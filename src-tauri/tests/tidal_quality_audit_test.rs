@@ -69,10 +69,14 @@ async fn test_audit_tidal_stream_resolution_matrix() {
 
     let _ = syncify_tauri_lib::crypto::init_keychain_crypto();
     let dec_str = syncify_tauri_lib::crypto::decrypt(&creds_json).expect("Decrypt creds");
-    let creds: syncify_tidal_downloader::TidalGuiCredentials = serde_json::from_str(&dec_str).expect("Deserialize creds");
+    let creds: syncify_tidal_downloader::TidalGuiCredentials =
+        serde_json::from_str(&dec_str).expect("Deserialize creds");
 
     let access_token = creds.access_token.clone();
-    let country_code = creds.country_code.clone().unwrap_or_else(|| "ES".to_string());
+    let country_code = creds
+        .country_code
+        .clone()
+        .unwrap_or_else(|| "ES".to_string());
     let client = reqwest::Client::new();
     let track_ids = vec!["560266", "80654035", "77703642"];
 
@@ -82,8 +86,12 @@ async fn test_audit_tidal_stream_resolution_matrix() {
         println!("=======================================================");
 
         // 1. Check Catalog Metadata
-        let meta_url = format!("https://api.tidal.com/v1/tracks/{}?countryCode={}", track_id, country_code);
-        if let Ok(resp) = client.get(&meta_url)
+        let meta_url = format!(
+            "https://api.tidal.com/v1/tracks/{}?countryCode={}",
+            track_id, country_code
+        );
+        if let Ok(resp) = client
+            .get(&meta_url)
             .header("Authorization", format!("Bearer {}", access_token))
             .header("X-Tidal-SessionId", &access_token)
             .send()
@@ -91,11 +99,29 @@ async fn test_audit_tidal_stream_resolution_matrix() {
         {
             if let Ok(json_val) = resp.json::<serde_json::Value>().await {
                 println!("--- CATALOG METADATA ---");
-                println!("Title: {:?}", json_val.get("title").and_then(|v| v.as_str()));
-                println!("Artist: {:?}", json_val.get("artist").and_then(|a| a.get("name")).and_then(|v| v.as_str()));
-                println!("Album: {:?}", json_val.get("album").and_then(|a| a.get("title")).and_then(|v| v.as_str()));
+                println!(
+                    "Title: {:?}",
+                    json_val.get("title").and_then(|v| v.as_str())
+                );
+                println!(
+                    "Artist: {:?}",
+                    json_val
+                        .get("artist")
+                        .and_then(|a| a.get("name"))
+                        .and_then(|v| v.as_str())
+                );
+                println!(
+                    "Album: {:?}",
+                    json_val
+                        .get("album")
+                        .and_then(|a| a.get("title"))
+                        .and_then(|v| v.as_str())
+                );
                 println!("ISRC: {:?}", json_val.get("isrc").and_then(|v| v.as_str()));
-                println!("Catalog audioQuality: {:?}", json_val.get("audioQuality").and_then(|v| v.as_str()));
+                println!(
+                    "Catalog audioQuality: {:?}",
+                    json_val.get("audioQuality").and_then(|v| v.as_str())
+                );
                 println!("Catalog audioModes: {:?}", json_val.get("audioModes"));
                 println!("Catalog mediaMetadata: {:?}", json_val.get("mediaMetadata"));
                 println!();
@@ -121,10 +147,14 @@ async fn test_audit_tidal_stream_resolution_matrix() {
                 url.push_str(&format!("&manifestMimeType={}", m_mime));
             }
 
-            let resp_res = client.get(&url)
+            let resp_res = client
+                .get(&url)
                 .header("Authorization", format!("Bearer {}", access_token))
                 .header("X-Tidal-SessionId", &access_token)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                )
                 .send()
                 .await;
 
@@ -133,7 +163,10 @@ async fn test_audit_tidal_stream_resolution_matrix() {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
 
-                    println!("--- REQUEST: audioquality={}, manifestMimeType={:?} ---", audio_quality_param, manifest_mime_type_param);
+                    println!(
+                        "--- REQUEST: audioquality={}, manifestMimeType={:?} ---",
+                        audio_quality_param, manifest_mime_type_param
+                    );
                     println!("HTTP Status: {}", status);
 
                     if status.is_success() {
@@ -145,19 +178,39 @@ async fn test_audit_tidal_stream_resolution_matrix() {
 
                             if let Some(b64_manifest) = info.manifest {
                                 if let Ok(decoded_bytes) = BASE64.decode(&b64_manifest) {
-                                    if let Ok(decoded_str) = String::from_utf8(decoded_bytes.clone()) {
+                                    if let Ok(decoded_str) =
+                                        String::from_utf8(decoded_bytes.clone())
+                                    {
                                         if decoded_str.starts_with('{') {
-                                            if let Ok(bts) = serde_json::from_str::<BtsManifest>(&decoded_str) {
+                                            if let Ok(bts) =
+                                                serde_json::from_str::<BtsManifest>(&decoded_str)
+                                            {
                                                 println!("BTS JSON mimeType: {:?}", bts.mime_type);
                                                 println!("BTS JSON codecs: {:?}", bts.codecs);
-                                                println!("BTS JSON encryptionType: {:?}", bts.encryption_type);
-                                                println!("BTS URLs count: {:?}", bts.urls.as_ref().map(|u| u.len()));
+                                                println!(
+                                                    "BTS JSON encryptionType: {:?}",
+                                                    bts.encryption_type
+                                                );
+                                                println!(
+                                                    "BTS URLs count: {:?}",
+                                                    bts.urls.as_ref().map(|u| u.len())
+                                                );
                                             } else {
-                                                println!("JSON manifest: {}", &decoded_str[..decoded_str.len().min(120)]);
+                                                println!(
+                                                    "JSON manifest: {}",
+                                                    &decoded_str[..decoded_str.len().min(120)]
+                                                );
                                             }
-                                        } else if decoded_str.contains("<MPD") || decoded_str.contains("<?xml") {
-                                            println!("XML DASH manifest detected, len={}", decoded_str.len());
-                                            if decoded_str.contains("codecs=\"flac\"") || decoded_str.contains("codecs=\"fLaC\"") {
+                                        } else if decoded_str.contains("<MPD")
+                                            || decoded_str.contains("<?xml")
+                                        {
+                                            println!(
+                                                "XML DASH manifest detected, len={}",
+                                                decoded_str.len()
+                                            );
+                                            if decoded_str.contains("codecs=\"flac\"")
+                                                || decoded_str.contains("codecs=\"fLaC\"")
+                                            {
                                                 println!("DASH contains FLAC codec!");
                                             } else if decoded_str.contains("codecs=\"mp4a") {
                                                 println!("DASH contains AAC codec!");
@@ -169,7 +222,10 @@ async fn test_audit_tidal_stream_resolution_matrix() {
                                 }
                             }
                         } else {
-                            println!("Non-standard JSON success: {}", &text[..text.len().min(200)]);
+                            println!(
+                                "Non-standard JSON success: {}",
+                                &text[..text.len().min(200)]
+                            );
                         }
                     } else {
                         println!("Error response: {}", &text[..text.len().min(200)]);

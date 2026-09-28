@@ -147,9 +147,17 @@ fn test_orchestrator_quality_reconciliation_exact_hires() {
 
     DownloadOrchestrator::reconcile_physical_audio_quality(&mut res, &req);
 
-    assert_eq!(res.bit_depth, 24, "Must reconcile true bit depth 24 from physical FLAC");
-    assert_eq!(res.sample_rate, 96000, "Must reconcile true sample rate 96000 from physical FLAC");
-    let qd = res.quality_decision.expect("Quality decision must be evaluated");
+    assert_eq!(
+        res.bit_depth, 24,
+        "Must reconcile true bit depth 24 from physical FLAC"
+    );
+    assert_eq!(
+        res.sample_rate, 96000,
+        "Must reconcile true sample rate 96000 from physical FLAC"
+    );
+    let qd = res
+        .quality_decision
+        .expect("Quality decision must be evaluated");
     assert_eq!(qd.decision, QualityDecisionKind::CompletedExactQuality);
     assert!(!qd.quality_fallback_used);
     assert_eq!(qd.effective_quality, "FLAC 24-bit / 96.0kHz");
@@ -184,12 +192,31 @@ fn test_orchestrator_quality_reconciliation_shortfall_detection() {
 
     DownloadOrchestrator::reconcile_physical_audio_quality(&mut res, &req);
 
-    assert_eq!(res.bit_depth, 16, "Physical inspection must correct claimed 24-bit to 16-bit");
-    assert_eq!(res.sample_rate, 44100, "Physical inspection must correct claimed 96kHz to 44.1kHz");
-    let qd = res.quality_decision.expect("Quality decision must be evaluated");
-    assert_eq!(qd.decision, QualityDecisionKind::CompletedWithQualityShortfall, "Must flag QualityShortfall");
-    assert!(qd.quality_fallback_used, "quality_fallback_used must be true for shortfall");
-    assert!(qd.reason.as_ref().unwrap().contains("Quality shortfall: requested Hi-Res"));
+    assert_eq!(
+        res.bit_depth, 16,
+        "Physical inspection must correct claimed 24-bit to 16-bit"
+    );
+    assert_eq!(
+        res.sample_rate, 44100,
+        "Physical inspection must correct claimed 96kHz to 44.1kHz"
+    );
+    let qd = res
+        .quality_decision
+        .expect("Quality decision must be evaluated");
+    assert_eq!(
+        qd.decision,
+        QualityDecisionKind::CompletedWithQualityShortfall,
+        "Must flag QualityShortfall"
+    );
+    assert!(
+        qd.quality_fallback_used,
+        "quality_fallback_used must be true for shortfall"
+    );
+    assert!(qd
+        .reason
+        .as_ref()
+        .unwrap()
+        .contains("Quality shortfall: requested Hi-Res"));
 }
 
 #[tokio::test]
@@ -235,7 +262,7 @@ async fn test_worker_mark_complete_database_reconciliation_shortfall() {
     // Queue item requesting 'hires'
     let queue_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO download_queue (track_id, status, requested_quality, progress_percent)
-           VALUES (?, 'downloading', 'hires', 50.0) RETURNING id"#
+           VALUES (?, 'downloading', 'hires', 50.0) RETURNING id"#,
     )
     .bind(track_id)
     .fetch_one(&pool)
@@ -263,12 +290,17 @@ async fn test_worker_mark_complete_database_reconciliation_shortfall() {
     worker.mark_complete(queue_id, &download_res).await;
 
     // 1. Verify tracks.audio_quality was synchronized to 'lossless' (reconciled against physical reality)
-    let final_track_q: Option<String> = sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
-        .bind(track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(final_track_q.as_deref(), Some("lossless"), "tracks.audio_quality must match physical 16-bit FLAC reality ('lossless')");
+    let final_track_q: Option<String> =
+        sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        final_track_q.as_deref(),
+        Some("lossless"),
+        "tracks.audio_quality must match physical 16-bit FLAC reality ('lossless')"
+    );
 
     // 2. Verify downloads table records the physical reality and shortfall decision
     let (bd, sr, fmt, q_dec, q_fb): (Option<i32>, Option<i32>, Option<String>, Option<String>, i64) = sqlx::query_as(
@@ -295,7 +327,10 @@ async fn test_worker_mark_complete_database_reconciliation_shortfall() {
     .unwrap();
 
     assert_eq!(q_status, "complete");
-    assert_eq!(q_dec_queue.as_deref(), Some("CompletedWithQualityShortfall"));
+    assert_eq!(
+        q_dec_queue.as_deref(),
+        Some("CompletedWithQualityShortfall")
+    );
     assert_eq!(q_fb_queue, Some(1));
     assert!(q_eff_q.as_deref().unwrap().contains("16-bit / 44.1kHz"));
 }
@@ -340,7 +375,7 @@ async fn test_worker_mark_complete_database_reconciliation_hires_promotion() {
 
     let queue_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO download_queue (track_id, status, requested_quality, progress_percent)
-           VALUES (?, 'downloading', 'hires', 50.0) RETURNING id"#
+           VALUES (?, 'downloading', 'hires', 50.0) RETURNING id"#,
     )
     .bind(track_id)
     .fetch_one(&pool)
@@ -368,12 +403,17 @@ async fn test_worker_mark_complete_database_reconciliation_hires_promotion() {
     worker.mark_complete(queue_id, &download_res).await;
 
     // Verify tracks.audio_quality was promoted to 'hires' based on true disk reality
-    let final_track_q: Option<String> = sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
-        .bind(track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(final_track_q.as_deref(), Some("hires"), "tracks.audio_quality must be promoted to 'hires'");
+    let final_track_q: Option<String> =
+        sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        final_track_q.as_deref(),
+        Some("hires"),
+        "tracks.audio_quality must be promoted to 'hires'"
+    );
 
     // Verify downloads table
     let (bd, sr, fmt, q_dec, q_fb): (Option<i32>, Option<i32>, Option<String>, Option<String>, i64) = sqlx::query_as(

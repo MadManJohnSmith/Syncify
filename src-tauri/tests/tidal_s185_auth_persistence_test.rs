@@ -117,8 +117,7 @@ async fn test_s185_valid_active_credentials_resolve_without_invalidation() {
         insert_tidal_account(&pool, "valid@test.example", &creds.to_string(), false, None).await;
 
     let http_client = reqwest::Client::new();
-    let (resolved, username) =
-        resolve_and_refresh_gui_credentials(&pool, &http_client).await;
+    let (resolved, username) = resolve_and_refresh_gui_credentials(&pool, &http_client).await;
 
     assert!(
         resolved.is_some(),
@@ -145,12 +144,17 @@ async fn test_s185_transport_error_during_refresh_does_not_persist_invalidation(
         "expires_at": now_secs() - 100.0,
         "country_code": "US",
     });
-    let account_id =
-        insert_tidal_account(&pool, "transport@test.example", &creds.to_string(), false, None).await;
+    let account_id = insert_tidal_account(
+        &pool,
+        "transport@test.example",
+        &creds.to_string(),
+        false,
+        None,
+    )
+    .await;
 
     let http_client = dead_transport_client();
-    let (resolved, _username) =
-        resolve_and_refresh_gui_credentials(&pool, &http_client).await;
+    let (resolved, _username) = resolve_and_refresh_gui_credentials(&pool, &http_client).await;
 
     assert!(
         resolved.is_none(),
@@ -183,8 +187,7 @@ async fn test_s185_expired_token_without_refresh_marks_invalid() {
         insert_tidal_account(&pool, "dead@test.example", &creds.to_string(), false, None).await;
 
     let http_client = reqwest::Client::new(); // no se usa: rama sin red
-    let (resolved, _username) =
-        resolve_and_refresh_gui_credentials(&pool, &http_client).await;
+    let (resolved, _username) = resolve_and_refresh_gui_credentials(&pool, &http_client).await;
     assert!(resolved.is_none());
 
     let (inv, reason) = account_flags(&pool, account_id).await;
@@ -206,8 +209,22 @@ async fn test_s185_login_upsert_cleans_stale_rows_pipeline_selects_clean_row() {
         "refresh_token": "old_refresh",
         "token_expiry": now_secs() - 5000.0,
     });
-    insert_tidal_account(&pool, "stale1@test.example", &stale.to_string(), true, Some("token_expired")).await;
-    insert_tidal_account(&pool, "stale2@test.example", &stale.to_string(), true, Some("token_expired")).await;
+    insert_tidal_account(
+        &pool,
+        "stale1@test.example",
+        &stale.to_string(),
+        true,
+        Some("token_expired"),
+    )
+    .await;
+    insert_tidal_account(
+        &pool,
+        "stale2@test.example",
+        &stale.to_string(),
+        true,
+        Some("token_expired"),
+    )
+    .await;
 
     // «Login exitoso»: mismo camino que start_auth_and_save — payload con expiración
     // inyectada, cifrado y upsert estable por servicio.
@@ -220,9 +237,15 @@ async fn test_s185_login_upsert_cleans_stale_rows_pipeline_selects_clean_row() {
     inject_tidal_expiry(&mut payload, Some(now_secs() + 7200.0));
     let encrypted = crypto::encrypt(&payload.to_string()).unwrap();
 
-    upsert_service_account(&pool, tidal_service_id(&pool).await, "Owner", Some("owner@test.example"), &encrypted)
-        .await
-        .expect("upsert succeeds");
+    upsert_service_account(
+        &pool,
+        tidal_service_id(&pool).await,
+        "Owner",
+        Some("owner@test.example"),
+        &encrypted,
+    )
+    .await
+    .expect("upsert succeeds");
 
     // Exactamente las mismas filas (preserva CASCADE data), TODAS limpias y
     // exactamente UNA activa — la que el pipeline selecciona.
@@ -245,8 +268,7 @@ async fn test_s185_login_upsert_cleans_stale_rows_pipeline_selects_clean_row() {
 
     // El pipeline selecciona una fila limpia utilizable sin pasos extra.
     let http_client = reqwest::Client::new();
-    let (resolved, _username) =
-        resolve_and_refresh_gui_credentials(&pool, &http_client).await;
+    let (resolved, _username) = resolve_and_refresh_gui_credentials(&pool, &http_client).await;
     assert!(
         resolved.is_some(),
         "tras un login exito la primera descarga NO requiere red ni pasos extra"
@@ -259,9 +281,15 @@ async fn test_s185_login_upsert_cleans_stale_rows_pipeline_selects_clean_row() {
         .execute(&pool)
         .await
         .unwrap();
-    upsert_service_account(&pool, tidal_service_id(&pool).await, "Fresh", None, &encrypted)
-        .await
-        .expect("insert path succeeds");
+    upsert_service_account(
+        &pool,
+        tidal_service_id(&pool).await,
+        "Fresh",
+        None,
+        &encrypted,
+    )
+    .await
+    .expect("insert path succeeds");
     let (count,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM accounts WHERE service_id = ? AND is_active = 1 AND COALESCE(credentials_invalid,0)=0",
     )
@@ -279,16 +307,36 @@ async fn test_s185_relogin_with_different_email_survives_unique_constraint() {
     // Dos filas históricas del mismo servicio (cuentas A y B del propietario).
     // El upsert antiguo moría aquí con «UNIQUE constraint failed: accounts.service_id,
     // accounts.email» al intentar el UPDATE masivo — fallando el login completo.
-    insert_tidal_account(&pool, "account_a@test.example", r#"{"access_token":"a_old"}"#, false, None).await;
-    let row_b = insert_tidal_account(&pool, "account_b@test.example", r#"{"access_token":"b_old"}"#, true, Some("token_expired")).await;
+    insert_tidal_account(
+        &pool,
+        "account_a@test.example",
+        r#"{"access_token":"a_old"}"#,
+        false,
+        None,
+    )
+    .await;
+    let row_b = insert_tidal_account(
+        &pool,
+        "account_b@test.example",
+        r#"{"access_token":"b_old"}"#,
+        true,
+        Some("token_expired"),
+    )
+    .await;
 
     let fresh = crypto::encrypt(r#"{"access_token":"relogin_access","refresh_token":"relogin_refresh","token_expiry":4102444800}"#).unwrap();
     let service_id = tidal_service_id(&pool).await;
 
     // 1) Re-login con la cuenta B: debe revivir SU fila sin error SQL.
-    upsert_service_account(&pool, service_id, "Owner B", Some("account_b@test.example"), &fresh)
-        .await
-        .expect("re-login con email existente no debe chocar con UNIQUE");
+    upsert_service_account(
+        &pool,
+        service_id,
+        "Owner B",
+        Some("account_b@test.example"),
+        &fresh,
+    )
+    .await
+    .expect("re-login con email existente no debe chocar con UNIQUE");
     let (inv, reason, active) = sqlx::query_as::<_, (i64, Option<String>, i64)>(
         "SELECT COALESCE(credentials_invalid,0), invalid_reason, is_active FROM accounts WHERE id = ?",
     )
@@ -301,26 +349,30 @@ async fn test_s185_relogin_with_different_email_survives_unique_constraint() {
 
     // 2) Re-login con un email NUEVO: toma la fila más reciente, cambia su email,
     //    activa solo esa; ninguna violación de unicidad.
-    upsert_service_account(&pool, service_id, "Owner C", Some("brand_new@test.example"), &fresh)
-        .await
-        .expect("re-login con email nuevo no debe chocar con UNIQUE");
-
-    let actives: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM accounts WHERE service_id = ? AND is_active = 1",
+    upsert_service_account(
+        &pool,
+        service_id,
+        "Owner C",
+        Some("brand_new@test.example"),
+        &fresh,
     )
-    .bind(service_id)
-    .fetch_one(&pool)
     .await
-    .unwrap();
+    .expect("re-login con email nuevo no debe chocar con UNIQUE");
+
+    let actives: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE service_id = ? AND is_active = 1")
+            .bind(service_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(actives, 1);
 
-    let (email_now,): (Option<String>,) = sqlx::query_as(
-        "SELECT email FROM accounts WHERE service_id = ? AND is_active = 1",
-    )
-    .bind(service_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (email_now,): (Option<String>,) =
+        sqlx::query_as("SELECT email FROM accounts WHERE service_id = ? AND is_active = 1")
+            .bind(service_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(email_now.as_deref(), Some("brand_new@test.example"));
 }
 
@@ -352,7 +404,10 @@ async fn test_s185_payload_without_expiry_gets_cached_or_conservative_expiry() {
     let mut payload = serde_json::json!({ "access_token": "a", "token_expiry": 123.5 });
     inject_tidal_expiry(&mut payload, Some(now_secs() + 99.0));
     assert_eq!(payload["token_expiry"].as_f64(), Some(123.5));
-    assert!(payload.get("expires_in").is_none(), "no añade campos si ya hay expiración");
+    assert!(
+        payload.get("expires_in").is_none(),
+        "no añade campos si ya hay expiración"
+    );
 }
 
 #[tokio::test]
@@ -370,6 +425,10 @@ async fn test_s185_worker_classification_ignores_generic_requires_auth_message()
     assert!(classify_session_auth_failure(
         "OAuth token refresh failed: User token has expired and refresh failed"
     ));
-    assert!(classify_session_auth_failure("Tidal returned invalid_grant for refresh"));
-    assert!(classify_session_auth_failure("HTTP 401 during oauth token exchange"));
+    assert!(classify_session_auth_failure(
+        "Tidal returned invalid_grant for refresh"
+    ));
+    assert!(classify_session_auth_failure(
+        "HTTP 401 during oauth token exchange"
+    ));
 }

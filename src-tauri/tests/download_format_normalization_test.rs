@@ -11,10 +11,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tempfile::TempDir;
 
 fn normalize_physical_format(eff_fmt: Option<&str>, file_path: &str) -> String {
-    let physical_format = eff_fmt
-        .unwrap_or("FLAC")
-        .trim()
-        .to_uppercase();
+    let physical_format = eff_fmt.unwrap_or("FLAC").trim().to_uppercase();
 
     let valid_formats = ["FLAC", "AAC", "MP3", "ALAC", "OPUS"];
     if valid_formats.contains(&physical_format.as_str()) {
@@ -46,7 +43,10 @@ async fn test_downloads_format_case_sensitivity_and_normalization() {
 
     // Run migrations to get the real production schema including downloads CHECK constraint
     let migrator = sqlx::migrate!("./migrations");
-    migrator.run(&pool).await.expect("Migrations must run cleanly");
+    migrator
+        .run(&pool)
+        .await
+        .expect("Migrations must run cleanly");
 
     // Setup base records: service, artist, album, tracks
     sqlx::query("INSERT INTO services (id, name, supports_download, max_quality) VALUES (1, 'qobuz', 1, 'hires'), (2, 'tidal', 1, 'hires') ON CONFLICT(id) DO NOTHING")
@@ -64,21 +64,23 @@ async fn test_downloads_format_case_sensitivity_and_normalization() {
         .await
         .unwrap();
 
-    sqlx::query("INSERT INTO tracks (id, title, album_id, duration_ms, audio_quality) VALUES 
+    sqlx::query(
+        "INSERT INTO tracks (id, title, album_id, duration_ms, audio_quality) VALUES
         (101, 'Track FLAC Lowercase', 1, 180000, 'LOSSLESS'),
         (102, 'Track MP3 Lowercase', 1, 180000, 'LOSSLESS'),
         (103, 'Track AAC Lowercase', 1, 180000, 'LOSSLESS'),
         (104, 'Track OPUS Lowercase', 1, 180000, 'LOSSLESS'),
         (105, 'Track Unknown Fallback', 1, 180000, 'LOSSLESS'),
-        (999, 'Track Direct Lowercase Raw', 1, 180000, 'LOSSLESS')")
-        .execute(&pool)
-        .await
-        .unwrap();
+        (999, 'Track Direct Lowercase Raw', 1, 180000, 'LOSSLESS')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // 1. Verify that raw unnormalized lowercase format FAILS the SQLite CHECK constraint
     let raw_lowercase_insert = sqlx::query(
         "INSERT INTO downloads (track_id, source_service_id, file_path, file_format, downloaded_at)
-         VALUES (999, 1, '/music/raw_flac.flac', 'flac', CURRENT_TIMESTAMP)"
+         VALUES (999, 1, '/music/raw_flac.flac', 'flac', CURRENT_TIMESTAMP)",
     )
     .execute(&pool)
     .await;
@@ -100,12 +102,20 @@ async fn test_downloads_format_case_sensitivity_and_normalization() {
         (102i64, Some("mp3"), "/music/track102.mp3", "MP3"),
         (103i64, Some("  aac  "), "/music/track103.m4a", "AAC"),
         (104i64, Some("opus"), "/music/track104.opus", "OPUS"),
-        (105i64, Some("unknown_codec"), "/music/track105.flac", "FLAC"),
+        (
+            105i64,
+            Some("unknown_codec"),
+            "/music/track105.flac",
+            "FLAC",
+        ),
     ];
 
     for (track_id, raw_eff_fmt, file_path, expected_persisted) in test_cases {
         let normalized = normalize_physical_format(raw_eff_fmt, file_path);
-        assert_eq!(normalized, expected_persisted, "Normalized format should match expected uppercase");
+        assert_eq!(
+            normalized, expected_persisted,
+            "Normalized format should match expected uppercase"
+        );
 
         // 3. Insert using normalized physical_format into downloads
         let insert_res = sqlx::query(
@@ -113,7 +123,7 @@ async fn test_downloads_format_case_sensitivity_and_normalization() {
             INSERT INTO downloads (
                 track_id, source_service_id, file_path, file_format, downloaded_at
             ) VALUES (?, 1, ?, ?, CURRENT_TIMESTAMP)
-            "#
+            "#,
         )
         .bind(track_id)
         .bind(file_path)
@@ -128,17 +138,17 @@ async fn test_downloads_format_case_sensitivity_and_normalization() {
         );
 
         // 4. Verify persisted value in DB
-        let stored_format: String = sqlx::query_scalar(
-            "SELECT file_format FROM downloads WHERE track_id = ?"
-        )
-        .bind(track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let stored_format: String =
+            sqlx::query_scalar("SELECT file_format FROM downloads WHERE track_id = ?")
+                .bind(track_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         assert_eq!(
             stored_format, expected_persisted,
-            "Persisted file_format in SQLite must be exact uppercase '{}'", expected_persisted
+            "Persisted file_format in SQLite must be exact uppercase '{}'",
+            expected_persisted
         );
     }
 }

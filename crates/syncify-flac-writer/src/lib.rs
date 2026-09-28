@@ -5,9 +5,15 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing::{debug, info};
 
-pub use syncify_core_domain::cover_rules::{CoverPreservationPolicy, CoverType, CoverUpdateDecision};
-pub use syncify_core_domain::byte_validators::{ImageByteValidator, ImageDimensions, WebpByteValidator};
-pub use syncify_core_domain::metadata::{clean_title_and_extract_featured, extract_featured_artists};
+pub use syncify_core_domain::byte_validators::{
+    ImageByteValidator, ImageDimensions, WebpByteValidator,
+};
+pub use syncify_core_domain::cover_rules::{
+    CoverPreservationPolicy, CoverType, CoverUpdateDecision,
+};
+pub use syncify_core_domain::metadata::{
+    clean_title_and_extract_featured, extract_featured_artists,
+};
 
 /// Maximum recommended size for embedded FLAC PICTURE metadata block (800 KB / 819,200 bytes).
 pub const MAX_EMBEDDED_PICTURE_BYTES: usize = 800 * 1024;
@@ -93,13 +99,17 @@ impl FlacMetadata {
     /// In multidisc releases, TRACKTOTAL must reflect the local disc track count,
     /// preferring `disc_track_total` if set, otherwise falling back to `track_total`.
     pub fn effective_track_total(&self) -> u32 {
-        self.disc_track_total.filter(|&t| t > 0).unwrap_or(self.track_total)
+        self.disc_track_total
+            .filter(|&t| t > 0)
+            .unwrap_or(self.track_total)
     }
 
     /// Return the effective disc total for the release.
     /// Prefers `total_discs` if set, otherwise falling back to `disc_total`.
     pub fn effective_disc_total(&self) -> u32 {
-        self.total_discs.filter(|&d| d > 0).unwrap_or(self.disc_total)
+        self.total_discs
+            .filter(|&d| d > 0)
+            .unwrap_or(self.disc_total)
     }
 
     /// Checks if this track belongs to a compilation release.
@@ -197,7 +207,9 @@ pub fn resolve_flac_artists(
     fn add_artist(resolved: &mut Vec<String>, name: &str) {
         let trimmed = name.trim();
         if is_valid_tag_val(trimmed)
-            && !resolved.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed))
+            && !resolved
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(trimmed))
         {
             resolved.push(trimmed.to_string());
         }
@@ -291,16 +303,22 @@ pub fn unify_album_compilation_metadata(
             .map(|s| syncify_core_domain::metadata::normalize_compilation_artist(s))
             .or_else(|| {
                 // If any track already had a non-divergent album artist other than track artist
-                tracks.iter()
+                tracks
+                    .iter()
                     .filter_map(|t| t.album_artist.as_deref())
                     .find(|aa| is_valid_tag_val(aa) && !aa.eq_ignore_ascii_case("unknown"))
                     .map(|s| syncify_core_domain::metadata::normalize_compilation_artist(s))
             })
-            .unwrap_or_else(|| syncify_core_domain::metadata::CANONICAL_VARIOUS_ARTISTS.to_string());
+            .unwrap_or_else(|| {
+                syncify_core_domain::metadata::CANONICAL_VARIOUS_ARTISTS.to_string()
+            });
 
         for t in tracks.iter_mut() {
             t.compilation = Some(true);
-            if t.album_artist.as_deref().map(|aa| !is_valid_tag_val(aa)).unwrap_or(true)
+            if t.album_artist
+                .as_deref()
+                .map(|aa| !is_valid_tag_val(aa))
+                .unwrap_or(true)
                 || t.album_artist.as_deref() == Some(&t.artist)
             {
                 t.album_artist = Some(effective_comp_artist.clone());
@@ -308,7 +326,8 @@ pub fn unify_album_compilation_metadata(
         }
     } else {
         // Mono-artist: find the common artist if album_artist is missing
-        let common_artist = tracks.iter()
+        let common_artist = tracks
+            .iter()
             .find(|t| is_valid_tag_val(&t.artist))
             .map(|t| t.artist.clone());
 
@@ -324,7 +343,10 @@ pub fn unify_album_compilation_metadata(
 ///
 /// Uses VorbisComments (XiphComment) for FLAC files following exact Symfonium tag naming rules.
 /// Preserves unrelated tags, frame boundaries, and padding cleanly.
-pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result::Result<(), String> {
+pub fn apply_flac_tags(
+    file_path: &Path,
+    metadata: &FlacMetadata,
+) -> std::result::Result<(), String> {
     use metaflac::block::PictureType;
 
     if !file_path.exists() {
@@ -800,20 +822,27 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         if !cover_bytes.is_empty() {
             let prepared_pic = prepare_flac_picture(cover_bytes)?;
 
-            let existing_pic = tag.pictures().find(|p| p.picture_type == PictureType::CoverFront);
+            let existing_pic = tag
+                .pictures()
+                .find(|p| p.picture_type == PictureType::CoverFront);
 
             // Determine actual physical dimensions of existing picture block (TASK-131)
-            let (existing_w, existing_h) = existing_pic.map(|p| {
-                if p.width > 0 && p.height > 0 {
-                    (p.width, p.height)
-                } else {
-                    extract_image_dimensions(&p.data)
-                }
-            }).unwrap_or((0, 0));
+            let (existing_w, existing_h) = existing_pic
+                .map(|p| {
+                    if p.width > 0 && p.height > 0 {
+                        (p.width, p.height)
+                    } else {
+                        extract_image_dimensions(&p.data)
+                    }
+                })
+                .unwrap_or((0, 0));
 
-            let existing_is_corrupt_or_oversized = existing_pic.map(|p| {
-                (existing_w == 0 || existing_h == 0) || p.data.len() > HARD_CEILING_PICTURE_BYTES
-            }).unwrap_or(false);
+            let existing_is_corrupt_or_oversized = existing_pic
+                .map(|p| {
+                    (existing_w == 0 || existing_h == 0)
+                        || p.data.len() > HARD_CEILING_PICTURE_BYTES
+                })
+                .unwrap_or(false);
 
             let existing_front_type = existing_pic
                 .map(|p| WebpByteValidator::detect_cover_type(&p.data))
@@ -834,7 +863,10 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
                 // Symfonium invariant: preserving existing valid animated WebP CoverFront.
                 // If it had legacy 0x0 block dimensions, assign its real physical dimensions (TASK-131).
                 if let Some(mut existing) = existing_pic.cloned() {
-                    if (existing.width == 0 || existing.height == 0) && existing_w > 0 && existing_h > 0 {
+                    if (existing.width == 0 || existing.height == 0)
+                        && existing_w > 0
+                        && existing_h > 0
+                    {
                         existing.width = existing_w;
                         existing.height = existing_h;
                         tag.remove_picture_type(PictureType::CoverFront);
@@ -910,7 +942,10 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
         }
     }
 
-    info!("Symfonium-compatible VorbisComments tags written to {:?}", file_path);
+    info!(
+        "Symfonium-compatible VorbisComments tags written to {:?}",
+        file_path
+    );
     Ok(())
 }
 
@@ -919,14 +954,21 @@ pub fn apply_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result
 /// Ensures all VorbisComments are applied according to Symfonium standards,
 /// embedded PICTURE blocks contain real physical dimensions (width > 0, height > 0),
 /// and existing animated WebP CoverFront blocks are preserved per the Symfonium invariant.
-pub fn write_flac_metadata(file_path: &Path, metadata: &FlacMetadata) -> std::result::Result<(), String> {
+pub fn write_flac_metadata(
+    file_path: &Path,
+    metadata: &FlacMetadata,
+) -> std::result::Result<(), String> {
     apply_flac_tags(file_path, metadata)
 }
 
 /// Convert or extract a static frame to JPEG format using ffmpeg.
 ///
 /// Ensures the resulting image has valid dimensions and fits within the target constraint.
-pub fn convert_or_extract_to_jpeg(bytes: &[u8], max_dim: Option<u32>, quality: u32) -> Result<Vec<u8>, String> {
+pub fn convert_or_extract_to_jpeg(
+    bytes: &[u8],
+    max_dim: Option<u32>,
+    quality: u32,
+) -> Result<Vec<u8>, String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -941,12 +983,18 @@ pub fn convert_or_extract_to_jpeg(bytes: &[u8], max_dim: Option<u32>, quality: u
     let mut child = Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", "pipe:0",
-            "-vframes", "1",
-            "-vf", &scale_filter,
-            "-q:v", &q_str,
-            "-f", "image2",
-            "-c:v", "mjpeg",
+            "-i",
+            "pipe:0",
+            "-vframes",
+            "1",
+            "-vf",
+            &scale_filter,
+            "-q:v",
+            &q_str,
+            "-f",
+            "image2",
+            "-c:v",
+            "mjpeg",
             "pipe:1",
         ])
         .stdin(Stdio::piped())
@@ -965,7 +1013,10 @@ pub fn convert_or_extract_to_jpeg(bytes: &[u8], max_dim: Option<u32>, quality: u
 
     if !output.status.success() || output.stdout.is_empty() {
         let err_msg = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ffmpeg image conversion failed: {}", err_msg.lines().next().unwrap_or("unknown error")));
+        return Err(format!(
+            "ffmpeg image conversion failed: {}",
+            err_msg.lines().next().unwrap_or("unknown error")
+        ));
     }
 
     Ok(output.stdout)
@@ -1008,7 +1059,9 @@ pub fn prepare_flac_picture(cover_bytes: &[u8]) -> Result<metaflac::block::Pictu
     }
 
     let is_animated_webp = incoming_type.is_animated()
-        || WebpByteValidator::validate_animated_webp(cover_bytes).map(|w| w.is_animated).unwrap_or(false);
+        || WebpByteValidator::validate_animated_webp(cover_bytes)
+            .map(|w| w.is_animated)
+            .unwrap_or(false);
 
     let needs_conversion = incoming_type.is_webp()
         || is_animated_webp
@@ -1053,7 +1106,10 @@ pub fn prepare_flac_picture(cover_bytes: &[u8]) -> Result<metaflac::block::Pictu
     build_picture_block(final_bytes, final_dims)
 }
 
-fn build_picture_block(data: Vec<u8>, mut dims: ImageDimensions) -> Result<metaflac::block::Picture, String> {
+fn build_picture_block(
+    data: Vec<u8>,
+    mut dims: ImageDimensions,
+) -> Result<metaflac::block::Picture, String> {
     if data.len() > MAX_EMBEDDED_PICTURE_BYTES {
         return Err(format!(
             "Picture buffer size ({} bytes) exceeds maximum limit ({} bytes)",
@@ -1301,7 +1357,11 @@ pub fn sanitize_flac_pictures(file_path: &Path) -> Result<bool, String> {
                     modified = true;
                 }
                 Err(e) => {
-                    tracing::warn!("Removing unrepairable picture block from {:?}: {}", file_path, e);
+                    tracing::warn!(
+                        "Removing unrepairable picture block from {:?}: {}",
+                        file_path,
+                        e
+                    );
                     modified = true;
                 }
             }
@@ -1368,7 +1428,10 @@ pub struct FlacPictureAuditReport {
 }
 
 /// Audit internal METADATA_BLOCK_PICTURE blocks and sidecars at any pipeline stage.
-pub fn audit_flac_stage(stage_name: &str, file_path: &Path) -> Result<FlacPictureAuditReport, String> {
+pub fn audit_flac_stage(
+    stage_name: &str,
+    file_path: &Path,
+) -> Result<FlacPictureAuditReport, String> {
     let tag = metaflac::Tag::read_from_path(file_path)
         .map_err(|e| format!("Failed to read FLAC at stage '{}': {}", stage_name, e))?;
 
@@ -1378,13 +1441,16 @@ pub fn audit_flac_stage(stage_name: &str, file_path: &Path) -> Result<FlacPictur
     for pic in &pictures {
         let md5_hex = format!("{:x}", md5::compute(&pic.data));
 
-        let (has_vp8x, has_anim, anmf_frames) = match WebpByteValidator::validate_animated_webp(&pic.data) {
-            Ok(info) => (info.is_extended, info.is_animated, info.anmf_frame_count),
-            Err(_) => {
-                let _is_webp = pic.data.starts_with(b"RIFF") && pic.data.len() > 12 && &pic.data[8..12] == b"WEBP";
-                (false, false, 0)
-            }
-        };
+        let (has_vp8x, has_anim, anmf_frames) =
+            match WebpByteValidator::validate_animated_webp(&pic.data) {
+                Ok(info) => (info.is_extended, info.is_animated, info.anmf_frame_count),
+                Err(_) => {
+                    let _is_webp = pic.data.starts_with(b"RIFF")
+                        && pic.data.len() > 12
+                        && &pic.data[8..12] == b"WEBP";
+                    (false, false, 0)
+                }
+            };
 
         pic_summaries.push(PictureBlockSummary {
             picture_type: format!("{:?}", pic.picture_type),
@@ -1400,10 +1466,18 @@ pub fn audit_flac_stage(stage_name: &str, file_path: &Path) -> Result<FlacPictur
     }
 
     let parent = file_path.parent();
-    let sidecar_cover_webp = parent.map(|p| p.join("cover.webp").exists()).unwrap_or(false);
-    let sidecar_folder_webp = parent.map(|p| p.join("folder.webp").exists()).unwrap_or(false);
-    let sidecar_animated_webp = parent.map(|p| p.join("animated.webp").exists()).unwrap_or(false);
-    let sidecar_cover_jpg = parent.map(|p| p.join("cover.jpg").exists()).unwrap_or(false);
+    let sidecar_cover_webp = parent
+        .map(|p| p.join("cover.webp").exists())
+        .unwrap_or(false);
+    let sidecar_folder_webp = parent
+        .map(|p| p.join("folder.webp").exists())
+        .unwrap_or(false);
+    let sidecar_animated_webp = parent
+        .map(|p| p.join("animated.webp").exists())
+        .unwrap_or(false);
+    let sidecar_cover_jpg = parent
+        .map(|p| p.join("cover.jpg").exists())
+        .unwrap_or(false);
 
     let report = FlacPictureAuditReport {
         stage: stage_name.to_string(),
@@ -1433,7 +1507,10 @@ pub fn audit_flac_stage(stage_name: &str, file_path: &Path) -> Result<FlacPictur
 }
 
 /// Re-read FLAC file, verify structure, compare persisted tags against expected metadata, and return TagVerification.
-pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<TagVerification, String> {
+pub fn verify_flac_tags(
+    file_path: &Path,
+    expected: &FlacMetadata,
+) -> Result<TagVerification, String> {
     let mut verification = TagVerification {
         file_exists: file_path.exists(),
         flac_valid: false,
@@ -1471,7 +1548,12 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         if info.md5.len() == 16 {
             let is_valid = info.md5.iter().any(|&b| b != 0);
             verification.streaminfo_md5_valid = is_valid;
-            verification.streaminfo_md5 = Some(info.md5.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+            verification.streaminfo_md5 = Some(
+                info.md5
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<String>(),
+            );
         }
     }
 
@@ -1487,9 +1569,8 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
 
     // Check VorbisComments
     if let Some(comments) = tag.vorbis_comments() {
-        let read_val = |key: &str| -> Option<String> {
-            comments.get(key).and_then(|v| v.first().cloned())
-        };
+        let read_val =
+            |key: &str| -> Option<String> { comments.get(key).and_then(|v| v.first().cloned()) };
 
         if let Some(lrc) = comments.get("LYRICS") {
             verification.synced_lyrics_present = !lrc.is_empty();
@@ -1499,7 +1580,10 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
             verification.unsynced_lyrics_present = !un.is_empty();
             verification.lyrics_present = true;
         }
-        if comments.get("BPM").is_some() || comments.get("TEMPO").is_some() || comments.get("TBPM").is_some() {
+        if comments.get("BPM").is_some()
+            || comments.get("TEMPO").is_some()
+            || comments.get("TBPM").is_some()
+        {
             verification.bpm_present = true;
         }
 
@@ -1521,14 +1605,18 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
             }
         }
 
-        let (cleaned_expected_title, feat_from_exp_title) = clean_title_and_extract_featured(&expected.title);
+        let (cleaned_expected_title, feat_from_exp_title) =
+            clean_title_and_extract_featured(&expected.title);
         let exp_title = if !cleaned_expected_title.is_empty() {
             &cleaned_expected_title
         } else {
             &expected.title
         };
         let actual_title = read_val("TITLE").unwrap_or_default();
-        if is_valid_tag_val(&expected.title) && actual_title != expected.title && actual_title != *exp_title {
+        if is_valid_tag_val(&expected.title)
+            && actual_title != expected.title
+            && actual_title != *exp_title
+        {
             mismatches.push(("TITLE".to_string(), exp_title.to_string(), actual_title));
         }
 
@@ -1554,11 +1642,20 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
                     && first_actual != expected.artist
                     && (exp_resolved.is_empty() || actual_artists != exp_resolved)
                 {
-                    mismatches.push(("ARTIST".to_string(), expected.artist.clone(), first_actual.to_string()));
+                    mismatches.push((
+                        "ARTIST".to_string(),
+                        expected.artist.clone(),
+                        first_actual.to_string(),
+                    ));
                 }
             }
         }
-        check_field(&mut mismatches, "ALBUM", Some(&expected.album), read_val("ALBUM"));
+        check_field(
+            &mut mismatches,
+            "ALBUM",
+            Some(&expected.album),
+            read_val("ALBUM"),
+        );
         let expected_album_artist = if let Some(ref aa) = expected.album_artist {
             if is_valid_tag_val(aa) {
                 Some(aa.as_str())
@@ -1572,15 +1669,40 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
         } else {
             None
         };
-        check_field(&mut mismatches, "ALBUMARTIST", expected_album_artist, read_val("ALBUMARTIST"));
-        check_field(&mut mismatches, "COMPOSER", expected.composer.as_deref(), read_val("COMPOSER"));
-        check_field(&mut mismatches, "PERFORMER", expected.performers.as_deref(), read_val("PERFORMER"));
+        check_field(
+            &mut mismatches,
+            "ALBUMARTIST",
+            expected_album_artist,
+            read_val("ALBUMARTIST"),
+        );
+        check_field(
+            &mut mismatches,
+            "COMPOSER",
+            expected.composer.as_deref(),
+            read_val("COMPOSER"),
+        );
+        check_field(
+            &mut mismatches,
+            "PERFORMER",
+            expected.performers.as_deref(),
+            read_val("PERFORMER"),
+        );
         if expected.track_number > 0 {
-            check_field(&mut mismatches, "TRACKNUMBER", Some(&expected.track_number.to_string()), read_val("TRACKNUMBER"));
+            check_field(
+                &mut mismatches,
+                "TRACKNUMBER",
+                Some(&expected.track_number.to_string()),
+                read_val("TRACKNUMBER"),
+            );
         }
         let effective_track_total = expected.effective_track_total();
         if effective_track_total > 0 {
-            check_field(&mut mismatches, "TRACKTOTAL", Some(&effective_track_total.to_string()), read_val("TRACKTOTAL"));
+            check_field(
+                &mut mismatches,
+                "TRACKTOTAL",
+                Some(&effective_track_total.to_string()),
+                read_val("TRACKTOTAL"),
+            );
         }
         let effective_disc_number = if expected.disc_number > 0 {
             expected.disc_number
@@ -1590,12 +1712,27 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
             0
         };
         if effective_disc_number > 0 {
-            check_field(&mut mismatches, "DISCNUMBER", Some(&effective_disc_number.to_string()), read_val("DISCNUMBER"));
+            check_field(
+                &mut mismatches,
+                "DISCNUMBER",
+                Some(&effective_disc_number.to_string()),
+                read_val("DISCNUMBER"),
+            );
         }
         let effective_disc_total = expected.effective_disc_total();
         if effective_disc_total > 0 {
-            check_field(&mut mismatches, "DISCTOTAL", Some(&effective_disc_total.to_string()), read_val("DISCTOTAL"));
-            check_field(&mut mismatches, "TOTALDISCS", Some(&effective_disc_total.to_string()), read_val("TOTALDISCS"));
+            check_field(
+                &mut mismatches,
+                "DISCTOTAL",
+                Some(&effective_disc_total.to_string()),
+                read_val("DISCTOTAL"),
+            );
+            check_field(
+                &mut mismatches,
+                "TOTALDISCS",
+                Some(&effective_disc_total.to_string()),
+                read_val("TOTALDISCS"),
+            );
         }
         fn check_multi_field(
             mismatches: &mut Vec<(String, String, String)>,
@@ -1659,18 +1796,48 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
                 ));
             }
         }
-        check_field(&mut mismatches, "MEDIA", expected.media_type.as_deref(), read_val("MEDIA"));
-        check_field(&mut mismatches, "MUSICTYPE", expected.media_type.as_deref(), read_val("MUSICTYPE"));
-        check_field(&mut mismatches, "GROUPING", expected.grouping.as_deref(), read_val("GROUPING"));
+        check_field(
+            &mut mismatches,
+            "MEDIA",
+            expected.media_type.as_deref(),
+            read_val("MEDIA"),
+        );
+        check_field(
+            &mut mismatches,
+            "MUSICTYPE",
+            expected.media_type.as_deref(),
+            read_val("MUSICTYPE"),
+        );
+        check_field(
+            &mut mismatches,
+            "GROUPING",
+            expected.grouping.as_deref(),
+            read_val("GROUPING"),
+        );
         if expected.is_compilation() {
-            check_field(&mut mismatches, "COMPILATION", Some("1"), read_val("COMPILATION"));
+            check_field(
+                &mut mismatches,
+                "COMPILATION",
+                Some("1"),
+                read_val("COMPILATION"),
+            );
         } else if expected.compilation == Some(false) {
             if let Some(actual) = read_val("COMPILATION") {
                 mismatches.push(("COMPILATION".to_string(), "None".to_string(), actual));
             }
         }
-        check_field(&mut mismatches, "RELEASETYPE", expected.release_type.as_deref(), read_val("RELEASETYPE"));
-        check_field(&mut mismatches, "RELEASESTATUS", expected.release_status.as_deref(), read_val("RELEASESTATUS"));
+        check_field(
+            &mut mismatches,
+            "RELEASETYPE",
+            expected.release_type.as_deref(),
+            read_val("RELEASETYPE"),
+        );
+        check_field(
+            &mut mismatches,
+            "RELEASESTATUS",
+            expected.release_status.as_deref(),
+            read_val("RELEASESTATUS"),
+        );
         // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
         // The verifier computes the expected wire value with the SAME shared domain
         // helper apply_flac_tags uses (wire_country_value), so it validates against the
@@ -1679,40 +1846,174 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
             .release_country
             .as_deref()
             .map(syncify_metadata_domain::wire_country_value);
-        check_field(&mut mismatches, "RELEASECOUNTRY", norm_country.as_deref().or(expected.release_country.as_deref()), read_val("RELEASECOUNTRY"));
-        check_field(&mut mismatches, "COUNTRY", norm_country.as_deref().or(expected.release_country.as_deref()), read_val("COUNTRY"));
-        check_field(&mut mismatches, "RELEASEREGION", expected.release_region.as_deref(), read_val("RELEASEREGION"));
+        check_field(
+            &mut mismatches,
+            "RELEASECOUNTRY",
+            norm_country
+                .as_deref()
+                .or(expected.release_country.as_deref()),
+            read_val("RELEASECOUNTRY"),
+        );
+        check_field(
+            &mut mismatches,
+            "COUNTRY",
+            norm_country
+                .as_deref()
+                .or(expected.release_country.as_deref()),
+            read_val("COUNTRY"),
+        );
+        check_field(
+            &mut mismatches,
+            "RELEASEREGION",
+            expected.release_region.as_deref(),
+            read_val("RELEASEREGION"),
+        );
         let norm_lang = expected
             .language
             .as_deref()
             .map(syncify_metadata_domain::wire_language_value);
-        check_field(&mut mismatches, "LANGUAGE", norm_lang.as_deref().or(expected.language.as_deref()), read_val("LANGUAGE"));
-        check_field(&mut mismatches, "LABEL", expected.label.as_deref(), read_val("LABEL"));
-        check_field(&mut mismatches, "BARCODE", expected.barcode.as_deref(), read_val("BARCODE"));
-        check_field(&mut mismatches, "CATALOGNUMBER", expected.catalog_number.as_deref(), read_val("CATALOGNUMBER"));
-        check_field(&mut mismatches, "ORIGINALDATE", expected.original_date.as_deref(), read_val("ORIGINALDATE"));
-        check_field(&mut mismatches, "ISRC", expected.isrc.as_deref(), read_val("ISRC"));
-        check_field(&mut mismatches, "YEAR", expected.release_year.as_deref(), read_val("YEAR"));
-        check_field(&mut mismatches, "RELEASEDATE", expected.release_date.as_deref(), read_val("RELEASEDATE"));
+        check_field(
+            &mut mismatches,
+            "LANGUAGE",
+            norm_lang.as_deref().or(expected.language.as_deref()),
+            read_val("LANGUAGE"),
+        );
+        check_field(
+            &mut mismatches,
+            "LABEL",
+            expected.label.as_deref(),
+            read_val("LABEL"),
+        );
+        check_field(
+            &mut mismatches,
+            "BARCODE",
+            expected.barcode.as_deref(),
+            read_val("BARCODE"),
+        );
+        check_field(
+            &mut mismatches,
+            "CATALOGNUMBER",
+            expected.catalog_number.as_deref(),
+            read_val("CATALOGNUMBER"),
+        );
+        check_field(
+            &mut mismatches,
+            "ORIGINALDATE",
+            expected.original_date.as_deref(),
+            read_val("ORIGINALDATE"),
+        );
+        check_field(
+            &mut mismatches,
+            "ISRC",
+            expected.isrc.as_deref(),
+            read_val("ISRC"),
+        );
+        check_field(
+            &mut mismatches,
+            "YEAR",
+            expected.release_year.as_deref(),
+            read_val("YEAR"),
+        );
+        check_field(
+            &mut mismatches,
+            "RELEASEDATE",
+            expected.release_date.as_deref(),
+            read_val("RELEASEDATE"),
+        );
         if let Some(bpm) = expected.bpm {
-            check_field(&mut mismatches, "BPM", Some(&bpm.to_string()), read_val("BPM"));
+            check_field(
+                &mut mismatches,
+                "BPM",
+                Some(&bpm.to_string()),
+                read_val("BPM"),
+            );
         }
-        check_field(&mut mismatches, "INITIALKEY", expected.initial_key.as_deref(), read_val("INITIALKEY"));
-        check_field(&mut mismatches, "REPLAYGAIN_TRACK_GAIN", expected.replaygain_track_gain.as_deref(), read_val("REPLAYGAIN_TRACK_GAIN"));
-        check_field(&mut mismatches, "REPLAYGAIN_TRACK_PEAK", expected.replaygain_track_peak.as_deref(), read_val("REPLAYGAIN_TRACK_PEAK"));
-        check_field(&mut mismatches, "REPLAYGAIN_ALBUM_GAIN", expected.replaygain_album_gain.as_deref(), read_val("REPLAYGAIN_ALBUM_GAIN"));
-        check_field(&mut mismatches, "REPLAYGAIN_ALBUM_PEAK", expected.replaygain_album_peak.as_deref(), read_val("REPLAYGAIN_ALBUM_PEAK"));
-        check_field(&mut mismatches, "REPLAYGAIN_REFERENCE_LOUDNESS", expected.replaygain_reference_loudness.as_deref(), read_val("REPLAYGAIN_REFERENCE_LOUDNESS"));
-        check_field(&mut mismatches, "R128_TRACK_GAIN", expected.r128_track_gain.as_deref(), read_val("R128_TRACK_GAIN"));
+        check_field(
+            &mut mismatches,
+            "INITIALKEY",
+            expected.initial_key.as_deref(),
+            read_val("INITIALKEY"),
+        );
+        check_field(
+            &mut mismatches,
+            "REPLAYGAIN_TRACK_GAIN",
+            expected.replaygain_track_gain.as_deref(),
+            read_val("REPLAYGAIN_TRACK_GAIN"),
+        );
+        check_field(
+            &mut mismatches,
+            "REPLAYGAIN_TRACK_PEAK",
+            expected.replaygain_track_peak.as_deref(),
+            read_val("REPLAYGAIN_TRACK_PEAK"),
+        );
+        check_field(
+            &mut mismatches,
+            "REPLAYGAIN_ALBUM_GAIN",
+            expected.replaygain_album_gain.as_deref(),
+            read_val("REPLAYGAIN_ALBUM_GAIN"),
+        );
+        check_field(
+            &mut mismatches,
+            "REPLAYGAIN_ALBUM_PEAK",
+            expected.replaygain_album_peak.as_deref(),
+            read_val("REPLAYGAIN_ALBUM_PEAK"),
+        );
+        check_field(
+            &mut mismatches,
+            "REPLAYGAIN_REFERENCE_LOUDNESS",
+            expected.replaygain_reference_loudness.as_deref(),
+            read_val("REPLAYGAIN_REFERENCE_LOUDNESS"),
+        );
+        check_field(
+            &mut mismatches,
+            "R128_TRACK_GAIN",
+            expected.r128_track_gain.as_deref(),
+            read_val("R128_TRACK_GAIN"),
+        );
         if let Some(loudness) = expected.loudness {
-            check_field(&mut mismatches, "LOUDNESS", Some(&format!("{:.1}", loudness)), read_val("LOUDNESS"));
+            check_field(
+                &mut mismatches,
+                "LOUDNESS",
+                Some(&format!("{:.1}", loudness)),
+                read_val("LOUDNESS"),
+            );
         }
-        check_field(&mut mismatches, "MUSICBRAINZ_TRACKID", expected.musicbrainz_track_id.as_deref(), read_val("MUSICBRAINZ_TRACKID"));
-        check_field(&mut mismatches, "MUSICBRAINZ_ARTISTID", expected.musicbrainz_artist_id.as_deref(), read_val("MUSICBRAINZ_ARTISTID"));
-        check_field(&mut mismatches, "MUSICBRAINZ_ALBUMID", expected.musicbrainz_album_id.as_deref(), read_val("MUSICBRAINZ_ALBUMID"));
-        check_field(&mut mismatches, "MUSICBRAINZ_ALBUMARTISTID", expected.musicbrainz_albumartist_id.as_deref(), read_val("MUSICBRAINZ_ALBUMARTISTID"));
-        check_field(&mut mismatches, "ACOUSTID_ID", expected.acoustid_id.as_deref(), read_val("ACOUSTID_ID"));
-        check_field(&mut mismatches, "ACOUSTID_FINGERPRINT", expected.acoustid_fingerprint.as_deref(), read_val("ACOUSTID_FINGERPRINT"));
+        check_field(
+            &mut mismatches,
+            "MUSICBRAINZ_TRACKID",
+            expected.musicbrainz_track_id.as_deref(),
+            read_val("MUSICBRAINZ_TRACKID"),
+        );
+        check_field(
+            &mut mismatches,
+            "MUSICBRAINZ_ARTISTID",
+            expected.musicbrainz_artist_id.as_deref(),
+            read_val("MUSICBRAINZ_ARTISTID"),
+        );
+        check_field(
+            &mut mismatches,
+            "MUSICBRAINZ_ALBUMID",
+            expected.musicbrainz_album_id.as_deref(),
+            read_val("MUSICBRAINZ_ALBUMID"),
+        );
+        check_field(
+            &mut mismatches,
+            "MUSICBRAINZ_ALBUMARTISTID",
+            expected.musicbrainz_albumartist_id.as_deref(),
+            read_val("MUSICBRAINZ_ALBUMARTISTID"),
+        );
+        check_field(
+            &mut mismatches,
+            "ACOUSTID_ID",
+            expected.acoustid_id.as_deref(),
+            read_val("ACOUSTID_ID"),
+        );
+        check_field(
+            &mut mismatches,
+            "ACOUSTID_FINGERPRINT",
+            expected.acoustid_fingerprint.as_deref(),
+            read_val("ACOUSTID_FINGERPRINT"),
+        );
 
         verification.mismatches = mismatches;
     }
@@ -1722,7 +2023,10 @@ pub fn verify_flac_tags(file_path: &Path, expected: &FlacMetadata) -> Result<Tag
 }
 
 /// Helper that applies FLAC tags and performs instant re-read validation.
-pub fn apply_and_verify_flac_tags(file_path: &Path, metadata: &FlacMetadata) -> std::result::Result<TagVerification, String> {
+pub fn apply_and_verify_flac_tags(
+    file_path: &Path,
+    metadata: &FlacMetadata,
+) -> std::result::Result<TagVerification, String> {
     apply_flac_tags(file_path, metadata)?;
     verify_flac_tags(file_path, metadata)
 }
@@ -1753,10 +2057,14 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
     use std::process::{Command, Stdio};
 
     if !flac_path.is_file() {
-        return Err(format!("File does not exist or is not a file: {:?}", flac_path));
+        return Err(format!(
+            "File does not exist or is not a file: {:?}",
+            flac_path
+        ));
     }
 
-    let (bits_per_sample, total_samples) = if let Ok(tag) = metaflac::Tag::read_from_path(flac_path) {
+    let (bits_per_sample, total_samples) = if let Ok(tag) = metaflac::Tag::read_from_path(flac_path)
+    {
         if let Some(si) = tag.get_streaminfo() {
             (si.bits_per_sample, si.total_samples)
         } else {
@@ -1804,7 +2112,9 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
             }
         }
 
-        let status = child.wait().map_err(|e| format!("Failed to wait for flac: {}", e))?;
+        let status = child
+            .wait()
+            .map_err(|e| format!("Failed to wait for flac: {}", e))?;
         if !read_err && status.success() && (bytes_read > 0 || total_samples == 0) {
             let digest = ctx.finalize();
             return Ok(digest.0);
@@ -1821,7 +2131,12 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
         9..=16 => "s16le",
         17..=24 => "s24le",
         25..=32 => "s32le",
-        other => return Err(format!("Unsupported bits_per_sample for PCM MD5: {}", other)),
+        other => {
+            return Err(format!(
+                "Unsupported bits_per_sample for PCM MD5: {}",
+                other
+            ))
+        }
     };
 
     let mut child = Command::new("ffmpeg")
@@ -1833,7 +2148,10 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
         .spawn()
         .map_err(|e| format!("Failed to spawn ffmpeg for PCM MD5 computation: {}", e))?;
 
-    let mut stdout = child.stdout.take().ok_or("Failed to capture ffmpeg stdout")?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or("Failed to capture ffmpeg stdout")?;
     let mut ctx = md5::Context::new();
     let mut buffer = [0u8; 65536];
     let mut bytes_read = 0usize;
@@ -1852,7 +2170,9 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
         }
     }
 
-    let status = child.wait().map_err(|e| format!("Failed to wait for ffmpeg: {}", e))?;
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for ffmpeg: {}", e))?;
     if !status.success() || (bytes_read == 0 && total_samples > 0) {
         return Err(format!(
             "ffmpeg failed to decode PCM stream (status: {:?}, bytes: {})",
@@ -1878,14 +2198,18 @@ pub fn populate_streaminfo_md5(flac_path: &Path) -> Result<[u8; 16], String> {
     let tag = metaflac::Tag::read_from_path(flac_path)
         .map_err(|e| format!("Failed to read FLAC tags from {:?}: {}", flac_path, e))?;
 
-    let streaminfo = tag.get_streaminfo()
+    let streaminfo = tag
+        .get_streaminfo()
         .ok_or_else(|| format!("FLAC file missing STREAMINFO block: {:?}", flac_path))?;
 
     let is_valid_md5 = streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
     if is_valid_md5 {
         let mut existing = [0u8; 16];
         existing.copy_from_slice(&streaminfo.md5);
-        debug!("STREAMINFO already contains valid MD5: {:x}", md5::Digest(existing));
+        debug!(
+            "STREAMINFO already contains valid MD5: {:x}",
+            md5::Digest(existing)
+        );
         return Ok(existing);
     }
 
@@ -1894,11 +2218,16 @@ pub fn populate_streaminfo_md5(flac_path: &Path) -> Result<[u8; 16], String> {
 
     // 3. Fast in-place write if standard FLAC layout (header offset 26..42)
     let mut in_place_success = false;
-    if let Ok(mut file) = std::fs::OpenOptions::new().read(true).write(true).open(flac_path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(flac_path)
+    {
         use std::io::{Read, Seek, SeekFrom, Write};
         let mut magic_header = [0u8; 8];
         if file.read_exact(&mut magic_header).is_ok() {
-            let is_streaminfo_first = &magic_header[0..4] == b"fLaC" && (magic_header[4] & 0x7F) == 0;
+            let is_streaminfo_first =
+                &magic_header[0..4] == b"fLaC" && (magic_header[4] & 0x7F) == 0;
             let block_len = ((magic_header[5] as u32) << 16)
                 | ((magic_header[6] as u32) << 8)
                 | (magic_header[7] as u32);
@@ -1923,7 +2252,11 @@ pub fn populate_streaminfo_md5(flac_path: &Path) -> Result<[u8; 16], String> {
         }
     }
 
-    info!("Populated STREAMINFO MD5 for {:?}: {:x}", flac_path, md5::Digest(computed_md5));
+    info!(
+        "Populated STREAMINFO MD5 for {:?}: {:x}",
+        flac_path,
+        md5::Digest(computed_md5)
+    );
     Ok(computed_md5)
 }
 
@@ -1939,19 +2272,30 @@ pub fn inspect_and_verify_flac_stream(flac_path: &Path) -> Result<FlacIntegrityR
     let tag = metaflac::Tag::read_from_path(flac_path)
         .map_err(|e| format!("Failed to read FLAC tags from {:?}: {}", flac_path, e))?;
 
-    let streaminfo = tag.get_streaminfo()
+    let streaminfo = tag
+        .get_streaminfo()
         .ok_or_else(|| format!("FLAC file missing STREAMINFO block: {:?}", flac_path))?;
 
-    let streaminfo_has_valid_md5 = streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
+    let streaminfo_has_valid_md5 =
+        streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
     let streaminfo_md5_hex = if streaminfo.md5.len() == 16 {
-        Some(streaminfo.md5.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+        Some(
+            streaminfo
+                .md5
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>(),
+        )
     } else {
         None
     };
 
     // Compute the bit-exact raw PCM stream MD5
     let computed_raw = compute_pcm_stream_md5(flac_path)?;
-    let computed_hex = computed_raw.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    let computed_hex = computed_raw
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
 
     if streaminfo_has_valid_md5 {
         let matches = streaminfo.md5.as_slice() == &computed_raw[..];
@@ -2022,9 +2366,7 @@ pub struct FlacStreaminfoFinalization {
 
 /// Inner decode loop shared by the PCM MD5 + sample-count measurement (TASK-76).
 /// Streams the decoder's raw PCM stdout into an MD5 context while counting bytes.
-fn measure_pcm_stream(
-    child: &mut std::process::Child,
-) -> Result<([u8; 16], u64), String> {
+fn measure_pcm_stream(child: &mut std::process::Child) -> Result<([u8; 16], u64), String> {
     use std::io::Read;
 
     let mut stdout = child
@@ -2069,11 +2411,16 @@ fn measure_pcm_stream(
 /// reports the decoded PCM byte count so callers can derive the true sample count of a
 /// remuxed stream. Sample count = pcm_bytes / (channels * ceil(bits_per_sample / 8)),
 /// matching the FLAC specification's MD5 byte packing.
-pub fn compute_pcm_stream_md5_and_sample_count(flac_path: &Path) -> Result<([u8; 16], u64), String> {
+pub fn compute_pcm_stream_md5_and_sample_count(
+    flac_path: &Path,
+) -> Result<([u8; 16], u64), String> {
     use std::process::{Command, Stdio};
 
     if !flac_path.is_file() {
-        return Err(format!("File does not exist or is not a file: {:?}", flac_path));
+        return Err(format!(
+            "File does not exist or is not a file: {:?}",
+            flac_path
+        ));
     }
 
     let (bits_per_sample, num_channels, stored_total_samples) =
@@ -2116,7 +2463,10 @@ pub fn compute_pcm_stream_md5_and_sample_count(flac_path: &Path) -> Result<([u8;
                 }
             }
             Err(e) => {
-                debug!("flac CLI PCM measurement failed ({}); trying ffmpeg fallback", e);
+                debug!(
+                    "flac CLI PCM measurement failed ({}); trying ffmpeg fallback",
+                    e
+                );
             }
         }
     }
@@ -2181,9 +2531,7 @@ fn patch_flac_streaminfo_fields(
                 // Preserve the top 28 bits and rewrite the low 36-bit sample count,
                 // then overwrite the MD5 signature at file offset 26..42.
                 let mut field = [0u8; 8];
-                if file.seek(SeekFrom::Start(18)).is_ok()
-                    && file.read_exact(&mut field).is_ok()
-                {
+                if file.seek(SeekFrom::Start(18)).is_ok() && file.read_exact(&mut field).is_ok() {
                     let current = u64::from_be_bytes(field);
                     let preserved = current & !0x0F_FFFF_FFFF; // clear low 36 bits
                     let updated = preserved | (total_samples & 0x0F_FFFF_FFFF);
@@ -2225,16 +2573,19 @@ fn patch_flac_streaminfo_fields(
 pub fn finalize_flac_streaminfo_after_remux(
     flac_path: &Path,
 ) -> Result<FlacStreaminfoFinalization, String> {
-    let (bits_per_sample, num_channels) =
-        if let Ok(tag) = metaflac::Tag::read_from_path(flac_path) {
-            if let Some(si) = tag.get_streaminfo() {
-                (si.bits_per_sample as u32, si.num_channels as u32)
-            } else {
-                return Err(format!("FLAC file missing STREAMINFO block: {:?}", flac_path));
-            }
+    let (bits_per_sample, num_channels) = if let Ok(tag) = metaflac::Tag::read_from_path(flac_path)
+    {
+        if let Some(si) = tag.get_streaminfo() {
+            (si.bits_per_sample as u32, si.num_channels as u32)
         } else {
-            return Err(format!("Failed to read FLAC STREAMINFO: {:?}", flac_path));
-        };
+            return Err(format!(
+                "FLAC file missing STREAMINFO block: {:?}",
+                flac_path
+            ));
+        }
+    } else {
+        return Err(format!("Failed to read FLAC STREAMINFO: {:?}", flac_path));
+    };
 
     if bits_per_sample == 0 || num_channels == 0 {
         return Err(format!(
@@ -2301,11 +2652,16 @@ pub fn trim_flac_stream_copy(
         cmd.args(["-to", &format!("{:.6}", to.max(0.0))]);
     }
     cmd.args([
-        "-map", "0:a:0",
-        "-c", "copy",
-        "-map_metadata", "-1",
-        "-map_chapters", "-1",
-        "-f", "flac",
+        "-map",
+        "0:a:0",
+        "-c",
+        "copy",
+        "-map_metadata",
+        "-1",
+        "-map_chapters",
+        "-1",
+        "-f",
+        "flac",
     ]);
     cmd.arg(&tmp_path);
 
@@ -2405,7 +2761,13 @@ mod tests {
     }
 
     fn create_test_flac_file() -> TestFlacFile {
-        let path = std::env::temp_dir().join(format!("test_flac_writer_{}.flac", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let path = std::env::temp_dir().join(format!(
+            "test_flac_writer_{}.flac",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let mut flac_bytes = Vec::new();
         flac_bytes.extend_from_slice(b"fLaC");
         flac_bytes.extend_from_slice(&[
@@ -2413,8 +2775,8 @@ mod tests {
             0x10, 0x00, 0x10, 0x00, // min/max block size
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // min/max frame size
             0x0A, 0xC4, 0x42, 0xF0, // 44.1kHz, 2 channels, 16 bits, 0 samples
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]);
         std::fs::write(&path, &flac_bytes).expect("Failed to write initial FLAC bytes");
         TestFlacFile { path }
@@ -2436,7 +2798,10 @@ mod tests {
 
         let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
         let comments = read_tag.vorbis_comments().expect("No vorbis comments");
-        assert!(comments.get("EXPLICIT").is_none(), "EXPLICIT tag should be omitted when explicit == false");
+        assert!(
+            comments.get("EXPLICIT").is_none(),
+            "EXPLICIT tag should be omitted when explicit == false"
+        );
 
         let meta_none = FlacMetadata {
             title: "Clean Track 2".to_string(),
@@ -2449,7 +2814,10 @@ mod tests {
 
         let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
         let comments = read_tag.vorbis_comments().expect("No vorbis comments");
-        assert!(comments.get("EXPLICIT").is_none(), "EXPLICIT tag should be omitted when explicit == None");
+        assert!(
+            comments.get("EXPLICIT").is_none(),
+            "EXPLICIT tag should be omitted when explicit == None"
+        );
     }
 
     #[test]
@@ -2468,7 +2836,9 @@ mod tests {
 
         let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
         let comments = read_tag.vorbis_comments().expect("No vorbis comments");
-        let explicit_comments = comments.get("EXPLICIT").expect("EXPLICIT tag should be written when explicit == true");
+        let explicit_comments = comments
+            .get("EXPLICIT")
+            .expect("EXPLICIT tag should be written when explicit == true");
         assert_eq!(explicit_comments, &vec!["1".to_string()]);
     }
 
@@ -2488,7 +2858,10 @@ mod tests {
 
         let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
         let comments = read_tag.vorbis_comments().expect("No vorbis comments");
-        assert!(comments.get("WORK").is_none(), "WORK tag should be omitted when string is empty or whitespace");
+        assert!(
+            comments.get("WORK").is_none(),
+            "WORK tag should be omitted when string is empty or whitespace"
+        );
     }
 
     #[test]
@@ -2508,8 +2881,14 @@ mod tests {
 
         let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
         let comments = read_tag.vorbis_comments().expect("No vorbis comments");
-        assert_eq!(comments.get("CATALOGNUMBER"), Some(&vec!["CAT-12345".to_string()]));
-        assert_eq!(comments.get("ORIGINALDATE"), Some(&vec!["1973-03-01".to_string()]));
+        assert_eq!(
+            comments.get("CATALOGNUMBER"),
+            Some(&vec!["CAT-12345".to_string()])
+        );
+        assert_eq!(
+            comments.get("ORIGINALDATE"),
+            Some(&vec!["1973-03-01".to_string()])
+        );
     }
 
     #[test]
@@ -2529,7 +2908,8 @@ mod tests {
             ..Default::default()
         };
 
-        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        let ver =
+            apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
 
         assert!(ver.file_exists);
         assert!(ver.flac_valid);
@@ -2561,7 +2941,8 @@ mod tests {
             ..Default::default()
         };
 
-        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        let ver =
+            apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
         assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
 
         let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
@@ -2574,7 +2955,9 @@ mod tests {
         );
         assert_eq!(
             comments.get("ACOUSTID_FINGERPRINT"),
-            Some(&vec!["AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0".to_string()])
+            Some(&vec![
+                "AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0".to_string()
+            ])
         );
         assert_eq!(
             comments.get("MUSICBRAINZ_ARTISTID"),
@@ -2601,14 +2984,15 @@ mod tests {
             artist: "Multidisc Artist".to_string(),
             album: "Complete Anthology (Box Set)".to_string(),
             track_number: 3,
-            track_total: 41,               // Total tracks in box set
-            disc_track_total: Some(14),    // Total tracks on Disc 2 specifically
+            track_total: 41,            // Total tracks in box set
+            disc_track_total: Some(14), // Total tracks on Disc 2 specifically
             disc_number: 2,
-            total_discs: Some(3),          // 3-CD box set
+            total_discs: Some(3), // 3-CD box set
             ..Default::default()
         };
 
-        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        let ver =
+            apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
         assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
 
         let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
@@ -2636,15 +3020,22 @@ mod tests {
             ..Default::default()
         };
 
-        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        let ver =
+            apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
         assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
 
         let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
         let comments = read_tag.vorbis_comments().expect("No vorbis comments");
 
-        assert_eq!(comments.get("ALBUMARTIST"), Some(&vec!["Various Artists".to_string()]));
+        assert_eq!(
+            comments.get("ALBUMARTIST"),
+            Some(&vec!["Various Artists".to_string()])
+        );
         assert_eq!(comments.get("COMPILATION"), Some(&vec!["1".to_string()]));
-        assert_eq!(comments.get("ARTIST"), Some(&vec!["Soloist Artist".to_string()]));
+        assert_eq!(
+            comments.get("ARTIST"),
+            Some(&vec!["Soloist Artist".to_string()])
+        );
     }
 
     #[test]
@@ -2661,13 +3052,17 @@ mod tests {
             ..Default::default()
         };
 
-        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        let ver =
+            apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
         assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
 
         let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
         let comments = read_tag.vorbis_comments().expect("No vorbis comments");
 
-        assert_eq!(comments.get("ALBUMARTIST"), Some(&vec!["Various Artists".to_string()]));
+        assert_eq!(
+            comments.get("ALBUMARTIST"),
+            Some(&vec!["Various Artists".to_string()])
+        );
         assert_eq!(comments.get("COMPILATION"), Some(&vec!["1".to_string()]));
         assert_eq!(comments.get("ARTIST"), Some(&vec!["Dick Dale".to_string()]));
     }
@@ -2686,15 +3081,25 @@ mod tests {
             ..Default::default()
         };
 
-        let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
+        let ver =
+            apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags failed");
         assert!(ver.tags_match, "Tags must match: {:?}", ver.mismatches);
 
         let read_tag = metaflac::Tag::read_from_path(path).expect("Failed to read FLAC tag");
         let comments = read_tag.vorbis_comments().expect("No vorbis comments");
 
-        assert_eq!(comments.get("ALBUMARTIST"), Some(&vec!["Pink Floyd".to_string()]));
-        assert!(comments.get("COMPILATION").is_none(), "COMPILATION tag must NOT be present on mono-artist album");
-        assert_eq!(comments.get("ARTIST"), Some(&vec!["Pink Floyd".to_string()]));
+        assert_eq!(
+            comments.get("ALBUMARTIST"),
+            Some(&vec!["Pink Floyd".to_string()])
+        );
+        assert!(
+            comments.get("COMPILATION").is_none(),
+            "COMPILATION tag must NOT be present on mono-artist album"
+        );
+        assert_eq!(
+            comments.get("ARTIST"),
+            Some(&vec!["Pink Floyd".to_string()])
+        );
     }
 
     #[test]

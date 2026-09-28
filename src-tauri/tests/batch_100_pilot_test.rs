@@ -23,9 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use syncify_core_domain::byte_validators::AudioByteValidator;
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
-use syncify_tauri_lib::commands::{
-    evaluate_track_preflight, DownloadPreflightStatus,
-};
+use syncify_tauri_lib::commands::{evaluate_track_preflight, DownloadPreflightStatus};
 use syncify_tauri_lib::download::progress::{
     DownloadPhase, DownloadPhaseTimings, DownloadPhaseTracker,
 };
@@ -107,7 +105,14 @@ fn create_synthetic_test_flac(path: &Path, sample_rate: u32, bit_depth: u8, payl
 }
 
 /// Helper to generate comprehensive VorbisComments metadata
-fn build_pilot_metadata(idx: usize, artist: &str, album: &str, title: &str, isrc: &str, service: &str) -> FlacMetadata {
+fn build_pilot_metadata(
+    idx: usize,
+    artist: &str,
+    album: &str,
+    title: &str,
+    isrc: &str,
+    service: &str,
+) -> FlacMetadata {
     FlacMetadata {
         title: title.to_string(),
         artist: artist.to_string(),
@@ -209,22 +214,34 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
         .unwrap();
 
     let album1_name = "Pilot Volume 1 - Precision";
-    let album1_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, release_date) VALUES (?, '2026-08-19') RETURNING id")
-        .bind(album1_name)
-        .fetch_one(&db)
+    let album1_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, release_date) VALUES (?, '2026-08-19') RETURNING id",
+    )
+    .bind(album1_name)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album1_id)
+        .bind(artist_id)
+        .execute(&db)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-        .bind(album1_id).bind(artist_id).execute(&db).await.unwrap();
 
     let album2_name = "Pilot Volume 2 - Resiliency";
-    let album2_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, release_date) VALUES (?, '2026-08-19') RETURNING id")
-        .bind(album2_name)
-        .fetch_one(&db)
+    let album2_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, release_date) VALUES (?, '2026-08-19') RETURNING id",
+    )
+    .bind(album2_name)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album2_id)
+        .bind(artist_id)
+        .execute(&db)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-        .bind(album2_id).bind(artist_id).execute(&db).await.unwrap();
 
     // =========================================================================
     // STEP 1: Build the 100-Track Pilot Batch
@@ -251,15 +268,30 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
         .bind(&title).bind(album1_id).bind(210000 + (i as i64 * 1000)).bind(i as i32).bind(&isrc)
         .fetch_one(&db).await.unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
         sqlx::query(
             "INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, ?, 'FLAC', 24, 96000, 150, 1)"
         )
         .bind(tid).bind(format!("qobuz_pilot_{:03}", i)).execute(&db).await.unwrap();
 
-        pilot_tracks.push((tid, "qobuz_exact", isrc, title, album1_name, 24u8, 96000u32, "qobuz"));
+        pilot_tracks.push((
+            tid,
+            "qobuz_exact",
+            isrc,
+            title,
+            album1_name,
+            24u8,
+            96000u32,
+            "qobuz",
+        ));
     }
 
     // 2. 25 Tidal Exact tracks (indices 46..=70)
@@ -272,15 +304,30 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
         .bind(&title).bind(album1_id).bind(220000 + (i as i64 * 1000)).bind(i as i32).bind(&isrc)
         .fetch_one(&db).await.unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
         sqlx::query(
             "INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 3, ?, 'FLAC', 16, 44100, 90, 1)"
         )
         .bind(tid).bind(format!("tidal_pilot_{:03}", i)).execute(&db).await.unwrap();
 
-        pilot_tracks.push((tid, "tidal_exact", isrc, title, album1_name, 16u8, 44100u32, "tidal"));
+        pilot_tracks.push((
+            tid,
+            "tidal_exact",
+            isrc,
+            title,
+            album1_name,
+            16u8,
+            44100u32,
+            "tidal",
+        ));
     }
 
     // 3. 15 ISRC Fallback tracks (indices 71..=85)
@@ -293,8 +340,14 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
         .bind(&title).bind(album2_id).bind(230000 + (i as i64 * 1000)).bind(i as i32).bind(&isrc)
         .fetch_one(&db).await.unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
         // Stale on Qobuz, active on Tidal
         sqlx::query(
@@ -307,7 +360,16 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
         )
         .bind(tid).bind(format!("tidal_fallback_{:03}", i)).execute(&db).await.unwrap();
 
-        pilot_tracks.push((tid, "fallback_isrc", isrc, title, album2_name, 24u8, 96000u32, "tidal"));
+        pilot_tracks.push((
+            tid,
+            "fallback_isrc",
+            isrc,
+            title,
+            album2_name,
+            24u8,
+            96000u32,
+            "tidal",
+        ));
     }
 
     // 4. 10 Spotify unmapped tracks (indices 86..=95)
@@ -321,9 +383,21 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
         .fetch_one(&db).await.unwrap();
 
         sqlx::query("INSERT INTO library_entries (account_id, track_id) VALUES (1, ?)")
-            .bind(tid).execute(&db).await.unwrap();
+            .bind(tid)
+            .execute(&db)
+            .await
+            .unwrap();
 
-        pilot_tracks.push((tid, "spotify_unmapped", isrc, title, album2_name, 0u8, 0u32, "spotify"));
+        pilot_tracks.push((
+            tid,
+            "spotify_unmapped",
+            isrc,
+            title,
+            album2_name,
+            0u8,
+            0u32,
+            "spotify",
+        ));
     }
 
     // 5. 3 Rejected Quality tracks (indices 96..=98)
@@ -341,7 +415,16 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
         )
         .bind(tid).bind(format!("tidal_aac_{:03}", i)).execute(&db).await.unwrap();
 
-        pilot_tracks.push((tid, "rejected_quality", isrc, title, album2_name, 16u8, 44100u32, "tidal"));
+        pilot_tracks.push((
+            tid,
+            "rejected_quality",
+            isrc,
+            title,
+            album2_name,
+            16u8,
+            44100u32,
+            "tidal",
+        ));
     }
 
     // 6. 1 Already Downloaded (index 99)
@@ -350,8 +433,21 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
     )
     .bind(album2_id).fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, ?)")
-        .bind(tid_99).bind("C:/Music/dl_99.flac").execute(&db).await.unwrap();
-    pilot_tracks.push((tid_99, "already_downloaded", "USDL100099".to_string(), "Already Downloaded Track".to_string(), album2_name, 24u8, 96000u32, "qobuz"));
+        .bind(tid_99)
+        .bind("C:/Music/dl_99.flac")
+        .execute(&db)
+        .await
+        .unwrap();
+    pilot_tracks.push((
+        tid_99,
+        "already_downloaded",
+        "USDL100099".to_string(),
+        "Already Downloaded Track".to_string(),
+        album2_name,
+        24u8,
+        96000u32,
+        "qobuz",
+    ));
 
     // 7. 1 Already Queued (index 100)
     let tid_100: i64 = sqlx::query_scalar(
@@ -359,10 +455,26 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
     )
     .bind(album2_id).fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO download_queue (track_id, status) VALUES (?, 'queued')")
-        .bind(tid_100).execute(&db).await.unwrap();
-    pilot_tracks.push((tid_100, "already_queued", "USQUE100100".to_string(), "Already Queued Track".to_string(), album2_name, 24u8, 96000u32, "qobuz"));
+        .bind(tid_100)
+        .execute(&db)
+        .await
+        .unwrap();
+    pilot_tracks.push((
+        tid_100,
+        "already_queued",
+        "USQUE100100".to_string(),
+        "Already Queued Track".to_string(),
+        album2_name,
+        24u8,
+        96000u32,
+        "qobuz",
+    ));
 
-    assert_eq!(pilot_tracks.len(), 100, "Batch must contain exactly 100 tracks");
+    assert_eq!(
+        pilot_tracks.len(),
+        100,
+        "Batch must contain exactly 100 tracks"
+    );
 
     // =========================================================================
     // STEP 2: Execute Preflight Evaluation & Validate Spotify Non-Freezing Clean Exclusion
@@ -372,9 +484,15 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
     let mut eligible_tracks = Vec::new();
 
     for (tid, category, _, _, _, _, _, _) in &pilot_tracks {
-        let req_service = if *category == "fallback_isrc" { Some("qobuz") } else { None };
+        let req_service = if *category == "fallback_isrc" {
+            Some("qobuz")
+        } else {
+            None
+        };
         let strict = *category == "rejected_quality";
-        let pf = evaluate_track_preflight(&db, *tid, req_service, Some("lossless"), strict, true).await.unwrap();
+        let pf = evaluate_track_preflight(&db, *tid, req_service, Some("lossless"), strict, true)
+            .await
+            .unwrap();
 
         *preflight_counts.entry(pf.status).or_insert(0) += 1;
 
@@ -383,14 +501,54 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
         }
     }
 
-    assert_eq!(*preflight_counts.get(&DownloadPreflightStatus::ReadyExactSource).unwrap_or(&0), 70, "45 Qobuz + 25 Tidal = 70 ReadyExactSource");
-    assert_eq!(*preflight_counts.get(&DownloadPreflightStatus::ReadyFallbackExactIdentity).unwrap_or(&0), 15, "15 ISRC Fallback");
-    assert_eq!(*preflight_counts.get(&DownloadPreflightStatus::NoDownloadProvider).unwrap_or(&0), 10, "10 Spotify Unmapped must be NoDownloadProvider");
-    assert_eq!(*preflight_counts.get(&DownloadPreflightStatus::RejectedQuality).unwrap_or(&0), 3, "3 RejectedQuality under strict policy");
-    assert_eq!(*preflight_counts.get(&DownloadPreflightStatus::AlreadyDownloaded).unwrap_or(&0), 1, "1 AlreadyDownloaded");
-    assert_eq!(*preflight_counts.get(&DownloadPreflightStatus::AlreadyQueued).unwrap_or(&0), 1, "1 AlreadyQueued");
+    assert_eq!(
+        *preflight_counts
+            .get(&DownloadPreflightStatus::ReadyExactSource)
+            .unwrap_or(&0),
+        70,
+        "45 Qobuz + 25 Tidal = 70 ReadyExactSource"
+    );
+    assert_eq!(
+        *preflight_counts
+            .get(&DownloadPreflightStatus::ReadyFallbackExactIdentity)
+            .unwrap_or(&0),
+        15,
+        "15 ISRC Fallback"
+    );
+    assert_eq!(
+        *preflight_counts
+            .get(&DownloadPreflightStatus::NoDownloadProvider)
+            .unwrap_or(&0),
+        10,
+        "10 Spotify Unmapped must be NoDownloadProvider"
+    );
+    assert_eq!(
+        *preflight_counts
+            .get(&DownloadPreflightStatus::RejectedQuality)
+            .unwrap_or(&0),
+        3,
+        "3 RejectedQuality under strict policy"
+    );
+    assert_eq!(
+        *preflight_counts
+            .get(&DownloadPreflightStatus::AlreadyDownloaded)
+            .unwrap_or(&0),
+        1,
+        "1 AlreadyDownloaded"
+    );
+    assert_eq!(
+        *preflight_counts
+            .get(&DownloadPreflightStatus::AlreadyQueued)
+            .unwrap_or(&0),
+        1,
+        "1 AlreadyQueued"
+    );
 
-    assert_eq!(eligible_tracks.len(), 85, "Exactly 85 out of 100 tracks are eligible for downloading");
+    assert_eq!(
+        eligible_tracks.len(),
+        85,
+        "Exactly 85 out of 100 tracks are eligible for downloading"
+    );
 
     // =========================================================================
     // STEP 3: Enqueue Eligible Tracks into Download Queue
@@ -405,7 +563,7 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
                 service_id, service_name, service_track_id, target_title, allow_fallback
             ) VALUES (?, 50, ?, 'queued', 'hires', 1, ?, ?, ?, ?, 1)
             RETURNING id
-            "#
+            "#,
         )
         .bind(pf.track_id)
         .bind(pos as i64)
@@ -417,7 +575,14 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
         .await
         .unwrap();
 
-        queue_items.push((qid, pf.track_id, pf.title.clone(), pf.resolved_service_name.clone().unwrap_or_else(|| "qobuz".to_string())));
+        queue_items.push((
+            qid,
+            pf.track_id,
+            pf.title.clone(),
+            pf.resolved_service_name
+                .clone()
+                .unwrap_or_else(|| "qobuz".to_string()),
+        ));
     }
 
     assert_eq!(queue_items.len(), 85);
@@ -432,7 +597,8 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
     let semaphore = Arc::new(Semaphore::new(5));
     let completed_counter = Arc::new(AtomicUsize::new(0));
     let total_bytes_counter = Arc::new(AtomicUsize::new(0));
-    let metrics_collector: Arc<tokio::sync::Mutex<Vec<TrackExecutionMetric>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let metrics_collector: Arc<tokio::sync::Mutex<Vec<TrackExecutionMetric>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
     let mut join_handles = Vec::new();
 
@@ -447,8 +613,16 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
 
         let track_idx = idx + 1;
         let isrc = format!("USPILOT{:05}", track_idx);
-        let album_name = if track_idx <= 45 { album1_name } else { album2_name };
-        let bit_depth = if service == "tidal" && track_idx > 45 && track_idx <= 70 { 16u8 } else { 24u8 };
+        let album_name = if track_idx <= 45 {
+            album1_name
+        } else {
+            album2_name
+        };
+        let bit_depth = if service == "tidal" && track_idx > 45 && track_idx <= 70 {
+            16u8
+        } else {
+            24u8
+        };
         let sample_rate = if bit_depth == 16 { 44100u32 } else { 96000u32 };
 
         let handle = tokio::spawn(async move {
@@ -468,7 +642,7 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
             let staging_file = staging_dir_clone.join(format!("{}.part", qid));
             let payload_size = 100_000 + (track_idx * 1_000); // ~100KB synthetic audio payload
             create_synthetic_test_flac(&staging_file, sample_rate, bit_depth, payload_size);
-            
+
             // Ensure simulated network latency > 0 ms for real throughput calculation
             tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
             tracker.set_transfer_metrics(payload_size as u64, "network");
@@ -493,16 +667,21 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
 
             // 8. Tagging (Atomic VorbisComments with 48 tags)
             tracker.start_phase(DownloadPhase::Tagging);
-            let flac_meta = build_pilot_metadata(track_idx, artist_name, album_name, &title, &isrc, &service);
+            let flac_meta =
+                build_pilot_metadata(track_idx, artist_name, album_name, &title, &isrc, &service);
             let tag_res = apply_and_verify_flac_tags(&staging_file, &flac_meta);
-            assert!(tag_res.is_ok(), "VorbisComments tagging must verify cleanly");
+            assert!(
+                tag_res.is_ok(),
+                "VorbisComments tagging must verify cleanly"
+            );
 
             // 9. Atomic SQLite Persistence
             tracker.start_phase(DownloadPhase::Persisting);
             let safe_title = title.replace('/', "_");
             let target_album_dir = base_music_dir_clone.join(artist_name).join(album_name);
             std::fs::create_dir_all(&target_album_dir).unwrap();
-            let final_path = target_album_dir.join(format!("{:02} - {}.flac", track_idx, safe_title));
+            let final_path =
+                target_album_dir.join(format!("{:02} - {}.flac", track_idx, safe_title));
 
             sqlx::query(
                 r#"
@@ -549,10 +728,20 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
             let timings = tracker.finish_completed();
 
             assert!(timings.transfer_ms > 0, "Transfer duration must be > 0 ms");
-            assert!(timings.stream_duration_ms > 0, "Stream duration must be > 0 ms");
-            assert!(timings.throughput_mibps > 0.0, "Throughput must be > 0.0 MiB/s");
+            assert!(
+                timings.stream_duration_ms > 0,
+                "Stream duration must be > 0 ms"
+            );
+            assert!(
+                timings.throughput_mibps > 0.0,
+                "Throughput must be > 0.0 MiB/s"
+            );
             assert_eq!(timings.transfer_source, "network");
-            assert_eq!(timings.phases.len(), 12, "All 12 sequential operational phases must be recorded");
+            assert_eq!(
+                timings.phases.len(),
+                12,
+                "All 12 sequential operational phases must be recorded"
+            );
 
             completed_clone.fetch_add(1, Ordering::SeqCst);
             bytes_clone.fetch_add(payload_size, Ordering::SeqCst);
@@ -585,22 +774,39 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
     // STEP 5: Forensic Verification & Zero-Staging Residual Check
     // =========================================================================
 
-    assert_eq!(completed_counter.load(Ordering::SeqCst), 85, "All 85 eligible tracks must complete successfully");
+    assert_eq!(
+        completed_counter.load(Ordering::SeqCst),
+        85,
+        "All 85 eligible tracks must complete successfully"
+    );
 
     // Verify 0 orphan files in staging
     let staging_entries: Vec<_> = std::fs::read_dir(&staging_dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .collect();
-    assert_eq!(staging_entries.len(), 0, "Zero staging residual invariant: .staging must contain exactly 0 files post-promotion");
+    assert_eq!(
+        staging_entries.len(),
+        0,
+        "Zero staging residual invariant: .staging must contain exactly 0 files post-promotion"
+    );
 
     // Verify database row counts
-    let total_downloads_db: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE file_format = 'FLAC'")
-        .fetch_one(&db).await.unwrap();
-    assert_eq!(total_downloads_db, 85, "85 physical FLAC downloads persisted in database");
+    let total_downloads_db: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE file_format = 'FLAC'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        total_downloads_db, 85,
+        "85 physical FLAC downloads persisted in database"
+    );
 
-    let total_completed_queue: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'complete'")
-        .fetch_one(&db).await.unwrap();
+    let total_completed_queue: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'complete'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(total_completed_queue, 85);
 
     // =========================================================================
@@ -609,11 +815,22 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
 
     let collected_metrics = metrics_collector.lock().await.clone();
     let total_bytes: u64 = collected_metrics.iter().map(|m| m.bytes_transferred).sum();
-    let avg_transfer_ms: f64 = collected_metrics.iter().map(|m| m.transfer_ms as f64).sum::<f64>() / collected_metrics.len() as f64;
-    let avg_throughput_mibps: f64 = collected_metrics.iter().map(|m| m.throughput_mibps).sum::<f64>() / collected_metrics.len() as f64;
+    let avg_transfer_ms: f64 = collected_metrics
+        .iter()
+        .map(|m| m.transfer_ms as f64)
+        .sum::<f64>()
+        / collected_metrics.len() as f64;
+    let avg_throughput_mibps: f64 = collected_metrics
+        .iter()
+        .map(|m| m.throughput_mibps)
+        .sum::<f64>()
+        / collected_metrics.len() as f64;
     let lyrics_cache_hits = collected_metrics.iter().filter(|m| m.lyrics_cached).count();
     let cover_cache_hits = collected_metrics.iter().filter(|m| m.cover_cached).count();
-    let tagging_passed = collected_metrics.iter().filter(|m| m.tagging_verified).count();
+    let tagging_passed = collected_metrics
+        .iter()
+        .filter(|m| m.tagging_verified)
+        .count();
 
     println!("\n================================================================================");
     println!("                    S147: 100-TRACK PILOT BATCH FORENSIC REPORT                ");
@@ -631,13 +848,33 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
     println!(" ├─ Active Concurrency Threads: 5");
     println!(" ├─ Eligible Enqueued:          85");
     println!(" ├─ Successfully Downloaded:    85 (100.0% Success Rate)");
-    println!(" ├─ Total Audio Data Payload:   {:.2} MB ({} bytes)", total_bytes as f64 / 1_048_576.0, total_bytes);
-    println!(" ├─ Average Network Transfer:   {:.2} ms per track", avg_transfer_ms);
-    println!(" ├─ Average Throughput:         {:.2} MiB/s", avg_throughput_mibps);
-    println!(" ├─ Lyrics Cache Hit Rate:      {:.1}% ({}/85)", (lyrics_cache_hits as f64 / 85.0) * 100.0, lyrics_cache_hits);
-    println!(" ├─ Motion Cover Cache Hit Rate:100.0% ({}/85)", cover_cache_hits);
-    println!(" ├─ VorbisComment 48 Tags:      100.0% ({}/85 Verified Atomically)", tagging_passed);
-    println!(" └─ Staging Residuals:          0 files (.staging clean)", );
+    println!(
+        " ├─ Total Audio Data Payload:   {:.2} MB ({} bytes)",
+        total_bytes as f64 / 1_048_576.0,
+        total_bytes
+    );
+    println!(
+        " ├─ Average Network Transfer:   {:.2} ms per track",
+        avg_transfer_ms
+    );
+    println!(
+        " ├─ Average Throughput:         {:.2} MiB/s",
+        avg_throughput_mibps
+    );
+    println!(
+        " ├─ Lyrics Cache Hit Rate:      {:.1}% ({}/85)",
+        (lyrics_cache_hits as f64 / 85.0) * 100.0,
+        lyrics_cache_hits
+    );
+    println!(
+        " ├─ Motion Cover Cache Hit Rate:100.0% ({}/85)",
+        cover_cache_hits
+    );
+    println!(
+        " ├─ VorbisComment 48 Tags:      100.0% ({}/85 Verified Atomically)",
+        tagging_passed
+    );
+    println!(" └─ Staging Residuals:          0 files (.staging clean)",);
     println!("================================================================================\n");
 
     assert_eq!(tagging_passed, 85);

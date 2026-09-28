@@ -90,7 +90,7 @@ async fn test_library_physical_reconciliation_lifecycle() {
             id INTEGER PRIMARY KEY,
             base_folder TEXT NOT NULL
         );
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -112,28 +112,52 @@ async fn test_library_physical_reconciliation_lifecycle() {
 
     // 1. Seed tracks in database
     // Track 1: Existing on disk
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Mid-Air Thief') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, artist_id) VALUES ('Crumbling', ?) RETURNING id")
-        .bind(artist_id).fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Mid-Air Thief') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, artist_id) VALUES ('Crumbling', ?) RETURNING id",
+    )
+    .bind(artist_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let track_id_1: i64 = sqlx::query_scalar("INSERT INTO tracks (id, title, album_id, isrc) VALUES (19, 'These Chains', ?, 'USEZ61920802') RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
-        .bind(track_id_1).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(track_id_1)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Track 2: Missing on disk (should be purged)
     let track_id_2: i64 = sqlx::query_scalar("INSERT INTO tracks (id, title, album_id, isrc) VALUES (999, 'Deleted Track', ?, 'USXX12345678') RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
 
     // Track 3: Orphan physical file on disk (should be re-linked)
-    let artist_id_3: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Vito Bambino') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id_3: i64 = sqlx::query_scalar("INSERT INTO albums (title, artist_id) VALUES ('Pracownia', ?) RETURNING id")
-        .bind(artist_id_3).fetch_one(&pool).await.unwrap();
+    let artist_id_3: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Vito Bambino') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id_3: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, artist_id) VALUES ('Pracownia', ?) RETURNING id",
+    )
+    .bind(artist_id_3)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let track_id_3: i64 = sqlx::query_scalar("INSERT INTO tracks (id, title, album_id, isrc) VALUES (25, 'Lekko', ?, 'PLUM72300154') RETURNING id")
         .bind(album_id_3).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
-        .bind(track_id_3).bind(artist_id_3).execute(&pool).await.unwrap();
+        .bind(track_id_3)
+        .bind(artist_id_3)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 2, '208216979')")
         .bind(track_id_3).execute(&pool).await.unwrap();
 
@@ -210,7 +234,12 @@ async fn test_library_physical_reconciliation_lifecycle() {
     let track1_dir = base_music_dir.join("Mid-Air Thief").join("Crumbling");
     std::fs::create_dir_all(&track1_dir).unwrap();
     let track1_file = track1_dir.join("02 - These Chains.flac");
-    make_test_flac(&track1_file, "USEZ61920802", "These Chains", "Mid-Air Thief");
+    make_test_flac(
+        &track1_file,
+        "USEZ61920802",
+        "These Chains",
+        "Mid-Air Thief",
+    );
 
     // Real physical file for Track 3 (Orphan on disk)
     let track3_dir = base_music_dir.join("Vito Bambino").join("Pracownia");
@@ -233,7 +262,10 @@ async fn test_library_physical_reconciliation_lifecycle() {
         .bind(track_id_2).bind(missing_path.to_str().unwrap()).execute(&pool).await.unwrap();
 
     // Check pre-state
-    let count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads").fetch_one(&pool).await.unwrap();
+    let count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count_before, 2);
 
     // =========================================================================
@@ -253,9 +285,18 @@ async fn test_library_physical_reconciliation_lifecycle() {
         .await
         .expect("Reconciliation must succeed");
 
-    assert_eq!(report.purged_missing, 1, "Must purge 1 missing download record");
-    assert_eq!(report.cleaned_staging_residuals, 2, "Must clean 2 staging residual files");
-    assert_eq!(report.verified_total, 2, "Verified total must be 2 after re-linking");
+    assert_eq!(
+        report.purged_missing, 1,
+        "Must purge 1 missing download record"
+    );
+    assert_eq!(
+        report.cleaned_staging_residuals, 2,
+        "Must clean 2 staging residual files"
+    );
+    assert_eq!(
+        report.verified_total, 2,
+        "Verified total must be 2 after re-linking"
+    );
 
     // Verify downloads row for Track 2 (ghost) is removed
     let ghost_dl: Option<(i64,)> = sqlx::query_as("SELECT id FROM downloads WHERE track_id = ?")
@@ -266,16 +307,26 @@ async fn test_library_physical_reconciliation_lifecycle() {
     assert!(ghost_dl.is_none(), "Missing download row must be purged");
 
     // Verify downloads row for Track 3 (re-linked) is present
-    let relinked_dl: Option<(String, i64)> = sqlx::query_as("SELECT file_path, file_size_bytes FROM downloads WHERE track_id = ?")
-        .bind(track_id_3)
-        .fetch_optional(&pool)
-        .await
-        .unwrap();
-    assert!(relinked_dl.is_some(), "Orphan track must be re-linked in downloads");
+    let relinked_dl: Option<(String, i64)> =
+        sqlx::query_as("SELECT file_path, file_size_bytes FROM downloads WHERE track_id = ?")
+            .bind(track_id_3)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert!(
+        relinked_dl.is_some(),
+        "Orphan track must be re-linked in downloads"
+    );
 
     // Verify staging directory is clean
-    let staging_entries: Vec<_> = std::fs::read_dir(&staging_dir).unwrap().filter_map(|e| e.ok()).collect();
-    assert!(staging_entries.is_empty(), "Staging directory must have 0 residual files");
+    let staging_entries: Vec<_> = std::fs::read_dir(&staging_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(
+        staging_entries.is_empty(),
+        "Staging directory must have 0 residual files"
+    );
 
     // =========================================================================
     // IDEMPOTENCY CHECK
@@ -285,7 +336,16 @@ async fn test_library_physical_reconciliation_lifecycle() {
         .expect("Second reconciliation must succeed");
 
     assert_eq!(report_second.purged_missing, 0, "Second run must purge 0");
-    assert_eq!(report_second.relinked_orphans, 0, "Second run must re-link 0");
-    assert_eq!(report_second.cleaned_staging_residuals, 0, "Second run must clean 0");
-    assert_eq!(report_second.verified_total, 2, "Verified total must remain 2");
+    assert_eq!(
+        report_second.relinked_orphans, 0,
+        "Second run must re-link 0"
+    );
+    assert_eq!(
+        report_second.cleaned_staging_residuals, 0,
+        "Second run must clean 0"
+    );
+    assert_eq!(
+        report_second.verified_total, 2,
+        "Verified total must remain 2"
+    );
 }

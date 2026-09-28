@@ -13,9 +13,13 @@ use syncify_tauri_lib::import_cache::process_track_title;
 #[test]
 fn test_album_remaster_marker_detection() {
     // True cases: album declares edition / remaster
-    assert!(has_album_remaster_marker("Dziewczyna Szamana (2021 Remaster)"));
+    assert!(has_album_remaster_marker(
+        "Dziewczyna Szamana (2021 Remaster)"
+    ));
     assert!(has_album_remaster_marker("Heroes (Remastered)"));
-    assert!(has_album_remaster_marker("Nevermind (30th Anniversary Super Deluxe)"));
+    assert!(has_album_remaster_marker(
+        "Nevermind (30th Anniversary Super Deluxe)"
+    ));
     assert!(has_album_remaster_marker("OK Computer (Deluxe Edition)"));
     assert!(has_album_remaster_marker("Abbey Road (50th Anniversary)"));
     assert!(has_album_remaster_marker("Disintegration (Deluxe Edition)"));
@@ -86,10 +90,7 @@ fn test_redundant_remaster_stripped_when_album_declares_remaster() {
         "Heroes"
     );
     assert_eq!(
-        strip_redundant_remaster(
-            "Heroes - 2021 Remastered Version",
-            "Heroes (2021 Remaster)"
-        ),
+        strip_redundant_remaster("Heroes - 2021 Remastered Version", "Heroes (2021 Remaster)"),
         "Heroes"
     );
     assert_eq!(

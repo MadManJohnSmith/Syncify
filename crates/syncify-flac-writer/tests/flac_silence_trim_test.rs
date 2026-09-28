@@ -28,7 +28,12 @@ fn generate_fixture(dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
     let status = Command::new("ffmpeg")
         .args(["-v", "error", "-y"])
-        .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=5:sample_rate=44100"])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=5:sample_rate=44100",
+        ])
         .args(["-af", "adelay=3500:all=1,apad=pad_dur=3.5"])
         .args(["-ac", "2"])
         .arg(&path)
@@ -65,7 +70,15 @@ fn test_trim_restore_finalize_pipeline_repairs_streaminfo() {
         comments.set("ARTIST", vec!["TASK-76"]);
     }
     let png_status = Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=8x8:d=1"])
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=8x8:d=1",
+        ])
         .args(["-frames:v", "1", "-f", "image2"])
         .arg(dir.path().join("cover.png"))
         .status()
@@ -103,7 +116,11 @@ fn test_trim_restore_finalize_pipeline_repairs_streaminfo() {
 
     // 2. Restore tags/pictures.
     let restored = restore_flac_metadata_blocks(&trimmed, &fixture).expect("restore");
-    assert!(restored >= 2, "expected VorbisComment + Picture restored, got {}", restored);
+    assert!(
+        restored >= 2,
+        "expected VorbisComment + Picture restored, got {}",
+        restored
+    );
     let tag_after = metaflac::Tag::read_from_path(&trimmed).unwrap();
     assert_eq!(
         tag_after
@@ -113,7 +130,10 @@ fn test_trim_restore_finalize_pipeline_repairs_streaminfo() {
             .map(|s| s.to_string()),
         Some("Trim Fixture".to_string())
     );
-    assert!(tag_after.pictures().next().is_some(), "CoverFront picture lost");
+    assert!(
+        tag_after.pictures().next().is_some(),
+        "CoverFront picture lost"
+    );
 
     // 3. Finalize STREAMINFO: total_samples + MD5 recomputed from a decode pass.
     let fin = finalize_flac_streaminfo_after_remux(&trimmed).expect("finalize");
@@ -125,9 +145,16 @@ fn test_trim_restore_finalize_pipeline_repairs_streaminfo() {
 
     let integrity = inspect_and_verify_flac_stream(&trimmed).expect("integrity");
     assert!(integrity.streaminfo_md5_valid, "MD5 missing after finalize");
-    assert!(integrity.verified, "MD5 mismatch after finalize: {:?}", integrity);
+    assert!(
+        integrity.verified,
+        "MD5 mismatch after finalize: {:?}",
+        integrity
+    );
     assert_eq!(integrity.computed_md5, fin.md5_hex);
 
     let final_pcm = decoded_pcm_len(&trimmed);
-    assert_eq!(final_pcm, trimmed_pcm, "finalize must not alter decoded audio");
+    assert_eq!(
+        final_pcm, trimmed_pcm,
+        "finalize must not alter decoded audio"
+    );
 }

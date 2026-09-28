@@ -25,7 +25,10 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
 
     // Run all migrations including 0060
     let migrator = sqlx::migrate!("./migrations");
-    migrator.run(&pool).await.expect("Migrations must run cleanly");
+    migrator
+        .run(&pool)
+        .await
+        .expect("Migrations must run cleanly");
 
     // Seed services and test tracks
     sqlx::query(
@@ -36,8 +39,14 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
     .await
     .unwrap();
 
-    let tidal_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'").fetch_one(&pool).await.unwrap();
-    let qobuz_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'qobuz'").fetch_one(&pool).await.unwrap();
+    let tidal_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let qobuz_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'qobuz'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Test Artist')")
         .execute(&pool)
@@ -49,29 +58,24 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
         .await
         .unwrap();
 
-    sqlx::query("INSERT INTO tracks (id, title, album_id, duration_ms, audio_quality) VALUES 
+    sqlx::query(
+        "INSERT INTO tracks (id, title, album_id, duration_ms, audio_quality) VALUES
         (101, 'Strict FLAC Track', 1, 180000, 'LOSSLESS'),
         (102, 'Permissive AAC Track', 1, 180000, 'LOSSLESS'),
         (103, 'Qobuz Exact Track', 1, 180000, 'HI_RES_LOSSLESS'),
         (104, 'Spotify to Qobuz Track', 1, 180000, 'LOSSLESS'),
-        (105, 'Spotify to Tidal AAC Track', 1, 180000, 'HI_RES_LOSSLESS')")
-        .execute(&pool)
-        .await
-        .unwrap();
+        (105, 'Spotify to Tidal AAC Track', 1, 180000, 'HI_RES_LOSSLESS')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // =========================================================================
     // Scenario A: Strict FLAC + AAC stream -> Rejection, 0 downloads rows
     // =========================================================================
     {
         let q_eval = QualityPolicy::evaluate_stream_resolution(
-            "LOSSLESS",
-            "320",
-            "AAC",
-            16,
-            44100.0,
-            "tidal",
-            "tidal",
-            true,  // strict_quality
+            "LOSSLESS", "320", "AAC", 16, 44100.0, "tidal", "tidal", true,  // strict_quality
             false, // allow_lossy_fallback = false
         );
         assert_eq!(q_eval.decision, QualityDecisionKind::RejectedQuality);
@@ -100,11 +104,15 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
         .unwrap();
 
         // Verify NO row exists in downloads
-        let count_dl: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM downloads WHERE track_id = 101")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count_dl.0, 0, "Scenario A: strict rejection must NOT create a downloads row");
+        let count_dl: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM downloads WHERE track_id = 101")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            count_dl.0, 0,
+            "Scenario A: strict rejection must NOT create a downloads row"
+        );
 
         // Verify queue record has RejectedQuality
         let q_status: (String, Option<String>, Option<String>) = sqlx::query_as(
@@ -133,7 +141,10 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
             false, // strict_quality
             true,  // allow_lossy_fallback = true
         );
-        assert_eq!(q_eval.decision, QualityDecisionKind::CompletedWithQualityFallback);
+        assert_eq!(
+            q_eval.decision,
+            QualityDecisionKind::CompletedWithQualityFallback
+        );
         assert!(q_eval.quality_fallback_used);
         assert!(!q_eval.provider_fallback_used);
 
@@ -178,12 +189,21 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
         .await
         .unwrap();
 
-        assert_eq!(dl.file_format, "AAC", "Physical format must be AAC, never FLAC");
+        assert_eq!(
+            dl.file_format, "AAC",
+            "Physical format must be AAC, never FLAC"
+        );
         assert_eq!(dl.effective_quality.as_deref(), Some("320kbps"));
-        assert_eq!(dl.quality_decision.as_deref(), Some("CompletedWithQualityFallback"));
+        assert_eq!(
+            dl.quality_decision.as_deref(),
+            Some("CompletedWithQualityFallback")
+        );
         assert_eq!(dl.provider_fallback_used, 0);
         assert_eq!(dl.quality_fallback_used, 1);
-        assert!(dl.decision_reason.unwrap().contains("lossy fallback is enabled"));
+        assert!(dl
+            .decision_reason
+            .unwrap()
+            .contains("lossy fallback is enabled"));
     }
 
     // =========================================================================
@@ -191,15 +211,7 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
     // =========================================================================
     {
         let q_eval = QualityPolicy::evaluate_stream_resolution(
-            "24-192",
-            "24-192",
-            "FLAC",
-            24,
-            192000.0,
-            "qobuz",
-            "qobuz",
-            true,
-            false,
+            "24-192", "24-192", "FLAC", 24, 192000.0, "qobuz", "qobuz", true, false,
         );
         assert_eq!(q_eval.decision, QualityDecisionKind::CompletedExactQuality);
         assert!(!q_eval.provider_fallback_used);
@@ -243,17 +255,12 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
     // =========================================================================
     {
         let q_eval = QualityPolicy::evaluate_stream_resolution(
-            "LOSSLESS",
-            "16-44",
-            "FLAC",
-            16,
-            44100.0,
-            "spotify",
-            "qobuz",
-            false,
-            true,
+            "LOSSLESS", "16-44", "FLAC", 16, 44100.0, "spotify", "qobuz", false, true,
         );
-        assert_eq!(q_eval.decision, QualityDecisionKind::CompletedWithProviderFallback);
+        assert_eq!(
+            q_eval.decision,
+            QualityDecisionKind::CompletedWithProviderFallback
+        );
         assert!(q_eval.provider_fallback_used);
         assert!(!q_eval.quality_fallback_used);
 
@@ -307,7 +314,10 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
             false,
             true,
         );
-        assert_eq!(q_eval.decision, QualityDecisionKind::CompletedWithQualityFallback);
+        assert_eq!(
+            q_eval.decision,
+            QualityDecisionKind::CompletedWithQualityFallback
+        );
         assert!(q_eval.provider_fallback_used);
         assert!(q_eval.quality_fallback_used);
 

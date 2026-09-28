@@ -78,10 +78,7 @@ fn test_sidecar_uniformity_and_staging_hygiene() {
         1,
         "Expected exactly 1 file in staging (.nomedia)"
     );
-    assert_eq!(
-        staging_entries[0].file_name().to_string_lossy(),
-        ".nomedia"
-    );
+    assert_eq!(staging_entries[0].file_name().to_string_lossy(), ".nomedia");
 }
 
 #[test]
@@ -89,7 +86,9 @@ fn test_no_cross_album_sidecar_contamination() {
     let base_dir = tempdir().unwrap();
     let library_dir = base_dir.path().join("Music").join("Syncify");
     let album_a_dir = library_dir.join("Pink Floyd").join("The Wall");
-    let album_b_dir = library_dir.join("Pink Floyd").join("The Dark Side of the Moon");
+    let album_b_dir = library_dir
+        .join("Pink Floyd")
+        .join("The Dark Side of the Moon");
 
     std::fs::create_dir_all(&album_a_dir).unwrap();
     std::fs::create_dir_all(&album_b_dir).unwrap();

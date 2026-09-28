@@ -10,12 +10,12 @@
 
 use sqlx::sqlite::SqlitePoolOptions;
 use std::path::Path;
-use tempfile::TempDir;
 use syncify_tauri_lib::services::repair_history::{
-    fetch_repair_history, record_applied_repair, import_historical_verified_repairs,
+    fetch_repair_history, import_historical_verified_repairs, record_applied_repair,
     sanitize_audit_text,
 };
 use syncify_tauri_lib::services::tidal_pipeline::reenrich_download_file;
+use tempfile::TempDir;
 
 async fn write_test_flac(path: &Path, audio_payload: &[u8]) {
     let mut flac_bytes = Vec::new();
@@ -30,7 +30,9 @@ async fn write_test_flac(path: &Path, audio_payload: &[u8]) {
     streaminfo[13] = 0xF0;
     flac_bytes.extend_from_slice(&streaminfo);
     flac_bytes.extend_from_slice(audio_payload);
-    tokio::fs::write(path, &flac_bytes).await.expect("Failed to write test flac");
+    tokio::fs::write(path, &flac_bytes)
+        .await
+        .expect("Failed to write test flac");
 }
 
 async fn create_test_db() -> (sqlx::Pool<sqlx::Sqlite>, TempDir) {
@@ -75,8 +77,12 @@ async fn test_no_append_on_dry_run() {
         .await
         .unwrap();
 
-    let ghost_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, track_number) VALUES ('Tidal Track 134683067', 1) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let ghost_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, track_number) VALUES ('Tidal Track 134683067', 1) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let dl_id: i64 = sqlx::query_scalar("INSERT INTO downloads (track_id, file_path, file_format, metadata_completeness) VALUES (?, ?, 'FLAC', 0) RETURNING id")
         .bind(ghost_id).bind(flac_path.to_string_lossy().to_string()).fetch_one(&pool).await.unwrap();
 
@@ -85,8 +91,14 @@ async fn test_no_append_on_dry_run() {
     assert!(dry_res.dry_run);
 
     // Verify 0 rows in repair_history
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM repair_history").fetch_one(&pool).await.unwrap();
-    assert_eq!(count, 0, "Dry-run must NEVER append records to repair_history");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM repair_history")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "Dry-run must NEVER append records to repair_history"
+    );
 }
 
 #[tokio::test]
@@ -106,21 +118,36 @@ async fn test_append_on_successful_repair() {
         .unwrap();
 
     // Canonical target
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, release_date) VALUES ('OK Computer', '1997-05-21') RETURNING id")
         .fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
-        .bind(album_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     let real_track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (album_id, title, track_number, isrc) VALUES (?, 'Airbag', 1, 'GBAYE9700001') RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(real_track_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(real_track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 3, '134683067')")
         .bind(real_track_id).execute(&pool).await.unwrap();
 
-    let ghost_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, track_number) VALUES ('Tidal Track 134683067', 1) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let ghost_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, track_number) VALUES ('Tidal Track 134683067', 1) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let dl_id: i64 = sqlx::query_scalar("INSERT INTO downloads (track_id, file_path, file_format, metadata_completeness) VALUES (?, ?, 'FLAC', 0) RETURNING id")
         .bind(ghost_id).bind(flac_path.to_string_lossy().to_string()).fetch_one(&pool).await.unwrap();
 
@@ -159,25 +186,70 @@ async fn test_history_ordering_desc() {
 
     // Manually insert 3 audit records with different timestamps
     record_applied_repair(
-        &pool, "rep_1", Some(101), Some(1), Some(2),
-        "/old/1.flac", "/new/1.flac", "hash_1", Some("hash_out_1"),
-        Some("audio_1"), Some("audio_1"), "valid", &["action1".to_string()],
-        None, "test.prov", "success", None
-    ).await.unwrap();
+        &pool,
+        "rep_1",
+        Some(101),
+        Some(1),
+        Some(2),
+        "/old/1.flac",
+        "/new/1.flac",
+        "hash_1",
+        Some("hash_out_1"),
+        Some("audio_1"),
+        Some("audio_1"),
+        "valid",
+        &["action1".to_string()],
+        None,
+        "test.prov",
+        "success",
+        None,
+    )
+    .await
+    .unwrap();
 
     record_applied_repair(
-        &pool, "rep_2", Some(102), Some(3), Some(4),
-        "/old/2.flac", "/new/2.flac", "hash_2", Some("hash_out_2"),
-        Some("audio_2"), Some("audio_2"), "valid", &["action2".to_string()],
-        None, "test.prov", "success", None
-    ).await.unwrap();
+        &pool,
+        "rep_2",
+        Some(102),
+        Some(3),
+        Some(4),
+        "/old/2.flac",
+        "/new/2.flac",
+        "hash_2",
+        Some("hash_out_2"),
+        Some("audio_2"),
+        Some("audio_2"),
+        "valid",
+        &["action2".to_string()],
+        None,
+        "test.prov",
+        "success",
+        None,
+    )
+    .await
+    .unwrap();
 
     record_applied_repair(
-        &pool, "rep_3", Some(103), Some(5), Some(6),
-        "/old/3.flac", "/new/3.flac", "hash_3", None,
-        Some("audio_3"), None, "repair_input_changed", &["action3".to_string()],
-        Some("RollbackExecuted"), "test.prov", "failed", None
-    ).await.unwrap();
+        &pool,
+        "rep_3",
+        Some(103),
+        Some(5),
+        Some(6),
+        "/old/3.flac",
+        "/new/3.flac",
+        "hash_3",
+        None,
+        Some("audio_3"),
+        None,
+        "repair_input_changed",
+        &["action3".to_string()],
+        Some("RollbackExecuted"),
+        "test.prov",
+        "failed",
+        None,
+    )
+    .await
+    .unwrap();
 
     let list = fetch_repair_history(&pool, None, None).await.unwrap();
     assert_eq!(list.len(), 3);
@@ -197,14 +269,32 @@ async fn test_hash_and_provenance_integrity_and_sanitization() {
 
     let rep_id = "rep_sanitized_test";
     record_applied_repair(
-        &pool, rep_id, Some(999), None, None,
-        dirty_path, "/clean/path.flac", "input_sha256", Some("output_sha256"),
-        None, None, "valid", &[], None,
-        "tidal_pipeline.re_enrich https://api.tidal.com/v1/auth_token=abc", "success", None
-    ).await.unwrap();
+        &pool,
+        rep_id,
+        Some(999),
+        None,
+        None,
+        dirty_path,
+        "/clean/path.flac",
+        "input_sha256",
+        Some("output_sha256"),
+        None,
+        None,
+        "valid",
+        &[],
+        None,
+        "tidal_pipeline.re_enrich https://api.tidal.com/v1/auth_token=abc",
+        "success",
+        None,
+    )
+    .await
+    .unwrap();
 
     let list = fetch_repair_history(&pool, None, None).await.unwrap();
-    let r = list.into_iter().find(|item| item.repair_id == rep_id).unwrap();
+    let r = list
+        .into_iter()
+        .find(|item| item.repair_id == rep_id)
+        .unwrap();
     assert!(!r.old_path.contains("secret_token"));
     assert!(!r.provenance.contains("auth_token=abc"));
 }
@@ -221,9 +311,18 @@ async fn test_historical_918_919_import_if_verifiable() {
     assert_eq!(hist_empty.len(), 0);
 
     // 2. Insert verified downloads 918 & 919 in canonical state (completeness = 100)
-    sqlx::query("INSERT INTO artists (id, name) VALUES (10, 'Radiohead')").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO albums (id, title) VALUES (20, 'OK Computer')").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (20, 10, 1)").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO artists (id, name) VALUES (10, 'Radiohead')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO albums (id, title) VALUES (20, 'OK Computer')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (20, 10, 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO tracks (id, album_id, title) VALUES (50, 20, 'Airbag'), (43, 20, 'Paranoid Android')").execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO downloads (id, track_id, file_path, file_format, metadata_completeness) VALUES (918, 50, '/Music/Radiohead/1997 - OK Computer/01 - Airbag.flac', 'FLAC', 100), (919, 43, '/Music/Radiohead/1997 - OK Computer/02 - Paranoid Android.flac', 'FLAC', 100)").execute(&pool).await.unwrap();
 
@@ -258,24 +357,58 @@ async fn test_append_only_failure_records_never_overwrite_success() {
     // 1. Record a successful repair for download 918
     let rep_success_id = "rep_dl_918_success_1";
     record_applied_repair(
-        &pool, rep_success_id, Some(918), Some(19495), Some(50),
-        "/old/airbag.flac", "/new/airbag.flac", "sha_in_1", Some("sha_out_1"),
-        Some("audio_payload_1"), Some("audio_payload_1"), "valid", &["tags_applied".to_string()],
-        None, "tidal_pipeline.re_enrich", "success", None
-    ).await.unwrap();
+        &pool,
+        rep_success_id,
+        Some(918),
+        Some(19495),
+        Some(50),
+        "/old/airbag.flac",
+        "/new/airbag.flac",
+        "sha_in_1",
+        Some("sha_out_1"),
+        Some("audio_payload_1"),
+        Some("audio_payload_1"),
+        "valid",
+        &["tags_applied".to_string()],
+        None,
+        "tidal_pipeline.re_enrich",
+        "success",
+        None,
+    )
+    .await
+    .unwrap();
 
     // 2. Simulate subsequent failed repair attempt for the same download 918 (e.g. concurrent conflict or baseline failure)
     let rep_failed_id = "rep_dl_918_failed_2";
     record_applied_repair(
-        &pool, rep_failed_id, Some(918), Some(19495), Some(50),
-        "/old/airbag.flac", "/new/airbag.flac", "sha_in_1", None,
-        Some("audio_payload_1"), None, "repair_input_changed", &["validated_baseline".to_string()],
-        Some("RollbackExecuted"), "tidal_pipeline.re_enrich", "failed", None
-    ).await.unwrap();
+        &pool,
+        rep_failed_id,
+        Some(918),
+        Some(19495),
+        Some(50),
+        "/old/airbag.flac",
+        "/new/airbag.flac",
+        "sha_in_1",
+        None,
+        Some("audio_payload_1"),
+        None,
+        "repair_input_changed",
+        &["validated_baseline".to_string()],
+        Some("RollbackExecuted"),
+        "tidal_pipeline.re_enrich",
+        "failed",
+        None,
+    )
+    .await
+    .unwrap();
 
     // 3. Query all records for download 918
     let list = fetch_repair_history(&pool, None, None).await.unwrap();
-    assert_eq!(list.len(), 2, "Both success and failed audit events must be preserved (append-only)");
+    assert_eq!(
+        list.len(),
+        2,
+        "Both success and failed audit events must be preserved (append-only)"
+    );
 
     let success_rec = list.iter().find(|r| r.repair_id == rep_success_id).unwrap();
     assert_eq!(success_rec.result, "success");
@@ -283,6 +416,8 @@ async fn test_append_only_failure_records_never_overwrite_success() {
 
     let failed_rec = list.iter().find(|r| r.repair_id == rep_failed_id).unwrap();
     assert_eq!(failed_rec.result, "failed");
-    assert_eq!(failed_rec.rollback_state, Some("RollbackExecuted".to_string()));
+    assert_eq!(
+        failed_rec.rollback_state,
+        Some("RollbackExecuted".to_string())
+    );
 }
-

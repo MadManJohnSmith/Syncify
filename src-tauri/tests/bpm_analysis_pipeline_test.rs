@@ -12,9 +12,7 @@
 
 use std::path::PathBuf;
 use syncify_tauri_lib::services::repair_guardrail::compute_file_audio_content_hash;
-use syncify_tauri_lib::services::tempo_analyzer::{
-    TempoAnalyzer, TempoSource,
-};
+use syncify_tauri_lib::services::tempo_analyzer::{TempoAnalyzer, TempoSource};
 use tempfile::tempdir;
 
 fn generate_rhythmic_audio_pcm(bpm: f64, sample_rate: u32, duration_sec: f64) -> Vec<f32> {
@@ -50,8 +48,8 @@ fn create_flac_from_pcm(path: &PathBuf, samples: &[f32], sample_rate: u32) {
     wav_bytes.extend_from_slice(&(36 + num_samples * 2).to_le_bytes());
     wav_bytes.extend_from_slice(b"WAVEfmt ");
     wav_bytes.extend_from_slice(&16u32.to_le_bytes()); // Subchunk1Size
-    wav_bytes.extend_from_slice(&1u16.to_le_bytes());  // AudioFormat (PCM)
-    wav_bytes.extend_from_slice(&1u16.to_le_bytes());  // NumChannels (1)
+    wav_bytes.extend_from_slice(&1u16.to_le_bytes()); // AudioFormat (PCM)
+    wav_bytes.extend_from_slice(&1u16.to_le_bytes()); // NumChannels (1)
     wav_bytes.extend_from_slice(&sample_rate.to_le_bytes());
     wav_bytes.extend_from_slice(&byte_rate.to_le_bytes());
     wav_bytes.extend_from_slice(&block_align.to_le_bytes());
@@ -69,8 +67,10 @@ fn create_flac_from_pcm(path: &PathBuf, samples: &[f32], sample_rate: u32) {
     let _ = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "flac",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "flac",
             path.to_str().unwrap(),
         ])
         .output();
@@ -109,8 +109,10 @@ fn create_m4a_from_pcm(path: &PathBuf, samples: &[f32], sample_rate: u32) {
     let _ = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "aac",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "aac",
             path.to_str().unwrap(),
         ])
         .output();
@@ -133,7 +135,10 @@ fn test_known_audio_fixture_bpm_accuracy() {
         bpm,
         raw_bpm
     );
-    assert!(confidence > 0.40, "Confidence should be high for clear beat");
+    assert!(
+        confidence > 0.40,
+        "Confidence should be high for clear beat"
+    );
 }
 
 #[test]
@@ -147,8 +152,7 @@ fn test_low_confidence_rejection_no_bpm() {
         *s = ((seed >> 33) as f32 / 2147483648.0) - 1.0;
     }
 
-    let (bpm_opt, confidence, _, _) =
-        TempoAnalyzer::estimate_tempo_from_pcm(&noise, 22050, 0.40);
+    let (bpm_opt, confidence, _, _) = TempoAnalyzer::estimate_tempo_from_pcm(&noise, 22050, 0.40);
 
     // Random noise has weak autocorrelation prominence
     assert!(
@@ -233,7 +237,7 @@ async fn test_manual_precedence_and_database_persistence() {
 
     // 1. Insert dummy track and download
     let track_id: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc) VALUES ('Test Track', 'USXYZ2400001') RETURNING id"
+        "INSERT INTO tracks (title, isrc) VALUES ('Test Track', 'USXYZ2400001') RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -248,27 +252,24 @@ async fn test_manual_precedence_and_database_persistence() {
         return;
     }
 
-    sqlx::query(
-        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (?, ?, 'FLAC')"
-    )
-    .bind(track_id)
-    .bind(flac_path.to_str().unwrap())
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path, file_format) VALUES (?, ?, 'FLAC')")
+        .bind(track_id)
+        .bind(flac_path.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 2. Set Manual BPM = 140
     TempoAnalyzer::update_track_bpm_manual(&pool, track_id, 140)
         .await
         .unwrap();
 
-    let (bpm_val, source_val): (f64, String) = sqlx::query_as(
-        "SELECT bpm, tempo_source FROM tracks WHERE id = ?"
-    )
-    .bind(track_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (bpm_val, source_val): (f64, String) =
+        sqlx::query_as("SELECT bpm, tempo_source FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(bpm_val, 140.0);
     assert_eq!(source_val, "Manual");
@@ -281,13 +282,12 @@ async fn test_manual_precedence_and_database_persistence() {
     assert_eq!(res.bpm, Some(140));
     assert_eq!(res.source, TempoSource::Manual);
 
-    let (bpm_after, source_after): (f64, String) = sqlx::query_as(
-        "SELECT bpm, tempo_source FROM tracks WHERE id = ?"
-    )
-    .bind(track_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (bpm_after, source_after): (f64, String) =
+        sqlx::query_as("SELECT bpm, tempo_source FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(bpm_after, 140.0);
     assert_eq!(source_after, "Manual");
@@ -304,7 +304,7 @@ async fn test_undownloaded_track_fails_safely_without_analysis() {
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
     let track_id: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc) VALUES ('Cloud Track', 'USXYZ2400002') RETURNING id"
+        "INSERT INTO tracks (title, isrc) VALUES ('Cloud Track', 'USXYZ2400002') RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -312,7 +312,10 @@ async fn test_undownloaded_track_fails_safely_without_analysis() {
 
     // Track has no row in downloads table
     let res = TempoAnalyzer::analyze_and_retag_track(&pool, track_id, 0.35, false).await;
-    assert!(res.is_err(), "Must fail safely when track has no physical download");
+    assert!(
+        res.is_err(),
+        "Must fail safely when track has no physical download"
+    );
 }
 
 #[test]
@@ -394,9 +397,9 @@ async fn test_streaming_metadata_precedence_test() {
 
     // 1. Insert track with StreamingMetadata BPM 128
     let track_id: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, isrc, bpm, tempo_source, tempo_confidence) 
-         VALUES ('Stream Track', 'USXYZ2400003', 128.0, 'StreamingMetadata', 0.95) 
-         RETURNING id"
+        "INSERT INTO tracks (title, isrc, bpm, tempo_source, tempo_confidence)
+         VALUES ('Stream Track', 'USXYZ2400003', 128.0, 'StreamingMetadata', 0.95)
+         RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -411,14 +414,12 @@ async fn test_streaming_metadata_precedence_test() {
         return;
     }
 
-    sqlx::query(
-        "INSERT INTO downloads (track_id, file_path, file_format) VALUES (?, ?, 'FLAC')"
-    )
-    .bind(track_id)
-    .bind(flac_path.to_str().unwrap())
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path, file_format) VALUES (?, ?, 'FLAC')")
+        .bind(track_id)
+        .bind(flac_path.to_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 2. Run analysis without force — must NOT overwrite StreamingMetadata!
     let res = TempoAnalyzer::analyze_and_retag_track(&pool, track_id, 0.35, false)
@@ -428,15 +429,13 @@ async fn test_streaming_metadata_precedence_test() {
     assert_eq!(res.bpm, Some(128));
     assert_eq!(res.source, TempoSource::StreamingMetadata);
 
-    let (bpm_db, source_db): (f64, String) = sqlx::query_as(
-        "SELECT bpm, tempo_source FROM tracks WHERE id = ?"
-    )
-    .bind(track_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (bpm_db, source_db): (f64, String) =
+        sqlx::query_as("SELECT bpm, tempo_source FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(bpm_db, 128.0);
     assert_eq!(source_db, "StreamingMetadata");
 }
-

@@ -45,25 +45,45 @@ async fn test_queue_reconciliation_20_submitted_10_queued_11_physical() {
     let db = create_test_db().await;
 
     // Create Artist and Album
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Audit Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, upc) VALUES ('Audit Album', '129000000001') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Audit Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, upc) VALUES ('Audit Album', '129000000001') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Insert 20 Tracks
     let mut track_ids = Vec::new();
     for i in 1..=20 {
-        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id")
-            .bind(format!("Track {}", i))
-            .bind(album_id)
-            .bind(format!("USRC129{:05}", i))
-            .fetch_one(&db)
-            .await
-            .unwrap();
+        let tid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id",
+        )
+        .bind(format!("Track {}", i))
+        .bind(album_id)
+        .bind(format!("USRC129{:05}", i))
+        .fetch_one(&db)
+        .await
+        .unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
         sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, available, format, bit_depth) VALUES (?, 2, ?, 1, 'FLAC', 24)")
             .bind(tid)
@@ -113,12 +133,16 @@ async fn test_queue_reconciliation_20_submitted_10_queued_11_physical() {
     }
 
     // Check counts via production audit command
-    let audit = perform_audit_download_queue(&db).await.expect("perform_audit_download_queue must succeed");
+    let audit = perform_audit_download_queue(&db)
+        .await
+        .expect("perform_audit_download_queue must succeed");
     assert_eq!(audit.total_items, 10, "Exact 10 newly queued items");
     assert_eq!(audit.ready_count, 10, "Exact 10 ready items in queue");
 
     let downloads_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
-        .fetch_one(&db).await.unwrap();
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(downloads_count, 1, "1 physical file already in downloads");
 
     // After 10 items finish downloading, total physical files will be 1 + 10 = 11
@@ -138,8 +162,13 @@ async fn test_queue_reconciliation_20_submitted_10_queued_11_physical() {
     }
 
     let total_physical_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
-        .fetch_one(&db).await.unwrap();
-    assert_eq!(total_physical_after, 11, "Reconciled total physical files is exactly 11");
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        total_physical_after, 11,
+        "Reconciled total physical files is exactly 11"
+    );
 }
 
 #[tokio::test]
@@ -147,24 +176,44 @@ async fn test_worker_concurrency_execution_and_atomic_claim() {
     let db = create_test_db().await;
 
     // Create Artist and Album
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Concurrency Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, upc) VALUES ('Concurrency Album', '129000000002') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
-
-    // Insert 6 Tracks and enqueue using production perform_add_to_queue
-    for i in 1..=6 {
-        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id")
-            .bind(format!("Concurrent Track {}", i))
-            .bind(album_id)
-            .bind(format!("USRC129C{:04}", i))
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Concurrency Artist') RETURNING id")
             .fetch_one(&db)
             .await
             .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, upc) VALUES ('Concurrency Album', '129000000002') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+    // Insert 6 Tracks and enqueue using production perform_add_to_queue
+    for i in 1..=6 {
+        let tid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id",
+        )
+        .bind(format!("Concurrent Track {}", i))
+        .bind(album_id)
+        .bind(format!("USRC129C{:04}", i))
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
         sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, available, format, bit_depth) VALUES (?, 2, ?, 1, 'FLAC', 24)")
             .bind(tid)
@@ -234,13 +283,25 @@ async fn test_worker_concurrency_execution_and_atomic_claim() {
     claimed_queue_ids.sort();
     let original_len = claimed_queue_ids.len();
     claimed_queue_ids.dedup();
-    assert_eq!(claimed_queue_ids.len(), original_len, "All claimed queue IDs must be unique (no double claiming)");
+    assert_eq!(
+        claimed_queue_ids.len(),
+        original_len,
+        "All claimed queue IDs must be unique (no double claiming)"
+    );
 
     // 3. Verify queue audit state: exactly 3 downloading, 3 remaining queued
-    let audit = perform_audit_download_queue(&db).await.expect("audit must succeed");
+    let audit = perform_audit_download_queue(&db)
+        .await
+        .expect("audit must succeed");
     assert_eq!(audit.total_items, 6);
-    assert_eq!(audit.downloading_count, 3, "Exactly 3 items atomically claimed into downloading state");
-    assert_eq!(audit.ready_count, 3, "Exactly 3 items remain in queued/ready state");
+    assert_eq!(
+        audit.downloading_count, 3,
+        "Exactly 3 items atomically claimed into downloading state"
+    );
+    assert_eq!(
+        audit.ready_count, 3,
+        "Exactly 3 items remain in queued/ready state"
+    );
 
     // 4. Verify ActiveDownloadGuard / increment_active tracking
     worker_state.increment_active();

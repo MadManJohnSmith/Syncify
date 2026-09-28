@@ -27,9 +27,9 @@ pub const LOG_RETENTION_DAYS: i64 = 30; // 30 days
 pub struct SystemLogEntry {
     pub id: String,
     pub timestamp: String,
-    pub level: String,      // "info", "warn", "error", "debug", "trace", "success"
+    pub level: String, // "info", "warn", "error", "debug", "trace", "success"
     pub target: String,
-    pub module: String,     // "Qobuz", "Tidal", "Spotify", "Worker", "Enrichment", "Database", "Filesystem", "System", etc.
+    pub module: String, // "Qobuz", "Tidal", "Spotify", "Worker", "Enrichment", "Database", "Filesystem", "System", etc.
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fields: Option<serde_json::Value>,
@@ -80,7 +80,9 @@ impl LogBuffer {
 
         // Assign incremental monotonic ID if missing
         if entry.id.is_empty() {
-            let next_id = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let next_id = self
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             entry.id = format!("log-{}", next_id);
         }
 
@@ -254,8 +256,12 @@ impl RotatingFileWriter {
 
     fn init_or_open(&self) {
         if let Err(e) = std::fs::create_dir_all(&self.log_dir) {
-            eprintln!("[WARN] [Syncify Logging] Failed to create log directory {:?}: {}", self.log_dir, e);
-            self.is_active.store(false, std::sync::atomic::Ordering::Relaxed);
+            eprintln!(
+                "[WARN] [Syncify Logging] Failed to create log directory {:?}: {}",
+                self.log_dir, e
+            );
+            self.is_active
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             return;
         }
 
@@ -268,12 +274,17 @@ impl RotatingFileWriter {
                 if let Ok(mut guard) = self.file.lock() {
                     *guard = Some(f);
                 }
-                self.is_active.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.is_active
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 self.cleanup_old_logs();
             }
             Err(e) => {
-                eprintln!("[WARN] [Syncify Logging] Failed to open active log file {:?}: {}", self.active_path, e);
-                self.is_active.store(false, std::sync::atomic::Ordering::Relaxed);
+                eprintln!(
+                    "[WARN] [Syncify Logging] Failed to open active log file {:?}: {}",
+                    self.active_path, e
+                );
+                self.is_active
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
@@ -289,7 +300,9 @@ impl RotatingFileWriter {
         };
 
         // Check if rotation needed
-        let current_size = std::fs::metadata(&self.active_path).map(|m| m.len()).unwrap_or(0);
+        let current_size = std::fs::metadata(&self.active_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
         let line_len = line.len() as u64 + 1; // including newline
 
         if current_size + line_len >= self.max_file_size {
@@ -344,11 +357,16 @@ impl RotatingFileWriter {
         {
             Ok(f) => {
                 *guard = Some(f);
-                self.is_active.store(true, std::sync::atomic::Ordering::Relaxed);
+                self.is_active
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
             Err(e) => {
-                eprintln!("[WARN] [Syncify Logging] Failed to open new logfile after rotation: {}", e);
-                self.is_active.store(false, std::sync::atomic::Ordering::Relaxed);
+                eprintln!(
+                    "[WARN] [Syncify Logging] Failed to open new logfile after rotation: {}",
+                    e
+                );
+                self.is_active
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
             }
         }
 
@@ -359,7 +377,9 @@ impl RotatingFileWriter {
     pub fn cleanup_old_logs(&self) {
         let now = Utc::now();
         if let Ok(mut last_cleanup) = self.last_cleanup.lock() {
-            if now.signed_duration_since(*last_cleanup).num_hours() < 1 && *last_cleanup != chrono::DateTime::<Utc>::MIN_UTC {
+            if now.signed_duration_since(*last_cleanup).num_hours() < 1
+                && *last_cleanup != chrono::DateTime::<Utc>::MIN_UTC
+            {
                 return;
             }
             *last_cleanup = now;
@@ -477,7 +497,11 @@ pub fn resolve_effective_log_config(
     };
 
     let log_dir = resolve_app_log_dir();
-    let filename = if is_dev { "syncify-dev.log" } else { "syncify.log" };
+    let filename = if is_dev {
+        "syncify-dev.log"
+    } else {
+        "syncify.log"
+    };
     let active_log_path = log_dir.join(filename);
 
     EffectiveLogConfig {
@@ -611,11 +635,17 @@ where
         let timestamp = Utc::now().to_rfc3339();
 
         let formatted_line = if visitor.extra_fields.is_empty() {
-            format!("[{}] [{}] [{}] [{}] {}", timestamp, level, module, target, sanitized_msg)
+            format!(
+                "[{}] [{}] [{}] [{}] {}",
+                timestamp, level, module, target, sanitized_msg
+            )
         } else {
             let fields_json = serde_json::Value::Object(visitor.extra_fields).to_string();
             let sanitized_fields = sanitize_log_message(&fields_json);
-            format!("[{}] [{}] [{}] [{}] {} {}", timestamp, level, module, target, sanitized_msg, sanitized_fields)
+            format!(
+                "[{}] [{}] [{}] [{}] {} {}",
+                timestamp, level, module, target, sanitized_msg, sanitized_fields
+            )
         };
 
         self.writer.write_line(&formatted_line);
@@ -636,7 +666,9 @@ pub fn get_logging_status() -> LoggingStatusDto {
     let file_active = file_writer.as_ref().map(|w| w.is_active()).unwrap_or(false);
 
     let active_path_opt = if is_dev && file_active {
-        file_writer.as_ref().map(|w| w.active_path().to_string_lossy().to_string())
+        file_writer
+            .as_ref()
+            .map(|w| w.active_path().to_string_lossy().to_string())
     } else {
         None
     };
@@ -680,8 +712,15 @@ pub fn init_logging_system(
             .with(buffer_layer.with_filter(filter));
 
         if config.log_to_file {
-            let filename = if config.is_development { "syncify-dev.log" } else { "syncify.log" };
-            let writer = Arc::new(RotatingFileWriter::new(config.log_dir.clone(), filename.to_string()));
+            let filename = if config.is_development {
+                "syncify-dev.log"
+            } else {
+                "syncify.log"
+            };
+            let writer = Arc::new(RotatingFileWriter::new(
+                config.log_dir.clone(),
+                filename.to_string(),
+            ));
             if let Ok(mut w_guard) = GLOBAL_FILE_WRITER.write() {
                 *w_guard = Some(writer.clone());
             }
@@ -751,7 +790,10 @@ pub fn normalize_target_module(target: &str) -> String {
         "Database".to_string()
     } else if lower.contains("crypto") || lower.contains("keychain") || lower.contains("auth") {
         "Security".to_string()
-    } else if lower.contains("scanner") || lower.contains("organize") || lower.contains("filesystem") {
+    } else if lower.contains("scanner")
+        || lower.contains("organize")
+        || lower.contains("filesystem")
+    {
         "Filesystem".to_string()
     } else if lower.contains("lyrics") {
         "Lyrics".to_string()
@@ -782,7 +824,8 @@ impl Visit for FieldVisitor {
         if name == "message" {
             self.message = Some(val_str);
         } else {
-            self.extra_fields.insert(name.to_string(), serde_json::Value::String(val_str));
+            self.extra_fields
+                .insert(name.to_string(), serde_json::Value::String(val_str));
         }
     }
 
@@ -791,23 +834,29 @@ impl Visit for FieldVisitor {
         if name == "message" {
             self.message = Some(value.to_string());
         } else {
-            self.extra_fields.insert(name.to_string(), serde_json::Value::String(value.to_string()));
+            self.extra_fields.insert(
+                name.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
     }
 
     fn record_i64(&mut self, field: &Field, value: i64) {
         let name = field.name();
-        self.extra_fields.insert(name.to_string(), serde_json::json!(value));
+        self.extra_fields
+            .insert(name.to_string(), serde_json::json!(value));
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
         let name = field.name();
-        self.extra_fields.insert(name.to_string(), serde_json::json!(value));
+        self.extra_fields
+            .insert(name.to_string(), serde_json::json!(value));
     }
 
     fn record_bool(&mut self, field: &Field, value: bool) {
         let name = field.name();
-        self.extra_fields.insert(name.to_string(), serde_json::json!(value));
+        self.extra_fields
+            .insert(name.to_string(), serde_json::json!(value));
     }
 }
 
@@ -819,8 +868,18 @@ mod tests {
     fn test_log_buffer_push_and_query() {
         let buffer = LogBuffer::new(10);
         buffer.log("info", "syncify::qobuz", "Qobuz", "Connected to Qobuz API");
-        buffer.log("error", "syncify::worker", "Worker", "Download failed for item 42");
-        buffer.log("warn", "syncify::spotify", "Spotify", "Rate limit approaching");
+        buffer.log(
+            "error",
+            "syncify::worker",
+            "Worker",
+            "Download failed for item 42",
+        );
+        buffer.log(
+            "warn",
+            "syncify::spotify",
+            "Spotify",
+            "Rate limit approaching",
+        );
 
         let logs = buffer.get_logs(None, None, None, None);
         assert_eq!(logs.len(), 3);
@@ -903,7 +962,8 @@ mod tests {
 
     #[test]
     fn test_rotating_file_writer_creation_and_write() {
-        let temp_dir = std::env::temp_dir().join(format!("syncify_log_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("syncify_log_test_{}", uuid::Uuid::new_v4()));
         let writer = RotatingFileWriter::new(temp_dir.clone(), "test-syncify.log".to_string());
         assert!(writer.is_active());
         assert!(writer.active_path().exists());

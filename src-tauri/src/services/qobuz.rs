@@ -5,9 +5,9 @@
 #![allow(dead_code)]
 
 use reqwest::Client;
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 /// Default placeholder values for development/testing when environment variables are not set.
@@ -54,7 +54,9 @@ where
     use serde::de::Error;
     let value: serde_json::Value = serde::Deserialize::deserialize(deserializer)?;
     match value {
-        serde_json::Value::Number(n) => n.as_i64().ok_or_else(|| D::Error::custom("invalid integer")),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .ok_or_else(|| D::Error::custom("invalid integer")),
         serde_json::Value::String(s) => s.parse::<i64>().map_err(D::Error::custom),
         _ => Err(D::Error::custom("expected integer or string")),
     }
@@ -144,14 +146,20 @@ where
                     None
                 }
             });
-            let name = map.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let name = map
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             Ok(Some(QobuzArtist { id, name }))
         }
         Some(serde_json::Value::String(s)) => {
             if s.trim().is_empty() {
                 Ok(None)
             } else {
-                Ok(Some(QobuzArtist { id: None, name: Some(s) }))
+                Ok(Some(QobuzArtist {
+                    id: None,
+                    name: Some(s),
+                }))
             }
         }
         _ => Ok(None),
@@ -175,14 +183,20 @@ where
                     None
                 }
             });
-            let name = map.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let name = map
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             Ok(Some(QobuzLabel { id, name }))
         }
         Some(serde_json::Value::String(s)) => {
             if s.trim().is_empty() {
                 Ok(None)
             } else {
-                Ok(Some(QobuzLabel { id: None, name: Some(s) }))
+                Ok(Some(QobuzLabel {
+                    id: None,
+                    name: Some(s),
+                }))
             }
         }
         _ => Ok(None),
@@ -190,7 +204,9 @@ where
 }
 
 /// Helper to deserialize tracks container from either { items: [...], total: ... } or [ ... ]
-pub fn deserialize_tracks_container<'de, D>(deserializer: D) -> Result<Option<QobuzTracksContainer>, D::Error>
+pub fn deserialize_tracks_container<'de, D>(
+    deserializer: D,
+) -> Result<Option<QobuzTracksContainer>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -204,18 +220,24 @@ where
     match val {
         serde_json::Value::Object(map) => {
             if let Some(items_val) = map.get("items") {
-                let items: Vec<QobuzTrack> = serde_json::from_value(items_val.clone()).map_err(D::Error::custom)?;
-                let total = map.get("total")
+                let items: Vec<QobuzTrack> =
+                    serde_json::from_value(items_val.clone()).map_err(D::Error::custom)?;
+                let total = map
+                    .get("total")
                     .and_then(|t| t.as_i64())
                     .map(|t| t as i32)
                     .unwrap_or(items.len() as i32);
                 Ok(Some(QobuzTracksContainer { items, total }))
             } else {
-                Ok(Some(QobuzTracksContainer { items: Vec::new(), total: 0 }))
+                Ok(Some(QobuzTracksContainer {
+                    items: Vec::new(),
+                    total: 0,
+                }))
             }
         }
         serde_json::Value::Array(arr) => {
-            let items: Vec<QobuzTrack> = serde_json::from_value(serde_json::Value::Array(arr)).map_err(D::Error::custom)?;
+            let items: Vec<QobuzTrack> =
+                serde_json::from_value(serde_json::Value::Array(arr)).map_err(D::Error::custom)?;
             let total = items.len() as i32;
             Ok(Some(QobuzTracksContainer { items, total }))
         }
@@ -512,7 +534,7 @@ impl QobuzClient {
         require_auth: bool,
     ) -> Result<T, String> {
         let mut all_params = params;
-        
+
         // Add app_id if not present
         if !all_params.iter().any(|(k, _)| *k == "app_id") {
             all_params.push(("app_id", self.app_id.clone()));
@@ -556,12 +578,22 @@ impl QobuzClient {
             .map_err(|e| format!("Failed to read response: {}", e))?;
 
         if !status.is_success() {
-            tracing::warn!("[QobuzClient] API error for {} ({}): {}", method, status, text);
+            tracing::warn!(
+                "[QobuzClient] API error for {} ({}): {}",
+                method,
+                status,
+                text
+            );
             return Err(format!("Qobuz API error ({}): {}", status, text));
         }
 
         serde_json::from_str(&text).map_err(|e| {
-            tracing::error!("[QobuzClient] Deserialization failure for {}: {} (raw: {})", method, e, &text[..text.len().min(300)]);
+            tracing::error!(
+                "[QobuzClient] Deserialization failure for {}: {} (raw: {})",
+                method,
+                e,
+                &text[..text.len().min(300)]
+            );
             format!(
                 "Failed to parse Qobuz response for {}: {} (raw: {})",
                 method,
@@ -579,11 +611,11 @@ impl QobuzClient {
         ];
 
         let result: serde_json::Value = self.api_request("user/login", params, false).await?;
-        
+
         let token = result["user"]["auth_token"]
             .as_str()
             .ok_or_else(|| format!("No auth token in login response: {}", result))?;
-            
+
         Ok(token.to_string())
     }
     /// Get user's favorite tracks (paginated)
@@ -598,9 +630,9 @@ impl QobuzClient {
             ("limit", limit.to_string()),
         ];
 
-        self.api_request("favorite/getUserFavorites", params, true).await
+        self.api_request("favorite/getUserFavorites", params, true)
+            .await
     }
-
 
     /// Get user's favorite albums (paginated)
     pub async fn get_favorite_albums(
@@ -614,7 +646,8 @@ impl QobuzClient {
             ("limit", limit.to_string()),
         ];
 
-        self.api_request("favorite/getUserFavorites", params, true).await
+        self.api_request("favorite/getUserFavorites", params, true)
+            .await
     }
 
     /// Get user's purchased albums (paginated)
@@ -623,12 +656,10 @@ impl QobuzClient {
         offset: i32,
         limit: i32,
     ) -> Result<QobuzPurchasesResponse, String> {
-        let params = vec![
-            ("offset", offset.to_string()),
-            ("limit", limit.to_string()),
-        ];
+        let params = vec![("offset", offset.to_string()), ("limit", limit.to_string())];
 
-        self.api_request("purchase/getUserPurchases", params, true).await
+        self.api_request("purchase/getUserPurchases", params, true)
+            .await
     }
 
     /// Get user's playlists (paginated)
@@ -637,12 +668,10 @@ impl QobuzClient {
         offset: i32,
         limit: i32,
     ) -> Result<QobuzPlaylistsResponse, String> {
-        let params = vec![
-            ("offset", offset.to_string()),
-            ("limit", limit.to_string()),
-        ];
+        let params = vec![("offset", offset.to_string()), ("limit", limit.to_string())];
 
-        self.api_request("playlist/getUserPlaylists", params, true).await
+        self.api_request("playlist/getUserPlaylists", params, true)
+            .await
     }
 
     /// Get playlist tracks (paginated)
@@ -674,7 +703,8 @@ impl QobuzClient {
             ("limit", limit.to_string()),
         ];
 
-        self.api_request("favorite/getUserFavorites", params, true).await
+        self.api_request("favorite/getUserFavorites", params, true)
+            .await
     }
 
     /// Add a track to Qobuz favorites (favorite/create?track_ids=...)
@@ -721,9 +751,7 @@ impl QobuzClient {
 
     /// Get full album details (album/get?album_id=...)
     pub async fn get_album_full(&self, album_id: &str) -> Result<QobuzAlbum, String> {
-        let params = vec![
-            ("album_id", album_id.to_string()),
-        ];
+        let params = vec![("album_id", album_id.to_string())];
 
         self.api_request("album/get", params, false).await
     }
@@ -732,11 +760,11 @@ impl QobuzClient {
     pub async fn enrich_albums(
         &self,
         db: &SqlitePool,
-        window: Option<&tauri::Window>
+        window: Option<&tauri::Window>,
     ) -> Result<super::ImportResult, String> {
         // 1. Find candidate albums
         let candidates: Vec<(String,)> = sqlx::query_as(
-            "SELECT qobuz_id FROM albums WHERE qobuz_id IS NOT NULL AND label IS NULL"
+            "SELECT qobuz_id FROM albums WHERE qobuz_id IS NOT NULL AND label IS NULL",
         )
         .fetch_all(db)
         .await
@@ -744,13 +772,22 @@ impl QobuzClient {
 
         let total = candidates.len();
         if total == 0 {
-            return Ok(super::ImportResult { imported: 0, skipped: 0 });
+            return Ok(super::ImportResult {
+                imported: 0,
+                skipped: 0,
+            });
         }
 
         tracing::info!("Qobuz: Starting enrichment for {} albums", total);
         if let Some(w) = window {
-            crate::commands::emit_import_progress(w, "qobuz_enrichment", "started", 0, total as u64, 
-                &format!("Enriching metadata for {} Qobuz albums...", total));
+            crate::commands::emit_import_progress(
+                w,
+                "qobuz_enrichment",
+                "started",
+                0,
+                total as u64,
+                &format!("Enriching metadata for {} Qobuz albums...", total),
+            );
         }
 
         let mut enriched = 0;
@@ -760,17 +797,15 @@ impl QobuzClient {
         for (i, (qobuz_id,)) in candidates.into_iter().enumerate() {
             match self.get_album_full(&qobuz_id).await {
                 Ok(full_album) => {
-                    let _ = sqlx::query(
-                        "UPDATE albums SET label = ?, upc = ? WHERE qobuz_id = ?"
-                    )
-                    .bind(full_album.label.as_ref().and_then(|l| l.name.as_deref()))
-                    .bind(full_album.upc)
-                    .bind(&qobuz_id)
-                    .execute(db)
-                    .await;
-                    
+                    let _ = sqlx::query("UPDATE albums SET label = ?, upc = ? WHERE qobuz_id = ?")
+                        .bind(full_album.label.as_ref().and_then(|l| l.name.as_deref()))
+                        .bind(full_album.upc)
+                        .bind(&qobuz_id)
+                        .execute(db)
+                        .await;
+
                     enriched += 1;
-                },
+                }
                 Err(e) => {
                     tracing::error!("Qobuz enrichment failed for {}: {}", qobuz_id, e);
                     skipped += 1;
@@ -779,8 +814,14 @@ impl QobuzClient {
 
             if let Some(w) = window {
                 if (i + 1) % 5 == 0 || i + 1 == total {
-                    crate::commands::emit_import_progress(w, "qobuz_enrichment", "progress", (i + 1) as u64, total as u64, 
-                        &format!("Enriched {}/{} albums...", i + 1, total));
+                    crate::commands::emit_import_progress(
+                        w,
+                        "qobuz_enrichment",
+                        "progress",
+                        (i + 1) as u64,
+                        total as u64,
+                        &format!("Enriched {}/{} albums...", i + 1, total),
+                    );
                 }
             }
 
@@ -788,7 +829,10 @@ impl QobuzClient {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
 
-        Ok(super::ImportResult { imported: enriched, skipped })
+        Ok(super::ImportResult {
+            imported: enriched,
+            skipped,
+        })
     }
 
     pub async fn import_library(
@@ -817,7 +861,11 @@ impl QobuzClient {
                     .as_ref()
                     .and_then(|a| a.name.clone())
                     .unwrap_or_default();
-                let (clean_artist_name, perf_role) = syncify_core_domain::metadata::parse_credit_role_and_name(&raw_artist_name, "performer");
+                let (clean_artist_name, perf_role) =
+                    syncify_core_domain::metadata::parse_credit_role_and_name(
+                        &raw_artist_name,
+                        "performer",
+                    );
                 let artist_name = if !clean_artist_name.is_empty() {
                     clean_artist_name
                 } else {
@@ -858,7 +906,10 @@ impl QobuzClient {
 
                 // TASK-68: Register performers in track_credits
                 if let Some(ref performers_str) = track.performers {
-                    for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(performers_str, "performer") {
+                    for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(
+                        performers_str,
+                        "performer",
+                    ) {
                         if let Ok(p_artist_id) = self.get_or_create_artist(db, &p_name).await {
                             let _ = sqlx::query(
                                 "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
@@ -875,7 +926,11 @@ impl QobuzClient {
                 // TASK-68: Register composer in track_credits
                 if let Some(ref composer_obj) = track.composer {
                     if let Some(ref comp_name_raw) = composer_obj.name {
-                        let (c_name, c_role) = syncify_core_domain::metadata::parse_credit_role_and_name(comp_name_raw, "composer");
+                        let (c_name, c_role) =
+                            syncify_core_domain::metadata::parse_credit_role_and_name(
+                                comp_name_raw,
+                                "composer",
+                            );
                         if let Ok(c_artist_id) = self.get_or_create_artist(db, &c_name).await {
                             let _ = sqlx::query(
                                 "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
@@ -891,7 +946,9 @@ impl QobuzClient {
 
                 // F4.3: Detect featured artists in track title and link with role = 'featured'
                 let track_title = track.title.as_deref().unwrap_or("");
-                for feat_name in syncify_core_domain::metadata::extract_featured_artists(track_title) {
+                for feat_name in
+                    syncify_core_domain::metadata::extract_featured_artists(track_title)
+                {
                     if let Ok(feat_artist_id) = self.get_or_create_artist(db, &feat_name).await {
                         if feat_artist_id != artist_id {
                             let _ = sqlx::query(
@@ -913,9 +970,9 @@ impl QobuzClient {
                     VALUES (?, ?, 1, 0, ?)
                     ON CONFLICT(account_id, track_id) DO UPDATE SET
                         is_liked = 1,
-                        added_at = CASE 
-                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
-                            ELSE library_entries.added_at 
+                        added_at = CASE
+                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
+                            ELSE library_entries.added_at
                         END
                     "#
                 )
@@ -936,8 +993,8 @@ impl QobuzClient {
                 let quality_score = self.compute_quality_score(track);
                 let _ = sqlx::query(
                     r#"
-                    INSERT OR REPLACE INTO track_sources 
-                    (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) 
+                    INSERT OR REPLACE INTO track_sources
+                    (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available)
                     VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)
                     "#
                 )
@@ -985,22 +1042,40 @@ impl QobuzClient {
             }
 
             for album_item in page.albums.items {
-                let full_album = if album_item.tracks.as_ref().map(|t| !t.items.is_empty()).unwrap_or(false) {
+                let full_album = if album_item
+                    .tracks
+                    .as_ref()
+                    .map(|t| !t.items.is_empty())
+                    .unwrap_or(false)
+                {
                     album_item
                 } else {
                     match self.get_album_full(&album_item.id).await {
                         Ok(alb) => alb,
                         Err(e) => {
-                            tracing::warn!("Failed to expand Qobuz purchase album {}: {}", album_item.id, e);
+                            tracing::warn!(
+                                "Failed to expand Qobuz purchase album {}: {}",
+                                album_item.id,
+                                e
+                            );
                             continue;
                         }
                     }
                 };
 
-                let primary_artist_name = full_album.artist.as_ref().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown".to_string());
-                let album_artist_id = self.get_or_create_artist(db, &primary_artist_name).await.unwrap_or(0);
+                let primary_artist_name = full_album
+                    .artist
+                    .as_ref()
+                    .and_then(|a| a.name.clone())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                let album_artist_id = self
+                    .get_or_create_artist(db, &primary_artist_name)
+                    .await
+                    .unwrap_or(0);
                 let album_db_id = if album_artist_id > 0 {
-                    self.get_or_create_album(db, &full_album, album_artist_id).await.ok()
+                    self.get_or_create_album(db, &full_album, album_artist_id)
+                        .await
+                        .ok()
                 } else {
                     None
                 };
@@ -1017,19 +1092,32 @@ impl QobuzClient {
                             .and_then(|a| a.name.clone())
                             .unwrap_or_else(|| primary_artist_name.clone());
 
-                        let (clean_performer, perf_role) = syncify_core_domain::metadata::parse_credit_role_and_name(&raw_performer_name, "performer");
-                        let is_tech_role = syncify_core_domain::metadata::is_technical_role(&perf_role);
+                        let (clean_performer, perf_role) =
+                            syncify_core_domain::metadata::parse_credit_role_and_name(
+                                &raw_performer_name,
+                                "performer",
+                            );
+                        let is_tech_role =
+                            syncify_core_domain::metadata::is_technical_role(&perf_role);
                         let performer_name = if !clean_performer.is_empty() {
                             clean_performer
                         } else {
                             primary_artist_name.clone()
                         };
 
-                        let artist_id = self.get_or_create_artist(db, &performer_name).await.unwrap_or(album_artist_id);
-                        let track_id = match self.get_or_create_track(db, track, album_db_id).await {
+                        let artist_id = self
+                            .get_or_create_artist(db, &performer_name)
+                            .await
+                            .unwrap_or(album_artist_id);
+                        let track_id = match self.get_or_create_track(db, track, album_db_id).await
+                        {
                             Ok(id) => id,
                             Err(e) => {
-                                tracing::warn!("Failed to get or create Qobuz purchase track {}: {}", track.id, e);
+                                tracing::warn!(
+                                    "Failed to get or create Qobuz purchase track {}: {}",
+                                    track.id,
+                                    e
+                                );
                                 continue;
                             }
                         };
@@ -1057,8 +1145,15 @@ impl QobuzClient {
 
                         // TASK-68: Register performers in track_credits
                         if let Some(ref performers_str) = track.performers {
-                            for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(performers_str, "performer") {
-                                if let Ok(p_artist_id) = self.get_or_create_artist(db, &p_name).await {
+                            for (p_name, p_role) in
+                                syncify_core_domain::metadata::parse_credits_string(
+                                    performers_str,
+                                    "performer",
+                                )
+                            {
+                                if let Ok(p_artist_id) =
+                                    self.get_or_create_artist(db, &p_name).await
+                                {
                                     let _ = sqlx::query(
                                         "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                                     )
@@ -1074,8 +1169,14 @@ impl QobuzClient {
                         // TASK-68: Register composer in track_credits
                         if let Some(ref composer_obj) = track.composer {
                             if let Some(ref comp_name_raw) = composer_obj.name {
-                                let (c_name, c_role) = syncify_core_domain::metadata::parse_credit_role_and_name(comp_name_raw, "composer");
-                                if let Ok(c_artist_id) = self.get_or_create_artist(db, &c_name).await {
+                                let (c_name, c_role) =
+                                    syncify_core_domain::metadata::parse_credit_role_and_name(
+                                        comp_name_raw,
+                                        "composer",
+                                    );
+                                if let Ok(c_artist_id) =
+                                    self.get_or_create_artist(db, &c_name).await
+                                {
                                     let _ = sqlx::query(
                                         "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                                     )
@@ -1096,9 +1197,9 @@ impl QobuzClient {
                             VALUES (?, ?, 0, 1, ?)
                             ON CONFLICT(account_id, track_id) DO UPDATE SET
                                 is_purchased = 1,
-                                added_at = CASE 
-                                    WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
-                                    ELSE library_entries.added_at 
+                                added_at = CASE
+                                    WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
+                                    ELSE library_entries.added_at
                                 END
                             "#
                         )
@@ -1118,8 +1219,8 @@ impl QobuzClient {
                         let quality_score = self.compute_quality_score(track);
                         let _ = sqlx::query(
                             r#"
-                            INSERT OR REPLACE INTO track_sources 
-                            (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) 
+                            INSERT OR REPLACE INTO track_sources
+                            (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available)
                             VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1)
                             "#
                         )
@@ -1136,7 +1237,8 @@ impl QobuzClient {
             }
 
             offset += limit;
-            if items_len < limit as usize || (page.albums.total > 0 && offset >= page.albums.total) {
+            if items_len < limit as usize || (page.albums.total > 0 && offset >= page.albums.total)
+            {
                 break;
             }
         }
@@ -1173,12 +1275,17 @@ impl QobuzClient {
             return Err("Cannot create artist with empty name".to_string());
         }
         if syncify_core_domain::metadata::has_technical_role_prefix(&clean_name) {
-            return Err(format!("Rejected artist name with technical role prefix: {}", clean_name));
+            return Err(format!(
+                "Rejected artist name with technical role prefix: {}",
+                clean_name
+            ));
         }
-        if let Ok(row) = sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-            .bind(&clean_name)
-            .fetch_one(db)
-            .await
+        if let Ok(row) = sqlx::query_as::<_, (i64,)>(
+            "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1",
+        )
+        .bind(&clean_name)
+        .fetch_one(db)
+        .await
         {
             return Ok(row.0);
         }
@@ -1212,14 +1319,14 @@ impl QobuzClient {
         // Create or update album by qobuz_id
         let album_id: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
             r#"
-            INSERT INTO albums (title, cover_art_url, release_date, qobuz_id, label, upc) 
+            INSERT INTO albums (title, cover_art_url, release_date, qobuz_id, label, upc)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(qobuz_id) WHERE qobuz_id IS NOT NULL DO UPDATE SET
                 cover_art_url = COALESCE(albums.cover_art_url, excluded.cover_art_url),
                 label = COALESCE(albums.label, excluded.label),
                 upc = COALESCE(albums.upc, excluded.upc)
             RETURNING id
-            "#
+            "#,
         )
         .bind(album.title.as_deref().unwrap_or_default())
         .bind(&cover_url)
@@ -1262,12 +1369,12 @@ impl QobuzClient {
             // Update missing metadata
             let _ = sqlx::query(
                 r#"
-                UPDATE tracks SET 
+                UPDATE tracks SET
                     album_id = COALESCE(album_id, ?),
                     track_number = COALESCE(track_number, ?),
                     disc_number = COALESCE(disc_number, ?)
                 WHERE id = ?
-                "#
+                "#,
             )
             .bind(album_id)
             .bind(track.track_number)
@@ -1275,7 +1382,7 @@ impl QobuzClient {
             .bind(row.0)
             .execute(db)
             .await;
-            
+
             return Ok(row.0);
         }
 
@@ -1289,13 +1396,13 @@ impl QobuzClient {
                 // Update qobuz_id and other metadata
                 let _ = sqlx::query(
                     r#"
-                    UPDATE tracks SET 
+                    UPDATE tracks SET
                         qobuz_id = COALESCE(qobuz_id, ?),
                         album_id = COALESCE(album_id, ?),
                         track_number = COALESCE(track_number, ?),
                         disc_number = COALESCE(disc_number, ?)
                     WHERE id = ?
-                    "#
+                    "#,
                 )
                 .bind(&qobuz_id)
                 .bind(album_id)
@@ -1304,13 +1411,14 @@ impl QobuzClient {
                 .bind(row.0)
                 .execute(db)
                 .await;
-                
+
                 return Ok(row.0);
             }
         }
 
         // 3. Validate title
-        let title = track.title
+        let title = track
+            .title
             .as_ref()
             .filter(|t| !t.trim().is_empty())
             .ok_or_else(|| format!("Track {} has no title, skipping", track.id))?;
@@ -1319,8 +1427,8 @@ impl QobuzClient {
         // 4. Create new track
         let track_id: i64 = sqlx::query_scalar(
             r#"
-            INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, qobuz_id) 
-            VALUES (?, ?, ?, ?, ?, ?, ?) 
+            INSERT INTO tracks (title, album_id, duration_ms, isrc, track_number, disc_number, qobuz_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -1386,7 +1494,10 @@ impl QobuzClient {
             .map(|track| QobuzSearchResult {
                 track_id: track.id.to_string(),
                 title: track.title.clone().unwrap_or_default(),
-                artist: track.performer.and_then(|p| p.name.clone()).unwrap_or_default(),
+                artist: track
+                    .performer
+                    .and_then(|p| p.name.clone())
+                    .unwrap_or_default(),
                 album: track.album.and_then(|a| a.title.clone()),
                 isrc: track.isrc,
                 duration_ms: track.duration * 1000,
@@ -1548,9 +1659,16 @@ impl QobuzClient {
         let mut skipped = 0;
 
         for playlist in response.playlists.items {
-            tracing::debug!("Qobuz: Importing playlist '{}' ({})", playlist.name, playlist.id);
+            tracing::debug!(
+                "Qobuz: Importing playlist '{}' ({})",
+                playlist.name,
+                playlist.id
+            );
 
-            let image_url = playlist.images300.as_ref().and_then(|imgs| imgs.first().cloned());
+            let image_url = playlist
+                .images300
+                .as_ref()
+                .and_then(|imgs| imgs.first().cloned());
             let pl_id_str = playlist.id.to_string();
             let res = crate::commands::upsert_playlist_and_source(
                 db,
@@ -1575,96 +1693,136 @@ impl QobuzClient {
                     let mut track_position = 0i32;
 
                     loop {
-                            let detail = match self.get_playlist_tracks(playlist.id, track_offset, track_limit).await {
-                                Ok(d) => d,
-                                Err(e) => {
-                                    tracing::warn!("Qobuz: Failed to fetch tracks for playlist '{}': {}", playlist.name, e);
-                                    break;
-                                }
-                            };
+                        let detail = match self
+                            .get_playlist_tracks(playlist.id, track_offset, track_limit)
+                            .await
+                        {
+                            Ok(d) => d,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Qobuz: Failed to fetch tracks for playlist '{}': {}",
+                                    playlist.name,
+                                    e
+                                );
+                                break;
+                            }
+                        };
 
-                            let tracks = match detail.tracks {
-                                Some(t) if !t.items.is_empty() => t,
-                                _ => break,
-                            };
+                        let tracks = match detail.tracks {
+                            Some(t) if !t.items.is_empty() => t,
+                            _ => break,
+                        };
 
-                            let page_len = tracks.items.len();
-                            for track in &tracks.items {
-                                let process = async {
-                                    let raw_artist_name = track.performer.as_ref()
-                                        .and_then(|a| a.name.clone())
-                                        .unwrap_or_else(|| "Unknown".to_string());
-                                    let (clean_artist_name, perf_role) = syncify_core_domain::metadata::parse_credit_role_and_name(&raw_artist_name, "performer");
-                                    let is_tech_role = syncify_core_domain::metadata::is_technical_role(&perf_role);
-                                    let artist_name = if !clean_artist_name.is_empty() {
-                                        clean_artist_name
-                                    } else {
-                                        syncify_core_domain::metadata::sanitize_artist_name(&raw_artist_name)
-                                    };
-                                    let artist_id = self.get_or_create_artist(db, &artist_name).await?;
-                                    let album_id = if let Some(ref album) = track.album {
-                                        Some(self.get_or_create_album(db, album, artist_id).await?)
-                                    } else { None };
-                                    let track_id = self.get_or_create_track(db, track, album_id).await?;
-                                    let _ = sqlx::query(
+                        let page_len = tracks.items.len();
+                        for track in &tracks.items {
+                            let process = async {
+                                let raw_artist_name = track
+                                    .performer
+                                    .as_ref()
+                                    .and_then(|a| a.name.clone())
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                let (clean_artist_name, perf_role) =
+                                    syncify_core_domain::metadata::parse_credit_role_and_name(
+                                        &raw_artist_name,
+                                        "performer",
+                                    );
+                                let is_tech_role =
+                                    syncify_core_domain::metadata::is_technical_role(&perf_role);
+                                let artist_name = if !clean_artist_name.is_empty() {
+                                    clean_artist_name
+                                } else {
+                                    syncify_core_domain::metadata::sanitize_artist_name(
+                                        &raw_artist_name,
+                                    )
+                                };
+                                let artist_id = self.get_or_create_artist(db, &artist_name).await?;
+                                let album_id = if let Some(ref album) = track.album {
+                                    Some(self.get_or_create_album(db, album, artist_id).await?)
+                                } else {
+                                    None
+                                };
+                                let track_id =
+                                    self.get_or_create_track(db, track, album_id).await?;
+                                let _ = sqlx::query(
                                         "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                                     ).bind(track_id).bind(artist_id).execute(db).await;
 
-                                    if is_tech_role {
-                                        let _ = sqlx::query(
+                                if is_tech_role {
+                                    let _ = sqlx::query(
                                             "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                                         ).bind(track_id).bind(artist_id).bind(&perf_role).execute(db).await;
-                                    }
+                                }
 
-                                    // TASK-68: Register performers in track_credits
-                                    if let Some(ref performers_str) = track.performers {
-                                        for (p_name, p_role) in syncify_core_domain::metadata::parse_credits_string(performers_str, "performer") {
-                                            if let Ok(p_artist_id) = self.get_or_create_artist(db, &p_name).await {
-                                                let _ = sqlx::query(
+                                // TASK-68: Register performers in track_credits
+                                if let Some(ref performers_str) = track.performers {
+                                    for (p_name, p_role) in
+                                        syncify_core_domain::metadata::parse_credits_string(
+                                            performers_str,
+                                            "performer",
+                                        )
+                                    {
+                                        if let Ok(p_artist_id) =
+                                            self.get_or_create_artist(db, &p_name).await
+                                        {
+                                            let _ = sqlx::query(
                                                     "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                                                 ).bind(track_id).bind(p_artist_id).bind(&p_role).execute(db).await;
-                                            }
                                         }
                                     }
+                                }
 
-                                    // TASK-68: Register composer in track_credits
-                                    if let Some(ref composer_obj) = track.composer {
-                                        if let Some(ref comp_name_raw) = composer_obj.name {
-                                            let (c_name, c_role) = syncify_core_domain::metadata::parse_credit_role_and_name(comp_name_raw, "composer");
-                                            if let Ok(c_artist_id) = self.get_or_create_artist(db, &c_name).await {
-                                                let _ = sqlx::query(
+                                // TASK-68: Register composer in track_credits
+                                if let Some(ref composer_obj) = track.composer {
+                                    if let Some(ref comp_name_raw) = composer_obj.name {
+                                        let (c_name, c_role) = syncify_core_domain::metadata::parse_credit_role_and_name(comp_name_raw, "composer");
+                                        if let Ok(c_artist_id) =
+                                            self.get_or_create_artist(db, &c_name).await
+                                        {
+                                            let _ = sqlx::query(
                                                     "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                                                 ).bind(track_id).bind(c_artist_id).bind(&c_role).execute(db).await;
-                                            }
                                         }
                                     }
+                                }
 
-                                    // F4.3: Detect featured artists in track title and link with role = 'featured'
-                                    let track_title = track.title.as_deref().unwrap_or("");
-                                    for feat_name in syncify_core_domain::metadata::extract_featured_artists(track_title) {
-                                        if let Ok(feat_artist_id) = self.get_or_create_artist(db, &feat_name).await {
-                                            if feat_artist_id != artist_id {
-                                                let _ = sqlx::query(
+                                // F4.3: Detect featured artists in track title and link with role = 'featured'
+                                let track_title = track.title.as_deref().unwrap_or("");
+                                for feat_name in
+                                    syncify_core_domain::metadata::extract_featured_artists(
+                                        track_title,
+                                    )
+                                {
+                                    if let Ok(feat_artist_id) =
+                                        self.get_or_create_artist(db, &feat_name).await
+                                    {
+                                        if feat_artist_id != artist_id {
+                                            let _ = sqlx::query(
                                                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')"
                                                 ).bind(track_id).bind(feat_artist_id).execute(db).await;
-                                            }
                                         }
                                     }
-                                    let _ = sqlx::query(
+                                }
+                                let _ = sqlx::query(
                                         "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
                                     ).bind(pid).bind(track_id).bind(track_position).execute(db).await;
-                                    Ok::<(), String>(())
-                                };
-                                if let Err(e) = process.await {
-                                    tracing::warn!("Qobuz: Failed to import track in playlist '{}': {}", playlist.name, e);
-                                }
-                                track_position += 1;
+                                Ok::<(), String>(())
+                            };
+                            if let Err(e) = process.await {
+                                tracing::warn!(
+                                    "Qobuz: Failed to import track in playlist '{}': {}",
+                                    playlist.name,
+                                    e
+                                );
                             }
-
-                            track_offset += track_limit;
-                            if page_len < track_limit as usize { break; }
+                            track_position += 1;
                         }
-                },
+
+                        track_offset += track_limit;
+                        if page_len < track_limit as usize {
+                            break;
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::error!("Qobuz: Failed to insert playlist {}: {}", playlist.id, e);
                     skipped += 1;
@@ -1713,7 +1871,11 @@ pub fn extract_flac_streaminfo(path: &std::path::Path) -> Option<(i32, f64)> {
         use std::io::Read;
         let mut buf = [0u8; 64];
         if let Ok(n) = file.read(&mut buf) {
-            if let Some(info) = syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(&buf[..n]) {
+            if let Some(info) =
+                syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(
+                    &buf[..n],
+                )
+            {
                 return Some((info.bits_per_sample as i32, info.sample_rate as f64));
             }
         }

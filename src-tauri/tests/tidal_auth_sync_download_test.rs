@@ -91,16 +91,22 @@ async fn test_tidal_unified_active_account_resolution() {
     .unwrap();
 
     let http_client = reqwest::Client::new();
-    let (resolved_creds, account_name) = resolve_and_refresh_gui_credentials(&pool, &http_client).await;
+    let (resolved_creds, account_name) =
+        resolve_and_refresh_gui_credentials(&pool, &http_client).await;
 
-    assert!(resolved_creds.is_some(), "Active Tidal account must resolve");
+    assert!(
+        resolved_creds.is_some(),
+        "Active Tidal account must resolve"
+    );
     let creds = resolved_creds.unwrap();
     assert_eq!(creds.access_token, "mock_tidal_access_token_12345");
     assert_eq!(creds.country_code.as_deref(), Some("US"));
     assert_eq!(account_name.as_deref(), Some("Tidal HiFi User"));
 
     // Verify auth status command reports connected_valid
-    let auth_status = perform_get_service_auth_status(&pool, "tidal", None).await.unwrap();
+    let auth_status = perform_get_service_auth_status(&pool, "tidal", None)
+        .await
+        .unwrap();
     assert_eq!(auth_status.status, "connected_valid");
     assert!(auth_status.is_authenticated);
 }
@@ -129,11 +135,17 @@ async fn test_tidal_credentials_invalid_returns_requires_auth_and_blocks_downloa
     .unwrap();
 
     let http_client = reqwest::Client::new();
-    let (resolved_creds, _account_name) = resolve_and_refresh_gui_credentials(&pool, &http_client).await;
-    assert!(resolved_creds.is_none(), "Invalid account must not produce valid credentials");
+    let (resolved_creds, _account_name) =
+        resolve_and_refresh_gui_credentials(&pool, &http_client).await;
+    assert!(
+        resolved_creds.is_none(),
+        "Invalid account must not produce valid credentials"
+    );
 
     // Verify auth status reports requires_auth
-    let auth_status = perform_get_service_auth_status(&pool, "tidal", None).await.unwrap();
+    let auth_status = perform_get_service_auth_status(&pool, "tidal", None)
+        .await
+        .unwrap();
     assert_eq!(auth_status.status, "requires_auth");
     assert!(!auth_status.is_authenticated);
 
@@ -149,7 +161,11 @@ async fn test_tidal_credentials_invalid_returns_requires_auth_and_blocks_downloa
     let result = execute_tidal_single_track_download(&pool, dl_req, |_| {}).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.contains("RequiresAuth"), "Error must clearly indicate RequiresAuth: {}", err);
+    assert!(
+        err.contains("RequiresAuth"),
+        "Error must clearly indicate RequiresAuth: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -180,7 +196,11 @@ async fn test_tidal_downloader_orchestrator_ext_requires_auth_on_unauthenticated
     let result = downloader.download_track(&request, Some(&pool)).await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("RequiresAuth"), "Must propagate RequiresAuth when no valid account exists: {}", err_msg);
+    assert!(
+        err_msg.contains("RequiresAuth"),
+        "Must propagate RequiresAuth when no valid account exists: {}",
+        err_msg
+    );
 }
 
 #[tokio::test]
@@ -190,23 +210,35 @@ async fn test_concurrency_persistence_roundtrip_values() {
 
     for &concurrency in &[1usize, 3usize, 5usize] {
         // Set concurrency
-        let updated = perform_set_max_concurrent_downloads(&state, concurrency).await.unwrap();
+        let updated = perform_set_max_concurrent_downloads(&state, concurrency)
+            .await
+            .unwrap();
         assert_eq!(updated, concurrency);
         assert_eq!(state.worker_state.max_concurrent(), concurrency);
 
         // Verify SQLite sync_settings
-        let sync_val: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
-            .fetch_one(&pool).await.unwrap();
+        let sync_val: i32 =
+            sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(sync_val as usize, concurrency);
 
         // Verify SQLite advanced_settings
-        let adv_val: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM advanced_settings WHERE id = 1")
-            .fetch_one(&pool).await.unwrap();
+        let adv_val: i32 = sqlx::query_scalar(
+            "SELECT max_concurrent_downloads FROM advanced_settings WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(adv_val as usize, concurrency);
 
         // Verify SQLite settings table key
-        let kv_val: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-            .fetch_one(&pool).await.unwrap();
+        let kv_val: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(kv_val.parse::<usize>().unwrap(), concurrency);
 
         // Verify settings DTO reflects updated concurrency

@@ -8,9 +8,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use syncify_tauri_lib::commands::{
-    check_dependencies, validate_tool, ALLOWED_TOOLS,
-};
+use syncify_tauri_lib::commands::{check_dependencies, validate_tool, ALLOWED_TOOLS};
 
 fn get_project_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -123,9 +121,7 @@ fn test_python_security_suite_execution() {
 #[test]
 fn test_cli_install_tampered_hash_rejection() {
     let project_root = get_project_root();
-    let script_path = project_root
-        .join("scripts")
-        .join("dependency_manager.py");
+    let script_path = project_root.join("scripts").join("dependency_manager.py");
 
     // Attempt install of fpcalc with a corrupted/bogus SHA-256 hash
     let bogus_hash = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -148,7 +144,8 @@ fn test_cli_install_tampered_hash_rejection() {
                 "Installation with invalid hash must fail with non-zero exit code"
             );
             assert!(
-                stdout.contains("SHA-256 checksum mismatch") || stdout.contains("\"success\": false"),
+                stdout.contains("SHA-256 checksum mismatch")
+                    || stdout.contains("\"success\": false"),
                 "Output must report SHA-256 mismatch: {}",
                 stdout
             );

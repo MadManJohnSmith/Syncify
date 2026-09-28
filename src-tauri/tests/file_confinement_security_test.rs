@@ -75,17 +75,31 @@ async fn setup_test_context() -> (tauri::App<tauri::test::MockRuntime>, SqlitePo
         .execute(&pool).await.unwrap();
 
     // Seed a sample artist, album, track
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('The Dark Side of the Moon') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title) VALUES ('The Dark Side of the Moon') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     let _ = sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-        .bind(album_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let track_id: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, album_id, duration_ms) VALUES ('Time', ?, 425000) RETURNING id"
+        "INSERT INTO tracks (title, album_id, duration_ms) VALUES ('Time', ?, 425000) RETURNING id",
     )
-    .bind(album_id).fetch_one(&pool).await.unwrap();
+    .bind(album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let app = tauri::test::mock_app();
     let state = AppState {
@@ -143,17 +157,19 @@ async fn test_lyrics_import_path_traversal_rejected() {
 
     let traversal_cases = [
         test_dir.join("../.bashrc").to_string_lossy().to_string(),
-        test_dir.join("../../etc/passwd").to_string_lossy().to_string(),
-        test_dir.join("sub/../../.ssh/id_rsa.txt").to_string_lossy().to_string(),
+        test_dir
+            .join("../../etc/passwd")
+            .to_string_lossy()
+            .to_string(),
+        test_dir
+            .join("sub/../../.ssh/id_rsa.txt")
+            .to_string_lossy()
+            .to_string(),
     ];
 
     for path in traversal_cases {
         let res = import_lyrics_file(app_state.clone(), track_id, path.clone()).await;
-        assert!(
-            res.is_err(),
-            "Path traversal '{}' must be rejected",
-            path
-        );
+        assert!(res.is_err(), "Path traversal '{}' must be rejected", path);
         let err = res.unwrap_err();
         assert!(
             err.contains("sandbox violation") || err.contains("Acceso denegado"),
@@ -233,7 +249,8 @@ async fn test_lyrics_import_oversized_file_rejected() {
     );
     let err = res.unwrap_err();
     assert!(
-        err.contains("1 MB") && (err.contains("sandbox violation") || err.contains("Acceso denegado")),
+        err.contains("1 MB")
+            && (err.contains("sandbox violation") || err.contains("Acceso denegado")),
         "Error must mention 1 MB size limit and sandbox violation, got: {}",
         err
     );
@@ -291,7 +308,11 @@ async fn test_lyrics_import_legitimate_files_succeed() {
     )
     .await;
 
-    assert!(lrc_res.is_ok(), "Legitimate .lrc import must succeed: {:?}", lrc_res.err());
+    assert!(
+        lrc_res.is_ok(),
+        "Legitimate .lrc import must succeed: {:?}",
+        lrc_res.err()
+    );
     let lyrics = lrc_res.unwrap();
     assert_eq!(lyrics.format, "lrc");
     assert_eq!(lyrics.sync_level, Some("line".to_string()));
@@ -309,7 +330,11 @@ async fn test_lyrics_import_legitimate_files_succeed() {
     )
     .await;
 
-    assert!(txt_res.is_ok(), "Legitimate .txt import must succeed: {:?}", txt_res.err());
+    assert!(
+        txt_res.is_ok(),
+        "Legitimate .txt import must succeed: {:?}",
+        txt_res.err()
+    );
     let txt_lyrics = txt_res.unwrap();
     assert_eq!(txt_lyrics.format, "plain");
     assert_eq!(txt_lyrics.sync_level, Some("none".to_string()));
@@ -333,7 +358,10 @@ fn test_m3u_write_relative_and_traversal_paths_rejected() {
         "".to_string(),
         "   ".to_string(),
         test_dir.join("../escape.m3u").to_string_lossy().to_string(),
-        test_dir.join("../../etc/cron.m3u").to_string_lossy().to_string(),
+        test_dir
+            .join("../../etc/cron.m3u")
+            .to_string_lossy()
+            .to_string(),
     ];
 
     for path in &invalid_cases {
@@ -421,14 +449,22 @@ fn test_m3u_write_legitimate_files_succeed() {
     let m3u_path = test_dir.join("favorites.m3u");
     let m3u_content = "#EXTM3U\n#EXTINF:250,Artist - Title\nMusic/Artist/Album/01 Track.flac\n";
     let res_m3u = write_m3u_to_disk(m3u_path.to_str().unwrap(), m3u_content);
-    assert!(res_m3u.is_ok(), "Writing legitimate .m3u must succeed: {:?}", res_m3u.err());
+    assert!(
+        res_m3u.is_ok(),
+        "Writing legitimate .m3u must succeed: {:?}",
+        res_m3u.err()
+    );
     assert_eq!(fs::read_to_string(&m3u_path).unwrap(), m3u_content);
 
     // Test .m3u8
     let m3u8_path = test_dir.join("favorites_utf8.m3u8");
     let m3u8_content = "#EXTM3U\n#EXTINF:180,Café Tacvba - Eres\nMusic/Cafe Tacvba/Eres.flac\n";
     let res_m3u8 = write_m3u_to_disk(m3u8_path.to_str().unwrap(), m3u8_content);
-    assert!(res_m3u8.is_ok(), "Writing legitimate .m3u8 must succeed: {:?}", res_m3u8.err());
+    assert!(
+        res_m3u8.is_ok(),
+        "Writing legitimate .m3u8 must succeed: {:?}",
+        res_m3u8.err()
+    );
     assert_eq!(fs::read_to_string(&m3u8_path).unwrap(), m3u8_content);
 }
 
@@ -450,8 +486,14 @@ async fn test_backup_export_relative_and_traversal_paths_rejected() {
         "sub/backup.json".to_string(),
         "".to_string(),
         "   ".to_string(),
-        test_dir.join("../escape.json").to_string_lossy().to_string(),
-        test_dir.join("../../etc/backup.json").to_string_lossy().to_string(),
+        test_dir
+            .join("../escape.json")
+            .to_string_lossy()
+            .to_string(),
+        test_dir
+            .join("../../etc/backup.json")
+            .to_string_lossy()
+            .to_string(),
     ];
 
     for path in invalid_cases {
@@ -549,7 +591,11 @@ async fn test_backup_export_legitimate_destinations_succeed() {
     )
     .await;
 
-    assert!(custom_res.is_ok(), "export_library with valid custom path must succeed: {:?}", custom_res.err());
+    assert!(
+        custom_res.is_ok(),
+        "export_library with valid custom path must succeed: {:?}",
+        custom_res.err()
+    );
     let custom_output = custom_res.unwrap();
     assert!(Path::new(&custom_output.file_path).exists());
     assert!(custom_output.file_size_bytes > 0);
@@ -578,7 +624,11 @@ async fn test_backup_export_legitimate_destinations_succeed() {
             let default_dir = dirs::download_dir().unwrap();
             let default_path = default_dir.join(filename);
             let validated = validate_safe_backup_export_path(&default_path);
-            assert!(validated.is_ok(), "Default path must pass safe validation: {:?}", validated.err());
+            assert!(
+                validated.is_ok(),
+                "Default path must pass safe validation: {:?}",
+                validated.err()
+            );
         }
         Err(e) => panic!("Unexpected error on default export: {}", e),
     }
@@ -591,19 +641,28 @@ async fn test_backup_export_legitimate_destinations_succeed() {
 #[test]
 fn test_allowed_directory_resolvers_are_non_empty_and_absolute() {
     let lyrics_dirs = get_allowed_lyrics_read_directories();
-    assert!(!lyrics_dirs.is_empty(), "Lyrics allowed directories must not be empty");
+    assert!(
+        !lyrics_dirs.is_empty(),
+        "Lyrics allowed directories must not be empty"
+    );
     for dir in &lyrics_dirs {
         assert!(dir.is_absolute(), "Directory must be absolute: {:?}", dir);
     }
 
     let m3u_dirs = get_allowed_m3u_directories();
-    assert!(!m3u_dirs.is_empty(), "M3U allowed directories must not be empty");
+    assert!(
+        !m3u_dirs.is_empty(),
+        "M3U allowed directories must not be empty"
+    );
     for dir in &m3u_dirs {
         assert!(dir.is_absolute(), "Directory must be absolute: {:?}", dir);
     }
 
     let backup_dirs = get_allowed_backup_export_directories();
-    assert!(!backup_dirs.is_empty(), "Backup allowed directories must not be empty");
+    assert!(
+        !backup_dirs.is_empty(),
+        "Backup allowed directories must not be empty"
+    );
     for dir in &backup_dirs {
         assert!(dir.is_absolute(), "Directory must be absolute: {:?}", dir);
     }

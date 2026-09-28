@@ -17,10 +17,10 @@ mod tray;
 mod worker;
 
 use db::DbPool;
+pub use enrichment_worker::{EnrichmentWorker, EnrichmentWorkerState};
 use std::sync::Arc;
 use tauri::Manager;
 use worker::DownloadWorkerState;
-pub use enrichment_worker::{EnrichmentWorker, EnrichmentWorkerState};
 
 pub use crate::commands::ImportLock;
 
@@ -131,7 +131,6 @@ fn main() {
     // Create worker state (active by default for background queue execution)
     let worker_state = DownloadWorkerState::new(2); // 2 concurrent downloads
     let worker_state_clone = worker_state.clone();
-
 
     let import_lock = crate::commands::ImportLock(tokio::sync::Mutex::new(()));
     let concurrency_manager = services::get_global_concurrency_manager();
@@ -307,7 +306,7 @@ fn main() {
                 tracing::info!("Checking Python dependencies...");
                 let python_cmd = commands::get_python_executable();
                 let project_root = commands::get_project_root();
-                
+
                 // Log if .venv is missing as requested in S73
                 if !python_cmd.contains(".venv") && !python_cmd.contains("python.exe") {
                     let expected_venv = if cfg!(windows) {
@@ -491,7 +490,7 @@ fn main() {
                         });
                         if let Ok(encrypted) = crate::crypto::encrypt(&creds.to_string()) {
                             let _ = sqlx::query(
-                                r#"UPDATE accounts 
+                                r#"UPDATE accounts
                                    SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL
                                    WHERE service_id = (SELECT id FROM services WHERE name = 'qobuz')
                                      AND (credentials_invalid = 1 OR credentials_json IS NULL OR credentials_json NOT LIKE '%user_auth_token%')"#
@@ -618,7 +617,7 @@ fn main() {
 
                 worker.run().await;
             });
-            
+
             tracing::info!("Background enrichment worker started");
 
             // Initialize system tray (TASK-120), isolating any panic from the

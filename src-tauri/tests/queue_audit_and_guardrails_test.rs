@@ -41,18 +41,30 @@ async fn test_queue_audit_and_item_classification() {
     let db = create_test_db().await;
 
     // 1. Setup artist, album, and tracks
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Guardrail Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, upc) VALUES ('Guardrail Album', '112233445566') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Guardrail Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, upc) VALUES ('Guardrail Album', '112233445566') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Track 1: Source locked (valid)
     let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Track 1 Locked', ?, 'USRC11200001') RETURNING id")
         .bind(album_id).fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, available) VALUES (?, 2, 'qobuz_valid_101', 1)")
         .bind(t1).execute(&db).await.unwrap();
-    
+
     // Insert into download_queue as source_locked
     sqlx::query(
         r#"
@@ -115,7 +127,11 @@ async fn test_queue_audit_and_item_classification() {
     .await
     .unwrap_or_default();
 
-    assert_eq!(unresolved_items.len(), 1, "Exactly one legacy unresolved item in queue");
+    assert_eq!(
+        unresolved_items.len(),
+        1,
+        "Exactly one legacy unresolved item in queue"
+    );
     let (legacy_qid, _, _, _) = unresolved_items[0];
 
     // Quarantine as SourceIdentityMissing
@@ -129,12 +145,11 @@ async fn test_queue_audit_and_item_classification() {
         .unwrap();
 
     // Audit the download queue
-    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT status, service_track_id, error_message FROM download_queue"
-    )
-    .fetch_all(&db)
-    .await
-    .unwrap();
+    let rows: Vec<(String, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT status, service_track_id, error_message FROM download_queue")
+            .fetch_all(&db)
+            .await
+            .unwrap();
 
     let mut ready_count = 0i64;
     let mut source_locked_count = 0i64;
@@ -145,7 +160,10 @@ async fn test_queue_audit_and_item_classification() {
     let mut failed_count = 0i64;
 
     for (status, s_track_id, err_opt) in rows {
-        let is_locked = s_track_id.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+        let is_locked = s_track_id
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
         if is_locked {
             source_locked_count += 1;
         }
@@ -173,35 +191,72 @@ async fn test_queue_audit_and_item_classification() {
         }
     }
 
-    assert_eq!(ready_count, 1, "Only source_locked item remains ready/queued");
-    assert_eq!(source_locked_count, 2, "Two items have locked source ids (1 queued, 1 stale 404)");
-    assert_eq!(legacy_unresolved_count, 0, "No legacy unresolved items remain in queued state");
+    assert_eq!(
+        ready_count, 1,
+        "Only source_locked item remains ready/queued"
+    );
+    assert_eq!(
+        source_locked_count, 2,
+        "Two items have locked source ids (1 queued, 1 stale 404)"
+    );
+    assert_eq!(
+        legacy_unresolved_count, 0,
+        "No legacy unresolved items remain in queued state"
+    );
     assert_eq!(stale_source_count, 1, "One stale source classified");
     assert_eq!(ambiguous_source_count, 1, "One ambiguous source classified");
-    assert_eq!(source_identity_missing_count, 1, "One legacy row quarantined as SourceIdentityMissing");
-    assert_eq!(failed_count, 3, "3 failed items (legacy quarantined, stale, ambiguous)");
+    assert_eq!(
+        source_identity_missing_count, 1,
+        "One legacy row quarantined as SourceIdentityMissing"
+    );
+    assert_eq!(
+        failed_count, 3,
+        "3 failed items (legacy quarantined, stale, ambiguous)"
+    );
 }
 
 #[tokio::test]
 async fn test_mass_download_preflight_guardrail() {
     let db = create_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Preflight Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, upc) VALUES ('Preflight Album', '998877665544') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Preflight Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, upc) VALUES ('Preflight Album', '998877665544') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Create 150 favorite tracks to simulate mass library
     for i in 1..=150 {
-        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id")
-            .bind(format!("Preflight Track {:03}", i))
-            .bind(album_id)
-            .bind(format!("USPF112{:05}", i))
-            .fetch_one(&db).await.unwrap();
+        let tid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id",
+        )
+        .bind(format!("Preflight Track {:03}", i))
+        .bind(album_id)
+        .bind(format!("USPF112{:05}", i))
+        .fetch_one(&db)
+        .await
+        .unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
         if i <= 140 {
             // Valid Qobuz source
@@ -210,8 +265,13 @@ async fn test_mass_download_preflight_guardrail() {
         }
         // 10 tracks have no sources (unresolved)
 
-        sqlx::query("INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (2, ?, 1)")
-            .bind(tid).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (2, ?, 1)",
+        )
+        .bind(tid)
+        .execute(&db)
+        .await
+        .unwrap();
     }
 
     // 5 tracks are already downloaded
@@ -238,8 +298,11 @@ async fn test_mass_download_preflight_guardrail() {
     }
 
     // Verify initial queue count = 5
-    let initial_queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
-        .fetch_one(&db).await.unwrap();
+    let initial_queued: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(initial_queued, 5);
 
     // Run preflight evaluation (dry_run = true)
@@ -250,8 +313,11 @@ async fn test_mass_download_preflight_guardrail() {
         LEFT JOIN library_entries le ON le.track_id = t.id
         WHERE le.is_liked = 1
         ORDER BY t.id ASC
-        "#
-    ).fetch_all(&db).await.unwrap();
+        "#,
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
 
     let total_candidates = candidates.len() as i64;
     assert_eq!(total_candidates, 150);
@@ -262,8 +328,12 @@ async fn test_mass_download_preflight_guardrail() {
     let mut unresolved_sources = 0i64;
 
     for (tid,) in &candidates {
-        let dl_exists: Option<(String,)> = sqlx::query_as("SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1")
-            .bind(tid).fetch_optional(&db).await.unwrap();
+        let dl_exists: Option<(String,)> =
+            sqlx::query_as("SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1")
+                .bind(tid)
+                .fetch_optional(&db)
+                .await
+                .unwrap();
         if let Some((fp,)) = dl_exists {
             if !fp.trim().is_empty() {
                 already_downloaded += 1;
@@ -294,37 +364,70 @@ async fn test_mass_download_preflight_guardrail() {
     assert_eq!(ready_for_queue, 130);
 
     // Verify dry-run did NOT insert any new rows into download_queue
-    let queue_count_after_preflight: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
-        .fetch_one(&db).await.unwrap();
-    assert_eq!(queue_count_after_preflight, 5, "Preflight must not alter download_queue rows");
+    let queue_count_after_preflight: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        queue_count_after_preflight, 5,
+        "Preflight must not alter download_queue rows"
+    );
 }
 
 #[tokio::test]
 async fn test_download_favorites_contract_qobuz_5_batch() {
     let db = create_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Contract Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, upc) VALUES ('Contract Album', '112233445577') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Contract Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, upc) VALUES ('Contract Album', '112233445577') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Insert 10 tracks linked via library_entries (is_liked=1, account_id=2) and track_sources
     for i in 1..=10 {
-        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id")
-            .bind(format!("Contract Track {:02}", i))
-            .bind(album_id)
-            .bind(format!("USCT113{:05}", i))
-            .fetch_one(&db).await.unwrap();
+        let tid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, isrc) VALUES (?, ?, ?) RETURNING id",
+        )
+        .bind(format!("Contract Track {:02}", i))
+        .bind(album_id)
+        .bind(format!("USCT113{:05}", i))
+        .fetch_one(&db)
+        .await
+        .unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(tid).bind(artist_id).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(tid)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
         sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, ?, 'FLAC', 16, 44100, 100, 1)")
             .bind(tid).bind(format!("qobuz_contract_{:02}", i)).execute(&db).await.unwrap();
 
-        sqlx::query("INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (2, ?, 1)")
-            .bind(tid).execute(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (2, ?, 1)",
+        )
+        .bind(tid)
+        .execute(&db)
+        .await
+        .unwrap();
     }
 
     // Query candidate tracks using the canonical query with service_filter = 'qobuz'
@@ -364,7 +467,10 @@ async fn test_download_favorites_contract_qobuz_5_batch() {
     }
 
     let total_candidates = candidate_track_ids.len() as i64;
-    assert_eq!(total_candidates, 10, "Must discover all 10 candidates from library_entries + track_sources");
+    assert_eq!(
+        total_candidates, 10,
+        "Must discover all 10 candidates from library_entries + track_sources"
+    );
 
     // Apply limit = 5
     let limit = Some(5usize);
@@ -411,7 +517,7 @@ async fn test_download_favorites_contract_qobuz_5_batch() {
                 target_title, target_artist, target_album, target_isrc,
                 allow_fallback, smart_studio_origin
             ) VALUES (?, 60, ?, 'queued', 'lossless', 1, ?, ?, ?, ?, ?, ?, ?, 0, 1)
-            "#
+            "#,
         )
         .bind(tid)
         .bind(pos as i64)
@@ -454,8 +560,11 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
     let db = create_test_db().await;
 
     // 1. Setup artist
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Oasis') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Oasis') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     // 2. Track 1: Downloaded with uppercase ISRC without dashes
     let t1: i64 = sqlx::query_scalar(
@@ -463,7 +572,11 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
     )
     .fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t1).bind(artist_id).execute(&db).await.unwrap();
+        .bind(t1)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO downloads (track_id, file_path, source_service_id, file_format) VALUES (?, '/music/oasis/01.flac', 2, 'FLAC')")
         .bind(t1).execute(&db).await.unwrap();
 
@@ -472,7 +585,9 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
         "INSERT INTO tracks (title, duration_ms, isrc) VALUES ('Wonderwall (Remaster)', 258100, 'us-rc1-76-07839') RETURNING id"
     )
     .fetch_one(&db).await.unwrap();
-    let res_a = check_queue_guardrail(&db, t_cand_a, None, None, None).await.unwrap();
+    let res_a = check_queue_guardrail(&db, t_cand_a, None, None, None)
+        .await
+        .unwrap();
     assert!(
         matches!(res_a, Some(QueueGuardrailMatch::AlreadyDownloaded { track_id, .. }) if track_id == t1),
         "Candidate A with dashed lowercase ISRC must match downloaded track 1"
@@ -484,7 +599,11 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
     )
     .fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t2).bind(artist_id).execute(&db).await.unwrap();
+        .bind(t2)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
     let q2_id: i64 = sqlx::query_scalar(
         "INSERT INTO download_queue (track_id, status, priority, position) VALUES (?, 'queued', 50, 1) RETURNING id"
     )
@@ -496,8 +615,14 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
     )
     .fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t_cand_b).bind(artist_id).execute(&db).await.unwrap();
-    let res_b = check_queue_guardrail(&db, t_cand_b, None, None, None).await.unwrap();
+        .bind(t_cand_b)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let res_b = check_queue_guardrail(&db, t_cand_b, None, None, None)
+        .await
+        .unwrap();
     assert!(
         matches!(res_b, Some(QueueGuardrailMatch::AlreadyQueued { queue_id, .. }) if queue_id == q2_id),
         "Candidate B with canonical signature match must match queued item 2"
@@ -509,8 +634,16 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
     )
     .fetch_one(&db).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(t_cand_c).bind(artist_id).execute(&db).await.unwrap();
-    let res_c = check_queue_guardrail(&db, t_cand_c, None, None, None).await.unwrap();
-    assert_eq!(res_c, None, "Candidate C with Δdur > 2000 ms must not match");
+        .bind(t_cand_c)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let res_c = check_queue_guardrail(&db, t_cand_c, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        res_c, None,
+        "Candidate C with Δdur > 2000 ms must not match"
+    );
 }
-

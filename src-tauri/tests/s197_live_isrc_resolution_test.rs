@@ -34,7 +34,9 @@ async fn spawn_mock_tidal(responder: Responder) -> (String, Arc<Mutex<Vec<String
     let reqs = requests.clone();
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
             let responder = responder.clone();
             let reqs = reqs.clone();
             tokio::spawn(async move {
@@ -42,7 +44,11 @@ async fn spawn_mock_tidal(responder: Responder) -> (String, Arc<Mutex<Vec<String
                 let n = socket.read(&mut buf).await.unwrap_or(0);
                 let raw = String::from_utf8_lossy(&buf[..n]);
                 let request_line = raw.lines().next().unwrap_or("");
-                let target = request_line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let target = request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
                 reqs.lock().unwrap().push(target.clone());
                 let (status, body) = responder(&target);
                 let reason = match status {
@@ -74,7 +80,11 @@ fn split_target(target: &str) -> (&str, &str) {
 fn query_param(query: &str, key: &str) -> Option<String> {
     query.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=')?;
-        if k == key { Some(v.to_string()) } else { None }
+        if k == key {
+            Some(v.to_string())
+        } else {
+            None
+        }
     })
 }
 
@@ -245,13 +255,17 @@ async fn s197_live_isrc_resolution_scenarios() {
     assert_eq!(pf_hit.resolved_service_name.as_deref(), Some("tidal"));
     assert_eq!(pf_hit.resolved_service_track_id.as_deref(), Some("4242"));
 
-    let (stid, bit_depth, available) =
-        tidal_row_for_track(&db_hit, tid_hit).await.expect("hit must be persisted");
+    let (stid, bit_depth, available) = tidal_row_for_track(&db_hit, tid_hit)
+        .await
+        .expect("hit must be persisted");
     assert_eq!(stid, "4242");
     // LOSSLESS maps to 16/44.1 exactly like the Tidal import paths.
     assert_eq!(bit_depth, Some(16));
     assert_eq!(available, 1);
-    assert!(!requests_hit.lock().unwrap().is_empty(), "provider was consulted");
+    assert!(
+        !requests_hit.lock().unwrap().is_empty(),
+        "provider was consulted"
+    );
     drop(db_hit);
 
     // ---------- Phase (ii): miss on Tidal (+ Qobuz absent) → default, zero rows ----------
@@ -279,7 +293,11 @@ async fn s197_live_isrc_resolution_scenarios() {
         pf_miss.status
     );
     assert!(!pf_miss.is_eligible);
-    assert_eq!(tidal_row_count(&db_miss, tid_miss).await, 0, "no rows may be inserted on a miss");
+    assert_eq!(
+        tidal_row_count(&db_miss, tid_miss).await,
+        0,
+        "no rows may be inserted on a miss"
+    );
     assert_eq!(
         requests_miss.lock().unwrap().len(),
         1,
@@ -317,8 +335,14 @@ async fn s197_live_isrc_resolution_scenarios() {
 /// service request does not exclude both live-capable providers.
 #[test]
 fn s197_gate_pure_decision_matrix() {
-    assert!(!s197_should_attempt_live_resolution(false, None), "no ISRC ⇒ never");
-    assert!(s197_should_attempt_live_resolution(true, None), "no restriction ⇒ allowed");
+    assert!(
+        !s197_should_attempt_live_resolution(false, None),
+        "no ISRC ⇒ never"
+    );
+    assert!(
+        s197_should_attempt_live_resolution(true, None),
+        "no restriction ⇒ allowed"
+    );
     assert!(
         !s197_should_attempt_live_resolution(true, Some("spotify")),
         "explicit spotify-only request must not trigger provider lookups"
@@ -337,9 +361,15 @@ fn s197_gate_pure_decision_matrix() {
 #[test]
 fn s197_qobuz_quality_fields_mirror_import_math() {
     // Hi-res: 24/96 ⇒ score 1000 + 24*10 + min(96.0,200)=96 ⇒ 1336; Hz stored.
-    assert_eq!(s197_qobuz_quality_fields(Some(24), Some(96.0)), (Some(24), Some(96000), 1336));
+    assert_eq!(
+        s197_qobuz_quality_fields(Some(24), Some(96.0)),
+        (Some(24), Some(96000), 1336)
+    );
     // CD-quality FLAC baseline; kHz truncates like the import math (44.1 ⇒ 44).
-    assert_eq!(s197_qobuz_quality_fields(Some(16), Some(44.1)), (Some(16), Some(44100), 1204));
+    assert_eq!(
+        s197_qobuz_quality_fields(Some(16), Some(44.1)),
+        (Some(16), Some(44100), 1204)
+    );
     // Unknown quality degrades gracefully to the FLAC base score.
     assert_eq!(s197_qobuz_quality_fields(None, None), (None, None, 1000));
 }

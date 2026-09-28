@@ -20,7 +20,9 @@ use tempfile::TempDir;
 /// Helper: creates a synthetic minimal JPEG with SOF0 header encoding exact dimensions.
 fn create_synthetic_jpeg(width: u16, height: u16) -> Vec<u8> {
     let mut jpeg = Vec::new();
-    jpeg.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x08, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01]);
+    jpeg.extend_from_slice(&[
+        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x08, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+    ]);
     jpeg.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x0B, 0x08]); // SOF0, len 11, 8-bit precision
     jpeg.extend_from_slice(&height.to_be_bytes()); // height
     jpeg.extend_from_slice(&width.to_be_bytes()); // width
@@ -166,7 +168,7 @@ async fn init_test_db() -> sqlx::SqlitePool {
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(track_id, format)
         );
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -200,7 +202,8 @@ async fn test_materialize_missing_lrc_sidecar() {
         .await
         .unwrap();
 
-    let synced_lrc_content = "[00:01.00]Line 1 of song\n[00:05.50]Line 2 of song\n[00:10.00]Line 3 of song\n";
+    let synced_lrc_content =
+        "[00:01.00]Line 1 of song\n[00:05.50]Line 2 of song\n[00:10.00]Line 3 of song\n";
 
     sqlx::query(
         "INSERT INTO lyrics (track_id, format, sync_level, source, content) VALUES (1, 'lrc', 'line', 'lrclib', ?)"
@@ -211,7 +214,10 @@ async fn test_materialize_missing_lrc_sidecar() {
     .unwrap();
 
     let expected_lrc = audio_path.with_extension("lrc");
-    assert!(!expected_lrc.exists(), "Sidecar .lrc must not exist before materialization");
+    assert!(
+        !expected_lrc.exists(),
+        "Sidecar .lrc must not exist before materialization"
+    );
 
     // 2. Run materialization
     let result = materialize_missing_lrc_sidecars_pool(&pool, None)
@@ -224,9 +230,15 @@ async fn test_materialize_missing_lrc_sidecar() {
     assert_eq!(result.failed, 0);
 
     // 3. Verify file on disk
-    assert!(expected_lrc.exists(), "Sidecar .lrc must exist on disk after materialization");
+    assert!(
+        expected_lrc.exists(),
+        "Sidecar .lrc must exist on disk after materialization"
+    );
     let disk_content = std::fs::read_to_string(&expected_lrc).expect("Read materialized .lrc");
-    assert_eq!(disk_content, synced_lrc_content, "Materialized .lrc content and timestamps must match DB exactly");
+    assert_eq!(
+        disk_content, synced_lrc_content,
+        "Materialized .lrc content and timestamps must match DB exactly"
+    );
 
     // 4. Idempotency: Second execution must skip already materialized sidecar
     let second_run = materialize_missing_lrc_sidecars_pool(&pool, None)
@@ -280,9 +292,15 @@ async fn test_materialize_missing_covers_from_embedded_m4a() {
     assert_eq!(result.already_present, 0);
 
     // Verify cover.jpg on disk
-    assert!(cover_jpg.exists(), "cover.jpg must be materialized from embedded covr atom");
+    assert!(
+        cover_jpg.exists(),
+        "cover.jpg must be materialized from embedded covr atom"
+    );
     let disk_cover_bytes = std::fs::read(&cover_jpg).expect("read materialized cover.jpg");
-    assert_eq!(disk_cover_bytes, synthetic_jpeg, "Materialized cover bytes must match embedded artwork");
+    assert_eq!(
+        disk_cover_bytes, synthetic_jpeg,
+        "Materialized cover bytes must match embedded artwork"
+    );
 
     // Idempotency check: Subsequent run must detect already_present
     let second_run = materialize_missing_covers_pool(&pool, None)
@@ -340,11 +358,17 @@ async fn test_symfonium_animated_cover_invariant_never_overwritten() {
 
     // Verify that cover.webp was completely UNTOUCHED
     let disk_webp = std::fs::read(&cover_webp).expect("read cover.webp");
-    assert_eq!(disk_webp, synthetic_webp, "Symfonium animated cover.webp must NEVER be modified or degraded");
+    assert_eq!(
+        disk_webp, synthetic_webp,
+        "Symfonium animated cover.webp must NEVER be modified or degraded"
+    );
 
     // Verify that cover.jpg was NOT created, avoiding conflicts with the animated WebP
     let cover_jpg = album_dir.join("cover.jpg");
-    assert!(!cover_jpg.exists(), "cover.jpg must NOT be generated when valid animated cover.webp is present");
+    assert!(
+        !cover_jpg.exists(),
+        "cover.jpg must NOT be generated when valid animated cover.webp is present"
+    );
 }
 
 #[tokio::test]
@@ -386,7 +410,10 @@ async fn test_multidisc_cover_propagation() {
     let root_cover = album_root.join("cover.jpg");
 
     assert!(disc_cover.exists(), "Disc 1 must have cover.jpg");
-    assert!(root_cover.exists(), "Album root must have propagated cover.jpg");
+    assert!(
+        root_cover.exists(),
+        "Album root must have propagated cover.jpg"
+    );
 
     assert_eq!(std::fs::read(&disc_cover).unwrap(), synthetic_jpeg);
     assert_eq!(std::fs::read(&root_cover).unwrap(), synthetic_jpeg);
@@ -412,7 +439,7 @@ fn test_ensure_m4a_sidecars_intact_standalone() {
     assert_eq!(std::fs::read(&cover_jpg).unwrap(), synthetic_jpeg);
 
     // Second call: already intact, returns empty list
-    let second_call = ensure_m4a_sidecars_intact(&m4a_path, temp_dir.path())
-        .expect("second call failed");
+    let second_call =
+        ensure_m4a_sidecars_intact(&m4a_path, temp_dir.path()).expect("second call failed");
     assert!(second_call.is_empty());
 }

@@ -52,12 +52,15 @@ async fn test_canonical_sqlx_migration_0057_lifecycle_and_idempotency() {
 
     // Verify service_album_availability table DOES NOT exist yet
     let table_exists: Option<(String,)> = sqlx::query_as(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='service_album_availability'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='service_album_availability'",
     )
     .fetch_optional(&pool)
     .await
     .unwrap();
-    assert!(table_exists.is_none(), "service_album_availability must not exist before 0057");
+    assert!(
+        table_exists.is_none(),
+        "service_album_availability must not exist before 0057"
+    );
 
     // 3. Execute the full canonical SQLx migrator to upgrade from 56 -> 57
     migrator
@@ -67,7 +70,7 @@ async fn test_canonical_sqlx_migration_0057_lifecycle_and_idempotency() {
 
     // 4. Verify that SQLx registered 0057 in `_sqlx_migrations`
     let row_57: (i64, String, bool, Vec<u8>) = sqlx::query_as(
-        "SELECT version, description, success, checksum FROM _sqlx_migrations WHERE version = 57"
+        "SELECT version, description, success, checksum FROM _sqlx_migrations WHERE version = 57",
     )
     .fetch_one(&pool)
     .await
@@ -100,7 +103,10 @@ async fn test_canonical_sqlx_migration_0057_lifecycle_and_idempotency() {
     .fetch_optional(&pool)
     .await
     .unwrap();
-    assert!(index_exists.is_some(), "Index idx_service_album_avail_status must exist");
+    assert!(
+        index_exists.is_some(),
+        "Index idx_service_album_avail_status must exist"
+    );
 
     // 6. Test Idempotency: Running canonical migrator again on the upgraded DB must succeed without error
     let idempotency_res = migrator.run(&pool).await;
@@ -114,7 +120,8 @@ async fn test_canonical_sqlx_migration_0057_lifecycle_and_idempotency() {
         .await
         .unwrap();
     assert_eq!(
-        total_migrations.0, migrator.iter().count() as i64,
+        total_migrations.0,
+        migrator.iter().count() as i64,
         "Total migrations count must match canonical migrator count without duplicates"
     );
 }

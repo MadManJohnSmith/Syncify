@@ -89,7 +89,9 @@ fn test_flac_compilation_flag_present_when_true() {
 
     let tag_obj = metaflac::Tag::read_from_path(&file_path).expect("Read flac tags");
     let comments = tag_obj.vorbis_comments().expect("vorbis comments");
-    let comp_tags = comments.get("COMPILATION").expect("COMPILATION tag must exist");
+    let comp_tags = comments
+        .get("COMPILATION")
+        .expect("COMPILATION tag must exist");
     assert_eq!(comp_tags, &["1".to_string()]);
 }
 

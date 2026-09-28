@@ -48,7 +48,7 @@ async fn setup_test_db() -> (SqlitePool, tempfile::TempDir) {
             added_at TEXT,
             UNIQUE(playlist_id, position)
         );
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -88,15 +88,19 @@ async fn test_begin_immediate_prevents_busy_snapshot_under_concurrent_writes() {
                 let position = (step * 8 + worker_id) as i64;
 
                 // BEGIN IMMEDIATE acquires write lock immediately, serializing against other writers
-                let mut tx = p.begin_with("BEGIN IMMEDIATE")
-                    .await
-                    .unwrap_or_else(|e| panic!("Worker {} step {} failed BEGIN IMMEDIATE: {}", worker_id, step, e));
+                let mut tx = p.begin_with("BEGIN IMMEDIATE").await.unwrap_or_else(|e| {
+                    panic!(
+                        "Worker {} step {} failed BEGIN IMMEDIATE: {}",
+                        worker_id, step, e
+                    )
+                });
 
                 // Read within transaction
-                let _count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = 1")
-                    .fetch_one(&mut *tx)
-                    .await
-                    .unwrap();
+                let _count: (i64,) =
+                    sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = 1")
+                        .fetch_one(&mut *tx)
+                        .await
+                        .unwrap();
 
                 // Small yield to increase concurrency contention
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -105,15 +109,19 @@ async fn test_begin_immediate_prevents_busy_snapshot_under_concurrent_writes() {
                 sqlx::query(
                     "INSERT INTO playlist_tracks (playlist_id, track_id, position)
                      VALUES (1, ?, ?)
-                     ON CONFLICT(playlist_id, position) DO UPDATE SET track_id = excluded.track_id"
+                     ON CONFLICT(playlist_id, position) DO UPDATE SET track_id = excluded.track_id",
                 )
                 .bind(track_id)
                 .bind(position)
                 .execute(&mut *tx)
                 .await
-                .unwrap_or_else(|e| panic!("Worker {} step {} failed INSERT: {}", worker_id, step, e));
+                .unwrap_or_else(|e| {
+                    panic!("Worker {} step {} failed INSERT: {}", worker_id, step, e)
+                });
 
-                tx.commit().await.expect("Commit must succeed without SQLITE_BUSY");
+                tx.commit()
+                    .await
+                    .expect("Commit must succeed without SQLITE_BUSY");
             }
         }));
     }
@@ -123,12 +131,16 @@ async fn test_begin_immediate_prevents_busy_snapshot_under_concurrent_writes() {
     }
 
     // Verify consistency
-    let final_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = 1")
-        .fetch_one(&*pool_arc)
-        .await
-        .unwrap();
+    let final_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = 1")
+            .fetch_one(&*pool_arc)
+            .await
+            .unwrap();
 
-    assert_eq!(final_count.0, 40, "All 40 track positions should be inserted without collision");
+    assert_eq!(
+        final_count.0, 40,
+        "All 40 track positions should be inserted without collision"
+    );
 }
 
 #[tokio::test]
@@ -140,10 +152,12 @@ async fn test_tidal_playlist_upsert_on_conflict_position() {
         .await
         .unwrap();
 
-    sqlx::query("INSERT INTO tracks (id, title) VALUES (10, 'Original Track'), (20, 'Updated Track')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (id, title) VALUES (10, 'Original Track'), (20, 'Updated Track')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // 1. Initial insert at position 0
     let mut tx1 = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
@@ -151,7 +165,7 @@ async fn test_tidal_playlist_upsert_on_conflict_position() {
         "INSERT INTO playlist_tracks (playlist_id, track_id, position)
          VALUES (?, ?, ?)
          ON CONFLICT(playlist_id, position) DO UPDATE SET
-             track_id = excluded.track_id"
+             track_id = excluded.track_id",
     )
     .bind(1)
     .bind(10)
@@ -162,10 +176,12 @@ async fn test_tidal_playlist_upsert_on_conflict_position() {
     tx1.commit().await.unwrap();
 
     // Verify initial track at position 0
-    let tid: (i64,) = sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = 1 AND position = 0")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let tid: (i64,) = sqlx::query_as(
+        "SELECT track_id FROM playlist_tracks WHERE playlist_id = 1 AND position = 0",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(tid.0, 10);
 
     // 2. Re-insert at same position 0 with new track_id (mirrors tidal.rs:1827-1831)
@@ -174,7 +190,7 @@ async fn test_tidal_playlist_upsert_on_conflict_position() {
         "INSERT INTO playlist_tracks (playlist_id, track_id, position)
          VALUES (?, ?, ?)
          ON CONFLICT(playlist_id, position) DO UPDATE SET
-             track_id = excluded.track_id"
+             track_id = excluded.track_id",
     )
     .bind(1)
     .bind(20)
@@ -185,17 +201,23 @@ async fn test_tidal_playlist_upsert_on_conflict_position() {
     tx2.commit().await.unwrap();
 
     // Verify track_id was updated to 20 at position 0
-    let updated_tid: (i64,) = sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = 1 AND position = 0")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(updated_tid.0, 20, "ON CONFLICT(playlist_id, position) must update track_id");
+    let updated_tid: (i64,) = sqlx::query_as(
+        "SELECT track_id FROM playlist_tracks WHERE playlist_id = 1 AND position = 0",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        updated_tid.0, 20,
+        "ON CONFLICT(playlist_id, position) must update track_id"
+    );
 
     // Total rows must still be 1
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(count.0, 1);
 }
 
@@ -214,22 +236,29 @@ async fn test_playlist_reorder_under_unique_position_constraint() {
         .unwrap();
 
     // Position 0 = Track 1, Position 1 = Track 2
-    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (1, 1, 0), (1, 2, 1)")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (1, 1, 0), (1, 2, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Attempting to reorder track 2 to pos 0, and track 1 to pos 1
     // simulating what playlists.rs::reorder_playlist_tracks does:
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
 
     // 1st update: track 2 to position 0
-    let res1 = sqlx::query("UPDATE playlist_tracks SET position = 0 WHERE playlist_id = 1 AND track_id = 2")
-        .execute(&mut *tx)
-        .await;
+    let res1 = sqlx::query(
+        "UPDATE playlist_tracks SET position = 0 WHERE playlist_id = 1 AND track_id = 2",
+    )
+    .execute(&mut *tx)
+    .await;
 
     println!("Update track 2 to pos 0 result: {:?}", res1);
-    assert!(res1.is_err(), "Directly updating to pos 0 while track 1 is at pos 0 MUST trigger UNIQUE collision");
+    assert!(
+        res1.is_err(),
+        "Directly updating to pos 0 while track 1 is at pos 0 MUST trigger UNIQUE collision"
+    );
     tx.rollback().await.unwrap();
 
     // Staged reordering avoiding UNIQUE collisions:
@@ -252,14 +281,18 @@ async fn test_playlist_reorder_under_unique_position_constraint() {
     tx_staged.commit().await.unwrap();
 
     // Verify successful reordering
-    let p0: (i64,) = sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = 1 AND position = 0")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    let p1: (i64,) = sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = 1 AND position = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let p0: (i64,) = sqlx::query_as(
+        "SELECT track_id FROM playlist_tracks WHERE playlist_id = 1 AND position = 0",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let p1: (i64,) = sqlx::query_as(
+        "SELECT track_id FROM playlist_tracks WHERE playlist_id = 1 AND position = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     assert_eq!(p0.0, 2);
     assert_eq!(p1.0, 1);

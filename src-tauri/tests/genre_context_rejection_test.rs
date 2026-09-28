@@ -69,7 +69,9 @@ fn test_usage_contexts_and_charts_rejected() {
 
 #[test]
 fn test_isolated_terms_rejected() {
-    let isolated = ["English", "english", "Spanish", "spanish", "África", "africa"];
+    let isolated = [
+        "English", "english", "Spanish", "spanish", "África", "africa",
+    ];
 
     for item in isolated {
         assert!(

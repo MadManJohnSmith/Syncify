@@ -115,11 +115,11 @@ fn test_tie_break_hyphen_free_form_wins() {
     // Owner rule: empate -> forma sin guión.
     assert_eq!(canonicalize_genre("Jazz-Rock"), "Jazz Rock"); // Jazz-Rock(2) = Jazz Rock(2)
     assert_eq!(canonicalize_genre("Jazz Rock"), "Jazz Rock");
-    assert_eq!(canonicalize_genre("Rap-Rock"), "Rap Rock");   // Rap-Rock(2) = Rap Rock(2)
+    assert_eq!(canonicalize_genre("Rap-Rock"), "Rap Rock"); // Rap-Rock(2) = Rap Rock(2)
     assert_eq!(canonicalize_genre("Rap Rock"), "Rap Rock");
-    assert_eq!(canonicalize_genre("Post-Bop"), "Post Bop");   // Post-Bop = Post Bop
+    assert_eq!(canonicalize_genre("Post-Bop"), "Post Bop"); // Post-Bop = Post Bop
     assert_eq!(canonicalize_genre("Post Bop"), "Post Bop");
-    assert_eq!(canonicalize_genre("Neo-Glam"), "Neo Glam");   // Neo-Glam = Neo Glam
+    assert_eq!(canonicalize_genre("Neo-Glam"), "Neo Glam"); // Neo-Glam = Neo Glam
     assert_eq!(canonicalize_genre("Neo Glam"), "Neo Glam");
     // 2 Tone(1) = Two Tone(1): tie resolved to the numeric audited label
     assert_eq!(canonicalize_genre("Two Tone"), "2 Tone");
@@ -129,12 +129,15 @@ fn test_tie_break_hyphen_free_form_wins() {
 #[test]
 fn test_single_variant_facets_stay_intact() {
     // Single-variant rows and facet-distinct terms are NEVER mutated or fused.
-    assert_eq!(canonicalize_genre("Emo-Pop"), "Emo-Pop");           // única variante, intacta
+    assert_eq!(canonicalize_genre("Emo-Pop"), "Emo-Pop"); // única variante, intacta
     assert_eq!(canonicalize_genre("World-Fusion"), "World-Fusion"); // única variante, intacta
-    assert_eq!(canonicalize_genre("Adult Contemporary R&B"), "Adult Contemporary R&B"); // compuesto intacto
-    assert_eq!(canonicalize_genre("Early R&B"), "Early R&B");       // faceta R&B distinta
+    assert_eq!(
+        canonicalize_genre("Adult Contemporary R&B"),
+        "Adult Contemporary R&B"
+    ); // compuesto intacto
+    assert_eq!(canonicalize_genre("Early R&B"), "Early R&B"); // faceta R&B distinta
     assert_eq!(canonicalize_genre("Rhythm And Blues"), "Rhythm And Blues"); // faceta distinta
-    assert_eq!(canonicalize_genre("Rhythm & Blues"), "Rhythm & Blues");     // faceta distinta
+    assert_eq!(canonicalize_genre("Rhythm & Blues"), "Rhythm & Blues"); // faceta distinta
 
     // Jazz vocal facets: NO fusionar (facetas distintas según fuente)
     assert_eq!(canonicalize_genre("Jazz Vocal"), "Jazz Vocal");
@@ -167,7 +170,10 @@ fn test_fuse_genres_owner_integration_example() {
     // Owner example from S184: variants collapse into the audited winner.
     let fused = fuse_genres(&["r&b; R B; Funk"]);
     assert_eq!(fused, vec!["R&B".to_string(), "Funk".to_string()]);
-    assert_eq!(format_fused_genres(&["r&b; R B; Funk"]).as_deref(), Some("R&B; Funk"));
+    assert_eq!(
+        format_fused_genres(&["r&b; R B; Funk"]).as_deref(),
+        Some("R&B; Funk")
+    );
 }
 
 #[test]
@@ -187,9 +193,15 @@ fn test_fuse_genres_dedupe_runs_after_canonicalization() {
 #[test]
 fn test_fuse_genres_validation_precedes_canonicalization() {
     // Junk validation happens BEFORE the matrix: corrupted concatenations never reach it.
-    assert_eq!(fuse_genres(&["Synthpop_soft Rock_pop"]), Vec::<String>::new());
+    assert_eq!(
+        fuse_genres(&["Synthpop_soft Rock_pop"]),
+        Vec::<String>::new()
+    );
     assert_eq!(fuse_genres(&["rerip Synth-Pop"]), Vec::<String>::new());
-    assert_eq!(fuse_genres(&["Psychadelic"]), vec!["Psychedelic".to_string()]);
+    assert_eq!(
+        fuse_genres(&["Psychadelic"]),
+        vec!["Psychedelic".to_string()]
+    );
 }
 
 #[test]
@@ -199,6 +211,10 @@ fn test_fuse_genres_unmatched_terms_pass_through_untouched() {
     let fused = fuse_genres(&["Hip-Hop", "Party Rap", "Vocal Jazz"]);
     assert_eq!(
         fused,
-        vec!["Hip Hop".to_string(), "Party Rap".to_string(), "Vocal Jazz".to_string()]
+        vec![
+            "Hip Hop".to_string(),
+            "Party Rap".to_string(),
+            "Vocal Jazz".to_string()
+        ]
     );
 }

@@ -15,17 +15,24 @@ fn create_synthetic_animated_webp_bytes() -> Vec<u8> {
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-f", "lavfi",
-            "-i", "testsrc=duration=1:size=64x64:rate=10",
-            "-vcodec", "libwebp",
-            "-loop", "0",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=64x64:rate=10",
+            "-vcodec",
+            "libwebp",
+            "-loop",
+            "0",
             "-an",
             out_webp.to_str().unwrap(),
         ])
         .output()
         .expect("ffmpeg must execute");
 
-    assert!(status.status.success(), "ffmpeg animated WebP creation must succeed");
+    assert!(
+        status.status.success(),
+        "ffmpeg animated WebP creation must succeed"
+    );
     std::fs::read(&out_webp).expect("read anim.webp")
 }
 
@@ -36,10 +43,18 @@ async fn test_animated_cover_files_written_and_visible() {
     tokio::fs::create_dir_all(&dest_dir).await.unwrap();
 
     let animated_bytes = create_synthetic_animated_webp_bytes();
-    assert!(validate_animated_webp_bytes(&animated_bytes).is_ok(), "Synthetic WebP must be valid");
+    assert!(
+        validate_animated_webp_bytes(&animated_bytes).is_ok(),
+        "Synthetic WebP must be valid"
+    );
 
     // Write standard animated cover sidecars
-    let filenames = ["cover.webp", "animated.webp", "folder.webp", "cover.animated.webp"];
+    let filenames = [
+        "cover.webp",
+        "animated.webp",
+        "folder.webp",
+        "cover.animated.webp",
+    ];
     for fname in &filenames {
         let p = dest_dir.join(fname);
         tokio::fs::write(&p, &animated_bytes).await.unwrap();
@@ -50,6 +65,10 @@ async fn test_animated_cover_files_written_and_visible() {
         let p = dest_dir.join(fname);
         assert!(p.exists(), "Sidecar {} must exist", fname);
         let read_bytes = tokio::fs::read(&p).await.unwrap();
-        assert_eq!(read_bytes, animated_bytes, "Sidecar {} bytes must match", fname);
+        assert_eq!(
+            read_bytes, animated_bytes,
+            "Sidecar {} bytes must match",
+            fname
+        );
     }
 }

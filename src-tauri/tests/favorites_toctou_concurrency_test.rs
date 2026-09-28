@@ -67,13 +67,7 @@ async fn test_concurrent_favorite_artist_upsert_no_unique_violation() {
         let pool = db.clone();
         let service_artist_id = format!("srv_art_{}", i);
         let handle = tokio::spawn(async move {
-            upsert_canonical_favorite_artist(
-                &pool,
-                1,
-                &service_artist_id,
-                artist_name,
-            )
-            .await
+            upsert_canonical_favorite_artist(&pool, 1, &service_artist_id, artist_name).await
         });
         handles.push(handle);
     }
@@ -92,7 +86,10 @@ async fn test_concurrent_favorite_artist_upsert_no_unique_violation() {
     // All tasks must resolve to the EXACT same artist ID
     let first_id = returned_ids[0];
     for id in &returned_ids {
-        assert_eq!(*id, first_id, "All concurrent tasks must return the same artist ID");
+        assert_eq!(
+            *id, first_id,
+            "All concurrent tasks must return the same artist ID"
+        );
     }
 
     // Verify exactly one row exists in artists table
@@ -104,13 +101,12 @@ async fn test_concurrent_favorite_artist_upsert_no_unique_violation() {
     assert_eq!(count, 1, "Exactly one artist row should exist");
 
     // Verify favorite attributes
-    let (is_fav, fav_at): (i64, Option<String>) = sqlx::query_as(
-        "SELECT is_favorite, favorite_at FROM artists WHERE id = ?"
-    )
-    .bind(first_id)
-    .fetch_one(&db)
-    .await
-    .expect("Query failed");
+    let (is_fav, fav_at): (i64, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM artists WHERE id = ?")
+            .bind(first_id)
+            .fetch_one(&db)
+            .await
+            .expect("Query failed");
 
     assert_eq!(is_fav, 1);
     assert!(fav_at.is_some(), "favorite_at must be populated");

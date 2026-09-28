@@ -76,16 +76,19 @@ pub async fn perform_import_from_url_with_quality(
     let priority_order: Vec<String> = if let Some(orch) = orchestrator {
         orch.service_priority().to_vec()
     } else {
-        let prefs: Vec<(String,)> = sqlx::query_as(
-            "SELECT service_name FROM service_preferences ORDER BY priority ASC",
-        )
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
+        let prefs: Vec<(String,)> =
+            sqlx::query_as("SELECT service_name FROM service_preferences ORDER BY priority ASC")
+                .fetch_all(db)
+                .await
+                .unwrap_or_default();
         if !prefs.is_empty() {
             prefs.into_iter().map(|(p,)| p).collect()
         } else {
-            vec!["qobuz".to_string(), "tidal".to_string(), "amazon".to_string()]
+            vec![
+                "qobuz".to_string(),
+                "tidal".to_string(),
+                "amazon".to_string(),
+            ]
         }
     };
 
@@ -147,14 +150,20 @@ pub async fn perform_import_from_url_with_quality(
                 (parsed.service.clone(), parsed.id.clone(), false)
             };
 
-            let title_str = avail.title.unwrap_or_else(|| {
-                format!("{} Track {}", capitalize(&parsed.service), parsed.id)
-            });
+            let title_str = avail
+                .title
+                .unwrap_or_else(|| format!("{} Track {}", capitalize(&parsed.service), parsed.id));
             let artist_str = avail
                 .artist_name
                 .unwrap_or_else(|| "Unknown Artist".to_string());
 
-            (chosen_service, chosen_track_id, title_str, artist_str, cross)
+            (
+                chosen_service,
+                chosen_track_id,
+                title_str,
+                artist_str,
+                cross,
+            )
         }
         Err(e) => {
             tracing::warn!(
@@ -220,11 +229,12 @@ pub async fn perform_import_from_url_with_quality(
                 .execute(db)
                 .await;
 
-            let artist_id: Option<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE name = ?")
-                .bind(&artist)
-                .fetch_optional(db)
-                .await
-                .unwrap_or(None);
+            let artist_id: Option<i64> =
+                sqlx::query_scalar("SELECT id FROM artists WHERE name = ?")
+                    .bind(&artist)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None);
 
             if let Some(aid) = artist_id {
                 let _ = sqlx::query(
@@ -253,10 +263,11 @@ pub async fn perform_import_from_url_with_quality(
 
         // If origin service is different, record origin track source as well
         if parsed.service != target_service {
-            if let Ok(Some(orig_sid)) = sqlx::query_scalar::<_, i64>("SELECT id FROM services WHERE name = ?")
-                .bind(&parsed.service)
-                .fetch_optional(db)
-                .await
+            if let Ok(Some(orig_sid)) =
+                sqlx::query_scalar::<_, i64>("SELECT id FROM services WHERE name = ?")
+                    .bind(&parsed.service)
+                    .fetch_optional(db)
+                    .await
             {
                 let _ = sqlx::query(
                     r#"
@@ -334,11 +345,12 @@ pub async fn perform_import_from_url_with_quality(
     .await;
 
     // Fetch actual queue status
-    let q_status: Option<String> = sqlx::query_scalar("SELECT status FROM download_queue WHERE id = ?")
-        .bind(queue_id)
-        .fetch_optional(db)
-        .await
-        .unwrap_or(None);
+    let q_status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM download_queue WHERE id = ?")
+            .bind(queue_id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
 
     Ok(ParsedUrl {
         service: parsed.service,
@@ -355,10 +367,7 @@ pub async fn perform_import_from_url_with_quality(
 
 /// Parse a streaming service URL and enqueue it into download_queue (Tauri command)
 #[tauri::command]
-pub async fn import_from_url(
-    url: String,
-    state: State<'_, AppState>,
-) -> Result<ParsedUrl, String> {
+pub async fn import_from_url(url: String, state: State<'_, AppState>) -> Result<ParsedUrl, String> {
     tracing::info!("import_from_url called with: {}", url);
     let res = perform_import_from_url(&state.db, None, &url).await?;
     state.worker_state.notify_available();
@@ -378,7 +387,10 @@ fn parse_spotify_url(url: &str) -> Result<ParsedUrl, String> {
         }
     }
 
-    Err("Invalid Spotify URL format. Expected: spotify.com/{track|album|playlist|artist}/{id}".into())
+    Err(
+        "Invalid Spotify URL format. Expected: spotify.com/{track|album|playlist|artist}/{id}"
+            .into(),
+    )
 }
 
 fn parse_qobuz_url(url: &str) -> Result<ParsedUrl, String> {
@@ -402,9 +414,15 @@ fn parse_tidal_url(url: &str) -> Result<ParsedUrl, String> {
     let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
     let (content_type, id) = if parts.len() >= 3 && parts[0] == "browse" {
-        (parts[1].to_string(), parts[2].split('?').next().unwrap_or(parts[2]).to_string())
+        (
+            parts[1].to_string(),
+            parts[2].split('?').next().unwrap_or(parts[2]).to_string(),
+        )
     } else if parts.len() >= 2 {
-        (parts[0].to_string(), parts[1].split('?').next().unwrap_or(parts[1]).to_string())
+        (
+            parts[0].to_string(),
+            parts[1].split('?').next().unwrap_or(parts[1]).to_string(),
+        )
     } else {
         return Err("Invalid Tidal URL format".into());
     };
@@ -421,9 +439,15 @@ fn parse_deezer_url(url: &str) -> Result<ParsedUrl, String> {
     let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
     let (content_type, id) = if parts.len() >= 3 && parts[0].len() == 2 {
-        (parts[1].to_string(), parts[2].split('?').next().unwrap_or(parts[2]).to_string())
+        (
+            parts[1].to_string(),
+            parts[2].split('?').next().unwrap_or(parts[2]).to_string(),
+        )
     } else if parts.len() >= 2 {
-        (parts[0].to_string(), parts[1].split('?').next().unwrap_or(parts[1]).to_string())
+        (
+            parts[0].to_string(),
+            parts[1].split('?').next().unwrap_or(parts[1]).to_string(),
+        )
     } else {
         return Err("Invalid Deezer URL format".into());
     };

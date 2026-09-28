@@ -25,8 +25,11 @@ fn test_quality_decision_json_serialization_all_variants() {
     ];
 
     for variant in variants {
-        let json_val = serde_json::to_value(&variant).expect("Failed to serialize QualityDecisionKind");
-        let serialized_str = json_val.as_str().expect("Variant should serialize to string");
+        let json_val =
+            serde_json::to_value(&variant).expect("Failed to serialize QualityDecisionKind");
+        let serialized_str = json_val
+            .as_str()
+            .expect("Variant should serialize to string");
         assert_eq!(serialized_str, variant.to_string());
 
         let deserialized: QualityDecisionKind =
@@ -38,18 +41,11 @@ fn test_quality_decision_json_serialization_all_variants() {
 #[test]
 fn test_quality_decision_payload_structure_matches_ui_expectations() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless",
-        "high",
-        "AAC",
-        16,
-        44100.0,
-        "spotify",
-        "tidal",
-        false,
-        true,
+        "lossless", "high", "AAC", 16, 44100.0, "spotify", "tidal", false, true,
     );
 
-    let json_str = serde_json::to_string(&decision).expect("QualityDecision must serialize cleanly");
+    let json_str =
+        serde_json::to_string(&decision).expect("QualityDecision must serialize cleanly");
     let v: serde_json::Value = serde_json::from_str(&json_str).expect("Valid JSON");
 
     // Verify all mandatory contract fields exist in serialized representation
@@ -69,21 +65,17 @@ fn test_quality_decision_payload_structure_matches_ui_expectations() {
 #[test]
 fn test_rejected_quality_payload_structure() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless",
-        "high",
-        "AAC",
-        16,
-        44100.0,
-        "tidal",
-        "tidal",
-        true,
-        false,
+        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", true, false,
     );
 
-    let json_str = serde_json::to_string(&decision).expect("QualityDecision must serialize cleanly");
+    let json_str =
+        serde_json::to_string(&decision).expect("QualityDecision must serialize cleanly");
     let v: serde_json::Value = serde_json::from_str(&json_str).expect("Valid JSON");
 
     assert_eq!(v["decision"], "RejectedQuality");
-    assert_eq!(v["reason"], "Provider returned AAC; lossy fallback is disabled");
+    assert_eq!(
+        v["reason"],
+        "Provider returned AAC; lossy fallback is disabled"
+    );
     assert_eq!(v["retryable"], false);
 }

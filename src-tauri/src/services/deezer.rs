@@ -376,7 +376,11 @@ impl DeezerClient {
             .map_err(|e| format!("Failed to read: {}", e))?;
 
         if !status.is_success() {
-            return Err(format!("Deezer API error ({}): {}", status, &text[..text.len().min(200)]));
+            return Err(format!(
+                "Deezer API error ({}): {}",
+                status,
+                &text[..text.len().min(200)]
+            ));
         }
 
         let json: serde_json::Value =
@@ -426,7 +430,8 @@ impl DeezerClient {
         let json = self
             .public_get_json(&format!("/user/{}/albums", user_id), index, limit)
             .await?;
-        let page: Page = serde_json::from_value(json).map_err(|e| format!("Deezer albums parse error: {}", e))?;
+        let page: Page = serde_json::from_value(json)
+            .map_err(|e| format!("Deezer albums parse error: {}", e))?;
         let albums = page
             .data
             .unwrap_or_default()
@@ -443,7 +448,10 @@ impl DeezerClient {
     }
 
     /// Full track list of an album (public /album/{id}; tracks embed isrc).
-    pub async fn get_album_tracks_public(&self, album_id: &str) -> Result<Vec<DeezerTrack>, String> {
+    pub async fn get_album_tracks_public(
+        &self,
+        album_id: &str,
+    ) -> Result<Vec<DeezerTrack>, String> {
         #[derive(Deserialize)]
         struct RawAlbum {
             #[serde(default)]
@@ -477,7 +485,9 @@ impl DeezerClient {
             title: Option<String>,
         }
 
-        let json = self.public_get_json(&format!("/album/{}", album_id), 0, 0).await?;
+        let json = self
+            .public_get_json(&format!("/album/{}", album_id), 0, 0)
+            .await?;
         let raw: RawAlbum =
             serde_json::from_value(json).map_err(|e| format!("Deezer album parse error: {}", e))?;
         Ok(raw
@@ -519,7 +529,8 @@ impl DeezerClient {
         let json = self
             .public_get_json(&format!("/user/{}/artists", user_id), index, limit)
             .await?;
-        let page: Page = serde_json::from_value(json).map_err(|e| format!("Deezer artists parse error: {}", e))?;
+        let page: Page = serde_json::from_value(json)
+            .map_err(|e| format!("Deezer artists parse error: {}", e))?;
         let artists = page
             .data
             .unwrap_or_default()
@@ -564,7 +575,8 @@ impl DeezerClient {
         let json = self
             .public_get_json(&format!("/user/{}/playlists", user_id), index, limit)
             .await?;
-        let page: Page = serde_json::from_value(json).map_err(|e| format!("Deezer playlists parse error: {}", e))?;
+        let page: Page = serde_json::from_value(json)
+            .map_err(|e| format!("Deezer playlists parse error: {}", e))?;
         let playlists = page
             .data
             .unwrap_or_default()
@@ -622,7 +634,8 @@ impl DeezerClient {
         let json = self
             .public_get_json(&format!("/playlist/{}/tracks", playlist_id), index, limit)
             .await?;
-        let page: Page = serde_json::from_value(json).map_err(|e| format!("Deezer playlist tracks parse error: {}", e))?;
+        let page: Page = serde_json::from_value(json)
+            .map_err(|e| format!("Deezer playlist tracks parse error: {}", e))?;
         let tracks = page
             .data
             .unwrap_or_default()
@@ -711,8 +724,8 @@ impl DeezerClient {
                 // Add track source (Deezer provides up to FLAC quality)
                 let _ = sqlx::query(
                     r#"
-                    INSERT OR REPLACE INTO track_sources 
-                    (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) 
+                    INSERT OR REPLACE INTO track_sources
+                    (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available)
                     VALUES (?, ?, ?, 'FLAC', 16, 44100, 1)
                     "#
                 )
@@ -755,10 +768,10 @@ impl DeezerClient {
 
         let artist_id: i64 =
             sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
-            .bind(name)
-            .fetch_one(db)
-            .await
-            .map_err(|e| format!("Insert failed: {}", e))?;
+                .bind(name)
+                .fetch_one(db)
+                .await
+                .map_err(|e| format!("Insert failed: {}", e))?;
 
         Ok(artist_id)
     }
@@ -779,11 +792,12 @@ impl DeezerClient {
         }
 
         // Create new album
-        let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES (?) RETURNING id")
-            .bind(title)
-            .fetch_one(db)
-            .await
-            .map_err(|e| format!("Album insert failed: {}", e))?;
+        let album_id: i64 =
+            sqlx::query_scalar("INSERT INTO albums (title) VALUES (?) RETURNING id")
+                .bind(title)
+                .fetch_one(db)
+                .await
+                .map_err(|e| format!("Album insert failed: {}", e))?;
 
         // Link album to artist
         let _ = sqlx::query(

@@ -216,11 +216,12 @@ pub struct StubAlbumHydrationReport {
     pub total_processed: usize,
 }
 
-use std::sync::RwLock;
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 /// In-memory cache for MusicBrainz lookups
-static MB_QUERY_CACHE: RwLock<Option<HashMap<String, Option<MusicBrainzRecording>>>> = RwLock::new(None);
+static MB_QUERY_CACHE: RwLock<Option<HashMap<String, Option<MusicBrainzRecording>>>> =
+    RwLock::new(None);
 
 /// Clear MusicBrainz in-memory cache
 #[allow(dead_code)]
@@ -277,14 +278,22 @@ impl MusicBrainzClient {
         let cache_key = format!("isrc:{}", trimmed_isrc);
 
         // Check cache
-        let cached_opt: Option<Option<MusicBrainzRecording>> = if let Ok(guard) = MB_QUERY_CACHE.read() {
-            guard.as_ref().and_then(|c: &HashMap<String, Option<MusicBrainzRecording>>| c.get(&cache_key).cloned())
-        } else {
-            None
-        };
+        let cached_opt: Option<Option<MusicBrainzRecording>> =
+            if let Ok(guard) = MB_QUERY_CACHE.read() {
+                guard
+                    .as_ref()
+                    .and_then(|c: &HashMap<String, Option<MusicBrainzRecording>>| {
+                        c.get(&cache_key).cloned()
+                    })
+            } else {
+                None
+            };
 
         if let Some(cached) = cached_opt {
-            tracing::debug!("[MusicBrainz] Reusing cached lookup for ISRC {}", trimmed_isrc);
+            tracing::debug!(
+                "[MusicBrainz] Reusing cached lookup for ISRC {}",
+                trimmed_isrc
+            );
             return Ok(cached);
         }
 
@@ -418,14 +427,23 @@ impl MusicBrainzClient {
             album.unwrap_or("").trim().to_lowercase()
         );
 
-        let cached_search: Option<Option<MusicBrainzRecording>> = if let Ok(guard) = MB_QUERY_CACHE.read() {
-            guard.as_ref().and_then(|c: &HashMap<String, Option<MusicBrainzRecording>>| c.get(&cache_key).cloned())
-        } else {
-            None
-        };
+        let cached_search: Option<Option<MusicBrainzRecording>> =
+            if let Ok(guard) = MB_QUERY_CACHE.read() {
+                guard
+                    .as_ref()
+                    .and_then(|c: &HashMap<String, Option<MusicBrainzRecording>>| {
+                        c.get(&cache_key).cloned()
+                    })
+            } else {
+                None
+            };
 
         if let Some(Some(rec)) = cached_search {
-            tracing::debug!("[MusicBrainz] Reusing cached search for {} - {}", artist, title);
+            tracing::debug!(
+                "[MusicBrainz] Reusing cached search for {} - {}",
+                artist,
+                title
+            );
             return Ok(vec![rec]);
         }
 
@@ -546,20 +564,34 @@ impl MusicBrainzClient {
             match self.lookup_by_isrc(&isrc).await {
                 Ok(Some(recording)) => {
                     if !FieldValidator::is_valid_musicbrainz_id(&recording.id) {
-                        tracing::warn!("Rejecting invalid or synthetic MBID for track {}: {}", track_id, recording.id);
+                        tracing::warn!(
+                            "Rejecting invalid or synthetic MBID for track {}: {}",
+                            track_id,
+                            recording.id
+                        );
                         failed += 1;
                         continue;
                     }
 
                     // Update track with MusicBrainz ID, genre, and release year if available
-                    let mb_genre = recording.genres.as_ref()
+                    let mb_genre = recording
+                        .genres
+                        .as_ref()
                         .and_then(|g| g.first().map(|g| g.name.as_str()))
-                        .or_else(|| recording.tags.as_ref().and_then(|t| t.first().map(|t| t.name.as_str())))
+                        .or_else(|| {
+                            recording
+                                .tags
+                                .as_ref()
+                                .and_then(|t| t.first().map(|t| t.name.as_str()))
+                        })
                         .and_then(crate::services::enrichment::clean_primary_genre);
 
-                    let mb_date = recording.releases.as_ref()
+                    let mb_date = recording
+                        .releases
+                        .as_ref()
                         .and_then(|rels| rels.first().and_then(|r| r.date.as_deref()));
-                    let mb_year = mb_date.and_then(|d| d.get(..4).and_then(|y| y.parse::<i32>().ok()));
+                    let mb_year =
+                        mb_date.and_then(|d| d.get(..4).and_then(|y| y.parse::<i32>().ok()));
 
                     let result = sqlx::query(
                         r#"
@@ -568,7 +600,7 @@ impl MusicBrainzClient {
                             genre = COALESCE(genre, ?),
                             release_year = COALESCE(release_year, ?)
                         WHERE id = ?
-                        "#
+                        "#,
                     )
                     .bind(&recording.id)
                     .bind(mb_genre.as_deref())
@@ -584,7 +616,7 @@ impl MusicBrainzClient {
                             SET release_date = COALESCE(release_date, ?)
                             WHERE id = (SELECT album_id FROM tracks WHERE id = ?)
                               AND (release_date IS NULL OR release_date = '')
-                            "#
+                            "#,
                         )
                         .bind(d)
                         .bind(track_id)
@@ -659,14 +691,20 @@ impl MusicBrainzClient {
     }
 
     /// Get streaming/external IDs (Spotify, Tidal) from artist URL relationships
-    pub async fn get_artist_external_ids(&self, mbid: &str) -> Result<(Option<String>, Option<String>), String> {
+    pub async fn get_artist_external_ids(
+        &self,
+        mbid: &str,
+    ) -> Result<(Option<String>, Option<String>), String> {
         if mbid.is_empty() {
             return Ok((None, None));
         }
 
         self.rate_limit().await;
 
-        let url = format!("{}/artist/{}?inc=url-rels&fmt=json", MUSICBRAINZ_API_BASE, mbid);
+        let url = format!(
+            "{}/artist/{}?inc=url-rels&fmt=json",
+            MUSICBRAINZ_API_BASE, mbid
+        );
 
         let response = self
             .client
@@ -711,7 +749,10 @@ impl MusicBrainzClient {
     }
 
     /// Search for release by barcode / UPC
-    pub async fn search_release_by_barcode(&self, barcode: &str) -> Result<Option<Release>, String> {
+    pub async fn search_release_by_barcode(
+        &self,
+        barcode: &str,
+    ) -> Result<Option<Release>, String> {
         let trimmed = barcode.trim();
         if trimmed.is_empty() {
             return Ok(None);
@@ -747,7 +788,11 @@ impl MusicBrainzClient {
     }
 
     /// Search for release by title and artist
-    pub async fn search_release_by_title_and_artist(&self, title: &str, artist: &str) -> Result<Option<Release>, String> {
+    pub async fn search_release_by_title_and_artist(
+        &self,
+        title: &str,
+        artist: &str,
+    ) -> Result<Option<Release>, String> {
         let trimmed_t = title.trim();
         let trimmed_a = artist.trim();
         if trimmed_t.is_empty() {
@@ -757,7 +802,11 @@ impl MusicBrainzClient {
         self.rate_limit().await;
 
         let query = if !trimmed_a.is_empty() {
-            format!("release:\"{}\" AND artist:\"{}\"", escape_lucene(trimmed_t), escape_lucene(trimmed_a))
+            format!(
+                "release:\"{}\" AND artist:\"{}\"",
+                escape_lucene(trimmed_t),
+                escape_lucene(trimmed_a)
+            )
         } else {
             format!("release:\"{}\"", escape_lucene(trimmed_t))
         };
@@ -790,7 +839,10 @@ impl MusicBrainzClient {
     }
 
     /// Fetch full release details including media and tracklist
-    pub async fn get_release_with_tracks(&self, release_mbid: &str) -> Result<Option<MusicBrainzReleaseWithMedia>, String> {
+    pub async fn get_release_with_tracks(
+        &self,
+        release_mbid: &str,
+    ) -> Result<Option<MusicBrainzReleaseWithMedia>, String> {
         if release_mbid.is_empty() {
             return Ok(None);
         }
@@ -824,7 +876,10 @@ impl MusicBrainzClient {
 
     /// Resolve ghost favorite artists: merge casing duplicates into populated library artists,
     /// and resolve standalone favorite artists against MusicBrainz linking MBIDs and external IDs.
-    pub async fn resolve_ghost_artists(&self, db: &sqlx::SqlitePool) -> Result<GhostArtistReport, String> {
+    pub async fn resolve_ghost_artists(
+        &self,
+        db: &sqlx::SqlitePool,
+    ) -> Result<GhostArtistReport, String> {
         let mut report = GhostArtistReport::default();
 
         let ghost_artists: Vec<(i64, String, Option<String>)> = sqlx::query_as(
@@ -835,7 +890,7 @@ impl MusicBrainzClient {
               AND g.id NOT IN (SELECT DISTINCT artist_id FROM track_artists)
               AND g.id NOT IN (SELECT DISTINCT artist_id FROM album_artists)
             ORDER BY g.id
-            "#
+            "#,
         )
         .fetch_all(db)
         .await
@@ -868,11 +923,13 @@ impl MusicBrainzClient {
                 .execute(db)
                 .await;
 
-                let _ = sqlx::query("UPDATE OR IGNORE track_credits SET artist_id = ? WHERE artist_id = ?")
-                    .bind(target_id)
-                    .bind(ghost_id)
-                    .execute(db)
-                    .await;
+                let _ = sqlx::query(
+                    "UPDATE OR IGNORE track_credits SET artist_id = ? WHERE artist_id = ?",
+                )
+                .bind(target_id)
+                .bind(ghost_id)
+                .execute(db)
+                .await;
                 let _ = sqlx::query("DELETE FROM track_credits WHERE artist_id = ?")
                     .bind(ghost_id)
                     .execute(db)
@@ -888,12 +945,20 @@ impl MusicBrainzClient {
                 match self.search_artist(&ghost_name).await {
                     Ok(Some(mb_artist)) => {
                         let mbid = mb_artist.id;
-                        if !FieldValidator::is_valid_musicbrainz_artist_id(&mbid, Some(&ghost_name)) {
-                            tracing::warn!("Rejecting invalid or synthetic MBID from API for artist {}: {}", ghost_name, mbid);
+                        if !FieldValidator::is_valid_musicbrainz_artist_id(&mbid, Some(&ghost_name))
+                        {
+                            tracing::warn!(
+                                "Rejecting invalid or synthetic MBID from API for artist {}: {}",
+                                ghost_name,
+                                mbid
+                            );
                             continue;
                         }
 
-                        let (spotify_id, tidal_id) = self.get_artist_external_ids(&mbid).await.unwrap_or((None, None));
+                        let (spotify_id, tidal_id) = self
+                            .get_artist_external_ids(&mbid)
+                            .await
+                            .unwrap_or((None, None));
                         let has_ext = spotify_id.is_some() || tidal_id.is_some();
 
                         let _ = sqlx::query(
@@ -903,7 +968,7 @@ impl MusicBrainzClient {
                                 spotify_id = COALESCE(spotify_id, ?),
                                 tidal_id = COALESCE(tidal_id, ?)
                             WHERE id = ?
-                            "#
+                            "#,
                         )
                         .bind(&mbid)
                         .bind(spotify_id)
@@ -918,10 +983,12 @@ impl MusicBrainzClient {
                         }
                     }
                     Ok(None) => {
-                        let _ = sqlx::query("UPDATE artists SET musicbrainz_id = 'NOT_FOUND' WHERE id = ?")
-                            .bind(ghost_id)
-                            .execute(db)
-                            .await;
+                        let _ = sqlx::query(
+                            "UPDATE artists SET musicbrainz_id = 'NOT_FOUND' WHERE id = ?",
+                        )
+                        .bind(ghost_id)
+                        .execute(db)
+                        .await;
                     }
                     Err(e) => {
                         tracing::warn!("Failed MusicBrainz search for {}: {}", ghost_name, e);
@@ -935,7 +1002,10 @@ impl MusicBrainzClient {
 
     /// Hydrate stub favorite albums: merge duplicate stubs with populated counterparts,
     /// and fetch full tracklists for unpopulated stubs via MusicBrainz.
-    pub async fn hydrate_stub_albums(&self, db: &sqlx::SqlitePool) -> Result<StubAlbumHydrationReport, String> {
+    pub async fn hydrate_stub_albums(
+        &self,
+        db: &sqlx::SqlitePool,
+    ) -> Result<StubAlbumHydrationReport, String> {
         let mut report = StubAlbumHydrationReport::default();
 
         let stub_albums: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
@@ -953,8 +1023,12 @@ impl MusicBrainzClient {
 
         report.total_processed = stub_albums.len();
 
-        for (stub_id, stub_title, rel_date, cover_url, spot_id, qob_id, tid_id, upc) in stub_albums {
-            let clean_upc = upc.as_deref().map(|u| u.trim_start_matches('0')).filter(|u| !u.is_empty());
+        for (stub_id, stub_title, rel_date, cover_url, spot_id, qob_id, tid_id, upc) in stub_albums
+        {
+            let clean_upc = upc
+                .as_deref()
+                .map(|u| u.trim_start_matches('0'))
+                .filter(|u| !u.is_empty());
 
             let target_populated: Option<(i64,)> = if let Some(u) = clean_upc {
                 sqlx::query_as(
@@ -964,7 +1038,7 @@ impl MusicBrainzClient {
                       AND LTRIM(a.upc, '0') = ?
                       AND a.id IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)
                     LIMIT 1
-                    "#
+                    "#,
                 )
                 .bind(stub_id)
                 .bind(u)
@@ -979,7 +1053,7 @@ impl MusicBrainzClient {
                       AND LOWER(a.title) = LOWER(?)
                       AND a.id IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)
                     LIMIT 1
-                    "#
+                    "#,
                 )
                 .bind(stub_id)
                 .bind(&stub_title)
@@ -1000,7 +1074,7 @@ impl MusicBrainzClient {
                         upc = COALESCE(upc, ?),
                         cover_art_url = COALESCE(cover_art_url, ?)
                     WHERE id = ?
-                    "#
+                    "#,
                 )
                 .bind(spot_id)
                 .bind(qob_id)
@@ -1036,7 +1110,7 @@ impl MusicBrainzClient {
                     JOIN artists ar ON ar.id = aa.artist_id
                     WHERE aa.album_id = ?
                     LIMIT 1
-                    "#
+                    "#,
                 )
                 .bind(stub_id)
                 .fetch_optional(db)
@@ -1048,7 +1122,9 @@ impl MusicBrainzClient {
                 let mb_release = if let Some(u) = clean_upc {
                     self.search_release_by_barcode(u).await.unwrap_or(None)
                 } else {
-                    self.search_release_by_title_and_artist(&stub_title, &artist_name).await.unwrap_or(None)
+                    self.search_release_by_title_and_artist(&stub_title, &artist_name)
+                        .await
+                        .unwrap_or(None)
                 };
 
                 if let Some(rel) = mb_release {
@@ -1061,37 +1137,53 @@ impl MusicBrainzClient {
                                     for t in tracks {
                                         let track_num = t.position.unwrap_or(1) as i32;
                                         let duration = t.length;
-                                        let rec_id = t.recording.as_ref()
-                                            .map(|r| r.id.clone())
-                                            .filter(|id| FieldValidator::is_valid_musicbrainz_id(id));
+                                        let rec_id =
+                                            t.recording.as_ref().map(|r| r.id.clone()).filter(
+                                                |id| FieldValidator::is_valid_musicbrainz_id(id),
+                                            );
 
-                                        let track_artist_name = t.artist_credit
+                                        let track_artist_name = t
+                                            .artist_credit
                                             .as_ref()
-                                            .and_then(|ac| ac.first().map(|a| {
-                                                if !a.name.is_empty() {
-                                                    a.name.clone()
-                                                } else if !a.artist.name.is_empty() {
-                                                    a.artist.name.clone()
-                                                } else {
-                                                    String::new()
-                                                }
-                                            }))
+                                            .and_then(|ac| {
+                                                ac.first().map(|a| {
+                                                    if !a.name.is_empty() {
+                                                        a.name.clone()
+                                                    } else if !a.artist.name.is_empty() {
+                                                        a.artist.name.clone()
+                                                    } else {
+                                                        String::new()
+                                                    }
+                                                })
+                                            })
                                             .filter(|name| !name.is_empty())
-                                            .unwrap_or_else(|| if artist_name.is_empty() { "Various Artists".to_string() } else { artist_name.clone() });
+                                            .unwrap_or_else(|| {
+                                                if artist_name.is_empty() {
+                                                    "Various Artists".to_string()
+                                                } else {
+                                                    artist_name.clone()
+                                                }
+                                            });
 
                                         let mut artist_id: Option<i64> = sqlx::query_scalar(
-                                            "SELECT id FROM artists WHERE LOWER(name) = LOWER(?)"
+                                            "SELECT id FROM artists WHERE LOWER(name) = LOWER(?)",
                                         )
                                         .bind(&track_artist_name)
                                         .fetch_optional(db)
                                         .await
                                         .unwrap_or(None);
 
-                                        let track_artist_mbid = t.artist_credit
+                                        let track_artist_mbid = t
+                                            .artist_credit
                                             .as_ref()
                                             .and_then(|ac| ac.first())
                                             .map(|a| a.artist.id.as_str())
-                                            .filter(|id| FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&track_artist_name)));
+                                            .filter(|id| {
+                                                FieldValidator::is_valid_musicbrainz_artist_id(
+                                                    id,
+                                                    Some(&track_artist_name),
+                                                )
+                                            });
 
                                         if artist_id.is_none() {
                                             artist_id = sqlx::query_scalar(
@@ -1102,7 +1194,9 @@ impl MusicBrainzClient {
                                             .fetch_optional(db)
                                             .await
                                             .unwrap_or(None);
-                                        } else if let (Some(aid), Some(mbid)) = (artist_id, track_artist_mbid) {
+                                        } else if let (Some(aid), Some(mbid)) =
+                                            (artist_id, track_artist_mbid)
+                                        {
                                             let _ = sqlx::query(
                                                 "UPDATE artists SET musicbrainz_id = ? WHERE id = ? AND musicbrainz_id IS NULL"
                                             )
@@ -1112,18 +1206,29 @@ impl MusicBrainzClient {
                                             .await;
                                         }
 
-                                        let mb_track_genre = rel.release_group.as_ref()
+                                        let mb_track_genre = rel
+                                            .release_group
+                                            .as_ref()
                                             .and_then(|rg| rg.genres.as_ref())
                                             .and_then(|g| g.first().map(|g| g.name.as_str()))
                                             .or_else(|| {
-                                                rel.release_group.as_ref()
+                                                rel.release_group
+                                                    .as_ref()
                                                     .and_then(|rg| rg.tags.as_ref())
-                                                    .and_then(|t| t.first().map(|t| t.name.as_str()))
+                                                    .and_then(|t| {
+                                                        t.first().map(|t| t.name.as_str())
+                                                    })
                                             })
-                                            .and_then(crate::services::enrichment::clean_primary_genre);
+                                            .and_then(
+                                                crate::services::enrichment::clean_primary_genre,
+                                            );
 
-                                        let effective_rel_date = rel_date.as_deref().or(rel.date.as_deref());
-                                        let effective_track_year = effective_rel_date.and_then(|d| d.get(..4).and_then(|y| y.parse::<i32>().ok()));
+                                        let effective_rel_date =
+                                            rel_date.as_deref().or(rel.date.as_deref());
+                                        let effective_track_year =
+                                            effective_rel_date.and_then(|d| {
+                                                d.get(..4).and_then(|y| y.parse::<i32>().ok())
+                                            });
 
                                         let track_id_res: Option<i64> = sqlx::query_scalar(
                                             r#"
@@ -1279,7 +1384,7 @@ pub async fn reconcile_musicbrainz_from_physical_flacs(
 
                 // 1. Try resolving track by downloads.file_path
                 let mut tid_opt: Option<i64> = sqlx::query_scalar(
-                    "SELECT track_id FROM downloads WHERE file_path = ? LIMIT 1"
+                    "SELECT track_id FROM downloads WHERE file_path = ? LIMIT 1",
                 )
                 .bind(&path_str)
                 .fetch_optional(db)
@@ -1290,35 +1395,44 @@ pub async fn reconcile_musicbrainz_from_physical_flacs(
                 if tid_opt.is_none() {
                     if let Ok(tag) = metaflac::Tag::read_from_path(path) {
                         if let Some(vc) = tag.vorbis_comments() {
-                            if let Some(isrc) = vc.get("ISRC").and_then(|v| v.first()).map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                                tid_opt = sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
-                                    .bind(isrc)
-                                    .fetch_optional(db)
-                                    .await
-                                    .unwrap_or(None);
+                            if let Some(isrc) = vc
+                                .get("ISRC")
+                                .and_then(|v| v.first())
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                            {
+                                tid_opt = sqlx::query_scalar(
+                                    "SELECT id FROM tracks WHERE isrc = ? LIMIT 1",
+                                )
+                                .bind(isrc)
+                                .fetch_optional(db)
+                                .await
+                                .unwrap_or(None);
                             }
                         }
                     }
                 }
 
                 if let Some(tid) = tid_opt {
-                    let current_mbid: Option<String> = sqlx::query_scalar(
-                        "SELECT musicbrainz_id FROM tracks WHERE id = ?"
-                    )
-                    .bind(tid)
-                    .fetch_optional(db)
-                    .await
-                    .unwrap_or(None)
-                    .flatten();
+                    let current_mbid: Option<String> =
+                        sqlx::query_scalar("SELECT musicbrainz_id FROM tracks WHERE id = ?")
+                            .bind(tid)
+                            .fetch_optional(db)
+                            .await
+                            .unwrap_or(None)
+                            .flatten();
 
                     if current_mbid.as_deref() != Some(&mbid) {
-                        if let Err(e) = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
-                            .bind(&mbid)
-                            .bind(tid)
-                            .execute(db)
-                            .await
+                        if let Err(e) =
+                            sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                                .bind(&mbid)
+                                .bind(tid)
+                                .execute(db)
+                                .await
                         {
-                            report.errors.push(format!("Failed to update track {}: {}", tid, e));
+                            report
+                                .errors
+                                .push(format!("Failed to update track {}: {}", tid, e));
                         } else {
                             report.db_updated += 1;
                         }
@@ -1329,16 +1443,23 @@ pub async fn reconcile_musicbrainz_from_physical_flacs(
             }
             return Ok(report);
         } else if path.is_dir() {
-            for entry in walkdir::WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+            for entry in walkdir::WalkDir::new(path)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
                 let p = entry.path();
-                if p.is_file() && p.extension().map(|e| e.to_string_lossy().to_lowercase() == "flac").unwrap_or(false) {
+                if p.is_file()
+                    && p.extension()
+                        .map(|e| e.to_string_lossy().to_lowercase() == "flac")
+                        .unwrap_or(false)
+                {
                     report.scanned_files += 1;
                     if let Some(mbid) = extract_musicbrainz_track_id_from_flac(p) {
                         report.mbid_found_in_tags += 1;
                         let path_str = p.to_string_lossy().to_string();
 
                         let mut tid_opt: Option<i64> = sqlx::query_scalar(
-                            "SELECT track_id FROM downloads WHERE file_path = ? LIMIT 1"
+                            "SELECT track_id FROM downloads WHERE file_path = ? LIMIT 1",
                         )
                         .bind(&path_str)
                         .fetch_optional(db)
@@ -1348,12 +1469,19 @@ pub async fn reconcile_musicbrainz_from_physical_flacs(
                         if tid_opt.is_none() {
                             if let Ok(tag) = metaflac::Tag::read_from_path(p) {
                                 if let Some(vc) = tag.vorbis_comments() {
-                                    if let Some(isrc) = vc.get("ISRC").and_then(|v| v.first()).map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                                        tid_opt = sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
-                                            .bind(isrc)
-                                            .fetch_optional(db)
-                                            .await
-                                            .unwrap_or(None);
+                                    if let Some(isrc) = vc
+                                        .get("ISRC")
+                                        .and_then(|v| v.first())
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                    {
+                                        tid_opt = sqlx::query_scalar(
+                                            "SELECT id FROM tracks WHERE isrc = ? LIMIT 1",
+                                        )
+                                        .bind(isrc)
+                                        .fetch_optional(db)
+                                        .await
+                                        .unwrap_or(None);
                                     }
                                 }
                             }
@@ -1361,7 +1489,7 @@ pub async fn reconcile_musicbrainz_from_physical_flacs(
 
                         if let Some(tid) = tid_opt {
                             let current_mbid: Option<String> = sqlx::query_scalar(
-                                "SELECT musicbrainz_id FROM tracks WHERE id = ?"
+                                "SELECT musicbrainz_id FROM tracks WHERE id = ?",
                             )
                             .bind(tid)
                             .fetch_optional(db)
@@ -1370,13 +1498,16 @@ pub async fn reconcile_musicbrainz_from_physical_flacs(
                             .flatten();
 
                             if current_mbid.as_deref() != Some(&mbid) {
-                                if let Err(e) = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
-                                    .bind(&mbid)
-                                    .bind(tid)
-                                    .execute(db)
-                                    .await
+                                if let Err(e) =
+                                    sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                                        .bind(&mbid)
+                                        .bind(tid)
+                                        .execute(db)
+                                        .await
                                 {
-                                    report.errors.push(format!("Failed to update track {}: {}", tid, e));
+                                    report
+                                        .errors
+                                        .push(format!("Failed to update track {}: {}", tid, e));
                                 } else {
                                     report.db_updated += 1;
                                 }
@@ -1398,7 +1529,7 @@ pub async fn reconcile_musicbrainz_from_physical_flacs(
         FROM downloads d
         JOIN tracks t ON t.id = d.track_id
         WHERE d.file_path LIKE '%.flac'
-        "#
+        "#,
     )
     .fetch_all(db)
     .await
@@ -1419,7 +1550,9 @@ pub async fn reconcile_musicbrainz_from_physical_flacs(
                     .execute(db)
                     .await
                 {
-                    report.errors.push(format!("Failed to update track {}: {}", tid, e));
+                    report
+                        .errors
+                        .push(format!("Failed to update track {}: {}", tid, e));
                 } else {
                     report.db_updated += 1;
                 }

@@ -134,9 +134,11 @@ impl DownloadWorkerState {
     }
 
     pub fn decrement_active(&self) {
-        let _ = self.active_count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
-            Some(val.saturating_sub(1))
-        });
+        let _ = self
+            .active_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
+                Some(val.saturating_sub(1))
+            });
         self.slot_available_notify.notify_waiters();
     }
 }
@@ -306,9 +308,9 @@ impl DownloadWorker {
     pub async fn get_next_item(&self) -> Option<(i64, i64, String, String)> {
         let item: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
             r#"
-            SELECT dq.id, dq.track_id, 
+            SELECT dq.id, dq.track_id,
                    COALESCE(dq.target_title, t.title) as title,
-                   COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
+                   COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
                     JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist
             FROM download_queue dq
             LEFT JOIN tracks t ON t.id = dq.track_id
@@ -335,9 +337,9 @@ impl DownloadWorker {
     pub async fn claim_next_item(&self) -> Option<(i64, i64, String, String)> {
         let item: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
             r#"
-            SELECT dq.id, dq.track_id, 
+            SELECT dq.id, dq.track_id,
                    COALESCE(dq.target_title, t.title) as title,
-                   COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
+                   COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
                     JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist
             FROM download_queue dq
             LEFT JOIN tracks t ON t.id = dq.track_id
@@ -386,31 +388,38 @@ impl DownloadWorker {
     }
 
     /// Mark item as complete
-    pub async fn mark_complete(
-        &self,
-        queue_id: i64,
-        res: &crate::download::DownloadResult,
-    ) {
+    pub async fn mark_complete(&self, queue_id: i64, res: &crate::download::DownloadResult) {
         // Inspect physical audio file on disk to get ground-truth audio metrics
         let path = std::path::Path::new(&res.file_path);
         let phys_info = crate::download::audio_inspector::inspect_physical_audio_file(path);
 
-        let real_bit_depth = phys_info.as_ref().map(|p| p.bit_depth).unwrap_or(res.bit_depth);
-        let real_sample_rate = phys_info.as_ref().map(|p| p.sample_rate).unwrap_or(res.sample_rate);
+        let real_bit_depth = phys_info
+            .as_ref()
+            .map(|p| p.bit_depth)
+            .unwrap_or(res.bit_depth);
+        let real_sample_rate = phys_info
+            .as_ref()
+            .map(|p| p.sample_rate)
+            .unwrap_or(res.sample_rate);
         let real_bitrate = phys_info.as_ref().and_then(|p| p.bitrate).or(res.bitrate);
-        let physical_format = phys_info.as_ref().map(|p| p.format.clone()).unwrap_or_else(|| {
-            if res.file_path.to_lowercase().ends_with(".flac") {
-                "FLAC".to_string()
-            } else if res.file_path.to_lowercase().ends_with(".mp3") {
-                "MP3".to_string()
-            } else if res.file_path.to_lowercase().ends_with(".m4a") || res.file_path.to_lowercase().ends_with(".aac") {
-                "AAC".to_string()
-            } else if res.file_path.to_lowercase().ends_with(".opus") {
-                "OPUS".to_string()
-            } else {
-                "FLAC".to_string()
-            }
-        });
+        let physical_format = phys_info
+            .as_ref()
+            .map(|p| p.format.clone())
+            .unwrap_or_else(|| {
+                if res.file_path.to_lowercase().ends_with(".flac") {
+                    "FLAC".to_string()
+                } else if res.file_path.to_lowercase().ends_with(".mp3") {
+                    "MP3".to_string()
+                } else if res.file_path.to_lowercase().ends_with(".m4a")
+                    || res.file_path.to_lowercase().ends_with(".aac")
+                {
+                    "AAC".to_string()
+                } else if res.file_path.to_lowercase().ends_with(".opus") {
+                    "OPUS".to_string()
+                } else {
+                    "FLAC".to_string()
+                }
+            });
 
         let canon_tier = crate::download::audio_inspector::classify_physical_audio_quality(
             real_bit_depth,
@@ -426,7 +435,7 @@ impl DownloadWorker {
         );
 
         let req_q_val = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT requested_quality FROM download_queue WHERE id = ?"
+            "SELECT requested_quality FROM download_queue WHERE id = ?",
         )
         .bind(queue_id)
         .fetch_optional(&self.db)
@@ -439,9 +448,14 @@ impl DownloadWorker {
         let prov_fb = res.origin_service.is_some()
             && res.effective_service.is_some()
             && res.origin_service.as_deref().unwrap_or("").to_lowercase()
-                != res.effective_service.as_deref().unwrap_or("").to_lowercase();
+                != res
+                    .effective_service
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase();
         let is_lossy = physical_tier.is_lossy();
-        let is_hires_req = syncify_core_domain::quality::QualityPolicy::is_hires_requested(&req_q_val);
+        let is_hires_req =
+            syncify_core_domain::quality::QualityPolicy::is_hires_requested(&req_q_val);
         let is_shortfall = !is_lossy && is_hires_req && !physical_tier.is_hires();
 
         let (q_decision, qual_fallback, dec_reason) = if is_shortfall {
@@ -459,7 +473,11 @@ impl DownloadWorker {
                 1i64,
                 Some(format!(
                     "Quality fallback: requested {}, but received {} {}",
-                    req_q_val, physical_format, real_bitrate.map(|b| format!("{}kbps", b)).unwrap_or_default()
+                    req_q_val,
+                    physical_format,
+                    real_bitrate
+                        .map(|b| format!("{}kbps", b))
+                        .unwrap_or_default()
                 )),
             )
         } else if let Some(ref qd) = res.quality_decision {
@@ -479,9 +497,14 @@ impl DownloadWorker {
         } else if is_lossy {
             format!("{} {}kbps", physical_format, real_bitrate.unwrap_or(320))
         } else {
-            format!("FLAC {}-bit / {:.1}kHz", real_bit_depth, real_sample_rate as f64 / 1000.0)
+            format!(
+                "FLAC {}-bit / {:.1}kHz",
+                real_bit_depth,
+                real_sample_rate as f64 / 1000.0
+            )
         };
-        let req_fmt = if is_lossy && !is_hires_req && !req_q_val.to_lowercase().contains("lossless") {
+        let req_fmt = if is_lossy && !is_hires_req && !req_q_val.to_lowercase().contains("lossless")
+        {
             "MP3".to_string()
         } else {
             "FLAC".to_string()
@@ -491,9 +514,9 @@ impl DownloadWorker {
 
         if let Err(e) = sqlx::query(
             r#"
-            UPDATE download_queue 
-            SET status = 'complete', 
-                completed_at = CURRENT_TIMESTAMP, 
+            UPDATE download_queue
+            SET status = 'complete',
+                completed_at = CURRENT_TIMESTAMP,
                 progress_percent = 100.0,
                 origin_service = COALESCE(origin_service, ?),
                 origin_service_track_id = COALESCE(origin_service_track_id, ?),
@@ -511,7 +534,7 @@ impl DownloadWorker {
                 quality_fallback_used = ?,
                 decision_reason = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(&res.origin_service)
         .bind(&res.origin_service_track_id)
@@ -539,7 +562,10 @@ impl DownloadWorker {
             );
         }
 
-        let file_size = tokio::fs::metadata(&res.file_path).await.map(|m| m.len() as i64).ok();
+        let file_size = tokio::fs::metadata(&res.file_path)
+            .await
+            .map(|m| m.len() as i64)
+            .ok();
         let effective_srv = res.effective_service.as_deref().unwrap_or(&res.service);
         if let Err(e) = sqlx::query(
             r#"
@@ -547,13 +573,13 @@ impl DownloadWorker {
                 track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at,
                 origin_service, origin_service_track_id, effective_service, effective_service_track_id, fallback_reason, match_method, match_confidence,
                 requested_quality, effective_quality, requested_format, effective_format, quality_decision, provider_fallback_used, quality_fallback_used, decision_reason
-            ) 
+            )
             SELECT track_id, (SELECT id FROM services WHERE LOWER(name) = LOWER(?)), ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
                    ?, ?, ?, ?, ?, ?, ?,
                    ?, ?, ?, ?, ?, ?, ?, ?
             FROM download_queue WHERE id = ?
-            ON CONFLICT(track_id) DO UPDATE SET 
-                file_path = excluded.file_path, 
+            ON CONFLICT(track_id) DO UPDATE SET
+                file_path = excluded.file_path,
                 file_format = excluded.file_format,
                 bit_depth = excluded.bit_depth,
                 sample_rate = excluded.sample_rate,
@@ -609,11 +635,12 @@ impl DownloadWorker {
         }
 
         // Synchronize tracks.audio_quality based on actual physical audio on disk
-        let track_id_opt: Option<i64> = sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
-            .bind(queue_id)
-            .fetch_optional(&self.db)
-            .await
-            .unwrap_or(None);
+        let track_id_opt: Option<i64> =
+            sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
+                .bind(queue_id)
+                .fetch_optional(&self.db)
+                .await
+                .unwrap_or(None);
 
         if let Some(tid) = track_id_opt {
             if let Err(e) = sqlx::query("UPDATE tracks SET audio_quality = ? WHERE id = ?")
@@ -622,15 +649,20 @@ impl DownloadWorker {
                 .execute(&self.db)
                 .await
             {
-                tracing::error!("Failed to update tracks.audio_quality to '{}' for track {}: {}", canon_tier, tid, e);
+                tracing::error!(
+                    "Failed to update tracks.audio_quality to '{}' for track {}: {}",
+                    canon_tier,
+                    tid,
+                    e
+                );
             } else {
                 tracing::info!("Synchronized track {} audio_quality to '{}' based on physical audio ({}bit/{}Hz)", tid, canon_tier, real_bit_depth, real_sample_rate);
             }
 
             // Also update track_sources with real physical metrics
             let _ = sqlx::query(
-                r#"UPDATE track_sources 
-                   SET bit_depth = ?, sample_rate = ?, bitrate = ?, format = ? 
+                r#"UPDATE track_sources
+                   SET bit_depth = ?, sample_rate = ?, bitrate = ?, format = ?
                    WHERE track_id = ? AND service_id = (SELECT id FROM services WHERE LOWER(name) = LOWER(?))"#
             )
             .bind(real_bit_depth as i64)
@@ -648,11 +680,12 @@ impl DownloadWorker {
         if lrc_path.is_file() {
             if let Ok(content) = tokio::fs::read_to_string(&lrc_path).await {
                 if !content.trim().is_empty() {
-                    let track_id_opt: Option<i64> = sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
-                        .bind(queue_id)
-                        .fetch_optional(&self.db)
-                        .await
-                        .unwrap_or(None);
+                    let track_id_opt: Option<i64> =
+                        sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
+                            .bind(queue_id)
+                            .fetch_optional(&self.db)
+                            .await
+                            .unwrap_or(None);
                     if let Some(tid) = track_id_opt {
                         let is_embedded = physical_format.to_uppercase() == "FLAC";
                         let _ = sqlx::query(
@@ -675,12 +708,15 @@ impl DownloadWorker {
         }
 
         // TASK-84: Retro-propagate MusicBrainz ID from physical FLAC Vorbis comments to tracks table
-        if physical_format.to_uppercase() == "FLAC" || res.file_path.to_lowercase().ends_with(".flac") {
-            let track_id_opt: Option<i64> = sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
-                .bind(queue_id)
-                .fetch_optional(&self.db)
-                .await
-                .unwrap_or(None);
+        if physical_format.to_uppercase() == "FLAC"
+            || res.file_path.to_lowercase().ends_with(".flac")
+        {
+            let track_id_opt: Option<i64> =
+                sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
+                    .bind(queue_id)
+                    .fetch_optional(&self.db)
+                    .await
+                    .unwrap_or(None);
             if let Some(tid) = track_id_opt {
                 let _ = crate::services::musicbrainz::sync_flac_musicbrainz_id_to_track(
                     &self.db,
@@ -709,8 +745,12 @@ impl DownloadWorker {
 
     /// Mark item as permanently failed (non-retryable: requires auth, rejected quality, ambiguous source, identity conflict)
     async fn mark_permanent_failure(&self, queue_id: i64, status: &str, error: &str) {
-        let is_rejected_q = status == "rejected_quality" || error.contains("RejectedQuality") || error.contains("Quality rejection");
-        let is_ambiguous = error.contains("AmbiguousSource") || error.contains("SourceIdentityMissing") || error.contains("IdentityConflict");
+        let is_rejected_q = status == "rejected_quality"
+            || error.contains("RejectedQuality")
+            || error.contains("Quality rejection");
+        let is_ambiguous = error.contains("AmbiguousSource")
+            || error.contains("SourceIdentityMissing")
+            || error.contains("IdentityConflict");
         let q_decision = if is_rejected_q {
             Some("RejectedQuality")
         } else if is_ambiguous {
@@ -718,7 +758,11 @@ impl DownloadWorker {
         } else {
             None
         };
-        let dec_reason = if is_rejected_q || is_ambiguous { Some(error) } else { None };
+        let dec_reason = if is_rejected_q || is_ambiguous {
+            Some(error)
+        } else {
+            None
+        };
 
         if let Err(e) = sqlx::query(
             "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = 99, quality_decision = COALESCE(?, quality_decision), decision_reason = COALESCE(?, decision_reason) WHERE id = ?"
@@ -740,7 +784,6 @@ impl DownloadWorker {
             );
         }
     }
-
 
     /// Update progress - designed for streaming progress updates from Python subprocess
     #[allow(dead_code)]
@@ -778,14 +821,13 @@ impl DownloadWorker {
         const DEFAULT_REQUEST: &str = "HI_RES_LOSSLESS";
 
         // 1. Global ceiling from the settings KV.
-        let global_raw: Option<(String,)> = sqlx::query_as(
-            "SELECT value FROM settings WHERE key = ? LIMIT 1",
-        )
-        .bind(crate::commands::GLOBAL_MAX_QUALITY_KEY)
-        .fetch_optional(&self.db)
-        .await
-        .ok()
-        .flatten();
+        let global_raw: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM settings WHERE key = ? LIMIT 1")
+                .bind(crate::commands::GLOBAL_MAX_QUALITY_KEY)
+                .fetch_optional(&self.db)
+                .await
+                .ok()
+                .flatten();
         let global_canonical =
             crate::commands::canonical_global_max_quality(global_raw.map(|(v,)| v).as_deref());
         let global_rank = crate::commands::global_ceiling_rank(global_canonical);
@@ -909,15 +951,29 @@ impl DownloadWorker {
         self.state.increment_active();
         let _guard = ActiveDownloadGuard(self.state.clone());
         self.mark_downloading(queue_id).await;
-        self.process_download_internal(queue_id, track_id, title, artist).await;
+        self.process_download_internal(queue_id, track_id, title, artist)
+            .await;
     }
 
     /// Process a claimed download task where status is already marked downloading
-    pub async fn process_download_claimed(&self, queue_id: i64, track_id: i64, title: &str, artist: &str) {
-        self.process_download_internal(queue_id, track_id, title, artist).await;
+    pub async fn process_download_claimed(
+        &self,
+        queue_id: i64,
+        track_id: i64,
+        title: &str,
+        artist: &str,
+    ) {
+        self.process_download_internal(queue_id, track_id, title, artist)
+            .await;
     }
 
-    async fn process_download_internal(&self, queue_id: i64, track_id: i64, title: &str, artist: &str) {
+    async fn process_download_internal(
+        &self,
+        queue_id: i64,
+        track_id: i64,
+        title: &str,
+        artist: &str,
+    ) {
         // 1. Query full source identity from download_queue row
         let queue_meta: Option<(
             Option<String>, // service_name
@@ -932,11 +988,11 @@ impl DownloadWorker {
             Option<i64>,    // allow_fallback
         )> = sqlx::query_as(
             r#"
-            SELECT service_name, service_track_id, service_album_id, 
-                   target_title, target_artist, target_album, target_isrc, 
-                   quality_preference, smart_studio_origin, allow_fallback 
+            SELECT service_name, service_track_id, service_album_id,
+                   target_title, target_artist, target_album, target_isrc,
+                   quality_preference, smart_studio_origin, allow_fallback
             FROM download_queue WHERE id = ?
-            "#
+            "#,
         )
         .bind(queue_id)
         .fetch_optional(&self.db)
@@ -955,7 +1011,18 @@ impl DownloadWorker {
             q_pref,
             smart_studio,
             allow_fb,
-        ) = queue_meta.unwrap_or((None, None, None, None, None, None, None, None, Some(0), Some(0)));
+        ) = queue_meta.unwrap_or((
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            Some(0),
+        ));
 
         let effective_title = t_title.unwrap_or_else(|| title.to_string());
         let effective_artist = t_artist.unwrap_or_else(|| artist.to_string());
@@ -988,7 +1055,10 @@ impl DownloadWorker {
             progress_percent: 0.0,
             message: Some(format!(
                 "Starting download{}...",
-                s_name.as_deref().map(|s| format!(" via {}", s)).unwrap_or_default()
+                s_name
+                    .as_deref()
+                    .map(|s| format!(" via {}", s))
+                    .unwrap_or_default()
             )),
             bytes_downloaded: 0,
             total_bytes: None,
@@ -1005,10 +1075,16 @@ impl DownloadWorker {
         let is_allowed_fallback = allow_fb.unwrap_or(0) != 0;
         let is_smart_studio = smart_studio.unwrap_or(0) != 0;
 
-        if !is_allowed_fallback && !is_smart_studio && (s_track_id.is_none() || s_track_id.as_deref().unwrap_or("").trim().is_empty()) {
-            let err_msg = "SourceIdentityMissing: No locked service_track_id and allow_fallback=false".to_string();
+        if !is_allowed_fallback
+            && !is_smart_studio
+            && (s_track_id.is_none() || s_track_id.as_deref().unwrap_or("").trim().is_empty())
+        {
+            let err_msg =
+                "SourceIdentityMissing: No locked service_track_id and allow_fallback=false"
+                    .to_string();
             tracing::warn!("[Worker] Rejecting queue item {}: {}", queue_id, err_msg);
-            self.mark_permanent_failure(queue_id, "failed", &err_msg).await;
+            self.mark_permanent_failure(queue_id, "failed", &err_msg)
+                .await;
             self.emit_progress(DownloadProgressEvent {
                 queue_id,
                 track_id,
@@ -1032,14 +1108,14 @@ impl DownloadWorker {
         // Get full track metadata for fallback / enrichment
         let query_result = sqlx::query_as::<_, TrackMeta>(
             r#"
-            SELECT 
+            SELECT
                 t.title, t.isrc, t.duration_ms,
                 t.track_number, t.disc_number, NULL as total_tracks,
                 a.title as album_name, a.release_date,
                 ts.service_track_id as spotify_id,
-                (SELECT GROUP_CONCAT(ar.name, ', ') FROM track_artists ta 
+                (SELECT GROUP_CONCAT(ar.name, ', ') FROM track_artists ta
                  JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id) as artist_name,
-                (SELECT ar.name FROM track_artists ta 
+                (SELECT ar.name FROM track_artists ta
                  JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id LIMIT 1) as album_artist,
                 t.musicbrainz_id,
                 t.acoustid_fingerprint
@@ -1074,7 +1150,8 @@ impl DownloadWorker {
         let output_dir = self.resolve_download_output_dir().await;
         let operation_id = format!("op-{}", uuid::Uuid::new_v4());
 
-        let result: Result<crate::download::DownloadResult, String> = if let Some(meta) = track_meta {
+        let result: Result<crate::download::DownloadResult, String> = if let Some(meta) = track_meta
+        {
             // Create download request with locked source identity
             let request = crate::download::DownloadRequest {
                 item_id: queue_id.to_string(),
@@ -1116,9 +1193,13 @@ impl DownloadWorker {
             );
 
             // Use the Rust download orchestrator with SQLite active account resolution
-            let orchestrator = crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
-            
-            orchestrator.download_track(&request).await.map_err(|e| e.to_string())
+            let orchestrator =
+                crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
+
+            orchestrator
+                .download_track(&request)
+                .await
+                .map_err(|e| e.to_string())
         } else if !effective_title.is_empty() {
             let request = crate::download::DownloadRequest {
                 item_id: queue_id.to_string(),
@@ -1159,9 +1240,13 @@ impl DownloadWorker {
                 queue_id, request.album_name, request.allow_fallback
             );
 
-            let orchestrator = crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
-            
-            orchestrator.download_track(&request).await.map_err(|e| e.to_string())
+            let orchestrator =
+                crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
+
+            orchestrator
+                .download_track(&request)
+                .await
+                .map_err(|e| e.to_string())
         } else {
             Err("Track metadata not found in database".to_string())
         };
@@ -1185,11 +1270,18 @@ impl DownloadWorker {
                 // here; the only exclusion path in the trimmer is an explicit flag
                 // (see services::silence_trimmer). A future schema column can be wired
                 // into `process_file_with_config(.., gapless_exempt)` in one line.
-                crate::download::DownloadOrchestrator::trim_downloaded_track_silence(&mut download_result).await;
+                crate::download::DownloadOrchestrator::trim_downloaded_track_silence(
+                    &mut download_result,
+                )
+                .await;
 
                 self.mark_complete(queue_id, &download_result).await;
                 let file_size = tokio::fs::metadata(&file_path).await.map(|m| m.len()).ok();
-                let _ = crate::services::ManifestWriter::generate_and_save_manifest(&self.db, std::path::Path::new(&output_dir)).await;
+                let _ = crate::services::ManifestWriter::generate_and_save_manifest(
+                    &self.db,
+                    std::path::Path::new(&output_dir),
+                )
+                .await;
                 let is_shortfall = download_result.quality_decision.as_ref()
                     .map_or(false, |qd| qd.decision == syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityShortfall);
                 let is_fallback = download_result.quality_decision.as_ref()
@@ -1198,9 +1290,19 @@ impl DownloadWorker {
                 let progress_msg = if is_shortfall {
                     format!("Download complete via {} ({}bit/{}kHz) [Quality Shortfall: requested Hi-Res]", service, bit_depth, (sample_rate as f64 / 1000.0))
                 } else if is_fallback {
-                    format!("Download complete via {} ({}bit/{}kHz) [Quality Fallback]", service, bit_depth, (sample_rate as f64 / 1000.0))
+                    format!(
+                        "Download complete via {} ({}bit/{}kHz) [Quality Fallback]",
+                        service,
+                        bit_depth,
+                        (sample_rate as f64 / 1000.0)
+                    )
                 } else {
-                    format!("Download complete via {} ({}bit/{}kHz)", service, bit_depth, (sample_rate as f64 / 1000.0))
+                    format!(
+                        "Download complete via {} ({}bit/{}kHz)",
+                        service,
+                        bit_depth,
+                        (sample_rate as f64 / 1000.0)
+                    )
                 };
 
                 self.emit_progress(DownloadProgressEvent {
@@ -1255,10 +1357,10 @@ impl DownloadWorker {
                         notif_title,
                         notif_msg,
                         crate::commands::NotificationCategory::Download,
-                        Some(serde_json::json!({ 
-                            "queue_id": queue_id, 
-                            "track_id": track_id, 
-                            "file_path": file_path, 
+                        Some(serde_json::json!({
+                            "queue_id": queue_id,
+                            "track_id": track_id,
+                            "file_path": file_path,
                             "service": service,
                             "bit_depth": bit_depth,
                             "sample_rate": sample_rate,
@@ -1272,12 +1374,31 @@ impl DownloadWorker {
                         None,
                         "download",
                         "completed",
-                        if is_shortfall || is_fallback { "warning" } else { "info" },
-                        &format!("Downloaded {} - {}{}", artist, title, if is_shortfall { " (Quality Shortfall)" } else { "" }),
+                        if is_shortfall || is_fallback {
+                            "warning"
+                        } else {
+                            "info"
+                        },
+                        &format!(
+                            "Downloaded {} - {}{}",
+                            artist,
+                            title,
+                            if is_shortfall {
+                                " (Quality Shortfall)"
+                            } else {
+                                ""
+                            }
+                        ),
                     );
                     crate::services::notification::emit_service_notification(handle, service_notif);
                 }
-                tracing::info!("Downloaded via {}: {} - {} -> {}", service, artist, title, file_path);
+                tracing::info!(
+                    "Downloaded via {}: {} - {} -> {}",
+                    service,
+                    artist,
+                    title,
+                    file_path
+                );
             }
             Err(error) => {
                 // Ensure staging artifact is cleaned up upon error
@@ -1300,20 +1421,21 @@ impl DownloadWorker {
                     || error.contains("SourceIdentityMissing")
                     || error.contains("IdentityConflict");
 
-                let is_permanent = is_auth_error 
+                let is_permanent = is_auth_error
                     || is_ambiguous
-                    || error.contains("RejectedQuality") 
-                    || error.contains("downgrade rejected") 
-                    || error.contains("TrackUnresolved") 
-                    || error.contains("NotFound") 
-                    || error.contains("not found on") 
-                    || error.contains("404") 
-                    || error.contains("StaleSource") 
+                    || error.contains("RejectedQuality")
+                    || error.contains("downgrade rejected")
+                    || error.contains("TrackUnresolved")
+                    || error.contains("NotFound")
+                    || error.contains("not found on")
+                    || error.contains("404")
+                    || error.contains("StaleSource")
                     || error.contains("track/get failed")
                     || error.contains("NetworkExhausted");
 
                 if is_permanent {
-                    self.mark_permanent_failure(queue_id, "failed", &error).await;
+                    self.mark_permanent_failure(queue_id, "failed", &error)
+                        .await;
                 } else {
                     self.mark_failed(queue_id, &error).await;
                 }
@@ -1341,7 +1463,7 @@ impl DownloadWorker {
                     if let Some(ref srv) = target_service {
                         let update_res = sqlx::query(
                             r#"
-                            UPDATE accounts 
+                            UPDATE accounts
                             SET credentials_invalid = 1,
                                 invalid_reason = 'token_expired',
                                 last_auth_error = ?,
@@ -1364,24 +1486,30 @@ impl DownloadWorker {
 
                         if let Some(handle) = &self.app_handle {
                             use tauri::Emitter;
-                            let _ = handle.emit("auth-session-expired", serde_json::json!({
-                                "service": srv,
-                                "error": error,
-                                "reason": "token_expired",
-                            }));
-                            let _ = handle.emit("auth-state-updated", serde_json::json!({
-                                "service": srv,
-                                "status": "expired",
-                                "error": error,
-                                "reason": "token_expired",
-                            }));
+                            let _ = handle.emit(
+                                "auth-session-expired",
+                                serde_json::json!({
+                                    "service": srv,
+                                    "error": error,
+                                    "reason": "token_expired",
+                                }),
+                            );
+                            let _ = handle.emit(
+                                "auth-state-updated",
+                                serde_json::json!({
+                                    "service": srv,
+                                    "status": "expired",
+                                    "error": error,
+                                    "reason": "token_expired",
+                                }),
+                            );
                         }
                     }
                 } else if is_stream_entitlement_error {
                     if let Some(ref srv) = target_service {
                         let _ = sqlx::query(
                             r#"
-                            UPDATE accounts 
+                            UPDATE accounts
                             SET last_auth_error = ?,
                                 last_auth_error_at = ?
                             WHERE service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?)) AND is_active = 1
@@ -1397,9 +1525,16 @@ impl DownloadWorker {
 
                 let status_str = if is_auth_error {
                     "requires_auth"
-                } else if error.contains("RejectedQuality") || error.contains("downgrade rejected") {
+                } else if error.contains("RejectedQuality") || error.contains("downgrade rejected")
+                {
                     "rejected_quality"
-                } else if error.contains("TrackUnresolved") || error.contains("NotFound") || error.contains("not found on") || error.contains("404") || error.contains("StaleSource") || error.contains("track/get failed") {
+                } else if error.contains("TrackUnresolved")
+                    || error.contains("NotFound")
+                    || error.contains("not found on")
+                    || error.contains("404")
+                    || error.contains("StaleSource")
+                    || error.contains("track/get failed")
+                {
                     "not_found"
                 } else {
                     "failed"
@@ -1428,7 +1563,9 @@ impl DownloadWorker {
                         "Download Failed",
                         format!("{} - {}: {}", artist, title, error),
                         crate::commands::NotificationCategory::Download,
-                        Some(serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "status": status_str, "error": error })),
+                        Some(
+                            serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "status": status_str, "error": error }),
+                        ),
                     );
                     let _ = crate::commands::emit_app_notification(handle, &notif);
                     let service_kind = if is_auth_error {
@@ -1450,7 +1587,13 @@ impl DownloadWorker {
                     );
                     crate::services::notification::emit_service_notification(handle, service_notif);
                 }
-                tracing::warn!("Download error [{}]: {} - {} - {}", status_str, artist, title, error);
+                tracing::warn!(
+                    "Download error [{}]: {} - {} - {}",
+                    status_str,
+                    artist,
+                    title,
+                    error
+                );
             }
         }
     }
@@ -1473,7 +1616,10 @@ impl DownloadWorker {
         .unwrap_or(0);
 
         if reset_count > 0 {
-            tracing::info!("Reset {} interrupted downloads on startup back to queued", reset_count);
+            tracing::info!(
+                "Reset {} interrupted downloads on startup back to queued",
+                reset_count
+            );
         }
 
         // Repair legacy queue rows with missing service_track_id
@@ -1517,7 +1663,9 @@ impl DownloadWorker {
                 let worker = self.clone();
                 tokio::spawn(async move {
                     let _guard = ActiveDownloadGuard(worker.state.clone());
-                    worker.process_download_claimed(queue_id, track_id, &title, &artist).await;
+                    worker
+                        .process_download_claimed(queue_id, track_id, &title, &artist)
+                        .await;
                 });
             } else {
                 // No items in queue, wait before checking again or until notified of newly queued items
@@ -1549,7 +1697,8 @@ impl DownloadWorker {
 
         for (qid, _tid, _s_name_opt, allow_fb) in unresolved_items {
             if allow_fb.unwrap_or(0) == 0 {
-                let reason = "SourceIdentityMissing: Legacy queue row without locked source identity";
+                let reason =
+                    "SourceIdentityMissing: Legacy queue row without locked source identity";
                 let _ = sqlx::query(
                     "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, retry_count = 99 WHERE id = ?"
                 )
@@ -1599,4 +1748,3 @@ impl DownloadWorkerState {
         }
     }
 }
-

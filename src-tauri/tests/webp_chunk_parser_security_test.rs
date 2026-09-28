@@ -4,9 +4,7 @@
 //! infinite loops, and out-of-bounds reads in RIFF WebP chunk parsing.
 //! Preserves the Symfonium invariant: CoverFront (0x03) = image/webp animated.
 
-use syncify_core_domain::byte_validators::{
-    WebpByteValidator, WebpValidationError,
-};
+use syncify_core_domain::byte_validators::{WebpByteValidator, WebpValidationError};
 use syncify_core_domain::CoverType;
 
 /// Helper to build a minimal valid synthetic animated WebP container
@@ -86,10 +84,17 @@ fn test_security_huge_chunk_size_overflow_u32_max_minus_2() {
     data.extend_from_slice(&[0u8; 16]); // Only 16 bytes provided
 
     let res = WebpByteValidator::validate_animated_webp(&data);
-    assert!(res.is_err(), "Huge chunk size must be rejected without panic");
+    assert!(
+        res.is_err(),
+        "Huge chunk size must be rejected without panic"
+    );
 
     match res.unwrap_err() {
-        WebpValidationError::ChunkOutOfBounds { offset, chunk_size, buffer_len } => {
+        WebpValidationError::ChunkOutOfBounds {
+            offset,
+            chunk_size,
+            buffer_len,
+        } => {
             assert_eq!(offset, 30);
             assert_eq!(chunk_size, huge_size as usize);
             assert_eq!(buffer_len, data.len());
@@ -122,10 +127,17 @@ fn test_security_huge_chunk_size_overflow_u32_max() {
     data.extend_from_slice(&[0u8; 16]);
 
     let res = WebpByteValidator::validate_animated_webp(&data);
-    assert!(res.is_err(), "u32::MAX chunk size must be rejected without panic");
+    assert!(
+        res.is_err(),
+        "u32::MAX chunk size must be rejected without panic"
+    );
 
     match res.unwrap_err() {
-        WebpValidationError::ChunkOutOfBounds { offset, chunk_size, buffer_len } => {
+        WebpValidationError::ChunkOutOfBounds {
+            offset,
+            chunk_size,
+            buffer_len,
+        } => {
             assert_eq!(offset, 30);
             assert_eq!(chunk_size, u32::MAX as usize);
             assert_eq!(buffer_len, data.len());
@@ -133,7 +145,10 @@ fn test_security_huge_chunk_size_overflow_u32_max() {
         WebpValidationError::CorruptedChunkStructure(msg) => {
             assert!(msg.contains("overflow") || msg.contains("Offset"));
         }
-        other => panic!("Unexpected error variant for u32::MAX chunk size: {:?}", other),
+        other => panic!(
+            "Unexpected error variant for u32::MAX chunk size: {:?}",
+            other
+        ),
     }
 }
 
@@ -160,7 +175,8 @@ fn test_security_padded_size_wraparound_attempt() {
     assert!(res.is_err());
     assert!(matches!(
         res.unwrap_err(),
-        WebpValidationError::ChunkOutOfBounds { .. } | WebpValidationError::CorruptedChunkStructure(_)
+        WebpValidationError::ChunkOutOfBounds { .. }
+            | WebpValidationError::CorruptedChunkStructure(_)
     ));
 }
 
@@ -194,7 +210,10 @@ fn test_security_zero_size_chunks_no_infinite_loop() {
     let info = WebpByteValidator::validate_animated_webp(&data)
         .expect("Zero-size chunks must advance safely without looping");
     assert_eq!(info.anmf_frame_count, 1);
-    assert!(start.elapsed().as_millis() < 500, "Must terminate immediately without hang");
+    assert!(
+        start.elapsed().as_millis() < 500,
+        "Must terminate immediately without hang"
+    );
 }
 
 #[test]
@@ -204,7 +223,10 @@ fn test_security_truncated_file_and_truncated_chunk_headers() {
     let res_tiny = WebpByteValidator::validate_animated_webp(tiny);
     assert_eq!(
         res_tiny.unwrap_err(),
-        WebpValidationError::TooSmall { min_expected: 30, actual: 16 }
+        WebpValidationError::TooSmall {
+            min_expected: 30,
+            actual: 16
+        }
     );
 
     // 2. Truncated chunk header (< 8 bytes left at end of file)

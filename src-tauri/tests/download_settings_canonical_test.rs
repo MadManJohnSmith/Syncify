@@ -90,7 +90,10 @@ async fn test_canonical_effective_preferences_get_and_atomic_save() {
     assert_eq!(initial.fallback_action, "try_next");
     assert_eq!(initial.allow_downgrade, true);
     assert_eq!(initial.strict_quality, false);
-    assert_eq!(initial.preferred_download_service, Some("qobuz".to_string()));
+    assert_eq!(
+        initial.preferred_download_service,
+        Some("qobuz".to_string())
+    );
 
     // 2. Mutate settings and save atomically
     let mut updated_prefs = initial.clone();
@@ -145,28 +148,32 @@ async fn test_canonical_effective_preferences_get_and_atomic_save() {
     assert_eq!(state.worker_state.max_concurrent(), 4);
 
     // 5. Verify SQLite persistence in underlying tables
-    let sync_concurrency: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let sync_concurrency: i32 =
+        sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(sync_concurrency, 4);
 
-    let adv_retries: i32 = sqlx::query_scalar("SELECT max_retries FROM advanced_settings WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let adv_retries: i32 =
+        sqlx::query_scalar("SELECT max_retries FROM advanced_settings WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(adv_retries, 5);
 
-    let folder_fallback: String = sqlx::query_scalar("SELECT fallback_action FROM folder_settings WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let folder_fallback: String =
+        sqlx::query_scalar("SELECT fallback_action FROM folder_settings WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(folder_fallback, "skip");
 
-    let tidal_priority: i32 = sqlx::query_scalar("SELECT priority FROM service_preferences WHERE service_name = 'tidal'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let tidal_priority: i32 =
+        sqlx::query_scalar("SELECT priority FROM service_preferences WHERE service_name = 'tidal'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(tidal_priority, 1);
 }
 
@@ -239,23 +246,23 @@ async fn test_dynamic_service_priority_fallback_matching_in_preflight() {
 
     // Track 100: Imported from Spotify (non-downloadable) with matching Qobuz and Tidal sources
     sqlx::query(
-        r#"INSERT INTO tracks (id, title, isrc, duration_ms) 
-           VALUES (100, 'Bohemian Rhapsody', 'GBUM71029604', 354000)"#
+        r#"INSERT INTO tracks (id, title, isrc, duration_ms)
+           VALUES (100, 'Bohemian Rhapsody', 'GBUM71029604', 354000)"#,
     )
     .execute(&pool)
     .await
     .unwrap();
 
     sqlx::query(
-        r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) 
-           VALUES (100, 1, 'spotify-100', 'OGG', 1)"#
+        r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, available)
+           VALUES (100, 1, 'spotify-100', 'OGG', 1)"#,
     )
     .execute(&pool)
     .await
     .unwrap();
 
     sqlx::query(
-        r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) 
+        r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available)
            VALUES (100, 2, 'qobuz-100', 'FLAC', 24, 96000, 150, 1)"#
     )
     .execute(&pool)
@@ -263,7 +270,7 @@ async fn test_dynamic_service_priority_fallback_matching_in_preflight() {
     .unwrap();
 
     sqlx::query(
-        r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) 
+        r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available)
            VALUES (100, 3, 'tidal-100', 'FLAC', 24, 96000, 150, 1)"#
     )
     .execute(&pool)
@@ -271,9 +278,16 @@ async fn test_dynamic_service_priority_fallback_matching_in_preflight() {
     .unwrap();
 
     // Test Case A: Priority is Qobuz (1) -> Tidal (2)
-    perform_reorder_service_priorities(&pool, vec!["qobuz".to_string(), "tidal".to_string(), "spotify".to_string()])
-        .await
-        .unwrap();
+    perform_reorder_service_priorities(
+        &pool,
+        vec![
+            "qobuz".to_string(),
+            "tidal".to_string(),
+            "spotify".to_string(),
+        ],
+    )
+    .await
+    .unwrap();
 
     let preflight_qobuz = evaluate_track_preflight(
         &pool,
@@ -286,14 +300,30 @@ async fn test_dynamic_service_priority_fallback_matching_in_preflight() {
     .await
     .unwrap();
 
-    assert_eq!(preflight_qobuz.status, DownloadPreflightStatus::ReadyFallbackExactIdentity);
-    assert_eq!(preflight_qobuz.resolved_service_name, Some("qobuz".to_string()));
-    assert_eq!(preflight_qobuz.resolved_service_track_id, Some("qobuz-100".to_string()));
+    assert_eq!(
+        preflight_qobuz.status,
+        DownloadPreflightStatus::ReadyFallbackExactIdentity
+    );
+    assert_eq!(
+        preflight_qobuz.resolved_service_name,
+        Some("qobuz".to_string())
+    );
+    assert_eq!(
+        preflight_qobuz.resolved_service_track_id,
+        Some("qobuz-100".to_string())
+    );
 
     // Test Case B: Reorder priorities: Tidal (1) -> Qobuz (2)
-    perform_reorder_service_priorities(&pool, vec!["tidal".to_string(), "qobuz".to_string(), "spotify".to_string()])
-        .await
-        .unwrap();
+    perform_reorder_service_priorities(
+        &pool,
+        vec![
+            "tidal".to_string(),
+            "qobuz".to_string(),
+            "spotify".to_string(),
+        ],
+    )
+    .await
+    .unwrap();
 
     let preflight_tidal = evaluate_track_preflight(
         &pool,
@@ -306,9 +336,18 @@ async fn test_dynamic_service_priority_fallback_matching_in_preflight() {
     .await
     .unwrap();
 
-    assert_eq!(preflight_tidal.status, DownloadPreflightStatus::ReadyFallbackExactIdentity);
-    assert_eq!(preflight_tidal.resolved_service_name, Some("tidal".to_string()));
-    assert_eq!(preflight_tidal.resolved_service_track_id, Some("tidal-100".to_string()));
+    assert_eq!(
+        preflight_tidal.status,
+        DownloadPreflightStatus::ReadyFallbackExactIdentity
+    );
+    assert_eq!(
+        preflight_tidal.resolved_service_name,
+        Some("tidal".to_string())
+    );
+    assert_eq!(
+        preflight_tidal.resolved_service_track_id,
+        Some("tidal-100".to_string())
+    );
 }
 
 #[tokio::test]
@@ -317,16 +356,16 @@ async fn test_strict_quality_vs_allow_downgrade_policy_in_preflight() {
 
     // Track 200: Spotify track with lossy MP3 Deezer source
     sqlx::query(
-        r#"INSERT INTO tracks (id, title, isrc, duration_ms) 
-           VALUES (200, 'Under Pressure', 'GBUM71029605', 248000)"#
+        r#"INSERT INTO tracks (id, title, isrc, duration_ms)
+           VALUES (200, 'Under Pressure', 'GBUM71029605', 248000)"#,
     )
     .execute(&pool)
     .await
     .unwrap();
 
     sqlx::query(
-        r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) 
-           VALUES (200, 1, 'spotify-200', 'OGG', 1)"#
+        r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, available)
+           VALUES (200, 1, 'spotify-200', 'OGG', 1)"#,
     )
     .execute(&pool)
     .await
@@ -336,7 +375,7 @@ async fn test_strict_quality_vs_allow_downgrade_policy_in_preflight() {
         .execute(&pool).await.unwrap();
 
     sqlx::query(
-        r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) 
+        r#"INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available)
            VALUES (200, 4, 'deezer-200', 'MP3', 16, 44100, 50, 1)"#
     )
     .execute(&pool)
@@ -355,7 +394,10 @@ async fn test_strict_quality_vs_allow_downgrade_policy_in_preflight() {
     .await
     .unwrap();
 
-    assert_eq!(strict_result.status, DownloadPreflightStatus::RejectedQuality);
+    assert_eq!(
+        strict_result.status,
+        DownloadPreflightStatus::RejectedQuality
+    );
     assert_eq!(strict_result.is_eligible, false);
 
     // 2. Permissive fallback policy (fallback_action = "try_next") accepts downgrade
@@ -370,7 +412,13 @@ async fn test_strict_quality_vs_allow_downgrade_policy_in_preflight() {
     .await
     .unwrap();
 
-    assert_eq!(permissive_result.status, DownloadPreflightStatus::ReadyFallbackExactIdentity);
+    assert_eq!(
+        permissive_result.status,
+        DownloadPreflightStatus::ReadyFallbackExactIdentity
+    );
     assert_eq!(permissive_result.is_eligible, true);
-    assert_eq!(permissive_result.resolved_service_name, Some("deezer".to_string()));
+    assert_eq!(
+        permissive_result.resolved_service_name,
+        Some("deezer".to_string())
+    );
 }

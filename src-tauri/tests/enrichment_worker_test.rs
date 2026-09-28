@@ -22,12 +22,22 @@ async fn create_test_db() -> SqlitePool {
         .expect("All migrations through 0047 must apply cleanly");
 
     // Insert sample artist and album
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-        .bind(album_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     pool
 }
@@ -147,7 +157,7 @@ async fn test_enrichment_worker_progress_lifecycle() {
         ON CONFLICT(track_id, service) DO UPDATE SET
             status = 'in_progress',
             last_attempt = datetime('now')
-        "#
+        "#,
     )
     .bind(track_id)
     .execute(&pool)
@@ -155,7 +165,7 @@ async fn test_enrichment_worker_progress_lifecycle() {
     .unwrap();
 
     let in_progress_check: (String,) = sqlx::query_as(
-        "SELECT status FROM enrichment_progress WHERE track_id = ? AND service = 'all'"
+        "SELECT status FROM enrichment_progress WHERE track_id = ? AND service = 'all'",
     )
     .bind(track_id)
     .fetch_one(&pool)
@@ -171,7 +181,7 @@ async fn test_enrichment_worker_progress_lifecycle() {
             completed_at = datetime('now'),
             last_error = NULL
         WHERE track_id = ? AND service = 'all'
-        "#
+        "#,
     )
     .bind(track_id)
     .execute(&pool)
@@ -252,11 +262,13 @@ async fn test_enrichment_retry_count_and_failure_handling() {
     assert!(eligible.is_some());
 
     // Update retry_count to 3 (max retries)
-    sqlx::query("UPDATE enrichment_progress SET retry_count = 3, status = 'failed' WHERE track_id = ?")
-        .bind(track_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE enrichment_progress SET retry_count = 3, status = 'failed' WHERE track_id = ?",
+    )
+    .bind(track_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Track reached max retries, must not be eligible
     let not_eligible: Option<(i64,)> = sqlx::query_as(
@@ -278,15 +290,19 @@ async fn test_enrichment_retry_count_and_failure_handling() {
 async fn test_enrichment_progress_persistence_across_restarts() {
     let pool = create_test_db().await;
 
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('Track 1', 1) RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let t1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('Track 1', 1) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
-    let _t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('Track 2', 1) RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let _t2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('Track 2', 1) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Simulate t1 completed before shutdown
     sqlx::query("INSERT INTO enrichment_progress (track_id, service, status, completed_at) VALUES (?, 'all', 'completed', datetime('now'))")

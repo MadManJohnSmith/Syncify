@@ -8,11 +8,11 @@
 //! 5. MP4 Apple SoundCheck `iTunNORM` calculation and formatting contract.
 //! 6. SQLite persistence and index retrieval for loudness and ReplayGain fields.
 
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::Row;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::Row;
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 use syncify_tauri_lib::download::audio_inspector::{
     calculate_album_replaygain, parse_ebur128_output, LoudnessAnalysis,
@@ -102,7 +102,10 @@ async fn test_migration_0083_application_and_schema() {
         .map(|r| r.get::<String, _>("name"))
         .collect();
 
-    assert!(column_names.contains(&"loudness".to_string()), "tracks must have 'loudness' column");
+    assert!(
+        column_names.contains(&"loudness".to_string()),
+        "tracks must have 'loudness' column"
+    );
     assert!(
         column_names.contains(&"replaygain_track_gain".to_string()),
         "tracks must have 'replaygain_track_gain' column"
@@ -206,8 +209,8 @@ fn test_calculate_album_replaygain_energy_summation() {
         r128_track_gain: "-7.00 LU".to_string(),
     };
 
-    let album_res = calculate_album_replaygain(&[t1, t2], Some(-18.0))
-        .expect("Album replaygain calculation");
+    let album_res =
+        calculate_album_replaygain(&[t1, t2], Some(-18.0)).expect("Album replaygain calculation");
 
     let (album_lufs, album_gain_db, album_gain_str, album_peak_str) = album_res;
 
@@ -248,21 +251,39 @@ fn test_flac_replaygain_vorbis_tags_roundtrip() {
     let verification = apply_and_verify_flac_tags(&file_path, &meta)
         .expect("apply_and_verify_flac_tags must succeed");
 
-    assert!(verification.tags_match, "Tags must match: {:?}", verification.mismatches);
+    assert!(
+        verification.tags_match,
+        "Tags must match: {:?}",
+        verification.mismatches
+    );
 
     // Explicit readback using metaflac
     let tag = metaflac::Tag::read_from_path(&file_path).expect("Read metaflac tag");
     let vorbis = tag.vorbis_comments().expect("Vorbis comments");
 
-    let get_val = |k: &str| -> Option<String> {
-        vorbis.get(k).and_then(|vals| vals.first().cloned())
-    };
+    let get_val =
+        |k: &str| -> Option<String> { vorbis.get(k).and_then(|vals| vals.first().cloned()) };
 
-    assert_eq!(get_val("REPLAYGAIN_TRACK_GAIN"), Some("-4.50 dB".to_string()));
-    assert_eq!(get_val("REPLAYGAIN_TRACK_PEAK"), Some("0.988220".to_string()));
-    assert_eq!(get_val("REPLAYGAIN_ALBUM_GAIN"), Some("-3.80 dB".to_string()));
-    assert_eq!(get_val("REPLAYGAIN_ALBUM_PEAK"), Some("0.999120".to_string()));
-    assert_eq!(get_val("REPLAYGAIN_REFERENCE_LOUDNESS"), Some("-18.0 LUFS".to_string()));
+    assert_eq!(
+        get_val("REPLAYGAIN_TRACK_GAIN"),
+        Some("-4.50 dB".to_string())
+    );
+    assert_eq!(
+        get_val("REPLAYGAIN_TRACK_PEAK"),
+        Some("0.988220".to_string())
+    );
+    assert_eq!(
+        get_val("REPLAYGAIN_ALBUM_GAIN"),
+        Some("-3.80 dB".to_string())
+    );
+    assert_eq!(
+        get_val("REPLAYGAIN_ALBUM_PEAK"),
+        Some("0.999120".to_string())
+    );
+    assert_eq!(
+        get_val("REPLAYGAIN_REFERENCE_LOUDNESS"),
+        Some("-18.0 LUFS".to_string())
+    );
     assert_eq!(get_val("R128_TRACK_GAIN"), Some("-9.50 LU".to_string()));
     assert_eq!(get_val("LOUDNESS"), Some("-13.5".to_string()));
 }
@@ -272,12 +293,20 @@ fn test_mp4_itunnorm_calculation_and_format() {
     let itunnorm = calculate_itunnorm(-3.0, 0.988220, Some(-2.5), Some(0.995000));
 
     // Contract: starts with single leading space and 10 space-separated 8-digit hex values
-    assert!(itunnorm.starts_with(' '), "iTunNORM must start with a leading space");
+    assert!(
+        itunnorm.starts_with(' '),
+        "iTunNORM must start with a leading space"
+    );
     let parts: Vec<&str> = itunnorm.trim().split_whitespace().collect();
     assert_eq!(parts.len(), 10, "iTunNORM must have 10 hex tokens");
 
     for p in &parts {
-        assert_eq!(p.len(), 8, "Each token in iTunNORM must be 8 hex characters: {}", p);
+        assert_eq!(
+            p.len(),
+            8,
+            "Each token in iTunNORM must be 8 hex characters: {}",
+            p
+        );
         assert!(
             p.chars().all(|c| c.is_ascii_hexdigit()),
             "Token must be valid hexadecimal: {}",
@@ -306,7 +335,7 @@ async fn test_sqlite_persistence_and_query_loudness() {
             title, loudness, replaygain_track_gain, replaygain_track_peak,
             replaygain_album_gain, replaygain_album_peak
         ) VALUES (?, ?, ?, ?, ?, ?)
-        "#
+        "#,
     )
     .bind("Sweet Fade Track")
     .bind(-14.2)

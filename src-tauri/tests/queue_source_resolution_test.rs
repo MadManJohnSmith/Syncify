@@ -41,15 +41,31 @@ async fn create_test_db() -> SqlitePool {
 async fn test_1_track_with_exact_qobuz_source() {
     let db = create_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Qobuz Track', ?, 'USRC12200001') RETURNING id")
         .bind(album_id).fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)").bind(track_id).bind(artist_id).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'qobuz_exact_101', 'FLAC', 24, 96000, 150, 1)")
         .bind(track_id).execute(&db).await.unwrap();
@@ -96,15 +112,31 @@ async fn test_1_track_with_exact_qobuz_source() {
 async fn test_2_track_with_exact_tidal_source() {
     let db = create_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist 2') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album 2') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist 2') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album 2') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Tidal Track', ?, 'USRC12200002') RETURNING id")
         .bind(album_id).fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)").bind(track_id).bind(artist_id).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 3, 'tidal_exact_202', 'FLAC', 16, 44100, 100, 1)")
         .bind(track_id).execute(&db).await.unwrap();
@@ -151,8 +183,11 @@ async fn test_2_track_with_exact_tidal_source() {
 async fn test_3_track_without_track_sources_returns_source_identity_missing() {
     let db = create_test_db().await;
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Empty Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Empty Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Unresolved Track', ?, 'USRC12200003') RETURNING id")
         .bind(album_id).fetch_one(&db).await.unwrap();
 
@@ -190,8 +225,12 @@ async fn test_3_track_without_track_sources_returns_source_identity_missing() {
 async fn test_4_source_with_empty_service_track_id_returns_source_identity_missing() {
     let db = create_test_db().await;
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Empty TrackID Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title) VALUES ('Empty TrackID Album') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Empty STID Track', ?, 'USRC12200004') RETURNING id")
         .bind(album_id).fetch_one(&db).await.unwrap();
 
@@ -237,8 +276,11 @@ async fn test_5_multiple_sources_single_active_account_resolves_cleanly() {
     sqlx::query("INSERT INTO accounts (id, service_id, display_name, email, is_active) VALUES (301, 3, 'Tidal Active User', 'user@tidal.com', 1)")
         .execute(&db).await.unwrap();
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Multi Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Multi Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Multi Track', ?, 'USRC12200005') RETURNING id")
         .bind(album_id).fetch_one(&db).await.unwrap();
 
@@ -249,34 +291,18 @@ async fn test_5_multiple_sources_single_active_account_resolves_cleanly() {
         .bind(track_id).execute(&db).await.unwrap();
 
     let queue_id = perform_add_to_queue(
-        &db,
-        track_id,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+        &db, track_id, None, None, None, None, None, None, None, None, None, None, None, None,
+        None, None, None,
     )
     .await
     .expect("Should resolve cleanly to Tidal because only Tidal has an active account");
 
-    let row: (String, String) = sqlx::query_as(
-        "SELECT service_name, service_track_id FROM download_queue WHERE id = ?"
-    )
-    .bind(queue_id)
-    .fetch_one(&db)
-    .await
-    .unwrap();
+    let row: (String, String) =
+        sqlx::query_as("SELECT service_name, service_track_id FROM download_queue WHERE id = ?")
+            .bind(queue_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     assert_eq!(row.0, "tidal");
     assert_eq!(row.1, "tidal_src_502");
@@ -292,8 +318,11 @@ async fn test_6_multiple_sources_dual_provider_resolves_via_preferences() {
     sqlx::query("INSERT INTO accounts (id, service_id, display_name, email, is_active) VALUES (301, 3, 'Tidal Active', 'user@tidal.com', 1)")
         .execute(&db).await.unwrap();
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Competing Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Competing Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Competing Track', ?, 'USRC12200006') RETURNING id")
         .bind(album_id).fetch_one(&db).await.unwrap();
 
@@ -303,27 +332,16 @@ async fn test_6_multiple_sources_dual_provider_resolves_via_preferences() {
         .bind(track_id).execute(&db).await.unwrap();
 
     let result = perform_add_to_queue(
-        &db,
-        track_id,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+        &db, track_id, None, None, None, None, None, None, None, None, None, None, None, None,
+        None, None, None,
     )
     .await;
 
-    assert!(result.is_ok(), "Dual-provider track must succeed and resolve via service preference: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Dual-provider track must succeed and resolve via service preference: {:?}",
+        result.err()
+    );
     let queue_id = result.unwrap();
 
     let row: (String, String) = sqlx::query_as(
@@ -332,14 +350,17 @@ async fn test_6_multiple_sources_dual_provider_resolves_via_preferences() {
         FROM download_queue dq
         JOIN services s ON s.id = dq.service_id
         WHERE dq.id = ?
-        "#
+        "#,
     )
     .bind(queue_id)
     .fetch_one(&db)
     .await
     .unwrap();
 
-    assert_eq!(row.0, "qobuz", "Primary preference provider must be selected");
+    assert_eq!(
+        row.0, "qobuz",
+        "Primary preference provider must be selected"
+    );
     assert_eq!(row.1, "qobuz_601");
 }
 
@@ -347,8 +368,11 @@ async fn test_6_multiple_sources_dual_provider_resolves_via_preferences() {
 async fn test_7_source_locked_does_not_perform_unresolved_metadata_insertion() {
     let db = create_test_db().await;
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Locked Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Locked Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Locked Track', ?, 'USRC12200007') RETURNING id")
         .bind(album_id).fetch_one(&db).await.unwrap();
 
@@ -378,7 +402,7 @@ async fn test_7_source_locked_does_not_perform_unresolved_metadata_insertion() {
     .unwrap();
 
     let row: (Option<String>, Option<String>, i64) = sqlx::query_as(
-        "SELECT service_name, service_track_id, allow_fallback FROM download_queue WHERE id = ?"
+        "SELECT service_name, service_track_id, allow_fallback FROM download_queue WHERE id = ?",
     )
     .bind(queue_id)
     .fetch_one(&db)
@@ -387,15 +411,21 @@ async fn test_7_source_locked_does_not_perform_unresolved_metadata_insertion() {
 
     assert_eq!(row.0.as_deref(), Some("qobuz"));
     assert_eq!(row.1.as_deref(), Some("qobuz_locked_701"));
-    assert_eq!(row.2, 0, "allow_fallback must be 0 for source-locked queue item");
+    assert_eq!(
+        row.2, 0,
+        "allow_fallback must be 0 for source-locked queue item"
+    );
 }
 
 #[tokio::test]
 async fn test_8_stale_source_404_quarantined_by_audit() {
     let db = create_test_db().await;
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Stale Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Stale Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Stale Track', ?, 'USRC12200008') RETURNING id")
         .bind(album_id).fetch_one(&db).await.unwrap();
 
@@ -416,16 +446,25 @@ async fn test_8_stale_source_404_quarantined_by_audit() {
     .await
     .unwrap();
 
-    let report = perform_audit_download_queue(&db).await.expect("Audit should run cleanly");
-    assert_eq!(report.stale_source_count, 1, "404 should be classified as StaleSource in audit report");
-
-    let retry_count: i64 = sqlx::query_scalar("SELECT retry_count FROM download_queue WHERE id = ?")
-        .bind(queue_id)
-        .fetch_one(&db)
+    let report = perform_audit_download_queue(&db)
         .await
-        .unwrap();
+        .expect("Audit should run cleanly");
+    assert_eq!(
+        report.stale_source_count, 1,
+        "404 should be classified as StaleSource in audit report"
+    );
 
-    assert_eq!(retry_count, 99, "Stale source item should remain quarantined with retry_count=99");
+    let retry_count: i64 =
+        sqlx::query_scalar("SELECT retry_count FROM download_queue WHERE id = ?")
+            .bind(queue_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+    assert_eq!(
+        retry_count, 99,
+        "Stale source item should remain quarantined with retry_count=99"
+    );
 }
 
 #[tokio::test]
@@ -433,8 +472,11 @@ async fn test_9_ui_blocker_case_resolves_correctly_with_persisted_source() {
     let db = create_test_db().await;
 
     let track_id: i64 = 10638;
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('UI Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('UI Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO tracks (id, title, album_id, isrc) VALUES (?, 'UI Track 10638', ?, 'USRC122010638')")
         .bind(track_id).bind(album_id).execute(&db).await.unwrap();
@@ -485,47 +527,53 @@ async fn test_9_ui_blocker_case_resolves_correctly_with_persisted_source() {
 async fn test_10_perform_add_to_queue_defaults_allow_fallback_to_true() {
     let db = create_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Fallback Artist') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Fallback Album') RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&db).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Fallback Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Fallback Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Fallback Track', ?, 'USRC12209999') RETURNING id")
         .bind(album_id).fetch_one(&db).await.unwrap();
-    sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)").bind(track_id).bind(artist_id).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) VALUES (?, 2, 'qobuz_fb_101', 'FLAC', 1)")
         .bind(track_id).execute(&db).await.unwrap();
 
     // Enqueue with allow_fallback = None
     let queue_id = perform_add_to_queue(
-        &db,
-        track_id,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+        &db, track_id, None, None, None, None, None, None, None, None, None, None, None, None,
         None, // allow_fallback = None
-        None,
-        None,
+        None, None,
     )
     .await
     .expect("Enqueue must succeed");
 
-    let allow_fb: i64 = sqlx::query_scalar("SELECT allow_fallback FROM download_queue WHERE id = ?")
-        .bind(queue_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let allow_fb: i64 =
+        sqlx::query_scalar("SELECT allow_fallback FROM download_queue WHERE id = ?")
+            .bind(queue_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
-    assert_eq!(allow_fb, 1, "allow_fallback must default to 1 (true) when not specified");
+    assert_eq!(
+        allow_fb, 1,
+        "allow_fallback must default to 1 (true) when not specified"
+    );
 }

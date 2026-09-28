@@ -143,7 +143,10 @@ pub fn validate_safe_backup_export_path_with_bases(
     // 2. Reject path traversal sequences (.. or ParentDir)
     for component in target_path.components() {
         if matches!(component, std::path::Component::ParentDir) {
-            return Err("Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)".to_string());
+            return Err(
+                "Acceso denegado: secuencias de escape ('..') detectadas (sandbox violation)"
+                    .to_string(),
+            );
         }
     }
 
@@ -151,7 +154,9 @@ pub fn validate_safe_backup_export_path_with_bases(
     let file_name = target_path
         .file_name()
         .and_then(|f| f.to_str())
-        .ok_or_else(|| "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string())?;
+        .ok_or_else(|| {
+            "Acceso denegado: nombre de archivo no válido (sandbox violation)".to_string()
+        })?;
 
     if file_name.starts_with('.') {
         return Err("Acceso denegado: no se permite escribir archivos ocultos o de configuración (sandbox violation)".to_string());
@@ -188,25 +193,34 @@ pub fn validate_safe_backup_export_path_with_bases(
         || path_str.contains("/.gnupg")
         || path_str.contains("/.aws")
     {
-        return Err("Acceso denegado: ruta en directorio protegido del sistema (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: ruta en directorio protegido del sistema (sandbox violation)"
+                .to_string(),
+        );
     }
 
     if allowed_bases.is_empty() {
-        return Err("Acceso denegado: no se definieron directorios base permitidos (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: no se definieron directorios base permitidos (sandbox violation)"
+                .to_string(),
+        );
     }
 
     // 6. Lexical containment check against allowed bases
-    let matches_lexical = allowed_bases.iter().any(|base| target_path.starts_with(base));
+    let matches_lexical = allowed_bases
+        .iter()
+        .any(|base| target_path.starts_with(base));
     if !matches_lexical {
         return Err(
-            "Acceso denegado: la ruta está fuera de los directorios permitidos (sandbox violation)".to_string(),
+            "Acceso denegado: la ruta está fuera de los directorios permitidos (sandbox violation)"
+                .to_string(),
         );
     }
 
     // 7. Parent directory resolution and creation
-    let parent = target_path
-        .parent()
-        .ok_or_else(|| "Acceso denegado: ruta sin directorio padre válido (sandbox violation)".to_string())?;
+    let parent = target_path.parent().ok_or_else(|| {
+        "Acceso denegado: ruta sin directorio padre válido (sandbox violation)".to_string()
+    })?;
 
     if !parent.exists() {
         std::fs::create_dir_all(parent)
@@ -214,8 +228,13 @@ pub fn validate_safe_backup_export_path_with_bases(
     }
 
     // 8. Canonicalize parent directory and verify containment
-    let canonical_parent = std::fs::canonicalize(parent)
-        .map_err(|e| format!("Error al canonicalizar directorio {}: {}", parent.display(), e))?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+        format!(
+            "Error al canonicalizar directorio {}: {}",
+            parent.display(),
+            e
+        )
+    })?;
 
     let mut canonical_allowed_bases = Vec::new();
     for b in allowed_bases {
@@ -225,7 +244,10 @@ pub fn validate_safe_backup_export_path_with_bases(
         canonical_allowed_bases.push(b.clone());
     }
 
-    if !canonical_allowed_bases.iter().any(|base| canonical_parent.starts_with(base)) {
+    if !canonical_allowed_bases
+        .iter()
+        .any(|base| canonical_parent.starts_with(base))
+    {
         return Err("Acceso denegado: el directorio destino canonicalizado está fuera del sandbox permitido (sandbox violation)".to_string());
     }
 
@@ -237,13 +259,19 @@ pub fn validate_safe_backup_export_path_with_bases(
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false)
     {
-        return Err("Acceso denegado: no se permite sobreescribir enlaces simbólicos (sandbox violation)".to_string());
+        return Err(
+            "Acceso denegado: no se permite sobreescribir enlaces simbólicos (sandbox violation)"
+                .to_string(),
+        );
     }
 
     if safe_target.exists() {
         let canonical_target = std::fs::canonicalize(&safe_target)
             .map_err(|e| format!("Error al canonicalizar archivo existente: {}", e))?;
-        if !canonical_allowed_bases.iter().any(|base| canonical_target.starts_with(base)) {
+        if !canonical_allowed_bases
+            .iter()
+            .any(|base| canonical_target.starts_with(base))
+        {
             return Err("Acceso denegado: el archivo destino existente resuelve fuera del sandbox permitido (sandbox violation)".to_string());
         }
     }
@@ -252,7 +280,9 @@ pub fn validate_safe_backup_export_path_with_bases(
 }
 
 /// Helper to validate a backup export destination path against default allowed directories.
-pub fn validate_safe_backup_export_path(target_path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+pub fn validate_safe_backup_export_path(
+    target_path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
     let allowed_bases = get_allowed_backup_export_directories();
     validate_safe_backup_export_path_with_bases(target_path, &allowed_bases)
 }
@@ -264,12 +294,11 @@ pub async fn export_library(
     output_path: Option<String>,
 ) -> Result<ExportLibraryResult, String> {
     // 1. Query all artists
-    let artists_rows: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT name, favorite_at FROM artists ORDER BY name ASC"
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| format!("Failed to export artists: {}", e))?;
+    let artists_rows: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT name, favorite_at FROM artists ORDER BY name ASC")
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| format!("Failed to export artists: {}", e))?;
 
     let backup_artists: Vec<BackupArtistDto> = artists_rows
         .into_iter()
@@ -277,14 +306,20 @@ pub async fn export_library(
         .collect();
 
     // 2. Query all albums
-    let albums_rows: Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+    let albums_rows: Vec<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
         r#"
         SELECT a.title, art.name, a.upc, a.release_date, a.favorite_at
         FROM albums a
         LEFT JOIN album_artists aa ON aa.album_id = a.id
         LEFT JOIN artists art ON art.id = aa.artist_id
         ORDER BY a.title ASC
-        "#
+        "#,
     )
     .fetch_all(&state.db)
     .await
@@ -292,13 +327,15 @@ pub async fn export_library(
 
     let backup_albums: Vec<BackupAlbumDto> = albums_rows
         .into_iter()
-        .map(|(title, artist, upc, release_date, favorite_at)| BackupAlbumDto {
-            title,
-            artist: artist.unwrap_or_else(|| "Unknown Artist".to_string()),
-            upc,
-            release_date,
-            favorite_at,
-        })
+        .map(
+            |(title, artist, upc, release_date, favorite_at)| BackupAlbumDto {
+                title,
+                artist: artist.unwrap_or_else(|| "Unknown Artist".to_string()),
+                upc,
+                release_date,
+                favorite_at,
+            },
+        )
         .collect();
 
     // 3. Query all tracks with sources & downloads
@@ -317,7 +354,7 @@ pub async fn export_library(
         Option<String>,
     )> = sqlx::query_as(
         r#"
-        SELECT 
+        SELECT
             t.isrc,
             t.title,
             COALESCE(art.name, 'Unknown Artist') as artist,
@@ -338,7 +375,7 @@ pub async fn export_library(
         LEFT JOIN services s ON s.id = ts.service_id
         LEFT JOIN downloads d ON d.track_id = t.id
         ORDER BY t.title ASC
-        "#
+        "#,
     )
     .fetch_all(&state.db)
     .await
@@ -346,11 +383,11 @@ pub async fn export_library(
 
     let backup_tracks: Vec<BackupTrackDto> = tracks_rows
         .into_iter()
-        .map(|(isrc, title, artist, album, track_number, disc_number, duration_ms, explicit, favorite_at, service, service_track_id, downloaded_format)| {
-            BackupTrackDto {
+        .map(
+            |(
                 isrc,
                 title,
-                artist: artist.unwrap_or_else(|| "Unknown Artist".to_string()),
+                artist,
                 album,
                 track_number,
                 disc_number,
@@ -360,17 +397,31 @@ pub async fn export_library(
                 service,
                 service_track_id,
                 downloaded_format,
-            }
-        })
+            )| {
+                BackupTrackDto {
+                    isrc,
+                    title,
+                    artist: artist.unwrap_or_else(|| "Unknown Artist".to_string()),
+                    album,
+                    track_number,
+                    disc_number,
+                    duration_ms,
+                    explicit,
+                    favorite_at,
+                    service,
+                    service_track_id,
+                    downloaded_format,
+                }
+            },
+        )
         .collect();
 
     // 4. Query playlists
-    let playlists_rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, name, description FROM playlists ORDER BY name ASC"
-    )
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| format!("Failed to export playlists: {}", e))?;
+    let playlists_rows: Vec<(i64, String, Option<String>)> =
+        sqlx::query_as("SELECT id, name, description FROM playlists ORDER BY name ASC")
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| format!("Failed to export playlists: {}", e))?;
 
     let mut backup_playlists: Vec<BackupPlaylistDto> = Vec::new();
     for (pid, name, description) in playlists_rows {
@@ -381,7 +432,7 @@ pub async fn export_library(
             JOIN tracks t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?
             ORDER BY pt.position ASC
-            "#
+            "#,
         )
         .bind(pid)
         .fetch_all(&state.db)
@@ -427,7 +478,10 @@ pub async fn export_library(
         Some(p) => {
             let trimmed = p.trim();
             if trimmed.is_empty() {
-                return Err("Acceso denegado: la ruta de destino no puede estar vacía (sandbox violation)".to_string());
+                return Err(
+                    "Acceso denegado: la ruta de destino no puede estar vacía (sandbox violation)"
+                        .to_string(),
+                );
             }
             std::path::PathBuf::from(trimmed)
         }
@@ -448,8 +502,13 @@ pub async fn export_library(
         let _ = std::fs::create_dir_all(parent);
     }
 
-    std::fs::write(&dest_path, &final_json)
-        .map_err(|e| format!("Failed to write backup file to {}: {}", dest_path.display(), e))?;
+    std::fs::write(&dest_path, &final_json).map_err(|e| {
+        format!(
+            "Failed to write backup file to {}: {}",
+            dest_path.display(),
+            e
+        )
+    })?;
 
     let file_size_bytes = std::fs::metadata(&dest_path)
         .map(|m| m.len())
@@ -478,8 +537,8 @@ pub async fn import_library(
         return Err(format!("Backup file does not exist: {}", file_path));
     }
 
-    let content = std::fs::read_to_string(p)
-        .map_err(|e| format!("Failed to read backup file: {}", e))?;
+    let content =
+        std::fs::read_to_string(p).map_err(|e| format!("Failed to read backup file: {}", e))?;
 
     let manifest: LibraryBackupManifest = serde_json::from_str(&content)
         .map_err(|e| format!("Invalid backup manifest format: {}", e))?;
@@ -501,7 +560,10 @@ pub async fn import_library(
     }
 
     // Atomic SQLite Transaction
-    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await
+    let mut tx = state
+        .db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .map_err(|e| format!("Failed to start database transaction: {}", e))?;
 
     let mut artists_imported = 0i64;
@@ -518,7 +580,7 @@ pub async fn import_library(
             VALUES (?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 favorite_at = COALESCE(excluded.favorite_at, artists.favorite_at)
-            "#
+            "#,
         )
         .bind(&artist.name)
         .bind(&artist.favorite_at)
@@ -536,22 +598,21 @@ pub async fn import_library(
     // 2. Import Albums
     for album in &manifest.albums {
         // Ensure artist exists
-        let artist_id: i64 = match sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
-            .bind(&album.artist)
-            .fetch_optional(&mut *tx)
-            .await
-            .ok()
-            .flatten()
-        {
-            Some(id) => id,
-            None => {
-                sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
+        let artist_id: i64 =
+            match sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
+                .bind(&album.artist)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten()
+            {
+                Some(id) => id,
+                None => sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
                     .bind(&album.artist)
                     .fetch_one(&mut *tx)
                     .await
-                    .map_err(|e| format!("Failed to create artist {}: {}", album.artist, e))?
-            }
-        };
+                    .map_err(|e| format!("Failed to create artist {}: {}", album.artist, e))?,
+            };
 
         let album_id: i64 = match sqlx::query_scalar::<_, i64>("SELECT id FROM albums WHERE title = ?")
             .bind(&album.title)
@@ -585,13 +646,12 @@ pub async fn import_library(
         };
 
         // Link album_artists
-        let _ = sqlx::query(
-            "INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)"
-        )
-        .bind(album_id)
-        .bind(artist_id)
-        .execute(&mut *tx)
-        .await;
+        let _ =
+            sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+                .bind(album_id)
+                .bind(artist_id)
+                .execute(&mut *tx)
+                .await;
 
         albums_imported += 1;
         if album.favorite_at.is_some() {
@@ -602,22 +662,21 @@ pub async fn import_library(
     // 3. Import Tracks
     for track in &manifest.tracks {
         // Resolve artist
-        let artist_id: i64 = match sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
-            .bind(&track.artist)
-            .fetch_optional(&mut *tx)
-            .await
-            .ok()
-            .flatten()
-        {
-            Some(id) => id,
-            None => {
-                sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
+        let artist_id: i64 =
+            match sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
+                .bind(&track.artist)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten()
+            {
+                Some(id) => id,
+                None => sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
                     .bind(&track.artist)
                     .fetch_one(&mut *tx)
                     .await
-                    .map_err(|e| format!("Failed to create artist {}: {}", track.artist, e))?
-            }
-        };
+                    .map_err(|e| format!("Failed to create artist {}: {}", track.artist, e))?,
+            };
 
         // Resolve album if any
         let album_id: Option<i64> = if let Some(alb_name) = &track.album {
@@ -733,7 +792,7 @@ pub async fn import_library(
     for pl in &manifest.playlists {
         // Find or create playlist
         let pl_id: i64 = sqlx::query_scalar(
-            "INSERT INTO playlists (account_id, name, description) VALUES (1, ?, ?) RETURNING id"
+            "INSERT INTO playlists (account_id, name, description) VALUES (1, ?, ?) RETURNING id",
         )
         .bind(&pl.name)
         .bind(&pl.description)
@@ -763,7 +822,8 @@ pub async fn import_library(
         playlists_imported += 1;
     }
 
-    tx.commit().await
+    tx.commit()
+        .await
         .map_err(|e| format!("Failed to commit import transaction: {}", e))?;
 
     Ok(ImportLibraryResult {

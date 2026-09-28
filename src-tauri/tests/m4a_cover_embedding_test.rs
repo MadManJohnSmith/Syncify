@@ -55,9 +55,12 @@ fn create_synthetic_m4a(path: &PathBuf) {
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             path.to_str().unwrap(),
         ])
         .output()
@@ -70,16 +73,16 @@ fn create_synthetic_m4a(path: &PathBuf) {
 fn create_synthetic_jpeg_bytes() -> Vec<u8> {
     // Minimal valid 1x1 JPEG image bytes
     vec![
-        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48,
-        0x00, 0x48, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08,
-        0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
-        0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20, 0x24, 0x2E, 0x27, 0x20,
-        0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29, 0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27,
-        0x39, 0x3D, 0x38, 0x32, 0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01,
-        0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
-        0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
-        0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F,
-        0x00, 0xBF, 0x80, 0xFF, 0xD9,
+        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00,
+        0x48, 0x00, 0x48, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06,
+        0x05, 0x08, 0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B,
+        0x0C, 0x19, 0x12, 0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20,
+        0x24, 0x2E, 0x27, 0x20, 0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29, 0x2C, 0x30, 0x31,
+        0x34, 0x34, 0x34, 0x1F, 0x27, 0x39, 0x3D, 0x38, 0x32, 0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF,
+        0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00,
+        0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+        0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0xBF, 0x80, 0xFF, 0xD9,
     ]
 }
 
@@ -134,14 +137,18 @@ fn test_m4a_cover_embedding_and_readback() {
     };
 
     // 1. Write tags and verify report
-    let report = apply_and_verify_mp4_tags(&file_path, &meta).expect("Tagging and verification must succeed");
+    let report = apply_and_verify_mp4_tags(&file_path, &meta)
+        .expect("Tagging and verification must succeed");
     assert!(report.file_exists);
     assert!(report.tags_match);
     assert!(report.title_matches);
     assert!(report.artist_matches);
     assert!(report.album_matches);
     assert!(report.track_number_matches);
-    assert!(report.cover_present, "Cover must be physically present in report");
+    assert!(
+        report.cover_present,
+        "Cover must be physically present in report"
+    );
     assert!(report.lyrics_present);
     assert!(report.isrc_present);
     assert!(report.musicbrainz_present);
@@ -155,25 +162,51 @@ fn test_m4a_cover_embedding_and_readback() {
     assert_eq!(read_tag.bpm(), Some(120));
 
     // Verify covr atom
-    assert!(read_tag.artwork().is_some() || read_tag.artworks().next().is_some(), "Artwork must be present via mp4ameta");
-    let read_artwork = read_tag.artwork().or_else(|| read_tag.artworks().next()).expect("Artwork must exist");
-    assert_eq!(read_artwork.data, cover_bytes.as_slice(), "Artwork bytes in covr atom must match written bytes");
+    assert!(
+        read_tag.artwork().is_some() || read_tag.artworks().next().is_some(),
+        "Artwork must be present via mp4ameta"
+    );
+    let read_artwork = read_tag
+        .artwork()
+        .or_else(|| read_tag.artworks().next())
+        .expect("Artwork must exist");
+    assert_eq!(
+        read_artwork.data,
+        cover_bytes.as_slice(),
+        "Artwork bytes in covr atom must match written bytes"
+    );
 
     // 3. Verify country and language freeform tags
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     // (supersedes the S177 alpha-2 contract of c8cc6a6 cited here before).
     let country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
     let read_country = read_tag.strings_of(&country_ident).next();
-    assert_eq!(read_country, Some("Germany"), "Country must carry canonical name 'Germany'");
+    assert_eq!(
+        read_country,
+        Some("Germany"),
+        "Country must carry canonical name 'Germany'"
+    );
 
-    let rel_country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
+    let rel_country_ident =
+        mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
     let read_rel_country = read_tag.strings_of(&rel_country_ident).next();
-    assert_eq!(read_rel_country, Some("Germany"), "RELEASECOUNTRY must carry canonical name 'Germany'");
+    assert_eq!(
+        read_rel_country,
+        Some("Germany"),
+        "RELEASECOUNTRY must carry canonical name 'Germany'"
+    );
 
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     let read_lang = read_tag.strings_of(&mp4ameta::Fourcc(*b"\xa9lng")).next();
-    assert_eq!(read_lang, Some("English"), "Language must be in standard ©lng atom as the display name 'English'");
+    assert_eq!(
+        read_lang,
+        Some("English"),
+        "Language must be in standard ©lng atom as the display name 'English'"
+    );
 
     let freeform_lang_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
-    assert!(read_tag.strings_of(&freeform_lang_ident).next().is_none(), "Freeform LANGUAGE atom must be absent");
+    assert!(
+        read_tag.strings_of(&freeform_lang_ident).next().is_none(),
+        "Freeform LANGUAGE atom must be absent"
+    );
 }

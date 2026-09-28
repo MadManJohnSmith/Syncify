@@ -24,17 +24,15 @@
 //! - Append-only recovery audit history
 //! - Idempotent second restart (0 mutations)
 
+use sqlx::sqlite::SqlitePoolOptions;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
-use syncify_core_domain::{
-    OperationJournalEntry, OperationPhase, OperationStatus, OperationType,
-};
+use syncify_core_domain::{OperationJournalEntry, OperationPhase, OperationStatus, OperationType};
 use syncify_tauri_lib::services::operation_recovery::{
-    create_operation_journal, reconcile_startup_operations, get_recovery_audit_summary,
+    create_operation_journal, get_recovery_audit_summary, reconcile_startup_operations,
 };
+use tempfile::TempDir;
 
 /// Helper to generate a minimal valid FLAC file (fLaC magic header + minimal streaminfo block)
 fn create_valid_flac_file(path: &Path) {
@@ -57,7 +55,8 @@ fn create_corrupt_part_file(path: &Path) {
         let _ = std::fs::create_dir_all(parent);
     }
     let mut file = File::create(path).expect("Create corrupt part file");
-    file.write_all(b"INCOMPLETE_STREAM_PAYLOAD_CORRUPT").expect("Write corrupt bytes");
+    file.write_all(b"INCOMPLETE_STREAM_PAYLOAD_CORRUPT")
+        .expect("Write corrupt bytes");
     file.flush().expect("Flush corrupt part file");
 }
 
@@ -101,21 +100,29 @@ async fn test_fault_injection_boundary_a_after_journal_creation() {
     create_operation_journal(&pool, &entry).await.unwrap();
 
     // Startup Reconciliation
-    let summary = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
     assert_eq!(summary.active_operations_found, 1);
     assert_eq!(summary.interrupted_retryable_count, 1);
 
     // Verify journal status transitioned from Started -> Interrupted
-    let journal_status: String = sqlx::query_scalar("SELECT status FROM operation_journal WHERE operation_id = ?")
-        .bind("op-fault-a-01")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let journal_status: String =
+        sqlx::query_scalar("SELECT status FROM operation_journal WHERE operation_id = ?")
+            .bind("op-fault-a-01")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(journal_status, "interrupted");
 
     // Idempotent second restart
-    let summary_second = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
-    assert_eq!(summary_second.active_operations_found, 0, "Second restart must find 0 active operations");
+    let summary_second = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
+    assert_eq!(
+        summary_second.active_operations_found, 0,
+        "Second restart must find 0 active operations"
+    );
 }
 
 #[tokio::test]
@@ -136,7 +143,7 @@ async fn test_fault_injection_boundary_b_and_c_during_transfer_and_staging() {
 
     // Insert track row first to satisfy FK
     let tid: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, duration_ms) VALUES ('Test Track BC', 180000) RETURNING id"
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Test Track BC', 180000) RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -166,7 +173,12 @@ async fn test_fault_injection_boundary_b_and_c_during_transfer_and_staging() {
         checkpoint_at: "".to_string(),
         status: OperationStatus::Checkpointed,
         input_identity: Some(r#"{"serviceTrackId":"134683067"}"#.to_string()),
-        expected_output_path: Some(temp.path().join("Tidal Track.flac").to_string_lossy().to_string()),
+        expected_output_path: Some(
+            temp.path()
+                .join("Tidal Track.flac")
+                .to_string_lossy()
+                .to_string(),
+        ),
         staging_path: Some(staging_file.to_string_lossy().to_string()),
         file_baseline: None,
         db_transaction_state: None,
@@ -179,9 +191,14 @@ async fn test_fault_injection_boundary_b_and_c_during_transfer_and_staging() {
     create_operation_journal(&pool, &entry).await.unwrap();
 
     // Startup Reconciliation
-    let summary = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
     assert_eq!(summary.cleaned_staging_files, 1);
-    assert!(!staging_file.exists(), "Corrupt staging file must be cleaned up on restart");
+    assert!(
+        !staging_file.exists(),
+        "Corrupt staging file must be cleaned up on restart"
+    );
 
     // Queue item reset to queued
     let q_status: String = sqlx::query_scalar("SELECT status FROM download_queue WHERE id = ?")
@@ -189,7 +206,10 @@ async fn test_fault_injection_boundary_b_and_c_during_transfer_and_staging() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(q_status, "queued", "Queue item must be safely reset to queued state");
+    assert_eq!(
+        q_status, "queued",
+        "Queue item must be safely reset to queued state"
+    );
 
     // Audit record present
     let audit = get_recovery_audit_summary(&pool).await.unwrap();
@@ -215,7 +235,7 @@ async fn test_fault_injection_boundary_f_after_tagging_before_promotion() {
     let dest_file = temp.path().join("Music").join("Artist - Track.flac");
 
     let tid: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, duration_ms) VALUES ('Test Track F', 180000) RETURNING id"
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Test Track F', 180000) RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -257,9 +277,14 @@ async fn test_fault_injection_boundary_f_after_tagging_before_promotion() {
     create_operation_journal(&pool, &entry).await.unwrap();
 
     // Startup Reconciliation should complete promotion without redownloading!
-    let summary = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
     assert_eq!(summary.recovered_count, 1);
-    assert!(dest_file.exists(), "Validated staging file must be promoted to destination");
+    assert!(
+        dest_file.exists(),
+        "Validated staging file must be promoted to destination"
+    );
     assert!(!staging_file.exists(), "Staging file moved to destination");
 
     // Check downloads table inserted and queue complete
@@ -296,7 +321,7 @@ async fn test_fault_injection_boundary_g_and_h_after_promotion_before_db_commit(
     assert!(dest_file.exists());
 
     let tid: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, duration_ms) VALUES ('Test Track GH', 180000) RETURNING id"
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Test Track GH', 180000) RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -338,14 +363,17 @@ async fn test_fault_injection_boundary_g_and_h_after_promotion_before_db_commit(
     create_operation_journal(&pool, &entry).await.unwrap();
 
     // Reconciliation should detect existing valid physical audio, create downloads row, mark recovered
-    let summary = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
-    assert_eq!(summary.recovered_count, 1);
-
-    let dl_row: (i64, String, String) = sqlx::query_as("SELECT track_id, file_path, file_format FROM downloads WHERE track_id = ?")
-        .bind(tid)
-        .fetch_one(&pool)
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
         .await
         .unwrap();
+    assert_eq!(summary.recovered_count, 1);
+
+    let dl_row: (i64, String, String) =
+        sqlx::query_as("SELECT track_id, file_path, file_format FROM downloads WHERE track_id = ?")
+            .bind(tid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(dl_row.0, tid);
     assert_eq!(dl_row.1, dest_file.to_string_lossy().to_string());
     assert_eq!(dl_row.2, "FLAC");
@@ -358,7 +386,9 @@ async fn test_fault_injection_boundary_g_and_h_after_promotion_before_db_commit(
     assert_eq!(q_status, "complete");
 
     // Second restart is 100% idempotent and does 0 new downloads rows
-    let summary_second = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
+    let summary_second = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
     assert_eq!(summary_second.active_operations_found, 0);
     let dl_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE track_id = ?")
         .bind(tid)
@@ -407,14 +437,17 @@ async fn test_fault_injection_boundary_i_and_j_repair_crash() {
 
     create_operation_journal(&pool, &entry).await.unwrap();
 
-    let summary = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
-    assert_eq!(summary.active_operations_found, 1);
-
-    let journal_status: String = sqlx::query_scalar("SELECT status FROM operation_journal WHERE operation_id = ?")
-        .bind("op-fault-ij-01")
-        .fetch_one(&pool)
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
         .await
         .unwrap();
+    assert_eq!(summary.active_operations_found, 1);
+
+    let journal_status: String =
+        sqlx::query_scalar("SELECT status FROM operation_journal WHERE operation_id = ?")
+            .bind("op-fault-ij-01")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(journal_status, "rolled_back");
 }
 
@@ -457,13 +490,16 @@ async fn test_fault_injection_boundary_k_l_m_import_and_enrichment_crash() {
 
     create_operation_journal(&pool, &entry).await.unwrap();
 
-    let summary = reconcile_startup_operations(&pool, Some(temp.path())).await.unwrap();
-    assert_eq!(summary.interrupted_retryable_count, 1);
-
-    let journal_status: String = sqlx::query_scalar("SELECT status FROM operation_journal WHERE operation_id = ?")
-        .bind("op-fault-klm-01")
-        .fetch_one(&pool)
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
         .await
         .unwrap();
+    assert_eq!(summary.interrupted_retryable_count, 1);
+
+    let journal_status: String =
+        sqlx::query_scalar("SELECT status FROM operation_journal WHERE operation_id = ?")
+            .bind("op-fault-klm-01")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(journal_status, "interrupted");
 }

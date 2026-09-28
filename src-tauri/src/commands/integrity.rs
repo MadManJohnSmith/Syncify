@@ -42,12 +42,11 @@ pub async fn perform_run_integrity_audit(
     };
 
     // 1. Audit downloaded files in SQLite against physical disk
-    let downloads: Vec<(i64, Option<i64>, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, track_id, file_path, file_format FROM downloads"
-    )
-    .fetch_all(db)
-    .await
-    .map_err(|e| format!("Failed to query downloads: {}", e))?;
+    let downloads: Vec<(i64, Option<i64>, String, Option<String>)> =
+        sqlx::query_as("SELECT id, track_id, file_path, file_format FROM downloads")
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("Failed to query downloads: {}", e))?;
 
     report.total_tracks_scanned = downloads.len() as i64;
     let mut known_file_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -57,7 +56,10 @@ pub async fn perform_run_integrity_audit(
         known_file_paths.insert(file_path.clone());
 
         if !p.exists() {
-            report.missing_files.push(format!("File registered in DB does not exist on disk: {}", file_path));
+            report.missing_files.push(format!(
+                "File registered in DB does not exist on disk: {}",
+                file_path
+            ));
             report.is_healthy = false;
             continue;
         }
@@ -66,29 +68,40 @@ pub async fn perform_run_integrity_audit(
         match std::fs::metadata(p) {
             Ok(meta) => {
                 if meta.len() == 0 {
-                    report.corrupt_or_zero_byte_files.push(format!("Zero-byte file detected: {}", file_path));
+                    report
+                        .corrupt_or_zero_byte_files
+                        .push(format!("Zero-byte file detected: {}", file_path));
                     report.is_healthy = false;
                 } else if meta.len() >= 4 {
                     // Check magic bytes
                     if let Ok(bytes) = std::fs::read(p) {
                         let is_flac = bytes.starts_with(b"fLaC");
-                        let is_m4a = bytes.len() >= 8 && (&bytes[4..8] == b"ftyp" || &bytes[0..4] == b"ftyp");
-                        let is_mp3 = bytes.starts_with(b"ID3") || (bytes.len() >= 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0);
+                        let is_m4a = bytes.len() >= 8
+                            && (&bytes[4..8] == b"ftyp" || &bytes[0..4] == b"ftyp");
+                        let is_mp3 = bytes.starts_with(b"ID3")
+                            || (bytes.len() >= 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0);
 
                         if !is_flac && !is_m4a && !is_mp3 {
-                            report.corrupt_or_zero_byte_files.push(format!("Invalid audio container magic header: {}", file_path));
+                            report.corrupt_or_zero_byte_files.push(format!(
+                                "Invalid audio container magic header: {}",
+                                file_path
+                            ));
                             report.is_healthy = false;
                         } else {
                             report.verified_files += 1;
                         }
                     } else {
-                        report.corrupt_or_zero_byte_files.push(format!("Unreadable file: {}", file_path));
+                        report
+                            .corrupt_or_zero_byte_files
+                            .push(format!("Unreadable file: {}", file_path));
                         report.is_healthy = false;
                     }
                 }
             }
             Err(e) => {
-                report.missing_files.push(format!("Could not read metadata for {}: {}", file_path, e));
+                report
+                    .missing_files
+                    .push(format!("Could not read metadata for {}: {}", file_path, e));
                 report.is_healthy = false;
             }
         }
@@ -97,17 +110,27 @@ pub async fn perform_run_integrity_audit(
     // 2. Check for abandoned staging (.part, .partial) and orphan audio files in staging / output directory
     let search_dir = download_dir
         .or_else(|| dirs::audio_dir().map(|p| p.to_string_lossy().to_string()))
-        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()))
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        })
         .unwrap_or_else(|| ".".to_string());
 
     let search_path = std::path::Path::new(&search_dir);
     if search_path.exists() {
-        for entry in walkdir::WalkDir::new(search_path).max_depth(10).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(search_path)
+            .max_depth(10)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let path = entry.path();
             if path.is_file() {
                 let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
                 if ext.eq_ignore_ascii_case("part") || ext.eq_ignore_ascii_case("partial") {
-                    report.abandoned_staging_files.push(path.to_string_lossy().to_string());
+                    report
+                        .abandoned_staging_files
+                        .push(path.to_string_lossy().to_string());
                     report.is_healthy = false;
                 } else if ext.eq_ignore_ascii_case("flac")
                     || ext.eq_ignore_ascii_case("m4a")
@@ -129,15 +152,17 @@ pub async fn perform_run_integrity_audit(
 
     // 3. Database referential consistency checks
     // 3a. Stuck downloading tasks in queue
-    let stuck_queue: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT id, track_id FROM download_queue WHERE status = 'downloading'"
-    )
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+    let stuck_queue: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT id, track_id FROM download_queue WHERE status = 'downloading'")
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
 
     for (qid, tid) in stuck_queue {
-        report.database_inconsistencies.push(format!("Queue item #{} (track #{}) stuck in 'downloading' status", qid, tid));
+        report.database_inconsistencies.push(format!(
+            "Queue item #{} (track #{}) stuck in 'downloading' status",
+            qid, tid
+        ));
     }
 
     // 3b. Tracks referencing non-existent albums
@@ -149,7 +174,10 @@ pub async fn perform_run_integrity_audit(
     .unwrap_or_default();
 
     for (tid, title) in orphan_tracks {
-        report.database_inconsistencies.push(format!("Track #{} ('{}') references non-existent album", tid, title));
+        report.database_inconsistencies.push(format!(
+            "Track #{} ('{}') references non-existent album",
+            tid, title
+        ));
         report.is_healthy = false;
     }
 
@@ -174,11 +202,10 @@ pub async fn perform_repair_integrity_issues(
     let mut cleaned_db = 0i64;
 
     // Reset stuck queue items to queued
-    let res = sqlx::query(
-        "UPDATE download_queue SET status = 'queued' WHERE status = 'downloading'"
-    )
-    .execute(db)
-    .await;
+    let res =
+        sqlx::query("UPDATE download_queue SET status = 'queued' WHERE status = 'downloading'")
+            .execute(db)
+            .await;
 
     if let Ok(r) = res {
         cleaned_db += r.rows_affected() as i64;
@@ -192,21 +219,38 @@ pub async fn perform_repair_integrity_issues(
                 .map_err(|e| format!("Failed to resolve staging path: {}", e))?;
             let staging_dir = std::path::PathBuf::from(&eff.staging_root);
             if !staging_dir.exists() {
-                std::fs::create_dir_all(&staging_dir)
-                    .map_err(|e| format!("Failed to create staging directory '{}': {}", staging_dir.display(), e))?;
+                std::fs::create_dir_all(&staging_dir).map_err(|e| {
+                    format!(
+                        "Failed to create staging directory '{}': {}",
+                        staging_dir.display(),
+                        e
+                    )
+                })?;
             }
-            let canonical_staging = std::fs::canonicalize(&staging_dir)
-                .map_err(|e| format!("Failed to canonicalize staging directory '{}': {}", staging_dir.display(), e))?;
+            let canonical_staging = std::fs::canonicalize(&staging_dir).map_err(|e| {
+                format!(
+                    "Failed to canonicalize staging directory '{}': {}",
+                    staging_dir.display(),
+                    e
+                )
+            })?;
 
             for file in files {
                 let trimmed = file.trim();
                 if trimmed.is_empty() {
-                    tracing::warn!("Path traversal attempt detected: empty path in staging purge list");
-                    return Err("Path traversal attempt detected: empty path in staging purge list".to_string());
+                    tracing::warn!(
+                        "Path traversal attempt detected: empty path in staging purge list"
+                    );
+                    return Err(
+                        "Path traversal attempt detected: empty path in staging purge list"
+                            .to_string(),
+                    );
                 }
 
                 let p = std::path::Path::new(trimmed);
-                if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                if p.components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
                     tracing::warn!(
                         "Path traversal attempt detected: path '{}' contains parent directory traversal ('..')",
                         file
@@ -241,8 +285,13 @@ pub async fn perform_repair_integrity_issues(
                     ));
                 }
 
-                std::fs::remove_file(&canonical_file)
-                    .map_err(|e| format!("Failed to remove staging file '{}': {}", canonical_file.display(), e))?;
+                std::fs::remove_file(&canonical_file).map_err(|e| {
+                    format!(
+                        "Failed to remove staging file '{}': {}",
+                        canonical_file.display(),
+                        e
+                    )
+                })?;
                 purged += 1;
             }
         }
@@ -251,7 +300,10 @@ pub async fn perform_repair_integrity_issues(
     Ok(IntegrityRepairResult {
         purged_staging_files: purged,
         cleaned_database_entries: cleaned_db,
-        message: format!("Repaired {} database items and purged {} staging files", cleaned_db, purged),
+        message: format!(
+            "Repaired {} database items and purged {} staging files",
+            cleaned_db, purged
+        ),
     })
 }
 

@@ -97,13 +97,24 @@ async fn test_canonical_sqlx_migration_0055_and_0056_lifecycle_and_idempotency()
     .await
     .unwrap();
 
-    assert_eq!(rows_55_56.len(), 2, "Must have exactly 2 new migration rows");
+    assert_eq!(
+        rows_55_56.len(),
+        2,
+        "Must have exactly 2 new migration rows"
+    );
 
     // Check migration 55
     assert_eq!(rows_55_56[0].0, 55);
     assert_eq!(rows_55_56[0].1, "account auth telemetry and dedupe");
-    assert!(rows_55_56[0].2, "Migration 55 must be marked success = true");
-    let hex_55: String = rows_55_56[0].3.iter().map(|b| format!("{:02X}", b)).collect();
+    assert!(
+        rows_55_56[0].2,
+        "Migration 55 must be marked success = true"
+    );
+    let hex_55: String = rows_55_56[0]
+        .3
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect();
     assert_eq!(
         hex_55,
         "68097CB98B9596B6B957453DE254F2F2272F38164124FCE624852683217CE4A7D8DF0EA6F57CB1F54CA5CCC6EF42FEAD"
@@ -112,8 +123,15 @@ async fn test_canonical_sqlx_migration_0055_and_0056_lifecycle_and_idempotency()
     // Check migration 56
     assert_eq!(rows_55_56[1].0, 56);
     assert_eq!(rows_55_56[1].1, "track display and disambiguator");
-    assert!(rows_55_56[1].2, "Migration 56 must be marked success = true");
-    let hex_56: String = rows_55_56[1].3.iter().map(|b| format!("{:02X}", b)).collect();
+    assert!(
+        rows_55_56[1].2,
+        "Migration 56 must be marked success = true"
+    );
+    let hex_56: String = rows_55_56[1]
+        .3
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect();
     assert_eq!(
         hex_56,
         "0DFE64BC27306563E46BBCDE3FBD26E99851F22E7A415627B1B281A11B6B6EF26200D7A6DFDD5D1B8171E13D6D6350EC"

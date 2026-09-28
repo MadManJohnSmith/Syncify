@@ -71,10 +71,7 @@ fn test_domain_credits_role_and_name_separation() {
         sanitize_artist_name("Vocoder\r - Daft Punk\r\n"),
         "Daft Punk"
     );
-    assert_eq!(
-        sanitize_artist_name("  Tony Castle\t \r\n "),
-        "Tony Castle"
-    );
+    assert_eq!(sanitize_artist_name("  Tony Castle\t \r\n "), "Tony Castle");
 
     // 5. Multi-entry string parsing
     let credits = parse_credits_string(
@@ -106,7 +103,10 @@ async fn test_sqlite_migration_0080_purge_and_triggers() {
         }
     }
     // We can run the complete migrator:
-    migrator.run(&pool).await.expect("Migrations must apply cleanly");
+    migrator
+        .run(&pool)
+        .await
+        .expect("Migrations must apply cleanly");
 
     // Recurrence prevention triggers must reject inserting \r, \n, or \t
     let insert_cr = sqlx::query("INSERT INTO artists (name) VALUES ('Bad\rArtist')")
@@ -140,9 +140,10 @@ async fn test_sqlite_migration_0080_purge_and_triggers() {
     assert!(insert_clean.is_ok(), "Clean artist name must succeed");
 
     // Update with control character must be rejected
-    let update_cr = sqlx::query("UPDATE artists SET name = 'Invalid\rName' WHERE name = 'Clean Valid Artist'")
-        .execute(&pool)
-        .await;
+    let update_cr =
+        sqlx::query("UPDATE artists SET name = 'Invalid\rName' WHERE name = 'Clean Valid Artist'")
+            .execute(&pool)
+            .await;
     assert!(
         update_cr.is_err(),
         "Trigger must reject updating artist with carriage return"
@@ -176,16 +177,18 @@ async fn test_search_and_dashboard_library_hardening() {
 
     // 1. Seed artists:
     // Artist 1: "Daft Punk" - linked to a track in track_artists
-    let daft_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Daft Punk') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let daft_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Daft Punk') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Artist 2: "Radiohead" - linked to an album in album_artists
-    let radio_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let radio_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Radiohead') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Artist 3: "Miles Davis" - marked as favorite
     let _miles_id: i64 = sqlx::query_scalar(
@@ -196,16 +199,18 @@ async fn test_search_and_dashboard_library_hardening() {
     .unwrap();
 
     // Artist 4: "Tony Castle" - technical credit ONLY (in track_credits, NOT track_artists, NOT album_artists, NOT favorite)
-    let tony_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Tony Castle') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let tony_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Tony Castle') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Seed Track & Album
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('OK Computer') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('OK Computer') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
         .bind(album_id)
         .bind(radio_id)
@@ -213,10 +218,12 @@ async fn test_search_and_dashboard_library_hardening() {
         .await
         .unwrap();
 
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, duration_ms) VALUES ('One More Time', 320000) RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms) VALUES ('One More Time', 320000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
         .bind(track_id)
         .bind(daft_id)
@@ -225,12 +232,14 @@ async fn test_search_and_dashboard_library_hardening() {
         .unwrap();
 
     // Tony Castle is in track_credits for the track
-    sqlx::query("INSERT INTO track_credits (track_id, artist_id, role) VALUES (?, ?, 'Recording Engineer')")
-        .bind(track_id)
-        .bind(tony_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO track_credits (track_id, artist_id, role) VALUES (?, ?, 'Recording Engineer')",
+    )
+    .bind(track_id)
+    .bind(tony_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Setup mock Tauri app & state
     let app = tauri::test::mock_app();

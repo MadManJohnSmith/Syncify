@@ -64,7 +64,9 @@ impl PipelineError {
     /// Machine-readable classification code.
     pub fn error_code(&self) -> &'static str {
         match self {
-            PipelineError::TrackUnresolved { .. } | PipelineError::NotFound { .. } => "TrackUnresolved",
+            PipelineError::TrackUnresolved { .. } | PipelineError::NotFound { .. } => {
+                "TrackUnresolved"
+            }
             PipelineError::RequiresAuth(_) => "RequiresAuth",
             PipelineError::PlaybackUnauthorized { .. } => "PlaybackUnauthorized",
             PipelineError::SourceUnavailable { .. } => "SourceUnavailable",
@@ -85,21 +87,50 @@ impl std::fmt::Display for PipelineError {
                 write!(f, "Track unresolved on {}: {}", provider, query)
             }
             PipelineError::RequiresAuth(r) => write!(f, "Authentication required: {}", r),
-            PipelineError::PlaybackUnauthorized { provider, http_status, sub_status, message } => {
+            PipelineError::PlaybackUnauthorized {
+                provider,
+                http_status,
+                sub_status,
+                message,
+            } => {
                 if let Some(sub) = sub_status {
-                    write!(f, "Playback unauthorized on {} (HTTP {}, subStatus {}): {}", provider, http_status, sub, message)
+                    write!(
+                        f,
+                        "Playback unauthorized on {} (HTTP {}, subStatus {}): {}",
+                        provider, http_status, sub, message
+                    )
                 } else {
-                    write!(f, "Playback unauthorized on {} (HTTP {}): {}", provider, http_status, message)
+                    write!(
+                        f,
+                        "Playback unauthorized on {} (HTTP {}): {}",
+                        provider, http_status, message
+                    )
                 }
             }
             PipelineError::SourceUnavailable { provider, message } => {
                 write!(f, "Provider {} unavailable: {}", provider, message)
             }
-            PipelineError::RejectedQuality { requested, obtained, reason } => {
-                write!(f, "Quality rejected (requested: {}, obtained: {}): {}", requested, obtained, reason)
+            PipelineError::RejectedQuality {
+                requested,
+                obtained,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "Quality rejected (requested: {}, obtained: {}): {}",
+                    requested, obtained, reason
+                )
             }
-            PipelineError::NetworkError { provider, endpoint, message } => {
-                write!(f, "Network error on {} [{}]: {}", provider, endpoint, message)
+            PipelineError::NetworkError {
+                provider,
+                endpoint,
+                message,
+            } => {
+                write!(
+                    f,
+                    "Network error on {} [{}]: {}",
+                    provider, endpoint, message
+                )
             }
             PipelineError::NotFound { provider, query } => {
                 write!(f, "Track not found on {}: {}", provider, query)
@@ -118,29 +149,83 @@ impl std::fmt::Display for PipelineError {
     }
 }
 
-
 /// Central taxonomy of pipeline and catalog errors for import, download, and UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "category", rename_all = "snake_case")]
 pub enum ErrorTaxonomy {
-    AuthInvalid { message: String },
-    AuthRefreshable { message: String },
-    EntitlementDenied { provider: String, reason: String },
-    RejectedQuality { requested: String, obtained: String, reason: String },
-    RegionRestricted { provider: String, country: String },
-    UnavailableFromProvider { provider: String, item_id: String, reason: String },
-    RateLimited { provider: String, retry_after_sec: Option<u64> },
-    TemporaryNetworkFailure { endpoint: String, message: String },
-    Timeout { endpoint: String, elapsed_ms: u64 },
-    MalformedProviderPayload { provider: String, field: String, reason: String },
-    IdentityConflict { field: String, existing_value: String, conflicting_value: String },
-    MetadataResolutionFailed { provider: String, query: String, reason: String },
-    AudioValidationFailed { format: String, reason: String },
-    TaggingFailed { stage: String, reason: String },
-    FilesystemFailed { path: String, reason: String },
-    DatabaseFailed { operation: String, reason: String },
-    RepairInputChanged { reason: String },
-    Cancelled { reason: String },
+    AuthInvalid {
+        message: String,
+    },
+    AuthRefreshable {
+        message: String,
+    },
+    EntitlementDenied {
+        provider: String,
+        reason: String,
+    },
+    RejectedQuality {
+        requested: String,
+        obtained: String,
+        reason: String,
+    },
+    RegionRestricted {
+        provider: String,
+        country: String,
+    },
+    UnavailableFromProvider {
+        provider: String,
+        item_id: String,
+        reason: String,
+    },
+    RateLimited {
+        provider: String,
+        retry_after_sec: Option<u64>,
+    },
+    TemporaryNetworkFailure {
+        endpoint: String,
+        message: String,
+    },
+    Timeout {
+        endpoint: String,
+        elapsed_ms: u64,
+    },
+    MalformedProviderPayload {
+        provider: String,
+        field: String,
+        reason: String,
+    },
+    IdentityConflict {
+        field: String,
+        existing_value: String,
+        conflicting_value: String,
+    },
+    MetadataResolutionFailed {
+        provider: String,
+        query: String,
+        reason: String,
+    },
+    AudioValidationFailed {
+        format: String,
+        reason: String,
+    },
+    TaggingFailed {
+        stage: String,
+        reason: String,
+    },
+    FilesystemFailed {
+        path: String,
+        reason: String,
+    },
+    DatabaseFailed {
+        operation: String,
+        reason: String,
+    },
+    RepairInputChanged {
+        reason: String,
+    },
+    Cancelled {
+        reason: String,
+    },
 }
 
 impl ErrorTaxonomy {
@@ -156,7 +241,9 @@ impl ErrorTaxonomy {
 
     pub fn retry_delay_sec(&self) -> u64 {
         match self {
-            ErrorTaxonomy::RateLimited { retry_after_sec, .. } => retry_after_sec.unwrap_or(30),
+            ErrorTaxonomy::RateLimited {
+                retry_after_sec, ..
+            } => retry_after_sec.unwrap_or(30),
             ErrorTaxonomy::TemporaryNetworkFailure { .. } => 3,
             ErrorTaxonomy::Timeout { .. } => 5,
             ErrorTaxonomy::AuthRefreshable { .. } => 1,
@@ -194,23 +281,77 @@ impl ErrorTaxonomy {
 
     pub fn ui_message(&self) -> String {
         match self {
-            ErrorTaxonomy::AuthInvalid { message } => format!("Authentication invalid: {}", message),
-            ErrorTaxonomy::AuthRefreshable { message } => format!("Refreshing session: {}", message),
-            ErrorTaxonomy::EntitlementDenied { provider, reason } => format!("Access denied on {}: {}", provider, reason),
-            ErrorTaxonomy::RejectedQuality { requested, obtained, reason } => format!("Quality {} rejected (obtained {}): {}", requested, obtained, reason),
-            ErrorTaxonomy::RegionRestricted { provider, country } => format!("Content unavailable in {} on {}", country, provider),
-            ErrorTaxonomy::UnavailableFromProvider { provider, item_id, reason } => format!("Item {} unavailable on {}: {}", item_id, provider, reason),
-            ErrorTaxonomy::RateLimited { provider, retry_after_sec } => format!("Rate limit on {}, wait {}s", provider, retry_after_sec.unwrap_or(30)),
-            ErrorTaxonomy::TemporaryNetworkFailure { message, .. } => format!("Network error: {}", message),
-            ErrorTaxonomy::Timeout { endpoint, elapsed_ms } => format!("Timeout after {}ms on {}", elapsed_ms, endpoint),
-            ErrorTaxonomy::MalformedProviderPayload { provider, field, reason } => format!("Malformed {} from {}: {}", field, provider, reason),
-            ErrorTaxonomy::IdentityConflict { field, existing_value, conflicting_value } => format!("Conflict on {}: existing '{}' vs candidate '{}'", field, existing_value, conflicting_value),
-            ErrorTaxonomy::MetadataResolutionFailed { query, reason, .. } => format!("Metadata failed for {}: {}", query, reason),
-            ErrorTaxonomy::AudioValidationFailed { format, reason } => format!("Invalid {} audio: {}", format, reason),
-            ErrorTaxonomy::TaggingFailed { stage, reason } => format!("Tagging error in {}: {}", stage, reason),
-            ErrorTaxonomy::FilesystemFailed { path, reason } => format!("Disk error at {}: {}", path, reason),
-            ErrorTaxonomy::DatabaseFailed { operation, reason } => format!("Database error during {}: {}", operation, reason),
-            ErrorTaxonomy::RepairInputChanged { reason } => format!("Repair input changed: {}", reason),
+            ErrorTaxonomy::AuthInvalid { message } => {
+                format!("Authentication invalid: {}", message)
+            }
+            ErrorTaxonomy::AuthRefreshable { message } => {
+                format!("Refreshing session: {}", message)
+            }
+            ErrorTaxonomy::EntitlementDenied { provider, reason } => {
+                format!("Access denied on {}: {}", provider, reason)
+            }
+            ErrorTaxonomy::RejectedQuality {
+                requested,
+                obtained,
+                reason,
+            } => format!(
+                "Quality {} rejected (obtained {}): {}",
+                requested, obtained, reason
+            ),
+            ErrorTaxonomy::RegionRestricted { provider, country } => {
+                format!("Content unavailable in {} on {}", country, provider)
+            }
+            ErrorTaxonomy::UnavailableFromProvider {
+                provider,
+                item_id,
+                reason,
+            } => format!("Item {} unavailable on {}: {}", item_id, provider, reason),
+            ErrorTaxonomy::RateLimited {
+                provider,
+                retry_after_sec,
+            } => format!(
+                "Rate limit on {}, wait {}s",
+                provider,
+                retry_after_sec.unwrap_or(30)
+            ),
+            ErrorTaxonomy::TemporaryNetworkFailure { message, .. } => {
+                format!("Network error: {}", message)
+            }
+            ErrorTaxonomy::Timeout {
+                endpoint,
+                elapsed_ms,
+            } => format!("Timeout after {}ms on {}", elapsed_ms, endpoint),
+            ErrorTaxonomy::MalformedProviderPayload {
+                provider,
+                field,
+                reason,
+            } => format!("Malformed {} from {}: {}", field, provider, reason),
+            ErrorTaxonomy::IdentityConflict {
+                field,
+                existing_value,
+                conflicting_value,
+            } => format!(
+                "Conflict on {}: existing '{}' vs candidate '{}'",
+                field, existing_value, conflicting_value
+            ),
+            ErrorTaxonomy::MetadataResolutionFailed { query, reason, .. } => {
+                format!("Metadata failed for {}: {}", query, reason)
+            }
+            ErrorTaxonomy::AudioValidationFailed { format, reason } => {
+                format!("Invalid {} audio: {}", format, reason)
+            }
+            ErrorTaxonomy::TaggingFailed { stage, reason } => {
+                format!("Tagging error in {}: {}", stage, reason)
+            }
+            ErrorTaxonomy::FilesystemFailed { path, reason } => {
+                format!("Disk error at {}: {}", path, reason)
+            }
+            ErrorTaxonomy::DatabaseFailed { operation, reason } => {
+                format!("Database error during {}: {}", operation, reason)
+            }
+            ErrorTaxonomy::RepairInputChanged { reason } => {
+                format!("Repair input changed: {}", reason)
+            }
             ErrorTaxonomy::Cancelled { reason } => format!("Operation cancelled: {}", reason),
         }
     }
@@ -254,9 +395,15 @@ impl std::fmt::Display for RequiresAuthReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RequiresAuthReason::NoCredentialsStored => write!(f, "No active credentials stored"),
-            RequiresAuthReason::TokenExpired => write!(f, "User token has expired and refresh failed"),
-            RequiresAuthReason::InvalidPayload => write!(f, "Token payload invalid for requested endpoint"),
-            RequiresAuthReason::DeviceCodePending => write!(f, "OAuth device code authorization pending"),
+            RequiresAuthReason::TokenExpired => {
+                write!(f, "User token has expired and refresh failed")
+            }
+            RequiresAuthReason::InvalidPayload => {
+                write!(f, "Token payload invalid for requested endpoint")
+            }
+            RequiresAuthReason::DeviceCodePending => {
+                write!(f, "OAuth device code authorization pending")
+            }
             RequiresAuthReason::Unauthorized(msg) => write!(f, "Unauthorized: {}", msg),
         }
     }
@@ -328,19 +475,27 @@ mod tests {
 
     #[test]
     fn test_error_taxonomy_comprehensive() {
-        let auth_inv = ErrorTaxonomy::AuthInvalid { message: "Token revoked".to_string() };
+        let auth_inv = ErrorTaxonomy::AuthInvalid {
+            message: "Token revoked".to_string(),
+        };
         assert!(!auth_inv.is_retryable());
         assert!(auth_inv.invalidates_credentials());
         assert!(auth_inv.requires_user_action());
         assert_eq!(auth_inv.log_severity(), "WARN");
 
-        let rate_lim = ErrorTaxonomy::RateLimited { provider: "spotify".to_string(), retry_after_sec: Some(45) };
+        let rate_lim = ErrorTaxonomy::RateLimited {
+            provider: "spotify".to_string(),
+            retry_after_sec: Some(45),
+        };
         assert!(rate_lim.is_retryable());
         assert_eq!(rate_lim.retry_delay_sec(), 45);
         assert_eq!(rate_lim.max_attempts(), 3);
         assert!(!rate_lim.invalidates_credentials());
 
-        let timeout = ErrorTaxonomy::Timeout { endpoint: "api.tidal.com".to_string(), elapsed_ms: 10000 };
+        let timeout = ErrorTaxonomy::Timeout {
+            endpoint: "api.tidal.com".to_string(),
+            elapsed_ms: 10000,
+        };
         assert!(timeout.is_retryable());
         assert_eq!(timeout.retry_delay_sec(), 5);
 
@@ -353,4 +508,3 @@ mod tests {
         assert!(rejected_q.is_terminal());
     }
 }
-

@@ -9,7 +9,8 @@ use crate::download::lyrics::{
     ResolutionStatus,
 };
 use crate::download::progress::{
-    ByteStreamTracker, DownloadPhase, DownloadPhaseTracker, DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
+    ByteStreamTracker, DownloadPhase, DownloadPhaseTracker, DownloadProgress, DownloadRequest,
+    DownloadResult, PROGRESS_TRACKER,
 };
 use crate::services::animated_cover::{resolve_and_download_animated_cover, AnimatedCoverStatus};
 use crate::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
@@ -155,7 +156,10 @@ pub fn map_quality_to_format_id(quality: &str) -> &'static str {
 }
 
 /// Map quality string to allowed Qobuz format_ids in cascade order (identical to CLI)
-pub fn map_quality_to_allowed_format_ids_with_lossy_fallback(quality: &str, allow_lossy_fallback: bool) -> &'static [&'static str] {
+pub fn map_quality_to_allowed_format_ids_with_lossy_fallback(
+    quality: &str,
+    allow_lossy_fallback: bool,
+) -> &'static [&'static str] {
     match (quality.to_uppercase().trim(), allow_lossy_fallback) {
         ("27" | "HI_RES_LOSSLESS" | "24-192" | "24/192", true) => &["27", "7", "6", "5"],
         ("27" | "HI_RES_LOSSLESS" | "24-192" | "24/192", false) => &["27", "7", "6"],
@@ -174,14 +178,22 @@ pub fn map_quality_to_allowed_format_ids_with_lossy_fallback(quality: &str, allo
 }
 
 /// Build pure deterministic MD5 signature for `track/getFileUrl`
-pub fn build_request_signature(format_id: &str, track_id: &str, ts: &str, app_secret: &str) -> String {
+pub fn build_request_signature(
+    format_id: &str,
+    track_id: &str,
+    ts: &str,
+    app_secret: &str,
+) -> String {
     let raw = format!(
         "trackgetFileUrlformat_id{}intentstreamtrack_id{}{}{}",
         format_id, track_id, ts, app_secret
     );
     let digest = md5::compute(raw.as_bytes());
     let sig = format!("{:x}", digest);
-    debug!("[Qobuz] Generated signature for format={} track_id={}", format_id, track_id);
+    debug!(
+        "[Qobuz] Generated signature for format={} track_id={}",
+        format_id, track_id
+    );
     sig
 }
 
@@ -226,7 +238,10 @@ impl QobuzDownloader {
     }
 
     /// Resolve Qobuz user auth token exclusively from SQLite accounts table (same logic as service.rs)
-    pub async fn resolve_token(&self, db_opt: Option<&sqlx::SqlitePool>) -> Result<String, QobuzAuthStatus> {
+    pub async fn resolve_token(
+        &self,
+        db_opt: Option<&sqlx::SqlitePool>,
+    ) -> Result<String, QobuzAuthStatus> {
         let pool = match db_opt {
             Some(p) => p,
             None => {
@@ -238,10 +253,10 @@ impl QobuzDownloader {
 
         // Query active Qobuz account from SQLite (identical to service.rs:load_service_credentials)
         let account: Result<(i64, String), _> = sqlx::query_as(
-            "SELECT a.id, a.credentials_json FROM accounts a 
-             JOIN services s ON s.id = a.service_id 
-             WHERE s.name = 'qobuz' AND a.is_active = 1 
-             ORDER BY a.id DESC LIMIT 1"
+            "SELECT a.id, a.credentials_json FROM accounts a
+             JOIN services s ON s.id = a.service_id
+             WHERE s.name = 'qobuz' AND a.is_active = 1
+             ORDER BY a.id DESC LIMIT 1",
         )
         .fetch_one(pool)
         .await;
@@ -259,35 +274,37 @@ impl QobuzDownloader {
         let decrypted = match crate::crypto::decrypt(&encrypted_json) {
             Ok(d) => d,
             Err(e) => {
-                return Err(QobuzAuthStatus::RequiresAuth(
-                    format!("Failed to decrypt Qobuz credentials: {}. Please re-authenticate in Syncify.", e),
-                ));
+                return Err(QobuzAuthStatus::RequiresAuth(format!(
+                    "Failed to decrypt Qobuz credentials: {}. Please re-authenticate in Syncify.",
+                    e
+                )));
             }
         };
 
         let creds: serde_json::Value = match serde_json::from_str(&decrypted) {
             Ok(c) => c,
             Err(e) => {
-                return Err(QobuzAuthStatus::RequiresAuth(
-                    format!("Invalid Qobuz credentials JSON: {}. Please re-authenticate in Syncify.", e),
-                ));
+                return Err(QobuzAuthStatus::RequiresAuth(format!(
+                    "Invalid Qobuz credentials JSON: {}. Please re-authenticate in Syncify.",
+                    e
+                )));
             }
         };
 
-/// Validate that a Qobuz auth token is usable (filters browser cookie artifacts)
-fn is_viable_qobuz_token(token: &str) -> bool {
-    let t = token.trim();
-    if t.is_empty() || t == "browser_cookies" || t == "null" || t == "undefined" {
-        return false;
-    }
-    if t.starts_with('{') || t.starts_with('[') || t.starts_with("eyJ") {
-        return false;
-    }
-    if t.len() < 16 {
-        return false;
-    }
-    !t.chars().any(|c| c.is_whitespace())
-}
+        /// Validate that a Qobuz auth token is usable (filters browser cookie artifacts)
+        fn is_viable_qobuz_token(token: &str) -> bool {
+            let t = token.trim();
+            if t.is_empty() || t == "browser_cookies" || t == "null" || t == "undefined" {
+                return false;
+            }
+            if t.starts_with('{') || t.starts_with('[') || t.starts_with("eyJ") {
+                return false;
+            }
+            if t.len() < 16 {
+                return false;
+            }
+            !t.chars().any(|c| c.is_whitespace())
+        }
 
         // Extract token matching service.rs logic
         let stored_token = creds["user_auth_token"]
@@ -315,7 +332,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         if let (Some(user), Some(pass)) = (username, password) {
             if !user.trim().is_empty() && !pass.trim().is_empty() {
                 info!("[Qobuz] Performing direct login with stored username/password...");
-                let client = crate::services::QobuzClient::new(self.app_id.clone(), self.app_secret.clone());
+                let client =
+                    crate::services::QobuzClient::new(self.app_id.clone(), self.app_secret.clone());
                 match client.login(user, pass).await {
                     Ok(fresh_token) => return Ok(fresh_token),
                     Err(e) => {
@@ -366,10 +384,13 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         allow_fallback: bool,
     ) -> Result<StreamResolution> {
         if user_auth_token.trim().is_empty() {
-            return Err(anyhow!("Cannot query official Qobuz stream URL: user_auth_token is empty"));
+            return Err(anyhow!(
+                "Cannot query official Qobuz stream URL: user_auth_token is empty"
+            ));
         }
 
-        let allowed_formats = map_quality_to_allowed_format_ids_with_lossy_fallback(quality, allow_fallback);
+        let allowed_formats =
+            map_quality_to_allowed_format_ids_with_lossy_fallback(quality, allow_fallback);
         let track_id_str = track_id.to_string();
         let mut last_error = String::new();
 
@@ -402,9 +423,14 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             match response {
                 Ok(resp) => {
                     let status = resp.status();
-                    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+                    if status == reqwest::StatusCode::UNAUTHORIZED
+                        || status == reqwest::StatusCode::FORBIDDEN
+                    {
                         let error_body = resp.text().await.unwrap_or_default();
-                        warn!("[Qobuz] Token expired or unauthorized (HTTP {}): {}", status, error_body);
+                        warn!(
+                            "[Qobuz] Token expired or unauthorized (HTTP {}): {}",
+                            status, error_body
+                        );
                         return Err(anyhow!("RequiresAuth: Qobuz token expired (HTTP {}). Please re-authenticate via Settings > Accounts.", status));
                     }
 
@@ -432,7 +458,10 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
         }
 
-        Err(anyhow!("Qobuz official getFileUrl failed for all allowed formats: {}", last_error))
+        Err(anyhow!(
+            "Qobuz official getFileUrl failed for all allowed formats: {}",
+            last_error
+        ))
     }
 
     /// Secondary proxy fallback stream endpoint (never receives user_auth_token)
@@ -451,12 +480,19 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 format!("{}{}&quality={}", api, track_id, format_id)
             };
 
-            let result = self.client.get(&url).timeout(Duration::from_secs(15)).send().await;
+            let result = self
+                .client
+                .get(&url)
+                .timeout(Duration::from_secs(15))
+                .send()
+                .await;
             if let Ok(resp) = result {
                 if resp.status().is_success() {
                     if let Ok(stream_resp) = resp.json::<StreamResponse>().await {
                         if let Some(download_url) = stream_resp.url {
-                            if !download_url.trim().is_empty() && !download_url.to_lowercase().contains("error") {
+                            if !download_url.trim().is_empty()
+                                && !download_url.to_lowercase().contains("error")
+                            {
                                 info!("[Qobuz] ✓ Acquired fallback stream URL via proxy {}", api);
                                 return Ok(StreamResolution {
                                     url: download_url,
@@ -482,12 +518,18 @@ fn is_viable_qobuz_token(token: &str) -> bool {
     ) -> Result<StreamResolution> {
         if let Some(token) = user_auth_token {
             if !token.trim().is_empty() {
-                match self.get_official_download_url(track_id, quality, token, allow_fallback).await {
+                match self
+                    .get_official_download_url(track_id, quality, token, allow_fallback)
+                    .await
+                {
                     Ok(res) => return Ok(res),
                     Err(e) => {
                         let err_str = e.to_string();
                         // If token is expired (RequiresAuth / 401 / 403), fail fast so user can re-authenticate
-                        if err_str.contains("RequiresAuth") || err_str.contains("401") || err_str.contains("403") {
+                        if err_str.contains("RequiresAuth")
+                            || err_str.contains("401")
+                            || err_str.contains("403")
+                        {
                             return Err(e);
                         }
                         warn!("[Qobuz] Official stream resolution failed: {}. Falling back to proxy...", e);
@@ -688,11 +730,18 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Qobuz track/get failed for ID {}: HTTP {}", track_id, response.status()));
+            return Err(anyhow!(
+                "Qobuz track/get failed for ID {}: HTTP {}",
+                track_id,
+                response.status()
+            ));
         }
 
         let track: QobuzTrack = response.json().await?;
-        info!("[Qobuz] ✓ Resolved exact track entity: '{}' (ID: {})", track.title, track.id);
+        info!(
+            "[Qobuz] ✓ Resolved exact track entity: '{}' (ID: {})",
+            track.title, track.id
+        );
         Ok(track)
     }
 
@@ -729,11 +778,18 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         let response = req.send().await?;
 
         if !response.status().is_success() {
-            return Err(anyhow!("Qobuz album/get failed for ID {}: HTTP {}", album_id, response.status()));
+            return Err(anyhow!(
+                "Qobuz album/get failed for ID {}: HTTP {}",
+                album_id,
+                response.status()
+            ));
         }
 
         let album: QobuzAlbum = response.json().await?;
-        info!("[Qobuz] ✓ Resolved album entity: '{}' (ID: {:?})", album.title, album.id);
+        info!(
+            "[Qobuz] ✓ Resolved album entity: '{}' (ID: {:?})",
+            album.title, album.id
+        );
         Ok(album)
     }
 
@@ -796,7 +852,11 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
                         if !is_transient || attempt >= max_retries {
                             if is_transient {
-                                return Err(anyhow!("NetworkExhausted: HTTP {} after {} attempts", status, attempt));
+                                return Err(anyhow!(
+                                    "NetworkExhausted: HTTP {} after {} attempts",
+                                    status,
+                                    attempt
+                                ));
                             } else {
                                 return Err(anyhow!("Download failed: HTTP {}", status));
                             }
@@ -808,7 +868,11 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                             None
                         };
 
-                        let backoff = calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
+                        let backoff = calculate_backoff_with_jitter(
+                            attempt - 1,
+                            initial_backoff,
+                            max_backoff,
+                        );
                         let wait_dur = server_retry.unwrap_or(backoff);
                         warn!(
                             "[Qobuz] Transient HTTP status {} for item {}. Retrying in {:?} (attempt {}/{})",
@@ -816,8 +880,13 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                         );
                         tokio::time::sleep(wait_dur).await;
 
-                        if let Some((downloader, track_id, quality, token_ref, allow_fallback)) = stream_url_provider {
-                            if let Ok(new_stream) = downloader.get_download_url(track_id, quality, token_ref, allow_fallback).await {
+                        if let Some((downloader, track_id, quality, token_ref, allow_fallback)) =
+                            stream_url_provider
+                        {
+                            if let Ok(new_stream) = downloader
+                                .get_download_url(track_id, quality, token_ref, allow_fallback)
+                                .await
+                            {
                                 current_url = new_stream.url;
                             }
                         }
@@ -830,18 +899,28 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                     let err_msg = e.to_string();
 
                     if attempt >= max_retries {
-                        return Err(anyhow!("NetworkExhausted: Network error after {} attempts: {}", max_retries, err_msg));
+                        return Err(anyhow!(
+                            "NetworkExhausted: Network error after {} attempts: {}",
+                            max_retries,
+                            err_msg
+                        ));
                     }
 
-                    let backoff = calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
+                    let backoff =
+                        calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
                     warn!(
                         "[Qobuz] Network error for item {}: '{}'. Retrying in {:?} (attempt {}/{})",
                         item_id, err_msg, backoff, attempt, max_retries
                     );
                     tokio::time::sleep(backoff).await;
 
-                    if let Some((downloader, track_id, quality, token_ref, allow_fallback)) = stream_url_provider {
-                        if let Ok(new_stream) = downloader.get_download_url(track_id, quality, token_ref, allow_fallback).await {
+                    if let Some((downloader, track_id, quality, token_ref, allow_fallback)) =
+                        stream_url_provider
+                    {
+                        if let Ok(new_stream) = downloader
+                            .get_download_url(track_id, quality, token_ref, allow_fallback)
+                            .await
+                        {
                             current_url = new_stream.url;
                         }
                     }
@@ -898,18 +977,28 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 let _ = tokio::fs::remove_file(staging_path).await;
 
                 if attempt >= max_retries {
-                    return Err(anyhow!("NetworkExhausted: Stream decoding error after {} attempts: {}", max_retries, err_msg));
+                    return Err(anyhow!(
+                        "NetworkExhausted: Stream decoding error after {} attempts: {}",
+                        max_retries,
+                        err_msg
+                    ));
                 }
 
-                let backoff = calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
+                let backoff =
+                    calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
                 warn!(
                     "[Qobuz] Stream error for item {}: '{}'. Retrying in {:?} (attempt {}/{})",
                     item_id, err_msg, backoff, attempt, max_retries
                 );
                 tokio::time::sleep(backoff).await;
 
-                if let Some((downloader, track_id, quality, token_ref, allow_fallback)) = stream_url_provider {
-                    if let Ok(new_stream) = downloader.get_download_url(track_id, quality, token_ref, allow_fallback).await {
+                if let Some((downloader, track_id, quality, token_ref, allow_fallback)) =
+                    stream_url_provider
+                {
+                    if let Ok(new_stream) = downloader
+                        .get_download_url(track_id, quality, token_ref, allow_fallback)
+                        .await
+                    {
                         current_url = new_stream.url;
                     }
                 }
@@ -920,9 +1009,14 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 attempt += 1;
                 let _ = tokio::fs::remove_file(staging_path).await;
                 if attempt >= max_retries {
-                    return Err(anyhow!("NetworkExhausted: Flush error after {} attempts: {}", max_retries, e));
+                    return Err(anyhow!(
+                        "NetworkExhausted: Flush error after {} attempts: {}",
+                        max_retries,
+                        e
+                    ));
                 }
-                let backoff = calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
+                let backoff =
+                    calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
                 tokio::time::sleep(backoff).await;
                 continue;
             }
@@ -957,35 +1051,61 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         phase_tracker.start_phase(DownloadPhase::ResolveStream);
         let track = if let Some(ref s_track_id) = request.service_track_id {
             if let Ok(tid) = s_track_id.parse::<i64>() {
-                info!("[Qobuz] Resolving exact entity for service_track_id={}", tid);
+                info!(
+                    "[Qobuz] Resolving exact entity for service_track_id={}",
+                    tid
+                );
                 self.get_track_by_id(tid, token_ref).await?
             } else {
-                return Err(anyhow!("SourceIdentityMissing: Non-numeric service_track_id '{}'", s_track_id));
+                return Err(anyhow!(
+                    "SourceIdentityMissing: Non-numeric service_track_id '{}'",
+                    s_track_id
+                ));
             }
         } else {
             // Only allow ISRC search if explicitly authorized with BOTH allow_fallback and smart_studio_origin
             if !request.allow_fallback || !request.smart_studio_origin {
-                return Err(anyhow!("SourceIdentityMissing: No locked service_track_id and allow_fallback=false"));
+                return Err(anyhow!(
+                    "SourceIdentityMissing: No locked service_track_id and allow_fallback=false"
+                ));
             }
             if let Some(isrc) = &request.isrc {
-                info!("[Qobuz] Using resolution_strategy='isrc_fallback' for isrc={}", isrc);
+                info!(
+                    "[Qobuz] Using resolution_strategy='isrc_fallback' for isrc={}",
+                    isrc
+                );
                 match self.search_by_isrc(isrc, duration_sec, token_ref).await {
                     Ok(t) => t,
                     Err(_) => {
-                        self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec, token_ref)
-                            .await?
+                        self.search_by_metadata(
+                            &request.track_name,
+                            &request.artist_name,
+                            duration_sec,
+                            token_ref,
+                        )
+                        .await?
                     }
                 }
             } else {
                 info!("[Qobuz] Using resolution_strategy='metadata_fallback' for title='{}' artist='{}'", request.track_name, request.artist_name);
-                self.search_by_metadata(&request.track_name, &request.artist_name, duration_sec, token_ref)
-                    .await?
+                self.search_by_metadata(
+                    &request.track_name,
+                    &request.artist_name,
+                    duration_sec,
+                    token_ref,
+                )
+                .await?
             }
         };
 
         // 3. Resolve Stream URL (tries allowed formats in cascade order)
         let stream_res = self
-            .get_download_url(track.id, &request.quality, token_ref, request.allow_fallback)
+            .get_download_url(
+                track.id,
+                &request.quality,
+                token_ref,
+                request.allow_fallback,
+            )
             .await?;
 
         // 4. Staging path setup
@@ -996,7 +1116,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         if !nomedia_path.exists() {
             let _ = tokio::fs::write(&nomedia_path, b"").await;
         }
-        let staging_path = staging_dir.join(format!("{}.part", sanitize_filename(&request.item_id)));
+        let staging_path =
+            staging_dir.join(format!("{}.part", sanitize_filename(&request.item_id)));
 
         // 5. Transfer phase (Audio streaming to disk until flush)
         phase_tracker.start_phase(DownloadPhase::Transfer);
@@ -1005,7 +1126,13 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 &stream_res.url,
                 &staging_path,
                 item_id,
-                Some((self, track.id, &request.quality, token_ref, request.allow_fallback)),
+                Some((
+                    self,
+                    track.id,
+                    &request.quality,
+                    token_ref,
+                    request.allow_fallback,
+                )),
             )
             .await
         {
@@ -1018,7 +1145,9 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         if downloaded_bytes == 0 {
             let _ = tokio::fs::remove_file(&staging_path).await;
-            return Err(anyhow!("NetworkExhausted: Qobuz downloaded audio payload is 0 bytes"));
+            return Err(anyhow!(
+                "NetworkExhausted: Qobuz downloaded audio payload is 0 bytes"
+            ));
         }
         phase_tracker.set_transfer_metrics(downloaded_bytes, "network");
 
@@ -1029,7 +1158,9 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         if is_flac && !AudioByteValidator::is_flac_magic(&header_bytes) {
             let _ = tokio::fs::remove_file(&staging_path).await;
-            return Err(anyhow!("Downloaded audio failed bit-perfect FLAC magic verification"));
+            return Err(anyhow!(
+                "Downloaded audio failed bit-perfect FLAC magic verification"
+            ));
         }
 
         // F3.4: Inspect STREAMINFO header from downloaded FLAC to extract true physical bit_depth and sample_rate
@@ -1040,13 +1171,22 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 if let Some(info) = tag.get_streaminfo() {
                     (info.bits_per_sample as i32, info.sample_rate as f64)
                 } else {
-                    (track.max_bit_depth.unwrap_or(16), track.max_sample_rate.unwrap_or(44.1) * 1000.0)
+                    (
+                        track.max_bit_depth.unwrap_or(16),
+                        track.max_sample_rate.unwrap_or(44.1) * 1000.0,
+                    )
                 }
             } else {
-                (track.max_bit_depth.unwrap_or(16), track.max_sample_rate.unwrap_or(44.1) * 1000.0)
+                (
+                    track.max_bit_depth.unwrap_or(16),
+                    track.max_sample_rate.unwrap_or(44.1) * 1000.0,
+                )
             }
         } else {
-            (track.max_bit_depth.unwrap_or(16), track.max_sample_rate.unwrap_or(44.1) * 1000.0)
+            (
+                track.max_bit_depth.unwrap_or(16),
+                track.max_sample_rate.unwrap_or(44.1) * 1000.0,
+            )
         };
 
         // 7. Tagging with metaflac (VORBIS_COMMENT and PICTURE) + Full Enrichment
@@ -1104,7 +1244,10 @@ fn is_viable_qobuz_token(token: &str) -> bool {
         let barcode_val = track.album.as_ref().and_then(|a| a.upc.clone());
         let explicit_val = track.parental_warning;
         let copyright_val = track.copyright.clone();
-        let performers_val = track.performers.clone().or_else(|| Some(artist_name.clone()));
+        let performers_val = track
+            .performers
+            .clone()
+            .or_else(|| Some(artist_name.clone()));
         let work_val = track.work.clone();
 
         let mut has_lyrics_cached = false;
@@ -1160,7 +1303,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                     Ok(resp) if resp.status().is_success() => {
                         if let Ok(bytes) = resp.bytes().await {
                             if !bytes.is_empty() {
-                                let cover_staging = staging_dir.join(format!("{}.cover.jpg", sanitize_filename(item_id)));
+                                let cover_staging = staging_dir
+                                    .join(format!("{}.cover.jpg", sanitize_filename(item_id)));
                                 let _ = tokio::fs::write(&cover_staging, &bytes).await;
                                 staged_cover_jpg_path = Some(cover_staging);
                                 raw_jpeg_bytes = Some(bytes.to_vec());
@@ -1173,14 +1317,28 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
 
             // Attempt Apple Music Animated Cover resolution for motion artwork
-            match resolve_and_download_animated_cover(&self.client, &artist_name, &album_title, &staging_dir).await {
+            match resolve_and_download_animated_cover(
+                &self.client,
+                &artist_name,
+                &album_title,
+                &staging_dir,
+            )
+            .await
+            {
                 AnimatedCoverStatus::Success(webp_path) => {
-                    info!("[Qobuz] ✓ Motion cover art resolved and downloaded from Apple Music: {:?}", webp_path);
+                    info!(
+                        "[Qobuz] ✓ Motion cover art resolved and downloaded from Apple Music: {:?}",
+                        webp_path
+                    );
                     if let Ok(webp_bytes) = tokio::fs::read(&webp_path).await {
                         if webp_bytes.len() >= 30 {
                             use syncify_core_domain::byte_validators::WebpByteValidator;
-                            if let Ok(info) = WebpByteValidator::validate_animated_webp(&webp_bytes) {
-                                info!("[Qobuz] ✓ Validated animated WebP: {} frames, {}x{} px", info.anmf_frame_count, info.canvas_width, info.canvas_height);
+                            if let Ok(info) = WebpByteValidator::validate_animated_webp(&webp_bytes)
+                            {
+                                info!(
+                                    "[Qobuz] ✓ Validated animated WebP: {} frames, {}x{} px",
+                                    info.anmf_frame_count, info.canvas_width, info.canvas_height
+                                );
                                 // Preserve animated artwork in sidecar (cover.webp / cover.animated.webp).
                                 // For FLAC embedded PICTURE block, prefer static JPEG with real dimensions and bounded size.
                                 if let Some(jpeg_bytes) = raw_jpeg_bytes {
@@ -1188,7 +1346,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                                     flac_meta.cover_source = Some("Qobuz Cover Art".to_string());
                                 } else {
                                     flac_meta.cover_data = Some(webp_bytes);
-                                    flac_meta.cover_source = Some("Apple Music Animated Cover".to_string());
+                                    flac_meta.cover_source =
+                                        Some("Apple Music Animated Cover".to_string());
                                 }
                                 staged_cover_webp_path = Some(webp_path);
                                 has_cover_cached = true;
@@ -1243,7 +1402,12 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             resolved_lyrics_res = None;
 
             match lyrics_service
-                .resolve_lyrics_and_sidecar(&artist_name, &track.title, Some(&album_title), duration_sec)
+                .resolve_lyrics_and_sidecar(
+                    &artist_name,
+                    &track.title,
+                    Some(&album_title),
+                    duration_sec,
+                )
                 .await
             {
                 Ok((res, sidecar_opt)) => {
@@ -1257,13 +1421,17 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                         }
 
                         if let Some(ref lrc_content) = sidecar_opt {
-                            let lrc_staging = staging_dir.join(format!("{}.lrc", sanitize_filename(item_id)));
+                            let lrc_staging =
+                                staging_dir.join(format!("{}.lrc", sanitize_filename(item_id)));
                             if let Ok(_) = tokio::fs::write(&lrc_staging, lrc_content).await {
                                 staged_lrc_path = Some(lrc_staging);
                                 info!("[Qobuz] Synced lyrics acquired from {}: embedded and staged as .lrc", res.provider);
                             }
                         } else {
-                            info!("[Qobuz] Plain lyrics acquired from {} (no sidecar created)", res.provider);
+                            info!(
+                                "[Qobuz] Plain lyrics acquired from {} (no sidecar created)",
+                                res.provider
+                            );
                         }
 
                         has_lyrics_cached = true;
@@ -1289,9 +1457,27 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
             if let Some(goodies) = goodies_list {
                 for g in goodies {
-                    let is_pdf = g.url.as_deref().map(|u: &str| u.ends_with(".pdf") || u.contains("booklet") || u.contains("pdf")).unwrap_or(false)
-                        || g.original_url.as_deref().map(|u: &str| u.ends_with(".pdf") || u.contains("booklet") || u.contains("pdf")).unwrap_or(false)
-                        || g.name.as_deref().map(|n: &str| n.to_lowercase().contains("booklet") || n.to_lowercase().contains("pdf") || n.to_lowercase().contains("livret")).unwrap_or(false)
+                    let is_pdf = g
+                        .url
+                        .as_deref()
+                        .map(|u: &str| {
+                            u.ends_with(".pdf") || u.contains("booklet") || u.contains("pdf")
+                        })
+                        .unwrap_or(false)
+                        || g.original_url
+                            .as_deref()
+                            .map(|u: &str| {
+                                u.ends_with(".pdf") || u.contains("booklet") || u.contains("pdf")
+                            })
+                            .unwrap_or(false)
+                        || g.name
+                            .as_deref()
+                            .map(|n: &str| {
+                                n.to_lowercase().contains("booklet")
+                                    || n.to_lowercase().contains("pdf")
+                                    || n.to_lowercase().contains("livret")
+                            })
+                            .unwrap_or(false)
                         || g.file_format_id == Some(21)
                         || g.file_format_id == Some(1);
                     if is_pdf {
@@ -1299,11 +1485,20 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                             if let Ok(resp) = self.client.get(g_url).send().await {
                                 if resp.status().is_success() {
                                     if let Ok(bytes) = resp.bytes().await {
-                                        if !bytes.is_empty() && (bytes.starts_with(b"%PDF") || bytes.len() > 100) {
-                                            let booklet_staging = staging_dir.join(format!("{}.booklet.pdf", sanitize_filename(item_id)));
-                                            let _ = tokio::fs::write(&booklet_staging, &bytes).await;
+                                        if !bytes.is_empty()
+                                            && (bytes.starts_with(b"%PDF") || bytes.len() > 100)
+                                        {
+                                            let booklet_staging = staging_dir.join(format!(
+                                                "{}.booklet.pdf",
+                                                sanitize_filename(item_id)
+                                            ));
+                                            let _ =
+                                                tokio::fs::write(&booklet_staging, &bytes).await;
                                             staged_booklet_path = Some(booklet_staging);
-                                            info!("[Qobuz] ✓ Staged digital booklet PDF ({} bytes)", bytes.len());
+                                            info!(
+                                                "[Qobuz] ✓ Staged digital booklet PDF ({} bytes)",
+                                                bytes.len()
+                                            );
                                             break;
                                         }
                                     }
@@ -1324,7 +1519,11 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 composer: composer.clone(),
                 performers: performers_val.clone(),
                 work: work_val.clone(),
-                genre: track.album.as_ref().and_then(|a| a.genre.as_ref()).map(|g| g.name.clone()),
+                genre: track
+                    .album
+                    .as_ref()
+                    .and_then(|a| a.genre.as_ref())
+                    .map(|g| g.name.clone()),
                 bpm: track.bpm,
                 track_number: Some(track_num),
                 disc_number: Some(disc_num),
@@ -1377,7 +1576,12 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
             if let Some(genre) = enriched.genre.value() {
                 flac_meta.genre = Some(genre.to_string());
-            } else if let Some(ref g) = track.album.as_ref().and_then(|a| a.genre.as_ref()).map(|g| g.name.clone()) {
+            } else if let Some(ref g) = track
+                .album
+                .as_ref()
+                .and_then(|a| a.genre.as_ref())
+                .map(|g| g.name.clone())
+            {
                 flac_meta.genre = Some(g.clone());
             }
             if let Some(style) = enriched.style.value() {
@@ -1390,7 +1594,13 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 flac_meta.tags = Some(tags.to_string());
             }
             if let Some(art_tags) = enriched.artist_tags.value() {
-                flac_meta.artist_tags = Some(art_tags.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
+                flac_meta.artist_tags = Some(
+                    art_tags
+                        .split(';')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect(),
+                );
             }
             if let Some(media_t) = enriched.media_type.value() {
                 flac_meta.media_type = Some(media_t.to_string());
@@ -1404,7 +1614,12 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             if let Some(grp) = enriched.grouping.value() {
                 flac_meta.grouping = Some(grp.to_string());
             }
-            if let Some(bpm) = enriched.bpm.value().and_then(|s| s.parse::<u32>().ok()).or(track.bpm) {
+            if let Some(bpm) = enriched
+                .bpm
+                .value()
+                .and_then(|s| s.parse::<u32>().ok())
+                .or(track.bpm)
+            {
                 flac_meta.bpm = Some(bpm);
             }
             if let Some(mb_rid) = enriched.musicbrainz_recording_id.value() {
@@ -1473,7 +1688,10 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                     if let Some(ref bkt_p) = staged_booklet_path {
                         let _ = tokio::fs::remove_file(bkt_p).await;
                     }
-                    return Err(anyhow!("Failed FLAC tagging and verification in staging: {}", e));
+                    return Err(anyhow!(
+                        "Failed FLAC tagging and verification in staging: {}",
+                        e
+                    ));
                 }
             }
         }
@@ -1565,29 +1783,54 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         // 8. Atomic promotion from staging to final path
         if let Err(e) = tokio::fs::rename(&staging_path, &final_path).await {
-            let staged_bytes = tokio::fs::read(&staging_path).await
+            let staged_bytes = tokio::fs::read(&staging_path)
+                .await
                 .map_err(|re| anyhow!("Failed to read staged file {:?}: {}", staging_path, re))?;
             let staged_sha = crate::services::repair_guardrail::compute_bytes_sha256(&staged_bytes);
             let staged_len = staged_bytes.len() as u64;
 
             if let Err(ce) = tokio::fs::write(&final_path, &staged_bytes).await {
                 let _ = tokio::fs::remove_file(&staging_path).await;
-                if let Some(ref p) = staged_lrc_path { let _ = tokio::fs::remove_file(p).await; }
-                if let Some(ref p) = staged_cover_jpg_path { let _ = tokio::fs::remove_file(p).await; }
-                if let Some(ref p) = staged_cover_webp_path { let _ = tokio::fs::remove_file(p).await; }
-                if let Some(ref p) = staged_booklet_path { let _ = tokio::fs::remove_file(p).await; }
-                return Err(anyhow!("Failed to promote staging file to final path: rename err={}, copy err={}", e, ce));
+                if let Some(ref p) = staged_lrc_path {
+                    let _ = tokio::fs::remove_file(p).await;
+                }
+                if let Some(ref p) = staged_cover_jpg_path {
+                    let _ = tokio::fs::remove_file(p).await;
+                }
+                if let Some(ref p) = staged_cover_webp_path {
+                    let _ = tokio::fs::remove_file(p).await;
+                }
+                if let Some(ref p) = staged_booklet_path {
+                    let _ = tokio::fs::remove_file(p).await;
+                }
+                return Err(anyhow!(
+                    "Failed to promote staging file to final path: rename err={}, copy err={}",
+                    e,
+                    ce
+                ));
             }
 
-            let dest_meta = tokio::fs::metadata(&final_path).await
-                .map_err(|me| anyhow!("Failed to read promoted file metadata {:?}: {}", final_path, me))?;
-            let dest_bytes = tokio::fs::read(&final_path).await
+            let dest_meta = tokio::fs::metadata(&final_path).await.map_err(|me| {
+                anyhow!(
+                    "Failed to read promoted file metadata {:?}: {}",
+                    final_path,
+                    me
+                )
+            })?;
+            let dest_bytes = tokio::fs::read(&final_path)
+                .await
                 .map_err(|re| anyhow!("Failed to reread promoted file {:?}: {}", final_path, re))?;
             let dest_sha = crate::services::repair_guardrail::compute_bytes_sha256(&dest_bytes);
 
             if dest_meta.len() != staged_len || dest_sha != staged_sha {
                 let _ = tokio::fs::remove_file(&final_path).await;
-                return Err(anyhow!("Integrity mismatch on cross-volume promotion: size {} vs {}, hash {} vs {}", dest_meta.len(), staged_len, dest_sha, staged_sha));
+                return Err(anyhow!(
+                    "Integrity mismatch on cross-volume promotion: size {} vs {}, hash {} vs {}",
+                    dest_meta.len(),
+                    staged_len,
+                    dest_sha,
+                    staged_sha
+                ));
             }
 
             let _ = tokio::fs::remove_file(&staging_path).await;
@@ -1624,7 +1867,9 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 };
 
                 if let Some(tid) = track_id_opt {
-                    let content = tokio::fs::read_to_string(&final_lrc).await.unwrap_or_default();
+                    let content = tokio::fs::read_to_string(&final_lrc)
+                        .await
+                        .unwrap_or_default();
                     if !content.is_empty() {
                         let (sync_level, source) = if let Some(ref res) = resolved_lyrics_res {
                             let s_lvl = match res.sync_type {
@@ -1663,7 +1908,8 @@ fn is_viable_qobuz_token(token: &str) -> bool {
             }
         }
 
-        let is_valid_file = |p: &std::path::Path| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false);
+        let is_valid_file =
+            |p: &std::path::Path| p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false);
 
         if let Some(ref cov_staged) = staged_cover_jpg_path {
             let final_cover = target_dir.join("cover.jpg");
@@ -1671,7 +1917,10 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 let _ = tokio::fs::copy(cov_staged, &final_cover).await;
             }
             if let Some(parent) = target_dir.parent() {
-                let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let dir_name = target_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
                 if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
                     let parent_cover = parent.join("cover.jpg");
                     if !is_valid_file(&parent_cover) {
@@ -1699,7 +1948,9 @@ fn is_viable_qobuz_token(token: &str) -> bool {
 
         // Guard against 0-byte truncated sidecars: regenerate from FLAC PICTURE block if missing or empty
         if is_flac {
-            if let Ok(repaired) = crate::services::flac_picture::ensure_flac_sidecars_intact(&final_path, &target_dir) {
+            if let Ok(repaired) =
+                crate::services::flac_picture::ensure_flac_sidecars_intact(&final_path, &target_dir)
+            {
                 if !repaired.is_empty() {
                     info!(count = repaired.len(), "[Qobuz] ✓ Regenerated {} truncated/missing sidecar(s) from FLAC PICTURE block", repaired.len());
                 }
@@ -1738,15 +1989,20 @@ fn is_viable_qobuz_token(token: &str) -> bool {
                 if let Some(mbid) = mbid_opt {
                     let clean_mbid = mbid.trim();
                     if !clean_mbid.is_empty() {
-                        let update_res = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
-                            .bind(clean_mbid)
-                            .bind(tid)
-                            .execute(pool)
-                            .await;
+                        let update_res =
+                            sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                                .bind(clean_mbid)
+                                .bind(tid)
+                                .execute(pool)
+                                .await;
                         if let Err(ref e) = update_res {
                             warn!(error = %e, track_id = tid, "[Qobuz] Non-fatal: failed to retro-propagate musicbrainz_id to DB");
                         } else {
-                            info!(track_id = tid, mbid = clean_mbid, "[Qobuz] ✓ Retro-propagated musicbrainz_id to tracks DB");
+                            info!(
+                                track_id = tid,
+                                mbid = clean_mbid,
+                                "[Qobuz] ✓ Retro-propagated musicbrainz_id to tracks DB"
+                            );
                         }
                     }
                 } else if is_flac && final_path.exists() {
@@ -1834,7 +2090,10 @@ pub async fn promote_webp_sidecars(
     }
 
     if let Some(parent) = target_dir.parent() {
-        let dir_name = target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let dir_name = target_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
         if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
             for sidecar_name in &["cover.webp", "folder.webp", "animated.webp"] {
                 let p = parent.join(sidecar_name);
@@ -1983,7 +2242,10 @@ mod tests {
 
     #[test]
     fn test_sanitize_filename() {
-        assert_eq!(sanitize_filename("AC/DC: High Voltage*"), "AC_DC_ High Voltage_");
+        assert_eq!(
+            sanitize_filename("AC/DC: High Voltage*"),
+            "AC_DC_ High Voltage_"
+        );
     }
 
     #[test]
@@ -1992,7 +2254,12 @@ mod tests {
         let id = derive_acoustid_id(fp).expect("non-empty fingerprint must yield an id");
         // UUIDv4-shaped: 8-4-4-4-12 hex groups
         let groups: Vec<usize> = id.split('-').map(|g| g.len()).collect();
-        assert_eq!(groups, vec![8, 4, 4, 4, 12], "AcoustID id must be UUID-shaped: {}", id);
+        assert_eq!(
+            groups,
+            vec![8, 4, 4, 4, 12],
+            "AcoustID id must be UUID-shaped: {}",
+            id
+        );
         // Deterministic across invocations
         assert_eq!(id, derive_acoustid_id(fp).unwrap());
         // Honest absence for empty input

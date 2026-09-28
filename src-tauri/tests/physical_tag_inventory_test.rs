@@ -14,13 +14,12 @@ use tempfile::tempdir;
 fn create_valid_flac_dummy(path: &PathBuf) {
     let raw_flac_bytes: &[u8] = &[
         0x66, 0x4C, 0x61, 0x43, // "fLaC"
-        0x00, 0x00, 0x00, 0x22, // METADATA_BLOCK_HEADER: type 0 (STREAMINFO), is_last=0, length=34
-        0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x0A, 0xC4, 0x42, 0xF0, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00,
-        0x84, 0x00, 0x00, 0x08, // METADATA_BLOCK_HEADER: type 4 (VORBIS_COMMENT), is_last=1, length=8
+        0x00, 0x00, 0x00,
+        0x22, // METADATA_BLOCK_HEADER: type 0 (STREAMINFO), is_last=0, length=34
+        0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0xC4, 0x42, 0xF0, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x84, 0x00, 0x00,
+        0x08, // METADATA_BLOCK_HEADER: type 4 (VORBIS_COMMENT), is_last=1, length=8
         0x00, 0x00, 0x00, 0x00, // vendor length 0
         0x00, 0x00, 0x00, 0x00, // user comment count 0
     ];
@@ -31,10 +30,14 @@ fn create_valid_m4a_dummy(path: &PathBuf) {
     let _ = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-f", "lavfi",
-            "-i", "anullsrc=r=44100:cl=stereo",
-            "-t", "1",
-            "-c:a", "aac",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=stereo",
+            "-t",
+            "1",
+            "-c:a",
+            "aac",
             path.to_str().unwrap(),
         ])
         .output();
@@ -147,7 +150,10 @@ fn test_tidal_flac_physical_inventory() {
 
     assert_eq!(vc.get("TITLE").unwrap()[0], "11 Besos");
     assert_eq!(vc.get("SYNCIFY_AUDIO_SOURCE").unwrap()[0], "Tidal");
-    assert_eq!(vc.get("SYNCIFY_COVER_SOURCE").unwrap()[0], "Apple Music Animated Cover");
+    assert_eq!(
+        vc.get("SYNCIFY_COVER_SOURCE").unwrap()[0],
+        "Apple Music Animated Cover"
+    );
     assert_eq!(vc.get("LANGUAGE").unwrap()[0], "Spanish"); // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     assert_eq!(vc.get("COUNTRY").unwrap()[0], "Spain"); // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     assert_eq!(vc.get("RECORDLABEL").unwrap()[0], "Universal Music Spain");
@@ -222,11 +228,11 @@ fn test_missing_at_source_tolerance() {
         isrc: None,
         barcode: None,
         catalog_number: None,
-        language: None, // MissingAtSource
+        language: None,        // MissingAtSource
         release_country: None, // MissingAtSource
         genre: Some("Ambient".to_string()),
-        bpm: None, // MissingAtSource
-        label: None, // MissingAtSource
+        bpm: None,      // MissingAtSource
+        label: None,    // MissingAtSource
         composer: None, // MissingAtSource
         performers: None,
         lyrics_lrc: None, // MissingAtSource (instrumental)

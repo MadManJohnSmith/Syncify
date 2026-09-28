@@ -43,6 +43,18 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # generate_context! valida frontendDist durante la compilación de Rust.
+      - name: Configurar Node.js 20 con cache npm
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Construir frontend requerido por Tauri
+        working-directory: ui
+        run: npm ci && npm run build
+
       # a) Compilación completa (lib + bins + tests) validando contra Cargo.lock comprometido.
       - name: cargo check --all-targets --locked
         run: cargo check --all-targets --locked
@@ -58,15 +70,14 @@ jobs:
       - name: batch_50_audit_test serializado (--test-threads=1)
         run: cargo test --locked --test batch_50_audit_test -- --test-threads=1
 
-      # d) Lint informativo NO bloqueante (baseline inicial; endurecer a -D warnings más adelante).
+      # d) Lint informativo (baseline inicial; endurecer a -D warnings más adelante).
       - name: cargo clippy (informativo)
         run: cargo clippy --all-targets
         continue-on-error: true
 
-      # e) Formato informativo NO bloqueante.
-      - name: cargo fmt --check (informativo)
-        run: cargo fmt --check
-        continue-on-error: true
+      # e) Formato bloqueante para todo el workspace Rust.
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
 
   frontend:
     name: Frontend (ui · vue-tsc · vitest)

@@ -47,9 +47,12 @@ fn read_existing_bpm(path: &Path) -> Option<u32> {
 fn get_audio_duration(path: &Path) -> f64 {
     let out = std::process::Command::new("ffprobe")
         .args([
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
             path.to_str().unwrap(),
         ])
         .output()
@@ -309,11 +312,26 @@ async fn run_20_track_physical_pilot_and_report() {
             "✗ CHANGED"
         };
 
-        let prev_str = r.bpm_prev.map(|b| b.to_string()).unwrap_or_else(|| "—".to_string());
-        let new_str = r.bpm_new.map(|b| b.to_string()).unwrap_or_else(|| "— (low conf)".to_string());
-        let readback_str = r.tag_readback.map(|b| b.to_string()).unwrap_or_else(|| "—".to_string());
-        let ref_str = r.reference_bpm.map(|b| format!("{:.0}", b)).unwrap_or_else(|| "Variable/None".to_string());
-        let err_str = r.absolute_error.map(|e| format!("{:.1} BPM", e)).unwrap_or_else(|| "N/A".to_string());
+        let prev_str = r
+            .bpm_prev
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "—".to_string());
+        let new_str = r
+            .bpm_new
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "— (low conf)".to_string());
+        let readback_str = r
+            .tag_readback
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "—".to_string());
+        let ref_str = r
+            .reference_bpm
+            .map(|b| format!("{:.0}", b))
+            .unwrap_or_else(|| "Variable/None".to_string());
+        let err_str = r
+            .absolute_error
+            .map(|e| format!("{:.1} BPM", e))
+            .unwrap_or_else(|| "N/A".to_string());
 
         println!(
             "| {:2} | {} | {} | {} | {:.1} | {} | {} | {:.2} | {}ms | {} | {} | {} | {} |",

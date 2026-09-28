@@ -9,9 +9,8 @@
 //! 6. FFmpeg argument builder enforces `-protocol_whitelist` `"https,tls,tcp"` positioned before `-i`.
 
 use syncify_tauri_lib::services::animated_cover::{
-    build_ffmpeg_animated_cover_args, validate_hls_stream_url,
-    validate_hls_stream_url_for_test, validate_hls_stream_url_opts,
-    FFMPEG_HLS_PROTOCOL_WHITELIST,
+    build_ffmpeg_animated_cover_args, validate_hls_stream_url, validate_hls_stream_url_for_test,
+    validate_hls_stream_url_opts, FFMPEG_HLS_PROTOCOL_WHITELIST,
 };
 
 #[test]
@@ -199,7 +198,10 @@ fn test_ffmpeg_arguments_include_protocol_whitelist_before_input() {
 
     // 2. Verify -protocol_whitelist argument and its value are present
     let pw_idx = args.iter().position(|&arg| arg == "-protocol_whitelist");
-    assert!(pw_idx.is_some(), "Arguments must contain '-protocol_whitelist'");
+    assert!(
+        pw_idx.is_some(),
+        "Arguments must contain '-protocol_whitelist'"
+    );
     let pw_idx = pw_idx.unwrap();
 
     assert_eq!(

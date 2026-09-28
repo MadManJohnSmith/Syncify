@@ -119,7 +119,7 @@ pub async fn search_library(
             AND (? = 'all' OR LOWER(s.name) = LOWER(?))
             AND (? = 0 OR t.is_favorite = 1 OR t.favorite_at IS NOT NULL)
             AND (
-                ? = 'all' OR 
+                ? = 'all' OR
                 (? = 'downloaded' AND d.file_path IS NOT NULL) OR
                 (? = 'not_downloaded' AND d.file_path IS NULL)
             )
@@ -151,7 +151,7 @@ pub async fn search_library(
             Option<String>,
         )> = sqlx::query_as(
             r#"
-            SELECT 
+            SELECT
                 t.id,
                 COALESCE(t.display_title, t.title) as title,
                 t.display_title,
@@ -164,7 +164,7 @@ pub async fn search_library(
                 CASE WHEN t.is_favorite = 1 OR t.favorite_at IS NOT NULL THEN 1 ELSE 0 END as is_fav,
                 GROUP_CONCAT(DISTINCT s.name) as services,
                 d.file_format as quality,
-                CASE 
+                CASE
                     WHEN d.file_path IS NOT NULL THEN 'downloaded'
                     WHEN EXISTS (SELECT 1 FROM download_queue dq WHERE dq.track_id = t.id AND (dq.status = 'queued' OR dq.status = 'downloading')) THEN 'queued'
                     ELSE 'not_downloaded'
@@ -182,7 +182,7 @@ pub async fn search_library(
             AND (? = 'all' OR LOWER(s.name) = LOWER(?))
             AND (? = 0 OR t.is_favorite = 1 OR t.favorite_at IS NOT NULL)
             AND (
-                ? = 'all' OR 
+                ? = 'all' OR
                 (? = 'downloaded' AND d.file_path IS NOT NULL) OR
                 (? = 'not_downloaded' AND d.file_path IS NULL)
             )
@@ -203,8 +203,8 @@ pub async fn search_library(
 
         result.tracks = tracks_rows
             .into_iter()
-            .map(|(id, title, display_title, source_title, artist_name, album_name, album_id, duration_ms, isrc, is_fav, services, quality, download_status)| {
-                SearchResultTrack {
+            .map(
+                |(
                     id,
                     title,
                     display_title,
@@ -214,12 +214,29 @@ pub async fn search_library(
                     album_id,
                     duration_ms,
                     isrc,
-                    is_favorite: is_fav == 1,
+                    is_fav,
                     services,
                     quality,
-                    download_status: download_status.unwrap_or_else(|| "not_downloaded".to_string()),
-                }
-            })
+                    download_status,
+                )| {
+                    SearchResultTrack {
+                        id,
+                        title,
+                        display_title,
+                        source_title,
+                        artist_name,
+                        album_name,
+                        album_id,
+                        duration_ms,
+                        isrc,
+                        is_favorite: is_fav == 1,
+                        services,
+                        quality,
+                        download_status: download_status
+                            .unwrap_or_else(|| "not_downloaded".to_string()),
+                    }
+                },
+            )
             .collect();
     }
 
@@ -233,9 +250,10 @@ pub async fn search_library(
             LEFT JOIN artists art ON art.id = aa.artist_id
             WHERE (al.title LIKE ? OR art.name LIKE ?)
             AND (? = 0 OR al.favorite_at IS NOT NULL)
-            "#
+            "#,
         )
-        .bind(&pattern).bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
         .bind(if only_fav { 1 } else { 0 })
         .fetch_one(&state.db)
         .await
@@ -253,7 +271,7 @@ pub async fn search_library(
             i64,
         )> = sqlx::query_as(
             r#"
-            SELECT 
+            SELECT
                 al.id,
                 al.title,
                 art.name as artist_name,
@@ -269,9 +287,10 @@ pub async fn search_library(
             GROUP BY al.id
             ORDER BY al.title ASC
             LIMIT ? OFFSET ?
-            "#
+            "#,
         )
-        .bind(&pattern).bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
         .bind(if only_fav { 1 } else { 0 })
         .bind(limit)
         .bind(offset)
@@ -281,19 +300,21 @@ pub async fn search_library(
 
         result.albums = albums_rows
             .into_iter()
-            .map(|(id, title, artist_name, release_date, cover_art_url, track_count, is_fav)| {
-                let release_year = release_date
-                    .and_then(|d| d.chars().take(4).collect::<String>().parse::<i32>().ok());
-                SearchResultAlbum {
-                    id,
-                    title,
-                    artist_name,
-                    release_year,
-                    cover_art_url,
-                    track_count,
-                    is_favorite: is_fav == 1,
-                }
-            })
+            .map(
+                |(id, title, artist_name, release_date, cover_art_url, track_count, is_fav)| {
+                    let release_year = release_date
+                        .and_then(|d| d.chars().take(4).collect::<String>().parse::<i32>().ok());
+                    SearchResultAlbum {
+                        id,
+                        title,
+                        artist_name,
+                        release_year,
+                        cover_art_url,
+                        track_count,
+                        is_favorite: is_fav == 1,
+                    }
+                },
+            )
             .collect();
     }
 
@@ -314,7 +335,7 @@ pub async fn search_library(
                 OR art.is_favorite = 1
                 OR art.favorite_at IS NOT NULL
             )
-            "#
+            "#,
         )
         .bind(&pattern)
         .bind(if only_fav { 1 } else { 0 })
@@ -326,7 +347,7 @@ pub async fn search_library(
 
         let artists_rows: Vec<(i64, String, i64, i64, i64)> = sqlx::query_as(
             r#"
-            SELECT 
+            SELECT
                 art.id,
                 art.name,
                 CASE WHEN art.favorite_at IS NOT NULL OR art.is_favorite = 1 THEN 1 ELSE 0 END as is_fav,
@@ -358,13 +379,15 @@ pub async fn search_library(
 
         result.artists = artists_rows
             .into_iter()
-            .map(|(id, name, is_fav, track_count, album_count)| SearchResultArtist {
-                id,
-                name,
-                is_favorite: is_fav == 1,
-                track_count,
-                album_count,
-            })
+            .map(
+                |(id, name, is_fav, track_count, album_count)| SearchResultArtist {
+                    id,
+                    name,
+                    is_favorite: is_fav == 1,
+                    track_count,
+                    album_count,
+                },
+            )
             .collect();
     }
 
@@ -378,19 +401,22 @@ pub async fn search_library(
             LEFT JOIN services s ON s.id = a.service_id
             WHERE (p.name LIKE ? OR p.description LIKE ?)
             AND (? = 'all' OR LOWER(s.name) = LOWER(?))
-            "#
+            "#,
         )
-        .bind(&pattern).bind(&pattern)
-        .bind(service_filter).bind(service_filter)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(service_filter)
+        .bind(service_filter)
         .fetch_one(&state.db)
         .await
         .unwrap_or((0,));
 
         result.total_playlists = count_row.0;
 
-        let playlists_rows: Vec<(i64, String, Option<String>, i64, Option<String>)> = sqlx::query_as(
-            r#"
-            SELECT 
+        let playlists_rows: Vec<(i64, String, Option<String>, i64, Option<String>)> =
+            sqlx::query_as(
+                r#"
+            SELECT
                 p.id,
                 p.name,
                 p.description,
@@ -403,25 +429,29 @@ pub async fn search_library(
             AND (? = 'all' OR LOWER(s.name) = LOWER(?))
             ORDER BY p.name ASC
             LIMIT ? OFFSET ?
-            "#
-        )
-        .bind(&pattern).bind(&pattern)
-        .bind(service_filter).bind(service_filter)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default();
+            "#,
+            )
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(service_filter)
+            .bind(service_filter)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
 
         result.playlists = playlists_rows
             .into_iter()
-            .map(|(id, name, description, track_count, service_name)| SearchResultPlaylist {
-                id,
-                name,
-                description,
-                track_count,
-                service_name,
-            })
+            .map(
+                |(id, name, description, track_count, service_name)| SearchResultPlaylist {
+                    id,
+                    name,
+                    description,
+                    track_count,
+                    service_name,
+                },
+            )
             .collect();
     }
 

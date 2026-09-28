@@ -26,11 +26,9 @@ fn create_minimal_flac(path: &Path) {
     let streaminfo_header = [0x00, 0x00, 0x00, 0x22];
     file.write_all(&streaminfo_header).unwrap();
     let streaminfo_data = [
-        0x10, 0x00, 0x10, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x0A, 0xC4, 0x42, 0xF0, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0xC4, 0x42, 0xF0, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
     ];
     file.write_all(&streaminfo_data).unwrap();
     let padding_header = [0x81, 0x00, 0x00, 0x10];
@@ -142,14 +140,16 @@ async fn test_exhaustive_enrichment_language_multi_provider_collection() {
         ..Default::default()
     };
 
-    let enriched = engine.resolve_exhaustive_track_metadata(
-        "Édith Piaf",
-        "L'Essentiel",
-        "Non, je ne regrette rien",
-        None,
-        &[qobuz_source, tidal_source, spotify_source],
-        false,
-    ).await;
+    let enriched = engine
+        .resolve_exhaustive_track_metadata(
+            "Édith Piaf",
+            "L'Essentiel",
+            "Non, je ne regrette rien",
+            None,
+            &[qobuz_source, tidal_source, spotify_source],
+            false,
+        )
+        .await;
 
     assert_eq!(enriched.language.value(), Some("fra"));
 }
@@ -157,18 +157,12 @@ async fn test_exhaustive_enrichment_language_multi_provider_collection() {
 #[test]
 fn test_language_fusion_precedence_and_majority() {
     // 1. StreamingService (Qobuz) beats Spotify
-    let candidates = [
-        ("English", "spotify", 0.90),
-        ("French", "qobuz", 0.95),
-    ];
+    let candidates = [("English", "spotify", 0.90), ("French", "qobuz", 0.95)];
     let resolved = fuse_languages(&candidates);
     assert_eq!(resolved, Some("fra".to_string()));
 
     // 2. MusicBrainz beats Spotify
-    let mb_candidates = [
-        ("English", "spotify", 0.90),
-        ("spa", "musicbrainz", 0.85),
-    ];
+    let mb_candidates = [("English", "spotify", 0.90), ("spa", "musicbrainz", 0.85)];
     let resolved_mb = fuse_languages(&mb_candidates);
     assert_eq!(resolved_mb, Some("spa".to_string()));
 
@@ -182,9 +176,7 @@ fn test_language_fusion_precedence_and_majority() {
     assert_eq!(resolved_eq, Some("deu".to_string()));
 
     // 4. Non-empty guarantee: single valid language from any tier is preserved
-    let single_spotify = [
-        ("Japanese", "spotify", 0.80),
-    ];
+    let single_spotify = [("Japanese", "spotify", 0.80)];
     let resolved_single = fuse_languages(&single_spotify);
     assert_eq!(resolved_single, Some("jpn".to_string()));
 }
@@ -228,10 +220,16 @@ fn test_mp4_language_tag_writing_and_roundtrip() {
     apply_and_verify_mp4_tags(&mp4_path, &meta).unwrap();
 
     let tag = mp4ameta::Tag::read_from_path(&mp4_path).unwrap();
-    let lang_str = tag.strings_of(&mp4ameta::Fourcc(*b"\xa9lng")).next().unwrap();
+    let lang_str = tag
+        .strings_of(&mp4ameta::Fourcc(*b"\xa9lng"))
+        .next()
+        .unwrap();
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     assert_eq!(lang_str, "Spanish");
 
     let freeform_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "LANGUAGE");
-    assert!(tag.strings_of(&freeform_ident).next().is_none(), "Freeform LANGUAGE atom must be absent");
+    assert!(
+        tag.strings_of(&freeform_ident).next().is_none(),
+        "Freeform LANGUAGE atom must be absent"
+    );
 }

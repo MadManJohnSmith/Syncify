@@ -81,11 +81,7 @@ fn create_synthetic_flac(path: &Path) {
 fn test_title_cleaning_and_feat_extraction_comprehensive() {
     let cases = vec![
         // (Input Title, Expected Clean Title, Expected Featured Artists)
-        (
-            "23 (feat. Sasha Dobson)",
-            "23",
-            vec!["Sasha Dobson"],
-        ),
+        ("23 (feat. Sasha Dobson)", "23", vec!["Sasha Dobson"]),
         (
             "After The Storm (Ft. Tyler, The Creator)",
             "After The Storm",
@@ -136,21 +132,13 @@ fn test_title_cleaning_and_feat_extraction_comprehensive() {
             "Burn My Shadow",
             vec!["Ian Astbury"],
         ),
-        (
-            "Fly By Day feat. JU!iE",
-            "Fly By Day",
-            vec!["JU!iE"],
-        ),
+        ("Fly By Day feat. JU!iE", "Fly By Day", vec!["JU!iE"]),
         (
             "202 feat. 泉まくら - New Mix",
             "202 - New Mix",
             vec!["泉まくら"],
         ),
-        (
-            "GIRL feat.呂布",
-            "GIRL",
-            vec!["呂布"],
-        ),
+        ("GIRL feat.呂布", "GIRL", vec!["呂布"]),
         (
             "Feel The Fiyaaaah (with A$AP Rocky & feat. Takeoff)",
             "Feel The Fiyaaaah",
@@ -162,36 +150,16 @@ fn test_title_cleaning_and_feat_extraction_comprehensive() {
             vec!["Don Toliver", "Future"],
         ),
         // False positives — must NOT extract or alter title
-        (
-            "BIRDS OF A FEATHER",
-            "BIRDS OF A FEATHER",
-            vec![],
-        ),
-        (
-            "Light as a Feather",
-            "Light as a Feather",
-            vec![],
-        ),
-        (
-            "Feather",
-            "Feather",
-            vec![],
-        ),
-        (
-            "Bloodfeather",
-            "Bloodfeather",
-            vec![],
-        ),
+        ("BIRDS OF A FEATHER", "BIRDS OF A FEATHER", vec![]),
+        ("Light as a Feather", "Light as a Feather", vec![]),
+        ("Feather", "Feather", vec![]),
+        ("Bloodfeather", "Bloodfeather", vec![]),
         (
             "Sexy Rouge (as featured in \"Sky Rojo\") (Remix)",
             "Sexy Rouge (as featured in \"Sky Rojo\") (Remix)",
             vec![],
         ),
-        (
-            "Ordinary Title",
-            "Ordinary Title",
-            vec![],
-        ),
+        ("Ordinary Title", "Ordinary Title", vec![]),
     ];
 
     for (raw, exp_title, exp_artists) in cases {
@@ -228,7 +196,11 @@ fn test_flac_discrete_multi_artist_vorbis_comments() {
     };
 
     let report = apply_and_verify_flac_tags(&file_path, &meta).expect("FLAC write and verify");
-    assert!(report.tags_match, "Tags verification failed: {:?}", report.mismatches);
+    assert!(
+        report.tags_match,
+        "Tags verification failed: {:?}",
+        report.mismatches
+    );
 
     let tag_obj = metaflac::Tag::read_from_path(&file_path).expect("Read FLAC tag");
     let comments = tag_obj.vorbis_comments().expect("Vorbis comments present");
@@ -268,7 +240,11 @@ fn test_flac_auto_extraction_from_title_generates_discrete_artists() {
     };
 
     let report = apply_and_verify_flac_tags(&file_path, &meta).expect("FLAC write and verify");
-    assert!(report.tags_match, "Tags verification failed: {:?}", report.mismatches);
+    assert!(
+        report.tags_match,
+        "Tags verification failed: {:?}",
+        report.mismatches
+    );
 
     let tag_obj = metaflac::Tag::read_from_path(&file_path).expect("Read FLAC tag");
     let comments = tag_obj.vorbis_comments().expect("Vorbis comments present");
@@ -336,7 +312,11 @@ fn test_flac_artist_deduplication_between_artist_and_title() {
     };
 
     let report = apply_and_verify_flac_tags(&file_path, &meta).expect("FLAC write and verify");
-    assert!(report.tags_match, "Tags verification failed: {:?}", report.mismatches);
+    assert!(
+        report.tags_match,
+        "Tags verification failed: {:?}",
+        report.mismatches
+    );
 
     let tag_obj = metaflac::Tag::read_from_path(&file_path).expect("Read FLAC tag");
     let comments = tag_obj.vorbis_comments().expect("Vorbis comments present");

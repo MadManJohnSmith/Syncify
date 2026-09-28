@@ -6,10 +6,8 @@
 //! 3. Cleanup on invalid/corrupt WebP input (no phantom files created).
 //! 4. Concurrent albums in distinct target folders do not collide or cross-contaminate sidecars.
 
+use syncify_tauri_lib::services::animated_cover::validate_animated_webp_bytes;
 use tempfile::TempDir;
-use syncify_tauri_lib::services::animated_cover::{
-    validate_animated_webp_bytes,
-};
 
 /// Minimal valid RIFF WEBP header with ANIM chunk
 fn create_synthetic_animated_webp(width: u16, height: u16, frame_count: u16) -> Vec<u8> {
@@ -51,8 +49,13 @@ async fn test_staging_directory_detection_prevents_duplicate_sidecars() {
     let staging_dir = temp.path().join(".staging");
     tokio::fs::create_dir_all(&staging_dir).await.unwrap();
 
-    let is_staging = staging_dir.file_name().map_or(false, |n| n == ".staging" || n.to_string_lossy().contains(".staging"));
-    assert!(is_staging, ".staging directory must be recognized as staging");
+    let is_staging = staging_dir.file_name().map_or(false, |n| {
+        n == ".staging" || n.to_string_lossy().contains(".staging")
+    });
+    assert!(
+        is_staging,
+        ".staging directory must be recognized as staging"
+    );
 
     let valid_webp = create_synthetic_animated_webp(300, 300, 5);
     let frames = validate_animated_webp_bytes(&valid_webp).expect("Valid synthetic animated WebP");
@@ -70,8 +73,14 @@ async fn test_staging_directory_detection_prevents_duplicate_sidecars() {
     }
 
     assert!(cover_webp.exists(), "cover.webp must exist in staging");
-    assert!(!staging_dir.join("folder.webp").exists(), "folder.webp must NOT exist in .staging");
-    assert!(!staging_dir.join("animated.webp").exists(), "animated.webp must NOT exist in .staging");
+    assert!(
+        !staging_dir.join("folder.webp").exists(),
+        "folder.webp must NOT exist in .staging"
+    );
+    assert!(
+        !staging_dir.join("animated.webp").exists(),
+        "animated.webp must NOT exist in .staging"
+    );
 }
 
 #[tokio::test]
@@ -80,8 +89,13 @@ async fn test_library_directory_creates_all_three_sidecars() {
     let library_dir = temp.path().join("Artist - Album");
     tokio::fs::create_dir_all(&library_dir).await.unwrap();
 
-    let is_staging = library_dir.file_name().map_or(false, |n| n == ".staging" || n.to_string_lossy().contains(".staging"));
-    assert!(!is_staging, "Library directory must NOT be identified as staging");
+    let is_staging = library_dir.file_name().map_or(false, |n| {
+        n == ".staging" || n.to_string_lossy().contains(".staging")
+    });
+    assert!(
+        !is_staging,
+        "Library directory must NOT be identified as staging"
+    );
 
     let valid_webp = create_synthetic_animated_webp(300, 300, 8);
     let cover_webp = library_dir.join("cover.webp");
@@ -94,14 +108,25 @@ async fn test_library_directory_creates_all_three_sidecars() {
         let _ = tokio::fs::copy(&cover_webp, &animated_webp).await;
     }
 
-    assert!(library_dir.join("cover.webp").exists(), "cover.webp must exist in library folder");
-    assert!(library_dir.join("folder.webp").exists(), "folder.webp must exist in library folder");
-    assert!(library_dir.join("animated.webp").exists(), "animated.webp must exist in library folder");
+    assert!(
+        library_dir.join("cover.webp").exists(),
+        "cover.webp must exist in library folder"
+    );
+    assert!(
+        library_dir.join("folder.webp").exists(),
+        "folder.webp must exist in library folder"
+    );
+    assert!(
+        library_dir.join("animated.webp").exists(),
+        "animated.webp must exist in library folder"
+    );
 }
 
 #[tokio::test]
 async fn test_invalid_corrupt_webp_rejected_without_sidecars() {
-    let corrupt_bytes = vec![0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]; // Incomplete RIFF
+    let corrupt_bytes = vec![
+        0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+    ]; // Incomplete RIFF
     let res = validate_animated_webp_bytes(&corrupt_bytes);
     assert!(res.is_err(), "Corrupted WebP must be rejected by validator");
 }
@@ -120,16 +145,24 @@ async fn test_concurrent_album_folders_isolation() {
     let handle_a = tokio::spawn(async move {
         let path = album_a.join("cover.webp");
         tokio::fs::write(&path, &webp_a).await.unwrap();
-        tokio::fs::copy(&path, album_a.join("folder.webp")).await.unwrap();
-        tokio::fs::copy(&path, album_a.join("animated.webp")).await.unwrap();
+        tokio::fs::copy(&path, album_a.join("folder.webp"))
+            .await
+            .unwrap();
+        tokio::fs::copy(&path, album_a.join("animated.webp"))
+            .await
+            .unwrap();
         album_a
     });
 
     let handle_b = tokio::spawn(async move {
         let path = album_b.join("cover.webp");
         tokio::fs::write(&path, &webp_b).await.unwrap();
-        tokio::fs::copy(&path, album_b.join("folder.webp")).await.unwrap();
-        tokio::fs::copy(&path, album_b.join("animated.webp")).await.unwrap();
+        tokio::fs::copy(&path, album_b.join("folder.webp"))
+            .await
+            .unwrap();
+        tokio::fs::copy(&path, album_b.join("animated.webp"))
+            .await
+            .unwrap();
         album_b
     });
 

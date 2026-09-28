@@ -60,13 +60,18 @@ pub async fn perform_get_favorites_tracks(
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(100).min(500);
 
-    tracing::info!("perform_get_favorites_tracks called: service={:?}, offset={}, limit={}", service, offset, limit);
+    tracing::info!(
+        "perform_get_favorites_tracks called: service={:?}, offset={}, limit={}",
+        service,
+        offset,
+        limit
+    );
 
     let items = match service.as_deref() {
         None | Some("all") => {
             sqlx::query_as::<_, FavoriteTrackItem>(
                 r#"
-                SELECT 
+                SELECT
                     t.id,
                     COALESCE(ts.service_track_id, CAST(t.id AS TEXT)) as service_track_id,
                     t.title,
@@ -95,7 +100,7 @@ pub async fn perform_get_favorites_tracks(
         Some(svc) if svc.eq_ignore_ascii_case("local") => {
             sqlx::query_as::<_, FavoriteTrackItem>(
                 r#"
-                SELECT 
+                SELECT
                     t.id,
                     COALESCE(ts.service_track_id, CAST(t.id AS TEXT)) as service_track_id,
                     t.title,
@@ -125,7 +130,7 @@ pub async fn perform_get_favorites_tracks(
         Some(svc) => {
             sqlx::query_as::<_, FavoriteTrackItem>(
                 r#"
-                SELECT 
+                SELECT
                     t.id,
                     ts.service_track_id as service_track_id,
                     t.title,
@@ -189,13 +194,19 @@ pub async fn perform_get_favorites_albums_with_options(
     let limit = limit.unwrap_or(100).min(500);
     let include_stubs_int = if include_stubs { 1i64 } else { 0i64 };
 
-    tracing::info!("perform_get_favorites_albums called: service={:?}, offset={}, limit={}, include_stubs={}", service, offset, limit, include_stubs);
+    tracing::info!(
+        "perform_get_favorites_albums called: service={:?}, offset={}, limit={}, include_stubs={}",
+        service,
+        offset,
+        limit,
+        include_stubs
+    );
 
     let items = match service.as_deref() {
         None | Some("all") => {
             sqlx::query_as::<_, FavoriteAlbumItem>(
                 r#"
-                SELECT 
+                SELECT
                     al.id,
                     COALESCE(al.tidal_id, al.spotify_id, al.qobuz_id, CAST(al.id AS TEXT)) as service_album_id,
                     al.title,
@@ -203,14 +214,14 @@ pub async fn perform_get_favorites_albums_with_options(
                     al.upc,
                     al.cover_art_url,
                     COALESCE(
-                        CASE 
+                        CASE
                             WHEN al.tidal_id IS NOT NULL THEN 'tidal'
                             WHEN al.spotify_id IS NOT NULL THEN 'spotify'
                             WHEN al.qobuz_id IS NOT NULL THEN 'qobuz'
                             ELSE (
-                                SELECT s.name FROM tracks t 
-                                JOIN track_sources ts ON ts.track_id = t.id 
-                                JOIN services s ON ts.service_id = s.id 
+                                SELECT s.name FROM tracks t
+                                JOIN track_sources ts ON ts.track_id = t.id
+                                JOIN services s ON ts.service_id = s.id
                                 WHERE t.album_id = al.id LIMIT 1
                             )
                         END,
@@ -236,7 +247,7 @@ pub async fn perform_get_favorites_albums_with_options(
         Some(svc) if svc.eq_ignore_ascii_case("local") => {
             sqlx::query_as::<_, FavoriteAlbumItem>(
                 r#"
-                SELECT 
+                SELECT
                     al.id,
                     CAST(al.id AS TEXT) as service_album_id,
                     al.title,
@@ -253,9 +264,9 @@ pub async fn perform_get_favorites_albums_with_options(
                   AND (
                     (al.spotify_id IS NULL AND al.tidal_id IS NULL AND al.qobuz_id IS NULL)
                     OR NOT EXISTS (
-                        SELECT 1 FROM tracks t 
-                        JOIN track_sources ts ON ts.track_id = t.id 
-                        JOIN services s ON ts.service_id = s.id 
+                        SELECT 1 FROM tracks t
+                        JOIN track_sources ts ON ts.track_id = t.id
+                        JOIN services s ON ts.service_id = s.id
                         WHERE t.album_id = al.id AND LOWER(s.name) NOT IN ('local')
                     )
                   )
@@ -273,20 +284,20 @@ pub async fn perform_get_favorites_albums_with_options(
         Some(svc) => {
             sqlx::query_as::<_, FavoriteAlbumItem>(
                 r#"
-                SELECT 
+                SELECT
                     al.id,
                     CAST(COALESCE(
-                        CASE 
+                        CASE
                             WHEN LOWER(?1) = 'spotify' THEN al.spotify_id
                             WHEN LOWER(?1) = 'tidal' THEN al.tidal_id
                             WHEN LOWER(?1) = 'qobuz' THEN al.qobuz_id
                             ELSE NULL
                         END,
                         (
-                            SELECT ts.service_track_id FROM tracks t 
-                            JOIN track_sources ts ON ts.track_id = t.id 
-                            JOIN services s ON ts.service_id = s.id 
-                            WHERE t.album_id = al.id AND LOWER(s.name) = LOWER(?1) 
+                            SELECT ts.service_track_id FROM tracks t
+                            JOIN track_sources ts ON ts.track_id = t.id
+                            JOIN services s ON ts.service_id = s.id
+                            WHERE t.album_id = al.id AND LOWER(s.name) = LOWER(?1)
                             LIMIT 1
                         ),
                         CAST(al.id AS TEXT)
@@ -307,9 +318,9 @@ pub async fn perform_get_favorites_albums_with_options(
                     OR (LOWER(?1) = 'tidal' AND al.tidal_id IS NOT NULL)
                     OR (LOWER(?1) = 'qobuz' AND al.qobuz_id IS NOT NULL)
                     OR EXISTS (
-                        SELECT 1 FROM tracks t 
-                        JOIN track_sources ts ON ts.track_id = t.id 
-                        JOIN services s ON ts.service_id = s.id 
+                        SELECT 1 FROM tracks t
+                        JOIN track_sources ts ON ts.track_id = t.id
+                        JOIN services s ON ts.service_id = s.id
                         WHERE t.album_id = al.id AND LOWER(s.name) = LOWER(?1)
                     )
                   )
@@ -339,7 +350,14 @@ pub async fn get_favorites_albums(
     limit: Option<i64>,
     include_stubs: Option<bool>,
 ) -> Result<Vec<FavoriteAlbumItem>, String> {
-    perform_get_favorites_albums_with_options(&state.db, service, offset, limit, include_stubs.unwrap_or(false)).await
+    perform_get_favorites_albums_with_options(
+        &state.db,
+        service,
+        offset,
+        limit,
+        include_stubs.unwrap_or(false),
+    )
+    .await
 }
 
 pub async fn perform_get_favorites_artists(
@@ -351,26 +369,31 @@ pub async fn perform_get_favorites_artists(
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(100).min(500);
 
-    tracing::info!("perform_get_favorites_artists called: service={:?}, offset={}, limit={}", service, offset, limit);
+    tracing::info!(
+        "perform_get_favorites_artists called: service={:?}, offset={}, limit={}",
+        service,
+        offset,
+        limit
+    );
 
     let items = match service.as_deref() {
         None | Some("all") => {
             sqlx::query_as::<_, FavoriteArtistItem>(
                 r#"
-                SELECT 
+                SELECT
                     a.id,
                     COALESCE(a.tidal_id, a.spotify_id, a.qobuz_id, CAST(a.id AS TEXT)) as service_artist_id,
                     a.name,
                     NULL as image_url,
                     COALESCE(
-                        CASE 
+                        CASE
                             WHEN a.tidal_id IS NOT NULL THEN 'tidal'
                             WHEN a.spotify_id IS NOT NULL THEN 'spotify'
                             WHEN a.qobuz_id IS NOT NULL THEN 'qobuz'
                             ELSE (
-                                SELECT s.name FROM track_artists ta 
-                                JOIN track_sources ts ON ts.track_id = ta.track_id 
-                                JOIN services s ON ts.service_id = s.id 
+                                SELECT s.name FROM track_artists ta
+                                JOIN track_sources ts ON ts.track_id = ta.track_id
+                                JOIN services s ON ts.service_id = s.id
                                 WHERE ta.artist_id = a.id LIMIT 1
                             )
                         END,
@@ -392,7 +415,7 @@ pub async fn perform_get_favorites_artists(
         Some(svc) if svc.eq_ignore_ascii_case("local") => {
             sqlx::query_as::<_, FavoriteArtistItem>(
                 r#"
-                SELECT 
+                SELECT
                     a.id,
                     CAST(a.id AS TEXT) as service_artist_id,
                     a.name,
@@ -404,9 +427,9 @@ pub async fn perform_get_favorites_artists(
                   AND (
                     (a.spotify_id IS NULL AND a.tidal_id IS NULL AND a.qobuz_id IS NULL)
                     OR NOT EXISTS (
-                        SELECT 1 FROM track_artists ta 
-                        JOIN track_sources ts ON ts.track_id = ta.track_id 
-                        JOIN services s ON ts.service_id = s.id 
+                        SELECT 1 FROM track_artists ta
+                        JOIN track_sources ts ON ts.track_id = ta.track_id
+                        JOIN services s ON ts.service_id = s.id
                         WHERE ta.artist_id = a.id AND LOWER(s.name) NOT IN ('local')
                     )
                   )
@@ -423,10 +446,10 @@ pub async fn perform_get_favorites_artists(
         Some(svc) => {
             sqlx::query_as::<_, FavoriteArtistItem>(
                 r#"
-                SELECT 
+                SELECT
                     a.id,
                     CAST(COALESCE(
-                        CASE 
+                        CASE
                             WHEN LOWER(?1) = 'spotify' THEN a.spotify_id
                             WHEN LOWER(?1) = 'tidal' THEN a.tidal_id
                             WHEN LOWER(?1) = 'qobuz' THEN a.qobuz_id
@@ -445,17 +468,17 @@ pub async fn perform_get_favorites_artists(
                     OR (LOWER(?1) = 'tidal' AND a.tidal_id IS NOT NULL)
                     OR (LOWER(?1) = 'qobuz' AND a.qobuz_id IS NOT NULL)
                     OR EXISTS (
-                        SELECT 1 FROM track_artists ta 
-                        JOIN track_sources ts ON ts.track_id = ta.track_id 
-                        JOIN services s ON ts.service_id = s.id 
+                        SELECT 1 FROM track_artists ta
+                        JOIN track_sources ts ON ts.track_id = ta.track_id
+                        JOIN services s ON ts.service_id = s.id
                         WHERE ta.artist_id = a.id AND LOWER(s.name) = LOWER(?1)
                     )
                     OR EXISTS (
-                        SELECT 1 FROM album_artists aa 
-                        JOIN albums al ON al.id = aa.album_id 
-                        JOIN tracks t ON t.album_id = al.id 
-                        JOIN track_sources ts ON ts.track_id = t.id 
-                        JOIN services s ON ts.service_id = s.id 
+                        SELECT 1 FROM album_artists aa
+                        JOIN albums al ON al.id = aa.album_id
+                        JOIN tracks t ON t.album_id = al.id
+                        JOIN track_sources ts ON ts.track_id = t.id
+                        JOIN services s ON ts.service_id = s.id
                         WHERE aa.artist_id = a.id AND LOWER(s.name) = LOWER(?1)
                     )
                   )
@@ -503,7 +526,7 @@ pub async fn toggle_album_favorite(
          SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END, \
              favorite_at = CASE WHEN is_favorite = 0 THEN datetime('now') ELSE NULL END \
          WHERE id = ? \
-         RETURNING is_favorite"
+         RETURNING is_favorite",
     )
     .bind(album_id)
     .fetch_optional(&state.db)
@@ -535,7 +558,7 @@ pub async fn toggle_artist_favorite(
          SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END, \
              favorite_at = CASE WHEN is_favorite = 0 THEN datetime('now') ELSE NULL END \
          WHERE id = ? \
-         RETURNING is_favorite"
+         RETURNING is_favorite",
     )
     .bind(artist_id)
     .fetch_optional(&state.db)
@@ -634,15 +657,21 @@ pub async fn push_favorite_to_service(
             }
         }
         "qobuz" => {
-            let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
-            let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
+            let app_id = std::env::var("QOBUZ_APP_ID")
+                .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
+            let app_secret = std::env::var("QOBUZ_APP_SECRET")
+                .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
             let user_auth_token = creds["user_auth_token"]
                 .as_str()
                 .or_else(|| creds["auth_token"].as_str())
                 .or_else(|| creds["access_token"].as_str())
                 .ok_or("Missing user auth token for Qobuz")?;
 
-            let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token.to_string());
+            let client = crate::services::QobuzClient::new_with_token(
+                app_id,
+                app_secret,
+                user_auth_token.to_string(),
+            );
 
             match item_type_lower.as_str() {
                 "track" => {
@@ -679,7 +708,8 @@ pub async fn push_favorite_to_service(
             let access_token = get_or_refresh_spotify_token(&state.db, account_id, &creds).await?;
             let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
             let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
-            let client = crate::services::SpotifyClient::new(access_token, refresh_token, expires_at);
+            let client =
+                crate::services::SpotifyClient::new(access_token, refresh_token, expires_at);
 
             match item_type_lower.as_str() {
                 "track" => {
@@ -761,7 +791,7 @@ pub async fn perform_push_favorite_sync(
         .map_err(|e| format!("Failed to insert into favorites: {}", e))?;
     } else {
         let _ = sqlx::query(
-            "DELETE FROM favorites WHERE account_id = ? AND item_type = ? AND service_item_id = ?"
+            "DELETE FROM favorites WHERE account_id = ? AND item_type = ? AND service_item_id = ?",
         )
         .bind(account_id)
         .bind(&item_type_lower)
@@ -774,7 +804,7 @@ pub async fn perform_push_favorite_sync(
     match item_type_lower.as_str() {
         "track" => {
             let mut track_id_opt: Option<i64> = sqlx::query_scalar(
-                "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?"
+                "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?",
             )
             .bind(service_id)
             .bind(service_item_id)
@@ -784,11 +814,12 @@ pub async fn perform_push_favorite_sync(
 
             if track_id_opt.is_none() {
                 if let Ok(num_id) = service_item_id.parse::<i64>() {
-                    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM tracks WHERE id = ?")
-                        .bind(num_id)
-                        .fetch_one(db)
-                        .await
-                        .unwrap_or(false);
+                    let exists: bool =
+                        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM tracks WHERE id = ?")
+                            .bind(num_id)
+                            .fetch_one(db)
+                            .await
+                            .unwrap_or(false);
                     if exists {
                         track_id_opt = Some(num_id);
                     }
@@ -808,7 +839,7 @@ pub async fn perform_push_favorite_sync(
                         INSERT INTO library_entries (account_id, track_id, added_at, is_liked)
                         VALUES (?, ?, datetime('now'), 1)
                         ON CONFLICT(account_id, track_id) DO UPDATE SET is_liked = 1
-                        "#
+                        "#,
                     )
                     .bind(account_id)
                     .bind(track_id)
@@ -833,7 +864,7 @@ pub async fn perform_push_favorite_sync(
                         .map_err(|e| format!("Failed to update library_entries: {}", e))?;
 
                     let remaining_likes: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM library_entries WHERE track_id = ? AND is_liked = 1"
+                        "SELECT COUNT(*) FROM library_entries WHERE track_id = ? AND is_liked = 1",
                     )
                     .bind(track_id)
                     .fetch_one(db)
@@ -849,30 +880,45 @@ pub async fn perform_push_favorite_sync(
                     .unwrap_or(0);
 
                     if remaining_likes == 0 && remaining_favs == 0 {
-                        let _ = sqlx::query("UPDATE tracks SET is_favorite = 0, favorite_at = NULL WHERE id = ?")
-                            .bind(track_id)
-                            .execute(db)
-                            .await
-                            .map_err(|e| format!("Failed to clear track favorite: {}", e))?;
+                        let _ = sqlx::query(
+                            "UPDATE tracks SET is_favorite = 0, favorite_at = NULL WHERE id = ?",
+                        )
+                        .bind(track_id)
+                        .execute(db)
+                        .await
+                        .map_err(|e| format!("Failed to clear track favorite: {}", e))?;
                     }
                 }
             }
         }
         "album" => {
             let mut album_id_opt: Option<i64> = match service_lower.as_str() {
-                "spotify" => sqlx::query_scalar("SELECT id FROM albums WHERE spotify_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
-                "tidal" => sqlx::query_scalar("SELECT id FROM albums WHERE tidal_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
-                "qobuz" => sqlx::query_scalar("SELECT id FROM albums WHERE qobuz_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
+                "spotify" => sqlx::query_scalar("SELECT id FROM albums WHERE spotify_id = ?")
+                    .bind(service_item_id)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None),
+                "tidal" => sqlx::query_scalar("SELECT id FROM albums WHERE tidal_id = ?")
+                    .bind(service_item_id)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None),
+                "qobuz" => sqlx::query_scalar("SELECT id FROM albums WHERE qobuz_id = ?")
+                    .bind(service_item_id)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None),
                 _ => None,
             };
 
             if album_id_opt.is_none() {
                 if let Ok(num_id) = service_item_id.parse::<i64>() {
-                    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM albums WHERE id = ?")
-                        .bind(num_id)
-                        .fetch_one(db)
-                        .await
-                        .unwrap_or(false);
+                    let exists: bool =
+                        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM albums WHERE id = ?")
+                            .bind(num_id)
+                            .fetch_one(db)
+                            .await
+                            .unwrap_or(false);
                     if exists {
                         album_id_opt = Some(num_id);
                     }
@@ -891,29 +937,44 @@ pub async fn perform_push_favorite_sync(
                     .await
                     .map_err(|e| format!("Failed to update album favorite: {}", e))?;
                 } else {
-                    let _ = sqlx::query("UPDATE albums SET is_favorite = 0, favorite_at = NULL WHERE id = ?")
-                        .bind(album_id)
-                        .execute(db)
-                        .await
-                        .map_err(|e| format!("Failed to clear album favorite: {}", e))?;
+                    let _ = sqlx::query(
+                        "UPDATE albums SET is_favorite = 0, favorite_at = NULL WHERE id = ?",
+                    )
+                    .bind(album_id)
+                    .execute(db)
+                    .await
+                    .map_err(|e| format!("Failed to clear album favorite: {}", e))?;
                 }
             }
         }
         "artist" => {
             let mut artist_id_opt: Option<i64> = match service_lower.as_str() {
-                "spotify" => sqlx::query_scalar("SELECT id FROM artists WHERE spotify_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
-                "tidal" => sqlx::query_scalar("SELECT id FROM artists WHERE tidal_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
-                "qobuz" => sqlx::query_scalar("SELECT id FROM artists WHERE qobuz_id = ?").bind(service_item_id).fetch_optional(db).await.unwrap_or(None),
+                "spotify" => sqlx::query_scalar("SELECT id FROM artists WHERE spotify_id = ?")
+                    .bind(service_item_id)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None),
+                "tidal" => sqlx::query_scalar("SELECT id FROM artists WHERE tidal_id = ?")
+                    .bind(service_item_id)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None),
+                "qobuz" => sqlx::query_scalar("SELECT id FROM artists WHERE qobuz_id = ?")
+                    .bind(service_item_id)
+                    .fetch_optional(db)
+                    .await
+                    .unwrap_or(None),
                 _ => None,
             };
 
             if artist_id_opt.is_none() {
                 if let Ok(num_id) = service_item_id.parse::<i64>() {
-                    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM artists WHERE id = ?")
-                        .bind(num_id)
-                        .fetch_one(db)
-                        .await
-                        .unwrap_or(false);
+                    let exists: bool =
+                        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM artists WHERE id = ?")
+                            .bind(num_id)
+                            .fetch_one(db)
+                            .await
+                            .unwrap_or(false);
                     if exists {
                         artist_id_opt = Some(num_id);
                     }
@@ -922,11 +983,13 @@ pub async fn perform_push_favorite_sync(
 
             if artist_id_opt.is_none() {
                 let clean_item_id = service_item_id.trim();
-                artist_id_opt = sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
-                    .bind(clean_item_id)
-                    .fetch_optional(db)
-                    .await
-                    .unwrap_or(None);
+                artist_id_opt = sqlx::query_scalar(
+                    "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
+                )
+                .bind(clean_item_id)
+                .fetch_optional(db)
+                .await
+                .unwrap_or(None);
             }
 
             if let Some(artist_id) = artist_id_opt {
@@ -937,11 +1000,13 @@ pub async fn perform_push_favorite_sync(
                         .await
                         .map_err(|e| format!("Failed to update artist favorite: {}", e))?;
                 } else {
-                    let _ = sqlx::query("UPDATE artists SET is_favorite = 0, favorite_at = NULL WHERE id = ?")
-                        .bind(artist_id)
-                        .execute(db)
-                        .await
-                        .map_err(|e| format!("Failed to clear artist favorite: {}", e))?;
+                    let _ = sqlx::query(
+                        "UPDATE artists SET is_favorite = 0, favorite_at = NULL WHERE id = ?",
+                    )
+                    .bind(artist_id)
+                    .execute(db)
+                    .await
+                    .map_err(|e| format!("Failed to clear artist favorite: {}", e))?;
                 }
             }
         }
@@ -989,16 +1054,20 @@ async fn persist_favorite_track_via_engine(
         sample_rate: Some(44100),
         duration_ms,
         audio_quality: Some(
-            syncify_core_domain::quality::classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
-                .as_str()
-                .to_string(),
+            syncify_core_domain::quality::classify_audio_tier(
+                Some(16),
+                Some(44100),
+                None,
+                Some("FLAC"),
+            )
+            .as_str()
+            .to_string(),
         ),
         query_musicbrainz: false,
         ..Default::default()
     };
     enrich_persist_with_locked_retry(engine, db, input).await
 }
-
 
 pub async fn upsert_canonical_favorite_album(
     db: &sqlx::Pool<sqlx::Sqlite>,
@@ -1011,7 +1080,11 @@ pub async fn upsert_canonical_favorite_album(
 ) -> Result<i64, sqlx::Error> {
     let clean_artist = syncify_core_domain::metadata::sanitize_artist_name(artist_name);
     let target_artist = clean_artist.trim();
-    let target_artist = if target_artist.is_empty() { artist_name.trim() } else { target_artist };
+    let target_artist = if target_artist.is_empty() {
+        artist_name.trim()
+    } else {
+        target_artist
+    };
 
     let artist_id: i64 = if let Ok(Some((aid,))) = sqlx::query_as::<_, (i64,)>(
         "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
@@ -1039,11 +1112,12 @@ pub async fn upsert_canonical_favorite_album(
             .await?;
 
         if let Some(aid) = existing {
-            let has_tracks: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM tracks WHERE album_id = ?")
-                .bind(aid)
-                .fetch_one(db)
-                .await
-                .unwrap_or(false);
+            let has_tracks: bool =
+                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM tracks WHERE album_id = ?")
+                    .bind(aid)
+                    .fetch_one(db)
+                    .await
+                    .unwrap_or(false);
             let is_stub = if has_tracks { 0 } else { 1 };
             sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, datetime('now')), cover_art_url = COALESCE(cover_art_url, ?), is_stub = ? WHERE id = ?")
                 .bind(image_url)
@@ -1063,17 +1137,19 @@ pub async fn upsert_canonical_favorite_album(
             .await?
         }
     } else {
-        let existing = sqlx::query_scalar::<_, i64>("SELECT id FROM albums WHERE title = ? LIMIT 1")
-            .bind(title)
-            .fetch_optional(db)
-            .await?;
+        let existing =
+            sqlx::query_scalar::<_, i64>("SELECT id FROM albums WHERE title = ? LIMIT 1")
+                .bind(title)
+                .fetch_optional(db)
+                .await?;
 
         if let Some(aid) = existing {
-            let has_tracks: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM tracks WHERE album_id = ?")
-                .bind(aid)
-                .fetch_one(db)
-                .await
-                .unwrap_or(false);
+            let has_tracks: bool =
+                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM tracks WHERE album_id = ?")
+                    .bind(aid)
+                    .fetch_one(db)
+                    .await
+                    .unwrap_or(false);
             let is_stub = if has_tracks { 0 } else { 1 };
             sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, datetime('now')), cover_art_url = COALESCE(cover_art_url, ?), is_stub = ? WHERE id = ?")
                 .bind(image_url)
@@ -1093,11 +1169,13 @@ pub async fn upsert_canonical_favorite_album(
         }
     };
 
-    let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
-        .bind(album_id)
-        .bind(artist_id)
-        .execute(db)
-        .await;
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)",
+    )
+    .bind(album_id)
+    .bind(artist_id)
+    .execute(db)
+    .await;
 
     let service_name: Option<String> = sqlx::query_scalar("SELECT name FROM services WHERE id = ?")
         .bind(service_id)
@@ -1143,14 +1221,17 @@ pub async fn upsert_canonical_favorite_artist(
 ) -> Result<i64, sqlx::Error> {
     let clean_name = syncify_core_domain::metadata::sanitize_artist_name(name);
     let target_name = clean_name.trim();
-    let target_name = if target_name.is_empty() { name.trim() } else { target_name };
+    let target_name = if target_name.is_empty() {
+        name.trim()
+    } else {
+        target_name
+    };
 
-    let existing: Option<(i64,)> = sqlx::query_as(
-        "SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1",
-    )
-    .bind(target_name)
-    .fetch_optional(db)
-    .await?;
+    let existing: Option<(i64,)> =
+        sqlx::query_as("SELECT id FROM artists WHERE LOWER(TRIM(name)) = LOWER(?) LIMIT 1")
+            .bind(target_name)
+            .fetch_optional(db)
+            .await?;
 
     let artist_id: i64 = if let Some((aid,)) = existing {
         sqlx::query(
@@ -1220,7 +1301,11 @@ pub async fn sync_favorites(
     let service_lower = service.to_lowercase();
     let type_filter = fav_type.unwrap_or_else(|| "all".to_string()).to_lowercase();
 
-    tracing::info!("sync_favorites called for service '{}', type '{}'", service_lower, type_filter);
+    tracing::info!(
+        "sync_favorites called for service '{}', type '{}'",
+        service_lower,
+        type_filter
+    );
 
     let (account_id, creds) = load_service_credentials(&state.db, &service_lower).await?;
     let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
@@ -1256,24 +1341,34 @@ pub async fn sync_favorites(
                 // F2-4: paginación completa (antes solo la página 0).
                 let mut offset: i32 = 0;
                 loop {
-                let page = client.get_favorites(offset, 100).await?;
-                total_found += page.total as i64;
-                let items_len = page.items.len();
-                for item in page.items {
-                    let track = item.item;
-                    let track_id_str = track.id.to_string();
-                    let title = track.title.clone();
-                    let duration_ms = (track.duration > 0).then(|| track.duration * 1000);
-                    if track.duration <= 0 && crate::services::import_pagination::is_placeholder_title(&title) {
-                        tracing::warn!("Skipping ghost/placeholder track '{}' ({})", title, track_id_str);
-                        continue;
-                    }
-                    let artist_name = track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown Artist".to_string());
-                    let album_name = track.album.as_ref().map(|a| a.title.clone());
-                    let isrc = track.isrc.clone();
-                    let favorited_at: Option<String> = None;
+                    let page = client.get_favorites(offset, 100).await?;
+                    total_found += page.total as i64;
+                    let items_len = page.items.len();
+                    for item in page.items {
+                        let track = item.item;
+                        let track_id_str = track.id.to_string();
+                        let title = track.title.clone();
+                        let duration_ms = (track.duration > 0).then(|| track.duration * 1000);
+                        if track.duration <= 0
+                            && crate::services::import_pagination::is_placeholder_title(&title)
+                        {
+                            tracing::warn!(
+                                "Skipping ghost/placeholder track '{}' ({})",
+                                title,
+                                track_id_str
+                            );
+                            continue;
+                        }
+                        let artist_name = track
+                            .artist
+                            .as_ref()
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        let album_name = track.album.as_ref().map(|a| a.title.clone());
+                        let isrc = track.isrc.clone();
+                        let favorited_at: Option<String> = None;
 
-                    let res = sqlx::query(
+                        let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, isrc, favorited_at)
                         VALUES (?, ?, 'track', ?, ?, ?, ?, ?, ?)
@@ -1296,34 +1391,37 @@ pub async fn sync_favorites(
                     .execute(&state.db)
                     .await;
 
-                    if let Ok(r) = res {
-                        if r.rows_affected() > 0 { imported += 1; }
-                    }
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
+                        }
 
-                    // F2-4: identidad canónica vía EnrichmentEngine
-                    let _ = persist_favorite_track_via_engine(
-                        &state.db,
-                        &enrichment_engine,
-                        "tidal",
-                        service_id,
-                        account_id,
-                        &track_id_str,
-                        &title,
-                        &artist_name,
-                        album_name.clone(),
-                        isrc.clone(),
-                        duration_ms,
-                    ).await;
-                }
-                match crate::services::import_pagination::next_offset(
-                    offset,
-                    items_len as i32,
-                    100,
-                    (page.total > 0).then_some(page.total as i64),
-                ) {
-                    Some(next) => offset = next,
-                    None => break,
-                }
+                        // F2-4: identidad canónica vía EnrichmentEngine
+                        let _ = persist_favorite_track_via_engine(
+                            &state.db,
+                            &enrichment_engine,
+                            "tidal",
+                            service_id,
+                            account_id,
+                            &track_id_str,
+                            &title,
+                            &artist_name,
+                            album_name.clone(),
+                            isrc.clone(),
+                            duration_ms,
+                        )
+                        .await;
+                    }
+                    match crate::services::import_pagination::next_offset(
+                        offset,
+                        items_len as i32,
+                        100,
+                        (page.total > 0).then_some(page.total as i64),
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
                 }
             }
 
@@ -1334,7 +1432,11 @@ pub async fn sync_favorites(
                     let album = item.item;
                     let album_id_str = album.tidal_id.to_string();
                     let title = album.title.clone();
-                    let artist_name = album.artist.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown Artist".to_string());
+                    let artist_name = album
+                        .artist
+                        .as_ref()
+                        .map(|a| a.name.clone())
+                        .unwrap_or_else(|| "Unknown Artist".to_string());
                     let upc = album.upc.clone();
                     let image_url = album.cover_url();
                     let favorited_at: Option<String> = None;
@@ -1364,7 +1466,9 @@ pub async fn sync_favorites(
                     .await;
 
                     if let Ok(r) = res {
-                        if r.rows_affected() > 0 { imported += 1; }
+                        if r.rows_affected() > 0 {
+                            imported += 1;
+                        }
                     }
 
                     // Canonical library album synchronization with UPC deduplication
@@ -1376,7 +1480,8 @@ pub async fn sync_favorites(
                         &artist_name,
                         upc.as_deref(),
                         image_url.as_deref(),
-                    ).await;
+                    )
+                    .await;
                 }
             }
 
@@ -1412,7 +1517,9 @@ pub async fn sync_favorites(
                     .await;
 
                     if let Ok(r) = res {
-                        if r.rows_affected() > 0 { imported += 1; }
+                        if r.rows_affected() > 0 {
+                            imported += 1;
+                        }
                     }
 
                     // Canonical library artist synchronization
@@ -1421,42 +1528,63 @@ pub async fn sync_favorites(
                         service_id,
                         &artist_id_str,
                         &name,
-                    ).await;
+                    )
+                    .await;
                 }
             }
         }
         "qobuz" => {
-            let app_id = std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
-            let app_secret = std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
+            let app_id = std::env::var("QOBUZ_APP_ID")
+                .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
+            let app_secret = std::env::var("QOBUZ_APP_SECRET")
+                .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
             let user_auth_token = creds["user_auth_token"]
                 .as_str()
                 .or_else(|| creds["auth_token"].as_str())
                 .or_else(|| creds["access_token"].as_str())
                 .ok_or("Missing user auth token for Qobuz")?;
 
-            let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token.to_string());
+            let client = crate::services::QobuzClient::new_with_token(
+                app_id,
+                app_secret,
+                user_auth_token.to_string(),
+            );
 
             if type_filter == "all" || type_filter == "tracks" {
                 // F2-4: paginación completa (antes solo la página 0).
                 let mut offset: i32 = 0;
                 loop {
-                let page = client.get_favorites(offset, 100).await?;
-                total_found += page.tracks.total as i64;
-                let items_len_q = page.tracks.items.len();
-                for track in page.tracks.items {
-                    let track_id_str = track.id.to_string();
-                    let title = track.title.unwrap_or_else(|| "Unknown Track".to_string());
-                    let duration_ms = (track.duration > 0).then(|| track.duration * 1000);
-                    if track.duration <= 0 && crate::services::import_pagination::is_placeholder_title(&title) {
-                        tracing::warn!("Skipping ghost/placeholder track '{}' ({})", title, track_id_str);
-                        continue;
-                    }
-                    let artist_name = track.performer.as_ref().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown Artist".to_string());
-                    let album_name = track.album.as_ref().and_then(|al| al.title.clone());
-                    let isrc = track.isrc.clone();
-                    let image_url = track.album.as_ref().and_then(|al| al.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone())));
+                    let page = client.get_favorites(offset, 100).await?;
+                    total_found += page.tracks.total as i64;
+                    let items_len_q = page.tracks.items.len();
+                    for track in page.tracks.items {
+                        let track_id_str = track.id.to_string();
+                        let title = track.title.unwrap_or_else(|| "Unknown Track".to_string());
+                        let duration_ms = (track.duration > 0).then(|| track.duration * 1000);
+                        if track.duration <= 0
+                            && crate::services::import_pagination::is_placeholder_title(&title)
+                        {
+                            tracing::warn!(
+                                "Skipping ghost/placeholder track '{}' ({})",
+                                title,
+                                track_id_str
+                            );
+                            continue;
+                        }
+                        let artist_name = track
+                            .performer
+                            .as_ref()
+                            .and_then(|a| a.name.clone())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        let album_name = track.album.as_ref().and_then(|al| al.title.clone());
+                        let isrc = track.isrc.clone();
+                        let image_url = track.album.as_ref().and_then(|al| {
+                            al.image
+                                .as_ref()
+                                .and_then(|img| img.large.clone().or_else(|| img.small.clone()))
+                        });
 
-                    let res = sqlx::query(
+                        let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, isrc, image_url)
                         VALUES (?, ?, 'track', ?, ?, ?, ?, ?, ?)
@@ -1479,34 +1607,37 @@ pub async fn sync_favorites(
                     .execute(&state.db)
                     .await;
 
-                    if let Ok(r) = res {
-                        if r.rows_affected() > 0 { imported += 1; }
-                    }
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
+                        }
 
-                    // F2-4: identidad canónica vía EnrichmentEngine
-                    let _ = persist_favorite_track_via_engine(
-                        &state.db,
-                        &enrichment_engine,
-                        "qobuz",
-                        service_id,
-                        account_id,
-                        &track_id_str,
-                        &title,
-                        &artist_name,
-                        album_name.clone(),
-                        isrc.clone(),
-                        duration_ms,
-                    ).await;
-                }
-                match crate::services::import_pagination::next_offset(
-                    offset,
-                    items_len_q as i32,
-                    100,
-                    (page.tracks.total > 0).then_some(page.tracks.total as i64),
-                ) {
-                    Some(next) => offset = next,
-                    None => break,
-                }
+                        // F2-4: identidad canónica vía EnrichmentEngine
+                        let _ = persist_favorite_track_via_engine(
+                            &state.db,
+                            &enrichment_engine,
+                            "qobuz",
+                            service_id,
+                            account_id,
+                            &track_id_str,
+                            &title,
+                            &artist_name,
+                            album_name.clone(),
+                            isrc.clone(),
+                            duration_ms,
+                        )
+                        .await;
+                    }
+                    match crate::services::import_pagination::next_offset(
+                        offset,
+                        items_len_q as i32,
+                        100,
+                        (page.tracks.total > 0).then_some(page.tracks.total as i64),
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
                 }
             }
 
@@ -1516,9 +1647,16 @@ pub async fn sync_favorites(
                 for album in page.albums.items {
                     let album_id_str = album.id.clone();
                     let title = album.title.unwrap_or_else(|| "Unknown Album".to_string());
-                    let artist_name = album.artist.as_ref().and_then(|a| a.name.clone()).unwrap_or_else(|| "Unknown Artist".to_string());
+                    let artist_name = album
+                        .artist
+                        .as_ref()
+                        .and_then(|a| a.name.clone())
+                        .unwrap_or_else(|| "Unknown Artist".to_string());
                     let upc = album.upc.clone();
-                    let image_url = album.image.as_ref().and_then(|img| img.large.clone().or_else(|| img.small.clone()));
+                    let image_url = album
+                        .image
+                        .as_ref()
+                        .and_then(|img| img.large.clone().or_else(|| img.small.clone()));
 
                     let res = sqlx::query(
                         r#"
@@ -1543,7 +1681,9 @@ pub async fn sync_favorites(
                     .await;
 
                     if let Ok(r) = res {
-                        if r.rows_affected() > 0 { imported += 1; }
+                        if r.rows_affected() > 0 {
+                            imported += 1;
+                        }
                     }
 
                     // Canonical library album synchronization with UPC deduplication
@@ -1555,7 +1695,8 @@ pub async fn sync_favorites(
                         &artist_name,
                         upc.as_deref(),
                         image_url.as_deref(),
-                    ).await;
+                    )
+                    .await;
                 }
             }
 
@@ -1584,7 +1725,9 @@ pub async fn sync_favorites(
                     .await;
 
                     if let Ok(r) = res {
-                        if r.rows_affected() > 0 { imported += 1; }
+                        if r.rows_affected() > 0 {
+                            imported += 1;
+                        }
                     }
 
                     // Canonical library artist synchronization
@@ -1593,7 +1736,8 @@ pub async fn sync_favorites(
                         service_id,
                         &artist_id_str,
                         &name,
-                    ).await;
+                    )
+                    .await;
                 }
             }
         }
@@ -1601,31 +1745,45 @@ pub async fn sync_favorites(
             let access_token = get_or_refresh_spotify_token(&state.db, account_id, &creds).await?;
             let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
             let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
-            let client = crate::services::SpotifyClient::new(access_token, refresh_token, expires_at);
+            let client =
+                crate::services::SpotifyClient::new(access_token, refresh_token, expires_at);
 
             if type_filter == "all" || type_filter == "tracks" {
                 // F2-4: paginación completa (antes solo la página 0).
                 let mut offset: i32 = 0;
                 loop {
-                let page = client.get_saved_tracks(offset, 50).await?;
-                total_found += page.total as i64;
-                let items_len_s = page.items.len();
-                for saved in page.items {
-                    let track = saved.track;
-                    let track_id_str = track.id.clone();
-                    let title = track.name.clone();
-                    let duration_ms = (track.duration_ms > 0).then_some(track.duration_ms);
-                    if track.duration_ms <= 0 && crate::services::import_pagination::is_placeholder_title(&title) {
-                        tracing::warn!("Skipping ghost/placeholder track '{}' ({})", title, track_id_str);
-                        continue;
-                    }
-                    let artist_name = track.artists.first().map(|a| a.name.clone()).unwrap_or_else(|| "Unknown Artist".to_string());
-                    let album_name = track.album.as_ref().map(|al| al.name.clone());
-                    let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
-                    let image_url = track.album.as_ref().and_then(|al| al.images.first().map(|i| i.url.clone()));
-                    let favorited_at = saved.added_at;
+                    let page = client.get_saved_tracks(offset, 50).await?;
+                    total_found += page.total as i64;
+                    let items_len_s = page.items.len();
+                    for saved in page.items {
+                        let track = saved.track;
+                        let track_id_str = track.id.clone();
+                        let title = track.name.clone();
+                        let duration_ms = (track.duration_ms > 0).then_some(track.duration_ms);
+                        if track.duration_ms <= 0
+                            && crate::services::import_pagination::is_placeholder_title(&title)
+                        {
+                            tracing::warn!(
+                                "Skipping ghost/placeholder track '{}' ({})",
+                                title,
+                                track_id_str
+                            );
+                            continue;
+                        }
+                        let artist_name = track
+                            .artists
+                            .first()
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        let album_name = track.album.as_ref().map(|al| al.name.clone());
+                        let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
+                        let image_url = track
+                            .album
+                            .as_ref()
+                            .and_then(|al| al.images.first().map(|i| i.url.clone()));
+                        let favorited_at = saved.added_at;
 
-                    let res = sqlx::query(
+                        let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, isrc, image_url, favorited_at)
                         VALUES (?, ?, 'track', ?, ?, ?, ?, ?, ?, ?)
@@ -1650,34 +1808,37 @@ pub async fn sync_favorites(
                     .execute(&state.db)
                     .await;
 
-                    if let Ok(r) = res {
-                        if r.rows_affected() > 0 { imported += 1; }
-                    }
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
+                        }
 
-                    // F2-4: identidad canónica vía EnrichmentEngine
-                    let _ = persist_favorite_track_via_engine(
-                        &state.db,
-                        &enrichment_engine,
-                        "spotify",
-                        service_id,
-                        account_id,
-                        &track_id_str,
-                        &title,
-                        &artist_name,
-                        album_name.clone(),
-                        isrc.clone(),
-                        duration_ms,
-                    ).await;
-                }
-                match crate::services::import_pagination::next_offset(
-                    offset,
-                    items_len_s as i32,
-                    50,
-                    (page.total > 0).then_some(page.total as i64),
-                ) {
-                    Some(next) => offset = next,
-                    None => break,
-                }
+                        // F2-4: identidad canónica vía EnrichmentEngine
+                        let _ = persist_favorite_track_via_engine(
+                            &state.db,
+                            &enrichment_engine,
+                            "spotify",
+                            service_id,
+                            account_id,
+                            &track_id_str,
+                            &title,
+                            &artist_name,
+                            album_name.clone(),
+                            isrc.clone(),
+                            duration_ms,
+                        )
+                        .await;
+                    }
+                    match crate::services::import_pagination::next_offset(
+                        offset,
+                        items_len_s as i32,
+                        50,
+                        (page.total > 0).then_some(page.total as i64),
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
                 }
             }
 
@@ -1718,7 +1879,9 @@ pub async fn sync_favorites(
                     .await;
 
                     if let Ok(r) = res {
-                        if r.rows_affected() > 0 { imported += 1; }
+                        if r.rows_affected() > 0 {
+                            imported += 1;
+                        }
                     }
 
                     // Canonical library album synchronization with UPC deduplication
@@ -1730,7 +1893,8 @@ pub async fn sync_favorites(
                         &artist_name,
                         upc.as_deref(),
                         image_url.as_deref(),
-                    ).await;
+                    )
+                    .await;
                 }
             }
 
@@ -1760,7 +1924,9 @@ pub async fn sync_favorites(
                     .await;
 
                     if let Ok(r) = res {
-                        if r.rows_affected() > 0 { imported += 1; }
+                        if r.rows_affected() > 0 {
+                            imported += 1;
+                        }
                     }
 
                     // Canonical library artist synchronization
@@ -1769,11 +1935,17 @@ pub async fn sync_favorites(
                         service_id,
                         &artist_id_str,
                         &name,
-                    ).await;
+                    )
+                    .await;
                 }
             }
         }
-        _ => return Err(format!("Unsupported service for favorites sync: {}", service)),
+        _ => {
+            return Err(format!(
+                "Unsupported service for favorites sync: {}",
+                service
+            ))
+        }
     }
 
     // Update favorites_cache
@@ -1784,7 +1956,7 @@ pub async fn sync_favorites(
         ON CONFLICT(service_name, item_type) DO UPDATE SET
             total_count = excluded.total_count,
             last_synced_at = datetime('now')
-        "#
+        "#,
     )
     .bind(&service_lower)
     .bind(&type_filter)
@@ -1866,11 +2038,15 @@ pub async fn download_favorites(
     dry_run: Option<bool>,
 ) -> Result<DownloadFavoritesResult, String> {
     let service_filter = service.map(|s| s.to_lowercase());
-    let type_filter = item_type.unwrap_or_else(|| "all".to_string()).to_lowercase();
+    let type_filter = item_type
+        .unwrap_or_else(|| "all".to_string())
+        .to_lowercase();
     let quality_pref = quality_preference.unwrap_or_else(|| "lossless".to_string());
     let prio = priority.unwrap_or(60); // Default higher priority for favorites
 
-    let srv_param = service_filter.as_deref().filter(|s| *s != "all" && *s != "local");
+    let srv_param = service_filter
+        .as_deref()
+        .filter(|s| *s != "all" && *s != "local");
     tracing::info!(
         "[download_favorites] Invoked with service={:?}, item_type={:?}, quality={:?}, priority={:?}, limit={:?}, dry_run={:?}",
         srv_param, type_filter, quality_pref, prio, limit, dry_run
@@ -1979,7 +2155,9 @@ pub async fn download_favorites(
     tracing::info!(
         "[download_favorites] Candidate tracks found: total={}, after_limit={}",
         total_candidates,
-        limit.map(|l| (l as usize).min(candidate_track_ids.len())).unwrap_or(candidate_track_ids.len())
+        limit
+            .map(|l| (l as usize).min(candidate_track_ids.len()))
+            .unwrap_or(candidate_track_ids.len())
     );
 
     // Apply batch limit if specified
@@ -2016,12 +2194,11 @@ pub async fn download_favorites(
     let mut ambiguous_sources = 0i64;
 
     // Get current max position in download_queue
-    let max_pos: (Option<i64>,) = sqlx::query_as(
-        "SELECT MAX(position) FROM download_queue WHERE status = 'queued'"
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or((None,));
+    let max_pos: (Option<i64>,) =
+        sqlx::query_as("SELECT MAX(position) FROM download_queue WHERE status = 'queued'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or((None,));
     let mut next_pos = max_pos.0.map(|p| p + 1).unwrap_or(0);
 
     for track_id in candidate_track_ids {
@@ -2110,12 +2287,12 @@ pub async fn download_favorites(
                     JOIN track_sources ts ON ts.track_id = t.id AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
                     JOIN services s ON s.id = ts.service_id
                     WHERE t.id = ?
-                    ORDER BY 
-                        CASE s.name 
-                            WHEN 'qobuz' THEN 1 
-                            WHEN 'tidal' THEN 2 
-                            WHEN 'deezer' THEN 3 
-                            ELSE 4 
+                    ORDER BY
+                        CASE s.name
+                            WHEN 'qobuz' THEN 1
+                            WHEN 'tidal' THEN 2
+                            WHEN 'deezer' THEN 3
+                            ELSE 4
                         END ASC,
                         COALESCE(ts.quality_score, 0) DESC
                     LIMIT 1
@@ -2128,7 +2305,8 @@ pub async fn download_favorites(
             }
         };
 
-        let (s_id, s_name, s_track_id, t_title, t_artist, t_album, t_isrc) = track_info.unwrap_or((None, None, None, None, None, None, None));
+        let (s_id, s_name, s_track_id, t_title, t_artist, t_album, t_isrc) =
+            track_info.unwrap_or((None, None, None, None, None, None, None));
 
         // When downloading favorites without fallback, source identity MUST be resolved and locked
         if s_track_id.is_none() || s_track_id.as_deref().unwrap_or("").trim().is_empty() {
@@ -2157,7 +2335,7 @@ pub async fn download_favorites(
                 allow_fallback, smart_studio_origin, created_at
             )
             VALUES (?, ?, ?, 'queued', ?, 1, ?, ?, ?, ?, ?, ?, ?, 1, 1, CURRENT_TIMESTAMP)
-            "#
+            "#,
         )
         .bind(track_id)
         .bind(prio)
@@ -2241,16 +2419,37 @@ mod favorites_quality_tests {
     #[test]
     fn test_s203_favorite_quality_vocab_mapping() {
         // The modal's 'Standard' option (320 kbps MP3 / High AAC) maps to 'high'.
-        assert_eq!(normalize_favorite_queue_quality("standard"), Some("high".to_string()));
-        assert_eq!(normalize_favorite_queue_quality("Standard"), Some("high".to_string()));
+        assert_eq!(
+            normalize_favorite_queue_quality("standard"),
+            Some("high".to_string())
+        );
+        assert_eq!(
+            normalize_favorite_queue_quality("Standard"),
+            Some("high".to_string())
+        );
         // 'normal' → 'high' per S203 vocabulary mapping.
-        assert_eq!(normalize_favorite_queue_quality("normal"), Some("high".to_string()));
+        assert_eq!(
+            normalize_favorite_queue_quality("normal"),
+            Some("high".to_string())
+        );
         // Canonical CHECK values pass through untouched.
-        assert_eq!(normalize_favorite_queue_quality("lossless"), Some("lossless".to_string()));
-        assert_eq!(normalize_favorite_queue_quality("hires"), Some("hires".to_string()));
-        assert_eq!(normalize_favorite_queue_quality("any"), Some("any".to_string()));
+        assert_eq!(
+            normalize_favorite_queue_quality("lossless"),
+            Some("lossless".to_string())
+        );
+        assert_eq!(
+            normalize_favorite_queue_quality("hires"),
+            Some("hires".to_string())
+        );
+        assert_eq!(
+            normalize_favorite_queue_quality("any"),
+            Some("any".to_string())
+        );
         // Legacy API-style spellings ride the canonical normalizer.
-        assert_eq!(normalize_favorite_queue_quality("HI_RES_LOSSLESS"), Some("hires".to_string()));
+        assert_eq!(
+            normalize_favorite_queue_quality("HI_RES_LOSSLESS"),
+            Some("hires".to_string())
+        );
         // Unknown → NULL (worker default applies) instead of a failing INSERT.
         assert_eq!(normalize_favorite_queue_quality("ultra_mega"), None);
         assert_eq!(normalize_favorite_queue_quality(""), None);
@@ -2304,7 +2503,10 @@ mod favorites_quality_tests {
         pool
     }
 
-    async fn insert_with_quality(pool: &sqlx::SqlitePool, quality: Option<&str>) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    async fn insert_with_quality(
+        pool: &sqlx::SqlitePool,
+        quality: Option<&str>,
+    ) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
         sqlx::query(
             r#"
             INSERT INTO download_queue (
@@ -2339,12 +2541,18 @@ mod favorites_quality_tests {
         // Reproduce the silent drop: the raw modal label violates the CHECK and the
         // INSERT fails — exactly what made favorite tracks vanish from counters.
         let raw = insert_with_quality(&pool, Some("standard")).await;
-        assert!(raw.is_err(), "raw 'standard' must violate the CHECK constraint");
+        assert!(
+            raw.is_err(),
+            "raw 'standard' must violate the CHECK constraint"
+        );
 
         // The normalized path succeeds and persists canonical 'high'.
-        insert_with_quality(&pool, normalize_favorite_queue_quality("standard").as_deref())
-            .await
-            .expect("normalized 'standard'→'high' must insert cleanly");
+        insert_with_quality(
+            &pool,
+            normalize_favorite_queue_quality("standard").as_deref(),
+        )
+        .await
+        .expect("normalized 'standard'→'high' must insert cleanly");
 
         // Unknown labels degrade to NULL and still enqueue (worker default applies).
         insert_with_quality(&pool, normalize_favorite_queue_quality("bogus").as_deref())
@@ -2357,8 +2565,19 @@ mod favorites_quality_tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(rows.len(), 2, "exactly the two normalized inserts must persist");
-        assert_eq!(rows[0].0.as_deref(), Some("high"), "'standard' must be stored as canonical 'high'");
-        assert_eq!(rows[1].0, None, "unknown label must be stored as NULL (worker default applies)");
+        assert_eq!(
+            rows.len(),
+            2,
+            "exactly the two normalized inserts must persist"
+        );
+        assert_eq!(
+            rows[0].0.as_deref(),
+            Some("high"),
+            "'standard' must be stored as canonical 'high'"
+        );
+        assert_eq!(
+            rows[1].0, None,
+            "unknown label must be stored as NULL (worker default applies)"
+        );
     }
 }

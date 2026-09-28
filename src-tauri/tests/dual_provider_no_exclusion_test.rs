@@ -7,7 +7,9 @@
 //! 4. 100% of dual-provider tracks selected are enqueued successfully.
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use syncify_tauri_lib::commands::{evaluate_track_preflight, perform_enqueue_tracks, DownloadPreflightStatus};
+use syncify_tauri_lib::commands::{
+    evaluate_track_preflight, perform_enqueue_tracks, DownloadPreflightStatus,
+};
 
 async fn create_test_db() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -36,10 +38,18 @@ async fn create_test_db() -> SqlitePool {
         .execute(&pool).await.unwrap();
 
     // Set Qobuz as priority 1, Tidal as priority 2
-    sqlx::query("INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('qobuz', 1)")
-        .execute(&pool).await.unwrap();
-    sqlx::query("INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('tidal', 2)")
-        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('qobuz', 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT OR IGNORE INTO service_preferences (service_name, priority) VALUES ('tidal', 2)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     pool
 }
@@ -52,14 +62,13 @@ async fn test_dual_provider_tracks_never_excluded_and_enqueued_cleanly() {
 
     // Setup 10 dual-provider tracks
     for i in 1..=10 {
-        let tid: i64 = sqlx::query_scalar(
-            "INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id"
-        )
-        .bind(format!("Dual Provider Song {:02}", i))
-        .bind(format!("USDUAL99{:04}", i))
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let tid: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+                .bind(format!("Dual Provider Song {:02}", i))
+                .bind(format!("USDUAL99{:04}", i))
+                .fetch_one(&db)
+                .await
+                .unwrap();
 
         // Qobuz candidate: 24-bit Hi-Res
         sqlx::query(
@@ -91,8 +100,15 @@ async fn test_dual_provider_tracks_never_excluded_and_enqueued_cleanly() {
             .expect("Preflight evaluation must succeed");
 
         assert_eq!(pf.status, DownloadPreflightStatus::ReadyExactSource);
-        assert!(pf.is_eligible, "Dual provider track must be eligible for download");
-        assert_eq!(pf.resolved_service_name.as_deref(), Some("qobuz"), "Preferred provider must be chosen");
+        assert!(
+            pf.is_eligible,
+            "Dual provider track must be eligible for download"
+        );
+        assert_eq!(
+            pf.resolved_service_name.as_deref(),
+            Some("qobuz"),
+            "Preferred provider must be chosen"
+        );
     }
 
     // 2. Perform Enqueue of all 10 dual-provider tracks
@@ -123,7 +139,7 @@ async fn test_dual_provider_tracks_never_excluded_and_enqueued_cleanly() {
         FROM download_queue dq
         JOIN services s ON s.id = dq.service_id
         ORDER BY dq.id ASC
-        "#
+        "#,
     )
     .fetch_all(&db)
     .await

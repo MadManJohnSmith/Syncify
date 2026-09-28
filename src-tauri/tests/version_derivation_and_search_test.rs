@@ -1,10 +1,8 @@
 //! Comprehensive Integration Tests for Version Derivation, Search, Source Precedence & Migration Lifecycle (S143B Final Gate)
 
-use tempfile::TempDir;
-use syncify_core_domain::{
-    derive_track_version, VersionConfidence, VersionDerivationInput,
-};
+use syncify_core_domain::{derive_track_version, VersionConfidence, VersionDerivationInput};
 use syncify_tauri_lib::crypto;
+use tempfile::TempDir;
 
 async fn setup_test_db() -> (sqlx::SqlitePool, TempDir) {
     let _ = crypto::init_keychain_crypto().or_else(|_| crypto::init_crypto([42u8; 32]));
@@ -29,9 +27,18 @@ async fn setup_test_db() -> (sqlx::SqlitePool, TempDir) {
     sqlx::query("INSERT OR IGNORE INTO services (id, name, supports_download, max_quality) VALUES (3, 'tidal', 1, 'lossless')")
         .execute(&pool).await.unwrap();
 
-    sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Gorillaz')").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO albums (id, title) VALUES (1, 'Gorillaz')").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (1, 1, 1)").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Gorillaz')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO albums (id, title) VALUES (1, 'Gorillaz')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (1, 1, 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     (pool, temp_dir)
 }
@@ -51,8 +58,14 @@ fn test_version_derivation_confidence_levels() {
     let res1 = derive_track_version(&input_provider_ver);
     assert_eq!(res1.confidence, VersionConfidence::High);
     assert!(res1.can_apply_to_catalog_and_disk());
-    assert_eq!(res1.file_disambiguator.as_deref(), Some("Ed Case / Sweetie Irie Refix"));
-    assert_eq!(res1.display_title.as_deref(), Some("Clint Eastwood (Ed Case / Sweetie Irie Refix)"));
+    assert_eq!(
+        res1.file_disambiguator.as_deref(),
+        Some("Ed Case / Sweetie Irie Refix")
+    );
+    assert_eq!(
+        res1.display_title.as_deref(),
+        Some("Clint Eastwood (Ed Case / Sweetie Irie Refix)")
+    );
 
     // 2. High Confidence: Explicit title suffix with keywords
     let input_title_suffix = VersionDerivationInput {
@@ -67,8 +80,14 @@ fn test_version_derivation_confidence_levels() {
     let res2 = derive_track_version(&input_title_suffix);
     assert_eq!(res2.confidence, VersionConfidence::High);
     assert!(res2.can_apply_to_catalog_and_disk());
-    assert_eq!(res2.file_disambiguator.as_deref(), Some("Stanton Warriors Remix"));
-    assert_eq!(res2.display_title.as_deref(), Some("Feel Good Inc. (Stanton Warriors Remix)"));
+    assert_eq!(
+        res2.file_disambiguator.as_deref(),
+        Some("Stanton Warriors Remix")
+    );
+    assert_eq!(
+        res2.display_title.as_deref(),
+        Some("Feel Good Inc. (Stanton Warriors Remix)")
+    );
 
     // 3. High Confidence: MusicBrainz disambiguation provenance
     let input_mb = VersionDerivationInput {
@@ -100,7 +119,10 @@ fn test_version_derivation_confidence_levels() {
     assert_eq!(res4.confidence, VersionConfidence::Medium);
     assert!(res4.can_apply_to_catalog_and_disk());
     assert_eq!(res4.file_disambiguator.as_deref(), Some("Soulchild Remix"));
-    assert_eq!(res4.display_title.as_deref(), Some("19-2000 (Soulchild Remix)"));
+    assert_eq!(
+        res4.display_title.as_deref(),
+        Some("19-2000 (Soulchild Remix)")
+    );
 
     // 5. Low Confidence: Free-text heuristic comment (MUST NOT apply to disk or catalog)
     let input_low = VersionDerivationInput {
@@ -114,7 +136,10 @@ fn test_version_derivation_confidence_levels() {
     };
     let res5 = derive_track_version(&input_low);
     assert_eq!(res5.confidence, VersionConfidence::Low);
-    assert!(!res5.can_apply_to_catalog_and_disk(), "Low confidence signals must never mutate disk/catalog");
+    assert!(
+        !res5.can_apply_to_catalog_and_disk(),
+        "Low confidence signals must never mutate disk/catalog"
+    );
     assert_eq!(res5.display_title, None);
     assert_eq!(res5.file_disambiguator, None);
 }
@@ -126,9 +151,11 @@ async fn test_source_precedence_and_version_coexistence() {
     // Track 2512: Original Studio Track
     sqlx::query(
         r#"INSERT INTO tracks (id, title, display_title, source_title, album_id, track_number, isrc)
-           VALUES (2512, '19-2000', '19-2000', '19-2000', 1, 11, 'GBAYE1400474')"#
+           VALUES (2512, '19-2000', '19-2000', '19-2000', 1, 11, 'GBAYE1400474')"#,
     )
-    .execute(&pool).await.unwrap();
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Track 2507: Remix Version Track
     sqlx::query(
@@ -140,30 +167,37 @@ async fn test_source_precedence_and_version_coexistence() {
     // Link track sources (Primary = Qobuz, Secondary = Tidal)
     sqlx::query(
         r#"INSERT INTO track_sources (track_id, service_id, service_track_id, availability_status)
-           VALUES (2512, 2, '35543626', 'available')"#
+           VALUES (2512, 2, '35543626', 'available')"#,
     )
-    .execute(&pool).await.unwrap();
+    .execute(&pool)
+    .await
+    .unwrap();
 
     sqlx::query(
         r#"INSERT INTO track_sources (track_id, service_id, service_track_id, availability_status)
-           VALUES (2507, 2, '35543632', 'available')"#
+           VALUES (2507, 2, '35543632', 'available')"#,
     )
-    .execute(&pool).await.unwrap();
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Verify distinct retrieval and projection
-    let orig: (String, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT title, display_title, source_title FROM tracks WHERE id = 2512"
-    )
-    .fetch_one(&pool).await.unwrap();
+    let orig: (String, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT title, display_title, source_title FROM tracks WHERE id = 2512")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(orig.0, "19-2000");
     assert_eq!(orig.1, Some("19-2000".to_string()));
     assert_eq!(orig.2, Some("19-2000".to_string()));
 
     let remix: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT title, display_title, source_title, file_disambiguator FROM tracks WHERE id = 2507"
+        "SELECT title, display_title, source_title, file_disambiguator FROM tracks WHERE id = 2507",
     )
-    .fetch_one(&pool).await.unwrap();
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     assert_eq!(remix.0, "19-2000");
     assert_eq!(remix.1, Some("19-2000 (Soulchild Remix)".to_string()));
@@ -183,9 +217,11 @@ async fn test_search_by_display_title_and_source_title() {
 
     sqlx::query(
         r#"INSERT INTO tracks (id, title, display_title, source_title, album_id, track_number, isrc)
-           VALUES (2512, '19-2000', '19-2000', '19-2000', 1, 11, 'GBAYE1400474')"#
+           VALUES (2512, '19-2000', '19-2000', '19-2000', 1, 11, 'GBAYE1400474')"#,
     )
-    .execute(&pool).await.unwrap();
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // 1. Searching for "Soulchild" MUST find track 2507 via display_title
     let pattern_remix = "%Soulchild%";
@@ -255,19 +291,27 @@ async fn test_reopen_persistence_across_app_restart() {
             .await
             .unwrap();
 
-        let (display_title, source_title, file_dis): (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT display_title, source_title, file_disambiguator FROM tracks WHERE id = 2507"
+        let (display_title, source_title, file_dis): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT display_title, source_title, file_disambiguator FROM tracks WHERE id = 2507",
         )
-        .fetch_one(&pool2).await.unwrap();
+        .fetch_one(&pool2)
+        .await
+        .unwrap();
 
         assert_eq!(display_title, Some("19-2000 (Soulchild Remix)".to_string()));
         assert_eq!(source_title, Some("19-2000".to_string()));
         assert_eq!(file_dis, Some("Soulchild Remix".to_string()));
 
         let (dl_path, dl_dis): (String, Option<String>) = sqlx::query_as(
-            "SELECT file_path, file_disambiguator FROM downloads WHERE track_id = 2507"
+            "SELECT file_path, file_disambiguator FROM downloads WHERE track_id = 2507",
         )
-        .fetch_one(&pool2).await.unwrap();
+        .fetch_one(&pool2)
+        .await
+        .unwrap();
 
         assert_eq!(dl_path, r"F:\Music\17 - 19-2000 [Soulchild Remix].flac");
         assert_eq!(dl_dis, Some("Soulchild Remix".to_string()));
@@ -280,5 +324,8 @@ async fn test_migration_0055_0056_idempotency() {
 
     // Running migrations a second time on an already migrated database must succeed without errors
     let migrate_res = sqlx::migrate!("./migrations").run(&pool).await;
-    assert!(migrate_res.is_ok(), "Second migration execution must be completely idempotent");
+    assert!(
+        migrate_res.is_ok(),
+        "Second migration execution must be completely idempotent"
+    );
 }

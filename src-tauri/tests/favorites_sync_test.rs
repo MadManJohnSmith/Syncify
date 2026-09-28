@@ -55,15 +55,23 @@ async fn test_migration_0045_full_lifecycle_and_idempotence() {
     // Verify albums and artists columns
     let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, is_favorite, favorite_at) VALUES ('Test Album', 1, datetime('now')) RETURNING id")
         .fetch_one(&db).await.unwrap();
-    let album_fav: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM albums WHERE id = ?")
-        .bind(album_id).fetch_one(&db).await.unwrap();
+    let album_fav: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM albums WHERE id = ?")
+            .bind(album_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(album_fav.0, 1);
     assert!(album_fav.1.is_some());
 
     let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name, is_favorite, favorite_at) VALUES ('Test Artist', 1, datetime('now')) RETURNING id")
         .fetch_one(&db).await.unwrap();
-    let artist_fav: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM artists WHERE id = ?")
-        .bind(artist_id).fetch_one(&db).await.unwrap();
+    let artist_fav: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM artists WHERE id = ?")
+            .bind(artist_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(artist_fav.0, 1);
     assert!(artist_fav.1.is_some());
 
@@ -104,19 +112,25 @@ async fn test_favorites_table_upsert_and_isolation() {
     .await
     .unwrap();
 
-    let row: (String, String) = sqlx::query_as("SELECT title, artist_name FROM favorites WHERE service_item_id = '80654035'")
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let row: (String, String) = sqlx::query_as(
+        "SELECT title, artist_name FROM favorites WHERE service_item_id = '80654035'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     assert_eq!(row.0, "Heroes (2017 Remaster)");
     assert_eq!(row.1, "David Bowie");
 
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM favorites WHERE service_item_id = '80654035'")
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(count.0, 1, "Duplicate insert must update in place without row duplication");
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM favorites WHERE service_item_id = '80654035'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        count.0, 1,
+        "Duplicate insert must update in place without row duplication"
+    );
 }
 
 #[tokio::test]
@@ -163,21 +177,34 @@ async fn test_cross_service_isrc_deduplication() {
 
     // Verification
     let tracks_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE isrc = ?")
-        .bind(isrc).fetch_one(&db).await.unwrap();
+        .bind(isrc)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(tracks_count.0, 1, "Single canonical track in library");
 
-    let sources_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
+    let sources_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
+            .bind(track_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(sources_count.0, 3, "Track linked to 3 streaming services");
 
     let favs_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM favorites WHERE isrc = ?")
-        .bind(isrc).fetch_one(&db).await.unwrap();
-    assert_eq!(favs_count.0, 3, "Track recorded in favorites for all 3 accounts");
+        .bind(isrc)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        favs_count.0, 3,
+        "Track recorded in favorites for all 3 accounts"
+    );
 
     // Canonical UI View Query (get_favorites_tracks for 'all' / 'local')
     let canonical_view_tracks: Vec<(i64, String, Option<String>)> = sqlx::query_as(
         r#"
-        SELECT 
+        SELECT
             t.id,
             t.title,
             t.isrc
@@ -186,13 +213,17 @@ async fn test_cross_service_isrc_deduplication() {
         WHERE t.is_favorite = 1
         GROUP BY t.id
         ORDER BY t.favorite_at DESC NULLS LAST
-        "#
+        "#,
     )
     .fetch_all(&db)
     .await
     .unwrap();
 
-    assert_eq!(canonical_view_tracks.len(), 1, "Canonical favorites query collapses multi-service sources into exactly 1 track");
+    assert_eq!(
+        canonical_view_tracks.len(),
+        1,
+        "Canonical favorites query collapses multi-service sources into exactly 1 track"
+    );
     assert_eq!(canonical_view_tracks[0].1, "Heroes");
     assert_eq!(canonical_view_tracks[0].2, Some("USJT11700035".to_string()));
 }
@@ -210,7 +241,7 @@ async fn test_favorites_cache_lifecycle() {
             total_count = excluded.total_count,
             data_json = excluded.data_json,
             last_synced_at = datetime('now')
-        "#
+        "#,
     )
     .execute(&db)
     .await
@@ -227,8 +258,12 @@ async fn test_favorites_cache_lifecycle() {
 async fn test_toggle_album_favorite_atomic() {
     let db = create_test_db().await;
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, is_favorite) VALUES ('Heroes Album', 0) RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, is_favorite) VALUES ('Heroes Album', 0) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     // Toggle to favorite
     let res1: (i32,) = sqlx::query_as(
@@ -236,7 +271,7 @@ async fn test_toggle_album_favorite_atomic() {
          SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END, \
              favorite_at = CASE WHEN is_favorite = 0 THEN datetime('now') ELSE NULL END \
          WHERE id = ? \
-         RETURNING is_favorite"
+         RETURNING is_favorite",
     )
     .bind(album_id)
     .fetch_one(&db)
@@ -245,7 +280,10 @@ async fn test_toggle_album_favorite_atomic() {
     assert_eq!(res1.0, 1, "Album must be favorited");
 
     let fav_at1: Option<String> = sqlx::query_scalar("SELECT favorite_at FROM albums WHERE id = ?")
-        .bind(album_id).fetch_one(&db).await.unwrap();
+        .bind(album_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert!(fav_at1.is_some());
 
     // Toggle back to unfavorite
@@ -254,7 +292,7 @@ async fn test_toggle_album_favorite_atomic() {
          SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END, \
              favorite_at = CASE WHEN is_favorite = 0 THEN datetime('now') ELSE NULL END \
          WHERE id = ? \
-         RETURNING is_favorite"
+         RETURNING is_favorite",
     )
     .bind(album_id)
     .fetch_one(&db)
@@ -263,7 +301,10 @@ async fn test_toggle_album_favorite_atomic() {
     assert_eq!(res2.0, 0, "Album must be unfavorited");
 
     let fav_at2: Option<String> = sqlx::query_scalar("SELECT favorite_at FROM albums WHERE id = ?")
-        .bind(album_id).fetch_one(&db).await.unwrap();
+        .bind(album_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert!(fav_at2.is_none());
 }
 
@@ -271,8 +312,12 @@ async fn test_toggle_album_favorite_atomic() {
 async fn test_toggle_artist_favorite_atomic() {
     let db = create_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name, is_favorite) VALUES ('David Bowie', 0) RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let artist_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name, is_favorite) VALUES ('David Bowie', 0) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     // Toggle to favorite
     let res1: (i32,) = sqlx::query_as(
@@ -280,7 +325,7 @@ async fn test_toggle_artist_favorite_atomic() {
          SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END, \
              favorite_at = CASE WHEN is_favorite = 0 THEN datetime('now') ELSE NULL END \
          WHERE id = ? \
-         RETURNING is_favorite"
+         RETURNING is_favorite",
     )
     .bind(artist_id)
     .fetch_one(&db)
@@ -288,8 +333,12 @@ async fn test_toggle_artist_favorite_atomic() {
     .unwrap();
     assert_eq!(res1.0, 1, "Artist must be favorited");
 
-    let fav_at1: Option<String> = sqlx::query_scalar("SELECT favorite_at FROM artists WHERE id = ?")
-        .bind(artist_id).fetch_one(&db).await.unwrap();
+    let fav_at1: Option<String> =
+        sqlx::query_scalar("SELECT favorite_at FROM artists WHERE id = ?")
+            .bind(artist_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert!(fav_at1.is_some());
 
     // Toggle back
@@ -298,7 +347,7 @@ async fn test_toggle_artist_favorite_atomic() {
          SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END, \
              favorite_at = CASE WHEN is_favorite = 0 THEN datetime('now') ELSE NULL END \
          WHERE id = ? \
-         RETURNING is_favorite"
+         RETURNING is_favorite",
     )
     .bind(artist_id)
     .fetch_one(&db)
@@ -362,13 +411,16 @@ async fn test_optimistic_rollback_simulation() {
     // Backend transaction fails intentionally (e.g. constraint violation or simulated error)
     let update_res = async {
         let mut tx = db.begin().await?;
-        sqlx::query("UPDATE tracks SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
-            .bind(track_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE tracks SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?",
+        )
+        .bind(track_id)
+        .execute(&mut *tx)
+        .await?;
         // Simulate forced failure
         Err::<(), sqlx::Error>(sqlx::Error::RowNotFound)
-    }.await;
+    }
+    .await;
 
     // On error, UI executes rollback
     if update_res.is_err() {
@@ -379,6 +431,9 @@ async fn test_optimistic_rollback_simulation() {
 
     // Verify DB remains 0
     let db_fav: (i32,) = sqlx::query_as("SELECT is_favorite FROM tracks WHERE id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
+        .bind(track_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(db_fav.0, 0, "DB state was never committed and remains 0");
 }

@@ -48,7 +48,7 @@ async fn setup_test_db() -> SqlitePool {
         );
         INSERT OR IGNORE INTO sync_settings (id, max_concurrent_downloads, quality_preference)
         VALUES (1, 2, 'LOSSLESS');
-        "#
+        "#,
     )
     .execute(&pool)
     .await

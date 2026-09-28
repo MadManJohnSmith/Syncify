@@ -29,7 +29,8 @@ use syncify_tauri_lib::download::DownloadRequest;
 use tokio::sync::Semaphore;
 
 fn compute_file_sha256(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(format!("{:x}", hasher.finalize()))
@@ -59,7 +60,10 @@ fn inspect_with_ffprobe(path: &Path) -> Result<FfprobeReport, String> {
         .map_err(|e| format!("Failed to execute ffprobe: {}", e))?;
 
     if !output.status.success() {
-        return Err(format!("ffprobe error: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(format!(
+            "ffprobe error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let json_val: serde_json::Value = serde_json::from_slice(&output.stdout)
@@ -70,7 +74,10 @@ fn inspect_with_ffprobe(path: &Path) -> Result<FfprobeReport, String> {
         .and_then(|arr| arr.first())
         .ok_or("No audio stream found")?;
 
-    let codec_name = stream["codec_name"].as_str().unwrap_or("unknown").to_string();
+    let codec_name = stream["codec_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
     let sample_rate = stream["sample_rate"]
         .as_str()
         .and_then(|s| s.parse::<u32>().ok())
@@ -85,13 +92,21 @@ fn inspect_with_ffprobe(path: &Path) -> Result<FfprobeReport, String> {
     let duration_sec = stream["duration"]
         .as_str()
         .and_then(|s| s.parse::<f64>().ok())
-        .or_else(|| json_val["format"]["duration"].as_str().and_then(|s| s.parse::<f64>().ok()))
+        .or_else(|| {
+            json_val["format"]["duration"]
+                .as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+        })
         .unwrap_or(0.0);
 
     let bit_rate = stream["bit_rate"]
         .as_str()
         .and_then(|s| s.parse::<u64>().ok())
-        .or_else(|| json_val["format"]["bit_rate"].as_str().and_then(|s| s.parse::<u64>().ok()));
+        .or_else(|| {
+            json_val["format"]["bit_rate"]
+                .as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+        });
 
     let mut tags = HashMap::new();
     if let Some(tags_obj) = json_val["format"]["tags"].as_object() {
@@ -195,15 +210,23 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
     println!("================================================================================");
 
     // 0. Verify git working tree and commit HEAD
-    let initial_head = Command::new("git").args(["rev-parse", "HEAD"]).output()
+    let initial_head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     println!("0. Git Commit HEAD: {}", initial_head);
-    assert_eq!(initial_head, "c654ee90fdd663374f4b778ee66aa0a99ccb3fe0", "Git HEAD must match S167 commit");
+    assert_eq!(
+        initial_head, "c654ee90fdd663374f4b778ee66aa0a99ccb3fe0",
+        "Git HEAD must match S167 commit"
+    );
 
     // 1. Initialize keychain crypto
     let crypto_init = syncify_tauri_lib::crypto::init_keychain_crypto();
-    assert!(crypto_init.is_ok(), "Keychain crypto initialization must succeed");
+    assert!(
+        crypto_init.is_ok(),
+        "Keychain crypto initialization must succeed"
+    );
 
     // 2. Connect to local runtime database
     let app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
@@ -224,17 +247,38 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
         .join("Syncify")
         .join("audits")
         .join("s167_50_track_manifest.json");
-    assert!(manifest_path.exists(), "Frozen manifest must exist at {:?}", manifest_path);
+    assert!(
+        manifest_path.exists(),
+        "Frozen manifest must exist at {:?}",
+        manifest_path
+    );
 
     let manifest_content = std::fs::read_to_string(&manifest_path).expect("Read manifest");
-    let manifest: FrozenManifest = serde_json::from_str(&manifest_content).expect("Parse manifest JSON");
+    let manifest: FrozenManifest =
+        serde_json::from_str(&manifest_content).expect("Parse manifest JSON");
 
-    assert_eq!(manifest.target_list_hash, "d06324134f7fb08d119159a70f0197d55dfe211127baffda05b0b837f603e8d3");
-    assert_eq!(manifest.preflight_report_hash, "358379296039929d06bf7cf046d2d4dd763ef19aab3aefe656461171ba07c9ed");
+    assert_eq!(
+        manifest.target_list_hash,
+        "d06324134f7fb08d119159a70f0197d55dfe211127baffda05b0b837f603e8d3"
+    );
+    assert_eq!(
+        manifest.preflight_report_hash,
+        "358379296039929d06bf7cf046d2d4dd763ef19aab3aefe656461171ba07c9ed"
+    );
     assert_eq!(manifest.tracks.len(), 50);
 
-    let seg_a_targets: Vec<ManifestTrack> = manifest.tracks.iter().filter(|t| t.segment == "Segment A").cloned().collect();
-    let seg_b_targets: Vec<ManifestTrack> = manifest.tracks.iter().filter(|t| t.segment == "Segment B").cloned().collect();
+    let seg_a_targets: Vec<ManifestTrack> = manifest
+        .tracks
+        .iter()
+        .filter(|t| t.segment == "Segment A")
+        .cloned()
+        .collect();
+    let seg_b_targets: Vec<ManifestTrack> = manifest
+        .tracks
+        .iter()
+        .filter(|t| t.segment == "Segment B")
+        .cloned()
+        .collect();
     assert_eq!(seg_a_targets.len(), 25);
     assert_eq!(seg_b_targets.len(), 25);
 
@@ -243,7 +287,10 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
     let seg_b_ids: HashSet<i64> = seg_b_targets.iter().map(|t| t.track_id).collect();
     assert_eq!(seg_a_ids.len(), 25);
     assert_eq!(seg_b_ids.len(), 25);
-    assert!(seg_a_ids.is_disjoint(&seg_b_ids), "Segment A and Segment B must be strictly disjoint");
+    assert!(
+        seg_a_ids.is_disjoint(&seg_b_ids),
+        "Segment A and Segment B must be strictly disjoint"
+    );
 
     // Clean previous test candidate rows from downloads to ensure an idempotent fresh execution
     for t in &manifest.tracks {
@@ -278,7 +325,10 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
 
     // Staging must be empty before start
     let staging_entries = std::fs::read_dir(&staging_dir).unwrap().count();
-    assert_eq!(staging_entries, 0, "Staging directory must be completely empty before execution");
+    assert_eq!(
+        staging_entries, 0,
+        "Staging directory must be completely empty before execution"
+    );
 
     let orchestrator = Arc::new(DownloadOrchestrator::new().with_db(pool.clone()));
 
@@ -323,7 +373,9 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                     quality_decision: "NoDownloadProvider".to_string(),
                     provider_fallback_used: false,
                     quality_fallback_used: false,
-                    decision_reason: Some("No active download provider available for this track".to_string()),
+                    decision_reason: Some(
+                        "No active download provider available for this track".to_string(),
+                    ),
                     retryable: false,
                     terminal_outcome: "Failed (No download provider available)".to_string(),
                     file_path: "".to_string(),
@@ -348,7 +400,11 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
 
             let req = DownloadRequest {
                 item_id: format!("s167_segA_{}", target.track_id),
-                isrc: if target.isrc.is_empty() { None } else { Some(target.isrc.clone()) },
+                isrc: if target.isrc.is_empty() {
+                    None
+                } else {
+                    Some(target.isrc.clone())
+                },
                 musicbrainz_recording_id: None,
                 acoustid_fingerprint: None,
                 spotify_id: None,
@@ -387,9 +443,13 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                     let sha = compute_file_sha256(p).unwrap_or_default();
                     let bytes = std::fs::read(p).unwrap_or_default();
                     let magic_valid = AudioByteValidator::is_flac_magic(&bytes);
-                    assert!(magic_valid, "Strict lossless file must have FLAC magic bytes");
+                    assert!(
+                        magic_valid,
+                        "Strict lossless file must have FLAC magic bytes"
+                    );
 
-                    let ff = inspect_with_ffprobe(p).expect("ffprobe must succeed on downloaded FLAC");
+                    let ff =
+                        inspect_with_ffprobe(p).expect("ffprobe must succeed on downloaded FLAC");
                     assert_eq!(ff.codec_name, "flac", "Strict lossless must decode as flac");
 
                     let is_provider_fb = target.origin_service == "spotify";
@@ -444,7 +504,11 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                         requested_format: "flac".to_string(),
                         strict_quality: true,
                         allow_lossy_fallback: false,
-                        preflight_decision: if is_provider_fb { "ReadyProviderFallbackExactQuality".to_string() } else { "ReadyExactQuality".to_string() },
+                        preflight_decision: if is_provider_fb {
+                            "ReadyProviderFallbackExactQuality".to_string()
+                        } else {
+                            "ReadyExactQuality".to_string()
+                        },
                         actual_codec: "FLAC".to_string(),
                         effective_quality: "FLAC 16-bit / 44.1 kHz".to_string(),
                         effective_format: "FLAC".to_string(),
@@ -465,7 +529,11 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                         sqlite_download_row: true,
                         staging_cleaned: true,
                         transfer_duration_ms: elapsed_ms,
-                        throughput_mibps: if elapsed_ms > 0 { (fsize as f64 / (1024.0 * 1024.0)) / (elapsed_ms as f64 / 1000.0) } else { 0.0 },
+                        throughput_mibps: if elapsed_ms > 0 {
+                            (fsize as f64 / (1024.0 * 1024.0)) / (elapsed_ms as f64 / 1000.0)
+                        } else {
+                            0.0
+                        },
                     };
                     recs.lock().await.push(rec);
                 }
@@ -476,7 +544,11 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                         || err_msg.contains("downgrade rejected")
                         || err_msg.contains("rejected to prevent quality downgrade")
                         || err_msg.contains("returned AAC for the current account/client context");
-                    assert!(is_rejected_quality, "Unexpected failure in Segment A: {}", err_msg);
+                    assert!(
+                        is_rejected_quality,
+                        "Unexpected failure in Segment A: {}",
+                        err_msg
+                    );
 
                     let rec = TrackExecutionAuditRecord {
                         segment: "Segment A".to_string(),
@@ -499,7 +571,9 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                         quality_decision: "RejectedQuality".to_string(),
                         provider_fallback_used: false,
                         quality_fallback_used: false,
-                        decision_reason: Some("Provider returned AAC; lossy fallback is disabled".to_string()),
+                        decision_reason: Some(
+                            "Provider returned AAC; lossy fallback is disabled".to_string(),
+                        ),
                         retryable: false,
                         terminal_outcome: "Failed (Quality rejected, 0 bytes saved)".to_string(),
                         file_path: "".to_string(),
@@ -530,32 +604,68 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
     assert_eq!(finished_recs_a.len(), 25);
 
     // Segment A Assertions
-    let seg_a_exact = finished_recs_a.iter().filter(|r| r.quality_decision == "CompletedExactQuality").count();
-    let seg_a_prov_fb = finished_recs_a.iter().filter(|r| r.quality_decision == "ReadyProviderFallbackExactQuality").count();
-    let seg_a_rej = finished_recs_a.iter().filter(|r| r.quality_decision == "RejectedQuality").count();
-    let seg_a_no_prov = finished_recs_a.iter().filter(|r| r.quality_decision == "NoDownloadProvider").count();
+    let seg_a_exact = finished_recs_a
+        .iter()
+        .filter(|r| r.quality_decision == "CompletedExactQuality")
+        .count();
+    let seg_a_prov_fb = finished_recs_a
+        .iter()
+        .filter(|r| r.quality_decision == "ReadyProviderFallbackExactQuality")
+        .count();
+    let seg_a_rej = finished_recs_a
+        .iter()
+        .filter(|r| r.quality_decision == "RejectedQuality")
+        .count();
+    let seg_a_no_prov = finished_recs_a
+        .iter()
+        .filter(|r| r.quality_decision == "NoDownloadProvider")
+        .count();
 
-    println!("Segment A Summary: Exact={}, ProviderFB={}, RejectedQuality={}, NoProvider={}", seg_a_exact, seg_a_prov_fb, seg_a_rej, seg_a_no_prov);
-    assert_eq!(seg_a_exact, 10, "Must have exactly 10 direct FLAC downloads in Segment A");
-    assert_eq!(seg_a_prov_fb, 4, "Must have exactly 4 provider fallback FLAC downloads in Segment A");
-    assert_eq!(seg_a_rej, 9, "Must have exactly 9 RejectedQuality tracks in Segment A (downgrade prevention)");
-    assert_eq!(seg_a_no_prov, 2, "Must have exactly 2 NoDownloadProvider tracks in Segment A");
+    println!(
+        "Segment A Summary: Exact={}, ProviderFB={}, RejectedQuality={}, NoProvider={}",
+        seg_a_exact, seg_a_prov_fb, seg_a_rej, seg_a_no_prov
+    );
+    assert_eq!(
+        seg_a_exact, 10,
+        "Must have exactly 10 direct FLAC downloads in Segment A"
+    );
+    assert_eq!(
+        seg_a_prov_fb, 4,
+        "Must have exactly 4 provider fallback FLAC downloads in Segment A"
+    );
+    assert_eq!(
+        seg_a_rej, 9,
+        "Must have exactly 9 RejectedQuality tracks in Segment A (downgrade prevention)"
+    );
+    assert_eq!(
+        seg_a_no_prov, 2,
+        "Must have exactly 2 NoDownloadProvider tracks in Segment A"
+    );
 
     // Verify 0 staging residuals
     let staging_entries_after_a = std::fs::read_dir(&staging_dir).unwrap().count();
-    assert_eq!(staging_entries_after_a, 0, "Staging directory must be completely empty after Segment A");
+    assert_eq!(
+        staging_entries_after_a, 0,
+        "Staging directory must be completely empty after Segment A"
+    );
 
     // Verify accounts invalid count is 0
-    let invalid_accounts_a: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE credentials_invalid = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(invalid_accounts_a, 0, "Auth credentials must NOT be invalidated by RejectedQuality");
+    let invalid_accounts_a: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE credentials_invalid = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        invalid_accounts_a, 0,
+        "Auth credentials must NOT be invalidated by RejectedQuality"
+    );
 
     // =========================================================================
     // EXECUTE SEGMENT B (Permissive Fallback: strict=false, fallback=true, conc=4)
     // =========================================================================
-    println!("\n>>> Starting SEGMENT B execution (Permissive Fallback, 25 tracks, concurrency=4)...");
+    println!(
+        "\n>>> Starting SEGMENT B execution (Permissive Fallback, 25 tracks, concurrency=4)..."
+    );
     let semaphore_b = Arc::new(Semaphore::new(4));
     let records_b = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let mut handles_b = Vec::new();
@@ -593,7 +703,9 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                     quality_decision: "NoDownloadProvider".to_string(),
                     provider_fallback_used: false,
                     quality_fallback_used: false,
-                    decision_reason: Some("No active download provider available for this track".to_string()),
+                    decision_reason: Some(
+                        "No active download provider available for this track".to_string(),
+                    ),
                     retryable: false,
                     terminal_outcome: "Failed (No download provider available)".to_string(),
                     file_path: "".to_string(),
@@ -618,7 +730,11 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
 
             let req = DownloadRequest {
                 item_id: format!("s167_segB_{}", target.track_id),
-                isrc: if target.isrc.is_empty() { None } else { Some(target.isrc.clone()) },
+                isrc: if target.isrc.is_empty() {
+                    None
+                } else {
+                    Some(target.isrc.clone())
+                },
                 musicbrainz_recording_id: None,
                 acoustid_fingerprint: None,
                 spotify_id: None,
@@ -663,9 +779,13 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                     } else {
                         AudioByteValidator::is_flac_magic(&bytes)
                     };
-                    assert!(magic_valid, "Downloaded file magic bytes must match format (M4A or FLAC)");
+                    assert!(
+                        magic_valid,
+                        "Downloaded file magic bytes must match format (M4A or FLAC)"
+                    );
 
-                    let ff = inspect_with_ffprobe(p).expect("ffprobe must succeed on downloaded file");
+                    let ff =
+                        inspect_with_ffprobe(p).expect("ffprobe must succeed on downloaded file");
 
                     let is_provider_fb = target.origin_service == "spotify";
                     let (q_dec, eff_q, eff_fmt, terminal_outcome, dec_reason) = if is_m4a {
@@ -751,7 +871,11 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                         } else {
                             "ReadyExactQuality".to_string()
                         },
-                        actual_codec: if is_m4a { "AAC".to_string() } else { "FLAC".to_string() },
+                        actual_codec: if is_m4a {
+                            "AAC".to_string()
+                        } else {
+                            "FLAC".to_string()
+                        },
                         effective_quality: eff_q,
                         effective_format: eff_fmt,
                         quality_decision: q_dec.to_string(),
@@ -771,7 +895,11 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
                         sqlite_download_row: true,
                         staging_cleaned: true,
                         transfer_duration_ms: elapsed_ms,
-                        throughput_mibps: if elapsed_ms > 0 { (fsize as f64 / (1024.0 * 1024.0)) / (elapsed_ms as f64 / 1000.0) } else { 0.0 },
+                        throughput_mibps: if elapsed_ms > 0 {
+                            (fsize as f64 / (1024.0 * 1024.0)) / (elapsed_ms as f64 / 1000.0)
+                        } else {
+                            0.0
+                        },
                     };
                     recs.lock().await.push(rec);
                 }
@@ -791,26 +919,62 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
     assert_eq!(finished_recs_b.len(), 25);
 
     // Segment B Assertions
-    let seg_b_exact = finished_recs_b.iter().filter(|r| r.quality_decision == "CompletedExactQuality").count();
-    let seg_b_prov_fb = finished_recs_b.iter().filter(|r| r.quality_decision == "CompletedWithProviderFallback").count();
-    let seg_b_qual_fb = finished_recs_b.iter().filter(|r| r.quality_decision == "CompletedWithQualityFallback").count();
-    let seg_b_no_prov = finished_recs_b.iter().filter(|r| r.quality_decision == "NoDownloadProvider").count();
+    let seg_b_exact = finished_recs_b
+        .iter()
+        .filter(|r| r.quality_decision == "CompletedExactQuality")
+        .count();
+    let seg_b_prov_fb = finished_recs_b
+        .iter()
+        .filter(|r| r.quality_decision == "CompletedWithProviderFallback")
+        .count();
+    let seg_b_qual_fb = finished_recs_b
+        .iter()
+        .filter(|r| r.quality_decision == "CompletedWithQualityFallback")
+        .count();
+    let seg_b_no_prov = finished_recs_b
+        .iter()
+        .filter(|r| r.quality_decision == "NoDownloadProvider")
+        .count();
 
-    println!("Segment B Summary: Exact={}, ProviderFB={}, QualityFB={}, NoProvider={}", seg_b_exact, seg_b_prov_fb, seg_b_qual_fb, seg_b_no_prov);
-    assert_eq!(seg_b_no_prov, 2, "Must have exactly 2 NoDownloadProvider tracks in Segment B");
-    assert_eq!(seg_b_prov_fb, 4, "Must have exactly 4 provider fallback FLAC downloads in Segment B");
-    assert_eq!(seg_b_exact + seg_b_qual_fb, 19, "Must have 19 direct downloads in Segment B");
-    assert!(seg_b_qual_fb >= 5, "Must have quality fallback AAC downloads in Segment B");
+    println!(
+        "Segment B Summary: Exact={}, ProviderFB={}, QualityFB={}, NoProvider={}",
+        seg_b_exact, seg_b_prov_fb, seg_b_qual_fb, seg_b_no_prov
+    );
+    assert_eq!(
+        seg_b_no_prov, 2,
+        "Must have exactly 2 NoDownloadProvider tracks in Segment B"
+    );
+    assert_eq!(
+        seg_b_prov_fb, 4,
+        "Must have exactly 4 provider fallback FLAC downloads in Segment B"
+    );
+    assert_eq!(
+        seg_b_exact + seg_b_qual_fb,
+        19,
+        "Must have 19 direct downloads in Segment B"
+    );
+    assert!(
+        seg_b_qual_fb >= 5,
+        "Must have quality fallback AAC downloads in Segment B"
+    );
 
     // Verify 0 staging residuals after Segment B
     let staging_entries_after_b = std::fs::read_dir(&staging_dir).unwrap().count();
-    assert_eq!(staging_entries_after_b, 0, "Staging directory must be completely empty after Segment B");
+    assert_eq!(
+        staging_entries_after_b, 0,
+        "Staging directory must be completely empty after Segment B"
+    );
 
     // Check HEAD did not change
-    let current_head = Command::new("git").args(["rev-parse", "HEAD"]).output()
+    let current_head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
-    assert_eq!(current_head, initial_head, "Git commit HEAD must not change during execution");
+    assert_eq!(
+        current_head, initial_head,
+        "Git commit HEAD must not change during execution"
+    );
 
     // Write Full Execution Report JSON
     let all_records = [finished_recs_a, finished_recs_b].concat();
@@ -826,5 +990,8 @@ async fn test_s167_live_network_50_controlled_execution_audit() {
     println!("       Execution Report: {}", report_out_path.display());
     println!("================================================================================\n");
 
-    println!("EXECUTION_REPORT_JSON_START\n{}\nEXECUTION_REPORT_JSON_END", report_json);
+    println!(
+        "EXECUTION_REPORT_JSON_START\n{}\nEXECUTION_REPORT_JSON_END",
+        report_json
+    );
 }

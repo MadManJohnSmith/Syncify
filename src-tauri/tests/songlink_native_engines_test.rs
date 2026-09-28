@@ -18,7 +18,8 @@ use std::sync::Arc;
 use syncify_tauri_lib::download::orchestrator::{DownloadOrchestrator, SongLinkEngineTarget};
 use syncify_tauri_lib::download::progress::DownloadRequest;
 use syncify_tauri_lib::download::songlink::{
-    extract_id_from_entity, extract_id_from_url, SongLinkAvailability, SongLinkClient, TrackAvailability,
+    extract_id_from_entity, extract_id_from_url, SongLinkAvailability, SongLinkClient,
+    TrackAvailability,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -280,7 +281,10 @@ fn test_id_extraction_from_entity_and_url() {
         Some("334455".to_string())
     );
     assert_eq!(
-        extract_id_from_url("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT", "spotify"),
+        extract_id_from_url(
+            "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT",
+            "spotify"
+        ),
         Some("4cOdK2wGLETKBW3PvgPWqT".to_string())
     );
 }
@@ -310,7 +314,10 @@ async fn test_songlink_tidal_id_routes_to_tidal_engine() {
         .expect("SongLink candidates must resolve");
 
     assert_eq!(avail.tidal_id.as_deref(), Some("34782012"));
-    assert!(!candidates.is_empty(), "Must resolve at least one candidate");
+    assert!(
+        !candidates.is_empty(),
+        "Must resolve at least one candidate"
+    );
     assert_eq!(
         candidates[0],
         SongLinkEngineTarget::Tidal("34782012".to_string())
@@ -318,7 +325,10 @@ async fn test_songlink_tidal_id_routes_to_tidal_engine() {
 
     // Verify orchestrator execution flow routes to Tidal
     let result = orchestrator.download_track(&req).await;
-    assert!(result.is_err(), "Standalone download fails without auth credentials");
+    assert!(
+        result.is_err(),
+        "Standalone download fails without auth credentials"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.to_lowercase().contains("tidal")
@@ -354,7 +364,10 @@ async fn test_songlink_qobuz_id_routes_to_qobuz_engine() {
         .expect("SongLink candidates must resolve");
 
     assert_eq!(avail.qobuz_id.as_deref(), Some("19827364"));
-    assert!(!candidates.is_empty(), "Must resolve at least one candidate");
+    assert!(
+        !candidates.is_empty(),
+        "Must resolve at least one candidate"
+    );
     assert_eq!(
         candidates[0],
         SongLinkEngineTarget::Qobuz("19827364".to_string())
@@ -362,7 +375,10 @@ async fn test_songlink_qobuz_id_routes_to_qobuz_engine() {
 
     // Verify orchestrator execution flow routes to Qobuz
     let result = orchestrator.download_track(&req).await;
-    assert!(result.is_err(), "Standalone download fails without auth credentials");
+    assert!(
+        result.is_err(),
+        "Standalone download fails without auth credentials"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.to_lowercase().contains("qobuz")

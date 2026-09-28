@@ -107,7 +107,11 @@ pub fn build_tray_menu<R: Runtime>(
 ) -> Result<Menu<R>, tauri::Error> {
     let menu = Menu::new(app)?;
 
-    let toggle_text = if is_visible { "Hide Syncify" } else { "Show Syncify" };
+    let toggle_text = if is_visible {
+        "Hide Syncify"
+    } else {
+        "Show Syncify"
+    };
     let toggle_id = if is_visible { "hide" } else { "show" };
     let toggle_item = MenuItem::with_id(app, toggle_id, toggle_text, true, None::<&str>)?;
     menu.append(&toggle_item)?;
@@ -137,13 +141,8 @@ pub fn build_tray_menu<R: Runtime>(
         status_submenu.append(&dl_item)?;
     }
     if sync_service.is_none() && !is_downloading {
-        let idle_item = MenuItem::with_id(
-            app,
-            "status_idle",
-            "✓ All caught up",
-            false,
-            None::<&str>,
-        )?;
+        let idle_item =
+            MenuItem::with_id(app, "status_idle", "✓ All caught up", false, None::<&str>)?;
         status_submenu.append(&idle_item)?;
     }
     menu.append(&status_submenu)?;
@@ -168,7 +167,13 @@ pub fn build_tray_menu<R: Runtime>(
     let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     menu.append(&settings_item)?;
 
-    let updates_item = MenuItem::with_id(app, "check_updates", "Check for Updates", true, None::<&str>)?;
+    let updates_item = MenuItem::with_id(
+        app,
+        "check_updates",
+        "Check for Updates",
+        true,
+        None::<&str>,
+    )?;
     menu.append(&updates_item)?;
 
     let sep4 = PredefinedMenuItem::separator(app)?;
@@ -193,18 +198,16 @@ pub fn setup_system_tray<R: Runtime>(
         .on_menu_event(|app, event| {
             handle_menu_click(app, event.id.as_ref());
         })
-        .on_tray_icon_event(|tray, event| {
-            match event {
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                } => {
-                    let app = tray.app_handle();
-                    toggle_main_window(app);
-                }
-                _ => {}
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } => {
+                let app = tray.app_handle();
+                toggle_main_window(app);
             }
+            _ => {}
         });
 
     if let Some(default_icon) = app.default_window_icon() {
@@ -351,7 +354,13 @@ pub fn update_tray_menu<R: Runtime>(
     sync_service: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(tray) = app.tray_by_id(SYNCIFY_TRAY_ID) {
-        let menu = build_tray_menu(app, is_visible, is_downloading, download_count, sync_service)?;
+        let menu = build_tray_menu(
+            app,
+            is_visible,
+            is_downloading,
+            download_count,
+            sync_service,
+        )?;
         tray.set_menu(Some(menu))?;
     }
     Ok(())

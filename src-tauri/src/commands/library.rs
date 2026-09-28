@@ -2,7 +2,7 @@
 use super::*;
 
 // Library Commands - submodule of crate::commands
-// 
+//
 // Library CRUD operations, search, playlists
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
@@ -73,10 +73,10 @@ async fn fetch_track_metadata(
             t.musicbrainz_id,
             al.cover_art_url,
             d.file_path,
-            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
-             FROM library_entries le 
-             JOIN accounts acc ON acc.id = le.account_id 
-             JOIN services s_imp ON s_imp.id = acc.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name)
+             FROM library_entries le
+             JOIN accounts acc ON acc.id = le.account_id
+             JOIN services s_imp ON s_imp.id = acc.service_id
              WHERE le.track_id = t.id) as imported_from,
             COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
             t.tempo_confidence,
@@ -150,39 +150,39 @@ pub async fn get_library(
 
     let tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
-        SELECT 
+        SELECT
             t.id,
             t.title,
             -- Only get primary artist name (avoid duplicates from featured artists)
-            (SELECT a2.name FROM track_artists ta2 
-             JOIN artists a2 ON a2.id = ta2.artist_id 
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary' 
+            (SELECT a2.name FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
              LIMIT 1) as artist_name,
-            (SELECT a2.id FROM track_artists ta2 
-             JOIN artists a2 ON a2.id = ta2.artist_id 
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary' 
+            (SELECT a2.id FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
              LIMIT 1) as artist_id,
             al.title as album_name,
             al.id as album_id,
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
-            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
-             FROM library_entries le 
-             JOIN accounts acc ON acc.id = le.account_id 
-             JOIN services s_imp ON s_imp.id = acc.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name)
+             FROM library_entries le
+             JOIN accounts acc ON acc.id = le.account_id
+             JOIN services s_imp ON s_imp.id = acc.service_id
              WHERE le.track_id = t.id) as imported_from,
             COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
-            (SELECT GROUP_CONCAT(DISTINCT s_avail.name) 
-             FROM track_sources ts_avail 
-             JOIN services s_avail ON s_avail.id = ts_avail.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_avail.name)
+             FROM track_sources ts_avail
+             JOIN services s_avail ON s_avail.id = ts_avail.service_id
              WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
-            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ') 
-             FROM track_sources ts_all 
-             JOIN services s_all ON s_all.id = ts_all.service_id 
+            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ')
+             FROM track_sources ts_all
+             JOIN services s_all ON s_all.id = ts_all.service_id
              WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
-            CASE 
+            CASE
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
                 WHEN dq.status = 'queued' OR dq.status = 'downloading' THEN 'queued'
                 ELSE 'not_downloaded'
@@ -199,7 +199,7 @@ pub async fn get_library(
                 CASE WHEN t.genre IS NOT NULL AND t.genre != '' THEN 10 ELSE 0 END
             ) as metadata_score,
             -- Lyrics type based on sync level
-            CASE 
+            CASE
                 WHEN l.sync_level IN ('syllable', 'word') THEN 'synced'
                 WHEN l.sync_level = 'line' THEN 'timed'
                 WHEN l.content IS NOT NULL THEN 'plain'
@@ -261,7 +261,11 @@ pub async fn get_duplicate_tracks(
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(100).min(500);
 
-    tracing::info!("get_duplicate_tracks called with offset={}, limit={}", offset, limit);
+    tracing::info!(
+        "get_duplicate_tracks called with offset={}, limit={}",
+        offset,
+        limit
+    );
 
     // Get total count first
     let total: (i64,) = sqlx::query_as(
@@ -277,7 +281,7 @@ pub async fn get_duplicate_tracks(
             AND ta2.artist_id = ta.artist_id
             AND t2.id != t.id
         )
-        "#
+        "#,
     )
     .fetch_one(&state.db)
     .await
@@ -285,38 +289,38 @@ pub async fn get_duplicate_tracks(
 
     let tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
-        SELECT 
+        SELECT
             t.id,
             t.title,
-            (SELECT a2.name FROM track_artists ta2 
-             JOIN artists a2 ON a2.id = ta2.artist_id 
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary' 
+            (SELECT a2.name FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
              LIMIT 1) as artist_name,
-            (SELECT a2.id FROM track_artists ta2 
-             JOIN artists a2 ON a2.id = ta2.artist_id 
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary' 
+            (SELECT a2.id FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
              LIMIT 1) as artist_id,
             al.title as album_name,
             al.id as album_id,
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
-            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
-             FROM library_entries le 
-             JOIN accounts acc ON acc.id = le.account_id 
-             JOIN services s_imp ON s_imp.id = acc.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name)
+             FROM library_entries le
+             JOIN accounts acc ON acc.id = le.account_id
+             JOIN services s_imp ON s_imp.id = acc.service_id
              WHERE le.track_id = t.id) as imported_from,
             COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
-            (SELECT GROUP_CONCAT(DISTINCT s_avail.name) 
-             FROM track_sources ts_avail 
-             JOIN services s_avail ON s_avail.id = ts_avail.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_avail.name)
+             FROM track_sources ts_avail
+             JOIN services s_avail ON s_avail.id = ts_avail.service_id
              WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
-            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ') 
-             FROM track_sources ts_all 
-             JOIN services s_all ON s_all.id = ts_all.service_id 
+            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ')
+             FROM track_sources ts_all
+             JOIN services s_all ON s_all.id = ts_all.service_id
              WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
-            CASE 
+            CASE
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
                 WHEN dq.status = 'queued' OR dq.status = 'downloading' THEN 'queued'
                 ELSE 'not_downloaded'
@@ -331,7 +335,7 @@ pub async fn get_duplicate_tracks(
                 CASE WHEN t.release_year IS NOT NULL AND t.release_year > 0 THEN 10 ELSE 0 END +
                 CASE WHEN t.genre IS NOT NULL AND t.genre != '' THEN 10 ELSE 0 END
             ) as metadata_score,
-            CASE 
+            CASE
                 WHEN l.sync_level IN ('syllable', 'word') THEN 'synced'
                 WHEN l.sync_level = 'line' THEN 'timed'
                 WHEN l.content IS NOT NULL THEN 'plain'
@@ -617,7 +621,9 @@ pub async fn fetch_artist(
     .await
     .map_err(|e| format!("Database error fetching top tracks: {}", e))?;
 
-    let appearances = fetch_artist_appearances(db, artist_id).await.unwrap_or_default();
+    let appearances = fetch_artist_appearances(db, artist_id)
+        .await
+        .unwrap_or_default();
 
     Ok(LibraryArtistDetail {
         id: artist.0,
@@ -719,14 +725,23 @@ pub async fn fetch_album(
     tracing::info!("get_album called for {}", album_id);
 
     // Fetch base album details
-    let album: (i64, String, Option<String>, Option<i64>, Option<String>, i64, Option<i64>, Option<String>) = sqlx::query_as(
+    let album: (
+        i64,
+        String,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        i64,
+        Option<i64>,
+        Option<String>,
+    ) = sqlx::query_as(
         r#"
         SELECT
             al.id,
             al.title,
-            (SELECT GROUP_CONCAT(ar.name, ', ') 
-             FROM artists ar 
-             JOIN album_artists aa ON ar.id = aa.artist_id 
+            (SELECT GROUP_CONCAT(ar.name, ', ')
+             FROM artists ar
+             JOIN album_artists aa ON ar.id = aa.artist_id
              WHERE aa.album_id = al.id) as artist_name,
             CAST(SUBSTR(al.release_date, 1, 4) AS INTEGER) as release_year,
             al.cover_art_url,
@@ -749,9 +764,9 @@ pub async fn fetch_album(
         SELECT
             t.id,
             t.title,
-            (SELECT GROUP_CONCAT(ar.name, ', ') 
-             FROM artists ar 
-             JOIN track_artists ta ON ar.id = ta.artist_id 
+            (SELECT GROUP_CONCAT(ar.name, ', ')
+             FROM artists ar
+             JOIN track_artists ta ON ar.id = ta.artist_id
              WHERE ta.track_id = t.id) as artist_name,
             t.duration_ms,
             t.track_number,
@@ -790,14 +805,20 @@ pub async fn get_playlist_tracks(
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(100).min(500);
 
-    tracing::info!("get_playlist_tracks called for playlist_id={}, offset={}, limit={}", playlist_id, offset, limit);
+    tracing::info!(
+        "get_playlist_tracks called for playlist_id={}, offset={}, limit={}",
+        playlist_id,
+        offset,
+        limit
+    );
 
     // Get total count first
-    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?")
-        .bind(playlist_id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| format!("Count error: {}", e))?;
+    let total: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?")
+            .bind(playlist_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| format!("Count error: {}", e))?;
 
     let tracks = fetch_local_playlist_tracks_page(&state.db, playlist_id, offset, limit).await?;
 
@@ -949,10 +970,10 @@ pub async fn enrich_metadata_musicbrainz(
     let tracks: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
         r#"
         SELECT t.id, t.isrc, t.title, a.name as artist_name
-        FROM tracks t 
+        FROM tracks t
         LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'primary'
         LEFT JOIN artists a ON a.id = ta.artist_id
-        WHERE t.isrc IS NOT NULL AND t.isrc != '' AND t.musicbrainz_id IS NULL 
+        WHERE t.isrc IS NOT NULL AND t.isrc != '' AND t.musicbrainz_id IS NULL
         LIMIT ?
         "#,
     )
@@ -1054,7 +1075,7 @@ pub async fn enrich_metadata_musicbrainz(
                                             && !local_artist.contains(&mb_artists)
                                         {
                                             tracing::warn!(
-                                                "Metadata Mismatch for track '{}': Local Artist '{}' != MB Artist '{}'. ISRC: {}", 
+                                                "Metadata Mismatch for track '{}': Local Artist '{}' != MB Artist '{}'. ISRC: {}",
                                                 title, db_artist_name, mb_artists, isrc
                                             );
                                             is_match = false;
@@ -1065,7 +1086,9 @@ pub async fn enrich_metadata_musicbrainz(
                                 if is_match {
                                     // Fetch details (genres, isrcs)
                                     let mut genre = None;
-                                    if let Ok(detail) = client.get_recording_details(&recording.id).await {
+                                    if let Ok(detail) =
+                                        client.get_recording_details(&recording.id).await
+                                    {
                                         if let Some(genres) = detail.genres {
                                             if !genres.is_empty() {
                                                 genre = Some(genres[0].name.clone());
@@ -1074,7 +1097,7 @@ pub async fn enrich_metadata_musicbrainz(
                                     }
 
                                     let result = sqlx::query(
-                                        "UPDATE tracks SET 
+                                        "UPDATE tracks SET
                                             musicbrainz_id = ?,
                                             genre = COALESCE(genre, ?)
                                          WHERE id = ?",
@@ -1215,9 +1238,9 @@ pub async fn repair_artist_links(state: State<'_, AppState>) -> Result<serde_jso
                 aid
             } else {
                 let aid: i64 = sqlx::query_scalar(
-                    "INSERT INTO artists (name) VALUES ('Unknown Artist') 
-                     ON CONFLICT(name) DO UPDATE SET id = id 
-                     RETURNING id"
+                    "INSERT INTO artists (name) VALUES ('Unknown Artist')
+                     ON CONFLICT(name) DO UPDATE SET id = id
+                     RETURNING id",
                 )
                 .fetch_one(&state.db)
                 .await
@@ -1358,7 +1381,12 @@ pub async fn search_tracks(
 ) -> Result<SearchResult, String> {
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(100);
-    tracing::info!("search_tracks called: {} (offset={}, limit={})", query, offset, limit);
+    tracing::info!(
+        "search_tracks called: {} (offset={}, limit={})",
+        query,
+        offset,
+        limit
+    );
 
     // Get total count of matching tracks
     let pattern = format!("%{}%", query);
@@ -1374,39 +1402,39 @@ pub async fn search_tracks(
 
     let tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
-        SELECT 
+        SELECT
             t.id,
             t.title,
             -- Only get primary artist name (avoid duplicates from featured artists)
-            (SELECT a2.name FROM track_artists ta2 
-             JOIN artists a2 ON a2.id = ta2.artist_id 
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary' 
+            (SELECT a2.name FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
              LIMIT 1) as artist_name,
-            (SELECT a2.id FROM track_artists ta2 
-             JOIN artists a2 ON a2.id = ta2.artist_id 
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary' 
+            (SELECT a2.id FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
              LIMIT 1) as artist_id,
             al.title as album_name,
             al.id as album_id,
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
-            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
-             FROM library_entries le 
-             JOIN accounts acc ON acc.id = le.account_id 
-             JOIN services s_imp ON s_imp.id = acc.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name)
+             FROM library_entries le
+             JOIN accounts acc ON acc.id = le.account_id
+             JOIN services s_imp ON s_imp.id = acc.service_id
              WHERE le.track_id = t.id) as imported_from,
             COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
-            (SELECT GROUP_CONCAT(DISTINCT s_avail.name) 
-             FROM track_sources ts_avail 
-             JOIN services s_avail ON s_avail.id = ts_avail.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_avail.name)
+             FROM track_sources ts_avail
+             JOIN services s_avail ON s_avail.id = ts_avail.service_id
              WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
-            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ') 
-             FROM track_sources ts_all 
-             JOIN services s_all ON s_all.id = ts_all.service_id 
+            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ')
+             FROM track_sources ts_all
+             JOIN services s_all ON s_all.id = ts_all.service_id
              WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
-            CASE 
+            CASE
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
                 WHEN dq.status = 'queued' OR dq.status = 'downloading' THEN 'queued'
                 ELSE 'not_downloaded'
@@ -1423,7 +1451,7 @@ pub async fn search_tracks(
                 CASE WHEN t.genre IS NOT NULL AND t.genre != '' THEN 10 ELSE 0 END
             ) as metadata_score,
             -- Lyrics type based on sync level
-            CASE 
+            CASE
                 WHEN l.sync_level IN ('syllable', 'word') THEN 'synced'
                 WHEN l.sync_level = 'line' THEN 'timed'
                 WHEN l.content IS NOT NULL THEN 'plain'
@@ -1469,8 +1497,13 @@ pub async fn search_tracks(
     .map_err(|e| format!("Search error: {}", e))?;
 
     let has_more = offset + (tracks.len() as i64) < total.0;
-    tracing::info!("search_tracks returned {} results (total: {}, has_more: {})", tracks.len(), total.0, has_more);
-    
+    tracing::info!(
+        "search_tracks returned {} results (total: {}, has_more: {})",
+        tracks.len(),
+        total.0,
+        has_more
+    );
+
     Ok(SearchResult {
         tracks,
         total: total.0,
@@ -1487,7 +1520,7 @@ pub async fn get_playlists(state: State<'_, AppState>) -> Result<Vec<Playlist>, 
 
     let playlists = sqlx::query_as::<_, Playlist>(
         r#"
-        SELECT 
+        SELECT
             p.id,
             p.name,
             p.description,
@@ -1568,7 +1601,7 @@ pub async fn create_playlist(
     let playlist_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO playlists (account_id, service_playlist_id, name, description, track_count)
            VALUES (?, 'local_' || ?, ?, ?, 0)
-           RETURNING id"#
+           RETURNING id"#,
     )
     .bind(account_id)
     .bind(&name)
@@ -1583,10 +1616,7 @@ pub async fn create_playlist(
 
 /// Remove a single track from the library (cascading deletes via FK)
 #[tauri::command]
-pub async fn remove_track(
-    state: State<'_, AppState>,
-    track_id: i64,
-) -> Result<(), String> {
+pub async fn remove_track(state: State<'_, AppState>, track_id: i64) -> Result<(), String> {
     tracing::info!("remove_track called: track_id={}", track_id);
 
     let result = sqlx::query("DELETE FROM tracks WHERE id = ?")
@@ -1617,7 +1647,10 @@ pub async fn bulk_remove_tracks(
 
     // Build parameterized IN clause
     let placeholders: Vec<String> = track_ids.iter().map(|_| "?".to_string()).collect();
-    let query_str = format!("DELETE FROM tracks WHERE id IN ({})", placeholders.join(","));
+    let query_str = format!(
+        "DELETE FROM tracks WHERE id IN ({})",
+        placeholders.join(",")
+    );
 
     let mut query = sqlx::query(&query_str);
     for id in &track_ids {
@@ -1636,10 +1669,7 @@ pub async fn bulk_remove_tracks(
 
 /// Toggle the favorite status of a track (atomic via RETURNING with timestamp update)
 #[tauri::command]
-pub async fn toggle_favorite(
-    state: State<'_, AppState>,
-    track_id: i64,
-) -> Result<bool, String> {
+pub async fn toggle_favorite(state: State<'_, AppState>, track_id: i64) -> Result<bool, String> {
     tracing::info!("toggle_favorite called: track_id={}", track_id);
 
     if track_id <= 0 {
@@ -1652,7 +1682,7 @@ pub async fn toggle_favorite(
          SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END, \
              favorite_at = CASE WHEN is_favorite = 0 THEN datetime('now') ELSE NULL END \
          WHERE id = ? \
-         RETURNING is_favorite"
+         RETURNING is_favorite",
     )
     .bind(track_id)
     .fetch_optional(&state.db)
@@ -1684,14 +1714,19 @@ pub async fn set_track_favorite(
     track_id: i64,
     is_favorite: bool,
 ) -> Result<bool, String> {
-    tracing::info!("set_track_favorite called: track_id={}, is_favorite={}", track_id, is_favorite);
+    tracing::info!(
+        "set_track_favorite called: track_id={}, is_favorite={}",
+        track_id,
+        is_favorite
+    );
 
     if track_id <= 0 {
         return Err(format!("Invalid track_id: {}", track_id));
     }
 
     // S168: Acquire CanonicalTrack lock
-    let _track_guard = state.concurrency_manager
+    let _track_guard = state
+        .concurrency_manager
         .acquire(
             syncify_core_domain::LockScope::CanonicalTrack(track_id),
             Some(&format!("fav-{}", track_id)),
@@ -1701,7 +1736,11 @@ pub async fn set_track_favorite(
         .map_err(|e| format!("Concurrency lock error: {}", e))?;
 
     let val = if is_favorite { 1 } else { 0 };
-    let fav_at_expr = if is_favorite { "datetime('now')" } else { "NULL" };
+    let fav_at_expr = if is_favorite {
+        "datetime('now')"
+    } else {
+        "NULL"
+    };
 
     let query_str = format!(
         "UPDATE tracks SET is_favorite = ?, favorite_at = {} WHERE id = ? RETURNING is_favorite",
@@ -1755,19 +1794,19 @@ pub async fn get_favorite_tracks(
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
-            (SELECT GROUP_CONCAT(DISTINCT s_imp.name) 
-             FROM library_entries le 
-             JOIN accounts acc ON acc.id = le.account_id 
-             JOIN services s_imp ON s_imp.id = acc.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_imp.name)
+             FROM library_entries le
+             JOIN accounts acc ON acc.id = le.account_id
+             JOIN services s_imp ON s_imp.id = acc.service_id
              WHERE le.track_id = t.id) as imported_from,
             COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
-            (SELECT GROUP_CONCAT(DISTINCT s_avail.name) 
-             FROM track_sources ts_avail 
-             JOIN services s_avail ON s_avail.id = ts_avail.service_id 
+            (SELECT GROUP_CONCAT(DISTINCT s_avail.name)
+             FROM track_sources ts_avail
+             JOIN services s_avail ON s_avail.id = ts_avail.service_id
              WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
-            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ') 
-             FROM track_sources ts_all 
-             JOIN services s_all ON s_all.id = ts_all.service_id 
+            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ')
+             FROM track_sources ts_all
+             JOIN services s_all ON s_all.id = ts_all.service_id
              WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
             CASE
@@ -1839,20 +1878,16 @@ pub async fn get_favorite_tracks(
 /// Handles paths with spaces, headless environments, and
 /// missing file managers without platform-specific #[cfg] blocks.
 #[tauri::command]
-pub async fn show_in_folder(
-    state: State<'_, AppState>,
-    track_id: i64,
-) -> Result<(), String> {
+pub async fn show_in_folder(state: State<'_, AppState>, track_id: i64) -> Result<(), String> {
     tracing::info!("show_in_folder called: track_id={}", track_id);
 
     // Get file path from downloads table
-    let file_path: Option<(String,)> = sqlx::query_as(
-        "SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1"
-    )
-    .bind(track_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+    let file_path: Option<(String,)> =
+        sqlx::query_as("SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1")
+            .bind(track_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| format!("Database error: {}", e))?;
 
     let path = match file_path {
         Some((p,)) => p,
@@ -1869,8 +1904,7 @@ pub async fn show_in_folder(
     // - Windows: explorer /select,"path" (handles spaces)
     // - macOS: open -R "path"
     // - Linux: falls back gracefully if no file manager available
-    opener::reveal(path_buf)
-        .map_err(|e| format!("Failed to reveal file in explorer: {}", e))?;
+    opener::reveal(path_buf).map_err(|e| format!("Failed to reveal file in explorer: {}", e))?;
 
     Ok(())
 }
@@ -1880,8 +1914,8 @@ mod library_tests {
     // Note: These tests validate SQL logic using in-memory SQLite.
     // They do NOT use Tauri State<> — they test the raw SQL operations.
 
-    use sqlx::SqlitePool;
     use super::*;
+    use sqlx::SqlitePool;
 
     async fn setup_test_db() -> SqlitePool {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
@@ -1898,20 +1932,30 @@ mod library_tests {
 
         // Insert a track
         sqlx::query("INSERT INTO tracks (title) VALUES ('Test Track')")
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // Verify it exists
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE title = 'Test Track'")
-            .fetch_one(&pool).await.unwrap();
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE title = 'Test Track'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(count.0, 1);
 
         // Remove it
         sqlx::query("DELETE FROM tracks WHERE title = 'Test Track'")
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // Verify gone
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE title = 'Test Track'")
-            .fetch_one(&pool).await.unwrap();
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE title = 'Test Track'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(count.0, 0);
     }
 
@@ -1923,17 +1967,25 @@ mod library_tests {
         for i in 1..=3 {
             sqlx::query("INSERT INTO tracks (title) VALUES (?)")
                 .bind(format!("Bulk Track {}", i))
-                .execute(&pool).await.unwrap();
+                .execute(&pool)
+                .await
+                .unwrap();
         }
 
         // Verify 3 exist
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE title LIKE 'Bulk Track%'")
-            .fetch_one(&pool).await.unwrap();
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE title LIKE 'Bulk Track%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(count.0, 3);
 
         // Get IDs of first 2
-        let rows: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE title LIKE 'Bulk Track%' LIMIT 2")
-            .fetch_all(&pool).await.unwrap();
+        let rows: Vec<(i64,)> =
+            sqlx::query_as("SELECT id FROM tracks WHERE title LIKE 'Bulk Track%' LIMIT 2")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(rows.len(), 2);
         let ids: Vec<i64> = rows.into_iter().map(|(id,)| id).collect();
 
@@ -1948,8 +2000,11 @@ mod library_tests {
         assert_eq!(result.rows_affected(), 2);
 
         // Verify 1 remains
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE title LIKE 'Bulk Track%'")
-            .fetch_one(&pool).await.unwrap();
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE title LIKE 'Bulk Track%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(count.0, 1);
     }
 
@@ -1959,28 +2014,41 @@ mod library_tests {
 
         // Insert a track (is_favorite defaults to 0)
         sqlx::query("INSERT INTO tracks (title) VALUES ('Fav Track')")
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let id: (i64,) = sqlx::query_as("SELECT id FROM tracks WHERE title = 'Fav Track'")
-            .fetch_one(&pool).await.unwrap();
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
         // Verify default is 0
         let fav: (i32,) = sqlx::query_as("SELECT is_favorite FROM tracks WHERE id = ?")
-            .bind(id.0).fetch_one(&pool).await.unwrap();
+            .bind(id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(fav.0, 0);
 
         // Toggle to 1
         sqlx::query("UPDATE tracks SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END WHERE id = ?")
             .bind(id.0).execute(&pool).await.unwrap();
         let fav: (i32,) = sqlx::query_as("SELECT is_favorite FROM tracks WHERE id = ?")
-            .bind(id.0).fetch_one(&pool).await.unwrap();
+            .bind(id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(fav.0, 1);
 
         // Toggle back to 0
         sqlx::query("UPDATE tracks SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END WHERE id = ?")
             .bind(id.0).execute(&pool).await.unwrap();
         let fav: (i32,) = sqlx::query_as("SELECT is_favorite FROM tracks WHERE id = ?")
-            .bind(id.0).fetch_one(&pool).await.unwrap();
+            .bind(id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(fav.0, 0);
     }
 
@@ -1990,19 +2058,23 @@ mod library_tests {
 
         // Insert a track (FTS trigger auto-indexes it)
         sqlx::query("INSERT INTO tracks (title) VALUES ('Searchable Track')")
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // Query FTS real JOIN
         let rows: Vec<(i64, String)> = sqlx::query_as(
             r#"
-            SELECT t.id, t.title 
-            FROM tracks t 
-            JOIN library_fts fts ON fts.rowid = t.id 
+            SELECT t.id, t.title
+            FROM tracks t
+            JOIN library_fts fts ON fts.rowid = t.id
             WHERE library_fts MATCH ?
-            "#
+            "#,
         )
         .bind("Searchable")
-        .fetch_all(&pool).await.unwrap();
+        .fetch_all(&pool)
+        .await
+        .unwrap();
 
         assert!(rows.len() >= 1);
         assert_eq!(rows[0].1, "Searchable Track");
@@ -2012,16 +2084,24 @@ mod library_tests {
     async fn test_get_artist_returns_albums() {
         let pool = setup_test_db().await;
 
-        let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
-            .fetch_one(&pool).await.unwrap();
+        let artist_id: i64 =
+            sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
-        let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
-            .fetch_one(&pool).await.unwrap();
+        let album_id: i64 =
+            sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
             .bind(album_id)
             .bind(artist_id)
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // The query from get_artist
         let rows: Vec<(i64, String)> = sqlx::query_as(
@@ -2032,10 +2112,12 @@ mod library_tests {
             FROM albums al
             JOIN album_artists aa ON aa.album_id = al.id
             WHERE aa.artist_id = ?
-            "#
+            "#,
         )
         .bind(artist_id)
-        .fetch_all(&pool).await.unwrap();
+        .fetch_all(&pool)
+        .await
+        .unwrap();
 
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1, "Test Album");
@@ -2045,8 +2127,11 @@ mod library_tests {
     async fn test_get_album_returns_tracks() {
         let pool = setup_test_db().await;
 
-        let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
-            .fetch_one(&pool).await.unwrap();
+        let album_id: i64 =
+            sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Test Album') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         let track_a_id: i64 = sqlx::query_scalar(
             "INSERT INTO tracks (title, album_id, track_number, isrc, explicit) VALUES ('Track A', ?, 1, 'USMETA0000001', 1) RETURNING id"
@@ -2056,19 +2141,24 @@ mod library_tests {
 
         sqlx::query("INSERT INTO tracks (title, album_id, track_number) VALUES ('Track B', ?, 2)")
             .bind(album_id)
-            .execute(&pool).await.unwrap();
-
-        let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Meta Artist') RETURNING id")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(track_a_id)
-            .bind(artist_id)
             .execute(&pool)
             .await
             .unwrap();
+
+        let artist_id: i64 =
+            sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Meta Artist') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(track_a_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, ?)")
             .bind(track_a_id)
@@ -2086,10 +2176,12 @@ mod library_tests {
             FROM tracks t
             WHERE t.album_id = ?
             ORDER BY COALESCE(t.disc_number, 1) ASC, COALESCE(t.track_number, 999) ASC, t.title ASC
-            "#
+            "#,
         )
         .bind(album_id)
-        .fetch_all(&pool).await.unwrap();
+        .fetch_all(&pool)
+        .await
+        .unwrap();
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].1, "Track A");
@@ -2101,7 +2193,10 @@ mod library_tests {
         assert_eq!(metadata.artist_name.as_deref(), Some("Meta Artist"));
         assert_eq!(metadata.album_name.as_deref(), Some("Test Album"));
         assert_eq!(metadata.explicit, Some(true));
-        assert_eq!(metadata.file_path.as_deref(), Some("C:/Music/Syncify/Track A.flac"));
+        assert_eq!(
+            metadata.file_path.as_deref(),
+            Some("C:/Music/Syncify/Track A.flac")
+        );
 
         let not_found = fetch_track_metadata(&pool, 999_999).await.unwrap_err();
         assert!(not_found.contains("Track not found"));
@@ -2110,32 +2205,51 @@ mod library_tests {
     #[sqlx::test]
     async fn test_auto_resolve_duplicates_by_isrc() {
         let pool = setup_test_db().await;
-        
+
         // Create an artist
         sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Test Artist')")
-            .execute(&pool).await.unwrap();
-        
+            .execute(&pool)
+            .await
+            .unwrap();
+
         // Insert 3 tracks without ISRC but same title and near duration
         // so fallback tolerant matching resolves this duplicate set.
         let id1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 180000) RETURNING id")
             .fetch_one(&pool).await.unwrap();
-        
+
         let id2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 181000) RETURNING id")
             .fetch_one(&pool).await.unwrap();
-        
+
         let id3: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc, duration_ms) VALUES ('Duplicate Song', NULL, 179000) RETURNING id")
             .fetch_one(&pool).await.unwrap();
 
         // Link all tracks to same artist
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
-            .bind(id1).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
-            .bind(id2).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
-            .bind(id3).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')",
+        )
+        .bind(id1)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')",
+        )
+        .bind(id2)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')",
+        )
+        .bind(id3)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let service_id: (i64,) = sqlx::query_as("SELECT id FROM services ORDER BY id LIMIT 1")
-            .fetch_one(&pool).await.unwrap();
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
         // 10, 7, 4 quality scores
         sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, quality_score) VALUES (?, ?, '1', 10)")
@@ -2156,8 +2270,11 @@ mod library_tests {
         assert_eq!(res.tracks_removed, 2);
 
         // Verify winner (quality_score = 10 -> id1)
-        let remaining: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE title = 'Duplicate Song'")
-            .fetch_all(&pool).await.unwrap();
+        let remaining: Vec<(i64,)> =
+            sqlx::query_as("SELECT id FROM tracks WHERE title = 'Duplicate Song'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].0, id1);
     }
@@ -2168,7 +2285,9 @@ mod library_tests {
 
         // Create an artist
         sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Merge Artist')")
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // Insert 2 duplicate tracks with same title and duration
         let id1: i64 = sqlx::query_scalar(
@@ -2182,14 +2301,26 @@ mod library_tests {
         .fetch_one(&pool).await.unwrap();
 
         // Track 1 has artist link
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
-            .bind(id1).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')",
+        )
+        .bind(id1)
+        .execute(&pool)
+        .await
+        .unwrap();
         // Track 2 has artist link
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
-            .bind(id2).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')",
+        )
+        .bind(id2)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let services: Vec<(i64,)> = sqlx::query_as("SELECT id FROM services ORDER BY id LIMIT 2")
-            .fetch_all(&pool).await.unwrap();
+            .fetch_all(&pool)
+            .await
+            .unwrap();
         let s1 = services[0].0;
         let s2 = services[1].0;
 
@@ -2222,10 +2353,22 @@ mod library_tests {
         .bind(account_id).fetch_one(&pool).await.unwrap();
 
         // Track 1 is in playlist 1, Track 2 is in playlist 2
-        sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)")
-            .bind(p1).bind(id1).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)")
-            .bind(p2).bind(id2).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)",
+        )
+        .bind(p1)
+        .bind(id1)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 0)",
+        )
+        .bind(p2)
+        .bind(id2)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // Track 1 has lyrics
         sqlx::query("INSERT INTO lyrics (track_id, format, sync_level, content) VALUES (?, 'lrc', 'line', '[00:01.00]Hello')")
@@ -2237,10 +2380,11 @@ mod library_tests {
         assert_eq!(res.tracks_removed, 1);
 
         // Winner must be id2 (higher quality score 120 vs 100)
-        let remaining_tracks: Vec<(i64, Option<String>, Option<f64>)> = sqlx::query_as(
-            "SELECT id, genre, bpm FROM tracks WHERE title = 'Dupe Song'"
-        )
-        .fetch_all(&pool).await.unwrap();
+        let remaining_tracks: Vec<(i64, Option<String>, Option<f64>)> =
+            sqlx::query_as("SELECT id, genre, bpm FROM tracks WHERE title = 'Dupe Song'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(remaining_tracks.len(), 1);
         assert_eq!(remaining_tracks[0].0, id2);
         // Metadata merged: genre backfilled from id1, bpm kept from id2
@@ -2257,16 +2401,26 @@ mod library_tests {
         assert_eq!(sources[1].1, "src_winner");
 
         // Playlists merged: both playlists now point to id2
-        let pl1_track: (i64,) = sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?")
-            .bind(p1).fetch_one(&pool).await.unwrap();
+        let pl1_track: (i64,) =
+            sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?")
+                .bind(p1)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(pl1_track.0, id2);
-        let pl2_track: (i64,) = sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?")
-            .bind(p2).fetch_one(&pool).await.unwrap();
+        let pl2_track: (i64,) =
+            sqlx::query_as("SELECT track_id FROM playlist_tracks WHERE playlist_id = ?")
+                .bind(p2)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(pl2_track.0, id2);
 
         // Lyrics transferred to id2
         let lyr_track: (i64,) = sqlx::query_as("SELECT track_id FROM lyrics WHERE format = 'lrc'")
-            .fetch_one(&pool).await.unwrap();
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(lyr_track.0, id2);
     }
 
@@ -2275,7 +2429,9 @@ mod library_tests {
         let pool = setup_test_db().await;
 
         sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'Rate Artist')")
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // 2 tracks with identical title and duration, both with quality_score = 100, bit_depth = 24
         // but different sample rates: 48000 vs 192000
@@ -2289,13 +2445,25 @@ mod library_tests {
         )
         .fetch_one(&pool).await.unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
-            .bind(id1).execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')")
-            .bind(id2).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')",
+        )
+        .bind(id1)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, 1, 'primary')",
+        )
+        .bind(id2)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let services: Vec<(i64,)> = sqlx::query_as("SELECT id FROM services ORDER BY id LIMIT 2")
-            .fetch_all(&pool).await.unwrap();
+            .fetch_all(&pool)
+            .await
+            .unwrap();
         let s1 = services[0].0;
         let s2 = services[1].0;
 
@@ -2316,8 +2484,11 @@ mod library_tests {
         assert_eq!(res.tracks_removed, 1);
 
         // id2 must win because 192000 > 48000
-        let remaining: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE title = 'Sample Rate Song'")
-            .fetch_all(&pool).await.unwrap();
+        let remaining: Vec<(i64,)> =
+            sqlx::query_as("SELECT id FROM tracks WHERE title = 'Sample Rate Song'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].0, id2);
     }
@@ -2353,7 +2524,10 @@ pub async fn merge_level2_3_duplicates_inner(
 pub async fn auto_resolve_duplicates_inner(
     db: &crate::db::DbPool,
 ) -> Result<AutoResolveResult, String> {
-    let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Tx error: {}", e))?;
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Tx error: {}", e))?;
     let mut groups_resolved = 0;
     let mut tracks_removed = 0;
     let mut affected_albums: std::collections::HashSet<i64> = std::collections::HashSet::new();
@@ -2399,8 +2573,10 @@ pub async fn auto_resolve_duplicates_inner(
         track_ids: Vec<i64>,
         affected_albums: &mut std::collections::HashSet<i64>,
     ) -> Result<u32, String> {
-        if track_ids.len() <= 1 { return Ok(0); }
-        
+        if track_ids.len() <= 1 {
+            return Ok(0);
+        }
+
         #[derive(sqlx::FromRow)]
         struct TrackInfo {
             id: i64,
@@ -2416,21 +2592,21 @@ pub async fn auto_resolve_duplicates_inner(
             source_count: i64,
             album_id: Option<i64>,
         }
-        
+
         let mut infos = Vec::new();
         for &id in &track_ids {
             let info: Option<TrackInfo> = sqlx::query_as(
                 r#"
-                SELECT 
+                SELECT
                     t.id,
                     (t.isrc IS NOT NULL AND TRIM(t.isrc) != '') as has_isrc,
                     COALESCE(
                         MAX(ts.quality_score),
-                        CASE 
+                        CASE
                             WHEN MAX(d.bit_depth) >= 24 THEN 1200
                             WHEN MAX(d.bit_depth) >= 16 THEN 1000
                             WHEN MAX(d.file_path) IS NOT NULL THEN 500
-                            ELSE NULL 
+                            ELSE NULL
                         END
                     ) as quality_score,
                     MAX(COALESCE(d.bit_depth, ts.bit_depth, 0)) as bit_depth,
@@ -2459,11 +2635,15 @@ pub async fn auto_resolve_duplicates_inner(
             )
             .bind(id)
             .fetch_optional(&mut **tx).await.map_err(|e| e.to_string())?;
-            if let Some(i) = info { infos.push(i); }
+            if let Some(i) = info {
+                infos.push(i);
+            }
         }
-        
-        if infos.len() <= 1 { return Ok(0); }
-        
+
+        if infos.len() <= 1 {
+            return Ok(0);
+        }
+
         // Survivor selection hierarchy:
         // Canonical ISRC > descargado > quality_score > 24-bit > sample_rate > mayor duración
         infos.sort_by(|a, b| {
@@ -2534,7 +2714,7 @@ pub async fn auto_resolve_duplicates_inner(
             // Stable deterministic tie-breaker
             a.id.cmp(&b.id)
         });
-        
+
         let winner_id = infos.last().unwrap().id;
         for info in &infos {
             if let Some(alb) = info.album_id {
@@ -2543,26 +2723,40 @@ pub async fn auto_resolve_duplicates_inner(
         }
 
         let mut removed = 0;
-        
+
         for info in &infos {
-            if info.id == winner_id { continue; }
+            if info.id == winner_id {
+                continue;
+            }
             let loser_id = info.id;
 
             // F2.5: Transactional MERGE rather than destructive DELETE
 
             // Retrieve audio_quality from both tracks to preserve the highest tier
-            let winner_q: Option<String> = sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
-                .bind(winner_id)
-                .fetch_optional(&mut **tx).await.ok().flatten();
-            let loser_q: Option<String> = sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
-                .bind(loser_id)
-                .fetch_optional(&mut **tx).await.ok().flatten();
+            let winner_q: Option<String> =
+                sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
+                    .bind(winner_id)
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .ok()
+                    .flatten();
+            let loser_q: Option<String> =
+                sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
+                    .bind(loser_id)
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .ok()
+                    .flatten();
 
             let parse_tier = |s: &str| -> AudioTier {
-                s.parse::<AudioTier>().unwrap_or_else(|_| classify_audio_tier(None, None, None, Some(s)))
+                s.parse::<AudioTier>()
+                    .unwrap_or_else(|_| classify_audio_tier(None, None, None, Some(s)))
             };
 
-            let mut merged_tier = match (winner_q.as_deref().map(parse_tier), loser_q.as_deref().map(parse_tier)) {
+            let mut merged_tier = match (
+                winner_q.as_deref().map(parse_tier),
+                loser_q.as_deref().map(parse_tier),
+            ) {
                 (Some(w), Some(l)) => Some(std::cmp::max(w, l)),
                 (Some(w), None) => Some(w),
                 (None, Some(l)) => Some(l),
@@ -2595,10 +2789,13 @@ pub async fn auto_resolve_duplicates_inner(
                        isrc, musicbrainz_id, genre, subgenre, release_year,
                        record_label, bpm, musical_key, spotify_id, qobuz_id, audio_quality
                 FROM tracks WHERE id = ?
-                "#
+                "#,
             )
             .bind(loser_id)
-            .fetch_optional(&mut **tx).await.ok().flatten();
+            .fetch_optional(&mut **tx)
+            .await
+            .ok()
+            .flatten();
 
             if let Some(lm) = loser_meta {
                 // Clear unique columns on loser before backfilling onto winner to prevent UNIQUE collisions
@@ -2608,8 +2805,8 @@ pub async fn auto_resolve_duplicates_inner(
 
                 let _ = sqlx::query(
                     r#"
-                    UPDATE tracks 
-                    SET 
+                    UPDATE tracks
+                    SET
                         album_id = COALESCE(tracks.album_id, ?),
                         duration_ms = COALESCE(tracks.duration_ms, ?),
                         track_number = COALESCE(tracks.track_number, ?),
@@ -2626,7 +2823,7 @@ pub async fn auto_resolve_duplicates_inner(
                         qobuz_id = COALESCE(tracks.qobuz_id, ?),
                         audio_quality = COALESCE(?, tracks.audio_quality, ?)
                     WHERE tracks.id = ?
-                    "#
+                    "#,
                 )
                 .bind(lm.album_id)
                 .bind(lm.duration_ms)
@@ -2645,7 +2842,8 @@ pub async fn auto_resolve_duplicates_inner(
                 .bind(merged_tier.map(|t| t.as_str()))
                 .bind(lm.audio_quality)
                 .bind(winner_id)
-                .execute(&mut **tx).await;
+                .execute(&mut **tx)
+                .await;
             }
 
             // Preserve favorite status if loser was favorited
@@ -2688,7 +2886,8 @@ pub async fn auto_resolve_duplicates_inner(
                         let _ = sqlx::query("UPDATE track_sources SET track_id = ? WHERE id = ?")
                             .bind(winner_id)
                             .bind(ls.id)
-                            .execute(&mut **tx).await;
+                            .execute(&mut **tx)
+                            .await;
                     }
                     Some((ws_id, ws_qs)) => {
                         let loser_qs = ls.quality_score.unwrap_or(0);
@@ -2714,65 +2913,118 @@ pub async fn auto_resolve_duplicates_inner(
                         }
                         let _ = sqlx::query("DELETE FROM track_sources WHERE id = ?")
                             .bind(ls.id)
-                            .execute(&mut **tx).await;
+                            .execute(&mut **tx)
+                            .await;
                     }
                 }
             }
 
             // 2. Transfer playlist_tracks
             sqlx::query("UPDATE playlist_tracks SET track_id = ? WHERE track_id = ?")
-                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(winner_id)
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
 
             // 3. Transfer downloads (track_id is unique in downloads)
-            let winner_has_download: bool = sqlx::query_scalar(
-                "SELECT COUNT(*) > 0 FROM downloads WHERE track_id = ?"
-            )
-            .bind(winner_id)
-            .fetch_one(&mut **tx).await.unwrap_or(false);
+            let winner_has_download: bool =
+                sqlx::query_scalar("SELECT COUNT(*) > 0 FROM downloads WHERE track_id = ?")
+                    .bind(winner_id)
+                    .fetch_one(&mut **tx)
+                    .await
+                    .unwrap_or(false);
 
             if !winner_has_download {
                 let _ = sqlx::query("UPDATE downloads SET track_id = ? WHERE track_id = ?")
-                    .bind(winner_id).bind(loser_id).execute(&mut **tx).await;
+                    .bind(winner_id)
+                    .bind(loser_id)
+                    .execute(&mut **tx)
+                    .await;
             } else {
                 let _ = sqlx::query("DELETE FROM downloads WHERE track_id = ?")
-                    .bind(loser_id).execute(&mut **tx).await;
+                    .bind(loser_id)
+                    .execute(&mut **tx)
+                    .await;
             }
 
             // 4. Transfer lyrics
             sqlx::query("UPDATE OR IGNORE lyrics SET track_id = ? WHERE track_id = ?")
-                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(winner_id)
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
             sqlx::query("DELETE FROM lyrics WHERE track_id = ?")
-                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
 
             // 5. Transfer library_entries
             sqlx::query("UPDATE OR IGNORE library_entries SET track_id = ? WHERE track_id = ?")
-                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(winner_id)
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
             sqlx::query("DELETE FROM library_entries WHERE track_id = ?")
-                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
 
             // 6. Transfer track_credits
             sqlx::query("UPDATE OR IGNORE track_credits SET track_id = ? WHERE track_id = ?")
-                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(winner_id)
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
             sqlx::query("DELETE FROM track_credits WHERE track_id = ?")
-                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
 
             // 7. Transfer track_artists
             sqlx::query("UPDATE OR IGNORE track_artists SET track_id = ? WHERE track_id = ?")
-                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(winner_id)
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
             sqlx::query("DELETE FROM track_artists WHERE track_id = ?")
-                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
 
             // 8. Transfer download_queue
             sqlx::query("UPDATE OR IGNORE download_queue SET track_id = ? WHERE track_id = ?")
-                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(winner_id)
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
             sqlx::query("DELETE FROM download_queue WHERE track_id = ?")
-                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
 
             // 9. Transfer enrichment_progress
             sqlx::query("UPDATE OR IGNORE enrichment_progress SET track_id = ? WHERE track_id = ?")
-                .bind(winner_id).bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(winner_id)
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
             sqlx::query("DELETE FROM enrichment_progress WHERE track_id = ?")
-                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
 
             // 10. Transfer operation_journal if table exists
             let has_op_journal: bool = sqlx::query_scalar(
@@ -2780,8 +3032,13 @@ pub async fn auto_resolve_duplicates_inner(
             )
             .fetch_one(&mut **tx).await.unwrap_or(false);
             if has_op_journal {
-                let _ = sqlx::query("UPDATE OR IGNORE operation_journal SET track_id = ? WHERE track_id = ?")
-                    .bind(winner_id).bind(loser_id).execute(&mut **tx).await;
+                let _ = sqlx::query(
+                    "UPDATE OR IGNORE operation_journal SET track_id = ? WHERE track_id = ?",
+                )
+                .bind(winner_id)
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await;
             }
 
             // 11. Favorites status is preserved on canonical tracks.is_favorite and library_entries.
@@ -2805,12 +3062,16 @@ pub async fn auto_resolve_duplicates_inner(
                 let _ = sqlx::query("UPDATE tracks SET audio_quality = ? WHERE id = ?")
                     .bind(tier.as_str())
                     .bind(winner_id)
-                    .execute(&mut **tx).await;
+                    .execute(&mut **tx)
+                    .await;
             }
 
             // 12. Finally remove the loser track record
             sqlx::query("DELETE FROM tracks WHERE id = ?")
-                .bind(loser_id).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                .bind(loser_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| e.to_string())?;
 
             removed += 1;
         }
@@ -2824,10 +3085,13 @@ pub async fn auto_resolve_duplicates_inner(
     .fetch_all(&mut *tx).await.map_err(|e| format!("Query error: {}", e))?;
 
     for (isrc,) in isrc_groups {
-        let tracks: Vec<(i64, Option<i32>)> = sqlx::query_as("SELECT id, explicit FROM tracks WHERE isrc = ?")
-            .bind(&isrc)
-            .fetch_all(&mut *tx).await.map_err(|e| e.to_string())?;
-        
+        let tracks: Vec<(i64, Option<i32>)> =
+            sqlx::query_as("SELECT id, explicit FROM tracks WHERE isrc = ?")
+                .bind(&isrc)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+
         let mut clean_ids = Vec::new();
         let mut explicit_ids = Vec::new();
         for (id, exp) in tracks {
@@ -2876,8 +3140,9 @@ pub async fn auto_resolve_duplicates_inner(
     .fetch_all(&mut *tx).await.map_err(|e| format!("Query error: {}", e))?;
 
     // Also include intra-album tracks matching by clean_title
-    let intra_clean_candidates: Vec<(i64, i64, String, String, Option<String>, Option<String>)> = sqlx::query_as(
-        r#"
+    let intra_clean_candidates: Vec<(i64, i64, String, String, Option<String>, Option<String>)> =
+        sqlx::query_as(
+            r#"
         SELECT a.id, b.id, a.title, b.title, a.isrc, b.isrc
         FROM tracks a
         JOIN tracks b ON a.album_id = b.album_id AND a.id < b.id
@@ -2888,13 +3153,17 @@ pub async fn auto_resolve_duplicates_inner(
           AND COALESCE(a.explicit, 0) = COALESCE(b.explicit, 0)
           AND LOWER(TRIM(a.title)) != LOWER(TRIM(b.title))
           AND ABS(a.duration_ms - b.duration_ms) <= 2000
-        "#
-    )
-    .fetch_all(&mut *tx).await.unwrap_or_default();
+        "#,
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap_or_default();
 
     let mut extra_intra = Vec::new();
     for (id_a, id_b, t_a, t_b, isrc_a, isrc_b) in intra_clean_candidates {
-        if syncify_core_domain::metadata::clean_title(&t_a) == syncify_core_domain::metadata::clean_title(&t_b) {
+        if syncify_core_domain::metadata::clean_title(&t_a)
+            == syncify_core_domain::metadata::clean_title(&t_b)
+        {
             extra_intra.push((id_a, id_b, isrc_a, isrc_b));
         }
     }
@@ -2921,7 +3190,8 @@ pub async fn auto_resolve_duplicates_inner(
 
     let mut parent: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     let mut rank: std::collections::HashMap<i64, u8> = std::collections::HashMap::new();
-    let mut component_isrc: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    let mut component_isrc: std::collections::HashMap<i64, String> =
+        std::collections::HashMap::new();
 
     // Process intra-album pairs (ISRC reconciled within the same album)
     for (id_a, id_b, isrc_a, isrc_b) in intra_pairs.into_iter().chain(extra_intra.into_iter()) {
@@ -2932,11 +3202,19 @@ pub async fn auto_resolve_duplicates_inner(
 
         let clean_isrc_a = isrc_a.and_then(|s| {
             let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         });
         let clean_isrc_b = isrc_b.and_then(|s| {
             let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         });
 
         let root_a = find_root(&mut parent, id_a);
@@ -2965,11 +3243,19 @@ pub async fn auto_resolve_duplicates_inner(
 
         let clean_isrc_a = isrc_a.and_then(|s| {
             let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         });
         let clean_isrc_b = isrc_b.and_then(|s| {
             let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         });
 
         let root_a = find_root(&mut parent, id_a);
@@ -3015,10 +3301,12 @@ pub async fn auto_resolve_duplicates_inner(
     // Renumber tracks sequentially in all affected albums
     for album_id in affected_albums {
         let discs: Vec<(i32,)> = sqlx::query_as(
-            "SELECT DISTINCT COALESCE(disc_number, 1) FROM tracks WHERE album_id = ? ORDER BY 1"
+            "SELECT DISTINCT COALESCE(disc_number, 1) FROM tracks WHERE album_id = ? ORDER BY 1",
         )
         .bind(album_id)
-        .fetch_all(&mut *tx).await.unwrap_or_default();
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap_or_default();
 
         for (disc,) in discs {
             let track_rows: Vec<(i64,)> = sqlx::query_as(
@@ -3031,12 +3319,13 @@ pub async fn auto_resolve_duplicates_inner(
             for (idx, (tid,)) in track_rows.into_iter().enumerate() {
                 let new_num = (idx + 1) as i32;
                 let _ = sqlx::query(
-                    "UPDATE tracks SET track_number = ? WHERE id = ? AND track_number != ?"
+                    "UPDATE tracks SET track_number = ? WHERE id = ? AND track_number != ?",
                 )
                 .bind(new_num)
                 .bind(tid)
                 .bind(new_num)
-                .execute(&mut *tx).await;
+                .execute(&mut *tx)
+                .await;
             }
         }
 
@@ -3048,7 +3337,9 @@ pub async fn auto_resolve_duplicates_inner(
         .execute(&mut *tx).await;
     }
 
-    tx.commit().await.map_err(|e| format!("Tx commit error: {}", e))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("Tx commit error: {}", e))?;
 
     Ok(AutoResolveResult {
         groups_resolved,
@@ -3122,13 +3413,36 @@ pub async fn perform_check_track_availability(
 
         // Perform non-destructive diagnostic check
         let (new_status, new_available, new_reason) = if service_track_id.is_empty() {
-            ("stale_404".to_string(), 0, Some("Source identity missing or empty service_track_id".to_string()))
+            (
+                "stale_404".to_string(),
+                0,
+                Some("Source identity missing or empty service_track_id".to_string()),
+            )
         } else if service_track_id.contains("404") || service_track_id.starts_with("stale_") {
-            ("stale_404".to_string(), 0, Some("Track not found on streaming provider (HTTP 404)".to_string()))
+            (
+                "stale_404".to_string(),
+                0,
+                Some("Track not found on streaming provider (HTTP 404)".to_string()),
+            )
         } else if service_track_id.contains("region") || service_track_id.contains("geo_blocked") {
-            ("region_unavailable".to_string(), 0, Some("Track restricted in current account region/territory".to_string()))
-        } else if service_track_id.contains("auth") || service_track_id.contains("unauth") || service_track_id.contains("401") || service_track_id.contains("403") {
-            ("requires_auth".to_string(), 0, Some("Provider credentials missing or authentication required (HTTP 401/403)".to_string()))
+            (
+                "region_unavailable".to_string(),
+                0,
+                Some("Track restricted in current account region/territory".to_string()),
+            )
+        } else if service_track_id.contains("auth")
+            || service_track_id.contains("unauth")
+            || service_track_id.contains("401")
+            || service_track_id.contains("403")
+        {
+            (
+                "requires_auth".to_string(),
+                0,
+                Some(
+                    "Provider credentials missing or authentication required (HTTP 401/403)"
+                        .to_string(),
+                ),
+            )
         } else {
             // Check account authentication for the service
             let active_account: Option<(i64, Option<String>)> = sqlx::query_as(
@@ -3141,30 +3455,39 @@ pub async fn perform_check_track_availability(
 
             match active_account {
                 None if svc_lower == "qobuz" || svc_lower == "tidal" || svc_lower == "spotify" => {
-                    let any_account: Option<(i64,)> = sqlx::query_as(
-                        "SELECT id FROM accounts WHERE service_id = ? LIMIT 1"
-                    )
-                    .bind(src.service_id)
-                    .fetch_optional(db)
-                    .await
-                    .unwrap_or(None);
+                    let any_account: Option<(i64,)> =
+                        sqlx::query_as("SELECT id FROM accounts WHERE service_id = ? LIMIT 1")
+                            .bind(src.service_id)
+                            .fetch_optional(db)
+                            .await
+                            .unwrap_or(None);
 
                     if any_account.is_none() {
-                        ("requires_auth".to_string(), 0, Some(format!("No active {} account connected", src.service_name)))
+                        (
+                            "requires_auth".to_string(),
+                            0,
+                            Some(format!("No active {} account connected", src.service_name)),
+                        )
                     } else {
-                        ("available".to_string(), 1, Some("Verified available on provider".to_string()))
+                        (
+                            "available".to_string(),
+                            1,
+                            Some("Verified available on provider".to_string()),
+                        )
                     }
-                },
-                _ => {
-                    ("available".to_string(), 1, Some("Verified available on provider".to_string()))
                 }
+                _ => (
+                    "available".to_string(),
+                    1,
+                    Some("Verified available on provider".to_string()),
+                ),
             }
         };
 
         // Update database with new availability status, reason, and last_checked timestamp
         let _ = sqlx::query(
             r#"
-            UPDATE track_sources 
+            UPDATE track_sources
             SET available = ?, availability_status = ?, availability_reason = ?, last_checked = CURRENT_TIMESTAMP
             WHERE id = ?
             "#
@@ -3260,7 +3583,10 @@ pub async fn perform_reconcile_library_physical_state(
 
     let base_path = std::path::Path::new(&base_folder);
     if !base_path.exists() {
-        return Err(format!("Base music directory does not exist or is invalid: {}", base_folder));
+        return Err(format!(
+            "Base music directory does not exist or is invalid: {}",
+            base_folder
+        ));
     }
 
     let report_id = format!("rec_{}", uuid::Uuid::new_v4().simple());
@@ -3279,11 +3605,10 @@ pub async fn perform_reconcile_library_physical_state(
     let mut cleaned_staging_residuals = 0u64;
 
     // 3. Automatic Backup on Mutating Apply
-    let is_mutating_apply = !opts.dry_run && (
-        opts.missing_file_policy != MissingFilePolicy::ReportOnly ||
-        opts.orphan_policy == OrphanPolicy::RelinkIfExactIdentity ||
-        opts.staging_policy == StagingPolicy::PurgeSafeResiduals
-    );
+    let is_mutating_apply = !opts.dry_run
+        && (opts.missing_file_policy != MissingFilePolicy::ReportOnly
+            || opts.orphan_policy == OrphanPolicy::RelinkIfExactIdentity
+            || opts.staging_policy == StagingPolicy::PurgeSafeResiduals);
 
     if is_mutating_apply {
         let db_file_row: Option<(i64, String, String)> = sqlx::query_as("PRAGMA database_list")
@@ -3295,8 +3620,15 @@ pub async fn perform_reconcile_library_physical_state(
                 let db_p = std::path::Path::new(&file_path);
                 if db_p.is_file() {
                     let bak_uuid = uuid::Uuid::new_v4().simple().to_string();
-                    let bak_file_name = format!("syncify_reconcile_{}_{}.db.bak", chrono::Utc::now().format("%Y%m%d_%H%M%S"), &bak_uuid[..8]);
-                    let bak_target = db_p.parent().unwrap_or(std::path::Path::new(".")).join(&bak_file_name);
+                    let bak_file_name = format!(
+                        "syncify_reconcile_{}_{}.db.bak",
+                        chrono::Utc::now().format("%Y%m%d_%H%M%S"),
+                        &bak_uuid[..8]
+                    );
+                    let bak_target = db_p
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join(&bak_file_name);
                     if let Ok(bytes) = std::fs::read(db_p) {
                         use sha2::Digest;
                         let mut hasher = sha2::Sha256::new();
@@ -3312,24 +3644,33 @@ pub async fn perform_reconcile_library_physical_state(
             }
         }
         if backup_id.is_none() {
-            backup_id = Some(format!("bak_mem_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+            backup_id = Some(format!(
+                "bak_mem_{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..8]
+            ));
             backup_sha256 = Some("in_memory_transactional_snapshot".to_string());
         }
     }
 
     // 4. Gather download records based on Scope
-    let download_rows: Vec<(i64, Option<i64>, String, Option<i64>, Option<String>)> = match &opts.scope {
-        ReconciliationScope::All => {
-            sqlx::query_as("SELECT id, track_id, file_path, source_service_id, effective_service FROM downloads")
-                .fetch_all(db)
-                .await
-                .map_err(|e| format!("Failed to query downloads: {}", e))?
-        }
+    let download_rows: Vec<(i64, Option<i64>, String, Option<i64>, Option<String>)> = match &opts
+        .scope
+    {
+        ReconciliationScope::All => sqlx::query_as(
+            "SELECT id, track_id, file_path, source_service_id, effective_service FROM downloads",
+        )
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("Failed to query downloads: {}", e))?,
         ReconciliationScope::SelectedDownloadIds(ids) => {
             if ids.is_empty() {
                 Vec::new()
             } else {
-                let id_list = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+                let id_list = ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
                 let sql = format!("SELECT id, track_id, file_path, source_service_id, effective_service FROM downloads WHERE id IN ({})", id_list);
                 sqlx::query_as(&sql)
                     .fetch_all(db)
@@ -3405,8 +3746,15 @@ pub async fn perform_reconcile_library_physical_state(
                 }
                 if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
                     let ext_lower = ext.to_lowercase();
-                    if ext_lower == "flac" || ext_lower == "m4a" || ext_lower == "mp3" || ext_lower == "wav"
-                        || ext_lower == "alac" || ext_lower == "aac" || ext_lower == "ogg" || ext_lower == "opus" {
+                    if ext_lower == "flac"
+                        || ext_lower == "m4a"
+                        || ext_lower == "mp3"
+                        || ext_lower == "wav"
+                        || ext_lower == "alac"
+                        || ext_lower == "aac"
+                        || ext_lower == "ogg"
+                        || ext_lower == "opus"
+                    {
                         physical_flacs.push(p.to_path_buf());
                     }
                 }
@@ -3431,13 +3779,12 @@ pub async fn perform_reconcile_library_physical_state(
         let file_path_str = file_path_buf.to_string_lossy().to_string();
 
         // Check if already in downloads
-        let existing_dl: Option<(i64, Option<i64>)> = sqlx::query_as(
-            "SELECT id, track_id FROM downloads WHERE file_path = ?"
-        )
-        .bind(&file_path_str)
-        .fetch_optional(db)
-        .await
-        .unwrap_or(None);
+        let existing_dl: Option<(i64, Option<i64>)> =
+            sqlx::query_as("SELECT id, track_id FROM downloads WHERE file_path = ?")
+                .bind(&file_path_str)
+                .fetch_optional(db)
+                .await
+                .unwrap_or(None);
 
         if existing_dl.is_some() {
             continue; // Already verified
@@ -3453,7 +3800,7 @@ pub async fn perform_reconcile_library_physical_state(
             }
         };
         let file_size_bytes = raw_bytes.len() as i64;
-        
+
         use sha2::Digest;
         let mut hasher = sha2::Sha256::new();
         hasher.update(&raw_bytes);
@@ -3499,11 +3846,12 @@ pub async fn perform_reconcile_library_physical_state(
                     // 1a. Explicit SYNCIFY_TRACK_ID tag
                     if let Some(tid_str) = vorbis.get("SYNCIFY_TRACK_ID").and_then(|v| v.first()) {
                         if let Ok(parsed_id) = tid_str.parse::<i64>() {
-                            let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE id = ?")
-                                .bind(parsed_id)
-                                .fetch_optional(db)
-                                .await
-                                .unwrap_or(None);
+                            let exists: Option<i64> =
+                                sqlx::query_scalar("SELECT id FROM tracks WHERE id = ?")
+                                    .bind(parsed_id)
+                                    .fetch_optional(db)
+                                    .await
+                                    .unwrap_or(None);
                             if exists.is_some() {
                                 matched_track_id = exists;
                             }
@@ -3511,7 +3859,11 @@ pub async fn perform_reconcile_library_physical_state(
                     }
                     // 1b. Explicit SYNCIFY_SOURCE_TRACK_ID or SYNCIFY_SERVICE_TRACK_ID tag
                     if matched_track_id.is_none() {
-                        if let Some(stid) = vorbis.get("SYNCIFY_SOURCE_TRACK_ID").or_else(|| vorbis.get("SYNCIFY_SERVICE_TRACK_ID")).and_then(|v| v.first()) {
+                        if let Some(stid) = vorbis
+                            .get("SYNCIFY_SOURCE_TRACK_ID")
+                            .or_else(|| vorbis.get("SYNCIFY_SERVICE_TRACK_ID"))
+                            .and_then(|v| v.first())
+                        {
                             let matches: Vec<(i64, i64)> = sqlx::query_as("SELECT track_id, service_id FROM track_sources WHERE service_track_id = ? AND available = 1")
                                 .bind(stid)
                                 .fetch_all(db)
@@ -3526,17 +3878,22 @@ pub async fn perform_reconcile_library_physical_state(
                     // 1c. Exact ISRC tag lookup (strictly 1:1 match)
                     if matched_track_id.is_none() {
                         if let Some(isrc) = vorbis.get("ISRC").and_then(|v| v.first()) {
-                            let isrc_matches: Vec<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ?")
-                                .bind(isrc)
-                                .fetch_all(db)
-                                .await
-                                .unwrap_or_default();
+                            let isrc_matches: Vec<i64> =
+                                sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ?")
+                                    .bind(isrc)
+                                    .fetch_all(db)
+                                    .await
+                                    .unwrap_or_default();
                             if isrc_matches.len() == 1 {
                                 matched_track_id = Some(isrc_matches[0]);
                             }
                         }
                     }
-                    if let Some(src) = vorbis.get("SYNCIFY_AUDIO_SOURCE").or_else(|| vorbis.get("AUDIO_SOURCE")).and_then(|v| v.first()) {
+                    if let Some(src) = vorbis
+                        .get("SYNCIFY_AUDIO_SOURCE")
+                        .or_else(|| vorbis.get("AUDIO_SOURCE"))
+                        .and_then(|v| v.first())
+                    {
                         effective_service = src.to_lowercase();
                     }
                 }
@@ -3549,11 +3906,12 @@ pub async fn perform_reconcile_library_physical_state(
 
                 let isrc_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "ISRC");
                 if let Some(isrc) = tag.strings_of(&isrc_ident).next() {
-                    let isrc_matches: Vec<i64> = sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ?")
-                        .bind(isrc)
-                        .fetch_all(db)
-                        .await
-                        .unwrap_or_default();
+                    let isrc_matches: Vec<i64> =
+                        sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ?")
+                            .bind(isrc)
+                            .fetch_all(db)
+                            .await
+                            .unwrap_or_default();
                     if isrc_matches.len() == 1 {
                         matched_track_id = Some(isrc_matches[0]);
                     }
@@ -3571,7 +3929,9 @@ pub async fn perform_reconcile_library_physical_state(
 
         // 3. Fallback stream inspection using audio inspector
         if sample_rate.is_none() || bit_depth.is_none() {
-            if let Some(insp) = crate::download::audio_inspector::inspect_physical_audio_file(file_path_buf) {
+            if let Some(insp) =
+                crate::download::audio_inspector::inspect_physical_audio_file(file_path_buf)
+            {
                 if sample_rate.is_none() {
                     sample_rate = Some(insp.sample_rate as i64);
                 }
@@ -3583,12 +3943,25 @@ pub async fn perform_reconcile_library_physical_state(
 
         // 4. Exact filename service pattern matching (e.g. [Tidal-134683067] or Tidal Track 134683067)
         if matched_track_id.is_none() {
-            let filename = file_path_buf.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let filename = file_path_buf
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
             if filename.contains("Tidal Track ") || filename.contains("[Tidal-") {
                 let clean_id = if filename.contains("[Tidal-") {
-                    filename.split("[Tidal-").nth(1).and_then(|s| s.split(']').next()).unwrap_or("").trim().to_string()
+                    filename
+                        .split("[Tidal-")
+                        .nth(1)
+                        .and_then(|s| s.split(']').next())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string()
                 } else {
-                    filename.replace("01 - Tidal Track ", "").replace("Tidal Track ", "").trim().to_string()
+                    filename
+                        .replace("01 - Tidal Track ", "")
+                        .replace("Tidal Track ", "")
+                        .trim()
+                        .to_string()
                 };
                 if !clean_id.is_empty() {
                     let tid_matches: Vec<i64> = sqlx::query_scalar(
@@ -3657,7 +4030,10 @@ pub async fn perform_reconcile_library_physical_state(
             planned_actions.push(ReconciliationActionItem {
                 action_type: action_type.to_string(),
                 target: file_path_str,
-                details: format!("Exact match verified for track #{} ({})", tid, effective_service),
+                details: format!(
+                    "Exact match verified for track #{} ({})",
+                    tid, effective_service
+                ),
                 track_id: Some(tid),
                 download_id: None,
                 service: Some(effective_service),
@@ -3721,7 +4097,10 @@ pub async fn perform_reconcile_library_physical_state(
 
     // 7. Execute Mutations in Apply Mode inside SQL Transaction
     if !opts.dry_run {
-        let mut tx = db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| format!("Failed to begin reconciliation transaction: {}", e))?;
+        let mut tx = db
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| format!("Failed to begin reconciliation transaction: {}", e))?;
 
         // 7a. Process missing records
         match opts.missing_file_policy {
@@ -3745,7 +4124,10 @@ pub async fn perform_reconcile_library_physical_state(
                             });
                         }
                         Err(e) => {
-                            failures.push(format!("Failed to delete download record #{}: {}", item.dl_id, e));
+                            failures.push(format!(
+                                "Failed to delete download record #{}: {}",
+                                item.dl_id, e
+                            ));
                         }
                     }
                 }
@@ -3761,7 +4143,10 @@ pub async fn perform_reconcile_library_physical_state(
                             executed_actions.push(ReconciliationActionItem {
                                 action_type: "mark_missing_download_record".to_string(),
                                 target: item.file_path.clone(),
-                                details: format!("Cleared file_path for download row #{}", item.dl_id),
+                                details: format!(
+                                    "Cleared file_path for download row #{}",
+                                    item.dl_id
+                                ),
                                 track_id: item.track_id,
                                 download_id: Some(item.dl_id),
                                 service: item.effective_service.clone(),
@@ -3769,7 +4154,10 @@ pub async fn perform_reconcile_library_physical_state(
                             });
                         }
                         Err(e) => {
-                            failures.push(format!("Failed to mark download record #{}: {}", item.dl_id, e));
+                            failures.push(format!(
+                                "Failed to mark download record #{}: {}",
+                                item.dl_id, e
+                            ));
                         }
                     }
                 }
@@ -3801,7 +4189,7 @@ pub async fn perform_reconcile_library_physical_state(
                         file_hash = excluded.file_hash,
                         bit_depth = excluded.bit_depth,
                         sample_rate = excluded.sample_rate,
-                        effective_service = excluded.effective_service"#
+                        effective_service = excluded.effective_service"#,
                 )
                 .bind(item.track_id)
                 .bind(service_id)
@@ -3830,7 +4218,10 @@ pub async fn perform_reconcile_library_physical_state(
                         });
                     }
                     Err(e) => {
-                        failures.push(format!("Failed to re-link orphan {}: {}", item.file_path_str, e));
+                        failures.push(format!(
+                            "Failed to re-link orphan {}: {}",
+                            item.file_path_str, e
+                        ));
                     }
                 }
             }
@@ -3838,9 +4229,14 @@ pub async fn perform_reconcile_library_physical_state(
 
         // Commit or Rollback transaction
         if failures.is_empty() {
-            tx.commit().await.map_err(|e| format!("Failed to commit reconciliation transaction: {}", e))?;
+            tx.commit()
+                .await
+                .map_err(|e| format!("Failed to commit reconciliation transaction: {}", e))?;
         } else {
-            return Err(format!("Reconciliation transaction rolled back due to failures: {:?}", failures));
+            return Err(format!(
+                "Reconciliation transaction rolled back due to failures: {:?}",
+                failures
+            ));
         }
 
         // 7c. Clean staging directory residuals
@@ -3874,17 +4270,36 @@ pub async fn perform_reconcile_library_physical_state(
         .await
         .unwrap_or(0);
 
-    let verified_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE file_path IS NOT NULL AND file_path != ''")
-        .fetch_one(db)
-        .await
-        .unwrap_or(0);
+    let verified_total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM downloads WHERE file_path IS NOT NULL AND file_path != ''",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap_or(0);
 
     let after_stats = ReconciliationStats {
         total_download_records: total_download_records_after as u64,
         physical_audio_files: physical_flacs.len() as u64,
-        missing_file_records: if opts.dry_run || opts.missing_file_policy == MissingFilePolicy::ReportOnly { missing_files.len() as u64 } else { 0 },
-        orphan_files_count: if opts.dry_run || opts.orphan_policy == OrphanPolicy::ReportOnly { orphan_files.len() as u64 } else { orphan_files.len().saturating_sub(exact_orphan_relinks.len()) as u64 },
-        staging_residuals_count: if opts.dry_run || opts.staging_policy == StagingPolicy::ReportOnly { safe_staging_files.len() as u64 } else { 0 },
+        missing_file_records: if opts.dry_run
+            || opts.missing_file_policy == MissingFilePolicy::ReportOnly
+        {
+            missing_files.len() as u64
+        } else {
+            0
+        },
+        orphan_files_count: if opts.dry_run || opts.orphan_policy == OrphanPolicy::ReportOnly {
+            orphan_files.len() as u64
+        } else {
+            orphan_files
+                .len()
+                .saturating_sub(exact_orphan_relinks.len()) as u64
+        },
+        staging_residuals_count: if opts.dry_run || opts.staging_policy == StagingPolicy::ReportOnly
+        {
+            safe_staging_files.len() as u64
+        } else {
+            0
+        },
     };
 
     Ok(LibraryReconciliationReport {
@@ -4001,7 +4416,9 @@ pub async fn perform_enqueue_tracks(
                 db,
                 pf.track_id,
                 priority,
-                norm_quality.clone().or_else(|| normalize_quality_preference(pf.resolved_quality.as_deref())),
+                norm_quality
+                    .clone()
+                    .or_else(|| normalize_quality_preference(pf.resolved_quality.as_deref())),
                 None,
                 pf.resolved_service_id,
                 pf.resolved_service_name.clone(),
@@ -4041,11 +4458,12 @@ pub async fn perform_enqueue_tracks(
             }
         } else {
             // Track excluded by preflight rules
-            let reason = if pf.status == DownloadPreflightStatus::AlreadyDownloaded && skip_downloaded {
-                "Track is already downloaded in local library".to_string()
-            } else {
-                pf.reason.clone()
-            };
+            let reason =
+                if pf.status == DownloadPreflightStatus::AlreadyDownloaded && skip_downloaded {
+                    "Track is already downloaded in local library".to_string()
+                } else {
+                    pf.reason.clone()
+                };
 
             tracing::info!(
                 track_id = pf.track_id,
@@ -4135,38 +4553,46 @@ pub async fn perform_reconcile_queue(
     db: &crate::DbPool,
     selected_track_ids: Option<Vec<i64>>,
 ) -> Result<QueueReconciliationReport, String> {
-    let (selected, eligible, excluded_preflight, exclusions, breakdown_by_reason) = if let Some(ref ids) = selected_track_ids {
-        let sel_count = ids.len() as i64;
-        let mut elig_count = 0i64;
-        let mut excl_count = 0i64;
-        let mut excl_vec = Vec::new();
-        let mut breakdown: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let (selected, eligible, excluded_preflight, exclusions, breakdown_by_reason) =
+        if let Some(ref ids) = selected_track_ids {
+            let sel_count = ids.len() as i64;
+            let mut elig_count = 0i64;
+            let mut excl_count = 0i64;
+            let mut excl_vec = Vec::new();
+            let mut breakdown: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
 
-        for &tid in ids {
-            let pf = evaluate_track_preflight(db, tid, None, None, false, true).await?;
-            if pf.is_eligible || pf.status == DownloadPreflightStatus::AlreadyQueued {
-                elig_count += 1;
-            } else {
-                excl_count += 1;
-                let reason_key = pf.status.code().to_string();
-                *breakdown.entry(reason_key).or_insert(0) += 1;
-                excl_vec.push(PreflightExclusion {
-                    track_id: pf.track_id,
-                    title: pf.title,
-                    artist: pf.artist,
-                    status: pf.status,
-                    skip_reason: pf.reason,
-                });
+            for &tid in ids {
+                let pf = evaluate_track_preflight(db, tid, None, None, false, true).await?;
+                if pf.is_eligible || pf.status == DownloadPreflightStatus::AlreadyQueued {
+                    elig_count += 1;
+                } else {
+                    excl_count += 1;
+                    let reason_key = pf.status.code().to_string();
+                    *breakdown.entry(reason_key).or_insert(0) += 1;
+                    excl_vec.push(PreflightExclusion {
+                        track_id: pf.track_id,
+                        title: pf.title,
+                        artist: pf.artist,
+                        status: pf.status,
+                        skip_reason: pf.reason,
+                    });
+                }
             }
-        }
-        (sel_count, elig_count, excl_count, excl_vec, breakdown)
-    } else {
-        let total_tracks: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
-            .fetch_one(db)
-            .await
-            .unwrap_or((0,));
-        (total_tracks.0, total_tracks.0, 0, Vec::new(), std::collections::HashMap::new())
-    };
+            (sel_count, elig_count, excl_count, excl_vec, breakdown)
+        } else {
+            let total_tracks: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
+                .fetch_one(db)
+                .await
+                .unwrap_or((0,));
+            (
+                total_tracks.0,
+                total_tracks.0,
+                0,
+                Vec::new(),
+                std::collections::HashMap::new(),
+            )
+        };
 
     // Query queue table for pending, active, completed, failed, and skipped items
     let queue_stats: (i64, i64, i64, i64, i64) = sqlx::query_as(
@@ -4187,7 +4613,11 @@ pub async fn perform_reconcile_queue(
     let active = queue_stats.1;
     let completed = queue_stats.2;
     let failed = queue_stats.3;
-    let skipped = if excluded_preflight > 0 { excluded_preflight } else { queue_stats.4 };
+    let skipped = if excluded_preflight > 0 {
+        excluded_preflight
+    } else {
+        queue_stats.4
+    };
 
     Ok(QueueReconciliationReport {
         selected,
@@ -4357,7 +4787,10 @@ pub struct PurgeOrphanEmptyAlbumsReport {
 pub async fn perform_purge_orphan_empty_albums(
     db: &sqlx::SqlitePool,
 ) -> Result<PurgeOrphanEmptyAlbumsReport, String> {
-    let mut tx = db.begin().await.map_err(|e| format!("Failed to begin transaction: {}", e))?;
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
     // 1. Count preserved stubs (albums with 0 tracks but is_stub = 1)
     let preserved_stubs: i64 = sqlx::query_scalar(
@@ -4404,16 +4837,22 @@ pub async fn perform_purge_orphan_empty_albums(
     .rows_affected();
 
     // 4. Verify integrity and foreign keys before commit
-    let fk_violations: Vec<(String, Option<i64>, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check;")
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to run foreign_key_check: {}", e))?;
+    let fk_violations: Vec<(String, Option<i64>, String, i64)> =
+        sqlx::query_as("PRAGMA foreign_key_check;")
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to run foreign_key_check: {}", e))?;
 
     if !fk_violations.is_empty() {
-        return Err(format!("Foreign key check failed after purge: {:?}", fk_violations));
+        return Err(format!(
+            "Foreign key check failed after purge: {:?}",
+            fk_violations
+        ));
     }
 
-    tx.commit().await.map_err(|e| format!("Failed to commit transaction: {}", e))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit transaction: {}", e))?;
 
     tracing::info!(
         "purge_orphan_empty_albums: purged {} albums, {} album_artists links, preserved {} stubs",
@@ -4436,7 +4875,3 @@ pub async fn purge_orphan_empty_albums(
 ) -> Result<PurgeOrphanEmptyAlbumsReport, String> {
     perform_purge_orphan_empty_albums(&state.db).await
 }
-
-
-
-

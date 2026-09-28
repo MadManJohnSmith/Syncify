@@ -8,23 +8,31 @@
 //! 5. Monotonic phase transitions in download progress telemetry.
 //! 6. Zero credential/secret exposure in telemetry events.
 
-use tempfile::TempDir;
-use syncify_core_domain::quality::{QualityClass, QualityPolicy};
 use syncify_core_domain::errors::ErrorTaxonomy;
-use syncify_tauri_lib::services::tidal_pipeline::{clean_title_for_filename, sanitize_filename_component};
+use syncify_core_domain::quality::{QualityClass, QualityPolicy};
 use syncify_tauri_lib::services::repair_guardrail::extract_audio_content_hash_from_bytes;
+use syncify_tauri_lib::services::tidal_pipeline::{
+    clean_title_for_filename, sanitize_filename_component,
+};
+use tempfile::TempDir;
 
 #[test]
 fn test_symbolic_title_path_sanitization_preserves_artistic_content() {
     // Case 1: "★ (Blackstar)" -> "Blackstar" in filename, artistic title "★" in tags/UI
     let raw_symbolic_bracketed = "★ (Blackstar)";
     let fs_clean = clean_title_for_filename(raw_symbolic_bracketed);
-    assert_eq!(fs_clean, "Blackstar", "Bracketed semantic title must be extracted for physical path");
+    assert_eq!(
+        fs_clean, "Blackstar",
+        "Bracketed semantic title must be extracted for physical path"
+    );
 
     // Case 2: Purely symbolic title "★" -> empty string triggers semantic fallback with track ID
     let raw_pure_symbol = "★";
     let fs_pure = clean_title_for_filename(raw_pure_symbol);
-    assert!(fs_pure.is_empty(), "Purely symbolic title must return empty string to trigger provider ID fallback");
+    assert!(
+        fs_pure.is_empty(),
+        "Purely symbolic title must return empty string to trigger provider ID fallback"
+    );
 
     // Case 3: Standard title with forbidden Windows characters
     let raw_windows = "Love: Live & Raw / 2024*";
@@ -37,15 +45,32 @@ fn test_symbolic_title_path_sanitization_preserves_artistic_content() {
 #[test]
 fn test_strict_quality_rejection_evaluator() {
     // Strict Lossless requested, AAC obtained -> Must reject
-    let reject_res = QualityPolicy::evaluate_downgrade(QualityClass::Lossless, QualityClass::Lossy, "AAC", false);
-    assert!(reject_res.is_err(), "AAC must be rejected under strict lossless policy");
+    let reject_res = QualityPolicy::evaluate_downgrade(
+        QualityClass::Lossless,
+        QualityClass::Lossy,
+        "AAC",
+        false,
+    );
+    assert!(
+        reject_res.is_err(),
+        "AAC must be rejected under strict lossless policy"
+    );
 
     // Lossless requested, AAC obtained with allow_lossy_fallback=true -> Allowed
-    let accept_res = QualityPolicy::evaluate_downgrade(QualityClass::Lossless, QualityClass::Lossy, "AAC", true);
-    assert!(accept_res.is_ok(), "Lossy fallback allowed only when explicitly permitted");
+    let accept_res =
+        QualityPolicy::evaluate_downgrade(QualityClass::Lossless, QualityClass::Lossy, "AAC", true);
+    assert!(
+        accept_res.is_ok(),
+        "Lossy fallback allowed only when explicitly permitted"
+    );
 
     // Lossless requested, FLAC obtained -> Allowed
-    let flac_res = QualityPolicy::evaluate_downgrade(QualityClass::Lossless, QualityClass::Lossless, "FLAC", false);
+    let flac_res = QualityPolicy::evaluate_downgrade(
+        QualityClass::Lossless,
+        QualityClass::Lossless,
+        "FLAC",
+        false,
+    );
     assert!(flac_res.is_ok());
 }
 
@@ -54,7 +79,7 @@ fn test_audio_payload_content_hash_invariant() {
     // Minimal mock FLAC header + audio payload
     let mut mock_flac = Vec::new();
     mock_flac.extend_from_slice(b"fLaC"); // Magic bytes
-    // Streaminfo block header (block type 0, last block 1, length 34)
+                                          // Streaminfo block header (block type 0, last block 1, length 34)
     mock_flac.push(0x80);
     mock_flac.extend_from_slice(&[0x00, 0x00, 0x22]);
     // 34 bytes dummy streaminfo
@@ -63,8 +88,8 @@ fn test_audio_payload_content_hash_invariant() {
     let audio_payload = b"SAMPLE_AUDIO_FRAME_DATA_1234567890";
     mock_flac.extend_from_slice(audio_payload);
 
-    let audio_hash_before = extract_audio_content_hash_from_bytes(&mock_flac)
-        .expect("Extract audio content hash");
+    let audio_hash_before =
+        extract_audio_content_hash_from_bytes(&mock_flac).expect("Extract audio content hash");
 
     // Simulate adding metadata / Vorbis comment block before audio frames
     let mut flac_with_tags = Vec::new();
@@ -96,12 +121,17 @@ async fn test_staging_cleanup_on_failure_rollback() {
     tokio::fs::create_dir_all(&staging_root).await.unwrap();
 
     let temp_staging_file = staging_root.join("temp_track_12345.flac");
-    tokio::fs::write(&temp_staging_file, b"MOCK_PARTIAL_DOWNLOAD").await.unwrap();
+    tokio::fs::write(&temp_staging_file, b"MOCK_PARTIAL_DOWNLOAD")
+        .await
+        .unwrap();
     assert!(temp_staging_file.exists());
 
     // Simulate pipeline error triggered during validation -> cleanup
     let _ = tokio::fs::remove_file(&temp_staging_file).await;
-    assert!(!temp_staging_file.exists(), "Staging temporary file must be purged upon terminal failure");
+    assert!(
+        !temp_staging_file.exists(),
+        "Staging temporary file must be purged upon terminal failure"
+    );
 }
 
 #[test]
@@ -126,14 +156,19 @@ async fn test_cross_service_fallback_exact_identity_matching() {
     let candidate_b_isrc = "USRC17609999";
 
     assert_eq!(isrc_target, candidate_a_isrc, "Exact ISRC match succeeds");
-    assert_ne!(isrc_target, candidate_b_isrc, "Mismatched ISRC rejected from automatic merge");
+    assert_ne!(
+        isrc_target, candidate_b_isrc,
+        "Mismatched ISRC rejected from automatic merge"
+    );
 }
 
 #[tokio::test]
 async fn test_best_effort_sidecars_preserve_valid_audio() {
     let temp_dir = TempDir::new().unwrap();
     let audio_file = temp_dir.path().join("track.flac");
-    tokio::fs::write(&audio_file, b"FLAC_VALID_AUDIO_BYTES").await.unwrap();
+    tokio::fs::write(&audio_file, b"FLAC_VALID_AUDIO_BYTES")
+        .await
+        .unwrap();
 
     // If lyrics sidecar fetching fails (simulated network timeout), audio file must remain intact
     let lrc_file = temp_dir.path().join("track.lrc");
@@ -143,7 +178,10 @@ async fn test_best_effort_sidecars_preserve_valid_audio() {
     // Audio MUST still exist and remain valid
     assert!(audio_file.exists());
     let audio_bytes = tokio::fs::read(&audio_file).await.unwrap();
-    assert_eq!(audio_bytes, b"FLAC_VALID_AUDIO_BYTES", "Valid audio must not be deleted if sidecar fails");
+    assert_eq!(
+        audio_bytes, b"FLAC_VALID_AUDIO_BYTES",
+        "Valid audio must not be deleted if sidecar fails"
+    );
 }
 
 #[test]
@@ -169,8 +207,10 @@ fn test_monotonic_download_phase_transitions() {
     for (idx, phase) in phases.iter().enumerate() {
         let mut ev = PipelineProgressEvent::new(target, "tidal", *phase);
         ev.progress_percent = (idx as f64) * 10.0;
-        assert!(ev.progress_percent >= prev_pct, "Progress percentage must be monotonically non-decreasing");
+        assert!(
+            ev.progress_percent >= prev_pct,
+            "Progress percentage must be monotonically non-decreasing"
+        );
         prev_pct = ev.progress_percent;
     }
 }
-

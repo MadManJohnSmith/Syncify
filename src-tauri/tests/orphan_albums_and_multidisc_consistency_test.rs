@@ -42,8 +42,8 @@ fn create_test_flac_file() -> TestFlacFile {
         0x10, 0x00, 0x10, 0x00, // min/max block size
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // min/max frame size
         0x0A, 0xC4, 0x42, 0xF0, // 44.1kHz, 2 channels, 16 bits, 0 samples
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
     ]);
     std::fs::write(&path, &flac_bytes).expect("Failed to write initial FLAC bytes");
     TestFlacFile { path }
@@ -69,12 +69,21 @@ async fn test_purge_orphan_empty_albums_preserves_stubs_and_cleans_album_artists
     let pool = create_test_db().await;
 
     // 1. Insert test artists
-    let artist1_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let artist2_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Ghost Artist') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let artist3_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Favorite Band') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist1_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let artist2_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Ghost Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let artist3_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Favorite Band') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // 2. Album A: Normal album with tracks (is_stub = 0)
     let album_a_id: i64 = sqlx::query_scalar(
@@ -83,7 +92,11 @@ async fn test_purge_orphan_empty_albums_preserves_stubs_and_cleans_album_artists
     .fetch_one(&pool).await.unwrap();
 
     sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
-        .bind(album_a_id).bind(artist1_id).execute(&pool).await.unwrap();
+        .bind(album_a_id)
+        .bind(artist1_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     sqlx::query("INSERT INTO tracks (title, album_id, track_number, duration_ms, isrc) VALUES ('Speak to Me', ?, 1, 65000, 'GBAYE7300001')")
         .bind(album_a_id).execute(&pool).await.unwrap();
@@ -97,7 +110,11 @@ async fn test_purge_orphan_empty_albums_preserves_stubs_and_cleans_album_artists
     .fetch_one(&pool).await.unwrap();
 
     sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
-        .bind(album_b_id).bind(artist2_id).execute(&pool).await.unwrap();
+        .bind(album_b_id)
+        .bind(artist2_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 4. Album C: Legitimate empty stub album (0 tracks, is_stub = 1)
     let album_c_id: i64 = sqlx::query_scalar(
@@ -106,23 +123,42 @@ async fn test_purge_orphan_empty_albums_preserves_stubs_and_cleans_album_artists
     .fetch_one(&pool).await.unwrap();
 
     sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
-        .bind(album_c_id).bind(artist3_id).execute(&pool).await.unwrap();
+        .bind(album_c_id)
+        .bind(artist3_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // 5. Album D: Another empty orphan album with 0 tracks (default is_stub = 0)
     let album_d_id: i64 = sqlx::query_scalar(
-        "INSERT INTO albums (title, total_tracks) VALUES ('Dangling Album', NULL) RETURNING id"
+        "INSERT INTO albums (title, total_tracks) VALUES ('Dangling Album', NULL) RETURNING id",
     )
-    .fetch_one(&pool).await.unwrap();
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
-        .bind(album_d_id).bind(artist2_id).execute(&pool).await.unwrap();
+        .bind(album_d_id)
+        .bind(artist2_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Pre-check verification
-    let count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums").fetch_one(&pool).await.unwrap();
+    let count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count_before, 4, "Should have 4 albums before purge");
 
-    let aa_count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM album_artists").fetch_one(&pool).await.unwrap();
-    assert_eq!(aa_count_before, 4, "Should have 4 album_artists links before purge");
+    let aa_count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM album_artists")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        aa_count_before, 4,
+        "Should have 4 album_artists links before purge"
+    );
 
     // Execute purge
     let report = perform_purge_orphan_empty_albums(&pool)
@@ -130,93 +166,186 @@ async fn test_purge_orphan_empty_albums_preserves_stubs_and_cleans_album_artists
         .expect("perform_purge_orphan_empty_albums should succeed");
 
     // Verify report
-    assert_eq!(report.purged_albums_count, 2, "Album B and D must be purged (2 albums)");
-    assert_eq!(report.purged_album_artists_count, 2, "2 album_artists rows must be purged");
-    assert_eq!(report.preserved_stubs_count, 1, "Album C stub must be preserved");
+    assert_eq!(
+        report.purged_albums_count, 2,
+        "Album B and D must be purged (2 albums)"
+    );
+    assert_eq!(
+        report.purged_album_artists_count, 2,
+        "2 album_artists rows must be purged"
+    );
+    assert_eq!(
+        report.preserved_stubs_count, 1,
+        "Album C stub must be preserved"
+    );
 
     // Post-check verification
-    let count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums").fetch_one(&pool).await.unwrap();
-    assert_eq!(count_after, 2, "Should have 2 albums remaining (Album A and Album C)");
+    let count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count_after, 2,
+        "Should have 2 albums remaining (Album A and Album C)"
+    );
 
     // Album A check
     let a_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM albums WHERE id = ?")
-        .bind(album_a_id).fetch_one(&pool).await.unwrap();
+        .bind(album_a_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert!(a_exists, "Album A must exist");
 
     // Album B check (purged)
     let b_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM albums WHERE id = ?")
-        .bind(album_b_id).fetch_one(&pool).await.unwrap();
+        .bind(album_b_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert!(!b_exists, "Album B must have been purged");
 
     // Album C check (stub preserved)
-    let c_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM albums WHERE id = ? AND is_stub = 1")
-        .bind(album_c_id).fetch_one(&pool).await.unwrap();
+    let c_exists: bool =
+        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM albums WHERE id = ? AND is_stub = 1")
+            .bind(album_c_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert!(c_exists, "Album C must exist and remain is_stub = 1");
 
     // Album D check (purged)
     let d_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM albums WHERE id = ?")
-        .bind(album_d_id).fetch_one(&pool).await.unwrap();
+        .bind(album_d_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert!(!d_exists, "Album D must have been purged");
 
     // Verify album_artists integrity
-    let aa_count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM album_artists").fetch_one(&pool).await.unwrap();
-    assert_eq!(aa_count_after, 2, "Should have 2 album_artists remaining (Album A and Album C)");
+    let aa_count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM album_artists")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        aa_count_after, 2,
+        "Should have 2 album_artists remaining (Album A and Album C)"
+    );
 
-    let b_aa_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM album_artists WHERE album_id = ?")
-        .bind(album_b_id).fetch_one(&pool).await.unwrap();
+    let b_aa_exists: bool =
+        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM album_artists WHERE album_id = ?")
+            .bind(album_b_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert!(!b_aa_exists, "Album B album_artists must have been deleted");
 
-    let d_aa_exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM album_artists WHERE album_id = ?")
-        .bind(album_d_id).fetch_one(&pool).await.unwrap();
+    let d_aa_exists: bool =
+        sqlx::query_scalar("SELECT COUNT(*) > 0 FROM album_artists WHERE album_id = ?")
+            .bind(album_d_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert!(!d_aa_exists, "Album D album_artists must have been deleted");
 
     // Verify foreign key integrity
-    let fk_violations: Vec<(String, Option<i64>, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check;")
-        .fetch_all(&pool).await.unwrap();
-    assert!(fk_violations.is_empty(), "Foreign key check must return 0 violations: {:?}", fk_violations);
+    let fk_violations: Vec<(String, Option<i64>, String, i64)> =
+        sqlx::query_as("PRAGMA foreign_key_check;")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        fk_violations.is_empty(),
+        "Foreign key check must return 0 violations: {:?}",
+        fk_violations
+    );
 
     // Idempotency: Second run should do nothing
     let report2 = perform_purge_orphan_empty_albums(&pool)
         .await
         .expect("Second purge must succeed");
-    assert_eq!(report2.purged_albums_count, 0, "Second run should purge 0 albums");
-    assert_eq!(report2.purged_album_artists_count, 0, "Second run should purge 0 album_artists");
-    assert_eq!(report2.preserved_stubs_count, 1, "Stub Album C must still be preserved");
+    assert_eq!(
+        report2.purged_albums_count, 0,
+        "Second run should purge 0 albums"
+    );
+    assert_eq!(
+        report2.purged_album_artists_count, 0,
+        "Second run should purge 0 album_artists"
+    );
+    assert_eq!(
+        report2.preserved_stubs_count, 1,
+        "Stub Album C must still be preserved"
+    );
 }
 
 #[tokio::test]
 async fn test_purge_cleans_dangling_album_artists_without_album() {
     let pool = create_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Dangling Artist') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Dangling Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Insert a dangling album_artists row referencing non-existent album id 999999
     // Disable FK temporarily to simulate pre-existing corruption
-    sqlx::query("PRAGMA foreign_keys = OFF;").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (999999, ?, 1)")
-        .bind(artist_id).execute(&pool).await.unwrap();
-    sqlx::query("PRAGMA foreign_keys = ON;").execute(&pool).await.unwrap();
+    sqlx::query("PRAGMA foreign_keys = OFF;")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (999999, ?, 1)",
+    )
+    .bind(artist_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("PRAGMA foreign_keys = ON;")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let dangling_before: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM album_artists WHERE album_id NOT IN (SELECT id FROM albums)"
-    ).fetch_one(&pool).await.unwrap();
-    assert_eq!(dangling_before, 1, "Should have 1 dangling album_artists before purge");
+        "SELECT COUNT(*) FROM album_artists WHERE album_id NOT IN (SELECT id FROM albums)",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        dangling_before, 1,
+        "Should have 1 dangling album_artists before purge"
+    );
 
     let report = perform_purge_orphan_empty_albums(&pool)
         .await
         .expect("Purge must succeed even with dangling album_artists");
 
-    assert_eq!(report.purged_album_artists_count, 1, "Dangling album_artists row must be purged");
+    assert_eq!(
+        report.purged_album_artists_count, 1,
+        "Dangling album_artists row must be purged"
+    );
 
     let dangling_after: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM album_artists WHERE album_id NOT IN (SELECT id FROM albums)"
-    ).fetch_one(&pool).await.unwrap();
-    assert_eq!(dangling_after, 0, "Should have 0 dangling album_artists after purge");
+        "SELECT COUNT(*) FROM album_artists WHERE album_id NOT IN (SELECT id FROM albums)",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        dangling_after, 0,
+        "Should have 0 dangling album_artists after purge"
+    );
 
-    let fk_violations: Vec<(String, Option<i64>, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check;")
-        .fetch_all(&pool).await.unwrap();
-    assert!(fk_violations.is_empty(), "Foreign key check must return 0 violations");
+    let fk_violations: Vec<(String, Option<i64>, String, i64)> =
+        sqlx::query_as("PRAGMA foreign_key_check;")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        fk_violations.is_empty(),
+        "Foreign key check must return 0 violations"
+    );
 }
 
 #[test]
@@ -232,16 +361,21 @@ fn test_flac_vorbis_multidisc_tags_emission_disc_tracktotal_and_totaldiscs() {
         album: "The Wall (Experience Edition)".to_string(),
         album_artist: Some("Pink Floyd".to_string()),
         track_number: 7,
-        track_total: 41,              // Overall boxset track count
-        disc_track_total: Some(14),   // Local Disc 2 track count
+        track_total: 41,            // Overall boxset track count
+        disc_track_total: Some(14), // Local Disc 2 track count
         disc_number: 2,
-        total_discs: Some(3),         // 3 CDs
+        total_discs: Some(3), // 3 CDs
         disc_total: 3,
         ..Default::default()
     };
 
-    let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags must succeed");
-    assert!(ver.tags_match, "Tags must match expected: {:?}", ver.mismatches);
+    let ver =
+        apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags must succeed");
+    assert!(
+        ver.tags_match,
+        "Tags must match expected: {:?}",
+        ver.mismatches
+    );
 
     let read_tag = metaflac::Tag::read_from_path(path).expect("Read FLAC tags");
     let comments = read_tag.vorbis_comments().expect("Vorbis comments");
@@ -290,14 +424,19 @@ fn test_flac_vorbis_multidisc_default_disc_number_when_zero() {
         track_number: 1,
         track_total: 20,
         disc_track_total: Some(10),
-        disc_number: 0,               // Unset/0
-        total_discs: Some(2),         // 2 discs
+        disc_number: 0,       // Unset/0
+        total_discs: Some(2), // 2 discs
         disc_total: 2,
         ..Default::default()
     };
 
-    let ver = apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags must succeed");
-    assert!(ver.tags_match, "Tags must match expected: {:?}", ver.mismatches);
+    let ver =
+        apply_and_verify_flac_tags(path, &meta).expect("apply_and_verify_flac_tags must succeed");
+    assert!(
+        ver.tags_match,
+        "Tags must match expected: {:?}",
+        ver.mismatches
+    );
 
     let read_tag = metaflac::Tag::read_from_path(path).expect("Read FLAC tags");
     let comments = read_tag.vorbis_comments().expect("Vorbis comments");
@@ -327,7 +466,8 @@ fn test_flac_vorbis_multidisc_default_disc_number_when_zero() {
 
 #[tokio::test]
 async fn test_python_purge_script_execution() {
-    let temp_dir = std::env::temp_dir().join(format!("syncify_test_py_purge_{}", std::process::id()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("syncify_test_py_purge_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&temp_dir);
     let db_path = temp_dir.join("test_orphan.db");
     let backup_dir = temp_dir.join("backups");
@@ -349,25 +489,51 @@ async fn test_python_purge_script_execution() {
         .expect("Migrate file DB");
 
     // Insert artist, album with tracks, orphan album, stub album
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let alb_tracks: i64 = sqlx::query_scalar("INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Keep Alb', 1, 0) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let alb_tracks: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Keep Alb', 1, 0) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-        .bind(alb_tracks).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(alb_tracks)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO tracks (title, album_id) VALUES ('Track 1', ?)")
-        .bind(alb_tracks).execute(&pool).await.unwrap();
+        .bind(alb_tracks)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let alb_orphan: i64 = sqlx::query_scalar("INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Orphan Alb', 0, 0) RETURNING id")
         .fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-        .bind(alb_orphan).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(alb_orphan)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
-    let alb_stub: i64 = sqlx::query_scalar("INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Stub Alb', 0, 1) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let alb_stub: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Stub Alb', 0, 1) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-        .bind(alb_stub).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(alb_stub)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     pool.close().await;
 
@@ -427,16 +593,35 @@ async fn test_python_purge_script_execution() {
         .expect("Reconnect file DB");
 
     let orphan_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE id = ?")
-        .bind(alb_orphan).fetch_one(&pool2).await.unwrap();
-    assert_eq!(orphan_count, 0, "Orphan album must be purged by python script");
+        .bind(alb_orphan)
+        .fetch_one(&pool2)
+        .await
+        .unwrap();
+    assert_eq!(
+        orphan_count, 0,
+        "Orphan album must be purged by python script"
+    );
 
-    let stub_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE id = ? AND is_stub = 1")
-        .bind(alb_stub).fetch_one(&pool2).await.unwrap();
-    assert_eq!(stub_count, 1, "Stub album must be preserved by python script");
+    let stub_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE id = ? AND is_stub = 1")
+            .bind(alb_stub)
+            .fetch_one(&pool2)
+            .await
+            .unwrap();
+    assert_eq!(
+        stub_count, 1,
+        "Stub album must be preserved by python script"
+    );
 
     let keep_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE id = ?")
-        .bind(alb_tracks).fetch_one(&pool2).await.unwrap();
-    assert_eq!(keep_count, 1, "Album with tracks must be preserved by python script");
+        .bind(alb_tracks)
+        .fetch_one(&pool2)
+        .await
+        .unwrap();
+    assert_eq!(
+        keep_count, 1,
+        "Album with tracks must be preserved by python script"
+    );
 
     pool2.close().await;
 

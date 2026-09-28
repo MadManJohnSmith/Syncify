@@ -158,7 +158,10 @@ impl AppleMusicClient {
     }
 
     /// Generic JSON request helper supporting relative paths and full URLs
-    pub async fn request_json<T: for<'de> Deserialize<'de>>(&self, path_or_url: &str) -> Result<T, String> {
+    pub async fn request_json<T: for<'de> Deserialize<'de>>(
+        &self,
+        path_or_url: &str,
+    ) -> Result<T, String> {
         let url = if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
             path_or_url.to_string()
         } else {
@@ -209,7 +212,10 @@ impl AppleMusicClient {
         offset: i32,
         limit: i32,
     ) -> Result<AppleMusicAlbumsResponse, String> {
-        let path = format!("me/library/albums?offset={}&limit={}&include=tracks", offset, limit);
+        let path = format!(
+            "me/library/albums?offset={}&limit={}&include=tracks",
+            offset, limit
+        );
         self.request_json(&path).await
     }
 
@@ -219,7 +225,10 @@ impl AppleMusicClient {
         offset: i32,
         limit: i32,
     ) -> Result<AppleMusicPlaylistsResponse, String> {
-        let path = format!("me/library/playlists?offset={}&limit={}&include=tracks", offset, limit);
+        let path = format!(
+            "me/library/playlists?offset={}&limit={}&include=tracks",
+            offset, limit
+        );
         self.request_json(&path).await
     }
 
@@ -230,7 +239,10 @@ impl AppleMusicClient {
         offset: i32,
         limit: i32,
     ) -> Result<AppleMusicResponse, String> {
-        let path = format!("me/library/playlists/{}/tracks?offset={}&limit={}", playlist_id, offset, limit);
+        let path = format!(
+            "me/library/playlists/{}/tracks?offset={}&limit={}",
+            playlist_id, offset, limit
+        );
         self.request_json(&path).await
     }
 
@@ -241,7 +253,10 @@ impl AppleMusicClient {
         offset: i32,
         limit: i32,
     ) -> Result<AppleMusicResponse, String> {
-        let path = format!("me/library/albums/{}/tracks?offset={}&limit={}", album_id, offset, limit);
+        let path = format!(
+            "me/library/albums/{}/tracks?offset={}&limit={}",
+            album_id, offset, limit
+        );
         self.request_json(&path).await
     }
 
@@ -296,7 +311,7 @@ impl AppleMusicClient {
 
                 // Add to library entry with normalized added_at (TASK-108: never NULL or 1970)
                 let normalized_date = crate::services::import_pagination::normalize_added_at(
-                    attrs.date_added.as_deref()
+                    attrs.date_added.as_deref(),
                 );
 
                 let result = sqlx::query(
@@ -305,9 +320,9 @@ impl AppleMusicClient {
                     VALUES (?, ?, 1, 0, ?)
                     ON CONFLICT(account_id, track_id) DO UPDATE SET
                         is_liked = 1,
-                        added_at = CASE 
-                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
-                            ELSE library_entries.added_at 
+                        added_at = CASE
+                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
+                            ELSE library_entries.added_at
                         END
                     "#
                 )
@@ -327,8 +342,8 @@ impl AppleMusicClient {
                 // Add track source (Apple Music is typically 256kbps AAC)
                 let _ = sqlx::query(
                     r#"
-                    INSERT OR REPLACE INTO track_sources 
-                    (track_id, service_id, service_track_id, format, bitrate, quality_score, available) 
+                    INSERT OR REPLACE INTO track_sources
+                    (track_id, service_id, service_track_id, format, bitrate, quality_score, available)
                     VALUES (?, ?, ?, 'AAC', 256, NULL, 1)
                     "#,
                 )
@@ -388,9 +403,13 @@ impl AppleMusicClient {
                 let album_id = self.get_or_create_album(db, &attrs.name, artist_id).await?;
 
                 let tracks = if let Some(rel) = &album.relationships {
-                    rel.tracks.as_ref().and_then(|t| t.data.clone()).unwrap_or_default()
+                    rel.tracks
+                        .as_ref()
+                        .and_then(|t| t.data.clone())
+                        .unwrap_or_default()
                 } else {
-                    self.get_album_tracks(&album.id, 0, 100).await
+                    self.get_album_tracks(&album.id, 0, 100)
+                        .await
                         .ok()
                         .and_then(|r| r.data)
                         .unwrap_or_default()
@@ -401,7 +420,9 @@ impl AppleMusicClient {
                         Some(a) => a,
                         None => continue,
                     };
-                    let track_id = self.get_or_create_track(db, track_attrs, Some(album_id)).await?;
+                    let track_id = self
+                        .get_or_create_track(db, track_attrs, Some(album_id))
+                        .await?;
                     let _ = sqlx::query(
                         "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                     )
@@ -411,7 +432,10 @@ impl AppleMusicClient {
                     .await;
 
                     let normalized_date = crate::services::import_pagination::normalize_added_at(
-                        track_attrs.date_added.as_deref().or(attrs.date_added.as_deref())
+                        track_attrs
+                            .date_added
+                            .as_deref()
+                            .or(attrs.date_added.as_deref()),
                     );
 
                     let result = sqlx::query(
@@ -420,9 +444,9 @@ impl AppleMusicClient {
                         VALUES (?, ?, 1, 0, ?)
                         ON CONFLICT(account_id, track_id) DO UPDATE SET
                             is_liked = 1,
-                            added_at = CASE 
-                                WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
-                                ELSE library_entries.added_at 
+                            added_at = CASE
+                                WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
+                                ELSE library_entries.added_at
                             END
                         "#
                     )
@@ -441,8 +465,8 @@ impl AppleMusicClient {
 
                     let _ = sqlx::query(
                         r#"
-                        INSERT OR REPLACE INTO track_sources 
-                        (track_id, service_id, service_track_id, format, bitrate, quality_score, available) 
+                        INSERT OR REPLACE INTO track_sources
+                        (track_id, service_id, service_track_id, format, bitrate, quality_score, available)
                         VALUES (?, ?, ?, 'AAC', 256, NULL, 1)
                         "#,
                     )
@@ -520,9 +544,13 @@ impl AppleMusicClient {
                 .map_err(|e| format!("Failed to upsert playlist: {}", e))?;
 
                 let tracks = if let Some(rel) = &playlist.relationships {
-                    rel.tracks.as_ref().and_then(|t| t.data.clone()).unwrap_or_default()
+                    rel.tracks
+                        .as_ref()
+                        .and_then(|t| t.data.clone())
+                        .unwrap_or_default()
                 } else {
-                    self.get_playlist_tracks(&playlist.id, 0, 100).await
+                    self.get_playlist_tracks(&playlist.id, 0, 100)
+                        .await
                         .ok()
                         .and_then(|r| r.data)
                         .unwrap_or_default()
@@ -533,7 +561,9 @@ impl AppleMusicClient {
                         Some(a) => a,
                         None => continue,
                     };
-                    let artist_id = self.get_or_create_artist(db, &track_attrs.artist_name).await?;
+                    let artist_id = self
+                        .get_or_create_artist(db, &track_attrs.artist_name)
+                        .await?;
                     let album_id = if let Some(ref alb) = track_attrs.album_name {
                         Some(self.get_or_create_album(db, alb, artist_id).await?)
                     } else {
@@ -560,7 +590,10 @@ impl AppleMusicClient {
                     .await;
 
                     let normalized_date = crate::services::import_pagination::normalize_added_at(
-                        track_attrs.date_added.as_deref().or(attrs.date_added.as_deref())
+                        track_attrs
+                            .date_added
+                            .as_deref()
+                            .or(attrs.date_added.as_deref()),
                     );
 
                     let result = sqlx::query(
@@ -569,9 +602,9 @@ impl AppleMusicClient {
                         VALUES (?, ?, 1, 0, ?)
                         ON CONFLICT(account_id, track_id) DO UPDATE SET
                             is_liked = 1,
-                            added_at = CASE 
-                                WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at 
-                                ELSE library_entries.added_at 
+                            added_at = CASE
+                                WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
+                                ELSE library_entries.added_at
                             END
                         "#
                     )
@@ -590,8 +623,8 @@ impl AppleMusicClient {
 
                     let _ = sqlx::query(
                         r#"
-                        INSERT OR REPLACE INTO track_sources 
-                        (track_id, service_id, service_track_id, format, bitrate, quality_score, available) 
+                        INSERT OR REPLACE INTO track_sources
+                        (track_id, service_id, service_track_id, format, bitrate, quality_score, available)
                         VALUES (?, ?, ?, 'AAC', 256, NULL, 1)
                         "#,
                     )
@@ -627,8 +660,20 @@ impl AppleMusicClient {
         account_id: i64,
     ) -> Result<super::ImportResult, String> {
         let songs_res = self.import_library(db, account_id).await?;
-        let albums_res = self.import_albums(db, account_id).await.unwrap_or(super::ImportResult { imported: 0, skipped: 0 });
-        let playlists_res = self.import_playlists(db, account_id).await.unwrap_or(super::ImportResult { imported: 0, skipped: 0 });
+        let albums_res = self
+            .import_albums(db, account_id)
+            .await
+            .unwrap_or(super::ImportResult {
+                imported: 0,
+                skipped: 0,
+            });
+        let playlists_res =
+            self.import_playlists(db, account_id)
+                .await
+                .unwrap_or(super::ImportResult {
+                    imported: 0,
+                    skipped: 0,
+                });
 
         Ok(super::ImportResult {
             imported: songs_res.imported + albums_res.imported + playlists_res.imported,
@@ -795,11 +840,12 @@ impl AppleMusicClient {
         if clean_name.is_empty() {
             return Err("Cannot create artist with empty name".to_string());
         }
-        let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-            .bind(&clean_name)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?;
+        let existing: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+                .bind(&clean_name)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| format!("DB error: {}", e))?;
 
         if let Some((id,)) = existing {
             return Ok(id);
@@ -830,13 +876,12 @@ impl AppleMusicClient {
             return Ok(row.0);
         }
 
-        let album_id: i64 = sqlx::query_scalar(
-            "INSERT INTO albums (title) VALUES (?) RETURNING id"
-        )
-        .bind(title)
-        .fetch_one(db)
-        .await
-        .map_err(|e| format!("Album insert failed: {}", e))?;
+        let album_id: i64 =
+            sqlx::query_scalar("INSERT INTO albums (title) VALUES (?) RETURNING id")
+                .bind(title)
+                .fetch_one(db)
+                .await
+                .map_err(|e| format!("Album insert failed: {}", e))?;
 
         // Link album to artist
         let _ = sqlx::query(

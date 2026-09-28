@@ -11,6 +11,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+use syncify_core_domain::quality::QualityDecisionKind;
 use syncify_tauri_lib::download::audio_inspector::{
     classify_physical_audio_quality, enforce_post_download_quality_gate,
     inspect_physical_audio_file,
@@ -18,7 +19,6 @@ use syncify_tauri_lib::download::audio_inspector::{
 use syncify_tauri_lib::download::orchestrator::DownloadOrchestrator;
 use syncify_tauri_lib::download::progress::DownloadResult;
 use syncify_tauri_lib::download::DownloadRequest;
-use syncify_core_domain::quality::QualityDecisionKind;
 use tempfile::TempDir;
 
 /// Generates a valid minimal synthetic FLAC file with STREAMINFO metadata
@@ -68,9 +68,15 @@ fn create_synthetic_flac(path: &Path, sample_rate: u32, bit_depth: u8) {
 #[test]
 fn test_classify_physical_audio_quality_matrix() {
     // 16-bit / 44.1kHz FLAC -> strictly lossless, never hires
-    assert_eq!(classify_physical_audio_quality(16, 44100, "FLAC"), "lossless");
+    assert_eq!(
+        classify_physical_audio_quality(16, 44100, "FLAC"),
+        "lossless"
+    );
     // 16-bit / 48kHz FLAC -> strictly lossless, never hires
-    assert_eq!(classify_physical_audio_quality(16, 48000, "FLAC"), "lossless");
+    assert_eq!(
+        classify_physical_audio_quality(16, 48000, "FLAC"),
+        "lossless"
+    );
 
     // 24-bit / 44.1kHz FLAC -> hires (bit_depth > 16)
     assert_eq!(classify_physical_audio_quality(24, 44100, "FLAC"), "hires");
@@ -142,7 +148,7 @@ fn test_orchestrator_reconciliation_and_post_download_gate() {
     // 1. Test fake Hi-Res shortfall scenario
     let mut res_16 = DownloadResult {
         file_path: flac_16_path.to_str().unwrap().to_string(),
-        bit_depth: 24, // Initially claimed by provider as 24-bit
+        bit_depth: 24,      // Initially claimed by provider as 24-bit
         sample_rate: 96000, // Initially claimed by provider as 96kHz
         title: "False Hi-Res Track".to_string(),
         artist: "Test Artist".to_string(),
@@ -181,7 +187,10 @@ fn test_orchestrator_reconciliation_and_post_download_gate() {
     assert_eq!(res_16.sample_rate, 44100);
     assert!(res_16.quality_decision.is_some());
     let qd_16 = res_16.quality_decision.as_ref().unwrap();
-    assert_eq!(qd_16.decision, QualityDecisionKind::CompletedWithQualityShortfall);
+    assert_eq!(
+        qd_16.decision,
+        QualityDecisionKind::CompletedWithQualityShortfall
+    );
     assert!(qd_16.quality_fallback_used);
 
     let gate_tier_16 = DownloadOrchestrator::verify_post_download_quality_gate(&res_16);
@@ -255,15 +264,17 @@ async fn test_sqlite_db_reconciliation_and_python_script_execution() {
     create_synthetic_flac(&flac_24, 96000, 24);
 
     // Track 101: Initially labeled as 'hires', but downloaded file is 16-bit / 44.1kHz
-    sqlx::query("INSERT INTO tracks (id, title, audio_quality) VALUES (101, 'Fake Hi-Res Song', 'hires')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (id, title, audio_quality) VALUES (101, 'Fake Hi-Res Song', 'hires')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query(
         r#"INSERT INTO downloads (
             track_id, source_service_id, file_path, file_format, bit_depth, sample_rate,
             requested_quality, quality_decision
-        ) VALUES (101, ?, ?, 'FLAC', 16, 44100, 'hires', 'CompletedExactQuality')"#
+        ) VALUES (101, ?, ?, 'FLAC', 16, 44100, 'hires', 'CompletedExactQuality')"#,
     )
     .bind(qobuz_id)
     .bind(flac_16.to_str().unwrap())
@@ -272,15 +283,17 @@ async fn test_sqlite_db_reconciliation_and_python_script_execution() {
     .unwrap();
 
     // Track 102: Legitimate 24/96 Hi-Res track
-    sqlx::query("INSERT INTO tracks (id, title, audio_quality) VALUES (102, 'True Hi-Res Song', 'hires')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (id, title, audio_quality) VALUES (102, 'True Hi-Res Song', 'hires')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query(
         r#"INSERT INTO downloads (
             track_id, source_service_id, file_path, file_format, bit_depth, sample_rate,
             requested_quality, quality_decision
-        ) VALUES (102, ?, ?, 'FLAC', 24, 96000, 'hires', 'CompletedExactQuality')"#
+        ) VALUES (102, ?, ?, 'FLAC', 24, 96000, 'hires', 'CompletedExactQuality')"#,
     )
     .bind(qobuz_id)
     .bind(flac_24.to_str().unwrap())
@@ -321,14 +334,20 @@ async fn test_sqlite_db_reconciliation_and_python_script_execution() {
         .unwrap();
 
     // Track 101 (16/44.1) MUST be recategorized to 'lossless'
-    assert_eq!(q101_post, "lossless", "16/44.1 track must be recategorized to lossless");
+    assert_eq!(
+        q101_post, "lossless",
+        "16/44.1 track must be recategorized to lossless"
+    );
 
     // Track 102 (24/96) MUST retain 'hires'
-    assert_eq!(q102_post, "hires", "24/96 track must legitimately retain hires");
+    assert_eq!(
+        q102_post, "hires",
+        "24/96 track must legitimately retain hires"
+    );
 
     // Download 101 MUST be updated to CompletedWithQualityShortfall
     let (d101_decision, d101_fallback): (String, i64) = sqlx::query_as(
-        "SELECT quality_decision, quality_fallback_used FROM downloads WHERE track_id = 101"
+        "SELECT quality_decision, quality_fallback_used FROM downloads WHERE track_id = 101",
     )
     .fetch_one(&pool)
     .await
@@ -338,7 +357,7 @@ async fn test_sqlite_db_reconciliation_and_python_script_execution() {
 
     // Download 102 MUST keep CompletedExactQuality
     let (d102_decision, d102_fallback): (String, i64) = sqlx::query_as(
-        "SELECT quality_decision, quality_fallback_used FROM downloads WHERE track_id = 102"
+        "SELECT quality_decision, quality_fallback_used FROM downloads WHERE track_id = 102",
     )
     .fetch_one(&pool)
     .await
@@ -373,7 +392,7 @@ async fn test_worker_post_download_gate_downgrades_to_lossless() {
     let queue_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO download_queue (
             track_id, status, requested_quality, progress_percent
-        ) VALUES (201, 'downloading', 'hires', 50.0) RETURNING id"#
+        ) VALUES (201, 'downloading', 'hires', 50.0) RETURNING id"#,
     )
     .fetch_one(&pool)
     .await
@@ -403,11 +422,15 @@ async fn test_worker_post_download_gate_downgrades_to_lossless() {
     worker.mark_complete(queue_id, &download_res).await;
 
     // Verify tracks.audio_quality was updated to 'lossless'
-    let track_quality: String = sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = 201")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(track_quality, "lossless", "Worker must update tracks.audio_quality to lossless when stream is 16/44.1");
+    let track_quality: String =
+        sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = 201")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        track_quality, "lossless",
+        "Worker must update tracks.audio_quality to lossless when stream is 16/44.1"
+    );
 
     // Verify downloads ledger
     let (d_bd, d_sr, d_dec, d_fb): (i64, i64, String, i64) = sqlx::query_as(

@@ -9,15 +9,14 @@
 //! 6. The cleanup routine is fully idempotent.
 //! 7. Path traversal attempts and outside files are protected.
 
+use sqlx::sqlite::SqlitePoolOptions;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
 use syncify_tauri_lib::services::operation_recovery::{
-    cleanup_staging_and_recover_stuck_queue,
-    cleanup_staging_and_recover_stuck_queue_with_message,
+    cleanup_staging_and_recover_stuck_queue, cleanup_staging_and_recover_stuck_queue_with_message,
 };
+use tempfile::TempDir;
 
 fn create_dummy_file(path: &Path, content: &[u8]) {
     if let Some(parent) = path.parent() {
@@ -88,7 +87,7 @@ async fn test_cleanup_staging_and_recover_stuck_queue_item_15623() {
         INSERT INTO download_queue (
             id, track_id, status, priority, position, staging_path, started_at
         ) VALUES (15623, 15623, 'downloading', 50, 1, ?, CURRENT_TIMESTAMP)
-        "#
+        "#,
     )
     .bind(part_file.to_string_lossy().to_string())
     .execute(&pool)
@@ -101,7 +100,7 @@ async fn test_cleanup_staging_and_recover_stuck_queue_item_15623() {
         INSERT INTO download_queue (
             id, track_id, status, priority, position
         ) VALUES (20001, 20001, 'queued', 50, 2)
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -113,7 +112,7 @@ async fn test_cleanup_staging_and_recover_stuck_queue_item_15623() {
         INSERT INTO download_queue (
             id, track_id, status, priority, position, progress_percent, completed_at
         ) VALUES (30001, 30001, 'complete', 50, 3, 100.0, CURRENT_TIMESTAMP)
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -125,26 +124,52 @@ async fn test_cleanup_staging_and_recover_stuck_queue_item_15623() {
         .expect("Recovery routine should execute cleanly");
 
     // 5. Verify staging file purge assertions
-    assert_eq!(summary.purged_staging_files, 3, "Exactly 3 orphan staging files should be purged");
-    assert_eq!(summary.recovered_stuck_items, 1, "Exactly 1 stuck queue item should be recovered");
-    assert_eq!(summary.recovered_queue_ids, vec![15623], "Queue id 15623 must be the recovered item");
+    assert_eq!(
+        summary.purged_staging_files, 3,
+        "Exactly 3 orphan staging files should be purged"
+    );
+    assert_eq!(
+        summary.recovered_stuck_items, 1,
+        "Exactly 1 stuck queue item should be recovered"
+    );
+    assert_eq!(
+        summary.recovered_queue_ids,
+        vec![15623],
+        "Queue id 15623 must be the recovered item"
+    );
 
-    assert!(!part_file.exists(), "15623.part must be deleted from staging");
-    assert!(!cover_file.exists(), "15623.cover.jpg must be deleted from staging");
+    assert!(
+        !part_file.exists(),
+        "15623.part must be deleted from staging"
+    );
+    assert!(
+        !cover_file.exists(),
+        "15623.cover.jpg must be deleted from staging"
+    );
     assert!(!lrc_file.exists(), "15623.lrc must be deleted from staging");
-    assert!(nomedia_file.exists(), ".nomedia must be preserved in .staging");
-    assert!(staging_dir.exists(), ".staging root directory itself must NOT be deleted");
+    assert!(
+        nomedia_file.exists(),
+        ".nomedia must be preserved in .staging"
+    );
+    assert!(
+        staging_dir.exists(),
+        ".staging root directory itself must NOT be deleted"
+    );
 
     // 6. Verify download_queue state mutations
     // Stuck item 15623 -> must be failed with explanatory error
-    let (status_15623, err_msg_15623, last_err_15623): (String, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT status, error_message, last_error FROM download_queue WHERE id = 15623"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (status_15623, err_msg_15623, last_err_15623): (String, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT status, error_message, last_error FROM download_queue WHERE id = 15623",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
-    assert_eq!(status_15623, "failed", "Stuck downloading item must transition to failed");
+    assert_eq!(
+        status_15623, "failed",
+        "Stuck downloading item must transition to failed"
+    );
     assert_eq!(
         err_msg_15623.as_deref(),
         Some("Download interrupted by system restart"),
@@ -157,34 +182,47 @@ async fn test_cleanup_staging_and_recover_stuck_queue_item_15623() {
     );
 
     // Queued item 20001 -> must NOT be altered
-    let (status_20001, err_msg_20001): (String, Option<String>) = sqlx::query_as(
-        "SELECT status, error_message FROM download_queue WHERE id = 20001"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (status_20001, err_msg_20001): (String, Option<String>) =
+        sqlx::query_as("SELECT status, error_message FROM download_queue WHERE id = 20001")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(status_20001, "queued", "Queued item must remain queued");
-    assert!(err_msg_20001.is_none(), "Queued item must not have error message set");
+    assert!(
+        err_msg_20001.is_none(),
+        "Queued item must not have error message set"
+    );
 
     // Complete item 30001 -> must NOT be altered
-    let (status_30001, err_msg_30001): (String, Option<String>) = sqlx::query_as(
-        "SELECT status, error_message FROM download_queue WHERE id = 30001"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (status_30001, err_msg_30001): (String, Option<String>) =
+        sqlx::query_as("SELECT status, error_message FROM download_queue WHERE id = 30001")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    assert_eq!(status_30001, "complete", "Completed item must remain complete");
-    assert!(err_msg_30001.is_none(), "Completed item must not have error message set");
+    assert_eq!(
+        status_30001, "complete",
+        "Completed item must remain complete"
+    );
+    assert!(
+        err_msg_30001.is_none(),
+        "Completed item must not have error message set"
+    );
 
     // 7. Test Idempotency: Running recovery again must perform 0 mutations
     let idempotent_summary = cleanup_staging_and_recover_stuck_queue(&pool, Some(&staging_dir))
         .await
         .expect("Second run must succeed");
 
-    assert_eq!(idempotent_summary.purged_staging_files, 0, "No new files should be purged");
-    assert_eq!(idempotent_summary.recovered_stuck_items, 0, "No stuck items should remain");
+    assert_eq!(
+        idempotent_summary.purged_staging_files, 0,
+        "No new files should be purged"
+    );
+    assert_eq!(
+        idempotent_summary.recovered_stuck_items, 0,
+        "No stuck items should remain"
+    );
 }
 
 #[tokio::test]
@@ -200,15 +238,19 @@ async fn test_cleanup_staging_custom_message_and_nested_directories() {
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
     // 1. Seed track and stuck queue item
-    sqlx::query("INSERT INTO tracks (id, title, duration_ms) VALUES (50001, 'Nested Test Track', 180000)")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (id, title, duration_ms) VALUES (50001, 'Nested Test Track', 180000)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
-    sqlx::query("INSERT INTO download_queue (id, track_id, status) VALUES (50001, 50001, 'downloading')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO download_queue (id, track_id, status) VALUES (50001, 50001, 'downloading')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // 2. Create nested subfolder in .staging
     let staging_dir = temp.path().join(".staging");
@@ -229,13 +271,10 @@ async fn test_cleanup_staging_custom_message_and_nested_directories() {
 
     // 3. Run recovery with custom reason
     let custom_msg = "Orphaned downloading item recovered on startup";
-    let summary = cleanup_staging_and_recover_stuck_queue_with_message(
-        &pool,
-        Some(&staging_dir),
-        custom_msg,
-    )
-    .await
-    .unwrap();
+    let summary =
+        cleanup_staging_and_recover_stuck_queue_with_message(&pool, Some(&staging_dir), custom_msg)
+            .await
+            .unwrap();
 
     assert_eq!(summary.purged_staging_files, 3);
     assert_eq!(summary.recovered_stuck_items, 1);
@@ -245,13 +284,16 @@ async fn test_cleanup_staging_custom_message_and_nested_directories() {
     assert!(!nested_tmp.exists());
     assert!(!root_lrc.exists());
     // The empty subfolder should be pruned
-    assert!(!nested_session_dir.exists(), "Empty subfolder inside staging must be pruned");
+    assert!(
+        !nested_session_dir.exists(),
+        "Empty subfolder inside staging must be pruned"
+    );
     // Root staging must remain
     assert!(staging_dir.exists(), "Staging root must remain");
 
     // 4. Verify custom error message in SQLite
     let (status, err_msg, last_err): (String, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT status, error_message, last_error FROM download_queue WHERE id = 50001"
+        "SELECT status, error_message, last_error FROM download_queue WHERE id = 50001",
     )
     .fetch_one(&pool)
     .await
@@ -294,5 +336,8 @@ async fn test_cleanup_staging_does_not_purge_files_outside_staging() {
 
     assert_eq!(summary.purged_staging_files, 1);
     assert!(!staging_part.exists(), "Staging part must be deleted");
-    assert!(outside_music.exists(), "External file outside staging must remain completely untouched");
+    assert!(
+        outside_music.exists(),
+        "External file outside staging must remain completely untouched"
+    );
 }

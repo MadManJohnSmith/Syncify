@@ -58,7 +58,10 @@ fn test_fuse_countries_with_alpha2_codes() {
     assert_eq!(fuse_countries(&inputs_bh), Some("Bahrain".to_string()));
 
     let inputs_us = [("US", "musicbrainz", 0.85)];
-    assert_eq!(fuse_countries(&inputs_us), Some("United States".to_string()));
+    assert_eq!(
+        fuse_countries(&inputs_us),
+        Some("United States".to_string())
+    );
 }
 
 #[test]

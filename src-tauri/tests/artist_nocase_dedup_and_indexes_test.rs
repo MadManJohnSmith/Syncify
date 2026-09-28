@@ -48,14 +48,17 @@ async fn test_migration_0076_clean_run_schema_and_indexes() {
     ];
 
     for idx_name in required_indexes {
-        let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?",
-        )
-        .bind(idx_name)
-        .fetch_one(&pool)
-        .await
-        .expect("Index lookup query failed");
-        assert_eq!(count.0, 1, "Index '{}' must exist in sqlite_master", idx_name);
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?")
+                .bind(idx_name)
+                .fetch_one(&pool)
+                .await
+                .expect("Index lookup query failed");
+        assert_eq!(
+            count.0, 1,
+            "Index '{}' must exist in sqlite_master",
+            idx_name
+        );
     }
 
     // 4. Verify old binary unique index is dropped
@@ -65,7 +68,10 @@ async fn test_migration_0076_clean_run_schema_and_indexes() {
     .fetch_one(&pool)
     .await
     .expect("Old index check query failed");
-    assert_eq!(old_idx_count.0, 0, "Old index idx_artists_name_unique must be dropped");
+    assert_eq!(
+        old_idx_count.0, 0,
+        "Old index idx_artists_name_unique must be dropped"
+    );
 
     // 5. Verify PRAGMA integrity_check and foreign_key_check
     let integrity: (String,) = sqlx::query_as("PRAGMA integrity_check")
@@ -78,7 +84,10 @@ async fn test_migration_0076_clean_run_schema_and_indexes() {
         .fetch_all(&pool)
         .await
         .expect("PRAGMA foreign_key_check failed");
-    assert!(fk_violations.is_empty(), "Database must have 0 foreign key violations");
+    assert!(
+        fk_violations.is_empty(),
+        "Database must have 0 foreign key violations"
+    );
 }
 
 #[tokio::test]
@@ -96,10 +105,17 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
     // 1. Prepare temp migrations dir containing 0001 through 0075
     let mig_temp_dir = TempDir::new().unwrap();
     let src_migrations_dir = Path::new("./migrations");
-    for entry in fs::read_dir(src_migrations_dir).unwrap().filter_map(|e| e.ok()) {
+    for entry in fs::read_dir(src_migrations_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+    {
         let file_name = entry.file_name().into_string().unwrap();
         if file_name.ends_with(".sql") {
-            let version = file_name.split('_').next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+            let version = file_name
+                .split('_')
+                .next()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
             if version > 0 && version < 76 {
                 fs::copy(entry.path(), mig_temp_dir.path().join(&file_name)).unwrap();
             }
@@ -129,7 +145,7 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
     // Group A: grandson (canonical) vs Grandson (loser, favorite=1, no tracks)
     sqlx::query(
         "INSERT INTO artists (id, name, qobuz_id, spotify_id, is_favorite)
-         VALUES (64, 'grandson', 'qobuz_grandson', 'spotify_grandson', 0)"
+         VALUES (64, 'grandson', 'qobuz_grandson', 'spotify_grandson', 0)",
     )
     .execute(&pool)
     .await
@@ -137,7 +153,7 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
 
     sqlx::query(
         "INSERT INTO artists (id, name, tidal_id, is_favorite)
-         VALUES (93676, 'Grandson', 'tidal_grandson', 1)"
+         VALUES (93676, 'Grandson', 'tidal_grandson', 1)",
     )
     .execute(&pool)
     .await
@@ -146,7 +162,7 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
     // Group B: TOTO (winner, has tidal_id) vs Toto (loser, has musicbrainz_id)
     sqlx::query(
         "INSERT INTO artists (id, name, tidal_id, is_favorite)
-         VALUES (11541, 'TOTO', 'tidal_toto', 1)"
+         VALUES (11541, 'TOTO', 'tidal_toto', 1)",
     )
     .execute(&pool)
     .await
@@ -154,7 +170,7 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
 
     sqlx::query(
         "INSERT INTO artists (id, name, musicbrainz_id, is_favorite)
-         VALUES (93680, 'Toto', 'mb_toto_123', 0)"
+         VALUES (93680, 'Toto', 'mb_toto_123', 0)",
     )
     .execute(&pool)
     .await
@@ -176,10 +192,12 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (1, 93676, 'primary')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (1, 93676, 'primary')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     // track 2 linked to canonical artist 64 with role 'featured'
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (2, 64, 'featured')")
         .execute(&pool)
@@ -206,14 +224,18 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
         .unwrap();
 
     // 4c. track_credits: track 1 credited to both 11541 and 93680 with role 'composer'
-    sqlx::query("INSERT INTO track_credits (track_id, artist_id, role) VALUES (1, 11541, 'composer')")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO track_credits (track_id, artist_id, role) VALUES (1, 93680, 'composer')")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO track_credits (track_id, artist_id, role) VALUES (1, 11541, 'composer')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO track_credits (track_id, artist_id, role) VALUES (1, 93680, 'composer')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Verify duplicates exist before migration 0076
     let pre_dups: (i64,) = sqlx::query_as(
@@ -222,7 +244,10 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(pre_dups.0, 3, "Must have 3 duplicate artist groups pre-migration");
+    assert_eq!(
+        pre_dups.0, 3,
+        "Must have 3 duplicate artist groups pre-migration"
+    );
 
     // 5. Now apply migration 0076 via canonical sqlx migrator
     let migrator = sqlx::migrate!("./migrations");
@@ -239,37 +264,50 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(post_dups.0, 0, "Deduplication must result in 0 case-insensitive duplicates");
+    assert_eq!(
+        post_dups.0, 0,
+        "Deduplication must result in 0 case-insensitive duplicates"
+    );
 
     // 6b. Check survivor 64 (grandson) consolidated all fields and favorite status
-    let survivor_grandson: (String, Option<String>, Option<String>, Option<String>, i64) = sqlx::query_as(
-        "SELECT name, spotify_id, qobuz_id, tidal_id, is_favorite FROM artists WHERE id = 64"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let survivor_grandson: (String, Option<String>, Option<String>, Option<String>, i64) =
+        sqlx::query_as(
+            "SELECT name, spotify_id, qobuz_id, tidal_id, is_favorite FROM artists WHERE id = 64",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(survivor_grandson.1.as_deref(), Some("spotify_grandson"));
     assert_eq!(survivor_grandson.2.as_deref(), Some("qobuz_grandson"));
-    assert_eq!(survivor_grandson.3.as_deref(), Some("tidal_grandson"), "Loser tidal_id must merge to winner");
-    assert_eq!(survivor_grandson.4, 1, "is_favorite must be consolidated to 1");
+    assert_eq!(
+        survivor_grandson.3.as_deref(),
+        Some("tidal_grandson"),
+        "Loser tidal_id must merge to winner"
+    );
+    assert_eq!(
+        survivor_grandson.4, 1,
+        "is_favorite must be consolidated to 1"
+    );
 
     // 6c. Check survivor 11541 (TOTO) consolidated musicbrainz_id
-    let survivor_toto: (Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT tidal_id, musicbrainz_id FROM artists WHERE id = 11541"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let survivor_toto: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT tidal_id, musicbrainz_id FROM artists WHERE id = 11541")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(survivor_toto.0.as_deref(), Some("tidal_toto"));
-    assert_eq!(survivor_toto.1.as_deref(), Some("mb_toto_123"), "musicbrainz_id must merge to winner");
+    assert_eq!(
+        survivor_toto.1.as_deref(),
+        Some("mb_toto_123"),
+        "musicbrainz_id must merge to winner"
+    );
 
     // 6d. Check loser rows are deleted (93676, 93680, 925) and winner 923 trimmed
-    let loser_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM artists WHERE id IN (93676, 93680, 925)"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let loser_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM artists WHERE id IN (93676, 93680, 925)")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(loser_count.0, 0, "Loser artist records must be deleted");
 
     let oasis_winner: (String,) = sqlx::query_as("SELECT name FROM artists WHERE id = 923")
@@ -280,7 +318,7 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
 
     // 6e. Check track_artists links
     let ta_rows: Vec<(i64, i64, String)> = sqlx::query_as(
-        "SELECT track_id, artist_id, role FROM track_artists ORDER BY track_id, role"
+        "SELECT track_id, artist_id, role FROM track_artists ORDER BY track_id, role",
     )
     .fetch_all(&pool)
     .await
@@ -293,30 +331,47 @@ async fn test_migration_0076_deduplicates_nocase_artist_groups_and_reassigns_lin
 
     // 6f. Check album_artists links
     let aa_rows: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT album_id, artist_id FROM album_artists ORDER BY album_id, artist_id"
+        "SELECT album_id, artist_id FROM album_artists ORDER BY album_id, artist_id",
     )
     .fetch_all(&pool)
     .await
     .unwrap();
     assert_eq!(aa_rows.len(), 3);
     assert_eq!(aa_rows[0], (1, 64), "Album 1 must link to survivor 64");
-    assert_eq!(aa_rows[1], (1, 11541), "Album 1 must link to survivor 11541");
-    assert_eq!(aa_rows[2], (2, 11541), "Album 2 must reassign to survivor 11541");
+    assert_eq!(
+        aa_rows[1],
+        (1, 11541),
+        "Album 1 must link to survivor 11541"
+    );
+    assert_eq!(
+        aa_rows[2],
+        (2, 11541),
+        "Album 2 must reassign to survivor 11541"
+    );
 
     // 6g. Check track_credits links
-    let tc_rows: Vec<(i64, i64, String)> = sqlx::query_as(
-        "SELECT track_id, artist_id, role FROM track_credits"
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let tc_rows: Vec<(i64, i64, String)> =
+        sqlx::query_as("SELECT track_id, artist_id, role FROM track_credits")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
     assert_eq!(tc_rows.len(), 1);
-    assert_eq!(tc_rows[0], (1, 11541, "composer".to_string()), "Track 1 credit must deduplicate to winner 11541");
+    assert_eq!(
+        tc_rows[0],
+        (1, 11541, "composer".to_string()),
+        "Track 1 credit must deduplicate to winner 11541"
+    );
 
     // 7. Verify PRAGMAs
-    let integrity: (String,) = sqlx::query_as("PRAGMA integrity_check").fetch_one(&pool).await.unwrap();
+    let integrity: (String,) = sqlx::query_as("PRAGMA integrity_check")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(integrity.0, "ok");
-    let fk_violations: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check").fetch_all(&pool).await.unwrap();
+    let fk_violations: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     assert!(fk_violations.is_empty(), "Zero FK violations");
 }
 
@@ -332,14 +387,17 @@ async fn test_explain_query_plan_uses_new_indexes() {
     migrator.run(&pool).await.unwrap();
 
     // 1. track_credits query plan
-    let qp_credits: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "EXPLAIN QUERY PLAN SELECT * FROM track_credits WHERE artist_id = ?"
-    )
-    .bind(64)
-    .fetch_all(&pool)
-    .await
-    .unwrap();
-    let detail_credits = qp_credits.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
+    let qp_credits: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM track_credits WHERE artist_id = ?")
+            .bind(64)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let detail_credits = qp_credits
+        .iter()
+        .map(|r| r.3.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(
         detail_credits.contains("USING INDEX idx_track_credits_artist")
             || detail_credits.contains("USING COVERING INDEX idx_track_credits_artist"),
@@ -348,14 +406,17 @@ async fn test_explain_query_plan_uses_new_indexes() {
     );
 
     // 2. track_artists query plan
-    let qp_track_artists: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "EXPLAIN QUERY PLAN SELECT * FROM track_artists WHERE artist_id = ?"
-    )
-    .bind(64)
-    .fetch_all(&pool)
-    .await
-    .unwrap();
-    let detail_ta = qp_track_artists.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
+    let qp_track_artists: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM track_artists WHERE artist_id = ?")
+            .bind(64)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let detail_ta = qp_track_artists
+        .iter()
+        .map(|r| r.3.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(
         detail_ta.contains("USING INDEX idx_track_artists_artist")
             || detail_ta.contains("USING COVERING INDEX idx_track_artists_artist")
@@ -365,14 +426,17 @@ async fn test_explain_query_plan_uses_new_indexes() {
     );
 
     // 3. album_artists query plan
-    let qp_album_artists: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "EXPLAIN QUERY PLAN SELECT * FROM album_artists WHERE artist_id = ?"
-    )
-    .bind(64)
-    .fetch_all(&pool)
-    .await
-    .unwrap();
-    let detail_aa = qp_album_artists.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
+    let qp_album_artists: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM album_artists WHERE artist_id = ?")
+            .bind(64)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let detail_aa = qp_album_artists
+        .iter()
+        .map(|r| r.3.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(
         detail_aa.contains("USING INDEX idx_album_artists_artist")
             || detail_aa.contains("USING COVERING INDEX idx_album_artists_artist")
@@ -382,14 +446,17 @@ async fn test_explain_query_plan_uses_new_indexes() {
     );
 
     // 4. artists query plan with COLLATE NOCASE
-    let qp_artist_nocase: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "EXPLAIN QUERY PLAN SELECT id FROM artists WHERE name = ? COLLATE NOCASE"
-    )
-    .bind("Grandson")
-    .fetch_all(&pool)
-    .await
-    .unwrap();
-    let detail_art = qp_artist_nocase.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
+    let qp_artist_nocase: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("EXPLAIN QUERY PLAN SELECT id FROM artists WHERE name = ? COLLATE NOCASE")
+            .bind("Grandson")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let detail_art = qp_artist_nocase
+        .iter()
+        .map(|r| r.3.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(
         detail_art.contains("USING INDEX idx_artists_name_unique_nocase")
             || detail_art.contains("USING COVERING INDEX idx_artists_name_unique_nocase")
@@ -429,7 +496,7 @@ async fn test_nocase_unique_constraint_and_recurrence_prevention() {
     let resolved_id: (i64,) = sqlx::query_as(
         "INSERT INTO artists (name) VALUES (?)
          ON CONFLICT (name COLLATE NOCASE) DO UPDATE SET id = id
-         RETURNING id"
+         RETURNING id",
     )
     .bind("radiohead")
     .fetch_one(&pool)
@@ -440,22 +507,27 @@ async fn test_nocase_unique_constraint_and_recurrence_prevention() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(resolved_id.0, initial_id.0, "Upsert must return existing artist ID");
+    assert_eq!(
+        resolved_id.0, initial_id.0,
+        "Upsert must return existing artist ID"
+    );
 
     // 4. Test recurrence prevention triggers: automatic whitespace trimming
-    let coldplay_id: (i64,) = sqlx::query_as(
-        "INSERT INTO artists (name) VALUES ('   Coldplay   ') RETURNING id"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let coldplay_id: (i64,) =
+        sqlx::query_as("INSERT INTO artists (name) VALUES ('   Coldplay   ') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let clean_name: (String,) = sqlx::query_as("SELECT name FROM artists WHERE id = ?")
         .bind(coldplay_id.0)
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(clean_name.0, "Coldplay", "Trigger must automatically trim artist name on insert");
+    assert_eq!(
+        clean_name.0, "Coldplay",
+        "Trigger must automatically trim artist name on insert"
+    );
 
     // Trigger on update
     sqlx::query("UPDATE artists SET name = '   The Strokes   ' WHERE id = ?")
@@ -469,5 +541,8 @@ async fn test_nocase_unique_constraint_and_recurrence_prevention() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(updated_name.0, "The Strokes", "Trigger must automatically trim artist name on update");
+    assert_eq!(
+        updated_name.0, "The Strokes",
+        "Trigger must automatically trim artist name on update"
+    );
 }

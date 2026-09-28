@@ -25,7 +25,9 @@ async fn spawn_mock(responder: Responder) -> String {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
             let responder = responder.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 32768];
@@ -60,20 +62,36 @@ fn json_page(data: serde_json::Value, total: i64) -> String {
 #[tokio::test]
 async fn test_s189_user_albums_parse_and_total() {
     let base = spawn_mock(Arc::new(|_method, target| {
-        assert!(target.starts_with("/user/42/albums"), "unexpected path: {}", target);
-        (200, json_page(serde_json::json!([
-            {"id": 123, "title": "Discovery", "nb_tracks": 14,
-             "cover_medium": "https://e-cdns-images.dzcdn.net/cover/md.jpg",
-             "artist": {"id": 27, "name": "Daft Punk"}}
-        ]), 1))
+        assert!(
+            target.starts_with("/user/42/albums"),
+            "unexpected path: {}",
+            target
+        );
+        (
+            200,
+            json_page(
+                serde_json::json!([
+                    {"id": 123, "title": "Discovery", "nb_tracks": 14,
+                     "cover_medium": "https://e-cdns-images.dzcdn.net/cover/md.jpg",
+                     "artist": {"id": 27, "name": "Daft Punk"}}
+                ]),
+                1,
+            ),
+        )
     }))
     .await;
 
     let client = DeezerClient::new("arl-test".into()).with_public_api_base(base);
-    let (albums, total) = client.get_user_albums_public("42", 0, 100).await.expect("albums");
+    let (albums, total) = client
+        .get_user_albums_public("42", 0, 100)
+        .await
+        .expect("albums");
     assert_eq!(total, 1);
     assert_eq!(albums.len(), 1);
-    assert_eq!(albums[0].id, "123", "numeric ids normalize to string identity");
+    assert_eq!(
+        albums[0].id, "123",
+        "numeric ids normalize to string identity"
+    );
     assert_eq!(albums[0].title, "Discovery");
     assert_eq!(albums[0].artist_name.as_deref(), Some("Daft Punk"));
 }
@@ -81,7 +99,10 @@ async fn test_s189_user_albums_parse_and_total() {
 #[tokio::test]
 async fn test_s189_error_payload_surfaces_as_err() {
     let base = spawn_mock(Arc::new(|_method, _target| {
-        (200, "{\"error\":{\"type\":\"Exception\",\"message\":\"Quota exceeded\"}}".to_string())
+        (
+            200,
+            "{\"error\":{\"type\":\"Exception\",\"message\":\"Quota exceeded\"}}".to_string(),
+        )
     }))
     .await;
 
@@ -90,7 +111,11 @@ async fn test_s189_error_payload_surfaces_as_err() {
         .get_user_playlists_public("42", 0, 100)
         .await
         .expect_err("error payload must not parse as an empty page");
-    assert!(err.contains("Quota exceeded"), "payload message preserved: {}", err);
+    assert!(
+        err.contains("Quota exceeded"),
+        "payload message preserved: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -99,18 +124,30 @@ async fn test_s189_playlist_tracks_pagination_sequence() {
     // mirrors the service.rs playlist-expansion loop.
     let base = spawn_mock(Arc::new(|_method, target| {
         if target.contains("index=0") {
-            (200, json_page(serde_json::json!([
-                {"id": 1, "title": "T1", "duration": 200, "isrc": "ISRC1",
-                 "artist": {"name": "A1"}, "album": {"title": "AL1"}},
-                {"id": 2, "title": "T2", "duration": 201, "isrc": "ISRC2",
-                 "artist": {"name": "A2"}, "album": {"title": "AL2"}}
-            ]), 4))
+            (
+                200,
+                json_page(
+                    serde_json::json!([
+                        {"id": 1, "title": "T1", "duration": 200, "isrc": "ISRC1",
+                         "artist": {"name": "A1"}, "album": {"title": "AL1"}},
+                        {"id": 2, "title": "T2", "duration": 201, "isrc": "ISRC2",
+                         "artist": {"name": "A2"}, "album": {"title": "AL2"}}
+                    ]),
+                    4,
+                ),
+            )
         } else if target.contains("index=2") {
-            (200, json_page(serde_json::json!([
-                {"id": 3, "title": "T3", "duration": 202, "isrc": "ISRC3",
-                 "artist": {"name": "A3"}},
-                {"id": 4, "title": "T4", "duration": 203}
-            ]), 4))
+            (
+                200,
+                json_page(
+                    serde_json::json!([
+                        {"id": 3, "title": "T3", "duration": 202, "isrc": "ISRC3",
+                         "artist": {"name": "A3"}},
+                        {"id": 4, "title": "T4", "duration": 203}
+                    ]),
+                    4,
+                ),
+            )
         } else {
             (400, "{}".to_string())
         }
@@ -141,13 +178,21 @@ async fn test_s189_playlist_tracks_pagination_sequence() {
             None => break,
         }
     }
-    assert_eq!(seen, vec!["T1", "T2", "T3", "T4"], "all pages consumed in order");
+    assert_eq!(
+        seen,
+        vec!["T1", "T2", "T3", "T4"],
+        "all pages consumed in order"
+    );
 }
 
 #[tokio::test]
 async fn test_s189_album_tracks_embedded_isrc() {
     let base = spawn_mock(Arc::new(|_method, target| {
-        assert!(target.starts_with("/album/777"), "unexpected path: {}", target);
+        assert!(
+            target.starts_with("/album/777"),
+            "unexpected path: {}",
+            target
+        );
         (
             200,
             serde_json::json!({
@@ -167,7 +212,10 @@ async fn test_s189_album_tracks_embedded_isrc() {
     .await;
 
     let client = DeezerClient::new("arl-test".into()).with_public_api_base(base);
-    let tracks = client.get_album_tracks_public("777").await.expect("album tracks");
+    let tracks = client
+        .get_album_tracks_public("777")
+        .await
+        .expect("album tracks");
     assert_eq!(tracks.len(), 2);
     assert_eq!(tracks[0].isrc.as_deref(), Some("DEEZERISRC1"));
     assert_eq!(tracks[1].isrc, None, "missing isrc stays optional");
@@ -178,13 +226,26 @@ async fn test_s189_init_failure_is_explicit_auth_rejection() {
     // The sync arm treats ANY init() error as RequiresAuth + credential
     // invalidation; verify init() actually fails on a rejected ARL payload.
     let base = spawn_mock(Arc::new(|_method, target| {
-        assert!(target.starts_with("/ajax/gw-light.php"), "unexpected path: {}", target);
-        (200, "{\"results\":{\"checkForm\":null,\"USER\":{}}}".to_string())
+        assert!(
+            target.starts_with("/ajax/gw-light.php"),
+            "unexpected path: {}",
+            target
+        );
+        (
+            200,
+            "{\"results\":{\"checkForm\":null,\"USER\":{}}}".to_string(),
+        )
     }))
     .await;
 
     let mut client = DeezerClient::new("bad-arl".into()).with_api_base(base);
-    let err = client.init().await.expect_err("missing checkForm must fail init");
-    assert!(err.to_lowercase().contains("token") || err.to_lowercase().contains("arl"),
-        "error must point at the ARL/token: {}", err);
+    let err = client
+        .init()
+        .await
+        .expect_err("missing checkForm must fail init");
+    assert!(
+        err.to_lowercase().contains("token") || err.to_lowercase().contains("arl"),
+        "error must point at the ARL/token: {}",
+        err
+    );
 }

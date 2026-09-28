@@ -54,8 +54,10 @@ fn create_synthetic_flac(path: &PathBuf) {
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "flac",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "flac",
             path.to_str().unwrap(),
         ])
         .output()
@@ -90,7 +92,11 @@ fn test_flac_semicolon_delimited_genres_discrete_blocks() {
     let vorbis = read_tag.vorbis_comments().expect("Vorbis comments");
     let genre_entries = vorbis.get("GENRE").expect("GENRE tags present");
 
-    assert_eq!(genre_entries.len(), 3, "Must have 3 distinct GENRE Vorbis comment blocks");
+    assert_eq!(
+        genre_entries.len(),
+        3,
+        "Must have 3 distinct GENRE Vorbis comment blocks"
+    );
     assert_eq!(genre_entries[0], "Pop");
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
     // S184 canonicalization matrix: "Synth-pop" carries the audited winner casing "Synth-Pop".
@@ -123,7 +129,11 @@ fn test_flac_slash_delimited_genres_discrete_blocks() {
     let vorbis = read_tag.vorbis_comments().expect("Vorbis comments");
     let genre_entries = vorbis.get("GENRE").expect("GENRE tags present");
 
-    assert_eq!(genre_entries.len(), 3, "Must have 3 distinct GENRE Vorbis comment blocks");
+    assert_eq!(
+        genre_entries.len(),
+        3,
+        "Must have 3 distinct GENRE Vorbis comment blocks"
+    );
     assert_eq!(genre_entries[0], "Rock");
     assert_eq!(genre_entries[1], "Alternative");
     assert_eq!(genre_entries[2], "Indie");

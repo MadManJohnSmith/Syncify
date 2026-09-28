@@ -2,8 +2,8 @@
 
 use serde_json::json;
 use syncify_tauri_lib::tray::{
-    build_tray_menu, is_close_to_tray_enabled, set_close_to_tray,
-    TraySettings, TrayState, SYNCIFY_TRAY_ID,
+    build_tray_menu, is_close_to_tray_enabled, set_close_to_tray, TraySettings, TrayState,
+    SYNCIFY_TRAY_ID,
 };
 
 #[test]
@@ -113,17 +113,16 @@ fn test_tray_menu_building_with_mock_app() {
     let handle = app.handle();
 
     // 1. Idle menu
-    let menu_idle = build_tray_menu(&handle, true, false, 0, None)
-        .expect("Build idle tray menu");
+    let menu_idle = build_tray_menu(&handle, true, false, 0, None).expect("Build idle tray menu");
     assert!(menu_idle.items().is_ok());
 
     // 2. Downloading menu
-    let menu_downloading = build_tray_menu(&handle, false, true, 5, None)
-        .expect("Build downloading tray menu");
+    let menu_downloading =
+        build_tray_menu(&handle, false, true, 5, None).expect("Build downloading tray menu");
     assert!(menu_downloading.items().is_ok());
 
     // 3. Syncing menu
-    let menu_syncing = build_tray_menu(&handle, true, false, 0, Some("Spotify"))
-        .expect("Build syncing tray menu");
+    let menu_syncing =
+        build_tray_menu(&handle, true, false, 0, Some("Spotify")).expect("Build syncing tray menu");
     assert!(menu_syncing.items().is_ok());
 }

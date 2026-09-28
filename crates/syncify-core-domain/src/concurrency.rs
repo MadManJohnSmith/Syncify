@@ -232,7 +232,8 @@ mod tests {
         assert!(!hash.contains("123456"));
         assert!(hash.starts_with("AccountSync:"));
 
-        let s_fs = LockScope::FilesystemPath("C:/Users/JohnDoe/Private/secret_track.flac".to_string());
+        let s_fs =
+            LockScope::FilesystemPath("C:/Users/JohnDoe/Private/secret_track.flac".to_string());
         let fs_hash = s_fs.to_redacted_key_hash();
         assert!(!fs_hash.contains("JohnDoe"));
         assert!(!fs_hash.contains("secret_track"));
@@ -254,7 +255,10 @@ mod tests {
         assert_eq!(scopes[0], LockScope::AccountSync(1));
         assert_eq!(scopes[1], LockScope::CanonicalTrack(5));
         assert_eq!(scopes[2], LockScope::CanonicalTrack(10));
-        assert_eq!(scopes[3], LockScope::FilesystemPath("C:/test.flac".to_string()));
+        assert_eq!(
+            scopes[3],
+            LockScope::FilesystemPath("C:/test.flac".to_string())
+        );
         assert_eq!(scopes[4], LockScope::Settings);
     }
 }

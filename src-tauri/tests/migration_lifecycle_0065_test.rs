@@ -31,12 +31,11 @@ async fn test_migration_0065_clean_run_schema_and_indexes() {
     assert!(max_v.0 >= 65, "Database must be at migration version >= 65");
 
     // 3. Verify column qobuz_id exists in artists
-    let columns_artists: Vec<(i64, String, String, i64, Option<String>, i64)> = sqlx::query_as(
-        "PRAGMA table_info(artists)"
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("Must fetch artists table info");
+    let columns_artists: Vec<(i64, String, String, i64, Option<String>, i64)> =
+        sqlx::query_as("PRAGMA table_info(artists)")
+            .fetch_all(&pool)
+            .await
+            .expect("Must fetch artists table info");
 
     let artist_cols: Vec<String> = columns_artists.into_iter().map(|c| c.1).collect();
     assert!(
@@ -54,19 +53,14 @@ async fn test_migration_0065_clean_run_schema_and_indexes() {
     ];
 
     for idx in expected_indexes {
-        let exists: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?"
-        )
-        .bind(idx)
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to query index existence");
+        let exists: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?")
+                .bind(idx)
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to query index existence");
 
-        assert_eq!(
-            exists.0, 1,
-            "Index {} must exist in sqlite_master",
-            idx
-        );
+        assert_eq!(exists.0, 1, "Index {} must exist in sqlite_master", idx);
     }
 
     // 5. Test uniqueness on artists.qobuz_id (WHERE qobuz_id IS NOT NULL)
@@ -76,9 +70,11 @@ async fn test_migration_0065_clean_run_schema_and_indexes() {
         .expect("Inserting artist with qobuz_id must succeed");
 
     // Inserting another artist with same qobuz_id must fail
-    let dup_res = sqlx::query("INSERT INTO artists (id, name, qobuz_id) VALUES (2, 'Artist Two', 'qobuz_123')")
-        .execute(&pool)
-        .await;
+    let dup_res = sqlx::query(
+        "INSERT INTO artists (id, name, qobuz_id) VALUES (2, 'Artist Two', 'qobuz_123')",
+    )
+    .execute(&pool)
+    .await;
     assert!(
         dup_res.is_err(),
         "Duplicate artists.qobuz_id must violate UNIQUE constraint idx_artists_qobuz_id"
@@ -97,15 +93,18 @@ async fn test_migration_0065_clean_run_schema_and_indexes() {
 
     // 6. Test EXPLAIN QUERY PLAN to verify index usage (no sequential scan)
     // 6a. Query artists by qobuz_id
-    let qp_artist: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "EXPLAIN QUERY PLAN SELECT * FROM artists WHERE qobuz_id = ?"
-    )
-    .bind("qobuz_123")
-    .fetch_all(&pool)
-    .await
-    .expect("EXPLAIN QUERY PLAN for artists.qobuz_id failed");
+    let qp_artist: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM artists WHERE qobuz_id = ?")
+            .bind("qobuz_123")
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN QUERY PLAN for artists.qobuz_id failed");
 
-    let detail_artist = qp_artist.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
+    let detail_artist = qp_artist
+        .iter()
+        .map(|r| r.3.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(
         detail_artist.contains("USING INDEX idx_artists_qobuz_id")
             || detail_artist.contains("USING COVERING INDEX idx_artists_qobuz_id"),
@@ -114,15 +113,18 @@ async fn test_migration_0065_clean_run_schema_and_indexes() {
     );
 
     // 6b. Query tracks by qobuz_id
-    let qp_tracks: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "EXPLAIN QUERY PLAN SELECT * FROM tracks WHERE qobuz_id = ?"
-    )
-    .bind("qobuz_track_1")
-    .fetch_all(&pool)
-    .await
-    .expect("EXPLAIN QUERY PLAN for tracks.qobuz_id failed");
+    let qp_tracks: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM tracks WHERE qobuz_id = ?")
+            .bind("qobuz_track_1")
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN QUERY PLAN for tracks.qobuz_id failed");
 
-    let detail_tracks = qp_tracks.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
+    let detail_tracks = qp_tracks
+        .iter()
+        .map(|r| r.3.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(
         detail_tracks.contains("USING INDEX idx_tracks_qobuz_id")
             || detail_tracks.contains("USING COVERING INDEX idx_tracks_qobuz_id"),
@@ -131,15 +133,18 @@ async fn test_migration_0065_clean_run_schema_and_indexes() {
     );
 
     // 6c. Query download_queue by track_id
-    let qp_queue: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "EXPLAIN QUERY PLAN SELECT * FROM download_queue WHERE track_id = ?"
-    )
-    .bind(101)
-    .fetch_all(&pool)
-    .await
-    .expect("EXPLAIN QUERY PLAN for download_queue.track_id failed");
+    let qp_queue: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM download_queue WHERE track_id = ?")
+            .bind(101)
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN QUERY PLAN for download_queue.track_id failed");
 
-    let detail_queue = qp_queue.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
+    let detail_queue = qp_queue
+        .iter()
+        .map(|r| r.3.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(
         detail_queue.contains("USING INDEX idx_download_queue_track_id")
             || detail_queue.contains("USING COVERING INDEX idx_download_queue_track_id"),
@@ -148,15 +153,18 @@ async fn test_migration_0065_clean_run_schema_and_indexes() {
     );
 
     // 6d. Query track_artists by artist_id
-    let qp_ta: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "EXPLAIN QUERY PLAN SELECT * FROM track_artists WHERE artist_id = ?"
-    )
-    .bind(1)
-    .fetch_all(&pool)
-    .await
-    .expect("EXPLAIN QUERY PLAN for track_artists.artist_id failed");
+    let qp_ta: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM track_artists WHERE artist_id = ?")
+            .bind(1)
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN QUERY PLAN for track_artists.artist_id failed");
 
-    let detail_ta = qp_ta.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
+    let detail_ta = qp_ta
+        .iter()
+        .map(|r| r.3.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(
         detail_ta.contains("idx_track_artists_artist"),
         "Query on track_artists.artist_id must use index. Detail: {}",
@@ -164,15 +172,18 @@ async fn test_migration_0065_clean_run_schema_and_indexes() {
     );
 
     // 6e. Query album_artists by artist_id
-    let qp_aa: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "EXPLAIN QUERY PLAN SELECT * FROM album_artists WHERE artist_id = ?"
-    )
-    .bind(1)
-    .fetch_all(&pool)
-    .await
-    .expect("EXPLAIN QUERY PLAN for album_artists.artist_id failed");
+    let qp_aa: Vec<(i64, i64, i64, String)> =
+        sqlx::query_as("EXPLAIN QUERY PLAN SELECT * FROM album_artists WHERE artist_id = ?")
+            .bind(1)
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN QUERY PLAN for album_artists.artist_id failed");
 
-    let detail_aa = qp_aa.iter().map(|r| r.3.clone()).collect::<Vec<_>>().join("; ");
+    let detail_aa = qp_aa
+        .iter()
+        .map(|r| r.3.clone())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(
         detail_aa.contains("idx_album_artists_artist"),
         "Query on album_artists.artist_id must use index. Detail: {}",

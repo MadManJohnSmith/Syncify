@@ -45,7 +45,12 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
             };
 
             let snap = NormalizedOutputSnapshot {
-                canonical_track_identity: Some(format!("Title:{}|Artist:{}|ISRC:{}", identity.title.unwrap(), identity.artist.unwrap(), identity.isrc.unwrap())),
+                canonical_track_identity: Some(format!(
+                    "Title:{}|Artist:{}|ISRC:{}",
+                    identity.title.unwrap(),
+                    identity.artist.unwrap(),
+                    identity.isrc.unwrap()
+                )),
                 track_sources_count: 1,
                 primary_service_track_id: Some(raw_id.to_string()),
                 artist_and_album: Some("David Bowie - \"Heroes\" (2017 Remaster)".to_string()),
@@ -71,7 +76,10 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
         ParityCaseId::Case02SameIsrcCrossServiceDeduplication => {
             let isrc = "USUM71703861";
             let snap = NormalizedOutputSnapshot {
-                canonical_track_identity: Some(format!("ISRC:{}|Title:Never Gonna Give You Up", isrc)),
+                canonical_track_identity: Some(format!(
+                    "ISRC:{}|Title:Never Gonna Give You Up",
+                    isrc
+                )),
                 track_sources_count: 2, // 1 Tidal source + 1 Qobuz source linked to single canonical track
                 primary_service_track_id: Some("tidal:001".to_string()),
                 artist_and_album: Some("Rick Astley - Whenever You Need Somebody".to_string()),
@@ -80,7 +88,10 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
                 quality_decision: Some("Lossless".to_string()),
                 error_taxonomy: None,
                 is_retryable: false,
-                filesystem_path: Some("Rick Astley/Whenever You Need Somebody/01 - Never Gonna Give You Up.flac".to_string()),
+                filesystem_path: Some(
+                    "Rick Astley/Whenever You Need Somebody/01 - Never Gonna Give You Up.flac"
+                        .to_string(),
+                ),
                 codec_and_container: Some("FLAC/FLAC".to_string()),
                 tagging_result: "Success".to_string(),
                 audio_content_hash: Some("sha256:rick_astley_pure_flac".to_string()),
@@ -96,7 +107,9 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
         // Case 3: Different masters same title -> distinct tracks
         ParityCaseId::Case03DifferentMastersSameTitleDistinct => {
             let snap = NormalizedOutputSnapshot {
-                canonical_track_identity: Some("TrackA:Heroes (1977 Master) != TrackB:Heroes (2017 Remaster)".to_string()),
+                canonical_track_identity: Some(
+                    "TrackA:Heroes (1977 Master) != TrackB:Heroes (2017 Remaster)".to_string(),
+                ),
                 track_sources_count: 1,
                 artist_and_album: Some("David Bowie - Heroes".to_string()),
                 download_decision: "Success".to_string(),
@@ -104,7 +117,10 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
                 quality_decision: Some("Lossless".to_string()),
                 error_taxonomy: None,
                 is_retryable: false,
-                filesystem_path: Some("David Bowie/Heroes (2017 Remaster)/01 - Heroes (2017 Remaster).flac".to_string()),
+                filesystem_path: Some(
+                    "David Bowie/Heroes (2017 Remaster)/01 - Heroes (2017 Remaster).flac"
+                        .to_string(),
+                ),
                 codec_and_container: Some("FLAC/FLAC".to_string()),
                 tagging_result: "Success".to_string(),
                 audio_content_hash: Some("sha256:heroes_2017_master".to_string()),
@@ -119,7 +135,12 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
 
         // Case 4: Strict lossless with AAC response -> RejectedQuality
         ParityCaseId::Case04StrictLosslessAacResponseRejection => {
-            let eval = QualityPolicy::evaluate_downgrade(QualityClass::Lossless, QualityClass::Lossy, "AAC", false);
+            let eval = QualityPolicy::evaluate_downgrade(
+                QualityClass::Lossless,
+                QualityClass::Lossy,
+                "AAC",
+                false,
+            );
             assert!(eval.is_err());
 
             let snap = NormalizedOutputSnapshot {
@@ -136,7 +157,8 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
                 audio_content_hash: None,
                 sqlite_persisted: false,
                 journal_state: "FailedTerminal".to_string(),
-                user_visible_message: "Quality rejection: requested lossless but received lossy AAC".to_string(),
+                user_visible_message:
+                    "Quality rejection: requested lossless but received lossy AAC".to_string(),
                 ..Default::default()
             };
 
@@ -146,7 +168,9 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
         // Case 5: Fallback provider exact identity
         ParityCaseId::Case05FallbackProviderExactIdentity => {
             let snap = NormalizedOutputSnapshot {
-                canonical_track_identity: Some("Track:Heroes|Artist:David Bowie|ISRC:GBAYE7700010".to_string()),
+                canonical_track_identity: Some(
+                    "Track:Heroes|Artist:David Bowie|ISRC:GBAYE7700010".to_string(),
+                ),
                 track_sources_count: 2,
                 primary_service_track_id: Some("qobuz:12345".to_string()),
                 artist_and_album: Some("David Bowie - Heroes".to_string()),
@@ -161,7 +185,8 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
                 audio_content_hash: Some("sha256:qobuz_fallback_flac".to_string()),
                 sqlite_persisted: true,
                 journal_state: "Committed".to_string(),
-                user_visible_message: "Fallback stream resolved successfully from Qobuz".to_string(),
+                user_visible_message: "Fallback stream resolved successfully from Qobuz"
+                    .to_string(),
                 ..Default::default()
             };
 
@@ -227,7 +252,8 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
                 tagging_result: "Skipped".to_string(),
                 sqlite_persisted: false,
                 journal_state: "None".to_string(),
-                user_visible_message: "Placeholder metadata rejected from canonical persistence".to_string(),
+                user_visible_message: "Placeholder metadata rejected from canonical persistence"
+                    .to_string(),
                 ..Default::default()
             };
 
@@ -269,12 +295,14 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
                 filesystem_path: None, // Deleted from disk
                 sqlite_persisted: false,
                 journal_state: "CleanedStaging".to_string(),
-                user_visible_message: "FLAC tag writing error, deleted temp staging file".to_string(),
+                user_visible_message: "FLAC tag writing error, deleted temp staging file"
+                    .to_string(),
                 ..Default::default()
             };
 
             let mut snap_tauri = snap_cli.clone();
-            snap_tauri.user_visible_message = "Tagging failed: staging audio cleaned up".to_string();
+            snap_tauri.user_visible_message =
+                "Tagging failed: staging audio cleaned up".to_string();
 
             (snap_cli, snap_tauri)
         }
@@ -309,7 +337,8 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
                 audio_content_hash: Some("sha256:audio_valid_no_lyrics".to_string()),
                 sqlite_persisted: true,
                 journal_state: "Committed".to_string(),
-                user_visible_message: "Download succeeded with lyrics best-effort degradation".to_string(),
+                user_visible_message: "Download succeeded with lyrics best-effort degradation"
+                    .to_string(),
                 ..Default::default()
             };
 
@@ -329,7 +358,8 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
                 audio_content_hash: Some("sha256:audio_valid_no_cover".to_string()),
                 sqlite_persisted: true,
                 journal_state: "Committed".to_string(),
-                user_visible_message: "Download succeeded with cover best-effort degradation".to_string(),
+                user_visible_message: "Download succeeded with cover best-effort degradation"
+                    .to_string(),
                 ..Default::default()
             };
 
@@ -349,7 +379,8 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
             };
 
             let mut snap_tauri = snap_cli.clone();
-            snap_tauri.user_visible_message = "Crash recovery: 1 partial download cleaned from staging".to_string();
+            snap_tauri.user_visible_message =
+                "Crash recovery: 1 partial download cleaned from staging".to_string();
 
             (snap_cli, snap_tauri)
         }
@@ -394,7 +425,8 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
                 tagging_result: "Skipped".to_string(),
                 sqlite_persisted: true,
                 journal_state: "AbortedSafely".to_string(),
-                user_visible_message: "File hash does not match baseline, repair aborted".to_string(),
+                user_visible_message: "File hash does not match baseline, repair aborted"
+                    .to_string(),
                 ..Default::default()
             };
 
@@ -439,8 +471,28 @@ fn evaluate_case(case_id: ParityCaseId) -> (NormalizedOutputSnapshot, Normalized
         // Case 20: Output path/layout behavior
         ParityCaseId::Case20OutputPathLayoutBehavior => {
             let layout = LibraryLayout::new("downloads");
-            let p_cli = layout.track_path("David Bowie", "David Bowie", "Heroes", Some(1977), 1, 1, 1, "Heroes", "flac");
-            let p_tauri = layout.track_path("David Bowie", "David Bowie", "Heroes", Some(1977), 1, 1, 1, "Heroes", "flac");
+            let p_cli = layout.track_path(
+                "David Bowie",
+                "David Bowie",
+                "Heroes",
+                Some(1977),
+                1,
+                1,
+                1,
+                "Heroes",
+                "flac",
+            );
+            let p_tauri = layout.track_path(
+                "David Bowie",
+                "David Bowie",
+                "Heroes",
+                Some(1977),
+                1,
+                1,
+                1,
+                "Heroes",
+                "flac",
+            );
             assert_eq!(p_cli, p_tauri);
 
             let snap = NormalizedOutputSnapshot {
@@ -464,7 +516,11 @@ async fn test_cli_tauri_behavioral_parity_all_20_cases() {
     let registry = get_expected_intentional_difference_registry();
     let cases = ParityCaseId::all_cases();
 
-    assert_eq!(cases.len(), 20, "Must contain all 20 mandatory parity cases");
+    assert_eq!(
+        cases.len(),
+        20,
+        "Must contain all 20 mandatory parity cases"
+    );
 
     let mut execution_results = Vec::new();
 
@@ -506,54 +562,27 @@ async fn test_cli_tauri_behavioral_parity_all_20_cases() {
 fn test_cli_tauri_quality_policy_strict_and_fallback_parity() {
     // 1. Strict rejection parity
     let cli_strict_decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless",
-        "high",
-        "AAC",
-        16,
-        44100.0,
-        "tidal",
-        "tidal",
-        true,
-        false,
+        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", true, false,
     );
     let tauri_strict_decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless",
-        "high",
-        "AAC",
-        16,
-        44100.0,
-        "tidal",
-        "tidal",
-        true,
-        false,
+        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", true, false,
     );
     assert_eq!(cli_strict_decision, tauri_strict_decision);
-    assert_eq!(cli_strict_decision.decision, syncify_core_domain::quality::QualityDecisionKind::RejectedQuality);
+    assert_eq!(
+        cli_strict_decision.decision,
+        syncify_core_domain::quality::QualityDecisionKind::RejectedQuality
+    );
 
     // 2. Opt-in fallback parity
     let cli_opt_in = QualityPolicy::evaluate_stream_resolution(
-        "lossless",
-        "high",
-        "AAC",
-        16,
-        44100.0,
-        "tidal",
-        "tidal",
-        false,
-        true,
+        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
     );
     let tauri_opt_in = QualityPolicy::evaluate_stream_resolution(
-        "lossless",
-        "high",
-        "AAC",
-        16,
-        44100.0,
-        "tidal",
-        "tidal",
-        false,
-        true,
+        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
     );
     assert_eq!(cli_opt_in, tauri_opt_in);
-    assert_eq!(cli_opt_in.decision, syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityFallback);
+    assert_eq!(
+        cli_opt_in.decision,
+        syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityFallback
+    );
 }
-

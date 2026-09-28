@@ -46,24 +46,27 @@ async fn test_mark_account_credentials_invalid_flips_flag_and_runs() {
     .unwrap();
 
     // Call mark_account_credentials_invalid
-    let affected = mark_account_credentials_invalid(&pool, "qobuz", "HTTP 401: Invalid session token")
-        .await
-        .expect("Should mark credentials invalid");
+    let affected =
+        mark_account_credentials_invalid(&pool, "qobuz", "HTTP 401: Invalid session token")
+            .await
+            .expect("Should mark credentials invalid");
 
     assert_eq!(affected, 1, "Should affect 1 account row");
 
-    let invalid: i64 = sqlx::query_scalar("SELECT credentials_invalid FROM accounts WHERE service_id = ?")
-        .bind(qobuz_svc_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let invalid: i64 =
+        sqlx::query_scalar("SELECT credentials_invalid FROM accounts WHERE service_id = ?")
+            .bind(qobuz_svc_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(invalid, 1, "Account should have credentials_invalid = 1");
 }
 
 #[test]
 fn test_sync_progress_event_terminal_failure_contract() {
-    let failed_evt = SyncProgressEvent::failed("qobuz", Some(1), "error", "Network timed out", 10, 5);
+    let failed_evt =
+        SyncProgressEvent::failed("qobuz", Some(1), "error", "Network timed out", 10, 5);
     assert_eq!(failed_evt.service, "qobuz");
     assert_eq!(failed_evt.status, "failed");
     assert!(failed_evt.terminal);
@@ -74,7 +77,8 @@ fn test_sync_progress_event_terminal_failure_contract() {
 
 #[test]
 fn test_sync_progress_event_requires_auth_contract() {
-    let auth_evt = SyncProgressEvent::requires_auth("tidal", Some(2), "RequiresAuth: Token expired");
+    let auth_evt =
+        SyncProgressEvent::requires_auth("tidal", Some(2), "RequiresAuth: Token expired");
     assert_eq!(auth_evt.service, "tidal");
     assert_eq!(auth_evt.status, "requires_auth");
     assert!(auth_evt.terminal);

@@ -9,12 +9,12 @@
 //! 7. Dos cuentas Tidal aisladas
 //! 8. Account 50 specifically against runtime database schema
 
-use tempfile::TempDir;
 use syncify_tauri_lib::commands::perform_get_service_auth_status;
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::notification::{
-    create_service_notification, should_emit_notification, clear_notification_cache,
+    clear_notification_cache, create_service_notification, should_emit_notification,
 };
+use tempfile::TempDir;
 
 async fn setup_test_db() -> (sqlx::SqlitePool, TempDir) {
     let _ = crypto::init_keychain_crypto().or_else(|_| crypto::init_crypto([42u8; 32]));
@@ -62,7 +62,9 @@ async fn test_sync_valid_and_download_valid_requires_no_reauth() {
     .await
     .unwrap();
 
-    let status = perform_get_service_auth_status(&pool, "tidal", Some(account_id)).await.unwrap();
+    let status = perform_get_service_auth_status(&pool, "tidal", Some(account_id))
+        .await
+        .unwrap();
 
     assert_eq!(status.status, "connected_valid");
     assert!(status.is_authenticated);
@@ -108,7 +110,9 @@ async fn test_sync_valid_plus_download_stream_404_does_not_invalidate_account() 
         .await
         .unwrap();
 
-    let status = perform_get_service_auth_status(&pool, "tidal", Some(account_id)).await.unwrap();
+    let status = perform_get_service_auth_status(&pool, "tidal", Some(account_id))
+        .await
+        .unwrap();
 
     // Account MUST remain valid for sync!
     assert_eq!(status.status, "connected_valid");
@@ -147,7 +151,9 @@ async fn test_historical_error_with_valid_sync_shows_status_without_false_toast(
     .await
     .unwrap();
 
-    let status = perform_get_service_auth_status(&pool, "tidal", Some(account_id)).await.unwrap();
+    let status = perform_get_service_auth_status(&pool, "tidal", Some(account_id))
+        .await
+        .unwrap();
 
     assert_eq!(status.status, "connected_valid");
     assert!(status.credentials_valid);
@@ -172,10 +178,16 @@ async fn test_notification_deduplication_suppresses_duplicate_toasts() {
     let notif2 = notif1.clone();
 
     // First emission should be allowed
-    assert!(should_emit_notification(&notif1), "First notification emission must be allowed");
+    assert!(
+        should_emit_notification(&notif1),
+        "First notification emission must be allowed"
+    );
 
     // Immediate duplicate emission with same dedupe_key MUST be suppressed
-    assert!(!should_emit_notification(&notif2), "Duplicate notification must be suppressed by dedupe cache");
+    assert!(
+        !should_emit_notification(&notif2),
+        "Duplicate notification must be suppressed by dedupe cache"
+    );
 }
 
 #[tokio::test]
@@ -204,8 +216,12 @@ async fn test_two_isolated_tidal_accounts() {
     .await
     .unwrap();
 
-    let status1 = perform_get_service_auth_status(&pool, "tidal", Some(acc1_id)).await.unwrap();
-    let status2 = perform_get_service_auth_status(&pool, "tidal", Some(acc2_id)).await.unwrap();
+    let status1 = perform_get_service_auth_status(&pool, "tidal", Some(acc1_id))
+        .await
+        .unwrap();
+    let status2 = perform_get_service_auth_status(&pool, "tidal", Some(acc2_id))
+        .await
+        .unwrap();
 
     assert!(status1.credentials_valid);
     assert!(!status1.credentials_invalid);
@@ -227,7 +243,11 @@ async fn test_runtime_account_50_auth_status() {
     }
 
     let db_url = format!("sqlite:{}?mode=ro", db_path);
-    if let Ok(pool) = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect(&db_url).await {
+    if let Ok(pool) = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&db_url)
+        .await
+    {
         let status = perform_get_service_auth_status(&pool, "tidal", Some(50)).await;
         if let Ok(s) = status {
             println!("Account 50 Runtime Auth Status: {:?}", s);

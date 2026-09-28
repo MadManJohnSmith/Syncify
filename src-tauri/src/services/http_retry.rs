@@ -66,7 +66,10 @@ impl HttpRetryPolicy {
 
     /// Determines if an HTTP method is considered inherently idempotent (e.g., GET, HEAD, PUT)
     pub fn is_method_idempotent(method: &Method) -> bool {
-        matches!(*method, Method::GET | Method::HEAD | Method::PUT | Method::OPTIONS)
+        matches!(
+            *method,
+            Method::GET | Method::HEAD | Method::PUT | Method::OPTIONS
+        )
     }
 
     /// Helper to parse HTTP-date (IMF-fixdate / RFC 2822 / RFC 1123) without external crates
@@ -81,9 +84,18 @@ impl HttpRetryPolicy {
         let day: u32 = day_str.parse().ok()?;
         let year: i32 = year_str.parse().ok()?;
         let month = match month_str {
-            "Jan" => 1, "Feb" => 2, "Mar" => 3, "Apr" => 4,
-            "May" => 5, "Jun" => 6, "Jul" => 7, "Aug" => 8,
-            "Sep" => 9, "Oct" => 10, "Nov" => 11, "Dec" => 12,
+            "Jan" => 1,
+            "Feb" => 2,
+            "Mar" => 3,
+            "Apr" => 4,
+            "May" => 5,
+            "Jun" => 6,
+            "Jul" => 7,
+            "Aug" => 8,
+            "Sep" => 9,
+            "Oct" => 10,
+            "Nov" => 11,
+            "Dec" => 12,
             _ => return None,
         };
 
@@ -377,7 +389,10 @@ mod tests {
     fn test_timeout_error_is_retryable() {
         let policy = HttpRetryPolicy::new();
         let decision = policy.evaluate_network_error(&Method::GET, 0, false, false);
-        assert_eq!(decision, RetryDecision::RetryAfter(Duration::from_millis(500)));
+        assert_eq!(
+            decision,
+            RetryDecision::RetryAfter(Duration::from_millis(500))
+        );
     }
 
     #[test]
@@ -396,7 +411,10 @@ mod tests {
             now,
         );
 
-        assert_eq!(decision, RetryDecision::DoNotRetry("Request cancelled".into()));
+        assert_eq!(
+            decision,
+            RetryDecision::DoNotRetry("Request cancelled".into())
+        );
     }
 
     #[test]

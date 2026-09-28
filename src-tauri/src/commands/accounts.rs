@@ -2,9 +2,8 @@
 use super::*;
 
 // Accounts Commands - submodule of crate::commands
-// 
+//
 // Account management, service connections
-
 
 // ==============================================
 // ACCOUNT MANAGEMENT COMMANDS
@@ -81,7 +80,7 @@ pub async fn get_services(state: State<'_, AppState>) -> Result<Vec<ServiceInfo>
 /// Get all connected accounts (without credentials)
 #[tauri::command]
 pub async fn get_accounts(state: State<'_, AppState>) -> Result<Vec<AccountInfo>, String> {
-    let rows: Vec<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>)> = 
+    let rows: Vec<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>)> =
         sqlx::query_as(
             r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.last_synced, a.created_at,
                       IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error
@@ -156,11 +155,14 @@ pub async fn add_account(
 
     tracing::info!("Added account for service_id={}", service_id);
 
-    let _ = app.emit("auth-state-updated", serde_json::json!({
-        "service_id": service_id,
-        "action": "added",
-        "account_id": account_id,
-    }));
+    let _ = app.emit(
+        "auth-state-updated",
+        serde_json::json!({
+            "service_id": service_id,
+            "action": "added",
+            "account_id": account_id,
+        }),
+    );
 
     Ok(account_id)
 }
@@ -180,10 +182,13 @@ pub async fn remove_account(
 
     tracing::info!("Removed account id={}", account_id);
 
-    let _ = app.emit("auth-state-updated", serde_json::json!({
-        "action": "removed",
-        "account_id": account_id,
-    }));
+    let _ = app.emit(
+        "auth-state-updated",
+        serde_json::json!({
+            "action": "removed",
+            "account_id": account_id,
+        }),
+    );
 
     Ok(())
 }
@@ -202,22 +207,26 @@ pub async fn get_internal_account_credentials(
             .map_err(|e| e.to_string())?;
 
     match encrypted {
-        Some((Some(creds),)) if !creds.trim().is_empty() => {
-            match crypto::decrypt(&creds) {
-                Ok(decrypted) => Ok(decrypted),
-                Err(e) if e.contains("Decryption error")
+        Some((Some(creds),)) if !creds.trim().is_empty() => match crypto::decrypt(&creds) {
+            Ok(decrypted) => Ok(decrypted),
+            Err(e)
+                if e.contains("Decryption error")
                     || e.contains("aead")
                     || e.contains("Base64 decode error")
-                    || e.contains("too short") => {
-                    tracing::error!("Decryption error for account {}: {}. Clearing credentials.", account_id, e);
-                    let _ = sqlx::query("UPDATE accounts SET credentials_json = NULL WHERE id = ?")
-                        .bind(account_id)
-                        .execute(pool)
-                        .await;
-                    Err("Service credentials expired. Please reconnect your account.".to_string())
-                }
-                Err(e) => Err(e),
+                    || e.contains("too short") =>
+            {
+                tracing::error!(
+                    "Decryption error for account {}: {}. Clearing credentials.",
+                    account_id,
+                    e
+                );
+                let _ = sqlx::query("UPDATE accounts SET credentials_json = NULL WHERE id = ?")
+                    .bind(account_id)
+                    .execute(pool)
+                    .await;
+                Err("Service credentials expired. Please reconnect your account.".to_string())
             }
+            Err(e) => Err(e),
         },
         Some(_) => Err("Credentials missing for account".into()),
         None => Err("Account not found".into()),
@@ -336,11 +345,14 @@ pub async fn toggle_account_active(
         .await
         .map_err(|e| e.to_string())?;
 
-    let _ = app.emit("auth-state-updated", serde_json::json!({
-        "action": "toggled",
-        "account_id": account_id,
-        "is_active": is_active,
-    }));
+    let _ = app.emit(
+        "auth-state-updated",
+        serde_json::json!({
+            "action": "toggled",
+            "account_id": account_id,
+            "is_active": is_active,
+        }),
+    );
 
     Ok(())
 }
@@ -357,7 +369,19 @@ pub async fn perform_get_service_auth_status(
         .as_secs() as i64;
     let now_iso = chrono::Utc::now().to_rfc3339();
 
-    let account_row: Option<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, i64, Option<String>, Option<String>, Option<String>)> = if let Some(aid) = account_id {
+    let account_row: Option<(
+        i64,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        i64,
+        Option<String>,
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = if let Some(aid) = account_id {
         sqlx::query_as(
             r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.credentials_json,
                       IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error,
@@ -386,7 +410,19 @@ pub async fn perform_get_service_auth_status(
         .map_err(|e| e.to_string())?
     };
 
-    let (id, _svc_id, svc_name, display_name, email, is_active, creds_json, credentials_invalid, invalid_reason, last_auth_err, last_auth_err_at) = match account_row {
+    let (
+        id,
+        _svc_id,
+        svc_name,
+        display_name,
+        email,
+        is_active,
+        creds_json,
+        credentials_invalid,
+        invalid_reason,
+        last_auth_err,
+        last_auth_err_at,
+    ) = match account_row {
         Some(row) => row,
         None => {
             return Ok(ServiceAuthStatus {
@@ -445,7 +481,9 @@ pub async fn perform_get_service_auth_status(
             download_auth_failed: false,
             display_name,
             email,
-            error_message: invalid_reason.or(Some("Account credentials marked invalid. Please re-authenticate.".to_string())),
+            error_message: invalid_reason.or(Some(
+                "Account credentials marked invalid. Please re-authenticate.".to_string(),
+            )),
             last_auth_error: last_auth_err,
             last_auth_error_at: last_auth_err_at,
             last_checked: Some(now_iso),
@@ -492,7 +530,10 @@ pub async fn perform_get_service_auth_status(
                 download_auth_failed: false,
                 display_name,
                 email,
-                error_message: Some(format!("Decryption error: {}. Please reconnect your account.", e)),
+                error_message: Some(format!(
+                    "Decryption error: {}. Please reconnect your account.",
+                    e
+                )),
                 last_auth_error: last_auth_err,
                 last_auth_error_at: last_auth_err_at,
                 last_checked: Some(now_iso),
@@ -524,9 +565,15 @@ pub async fn perform_get_service_auth_status(
         }
     };
 
-    let has_download_err = last_auth_err.as_ref().map(|e| {
-        e.contains("entitlement") || e.contains("paywall") || e.contains("quality") || e.contains("stream")
-    }).unwrap_or(false);
+    let has_download_err = last_auth_err
+        .as_ref()
+        .map(|e| {
+            e.contains("entitlement")
+                || e.contains("paywall")
+                || e.contains("quality")
+                || e.contains("stream")
+        })
+        .unwrap_or(false);
 
     match svc_name.to_lowercase().as_str() {
         "qobuz" => {
@@ -552,7 +599,9 @@ pub async fn perform_get_service_auth_status(
                                 download_auth_failed: false,
                                 display_name,
                                 email,
-                                error_message: Some("Qobuz session token expired. Please log in again.".to_string()),
+                                error_message: Some(
+                                    "Qobuz session token expired. Please log in again.".to_string(),
+                                ),
                                 last_auth_error: last_auth_err,
                                 last_auth_error_at: last_auth_err_at,
                                 last_checked: Some(now_iso),
@@ -579,7 +628,8 @@ pub async fn perform_get_service_auth_status(
                     })
                 }
                 _ => {
-                    let has_user_pass = creds["username"].as_str().is_some() && creds["password"].as_str().is_some();
+                    let has_user_pass = creds["username"].as_str().is_some()
+                        && creds["password"].as_str().is_some();
                     if has_user_pass {
                         Ok(ServiceAuthStatus {
                             service: svc_name,
@@ -639,7 +689,9 @@ pub async fn perform_get_service_auth_status(
                     download_auth_failed: false,
                     display_name,
                     email,
-                    error_message: Some("Spotify tokens missing. Please reconnect to Spotify.".to_string()),
+                    error_message: Some(
+                        "Spotify tokens missing. Please reconnect to Spotify.".to_string(),
+                    ),
                     last_auth_error: last_auth_err,
                     last_auth_error_at: last_auth_err_at,
                     last_checked: Some(now_iso),
@@ -660,7 +712,10 @@ pub async fn perform_get_service_auth_status(
                         download_auth_failed: false,
                         display_name,
                         email,
-                        error_message: Some("Spotify access token expired and no refresh token available.".to_string()),
+                        error_message: Some(
+                            "Spotify access token expired and no refresh token available."
+                                .to_string(),
+                        ),
                         last_auth_error: last_auth_err,
                         last_auth_error_at: last_auth_err_at,
                         last_checked: Some(now_iso),
@@ -703,7 +758,9 @@ pub async fn perform_get_service_auth_status(
                     download_auth_failed: false,
                     display_name,
                     email,
-                    error_message: Some("Tidal access token missing. Please reconnect to Tidal.".to_string()),
+                    error_message: Some(
+                        "Tidal access token missing. Please reconnect to Tidal.".to_string(),
+                    ),
                     last_auth_error: last_auth_err,
                     last_auth_error_at: last_auth_err_at,
                     last_checked: Some(now_iso),
@@ -751,7 +808,9 @@ pub async fn perform_get_service_auth_status(
             })
         }
         "deezer" => {
-            let arl = creds["arl"].as_str().or_else(|| creds["access_token"].as_str());
+            let arl = creds["arl"]
+                .as_str()
+                .or_else(|| creds["access_token"].as_str());
             // A4: no unwrap — map_or treats absent and blank ARL identically.
             if arl.map_or(true, |a| a.trim().is_empty()) {
                 return Ok(ServiceAuthStatus {
@@ -767,7 +826,9 @@ pub async fn perform_get_service_auth_status(
                     download_auth_failed: false,
                     display_name,
                     email,
-                    error_message: Some("Deezer ARL missing. Please re-enter your ARL.".to_string()),
+                    error_message: Some(
+                        "Deezer ARL missing. Please re-enter your ARL.".to_string(),
+                    ),
                     last_auth_error: last_auth_err,
                     last_auth_error_at: last_auth_err_at,
                     last_checked: Some(now_iso),
@@ -793,8 +854,14 @@ pub async fn perform_get_service_auth_status(
             })
         }
         "apple_music" => {
-            let has_dev_token = creds["developer_token"].as_str().map(|t| !t.trim().is_empty()).unwrap_or(false);
-            let has_user_token = creds["music_user_token"].as_str().map(|t| !t.trim().is_empty()).unwrap_or(false);
+            let has_dev_token = creds["developer_token"]
+                .as_str()
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false);
+            let has_user_token = creds["music_user_token"]
+                .as_str()
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false);
             if has_dev_token && has_user_token {
                 Ok(ServiceAuthStatus {
                     service: svc_name,
@@ -1061,7 +1128,7 @@ mod accounts_tests {
         .expect("Failed to insert account");
 
         // Query accounts with join (simulating get_accounts)
-        let rows: Vec<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, Option<String>)> = 
+        let rows: Vec<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, Option<String>)> =
             sqlx::query_as(
                 r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.last_synced, a.created_at
                    FROM accounts a

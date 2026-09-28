@@ -123,7 +123,7 @@ impl SoundCloudClient {
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO artists (name) VALUES (?)
              ON CONFLICT(name) DO UPDATE SET id = id
-             RETURNING id"
+             RETURNING id",
         )
         .bind(name)
         .fetch_one(db)
@@ -201,8 +201,8 @@ impl SoundCloudClient {
                 // Add track source (SoundCloud is typically 128kbps MP3)
                 let _ = sqlx::query(
                     r#"
-                    INSERT OR REPLACE INTO track_sources 
-                    (track_id, service_id, service_track_id, format, bitrate, quality_score, available) 
+                    INSERT OR REPLACE INTO track_sources
+                    (track_id, service_id, service_track_id, format, bitrate, quality_score, available)
                     VALUES (?, ?, ?, 'MP3', 128, NULL, 1)
                     "#,
                 )
@@ -232,12 +232,14 @@ impl SoundCloudClient {
     ) -> Result<i64, String> {
         // SoundCloud doesn't provide ISRC, so we match by title (simplified)
         // For now, using RETURNING id directly.
-        let id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, duration_ms) VALUES (?, ?) RETURNING id")
-            .bind(&track.title)
-            .bind(track.duration)
-            .fetch_one(db)
-            .await
-            .map_err(|e| format!("Insert failed: {}", e))?;
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, duration_ms) VALUES (?, ?) RETURNING id",
+        )
+        .bind(&track.title)
+        .bind(track.duration)
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("Insert failed: {}", e))?;
 
         Ok(id)
     }

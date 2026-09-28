@@ -97,7 +97,10 @@ impl DownloadOrchestrator {
 
     /// Analyze an audio file (e.g. in staging) extracting ReplayGain, Acoustic Features, and Fingerprinting.
     #[allow(dead_code)]
-    pub async fn analyze_staging_audio(&self, file_path: &std::path::Path) -> Result<AudioAnalysisMetrics, String> {
+    pub async fn analyze_staging_audio(
+        &self,
+        file_path: &std::path::Path,
+    ) -> Result<AudioAnalysisMetrics, String> {
         AudioAnalyzer::analyze_file(file_path).await
     }
 
@@ -111,7 +114,9 @@ impl DownloadOrchestrator {
     ///
     /// Fails soft by contract: any error is logged and the file is left exactly as
     /// downloaded — a trim problem never fails a download.
-    pub async fn trim_downloaded_track_silence(res: &mut DownloadResult) -> Option<crate::services::silence_trimmer::SilenceTrimReport> {
+    pub async fn trim_downloaded_track_silence(
+        res: &mut DownloadResult,
+    ) -> Option<crate::services::silence_trimmer::SilenceTrimReport> {
         let file_path = std::path::Path::new(&res.file_path);
         match crate::services::silence_trimmer::SilenceTrimmer::process_file(file_path).await {
             Ok(report) => {
@@ -176,34 +181,54 @@ impl DownloadOrchestrator {
 
     /// Reconciles the downloaded file's physical audio metrics from disk (sample_rate, bit_depth, channels, bitrate)
     /// and performs canonical quality policy evaluation against the physical reality.
-    pub fn reconcile_physical_audio_quality(
-        res: &mut DownloadResult,
-        request: &DownloadRequest,
-    ) {
+    pub fn reconcile_physical_audio_quality(res: &mut DownloadResult, request: &DownloadRequest) {
         let path = std::path::Path::new(&res.file_path);
         let phys_info = crate::download::audio_inspector::inspect_physical_audio_file(path);
 
-        let (verified_bd, verified_sr, verified_fmt, verified_channels, verified_bitrate, quality_label) =
-            if let Some(ref phys) = phys_info {
-                (
-                    phys.bit_depth,
-                    phys.sample_rate,
-                    phys.format.clone(),
-                    Some(phys.channels),
-                    phys.bitrate,
-                    phys.quality_string(),
+        let (
+            verified_bd,
+            verified_sr,
+            verified_fmt,
+            verified_channels,
+            verified_bitrate,
+            quality_label,
+        ) = if let Some(ref phys) = phys_info {
+            (
+                phys.bit_depth,
+                phys.sample_rate,
+                phys.format.clone(),
+                Some(phys.channels),
+                phys.bitrate,
+                phys.quality_string(),
+            )
+        } else {
+            let is_m4a = res.file_path.to_lowercase().ends_with(".m4a");
+            let is_mp3 = res.file_path.to_lowercase().ends_with(".mp3");
+            let fmt = if is_m4a {
+                "AAC"
+            } else if is_mp3 {
+                "MP3"
+            } else {
+                "FLAC"
+            };
+            let label = if fmt == "FLAC" {
+                format!(
+                    "FLAC {}-bit / {:.1}kHz",
+                    res.bit_depth,
+                    res.sample_rate as f64 / 1000.0
                 )
             } else {
-                let is_m4a = res.file_path.to_lowercase().ends_with(".m4a");
-                let is_mp3 = res.file_path.to_lowercase().ends_with(".mp3");
-                let fmt = if is_m4a { "AAC" } else if is_mp3 { "MP3" } else { "FLAC" };
-                let label = if fmt == "FLAC" {
-                    format!("FLAC {}-bit / {:.1}kHz", res.bit_depth, res.sample_rate as f64 / 1000.0)
-                } else {
-                    format!("{} 320kbps", fmt)
-                };
-                (res.bit_depth, res.sample_rate, fmt.to_string(), res.channels.or(Some(2)), res.bitrate, label)
+                format!("{} 320kbps", fmt)
             };
+            (
+                res.bit_depth,
+                res.sample_rate,
+                fmt.to_string(),
+                res.channels.or(Some(2)),
+                res.bitrate,
+                label,
+            )
+        };
 
         res.bit_depth = verified_bd;
         res.sample_rate = verified_sr;
@@ -241,7 +266,9 @@ impl DownloadOrchestrator {
                 "FLAC"
             } else if res.file_path.to_lowercase().ends_with(".mp3") {
                 "MP3"
-            } else if res.file_path.to_lowercase().ends_with(".m4a") || res.file_path.to_lowercase().ends_with(".aac") {
+            } else if res.file_path.to_lowercase().ends_with(".m4a")
+                || res.file_path.to_lowercase().ends_with(".aac")
+            {
                 "AAC"
             } else {
                 "FLAC"
@@ -266,7 +293,10 @@ impl DownloadOrchestrator {
         if let Some(ref isrc) = request.isrc {
             let isrc_trimmed = isrc.trim();
             if !isrc_trimmed.is_empty() {
-                debug!("[Orchestrator] Fallback Step 1: Searching Tidal by exact ISRC '{}'", isrc_trimmed);
+                debug!(
+                    "[Orchestrator] Fallback Step 1: Searching Tidal by exact ISRC '{}'",
+                    isrc_trimmed
+                );
 
                 // 1A. Check local database if available
                 if let Some(ref db) = self.db {
@@ -277,7 +307,7 @@ impl DownloadOrchestrator {
                         JOIN services s ON s.id = ts.service_id AND s.name = 'tidal'
                         JOIN tracks t ON t.id = ts.track_id
                         WHERE t.isrc = ? AND ts.available = 1
-                        "#
+                        "#,
                     )
                     .bind(isrc_trimmed)
                     .fetch_all(db)
@@ -287,7 +317,10 @@ impl DownloadOrchestrator {
                     if isrc_candidates.len() == 1 {
                         let (stid, fmt) = &isrc_candidates[0];
                         if let Ok(tid) = stid.parse::<i64>() {
-                            info!("[Orchestrator] ✓ Fallback matched via DB exact ISRC: Tidal ID {}", tid);
+                            info!(
+                                "[Orchestrator] ✓ Fallback matched via DB exact ISRC: Tidal ID {}",
+                                tid
+                            );
                             return Ok(FallbackMatch {
                                 target_track_id: tid,
                                 target_service: "tidal".to_string(),
@@ -297,14 +330,20 @@ impl DownloadOrchestrator {
                             });
                         }
                     } else if isrc_candidates.len() > 1 {
-                        return Err(format!("AmbiguousSource: Multiple competing Tidal tracks found for ISRC {}", isrc_trimmed));
+                        return Err(format!(
+                            "AmbiguousSource: Multiple competing Tidal tracks found for ISRC {}",
+                            isrc_trimmed
+                        ));
                     }
                 }
 
                 // 1B. Query Tidal API
                 match self.tidal.search_by_isrc(isrc_trimmed, duration_sec).await {
                     Ok(track) => {
-                        info!("[Orchestrator] ✓ Fallback matched via exact ISRC: Tidal ID {}", track.id);
+                        info!(
+                            "[Orchestrator] ✓ Fallback matched via exact ISRC: Tidal ID {}",
+                            track.id
+                        );
                         return Ok(FallbackMatch {
                             target_track_id: track.id,
                             target_service: "tidal".to_string(),
@@ -315,7 +354,9 @@ impl DownloadOrchestrator {
                     }
                     Err(e) => {
                         let err_msg = e.to_string();
-                        if err_msg.contains("AmbiguousSource") || err_msg.contains("Multiple competing") {
+                        if err_msg.contains("AmbiguousSource")
+                            || err_msg.contains("Multiple competing")
+                        {
                             return Err(format!("AmbiguousSource: Multiple competing Tidal tracks found for ISRC {}", isrc_trimmed));
                         }
                     }
@@ -336,7 +377,7 @@ impl DownloadOrchestrator {
                         JOIN services s ON s.id = ts.service_id AND s.name = 'tidal'
                         JOIN tracks t ON t.id = ts.track_id
                         WHERE t.musicbrainz_id = ? AND ts.available = 1
-                        "#
+                        "#,
                     )
                     .bind(mb_rid_trimmed)
                     .fetch_all(db)
@@ -373,7 +414,7 @@ impl DownloadOrchestrator {
                 JOIN tracks t ON t.id = ts.track_id
                 WHERE t.musicbrainz_id IS NOT NULL AND ts.available = 1
                   AND LOWER(t.title) = LOWER(?)
-                "#
+                "#,
             )
             .bind(&request.track_name)
             .fetch_all(db)
@@ -383,7 +424,8 @@ impl DownloadOrchestrator {
             let duration_matches: Vec<_> = mb_rel_candidates
                 .into_iter()
                 .filter(|(stid, dur, _)| {
-                    !stid.trim().is_empty() && (dur / 1000 - (request.duration_ms / 1000)).abs() <= 3
+                    !stid.trim().is_empty()
+                        && (dur / 1000 - (request.duration_ms / 1000)).abs() <= 3
                 })
                 .collect();
 
@@ -423,7 +465,7 @@ impl DownloadOrchestrator {
                         JOIN services s ON s.id = ts.service_id AND s.name = 'tidal'
                         JOIN tracks t ON t.id = ts.track_id
                         WHERE t.acoustid_fingerprint = ? AND ts.available = 1
-                        "#
+                        "#,
                     )
                     .bind(fp_trimmed)
                     .fetch_all(db)
@@ -458,7 +500,7 @@ impl DownloadOrchestrator {
                 JOIN services s ON s.id = ts.service_id AND s.name = 'tidal'
                 JOIN tracks t ON t.id = ts.track_id
                 WHERE LOWER(t.title) = LOWER(?) AND ts.available = 1
-                "#
+                "#,
             )
             .bind(&request.track_name)
             .fetch_one(db)
@@ -472,7 +514,11 @@ impl DownloadOrchestrator {
         let has_metadata_match = if has_local_metadata_match {
             true
         } else {
-            match self.tidal.search_by_metadata(&request.track_name, &request.artist_name, duration_sec).await {
+            match self
+                .tidal
+                .search_by_metadata(&request.track_name, &request.artist_name, duration_sec)
+                .await
+            {
                 Ok(_) => true,
                 Err(_) => false,
             }
@@ -483,7 +529,10 @@ impl DownloadOrchestrator {
         }
 
         // 6. No match found
-        Err(format!("SourceIdentityMissing: No equivalent Tidal source found for track '{}'", request.track_name))
+        Err(format!(
+            "SourceIdentityMissing: No equivalent Tidal source found for track '{}'",
+            request.track_name
+        ))
     }
 
     /// Download a track with cooperative cancellation and controlled fallback support
@@ -502,11 +551,18 @@ impl DownloadOrchestrator {
             }
         }
 
-        let primary_service = request.service_name.as_deref().unwrap_or("qobuz").to_lowercase();
+        let primary_service = request
+            .service_name
+            .as_deref()
+            .unwrap_or("qobuz")
+            .to_lowercase();
 
         if primary_service == "qobuz" {
             // Attempt direct download via locked Qobuz source
-            debug!("[Orchestrator] Attempting primary download via Qobuz (service_track_id={:?})", request.service_track_id);
+            debug!(
+                "[Orchestrator] Attempting primary download via Qobuz (service_track_id={:?})",
+                request.service_track_id
+            );
             let qobuz_result = self.qobuz.download_track(request, self.db.as_ref()).await;
 
             match qobuz_result {
@@ -519,7 +575,10 @@ impl DownloadOrchestrator {
                     res.match_method = Some("exact_locked_source".to_string());
                     res.match_confidence = Some(1.0);
                     Self::reconcile_physical_audio_quality(&mut res, request);
-                    info!("[Orchestrator] Download complete via exact Qobuz source: {}", res.file_path);
+                    info!(
+                        "[Orchestrator] Download complete via exact Qobuz source: {}",
+                        res.file_path
+                    );
                     PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
                     return Ok(res);
                 }
@@ -532,7 +591,8 @@ impl DownloadOrchestrator {
                         || err_msg.contains("403")
                         || err_msg.contains("RequiresAuth")
                         || err_msg.contains("authentication failed")
-                        || (err_msg.contains("token") && (err_msg.contains("expired") || err_msg.contains("invalid")))
+                        || (err_msg.contains("token")
+                            && (err_msg.contains("expired") || err_msg.contains("invalid")))
                     {
                         PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
                         return Err(anyhow!("RequiresAuth: Qobuz authentication required (HTTP 401/403). Automatic fallback aborted."));
@@ -541,13 +601,18 @@ impl DownloadOrchestrator {
                     // 2. Rejected quality on Qobuz -> abort without fallback unless permitted
                     if err_msg.contains("RejectedQuality") {
                         PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
-                        return Err(anyhow!("RejectedQuality: Requested quality not available on Qobuz"));
+                        return Err(anyhow!(
+                            "RejectedQuality: Requested quality not available on Qobuz"
+                        ));
                     }
 
                     // 3. Network Exhausted (stream / connection failures that exhausted retries) -> abort without fallback
                     if err_msg.contains("NetworkExhausted") {
                         PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
-                        return Err(anyhow!("NetworkExhausted: Qobuz network stream exhausted retries: {}", err_msg));
+                        return Err(anyhow!(
+                            "NetworkExhausted: Qobuz network stream exhausted retries: {}",
+                            err_msg
+                        ));
                     }
 
                     // 3. Stale source (404 / NotFound / Unavailable) -> trigger controlled fallback if allowed
@@ -568,7 +633,9 @@ impl DownloadOrchestrator {
                         info!("[Orchestrator] Qobuz source is stale (404/NotFound). Attempting controlled edition-identity fallback to Tidal...");
                         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "tidal"));
 
-                        let fallback_match = self.resolve_edition_identity_fallback(request).await
+                        let fallback_match = self
+                            .resolve_edition_identity_fallback(request)
+                            .await
                             .map_err(|e| {
                                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &e));
                                 anyhow!("{}", e)
@@ -580,12 +647,20 @@ impl DownloadOrchestrator {
                             let req_q = request.quality.to_uppercase();
                             if let Some(ref cq) = fallback_match.candidate_audio_quality {
                                 let cq_up = cq.to_uppercase();
-                                if (req_q.contains("HI_RES") || req_q.contains("HIRES") || req_q.contains("24") || req_q == "LOSSLESS")
-                                    && (cq_up.contains("LOW") || cq_up.contains("HIGH") || cq_up.contains("MP3") || cq_up.contains("AAC"))
-                                    && !cq_up.contains("HI_RES") && !cq_up.contains("24")
+                                if (req_q.contains("HI_RES")
+                                    || req_q.contains("HIRES")
+                                    || req_q.contains("24")
+                                    || req_q == "LOSSLESS")
+                                    && (cq_up.contains("LOW")
+                                        || cq_up.contains("HIGH")
+                                        || cq_up.contains("MP3")
+                                        || cq_up.contains("AAC"))
+                                    && !cq_up.contains("HI_RES")
+                                    && !cq_up.contains("24")
                                 {
                                     let rej_err = format!("RejectedQuality: Tidal fallback candidate quality '{}' is inferior to requested '{}' under strict policy", cq, request.quality);
-                                    PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &rej_err));
+                                    PROGRESS_TRACKER
+                                        .update(DownloadProgress::failed(item_id, &rej_err));
                                     return Err(anyhow!("{}", rej_err));
                                 }
                             }
@@ -594,20 +669,27 @@ impl DownloadOrchestrator {
                         // Prepare and execute Tidal download request
                         let mut tidal_req = request.clone();
                         tidal_req.service_name = Some("tidal".to_string());
-                        tidal_req.service_track_id = Some(fallback_match.target_track_id.to_string());
+                        tidal_req.service_track_id =
+                            Some(fallback_match.target_track_id.to_string());
 
-                        let mut tidal_res = self.tidal.download_track(&tidal_req, self.db.as_ref()).await
+                        let mut tidal_res = self
+                            .tidal
+                            .download_track(&tidal_req, self.db.as_ref())
+                            .await
                             .map_err(|e| {
                                 let msg = format!("Tidal fallback download failed: {}", e);
                                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &msg));
                                 anyhow!("{}", msg)
                             })?;
 
-                        tidal_res.origin_service = request.service_name.clone().or(Some("qobuz".to_string()));
+                        tidal_res.origin_service =
+                            request.service_name.clone().or(Some("qobuz".to_string()));
                         tidal_res.origin_service_track_id = request.service_track_id.clone();
                         tidal_res.effective_service = Some("tidal".to_string());
-                        tidal_res.effective_service_track_id = Some(fallback_match.target_track_id.to_string());
-                        tidal_res.fallback_reason = Some("StaleSource: Qobuz track not found (HTTP 404)".to_string());
+                        tidal_res.effective_service_track_id =
+                            Some(fallback_match.target_track_id.to_string());
+                        tidal_res.fallback_reason =
+                            Some("StaleSource: Qobuz track not found (HTTP 404)".to_string());
                         tidal_res.match_method = Some(fallback_match.match_method);
                         tidal_res.match_confidence = Some(fallback_match.match_confidence);
                         Self::reconcile_physical_audio_quality(&mut tidal_res, request);
@@ -654,7 +736,10 @@ impl DownloadOrchestrator {
                     for candidate in candidates {
                         if let Some(token) = cancel_token {
                             if token.is_cancelled() {
-                                PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, "Download cancelled"));
+                                PROGRESS_TRACKER.update(DownloadProgress::failed(
+                                    item_id,
+                                    "Download cancelled",
+                                ));
                                 return Err(anyhow!("Download cancelled by user"));
                             }
                         }
@@ -685,7 +770,8 @@ impl DownloadOrchestrator {
                                 match self.amazon.download_track(request, &amazon_url).await {
                                     Ok(mut res) => {
                                         Self::reconcile_physical_audio_quality(&mut res, request);
-                                        PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+                                        PROGRESS_TRACKER
+                                            .update(DownloadProgress::complete(item_id));
                                         return Ok(res);
                                     }
                                     Err(e) => {
@@ -698,17 +784,23 @@ impl DownloadOrchestrator {
                     }
 
                     if let Some(err) = last_error {
-                        PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err.to_string()));
+                        PROGRESS_TRACKER
+                            .update(DownloadProgress::failed(item_id, &err.to_string()));
                         return Err(err);
                     }
                 }
                 Err(e) => {
-                    warn!("[Orchestrator] SongLink query failed for track '{}': {}", request.track_name, e);
+                    warn!(
+                        "[Orchestrator] SongLink query failed for track '{}': {}",
+                        request.track_name, e
+                    );
                     // If service was directly Amazon with a direct URL in service_track_id, try Amazon
                     if primary_service == "amazon" {
                         if let Some(ref track_url) = request.service_track_id {
-                            if track_url.starts_with("http://") || track_url.starts_with("https://") {
-                                let mut res = self.amazon.download_track(request, track_url).await?;
+                            if track_url.starts_with("http://") || track_url.starts_with("https://")
+                            {
+                                let mut res =
+                                    self.amazon.download_track(request, track_url).await?;
                                 Self::reconcile_physical_audio_quality(&mut res, request);
                                 PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
                                 return Ok(res);
@@ -718,8 +810,14 @@ impl DownloadOrchestrator {
                 }
             }
 
-            PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &format!("Unsupported or unavailable service: {}", primary_service)));
-            Err(anyhow!("Unsupported or unavailable service: {}", primary_service))
+            PROGRESS_TRACKER.update(DownloadProgress::failed(
+                item_id,
+                &format!("Unsupported or unavailable service: {}", primary_service),
+            ));
+            Err(anyhow!(
+                "Unsupported or unavailable service: {}",
+                primary_service
+            ))
         }
     }
 
@@ -734,7 +832,7 @@ impl DownloadOrchestrator {
                 WHERE LOWER(s.name) = LOWER(?)
                   AND a.is_active = 1
                   AND COALESCE(a.credentials_invalid, 0) = 0
-                "#
+                "#,
             )
             .bind(service)
             .fetch_one(db)
@@ -762,7 +860,10 @@ impl DownloadOrchestrator {
     pub async fn resolve_songlink_candidates(
         &self,
         request: &DownloadRequest,
-    ) -> Result<(Vec<SongLinkEngineTarget>, crate::download::songlink::SongLinkAvailability)> {
+    ) -> Result<(
+        Vec<SongLinkEngineTarget>,
+        crate::download::songlink::SongLinkAvailability,
+    )> {
         let avail = self.query_songlink(request).await?;
         let mut candidates = Vec::new();
         let mut handled = std::collections::HashSet::new();
@@ -834,7 +935,10 @@ impl DownloadOrchestrator {
     pub async fn resolve_songlink_url_candidates(
         &self,
         url: &str,
-    ) -> Result<(Vec<SongLinkEngineTarget>, crate::download::songlink::SongLinkAvailability)> {
+    ) -> Result<(
+        Vec<SongLinkEngineTarget>,
+        crate::download::songlink::SongLinkAvailability,
+    )> {
         let avail = self.query_songlink_url(url).await?;
         let mut candidates = Vec::new();
         let mut handled = std::collections::HashSet::new();
@@ -914,9 +1018,18 @@ impl DownloadOrchestrator {
         tidal_req.service_name = Some("tidal".to_string());
         tidal_req.service_track_id = Some(tidal_id.to_string());
 
-        let mut tidal_res = self.tidal.download_track(&tidal_req, self.db.as_ref()).await?;
-        tidal_res.origin_service = request.service_name.clone().or_else(|| Some("spotify".to_string()));
-        tidal_res.origin_service_track_id = request.service_track_id.clone().or_else(|| request.spotify_id.clone());
+        let mut tidal_res = self
+            .tidal
+            .download_track(&tidal_req, self.db.as_ref())
+            .await?;
+        tidal_res.origin_service = request
+            .service_name
+            .clone()
+            .or_else(|| Some("spotify".to_string()));
+        tidal_res.origin_service_track_id = request
+            .service_track_id
+            .clone()
+            .or_else(|| request.spotify_id.clone());
         tidal_res.effective_service = Some("tidal".to_string());
         tidal_res.effective_service_track_id = Some(tidal_id.to_string());
         tidal_res.fallback_reason = Some("SongLink cross-platform match".to_string());
@@ -940,9 +1053,18 @@ impl DownloadOrchestrator {
         qobuz_req.service_name = Some("qobuz".to_string());
         qobuz_req.service_track_id = Some(qobuz_id.to_string());
 
-        let mut qobuz_res = self.qobuz.download_track(&qobuz_req, self.db.as_ref()).await?;
-        qobuz_res.origin_service = request.service_name.clone().or_else(|| Some("spotify".to_string()));
-        qobuz_res.origin_service_track_id = request.service_track_id.clone().or_else(|| request.spotify_id.clone());
+        let mut qobuz_res = self
+            .qobuz
+            .download_track(&qobuz_req, self.db.as_ref())
+            .await?;
+        qobuz_res.origin_service = request
+            .service_name
+            .clone()
+            .or_else(|| Some("spotify".to_string()));
+        qobuz_res.origin_service_track_id = request
+            .service_track_id
+            .clone()
+            .or_else(|| request.spotify_id.clone());
         qobuz_res.effective_service = Some("qobuz".to_string());
         qobuz_res.effective_service_track_id = Some(qobuz_id.to_string());
         qobuz_res.fallback_reason = Some("SongLink cross-platform match".to_string());
@@ -1006,8 +1128,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_fails_if_tidal_created_without_user_token_or_sqlite_pool() {
-        let orchestrator = DownloadOrchestrator::new()
-            .with_priority(vec!["tidal".to_string()]);
+        let orchestrator = DownloadOrchestrator::new().with_priority(vec!["tidal".to_string()]);
         // Neither db pool nor user_token provided
         let req = DownloadRequest {
             item_id: "test_item_1".to_string(),
@@ -1039,8 +1160,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_cancellation_token() {
-        let orchestrator = DownloadOrchestrator::new()
-            .with_priority(vec!["qobuz".to_string()]);
+        let orchestrator = DownloadOrchestrator::new().with_priority(vec!["qobuz".to_string()]);
         let cancel_token = CancellationToken::new();
         cancel_token.cancel(); // Pre-cancel
 
@@ -1061,7 +1181,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = orchestrator.download_track_cancellable(&req, Some(&cancel_token)).await;
+        let result = orchestrator
+            .download_track_cancellable(&req, Some(&cancel_token))
+            .await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("cancelled"));
@@ -1085,7 +1207,10 @@ mod tests {
         let orchestrator = DownloadOrchestrator::new();
 
         // 1. Test direct staging analysis
-        let analysis = orchestrator.analyze_staging_audio(&flac_path).await.unwrap();
+        let analysis = orchestrator
+            .analyze_staging_audio(&flac_path)
+            .await
+            .unwrap();
 
         // 2. Test orchestrator enrichment pipeline
         let req = DownloadRequest {
@@ -1107,7 +1232,10 @@ mod tests {
             ..Default::default()
         };
 
-        let enriched = orchestrator.enrich_staging_audio(&flac_path, &req, None).await.unwrap();
+        let enriched = orchestrator
+            .enrich_staging_audio(&flac_path, &req, None)
+            .await
+            .unwrap();
         assert_eq!(enriched.title.value(), Some("Heroes"));
         assert_eq!(enriched.artist.value(), Some("David Bowie"));
 

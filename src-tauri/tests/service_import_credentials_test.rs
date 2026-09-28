@@ -9,8 +9,8 @@
 //! 6. Accounts marked `credentials_invalid = 1` return `RequiresAuth` error.
 //! 7. Fallback to `TIDAL_ACCESS_TOKEN` only works if user ID is configured/extractable (never hardcoded mock).
 
-use std::sync::{Arc, Mutex};
 use sqlx::sqlite::SqlitePoolOptions;
+use std::sync::{Arc, Mutex};
 use syncify_tauri_lib::commands::{
     extract_user_id_from_jwt, import_service, resolve_tidal_import_credentials,
 };
@@ -29,9 +29,7 @@ struct MockRequest {
     auth_header: Option<String>,
 }
 
-async fn spawn_mock_tidal(
-    response_body: String,
-) -> (String, Arc<Mutex<Vec<MockRequest>>>) {
+async fn spawn_mock_tidal(response_body: String) -> (String, Arc<Mutex<Vec<MockRequest>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
     let addr = listener.local_addr().unwrap();
     let requests = Arc::new(Mutex::new(Vec::<MockRequest>::new()));
@@ -39,7 +37,9 @@ async fn spawn_mock_tidal(
 
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
             let reqs = reqs.clone();
             let body = response_body.clone();
             tokio::spawn(async move {
@@ -124,10 +124,11 @@ async fn test_import_service_loads_encrypted_credentials_from_sqlite_accounts() 
     let pool = setup_test_db().await;
 
     // Fetch tidal service ID
-    let tidal_svc_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
-        .fetch_one(&pool)
-        .await
-        .expect("tidal service must exist in migrated DB");
+    let tidal_svc_id: i64 =
+        sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
+            .fetch_one(&pool)
+            .await
+            .expect("tidal service must exist in migrated DB");
 
     let creds_json = serde_json::json!({
         "access_token": "tidal_dyn_token_abc123",
@@ -166,7 +167,11 @@ async fn test_import_service_loads_encrypted_credentials_from_sqlite_accounts() 
     // Clean up env
     std::env::remove_var("TIDAL_API_BASE_URL");
 
-    assert!(res.is_ok(), "import_service should succeed: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "import_service should succeed: {:?}",
+        res.err()
+    );
     let msg = res.unwrap();
     assert!(msg.contains("Tidal: 0 imported, 0 skipped"));
 
@@ -175,7 +180,8 @@ async fn test_import_service_loads_encrypted_credentials_from_sqlite_accounts() 
     assert!(!requests.is_empty(), "Mock server must receive request");
     let req = &requests[0];
     assert!(
-        req.target.contains("/users/real_tidal_user_789/favorites/tracks"),
+        req.target
+            .contains("/users/real_tidal_user_789/favorites/tracks"),
         "Target url must contain dynamic user_id: {}",
         req.target
     );
@@ -204,10 +210,11 @@ async fn test_import_service_plaintext_credentials_fallback() {
 
     let pool = setup_test_db().await;
 
-    let tidal_svc_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
-        .fetch_one(&pool)
-        .await
-        .expect("tidal service must exist");
+    let tidal_svc_id: i64 =
+        sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
+            .fetch_one(&pool)
+            .await
+            .expect("tidal service must exist");
 
     // Store plaintext JSON directly
     let creds_json = serde_json::json!({
@@ -241,11 +248,17 @@ async fn test_import_service_plaintext_credentials_fallback() {
     let res = import_service("tidal".to_string(), state).await;
     std::env::remove_var("TIDAL_API_BASE_URL");
 
-    assert!(res.is_ok(), "import_service should succeed: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "import_service should succeed: {:?}",
+        res.err()
+    );
 
     let requests = req_log.lock().unwrap();
     assert!(!requests.is_empty());
-    assert!(requests[0].target.contains("/users/plain_user_666/favorites/tracks"));
+    assert!(requests[0]
+        .target
+        .contains("/users/plain_user_666/favorites/tracks"));
     assert!(requests[0].target.contains("countryCode=CA"));
     assert!(requests[0]
         .auth_header
@@ -259,10 +272,11 @@ async fn test_import_service_user_id_as_number() {
     let _guard = ENV_LOCK.lock().unwrap();
 
     let pool = setup_test_db().await;
-    let tidal_svc_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
-        .fetch_one(&pool)
-        .await
-        .expect("tidal service");
+    let tidal_svc_id: i64 =
+        sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
+            .fetch_one(&pool)
+            .await
+            .expect("tidal service");
 
     // user_id as numeric integer in JSON
     let creds_json = serde_json::json!({
@@ -296,10 +310,11 @@ async fn test_import_service_user_id_extracted_from_jwt() {
     let _guard = ENV_LOCK.lock().unwrap();
 
     let pool = setup_test_db().await;
-    let tidal_svc_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
-        .fetch_one(&pool)
-        .await
-        .expect("tidal service");
+    let tidal_svc_id: i64 =
+        sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
+            .fetch_one(&pool)
+            .await
+            .expect("tidal service");
 
     let jwt = make_test_jwt("jwt_extracted_user_888");
 
@@ -328,7 +343,10 @@ async fn test_import_service_user_id_extracted_from_jwt() {
 #[tokio::test]
 async fn test_extract_user_id_from_jwt_helper() {
     let jwt = make_test_jwt("sub_user_42");
-    assert_eq!(extract_user_id_from_jwt(&jwt), Some("sub_user_42".to_string()));
+    assert_eq!(
+        extract_user_id_from_jwt(&jwt),
+        Some("sub_user_42".to_string())
+    );
 
     assert_eq!(extract_user_id_from_jwt("not.a.valid.jwt"), None);
     assert_eq!(extract_user_id_from_jwt("invalid"), None);
@@ -360,10 +378,11 @@ async fn test_import_service_invalid_credentials_returns_requires_auth() {
     let _guard = ENV_LOCK.lock().unwrap();
 
     let pool = setup_test_db().await;
-    let tidal_svc_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
-        .fetch_one(&pool)
-        .await
-        .expect("tidal service");
+    let tidal_svc_id: i64 =
+        sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'tidal'")
+            .fetch_one(&pool)
+            .await
+            .expect("tidal service");
 
     let creds_json = serde_json::json!({
         "access_token": "expired_tok",
@@ -387,7 +406,11 @@ async fn test_import_service_invalid_credentials_returns_requires_auth() {
     let res = import_service("tidal".to_string(), state).await;
     assert!(res.is_err());
     let err = res.unwrap_err();
-    assert!(err.contains("RequiresAuth"), "Error must require auth: {}", err);
+    assert!(
+        err.contains("RequiresAuth"),
+        "Error must require auth: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -404,7 +427,10 @@ async fn test_dev_fallback_without_user_id_rejected() {
 
     std::env::remove_var("TIDAL_ACCESS_TOKEN");
 
-    assert!(res.is_err(), "Should reject fallback without configured user ID");
+    assert!(
+        res.is_err(),
+        "Should reject fallback without configured user ID"
+    );
     let err = res.unwrap_err();
     assert!(
         err.contains("TIDAL_USER_ID not configured"),

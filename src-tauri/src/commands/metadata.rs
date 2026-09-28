@@ -219,15 +219,13 @@ pub async fn update_track_metadata(
             Some(id) => id,
             None => {
                 let release_year = metadata.year.or(Some(2024));
-                sqlx::query(
-                    "INSERT INTO albums (title, release_date) VALUES (?, ?) RETURNING id",
-                )
-                .bind(&album_name)
-                .bind(format!("{}-01-01", release_year.unwrap_or(2024)))
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|e| e.to_string())?
-                .get(0)
+                sqlx::query("INSERT INTO albums (title, release_date) VALUES (?, ?) RETURNING id")
+                    .bind(&album_name)
+                    .bind(format!("{}-01-01", release_year.unwrap_or(2024)))
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .get(0)
             }
         };
 
@@ -376,36 +374,38 @@ pub async fn get_tracks_needing_metadata(
 }
 
 #[tauri::command]
-pub async fn match_musicbrainz(
-    params: MetadataSearchParams,
-) -> Result<Vec<MetadataMatch>, String> {
+pub async fn match_musicbrainz(params: MetadataSearchParams) -> Result<Vec<MetadataMatch>, String> {
     let client = crate::services::musicbrainz::MusicBrainzClient::new();
 
     // Use title and artist for search
-    let results = client.search_recordings(
-        &params.title,
-        &params.artist,
-        params.album.as_deref(),
-        5
-    ).await.map_err(|e| e.to_string())?;
+    let results = client
+        .search_recordings(&params.title, &params.artist, params.album.as_deref(), 5)
+        .await
+        .map_err(|e| e.to_string())?;
 
-    let matches: Vec<MetadataMatch> = results.into_iter().map(|r| {
-        let artist_credit = r.artist_credit.clone().unwrap_or_default();
-        let artist_name = artist_credit.first().map(|ac| ac.name.clone()).unwrap_or_default();
+    let matches: Vec<MetadataMatch> = results
+        .into_iter()
+        .map(|r| {
+            let artist_credit = r.artist_credit.clone().unwrap_or_default();
+            let artist_name = artist_credit
+                .first()
+                .map(|ac| ac.name.clone())
+                .unwrap_or_default();
 
-        let release = r.releases.as_ref().and_then(|rel| rel.first());
-        let album_title = release.map(|rel| rel.title.clone());
+            let release = r.releases.as_ref().and_then(|rel| rel.first());
+            let album_title = release.map(|rel| rel.title.clone());
 
-        MetadataMatch {
-            recording_id: r.id,
-            title: r.title,
-            artist: artist_name,
-            album: album_title,
-            release_date: None,
-            score: 90,
-            source: "musicbrainz".to_string(),
-        }
-    }).collect();
+            MetadataMatch {
+                recording_id: r.id,
+                title: r.title,
+                artist: artist_name,
+                album: album_title,
+                release_date: None,
+                score: 90,
+                source: "musicbrainz".to_string(),
+            }
+        })
+        .collect();
 
     Ok(matches)
 }
@@ -430,7 +430,10 @@ pub async fn apply_musicbrainz_match(
 // HELPERS
 // ==============================================
 
-async fn get_track_details(db: &sqlx::SqlitePool, track_id: i64) -> Result<LibraryTrack, sqlx::Error> {
+async fn get_track_details(
+    db: &sqlx::SqlitePool,
+    track_id: i64,
+) -> Result<LibraryTrack, sqlx::Error> {
     let track: Option<LibraryTrack> = sqlx::query_as::<_, LibraryTrack>(
         r#"
         SELECT
@@ -532,7 +535,13 @@ pub async fn apply_catalog_identity_repair(
     confirmed: bool,
 ) -> Result<crate::services::catalog_identity_repair::CatalogRepairExecutionReport, String> {
     let backup_dir = dirs::data_local_dir().map(|p| p.join("com.syncify.app").join("backups"));
-    crate::services::catalog_identity_repair::apply_catalog_identity_repair(&state.db, &plan, confirmed, backup_dir.as_deref()).await
+    crate::services::catalog_identity_repair::apply_catalog_identity_repair(
+        &state.db,
+        &plan,
+        confirmed,
+        backup_dir.as_deref(),
+    )
+    .await
 }
 
 /// S167: Query aggregate post-crash recovery audit summary and details.
@@ -616,7 +625,12 @@ pub async fn fetch_missing_cover_art(
     .await
     .map_err(|e| format!("Failed to list albums missing art: {}", e))?;
 
-    let mut result = CoverArtBackfillResult { checked: 0, updated: 0, skipped: 0, failed: 0 };
+    let mut result = CoverArtBackfillResult {
+        checked: 0,
+        updated: 0,
+        skipped: 0,
+        failed: 0,
+    };
 
     for (album_id, isrc) in rows {
         result.checked += 1;
@@ -628,7 +642,11 @@ pub async fn fetch_missing_cover_art(
         let recording = match client.lookup_by_isrc(&isrc).await {
             Ok(rec) => rec,
             Err(e) => {
-                tracing::warn!("Cover art backfill: MB lookup failed for ISRC {}: {}", isrc, e);
+                tracing::warn!(
+                    "Cover art backfill: MB lookup failed for ISRC {}: {}",
+                    isrc,
+                    e
+                );
                 result.failed += 1;
                 continue;
             }
@@ -646,7 +664,10 @@ pub async fn fetch_missing_cover_art(
         };
 
         // Verify the CAA front image actually exists before persisting.
-        let url = format!("https://coverartarchive.org/release-group/{}/front-500", rg_id);
+        let url = format!(
+            "https://coverartarchive.org/release-group/{}/front-500",
+            rg_id
+        );
         let head = client_head_check(&url).await;
         match head {
             Ok(true) => {
@@ -668,7 +689,10 @@ pub async fn fetch_missing_cover_art(
 
     tracing::info!(
         "fetch_missing_cover_art: checked={} updated={} skipped={} failed={}",
-        result.checked, result.updated, result.skipped, result.failed
+        result.checked,
+        result.updated,
+        result.skipped,
+        result.failed
     );
     Ok(result)
 }
@@ -694,6 +718,3 @@ pub async fn reconcile_musicbrainz_tags(
     let p = path_override.as_deref().map(std::path::Path::new);
     crate::services::musicbrainz::reconcile_musicbrainz_from_physical_flacs(&state.db, p).await
 }
-
-
-

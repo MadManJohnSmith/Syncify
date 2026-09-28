@@ -15,7 +15,10 @@ fn test_strict_quality_rejects_aac_downgrade() {
     let allow_lossy_fallback = false;
 
     let res = QualityPolicy::evaluate_downgrade(requested, obtained, "AAC", allow_lossy_fallback);
-    assert!(res.is_err(), "Strict quality must reject AAC when requested Lossless");
+    assert!(
+        res.is_err(),
+        "Strict quality must reject AAC when requested Lossless"
+    );
     let err_msg = res.unwrap_err();
     assert!(
         err_msg.contains("requested_lossless_but_received_aac"),
@@ -31,7 +34,10 @@ fn test_lossy_opt_in_allows_aac_as_fallback() {
     let allow_lossy_fallback = true;
 
     let res = QualityPolicy::evaluate_downgrade(requested, obtained, "AAC", allow_lossy_fallback);
-    assert!(res.is_ok(), "Opt-in fallback must allow AAC stream without error");
+    assert!(
+        res.is_ok(),
+        "Opt-in fallback must allow AAC stream without error"
+    );
 }
 
 #[test]
@@ -40,19 +46,37 @@ fn test_flac_lossless_stream_is_always_accepted() {
     let obtained = QualityClass::Lossless;
 
     let res_strict = QualityPolicy::evaluate_downgrade(requested, obtained, "FLAC", false);
-    assert!(res_strict.is_ok(), "Lossless FLAC must be accepted with strict quality");
+    assert!(
+        res_strict.is_ok(),
+        "Lossless FLAC must be accepted with strict quality"
+    );
 
     let res_fallback = QualityPolicy::evaluate_downgrade(requested, obtained, "FLAC", true);
-    assert!(res_fallback.is_ok(), "Lossless FLAC must be accepted with fallback enabled");
+    assert!(
+        res_fallback.is_ok(),
+        "Lossless FLAC must be accepted with fallback enabled"
+    );
 }
 
 #[test]
 fn test_quality_classification_codec_mapping() {
-    assert_eq!(QualityPolicy::classify_codec("FLAC"), QualityClass::Lossless);
-    assert_eq!(QualityPolicy::classify_codec("flac"), QualityClass::Lossless);
-    assert_eq!(QualityPolicy::classify_codec("ALAC"), QualityClass::Lossless);
+    assert_eq!(
+        QualityPolicy::classify_codec("FLAC"),
+        QualityClass::Lossless
+    );
+    assert_eq!(
+        QualityPolicy::classify_codec("flac"),
+        QualityClass::Lossless
+    );
+    assert_eq!(
+        QualityPolicy::classify_codec("ALAC"),
+        QualityClass::Lossless
+    );
     assert_eq!(QualityPolicy::classify_codec("WAV"), QualityClass::Lossless);
-    assert_eq!(QualityPolicy::classify_codec("AIFF"), QualityClass::Lossless);
+    assert_eq!(
+        QualityPolicy::classify_codec("AIFF"),
+        QualityClass::Lossless
+    );
 
     assert_eq!(QualityPolicy::classify_codec("AAC"), QualityClass::Lossy);
     assert_eq!(QualityPolicy::classify_codec("aac"), QualityClass::Lossy);

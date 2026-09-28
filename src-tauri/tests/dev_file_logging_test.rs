@@ -12,9 +12,8 @@
 
 use std::path::PathBuf;
 use syncify_tauri_lib::services::logging::{
-    get_logging_status, resolve_app_log_dir,
-    resolve_effective_log_config, sanitize_log_message, RotatingFileWriter,
-    LOG_RETENTION_DAYS, MAX_LOG_FILE_SIZE_BYTES,
+    get_logging_status, resolve_app_log_dir, resolve_effective_log_config, sanitize_log_message,
+    RotatingFileWriter, LOG_RETENTION_DAYS, MAX_LOG_FILE_SIZE_BYTES,
 };
 use tracing::Level;
 
@@ -24,8 +23,14 @@ fn test_dev_mode_enables_file_logging_by_default() {
     // file logging must be enabled even if persisted setting is false.
     let config = resolve_effective_log_config(Some(false), Some("info"));
     assert!(config.is_development);
-    assert!(config.log_to_file, "Development mode must force log_to_file = true");
-    assert_eq!(config.active_log_path.file_name().unwrap(), "syncify-dev.log");
+    assert!(
+        config.log_to_file,
+        "Development mode must force log_to_file = true"
+    );
+    assert_eq!(
+        config.active_log_path.file_name().unwrap(),
+        "syncify-dev.log"
+    );
 }
 
 #[test]
@@ -44,7 +49,10 @@ fn test_rust_log_precedence_over_default() {
 #[test]
 fn test_log_file_created_in_app_log_dir_not_cwd() {
     let log_dir = resolve_app_log_dir();
-    assert!(log_dir.is_absolute(), "Log directory must be an absolute path");
+    assert!(
+        log_dir.is_absolute(),
+        "Log directory must be an absolute path"
+    );
 
     let current_dir = std::env::current_dir().unwrap();
     assert_ne!(
@@ -69,7 +77,8 @@ fn test_secret_and_signed_url_sanitization() {
     assert!(sanitized_bearer.contains("[REDACTED]"));
 
     // 2. Token / Password assignments
-    let token_json = r#"{"access_token": "secret_access_token_9999", "client_secret": "my_ultra_secret_pass"}"#;
+    let token_json =
+        r#"{"access_token": "secret_access_token_9999", "client_secret": "my_ultra_secret_pass"}"#;
     let sanitized_token = sanitize_log_message(token_json);
     assert!(!sanitized_token.contains("secret_access_token_9999"));
     assert!(!sanitized_token.contains("my_ultra_secret_pass"));
@@ -93,7 +102,8 @@ fn test_secret_and_signed_url_sanitization() {
 
 #[test]
 fn test_rotating_file_writer_rotation_and_retention() {
-    let temp_dir = std::env::temp_dir().join(format!("syncify_rotation_test_{}", uuid::Uuid::new_v4()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("syncify_rotation_test_{}", uuid::Uuid::new_v4()));
     let writer = RotatingFileWriter::new(temp_dir.clone(), "syncify-dev.log".to_string());
     assert!(writer.is_active());
 
@@ -114,7 +124,10 @@ fn test_rotating_file_writer_rotation_and_retention() {
         .unwrap()
         .filter_map(|e| e.ok())
         .collect();
-    assert!(entries.len() >= 2, "Expected at least 2 files (active + rotated)");
+    assert!(
+        entries.len() >= 2,
+        "Expected at least 2 files (active + rotated)"
+    );
 
     // Clean up test folder
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -137,6 +150,9 @@ fn test_logging_status_dto_integrity() {
     let status = get_logging_status();
     assert!(status.is_development);
     assert_eq!(status.retention_days, LOG_RETENTION_DAYS);
-    assert_eq!(status.max_file_size_mb, MAX_LOG_FILE_SIZE_BYTES / (1024 * 1024));
+    assert_eq!(
+        status.max_file_size_mb,
+        MAX_LOG_FILE_SIZE_BYTES / (1024 * 1024)
+    );
     assert!(!status.log_dir.is_empty());
 }

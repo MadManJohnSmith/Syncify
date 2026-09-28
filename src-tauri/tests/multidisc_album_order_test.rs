@@ -47,10 +47,11 @@ async fn test_multidisc_album_canonical_order_e2e() {
     let pool = setup_test_db().await;
 
     // Create artist and album
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Symphony Orchestra') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Symphony Orchestra') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, release_date) VALUES ('Double Concertos', '2023-05-12') RETURNING id")
         .fetch_one(&pool)
@@ -92,12 +93,14 @@ async fn test_multidisc_album_canonical_order_e2e() {
         .await
         .unwrap();
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(track_id)
-            .bind(artist_id)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 
     let app = tauri::test::mock_app();
@@ -106,13 +109,19 @@ async fn test_multidisc_album_canonical_order_e2e() {
     let app_state = app.state::<AppState>();
 
     // Test Tauri command get_album
-    let album_detail = get_album(app_state, album_id).await.expect("get_album should succeed");
+    let album_detail = get_album(app_state, album_id)
+        .await
+        .expect("get_album should succeed");
 
     assert_eq!(album_detail.title, "Double Concertos");
     assert_eq!(album_detail.track_count, 10);
     assert_eq!(album_detail.tracks.len(), 10);
 
-    let titles: Vec<&str> = album_detail.tracks.iter().map(|t| t.title.as_str()).collect();
+    let titles: Vec<&str> = album_detail
+        .tracks
+        .iter()
+        .map(|t| t.title.as_str())
+        .collect();
 
     // Canonical expected order:
     // Disc 1 (or COALESCE(NULL, 1) = 1):
@@ -142,7 +151,10 @@ async fn test_multidisc_album_canonical_order_e2e() {
         "Disc 2 - Bonus B",
     ];
 
-    assert_eq!(titles, expected_titles, "Pistas must follow canonical disc and track order");
+    assert_eq!(
+        titles, expected_titles,
+        "Pistas must follow canonical disc and track order"
+    );
 
     // Also assert disc_number field populated correctly
     assert_eq!(album_detail.tracks[0].disc_number, Some(1));
@@ -155,10 +167,12 @@ async fn test_multidisc_album_canonical_order_e2e() {
 async fn test_multidisc_interleaved_regression_prevented() {
     let pool = setup_test_db().await;
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Wall of Sound (Deluxe)') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title) VALUES ('Wall of Sound (Deluxe)') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Insert identical track numbers across 2 discs interleaved
     // Disc 2 Track 1, Disc 1 Track 1, Disc 2 Track 2, Disc 1 Track 2, Disc 2 Track 3, Disc 1 Track 3
@@ -172,17 +186,21 @@ async fn test_multidisc_interleaved_regression_prevented() {
     ];
 
     for (title, disc_num, track_num) in tracks {
-        sqlx::query("INSERT INTO tracks (title, album_id, disc_number, track_number) VALUES (?, ?, ?, ?)")
-            .bind(title)
-            .bind(album_id)
-            .bind(disc_num)
-            .bind(track_num)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO tracks (title, album_id, disc_number, track_number) VALUES (?, ?, ?, ?)",
+        )
+        .bind(title)
+        .bind(album_id)
+        .bind(disc_num)
+        .bind(track_num)
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 
-    let detail = fetch_album(&pool, album_id).await.expect("fetch_album should succeed");
+    let detail = fetch_album(&pool, album_id)
+        .await
+        .expect("fetch_album should succeed");
     let titles: Vec<&str> = detail.tracks.iter().map(|t| t.title.as_str()).collect();
 
     // Must NOT be interleaved [D1T1, D2T1, D1T2, D2T2, D1T3, D2T3]
@@ -194,10 +212,12 @@ async fn test_multidisc_interleaved_regression_prevented() {
 async fn test_tracks_with_all_null_track_numbers_ordered_by_title() {
     let pool = setup_test_db().await;
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Unindexed Vinyl Rip') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title) VALUES ('Unindexed Vinyl Rip') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // All track numbers are NULL
     let tracks = vec![
@@ -216,13 +236,18 @@ async fn test_tracks_with_all_null_track_numbers_ordered_by_title() {
             .unwrap();
     }
 
-    let detail = fetch_album(&pool, album_id).await.expect("fetch_album should succeed");
+    let detail = fetch_album(&pool, album_id)
+        .await
+        .expect("fetch_album should succeed");
     let titles: Vec<&str> = detail.tracks.iter().map(|t| t.title.as_str()).collect();
 
-    assert_eq!(titles, vec![
-        "Alpha Movement",
-        "Beta Movement",
-        "Gamma Movement",
-        "Zeta Movement",
-    ]);
+    assert_eq!(
+        titles,
+        vec![
+            "Alpha Movement",
+            "Beta Movement",
+            "Gamma Movement",
+            "Zeta Movement",
+        ]
+    );
 }

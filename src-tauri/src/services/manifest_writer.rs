@@ -41,7 +41,7 @@ impl ManifestWriter {
 
         let rows: Vec<ManifestRow> = sqlx::query_as(
             r#"
-            SELECT 
+            SELECT
                 dq.id, dq.track_id, dq.service_name, dq.service_track_id,
                 COALESCE(dq.target_title, t.title) as title,
                 COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist,
@@ -116,16 +116,25 @@ impl ManifestWriter {
                         ];
                         for name in sidecar_names {
                             let sidecar = parent.join(name);
-                            if sidecar.exists() && !created_artifacts.iter().any(|a| a == &sidecar.to_string_lossy()) {
+                            if sidecar.exists()
+                                && !created_artifacts
+                                    .iter()
+                                    .any(|a| a == &sidecar.to_string_lossy())
+                            {
                                 created_artifacts.push(sidecar.to_string_lossy().to_string());
                             }
                         }
 
                         // Check artist folder if separate parent directory
                         if let Some(artist_dir) = parent.parent() {
-                            for name in ["artist.jpg", "fanart.jpg", "artist.nfo", "biography.txt"] {
+                            for name in ["artist.jpg", "fanart.jpg", "artist.nfo", "biography.txt"]
+                            {
                                 let sidecar = artist_dir.join(name);
-                                if sidecar.exists() && !created_artifacts.iter().any(|a| a == &sidecar.to_string_lossy()) {
+                                if sidecar.exists()
+                                    && !created_artifacts
+                                        .iter()
+                                        .any(|a| a == &sidecar.to_string_lossy())
+                                {
                                     created_artifacts.push(sidecar.to_string_lossy().to_string());
                                 }
                             }
@@ -139,14 +148,39 @@ impl ManifestWriter {
                 ("Success".to_string(), None)
             } else if status == "skipped" || status.contains("skip") {
                 ("Skipped".to_string(), Some("Skipped existing".to_string()))
-            } else if status == "stale_source" || err_str.contains("StaleSource") || err_str.contains("404") || err_str.contains("TrackUnresolved") {
-                ("StaleSource".to_string(), Some("Source track unavailable or stale".to_string()))
-            } else if status == "source_identity_missing" || err_str.contains("SourceIdentityMissing") {
-                ("SourceIdentityMissing".to_string(), Some("Missing locked service track ID".to_string()))
-            } else if status == "rejected_quality" || err_str.contains("RejectedQuality") || err_str.contains("downgrade rejected") {
-                ("RejectedQuality".to_string(), Some("Quality downgrade rejected by strict quality policy".to_string()))
-            } else if status == "requires_auth" || err_str.contains("RequiresAuth") || err_str.contains("401") || err_str.contains("403") {
-                ("RequiresAuth".to_string(), Some("Service authentication expired or missing".to_string()))
+            } else if status == "stale_source"
+                || err_str.contains("StaleSource")
+                || err_str.contains("404")
+                || err_str.contains("TrackUnresolved")
+            {
+                (
+                    "StaleSource".to_string(),
+                    Some("Source track unavailable or stale".to_string()),
+                )
+            } else if status == "source_identity_missing"
+                || err_str.contains("SourceIdentityMissing")
+            {
+                (
+                    "SourceIdentityMissing".to_string(),
+                    Some("Missing locked service track ID".to_string()),
+                )
+            } else if status == "rejected_quality"
+                || err_str.contains("RejectedQuality")
+                || err_str.contains("downgrade rejected")
+            {
+                (
+                    "RejectedQuality".to_string(),
+                    Some("Quality downgrade rejected by strict quality policy".to_string()),
+                )
+            } else if status == "requires_auth"
+                || err_str.contains("RequiresAuth")
+                || err_str.contains("401")
+                || err_str.contains("403")
+            {
+                (
+                    "RequiresAuth".to_string(),
+                    Some("Service authentication expired or missing".to_string()),
+                )
             } else if status == "failed" {
                 ("Failed".to_string(), error_opt.clone())
             } else {
@@ -162,26 +196,68 @@ impl ManifestWriter {
                 title: title_opt.unwrap_or_else(|| "Unknown Title".to_string()),
                 artist: artist_opt.unwrap_or_else(|| "Unknown Artist".to_string()),
                 album: album_opt.unwrap_or_else(|| "Unknown Album".to_string()),
-                format_requested: quality_pref.clone().unwrap_or_else(|| "HI_RES_LOSSLESS".to_string()),
-                format_obtained: if is_success { Some("FLAC".to_string()) } else { None },
+                format_requested: quality_pref
+                    .clone()
+                    .unwrap_or_else(|| "HI_RES_LOSSLESS".to_string()),
+                format_obtained: if is_success {
+                    Some("FLAC".to_string())
+                } else {
+                    None
+                },
                 quality_class_requested: quality_pref.unwrap_or_else(|| "Lossless".to_string()),
-                quality_class_obtained: if is_success { Some("Lossless".to_string()) } else { None },
-                codec: if is_success { Some("FLAC".to_string()) } else { None },
-                container: if is_success { Some("FLAC".to_string()) } else { None },
-                extension: if is_success { Some("flac".to_string()) } else { None },
+                quality_class_obtained: if is_success {
+                    Some("Lossless".to_string())
+                } else {
+                    None
+                },
+                codec: if is_success {
+                    Some("FLAC".to_string())
+                } else {
+                    None
+                },
+                container: if is_success {
+                    Some("FLAC".to_string())
+                } else {
+                    None
+                },
+                extension: if is_success {
+                    Some("flac".to_string())
+                } else {
+                    None
+                },
                 source: Some("Syncify GUI Downloader".to_string()),
                 quality_fallback: false,
                 download_result: classified_result,
                 rejection_reason,
-                audio_validation: if is_success { "Valid".to_string() } else { "None".to_string() },
+                audio_validation: if is_success {
+                    "Valid".to_string()
+                } else {
+                    "None".to_string()
+                },
                 error: error_opt,
                 format_id_requested: "HI_RES_LOSSLESS".to_string(),
-                format_id_obtained: if is_success { Some("6".to_string()) } else { None },
+                format_id_obtained: if is_success {
+                    Some("6".to_string())
+                } else {
+                    None
+                },
                 final_path: file_path_opt,
                 size_bytes: size_bytes.map(|s| s as u64),
-                flac_validation: if is_success { "Valid".to_string() } else { "None".to_string() },
-                tagging_result: if is_success { "Success".to_string() } else { "None".to_string() },
-                enrichment_result: if is_success { "Success".to_string() } else { "None".to_string() },
+                flac_validation: if is_success {
+                    "Valid".to_string()
+                } else {
+                    "None".to_string()
+                },
+                tagging_result: if is_success {
+                    "Success".to_string()
+                } else {
+                    "None".to_string()
+                },
+                enrichment_result: if is_success {
+                    "Success".to_string()
+                } else {
+                    "None".to_string()
+                },
                 cover_result: if created_artifacts.iter().any(|a| a.ends_with(".webp")) {
                     "StaticAndAnimated".to_string()
                 } else if created_artifacts.iter().any(|a| a.ends_with(".jpg")) {

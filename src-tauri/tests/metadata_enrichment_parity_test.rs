@@ -3,9 +3,7 @@
 //! commercial tags, MBIDs, staging rollback, and best-effort graceful degradation.
 
 use std::path::Path;
-use syncify_flac_writer::{
-    apply_and_verify_flac_tags, audit_flac_stage, FlacMetadata,
-};
+use syncify_flac_writer::{apply_and_verify_flac_tags, audit_flac_stage, FlacMetadata};
 use syncify_tauri_lib::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
 use tempfile::TempDir;
 
@@ -95,7 +93,9 @@ fn test_full_vorbis_comment_41_tags_parity() {
         audio_source: Some("Qobuz".to_string()),
         bit_depth: Some(24),
         sample_rate: Some(96000.0),
-        lyrics_lrc: Some("[00:00.00] I, I will be king\n[00:05.00] And you, you will be queen".to_string()),
+        lyrics_lrc: Some(
+            "[00:00.00] I, I will be king\n[00:05.00] And you, you will be queen".to_string(),
+        ),
         musicbrainz_track_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
         musicbrainz_album_id: Some("66666666-7777-8888-9999-000000000000".to_string()),
         musicbrainz_artist_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()),
@@ -105,12 +105,18 @@ fn test_full_vorbis_comment_41_tags_parity() {
         // TASK-75: relational acoustic identifiers
         acoustid_id: Some("0e0a8a5c-8d93-4ce5-8b0a-1f2e3d4c5b6a".to_string()),
         acoustid_fingerprint: Some("AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0".to_string()),
-        cover_data: Some(vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46]), // JPEG header
+        cover_data: Some(vec![
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46,
+        ]), // JPEG header
         ..Default::default()
     };
 
     let result = apply_and_verify_flac_tags(&flac_path, &full_meta);
-    assert!(result.is_ok(), "apply_and_verify_flac_tags should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "apply_and_verify_flac_tags should succeed: {:?}",
+        result.err()
+    );
 
     let verification = result.unwrap();
     assert!(verification.flac_valid);
@@ -119,7 +125,11 @@ fn test_full_vorbis_comment_41_tags_parity() {
     assert!(verification.lyrics_present);
     assert!(verification.synced_lyrics_present);
     assert!(verification.bpm_present);
-    assert!(verification.mismatches.is_empty(), "Mismatches: {:?}", verification.mismatches);
+    assert!(
+        verification.mismatches.is_empty(),
+        "Mismatches: {:?}",
+        verification.mismatches
+    );
 
     // Verify raw VorbisComments from tag reader
     let tag = metaflac::Tag::read_from_path(&flac_path).unwrap();
@@ -129,18 +139,30 @@ fn test_full_vorbis_comment_41_tags_parity() {
     assert_eq!(comments.get("ARTIST").unwrap()[0], "David Bowie");
     assert_eq!(comments.get("ALBUM").unwrap()[0], "Heroes");
     assert_eq!(comments.get("ALBUMARTIST").unwrap()[0], "David Bowie");
-    assert_eq!(comments.get("COMPOSER").unwrap()[0], "David Bowie, Brian Eno");
-    assert_eq!(comments.get("PERFORMER").unwrap()[0], "David Bowie, Robert Fripp");
+    assert_eq!(
+        comments.get("COMPOSER").unwrap()[0],
+        "David Bowie, Brian Eno"
+    );
+    assert_eq!(
+        comments.get("PERFORMER").unwrap()[0],
+        "David Bowie, Robert Fripp"
+    );
     assert_eq!(comments.get("WORK").unwrap()[0], "Heroes Symphony");
     assert_eq!(comments.get("GENRE").unwrap()[0], "Art Rock");
-    assert_eq!(comments.get("STYLE").unwrap()[0], "Glam Rock / Berlin Trilogy");
+    assert_eq!(
+        comments.get("STYLE").unwrap()[0],
+        "Glam Rock / Berlin Trilogy"
+    );
     assert_eq!(comments.get("MOOD").unwrap()[0], "Triumphant");
     assert_eq!(comments.get("RELEASETYPE").unwrap()[0], "Album");
     assert_eq!(comments.get("RELEASESTATUS").unwrap()[0], "Official");
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     assert_eq!(comments.get("RELEASECOUNTRY").unwrap()[0], "United Kingdom");
     assert_eq!(comments.get("LANGUAGE").unwrap()[0], "English");
-    assert_eq!(comments.get("COPYRIGHT").unwrap()[0], "(P) 1977 RCA Records");
+    assert_eq!(
+        comments.get("COPYRIGHT").unwrap()[0],
+        "(P) 1977 RCA Records"
+    );
     assert_eq!(comments.get("LABEL").unwrap()[0], "RCA Victor");
     assert_eq!(comments.get("BARCODE").unwrap()[0], "0035629004321");
     assert_eq!(comments.get("CATALOGNUMBER").unwrap()[0], "PL 12522");
@@ -149,26 +171,65 @@ fn test_full_vorbis_comment_41_tags_parity() {
     assert_eq!(comments.get("BPM").unwrap()[0], "112");
     assert_eq!(comments.get("KEY").unwrap()[0], "D");
     assert_eq!(comments.get("INITIALKEY").unwrap()[0], "D");
-    assert_eq!(comments.get("REPLAYGAIN_TRACK_GAIN").unwrap()[0], "-6.50 dB");
-    assert_eq!(comments.get("REPLAYGAIN_TRACK_PEAK").unwrap()[0], "0.988220");
-    assert_eq!(comments.get("REPLAYGAIN_ALBUM_GAIN").unwrap()[0], "-5.80 dB");
-    assert_eq!(comments.get("REPLAYGAIN_ALBUM_PEAK").unwrap()[0], "0.999120");
+    assert_eq!(
+        comments.get("REPLAYGAIN_TRACK_GAIN").unwrap()[0],
+        "-6.50 dB"
+    );
+    assert_eq!(
+        comments.get("REPLAYGAIN_TRACK_PEAK").unwrap()[0],
+        "0.988220"
+    );
+    assert_eq!(
+        comments.get("REPLAYGAIN_ALBUM_GAIN").unwrap()[0],
+        "-5.80 dB"
+    );
+    assert_eq!(
+        comments.get("REPLAYGAIN_ALBUM_PEAK").unwrap()[0],
+        "0.999120"
+    );
     assert_eq!(comments.get("R128_TRACK_GAIN").unwrap()[0], "-2.10 LU");
     assert_eq!(comments.get("ENERGY").unwrap()[0], "0.85");
     assert_eq!(comments.get("DANCEABILITY").unwrap()[0], "0.55");
     assert_eq!(comments.get("LOUDNESS").unwrap()[0], "-7.2");
     assert_eq!(comments.get("SYNCIFY_LYRICS_SOURCE").unwrap()[0], "LRCLIB");
-    assert_eq!(comments.get("SYNCIFY_COVER_SOURCE").unwrap()[0], "Apple Music Animated Cover");
+    assert_eq!(
+        comments.get("SYNCIFY_COVER_SOURCE").unwrap()[0],
+        "Apple Music Animated Cover"
+    );
     assert_eq!(comments.get("SYNCIFY_AUDIO_SOURCE").unwrap()[0], "Qobuz");
-    assert_eq!(comments.get("MUSICBRAINZ_TRACKID").unwrap()[0], "11111111-2222-3333-4444-555555555555");
-    assert_eq!(comments.get("MUSICBRAINZ_ALBUMID").unwrap()[0], "66666666-7777-8888-9999-000000000000");
-    assert_eq!(comments.get("MUSICBRAINZ_ARTISTID").unwrap()[0], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-    assert_eq!(comments.get("MUSICBRAINZ_ALBUMARTISTID").unwrap()[0], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-    assert_eq!(comments.get("MUSICBRAINZ_RELEASEGROUPID").unwrap()[0], "ffffffff-0000-1111-2222-333333333333");
-    assert_eq!(comments.get("MUSICBRAINZ_WORKID").unwrap()[0], "99999999-aaaa-bbbb-cccc-dddddddddddd");
+    assert_eq!(
+        comments.get("MUSICBRAINZ_TRACKID").unwrap()[0],
+        "11111111-2222-3333-4444-555555555555"
+    );
+    assert_eq!(
+        comments.get("MUSICBRAINZ_ALBUMID").unwrap()[0],
+        "66666666-7777-8888-9999-000000000000"
+    );
+    assert_eq!(
+        comments.get("MUSICBRAINZ_ARTISTID").unwrap()[0],
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    );
+    assert_eq!(
+        comments.get("MUSICBRAINZ_ALBUMARTISTID").unwrap()[0],
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    );
+    assert_eq!(
+        comments.get("MUSICBRAINZ_RELEASEGROUPID").unwrap()[0],
+        "ffffffff-0000-1111-2222-333333333333"
+    );
+    assert_eq!(
+        comments.get("MUSICBRAINZ_WORKID").unwrap()[0],
+        "99999999-aaaa-bbbb-cccc-dddddddddddd"
+    );
     // TASK-75: relational acoustic identifiers readable by Symfonium
-    assert_eq!(comments.get("ACOUSTID_ID").unwrap()[0], "0e0a8a5c-8d93-4ce5-8b0a-1f2e3d4c5b6a");
-    assert_eq!(comments.get("ACOUSTID_FINGERPRINT").unwrap()[0], "AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0");
+    assert_eq!(
+        comments.get("ACOUSTID_ID").unwrap()[0],
+        "0e0a8a5c-8d93-4ce5-8b0a-1f2e3d4c5b6a"
+    );
+    assert_eq!(
+        comments.get("ACOUSTID_FINGERPRINT").unwrap()[0],
+        "AQAA0bmSQIhQJEAiFBCSEceE5McJ8kieBE-OP9qBo0C0"
+    );
 }
 
 #[test]
@@ -178,7 +239,8 @@ fn test_lyrics_embedding_and_lrc_sidecar_generation() {
     let lrc_path = temp_dir.path().join("track_with_lyrics.lrc");
     create_minimal_test_flac(&flac_path);
 
-    let lrc_text = "[00:01.20] First line of song\n[00:04.50] Second line of song\n[00:08.00] Chorus begins";
+    let lrc_text =
+        "[00:01.20] First line of song\n[00:04.50] Second line of song\n[00:08.00] Chorus begins";
     std::fs::write(&lrc_path, lrc_text).unwrap();
 
     let meta = FlacMetadata {
@@ -262,9 +324,18 @@ fn test_commercial_metadata_and_musicbrainz_ids() {
     assert_eq!(comments.get("COPYRIGHT").unwrap()[0], "(C) 2024 Nonesuch");
     assert_eq!(comments.get("CATALOGNUMBER").unwrap()[0], "7559-79313-2");
     assert_eq!(comments.get("ORIGINALDATE").unwrap()[0], "2024-05-10");
-    assert_eq!(comments.get("MUSICBRAINZ_TRACKID").unwrap()[0], "12345678-1234-1234-1234-123456789abc");
-    assert_eq!(comments.get("MUSICBRAINZ_ALBUMID").unwrap()[0], "87654321-4321-4321-4321-cba987654321");
-    assert_eq!(comments.get("MUSICBRAINZ_ARTISTID").unwrap()[0], "abcdef01-2345-6789-abcd-ef0123456789");
+    assert_eq!(
+        comments.get("MUSICBRAINZ_TRACKID").unwrap()[0],
+        "12345678-1234-1234-1234-123456789abc"
+    );
+    assert_eq!(
+        comments.get("MUSICBRAINZ_ALBUMID").unwrap()[0],
+        "87654321-4321-4321-4321-cba987654321"
+    );
+    assert_eq!(
+        comments.get("MUSICBRAINZ_ARTISTID").unwrap()[0],
+        "abcdef01-2345-6789-abcd-ef0123456789"
+    );
 }
 
 #[test]
@@ -281,7 +352,10 @@ fn test_staging_rollback_on_tagging_failure() {
     };
 
     let result = apply_and_verify_flac_tags(&corrupted_staging_path, &meta);
-    assert!(result.is_err(), "Tagging corrupted FLAC in staging must return Err to trigger clean rollback");
+    assert!(
+        result.is_err(),
+        "Tagging corrupted FLAC in staging must return Err to trigger clean rollback"
+    );
 
     let err_msg = result.err().unwrap();
     assert!(err_msg.contains("Failed") || err_msg.contains("FLAC"));
@@ -314,7 +388,10 @@ fn test_best_effort_degradation_when_enrichment_unavailable() {
     };
 
     let result = apply_and_verify_flac_tags(&flac_path, &base_meta);
-    assert!(result.is_ok(), "Base-only metadata must verify successfully under graceful degradation");
+    assert!(
+        result.is_ok(),
+        "Base-only metadata must verify successfully under graceful degradation"
+    );
 
     let verification = result.unwrap();
     assert!(verification.flac_valid);
@@ -330,9 +407,10 @@ async fn test_replaygain_acoustic_and_fingerprint_honest_absence_and_tagging() {
     create_minimal_test_flac(&staging_path);
 
     // 1. Run AudioAnalyzer on the staging audio
-    let analysis = syncify_tauri_lib::services::enrichment::AudioAnalyzer::analyze_file(&staging_path)
-        .await
-        .expect("AudioAnalyzer should succeed on staging audio");
+    let analysis =
+        syncify_tauri_lib::services::enrichment::AudioAnalyzer::analyze_file(&staging_path)
+            .await
+            .expect("AudioAnalyzer should succeed on staging audio");
 
     // Audit 2026-08-25: this fixture is a header+padding FLAC with no audio frames,
     // so ffmpeg EBU R128, TempoAnalyzer DSP and fpcalc all fail honestly. The old
@@ -372,7 +450,11 @@ async fn test_replaygain_acoustic_and_fingerprint_honest_absence_and_tagging() {
 
     // 3. Apply and verify FLAC tags on the staging file (graceful degradation)
     let result = apply_and_verify_flac_tags(&staging_path, &meta);
-    assert!(result.is_ok(), "apply_and_verify_flac_tags should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "apply_and_verify_flac_tags should succeed: {:?}",
+        result.err()
+    );
 
     // 4. Verify NO fabricated audio tags were written into the real VorbisComments
     let tag = metaflac::Tag::read_from_path(&staging_path).unwrap();
@@ -393,7 +475,11 @@ async fn test_replaygain_acoustic_and_fingerprint_honest_absence_and_tagging() {
 async fn test_staging_lifecycle_and_zero_orphans_post_promotion() {
     let temp_dir = TempDir::new().unwrap();
     let staging_dir = temp_dir.path().join(".staging");
-    let target_dir = temp_dir.path().join("Music").join("David Bowie").join("Heroes (1977)");
+    let target_dir = temp_dir
+        .path()
+        .join("Music")
+        .join("David Bowie")
+        .join("Heroes (1977)");
 
     std::fs::create_dir_all(&staging_dir).unwrap();
     std::fs::create_dir_all(&target_dir).unwrap();
@@ -435,7 +521,11 @@ async fn test_staging_lifecycle_and_zero_orphans_post_promotion() {
         .unwrap()
         .map(|res| res.unwrap().path())
         .collect();
-    assert!(remaining_staging.is_empty(), "Staging directory must have 0 orphaned files after promotion: {:?}", remaining_staging);
+    assert!(
+        remaining_staging.is_empty(),
+        "Staging directory must have 0 orphaned files after promotion: {:?}",
+        remaining_staging
+    );
 }
 
 #[tokio::test]
@@ -472,8 +562,14 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
     assert_eq!(normalize_country_code("Spain").as_deref(), Some("ES"));
     assert_eq!(normalize_country_code("España").as_deref(), Some("ES"));
     assert_eq!(normalize_country_code("Espana").as_deref(), Some("ES"));
-    assert_eq!(normalize_country_code("United States").as_deref(), Some("US"));
-    assert_eq!(normalize_country_code("Estados Unidos").as_deref(), Some("US"));
+    assert_eq!(
+        normalize_country_code("United States").as_deref(),
+        Some("US")
+    );
+    assert_eq!(
+        normalize_country_code("Estados Unidos").as_deref(),
+        Some("US")
+    );
     assert_eq!(normalize_country_code("EE.UU.").as_deref(), Some("US"));
     assert_eq!(normalize_country_code("EEUU").as_deref(), Some("US"));
     assert_eq!(normalize_country_code("Germany").as_deref(), Some("DE"));
@@ -487,7 +583,10 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
     assert_eq!(normalize_country_code("Mexico").as_deref(), Some("MX"));
     assert_eq!(normalize_country_code("México").as_deref(), Some("MX"));
     assert_eq!(normalize_country_code("Netherlands").as_deref(), Some("NL"));
-    assert_eq!(normalize_country_code("Países Bajos").as_deref(), Some("NL"));
+    assert_eq!(
+        normalize_country_code("Países Bajos").as_deref(),
+        Some("NL")
+    );
     assert_eq!(normalize_country_code("Holanda").as_deref(), Some("NL"));
     assert_eq!(normalize_country_code("Poland").as_deref(), Some("PL"));
     assert_eq!(normalize_country_code("Polonia").as_deref(), Some("PL"));
@@ -498,8 +597,14 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
     // 4. Historical aliases (UK / Great Britain -> GB)
     assert_eq!(normalize_country_code("UK").as_deref(), Some("GB"));
     assert_eq!(normalize_country_code("uk").as_deref(), Some("GB"));
-    assert_eq!(normalize_country_code("Great Britain").as_deref(), Some("GB"));
-    assert_eq!(normalize_country_code("Gran Bretaña").as_deref(), Some("GB"));
+    assert_eq!(
+        normalize_country_code("Great Britain").as_deref(),
+        Some("GB")
+    );
+    assert_eq!(
+        normalize_country_code("Gran Bretaña").as_deref(),
+        Some("GB")
+    );
     assert_eq!(normalize_country_code("Reino Unido").as_deref(), Some("GB"));
 
     // 5. Diacritics
@@ -538,29 +643,39 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
     let now_ts = "2026-08-17T23:30:00Z";
 
     // Inferred candidate
-    meta.release_country.merge_candidate(Some("ES".to_string()), "inferred", 0.50, now_ts);
+    meta.release_country
+        .merge_candidate(Some("ES".to_string()), "inferred", 0.50, now_ts);
     assert_eq!(meta.release_country.value(), Some("ES"));
     assert_eq!(meta.release_country.source(), Some("inferred"));
 
     // MusicBrainz candidate overrides Inferred
-    meta.release_country.merge_candidate(Some("FR".to_string()), "musicbrainz", 0.85, now_ts);
+    meta.release_country
+        .merge_candidate(Some("FR".to_string()), "musicbrainz", 0.85, now_ts);
     assert_eq!(meta.release_country.value(), Some("FR"));
     assert_eq!(meta.release_country.source(), Some("musicbrainz"));
 
     // Streaming candidate overrides MusicBrainz
-    meta.release_country.merge_candidate(Some("GB".to_string()), "qobuz", 0.85, now_ts);
+    meta.release_country
+        .merge_candidate(Some("GB".to_string()), "qobuz", 0.85, now_ts);
     assert_eq!(meta.release_country.value(), Some("GB"));
     assert_eq!(meta.release_country.source(), Some("qobuz"));
 
     // Manual override wins over Streaming and is immutable
-    meta.release_country.merge_candidate(Some("US".to_string()), "manual", 1.0, now_ts);
+    meta.release_country
+        .merge_candidate(Some("US".to_string()), "manual", 1.0, now_ts);
     assert_eq!(meta.release_country.value(), Some("US"));
     assert_eq!(meta.release_country.source(), Some("manual"));
 
     // 9. No overwriting valid manual country by subsequent streaming/musicbrainz candidates
-    meta.release_country.merge_candidate(Some("DE".to_string()), "tidal", 0.99, now_ts);
-    meta.release_country.merge_candidate(Some("JP".to_string()), "musicbrainz", 0.99, now_ts);
-    assert_eq!(meta.release_country.value(), Some("US"), "Manual country must remain untouched");
+    meta.release_country
+        .merge_candidate(Some("DE".to_string()), "tidal", 0.99, now_ts);
+    meta.release_country
+        .merge_candidate(Some("JP".to_string()), "musicbrainz", 0.99, now_ts);
+    assert_eq!(
+        meta.release_country.value(),
+        Some("US"),
+        "Manual country must remain untouched"
+    );
 
     // 10. FLAC VorbisComments RELEASECOUNTRY & RELEASEREGION tag writing
     let temp_dir = TempDir::new().unwrap();
@@ -601,7 +716,11 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
 
     let tag_reg = metaflac::Tag::read_from_path(&flac_path_region).unwrap();
     let comments_reg = tag_reg.vorbis_comments().unwrap();
-    assert_eq!(comments_reg.get("RELEASECOUNTRY"), None, "RELEASECOUNTRY must not exist for regional entities");
+    assert_eq!(
+        comments_reg.get("RELEASECOUNTRY"),
+        None,
+        "RELEASECOUNTRY must not exist for regional entities"
+    );
     assert_eq!(comments_reg.get("RELEASEREGION").unwrap(), &["Europe"]);
 
     // 12. Resolution of MusicBrainz XE / XW into EnrichedMetadata
@@ -611,16 +730,36 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
         source_name: "qobuz".to_string(),
         ..Default::default()
     };
-    let enriched_xe = engine.resolve_track_metadata_internal("Artist", "Album", "Title", None, Some(&origin_xe), false).await;
-    assert_eq!(enriched_xe.release_country.value(), None, "XE must not resolve to release_country");
-    assert_eq!(enriched_xe.release_region.value(), Some("XE"), "XE must resolve to release_region");
+    let enriched_xe = engine
+        .resolve_track_metadata_internal("Artist", "Album", "Title", None, Some(&origin_xe), false)
+        .await;
+    assert_eq!(
+        enriched_xe.release_country.value(),
+        None,
+        "XE must not resolve to release_country"
+    );
+    assert_eq!(
+        enriched_xe.release_region.value(),
+        Some("XE"),
+        "XE must resolve to release_region"
+    );
 
     let origin_xw = OriginTrackMetadata {
         release_country: Some("XW".to_string()),
         source_name: "qobuz".to_string(),
         ..Default::default()
     };
-    let enriched_xw = engine.resolve_track_metadata_internal("Artist", "Album", "Title", None, Some(&origin_xw), false).await;
-    assert_eq!(enriched_xw.release_country.value(), None, "XW must not resolve to release_country");
-    assert_eq!(enriched_xw.release_region.value(), Some("XW"), "XW must resolve to release_region");
+    let enriched_xw = engine
+        .resolve_track_metadata_internal("Artist", "Album", "Title", None, Some(&origin_xw), false)
+        .await;
+    assert_eq!(
+        enriched_xw.release_country.value(),
+        None,
+        "XW must not resolve to release_country"
+    );
+    assert_eq!(
+        enriched_xw.release_region.value(),
+        Some("XW"),
+        "XW must resolve to release_region"
+    );
 }

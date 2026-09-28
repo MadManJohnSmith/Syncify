@@ -98,13 +98,17 @@ fn test_ui_has_no_get_account_credentials_invocations() {
             .filter_map(|e| e.ok())
             .filter(|e| {
                 e.path().is_file()
-                    && e.path()
-                        .extension()
-                        .map_or(false, |ext| ext == "ts" || ext == "tsx" || ext == "js" || ext == "jsx" || ext == "svelte" || ext == "vue")
+                    && e.path().extension().map_or(false, |ext| {
+                        ext == "ts"
+                            || ext == "tsx"
+                            || ext == "js"
+                            || ext == "jsx"
+                            || ext == "svelte"
+                            || ext == "vue"
+                    })
             })
         {
-            let content = std::fs::read_to_string(entry.path())
-                .unwrap_or_default();
+            let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
             assert!(
                 !content.contains("get_account_credentials"),
                 "Found get_account_credentials invocation in UI file: {:?}",
@@ -216,15 +220,17 @@ async fn test_get_internal_account_credentials_corrupted_clears_db() {
     );
 
     // Verify DB cleared credentials_json to NULL
-    let stored_creds: Option<String> = sqlx::query_scalar(
-        "SELECT credentials_json FROM accounts WHERE id = ?"
-    )
-    .bind(account_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let stored_creds: Option<String> =
+        sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    assert!(stored_creds.is_none(), "Corrupted credentials should be cleared in DB");
+    assert!(
+        stored_creds.is_none(),
+        "Corrupted credentials should be cleared in DB"
+    );
 }
 
 #[tokio::test]
@@ -264,13 +270,15 @@ async fn test_get_internal_account_credentials_aead_tag_mismatch_clears_db() {
     );
 
     // Verify DB cleared credentials_json to NULL
-    let stored_creds: Option<String> = sqlx::query_scalar(
-        "SELECT credentials_json FROM accounts WHERE id = ?"
-    )
-    .bind(account_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let stored_creds: Option<String> =
+        sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    assert!(stored_creds.is_none(), "Mismatched key credentials should be cleared in DB");
+    assert!(
+        stored_creds.is_none(),
+        "Mismatched key credentials should be cleared in DB"
+    );
 }

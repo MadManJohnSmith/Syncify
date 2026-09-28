@@ -2,9 +2,8 @@
 use super::*;
 
 // Queue Commands - submodule of crate::commands
-// 
+//
 // Persistent download queue, worker control
-
 
 // ==============================================
 // PERSISTENT QUEUE MANAGEMENT COMMANDS
@@ -108,18 +107,12 @@ pub fn normalize_quality_preference(raw: Option<&str>) -> Option<String> {
     }
 
     match s.to_ascii_lowercase().as_str() {
-        "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "flac_hires" | "flac_24" => {
-            Some("hires".to_string())
-        }
-        "lossless" | "cd" | "flac" | "flac_16" => {
-            Some("lossless".to_string())
-        }
-        "high" | "320" | "320kbps" | "aac" | "mp3" | "lossy" | "standard" | "low" | "medium" | "ogg" => {
-            Some("high".to_string())
-        }
-        "any" | "best" | "auto" => {
-            Some("any".to_string())
-        }
+        "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "flac_hires"
+        | "flac_24" => Some("hires".to_string()),
+        "lossless" | "cd" | "flac" | "flac_16" => Some("lossless".to_string()),
+        "high" | "320" | "320kbps" | "aac" | "mp3" | "lossy" | "standard" | "low" | "medium"
+        | "ogg" => Some("high".to_string()),
+        "any" | "best" | "auto" => Some("any".to_string()),
         unknown => {
             tracing::warn!(
                 raw_quality = %unknown,
@@ -138,7 +131,9 @@ pub fn normalize_queue_quality_preference(raw: Option<String>) -> Option<String>
         match lower.as_str() {
             "hires" | "hi_res" | "hi-res" | "flac_24" => "hires".to_string(),
             "lossless" | "flac" | "flac_16" | "cd" => "lossless".to_string(),
-            "lossy" | "high" | "standard" | "low" | "medium" | "mp3" | "aac" | "ogg" => "high".to_string(),
+            "lossy" | "high" | "standard" | "low" | "medium" | "mp3" | "aac" | "ogg" => {
+                "high".to_string()
+            }
             "any" => "any".to_string(),
             _ => "any".to_string(),
         }
@@ -148,8 +143,15 @@ pub fn normalize_queue_quality_preference(raw: Option<String>) -> Option<String>
 /// Match result from preventive queue guardrail
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueGuardrailMatch {
-    AlreadyDownloaded { track_id: i64, file_path: String },
-    AlreadyQueued { queue_id: i64, track_id: i64, status: String },
+    AlreadyDownloaded {
+        track_id: i64,
+        file_path: String,
+    },
+    AlreadyQueued {
+        queue_id: i64,
+        track_id: i64,
+        status: String,
+    },
 }
 
 /// Guardrail preventivo en cola (Mitiga C3):
@@ -195,7 +197,8 @@ pub async fn check_queue_guardrail(
             m.duration_ms,
             m.isrc.or_else(|| fallback_isrc.map(|s| s.to_string())),
             m.primary_artist_id,
-            m.primary_artist_name.or_else(|| fallback_artist.map(|s| s.to_string())),
+            m.primary_artist_name
+                .or_else(|| fallback_artist.map(|s| s.to_string())),
         ),
         None => (
             fallback_title.map(|s| s.to_string()),
@@ -247,7 +250,7 @@ pub async fn check_queue_guardrail(
               )
           )
         LIMIT 1
-        "#
+        "#,
     )
     .bind(candidate_track_id)
     .bind(&norm_isrc)
@@ -306,7 +309,7 @@ pub async fn check_queue_guardrail(
           )
         ORDER BY dq.id DESC
         LIMIT 1
-        "#
+        "#,
     )
     .bind(candidate_track_id)
     .bind(&norm_isrc)
@@ -423,37 +426,48 @@ pub async fn perform_add_to_queue(
     }
 
     // Resolve source identity
-    let (final_service_id, final_service_name, final_service_track_id, final_service_album_id, final_quality) =
-        if let (Some(srv), Some(strk_id)) = (&eff_service, &passed_service_track_id) {
-            // Explicit service and service_track_id provided
-            let s_id = if let Some(sid) = service_id {
-                sid
-            } else {
-                let s_id_opt: Option<(i64,)> = sqlx::query_as("SELECT id FROM services WHERE name = ?")
-                    .bind(srv)
-                    .fetch_optional(db)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                s_id_opt.map(|r| r.0).unwrap_or(0)
-            };
-            (s_id, srv.clone(), strk_id.clone(), service_album_id, eff_quality.clone())
+    let (
+        final_service_id,
+        final_service_name,
+        final_service_track_id,
+        final_service_album_id,
+        final_quality,
+    ) = if let (Some(srv), Some(strk_id)) = (&eff_service, &passed_service_track_id) {
+        // Explicit service and service_track_id provided
+        let s_id = if let Some(sid) = service_id {
+            sid
         } else {
-            // Query candidate sources from track_sources for this track
-            #[derive(sqlx::FromRow)]
-            #[allow(dead_code)]
-            struct CandidateSourceRow {
-                service_id: i64,
-                service_name: String,
-                service_track_id: Option<String>,
-                format: Option<String>,
-                bit_depth: Option<i64>,
-                sample_rate: Option<i64>,
-                quality_score: Option<i64>,
-                available: i64,
-                active_accounts: i64,
-            }
+            let s_id_opt: Option<(i64,)> = sqlx::query_as("SELECT id FROM services WHERE name = ?")
+                .bind(srv)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| e.to_string())?;
+            s_id_opt.map(|r| r.0).unwrap_or(0)
+        };
+        (
+            s_id,
+            srv.clone(),
+            strk_id.clone(),
+            service_album_id,
+            eff_quality.clone(),
+        )
+    } else {
+        // Query candidate sources from track_sources for this track
+        #[derive(sqlx::FromRow)]
+        #[allow(dead_code)]
+        struct CandidateSourceRow {
+            service_id: i64,
+            service_name: String,
+            service_track_id: Option<String>,
+            format: Option<String>,
+            bit_depth: Option<i64>,
+            sample_rate: Option<i64>,
+            quality_score: Option<i64>,
+            available: i64,
+            active_accounts: i64,
+        }
 
-            let raw_candidates: Vec<CandidateSourceRow> = sqlx::query_as(
+        let raw_candidates: Vec<CandidateSourceRow> = sqlx::query_as(
                 r#"
                 SELECT ts.service_id, s.name as service_name, ts.service_track_id,
                        ts.format, ts.bit_depth, ts.sample_rate, ts.quality_score,
@@ -469,98 +483,104 @@ pub async fn perform_add_to_queue(
             .await
             .map_err(|e| e.to_string())?;
 
-            if raw_candidates.is_empty() {
-                return Err(format!(
-                    "SourceIdentityMissing: No track_sources available for track {}",
-                    track_id
-                ));
-            }
+        if raw_candidates.is_empty() {
+            return Err(format!(
+                "SourceIdentityMissing: No track_sources available for track {}",
+                track_id
+            ));
+        }
 
-            // Filter valid candidate sources: non-empty service_track_id and available == 1
-            let valid_candidates: Vec<CandidateSourceRow> = raw_candidates
+        // Filter valid candidate sources: non-empty service_track_id and available == 1
+        let valid_candidates: Vec<CandidateSourceRow> = raw_candidates
+            .into_iter()
+            .filter(|c| {
+                c.available == 1
+                    && c.service_track_id
+                        .as_deref()
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false)
+            })
+            .collect();
+
+        if valid_candidates.is_empty() {
+            return Err(format!(
+                "SourceIdentityMissing: Track {} has sources but missing valid service_track_id",
+                track_id
+            ));
+        }
+
+        // If a specific service was requested
+        let chosen_candidate: CandidateSourceRow = if let Some(ref requested_service) = eff_service
+        {
+            let mut matching: Vec<CandidateSourceRow> = valid_candidates
                 .into_iter()
-                .filter(|c| {
-                    c.available == 1
-                        && c.service_track_id
-                            .as_deref()
-                            .map(|s| !s.trim().is_empty())
-                            .unwrap_or(false)
-                })
+                .filter(|c| c.service_name.eq_ignore_ascii_case(requested_service))
                 .collect();
 
-            if valid_candidates.is_empty() {
+            if matching.is_empty() {
                 return Err(format!(
-                    "SourceIdentityMissing: Track {} has sources but missing valid service_track_id",
-                    track_id
-                ));
-            }
-
-            // If a specific service was requested
-            let chosen_candidate: CandidateSourceRow = if let Some(ref requested_service) = eff_service {
-                let mut matching: Vec<CandidateSourceRow> = valid_candidates
-                    .into_iter()
-                    .filter(|c| c.service_name.eq_ignore_ascii_case(requested_service))
-                    .collect();
-
-                if matching.is_empty() {
-                    return Err(format!(
                         "SourceIdentityMissing: No locked source available for track {} on service '{}'",
                         track_id, requested_service
                     ));
-                }
+            }
 
-                if matching.len() == 1 {
-                    matching.remove(0)
-                } else {
-                    matching.sort_by(|a, b| {
-                        b.active_accounts
-                            .cmp(&a.active_accounts)
-                            .then_with(|| b.quality_score.unwrap_or(0).cmp(&a.quality_score.unwrap_or(0)))
-                            .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
-                    });
-                    matching.remove(0)
-                }
+            if matching.len() == 1 {
+                matching.remove(0)
             } else {
-                // No specific service requested
-                // A4: guarded by len()==1 — next() is total here; kept without unwrap_or
-                // fallback because no synthetic CandidateSourceRow may be invented.
-                if valid_candidates.len() == 1 {
-                    valid_candidates.into_iter().next().unwrap()
-                } else {
-                    // Multiple candidates across services
-                    // 1. Check active accounts
-                    let mut with_active: Vec<CandidateSourceRow> = valid_candidates
-                        .into_iter()
-                        .filter(|c| c.active_accounts > 0)
-                        .collect();
+                matching.sort_by(|a, b| {
+                    b.active_accounts
+                        .cmp(&a.active_accounts)
+                        .then_with(|| {
+                            b.quality_score
+                                .unwrap_or(0)
+                                .cmp(&a.quality_score.unwrap_or(0))
+                        })
+                        .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
+                });
+                matching.remove(0)
+            }
+        } else {
+            // No specific service requested
+            // A4: guarded by len()==1 — next() is total here; kept without unwrap_or
+            // fallback because no synthetic CandidateSourceRow may be invented.
+            if valid_candidates.len() == 1 {
+                valid_candidates.into_iter().next().unwrap()
+            } else {
+                // Multiple candidates across services
+                // 1. Check active accounts
+                let mut with_active: Vec<CandidateSourceRow> = valid_candidates
+                    .into_iter()
+                    .filter(|c| c.active_accounts > 0)
+                    .collect();
 
-                    if with_active.len() == 1 {
-                        with_active.remove(0)
-                    } else if with_active.len() > 1 {
-                        // Check if track has a specific source locked on tracks table (e.g. qobuz_id)
-                        let track_qobuz: Option<(Option<String>,)> =
-                            sqlx::query_as("SELECT qobuz_id FROM tracks WHERE id = ?")
-                                .bind(track_id)
-                                .fetch_optional(db)
-                                .await
-                                .unwrap_or(None);
+                if with_active.len() == 1 {
+                    with_active.remove(0)
+                } else if with_active.len() > 1 {
+                    // Check if track has a specific source locked on tracks table (e.g. qobuz_id)
+                    let track_qobuz: Option<(Option<String>,)> =
+                        sqlx::query_as("SELECT qobuz_id FROM tracks WHERE id = ?")
+                            .bind(track_id)
+                            .fetch_optional(db)
+                            .await
+                            .unwrap_or(None);
 
-                        let mut found_exact_pos = None;
-                        if let Some((Some(ref qid),)) = track_qobuz {
-                            if !qid.trim().is_empty() {
-                                found_exact_pos = with_active.iter().position(|c| {
-                                    c.service_name == "qobuz"
-                                        && c.service_track_id.as_deref() == Some(qid.as_str())
-                                });
-                            }
+                    let mut found_exact_pos = None;
+                    if let Some((Some(ref qid),)) = track_qobuz {
+                        if !qid.trim().is_empty() {
+                            found_exact_pos = with_active.iter().position(|c| {
+                                c.service_name == "qobuz"
+                                    && c.service_track_id.as_deref() == Some(qid.as_str())
+                            });
                         }
+                    }
 
-                        if let Some(pos) = found_exact_pos {
-                            with_active.remove(pos)
-                        } else {
-                            // Sort with_active by service_preferences priority, then quality
-                            let svc_prefs: std::collections::HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
-                                "SELECT service_name, priority FROM service_preferences"
+                    if let Some(pos) = found_exact_pos {
+                        with_active.remove(pos)
+                    } else {
+                        // Sort with_active by service_preferences priority, then quality
+                        let svc_prefs: std::collections::HashMap<String, i64> =
+                            sqlx::query_as::<_, (String, i64)>(
+                                "SELECT service_name, priority FROM service_preferences",
                             )
                             .fetch_all(db)
                             .await
@@ -568,24 +588,46 @@ pub async fn perform_add_to_queue(
                             .into_iter()
                             .collect();
 
-                            with_active.sort_by(|a, b| {
-                                let prio_a = svc_prefs.get(&a.service_name).copied().unwrap_or_else(|| {
-                                    if a.service_name == "qobuz" { 1 } else if a.service_name == "tidal" { 2 } else { 99 }
+                        with_active.sort_by(|a, b| {
+                            let prio_a =
+                                svc_prefs.get(&a.service_name).copied().unwrap_or_else(|| {
+                                    if a.service_name == "qobuz" {
+                                        1
+                                    } else if a.service_name == "tidal" {
+                                        2
+                                    } else {
+                                        99
+                                    }
                                 });
-                                let prio_b = svc_prefs.get(&b.service_name).copied().unwrap_or_else(|| {
-                                    if b.service_name == "qobuz" { 1 } else if b.service_name == "tidal" { 2 } else { 99 }
+                            let prio_b =
+                                svc_prefs.get(&b.service_name).copied().unwrap_or_else(|| {
+                                    if b.service_name == "qobuz" {
+                                        1
+                                    } else if b.service_name == "tidal" {
+                                        2
+                                    } else {
+                                        99
+                                    }
                                 });
-                                prio_a.cmp(&prio_b)
-                                    .then_with(|| b.quality_score.unwrap_or(0).cmp(&a.quality_score.unwrap_or(0)))
-                                    .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
-                            });
-                            with_active.remove(0)
-                        }
-                    } else {
-                        // with_active is empty (no active accounts configured), but multiple sources exist
-                        // Sort by priority and return top candidate
-                        let svc_prefs: std::collections::HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
-                            "SELECT service_name, priority FROM service_preferences"
+                            prio_a
+                                .cmp(&prio_b)
+                                .then_with(|| {
+                                    b.quality_score
+                                        .unwrap_or(0)
+                                        .cmp(&a.quality_score.unwrap_or(0))
+                                })
+                                .then_with(|| {
+                                    b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0))
+                                })
+                        });
+                        with_active.remove(0)
+                    }
+                } else {
+                    // with_active is empty (no active accounts configured), but multiple sources exist
+                    // Sort by priority and return top candidate
+                    let svc_prefs: std::collections::HashMap<String, i64> =
+                        sqlx::query_as::<_, (String, i64)>(
+                            "SELECT service_name, priority FROM service_preferences",
                         )
                         .fetch_all(db)
                         .await
@@ -593,7 +635,7 @@ pub async fn perform_add_to_queue(
                         .into_iter()
                         .collect();
 
-                        let mut all_candidates: Vec<CandidateSourceRow> = sqlx::query_as(
+                    let mut all_candidates: Vec<CandidateSourceRow> = sqlx::query_as(
                             r#"
                             SELECT ts.service_id, s.name as service_name, ts.service_track_id,
                                    ts.format, ts.bit_depth, ts.sample_rate, ts.quality_score,
@@ -609,52 +651,71 @@ pub async fn perform_add_to_queue(
                         .await
                         .unwrap_or_default();
 
-                        if all_candidates.is_empty() {
-                            return Err(format!("SourceIdentityMissing: No valid track_sources available for track {}", track_id));
-                        }
-
-                        all_candidates.sort_by(|a, b| {
-                            let prio_a = svc_prefs.get(&a.service_name).copied().unwrap_or_else(|| {
-                                if a.service_name == "qobuz" { 1 } else if a.service_name == "tidal" { 2 } else { 99 }
-                            });
-                            let prio_b = svc_prefs.get(&b.service_name).copied().unwrap_or_else(|| {
-                                if b.service_name == "qobuz" { 1 } else if b.service_name == "tidal" { 2 } else { 99 }
-                            });
-                            prio_a.cmp(&prio_b)
-                                .then_with(|| b.quality_score.unwrap_or(0).cmp(&a.quality_score.unwrap_or(0)))
-                                .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
-                        });
-                        all_candidates.remove(0)
+                    if all_candidates.is_empty() {
+                        return Err(format!(
+                            "SourceIdentityMissing: No valid track_sources available for track {}",
+                            track_id
+                        ));
                     }
+
+                    all_candidates.sort_by(|a, b| {
+                        let prio_a = svc_prefs.get(&a.service_name).copied().unwrap_or_else(|| {
+                            if a.service_name == "qobuz" {
+                                1
+                            } else if a.service_name == "tidal" {
+                                2
+                            } else {
+                                99
+                            }
+                        });
+                        let prio_b = svc_prefs.get(&b.service_name).copied().unwrap_or_else(|| {
+                            if b.service_name == "qobuz" {
+                                1
+                            } else if b.service_name == "tidal" {
+                                2
+                            } else {
+                                99
+                            }
+                        });
+                        prio_a
+                            .cmp(&prio_b)
+                            .then_with(|| {
+                                b.quality_score
+                                    .unwrap_or(0)
+                                    .cmp(&a.quality_score.unwrap_or(0))
+                            })
+                            .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
+                    });
+                    all_candidates.remove(0)
                 }
-            };
-
-            let resolved_quality = eff_quality.or_else(|| {
-                let tier = classify_audio_tier(
-                    chosen_candidate.bit_depth.map(|v| v as i32),
-                    chosen_candidate.sample_rate.map(|v| v as i32),
-                    None,
-                    chosen_candidate.format.as_deref(),
-                );
-                let tier_str = match tier.as_str() {
-                    "lossy" => "high",
-                    other => other,
-                };
-                Some(tier_str.to_string())
-            });
-
-            (
-                chosen_candidate.service_id,
-                chosen_candidate.service_name,
-                chosen_candidate.service_track_id.unwrap_or_default(),
-                service_album_id,
-                resolved_quality,
-            )
+            }
         };
 
+        let resolved_quality = eff_quality.or_else(|| {
+            let tier = classify_audio_tier(
+                chosen_candidate.bit_depth.map(|v| v as i32),
+                chosen_candidate.sample_rate.map(|v| v as i32),
+                None,
+                chosen_candidate.format.as_deref(),
+            );
+            let tier_str = match tier.as_str() {
+                "lossy" => "high",
+                other => other,
+            };
+            Some(tier_str.to_string())
+        });
+
+        (
+            chosen_candidate.service_id,
+            chosen_candidate.service_name,
+            chosen_candidate.service_track_id.unwrap_or_default(),
+            service_album_id,
+            resolved_quality,
+        )
+    };
+
     // Resolve metadata if not fully passed
-    let (t_title, t_artist, t_album, t_isrc) = if target_title.is_some()
-        && target_artist.is_some()
+    let (t_title, t_artist, t_album, t_isrc) = if target_title.is_some() && target_artist.is_some()
     {
         (target_title, target_artist, target_album, target_isrc)
     } else {
@@ -687,10 +748,12 @@ pub async fn perform_add_to_queue(
     };
 
     // Get maximum existing position to append to end
-    let max_pos: Option<(i64,)> = sqlx::query_as("SELECT COALESCE(MAX(position), 0) FROM download_queue WHERE status = 'queued'")
-        .fetch_optional(db)
-        .await
-        .unwrap_or(None);
+    let max_pos: Option<(i64,)> = sqlx::query_as(
+        "SELECT COALESCE(MAX(position), 0) FROM download_queue WHERE status = 'queued'",
+    )
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
     let next_pos = max_pos.map(|(p,)| p + 1).unwrap_or(0);
 
     let final_quality_normalized = normalize_queue_quality_preference(final_quality);
@@ -1005,13 +1068,15 @@ async fn evaluate_track_preflight_inner(
         JOIN services s ON s.id = ts.service_id
         WHERE ts.track_id = ?
         ORDER BY ts.id ASC LIMIT 1
-        "#
+        "#,
     )
     .bind(track_id)
     .fetch_optional(db)
     .await
     .unwrap_or(None);
-    let origin_service_name = origin_service_opt.map(|r| r.0).unwrap_or_else(|| "unknown".to_string());
+    let origin_service_name = origin_service_opt
+        .map(|r| r.0)
+        .unwrap_or_else(|| "unknown".to_string());
 
     // 5. Evaluate direct candidates on downloadable services
     let downloadable_sources: Vec<CandSource> = all_sources
@@ -1070,24 +1135,42 @@ async fn evaluate_track_preflight_inner(
 
         if !is_stale {
             let mut sorted_active = active_direct;
-            let svc_prefs: std::collections::HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
-                "SELECT service_name, priority FROM service_preferences"
-            )
-            .fetch_all(db)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+            let svc_prefs: std::collections::HashMap<String, i64> =
+                sqlx::query_as::<_, (String, i64)>(
+                    "SELECT service_name, priority FROM service_preferences",
+                )
+                .fetch_all(db)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
 
             sorted_active.sort_by(|a, b| {
                 let prio_a = svc_prefs.get(&a.service_name).copied().unwrap_or_else(|| {
-                    if a.service_name == "qobuz" { 1 } else if a.service_name == "tidal" { 2 } else { 99 }
+                    if a.service_name == "qobuz" {
+                        1
+                    } else if a.service_name == "tidal" {
+                        2
+                    } else {
+                        99
+                    }
                 });
                 let prio_b = svc_prefs.get(&b.service_name).copied().unwrap_or_else(|| {
-                    if b.service_name == "qobuz" { 1 } else if b.service_name == "tidal" { 2 } else { 99 }
+                    if b.service_name == "qobuz" {
+                        1
+                    } else if b.service_name == "tidal" {
+                        2
+                    } else {
+                        99
+                    }
                 });
-                prio_a.cmp(&prio_b)
-                    .then_with(|| b.quality_score.unwrap_or(0).cmp(&a.quality_score.unwrap_or(0)))
+                prio_a
+                    .cmp(&prio_b)
+                    .then_with(|| {
+                        b.quality_score
+                            .unwrap_or(0)
+                            .cmp(&a.quality_score.unwrap_or(0))
+                    })
                     .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
             });
 
@@ -1167,7 +1250,7 @@ async fn evaluate_track_preflight_inner(
                 JOIN tracks t2 ON t2.id = ts.track_id
                 WHERE t2.isrc = ? AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
                   AND COALESCE(ts.availability_status, '') NOT IN ('stale_404', 'not_found')
-                ORDER BY 
+                ORDER BY
                     (SELECT COALESCE(sp.priority, 999) FROM service_preferences sp WHERE sp.service_name = s.name) ASC,
                     COALESCE(ts.quality_score, 0) DESC,
                     COALESCE(ts.bit_depth, 0) DESC
@@ -1181,7 +1264,11 @@ async fn evaluate_track_preflight_inner(
             if !isrc_matches.is_empty() {
                 let with_active: Vec<CandSource> = isrc_matches
                     .into_iter()
-                    .filter(|c| c.active_accounts > 0 && eff_svc_ref.map_or(true, |req| !c.service_name.eq_ignore_ascii_case(req)))
+                    .filter(|c| {
+                        c.active_accounts > 0
+                            && eff_svc_ref
+                                .map_or(true, |req| !c.service_name.eq_ignore_ascii_case(req))
+                    })
                     .collect();
 
                 if with_active.is_empty() {
@@ -1196,7 +1283,9 @@ async fn evaluate_track_preflight_inner(
                         resolved_service_name: None,
                         resolved_service_track_id: None,
                         resolved_quality: None,
-                        reason: "Exact ISRC match found on provider but no active authenticated account".to_string(),
+                        reason:
+                            "Exact ISRC match found on provider but no active authenticated account"
+                                .to_string(),
                         match_method: Some("exact_isrc".to_string()),
                         quality_decision: None,
                     });
@@ -1275,7 +1364,7 @@ async fn evaluate_track_preflight_inner(
                 JOIN tracks t2 ON t2.id = ts.track_id
                 WHERE t2.musicbrainz_id = ? AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
                   AND COALESCE(ts.availability_status, '') NOT IN ('stale_404', 'not_found')
-                ORDER BY 
+                ORDER BY
                     (SELECT COALESCE(sp.priority, 999) FROM service_preferences sp WHERE sp.service_name = s.name) ASC,
                     COALESCE(ts.quality_score, 0) DESC,
                     COALESCE(ts.bit_depth, 0) DESC
@@ -1289,7 +1378,11 @@ async fn evaluate_track_preflight_inner(
             if !mb_matches.is_empty() {
                 let with_active: Vec<CandSource> = mb_matches
                     .into_iter()
-                    .filter(|c| c.active_accounts > 0 && eff_svc_ref.map_or(true, |req| !c.service_name.eq_ignore_ascii_case(req)))
+                    .filter(|c| {
+                        c.active_accounts > 0
+                            && eff_svc_ref
+                                .map_or(true, |req| !c.service_name.eq_ignore_ascii_case(req))
+                    })
                     .collect();
 
                 if with_active.is_empty() {
@@ -1360,7 +1453,10 @@ async fn evaluate_track_preflight_inner(
                     resolved_service_name: Some(matched.service_name),
                     resolved_service_track_id: matched.service_track_id,
                     resolved_quality: Some(q_decision.effective_quality.clone()),
-                    reason: format!("Resolved fallback via MusicBrainz Recording ID ({})", mb_code),
+                    reason: format!(
+                        "Resolved fallback via MusicBrainz Recording ID ({})",
+                        mb_code
+                    ),
                     match_method: Some("musicbrainz_recording_id".to_string()),
                     quality_decision: Some(q_decision),
                 });
@@ -1421,7 +1517,8 @@ async fn evaluate_track_preflight_inner(
                 resolved_service_name: None,
                 resolved_service_track_id: None,
                 resolved_quality: None,
-                reason: "Source is stale/404 on streaming provider and no exact fallback was found".to_string(),
+                reason: "Source is stale/404 on streaming provider and no exact fallback was found"
+                    .to_string(),
                 match_method: None,
                 quality_decision: None,
             });
@@ -1525,9 +1622,8 @@ pub fn s197_qobuz_quality_fields(
     bit_depth: Option<i32>,
     sample_rate_khz: Option<f64>,
 ) -> (Option<i32>, Option<i32>, i32) {
-    let quality_score = 1000
-        + bit_depth.map_or(0, |d| d * 10)
-        + sample_rate_khz.map_or(0, |r| (r as i32).min(200));
+    let quality_score =
+        1000 + bit_depth.map_or(0, |d| d * 10) + sample_rate_khz.map_or(0, |r| (r as i32).min(200));
     (
         bit_depth,
         sample_rate_khz.map(|r| (r * 1000.0) as i32),
@@ -1942,11 +2038,11 @@ pub async fn get_queue(
         sqlx::query_as(
             r#"SELECT dq.id, dq.track_id, dq.service_id, dq.service_name, dq.service_track_id, dq.service_album_id,
                       dq.target_title, dq.target_artist, dq.target_album, dq.target_isrc, dq.quality_preference,
-                      COALESCE(dq.target_title, t.title) as title, 
-                      COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
+                      COALESCE(dq.target_title, t.title) as title,
+                      COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
                        JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist,
-                      dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded, 
-                      dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count, 
+                      dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded,
+                      dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count,
                       dq.position, dq.resumable, dq.staging_path,
                       dq.created_at, dq.started_at, dq.completed_at,
                       dq.requested_quality, dq.effective_quality, dq.requested_format, dq.effective_format,
@@ -1967,22 +2063,22 @@ pub async fn get_queue(
             r#"SELECT dq.id, dq.track_id, dq.service_id, dq.service_name, dq.service_track_id, dq.service_album_id,
                       dq.target_title, dq.target_artist, dq.target_album, dq.target_isrc, dq.quality_preference,
                       COALESCE(dq.target_title, t.title) as title,
-                      COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta 
+                      COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
                        JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist,
-                      dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded, 
-                      dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count, 
+                      dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded,
+                      dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count,
                       dq.position, dq.resumable, dq.staging_path,
                       dq.created_at, dq.started_at, dq.completed_at,
                       dq.requested_quality, dq.effective_quality, dq.requested_format, dq.effective_format,
                       dq.quality_decision, dq.provider_fallback_used, dq.quality_fallback_used, dq.decision_reason
                FROM download_queue dq
                LEFT JOIN tracks t ON t.id = dq.track_id
-               ORDER BY 
-                   CASE dq.status 
-                       WHEN 'downloading' THEN 1 
-                       WHEN 'queued' THEN 2 
-                       WHEN 'failed' THEN 3 
-                       ELSE 4 
+               ORDER BY
+                   CASE dq.status
+                       WHEN 'downloading' THEN 1
+                       WHEN 'queued' THEN 2
+                       WHEN 'failed' THEN 3
+                       ELSE 4
                    END,
                    dq.priority DESC, dq.position ASC, dq.created_at ASC
                LIMIT ?"#,
@@ -1998,11 +2094,12 @@ pub async fn get_queue(
 
 /// Reorder download queue (manual drag-and-drop ordering)
 #[tauri::command]
-pub async fn reorder_queue(
-    queue_ids: Vec<i64>,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
+pub async fn reorder_queue(queue_ids: Vec<i64>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut tx = state
+        .db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
     for (pos, id) in queue_ids.into_iter().enumerate() {
         sqlx::query("UPDATE download_queue SET position = ? WHERE id = ?")
             .bind(pos as i64)
@@ -2019,7 +2116,7 @@ pub async fn reorder_queue(
 #[tauri::command]
 pub async fn get_queue_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let stats: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
-        r#"SELECT 
+        r#"SELECT
             (SELECT COUNT(*) FROM download_queue WHERE status = 'queued') as queued,
             (SELECT COUNT(*) FROM download_queue WHERE status = 'downloading') as downloading,
             (SELECT COUNT(*) FROM download_queue WHERE status = 'complete') as complete,
@@ -2067,10 +2164,12 @@ pub async fn get_queue_stats(state: State<'_, AppState>) -> Result<serde_json::V
 
     // Artifact / Sidecars counts
     let audio_count: i64 = complete;
-    let lrc_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM lyrics WHERE format = 'lrc' OR content IS NOT NULL")
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(complete);
+    let lrc_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM lyrics WHERE format = 'lrc' OR content IS NOT NULL",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(complete);
     let cover_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(DISTINCT album_id) FROM tracks WHERE id IN (SELECT track_id FROM download_queue WHERE status = 'complete')"
     )
@@ -2126,11 +2225,12 @@ pub async fn update_queue_priority(
 /// Cancel a download (canonical command with staging cleanup)
 #[tauri::command]
 pub async fn cancel_download(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    let staging: Option<(Option<String>,)> = sqlx::query_as("SELECT staging_path FROM download_queue WHERE id = ?")
-        .bind(queue_id)
-        .fetch_optional(&state.db)
-        .await
-        .unwrap_or(None);
+    let staging: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT staging_path FROM download_queue WHERE id = ?")
+            .bind(queue_id)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap_or(None);
 
     if let Some((Some(path),)) = staging {
         let p = std::path::PathBuf::from(path);
@@ -2158,13 +2258,12 @@ pub async fn cancel_queue_item(queue_id: i64, state: State<'_, AppState>) -> Res
 #[tauri::command]
 pub async fn retry_queue_item(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
     // S168: Prevent re-enqueuing terminal non-retryable items
-    let item_meta: Option<(Option<String>, i64)> = sqlx::query_as(
-        "SELECT error_message, retry_count FROM download_queue WHERE id = ?"
-    )
-    .bind(queue_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
+    let item_meta: Option<(Option<String>, i64)> =
+        sqlx::query_as("SELECT error_message, retry_count FROM download_queue WHERE id = ?")
+            .bind(queue_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
 
     if let Some((err_opt, rc)) = item_meta {
         let err_str = err_opt.unwrap_or_default();
@@ -2210,8 +2309,8 @@ pub async fn retry_failed(
 #[tauri::command]
 pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String> {
     let result = sqlx::query(
-        r#"UPDATE download_queue 
-           SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1 
+        r#"UPDATE download_queue
+           SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1
            WHERE status = 'failed' AND retry_count < 5
              AND COALESCE(error_message, '') NOT LIKE '%AuthInvalid%'
              AND COALESCE(error_message, '') NOT LIKE '%RequiresAuth%'
@@ -2358,7 +2457,10 @@ pub async fn perform_set_max_concurrent_downloads(
 
 /// Set maximum concurrent downloads
 #[tauri::command]
-pub async fn set_max_concurrent_downloads(state: State<'_, AppState>, max: usize) -> Result<usize, String> {
+pub async fn set_max_concurrent_downloads(
+    state: State<'_, AppState>,
+    max: usize,
+) -> Result<usize, String> {
     perform_set_max_concurrent_downloads(&state, max).await
 }
 
@@ -2369,7 +2471,10 @@ pub async fn perform_force_redownload_tracks(
     priority: Option<i64>,
     quality_preference: Option<String>,
 ) -> Result<usize, String> {
-    tracing::info!("force_redownload_tracks called for {} tracks", track_ids.len());
+    tracing::info!(
+        "force_redownload_tracks called for {} tracks",
+        track_ids.len()
+    );
     let mut re_queued = 0;
 
     for tid in &track_ids {
@@ -2463,7 +2568,7 @@ pub async fn perform_clear_download_history(
         count
     } else {
         let res = sqlx::query(
-            "DELETE FROM download_queue WHERE status IN ('complete', 'failed', 'cancelled')"
+            "DELETE FROM download_queue WHERE status IN ('complete', 'failed', 'cancelled')",
         )
         .execute(db)
         .await
@@ -2498,8 +2603,6 @@ pub async fn perform_reset_download_history(db: &crate::DbPool) -> Result<String
 pub async fn reset_download_history(state: State<'_, AppState>) -> Result<String, String> {
     perform_reset_download_history(&state.db).await
 }
-
-
 
 // ==============================================
 // HEALTH CHECK COMMAND
@@ -2572,12 +2675,11 @@ pub struct QueueAuditReport {
 
 /// Perform read-only audit analyzing the current download queue state and identity compliance
 pub async fn perform_audit_download_queue(db: &crate::DbPool) -> Result<QueueAuditReport, String> {
-    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT status, service_track_id, error_message FROM download_queue"
-    )
-    .fetch_all(db)
-    .await
-    .map_err(|e| format!("Failed to audit queue: {}", e))?;
+    let rows: Vec<(String, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT status, service_track_id, error_message FROM download_queue")
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("Failed to audit queue: {}", e))?;
 
     let total_items = rows.len() as i64;
     let mut ready_count = 0i64;
@@ -2591,7 +2693,10 @@ pub async fn perform_audit_download_queue(db: &crate::DbPool) -> Result<QueueAud
     let mut downloading_count = 0i64;
 
     for (status, s_track_id, err_opt) in rows {
-        let is_locked = s_track_id.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+        let is_locked = s_track_id
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
         if is_locked {
             source_locked_count += 1;
         }
@@ -2648,9 +2753,9 @@ pub async fn audit_download_queue(state: State<'_, AppState>) -> Result<QueueAud
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+    use crate::worker::DownloadWorkerState;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::sync::Arc;
-    use crate::worker::DownloadWorkerState;
 
     #[tokio::test]
     async fn test_run_health_check() {
@@ -2659,29 +2764,32 @@ mod queue_tests {
             .connect("sqlite::memory:")
             .await
             .expect("Failed to create test database");
-        
+
         let state = AppState {
             db: pool,
             worker_state: DownloadWorkerState::new(2),
             enrichment_state: crate::enrichment_worker::EnrichmentWorkerState::new(),
             concurrency_manager: Arc::new(crate::services::ConcurrencyManager::new()),
         };
-        
+
         // Manual validation of health check logic (since mocking tauri::State is complex)
         // This confirms the fields expected in HealthCheck are present and correct
         let database_ok = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
-        
+
         // Assert the HealthCheck struct fields as per S28 refactor
         let health = HealthCheck {
             database_ok,
-            python_ok: true, 
+            python_ok: true,
             ffmpeg_available: true,
             chromaprint_available: true,
             services_configured: vec![],
             errors: vec![],
         };
-        
-        assert!(health.database_ok, "Database should be OK in test environment");
+
+        assert!(
+            health.database_ok,
+            "Database should be OK in test environment"
+        );
         assert!(health.python_ok);
         assert!(health.ffmpeg_available);
         assert!(health.chromaprint_available);

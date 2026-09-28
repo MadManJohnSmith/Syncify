@@ -111,7 +111,7 @@ async fn create_test_db() -> sqlx::Pool<sqlx::Sqlite> {
             content TEXT,
             sync_level TEXT DEFAULT 'none'
         );
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -156,10 +156,9 @@ async fn local_playlist_tracks_page_decodes_library_track_with_favorite_at() {
         .await
         .unwrap();
 
-    let page =
-        fetch_local_playlist_tracks_page(&db, 1, 0, 50)
-            .await
-            .expect("playlist page must decode into LibraryTrack");
+    let page = fetch_local_playlist_tracks_page(&db, 1, 0, 50)
+        .await
+        .expect("playlist page must decode into LibraryTrack");
 
     assert_eq!(page.len(), 1);
     let track = &page[0];
@@ -235,12 +234,14 @@ async fn seed_playlist_track(
     file_path: Option<&str>,
 ) -> i64 {
     let track_id: i64 = match duration_ms {
-        Some(ms) => sqlx::query_scalar("INSERT INTO tracks (title, duration_ms) VALUES (?, ?) RETURNING id")
-            .bind(title)
-            .bind(ms)
-            .fetch_one(db)
-            .await
-            .unwrap(),
+        Some(ms) => {
+            sqlx::query_scalar("INSERT INTO tracks (title, duration_ms) VALUES (?, ?) RETURNING id")
+                .bind(title)
+                .bind(ms)
+                .fetch_one(db)
+                .await
+                .unwrap()
+        }
         None => sqlx::query_scalar("INSERT INTO tracks (title) VALUES (?) RETURNING id")
             .bind(title)
             .fetch_one(db)
@@ -264,12 +265,14 @@ async fn seed_playlist_track(
         .unwrap();
     }
     if let Some(path) = file_path {
-        sqlx::query("INSERT INTO downloads (track_id, file_path, file_format) VALUES (?, ?, 'FLAC')")
-            .bind(track_id)
-            .bind(path)
-            .execute(db)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format) VALUES (?, ?, 'FLAC')",
+        )
+        .bind(track_id)
+        .bind(path)
+        .execute(db)
+        .await
+        .unwrap();
     }
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)")
         .bind(playlist_id)
@@ -297,13 +300,49 @@ async fn export_m3u_verifies_real_files_and_reports_missing() {
         .await
         .unwrap();
 
-    seed_playlist_track(&db, 7, 0, "Song One", Some(180_000), Some("Artist One"), Some(file_a.to_str().unwrap())).await;
+    seed_playlist_track(
+        &db,
+        7,
+        0,
+        "Song One",
+        Some(180_000),
+        Some("Artist One"),
+        Some(file_a.to_str().unwrap()),
+    )
+    .await;
     // Archivo que NO existe en disco (fila BD huérfana).
-    seed_playlist_track(&db, 7, 1, "Ghost Song", Some(200_000), Some("Artist Two"), Some(tmp.path().join("ghost.flac").to_str().unwrap())).await;
+    seed_playlist_track(
+        &db,
+        7,
+        1,
+        "Ghost Song",
+        Some(200_000),
+        Some("Artist Two"),
+        Some(tmp.path().join("ghost.flac").to_str().unwrap()),
+    )
+    .await;
     // Sin artista y sin duración -> fallbacks "Unknown" / EXTINF:0.
-    seed_playlist_track(&db, 7, 2, "Song Two", None, None, Some(file_b.to_str().unwrap())).await;
+    seed_playlist_track(
+        &db,
+        7,
+        2,
+        "Song Two",
+        None,
+        None,
+        Some(file_b.to_str().unwrap()),
+    )
+    .await;
     // Sin fila en downloads -> sin_archivo_local.
-    seed_playlist_track(&db, 7, 3, "Never Downloaded", Some(95_000), Some("Artist Three"), None).await;
+    seed_playlist_track(
+        &db,
+        7,
+        3,
+        "Never Downloaded",
+        Some(95_000),
+        Some("Artist Three"),
+        None,
+    )
+    .await;
 
     let result = export_playlist_m3u_core(&db, 7, None)
         .await
@@ -332,17 +371,29 @@ async fn export_m3u_verifies_real_files_and_reports_missing() {
     let content = &result.m3u_content;
     assert!(content.starts_with("#EXTM3U\n"), "header must be #EXTM3U");
     assert!(
-        content.contains(&format!("#EXTINF:180,Artist One - Song One\n{}", file_a.display())),
+        content.contains(&format!(
+            "#EXTINF:180,Artist One - Song One\n{}",
+            file_a.display()
+        )),
         "entry for verified Song One with absolute path, got:\n{}",
         content
     );
     assert!(
-        content.contains(&format!("#EXTINF:0,Unknown - Song Two\n{}", file_b.display())),
+        content.contains(&format!(
+            "#EXTINF:0,Unknown - Song Two\n{}",
+            file_b.display()
+        )),
         "duration NULL -> 0 and artist fallback 'Unknown', got:\n{}",
         content
     );
-    assert!(!content.contains("ghost.flac"), "missing files must not appear in m3u");
-    assert!(!content.contains("Never Downloaded"), "unverified entries must be excluded");
+    assert!(
+        !content.contains("ghost.flac"),
+        "missing files must not appear in m3u"
+    );
+    assert!(
+        !content.contains("Never Downloaded"),
+        "unverified entries must be excluded"
+    );
 
     // Orden por posición de playlist: Song One antes que Song Two.
     let idx_one = content.find("Song One").unwrap();
@@ -406,14 +457,26 @@ async fn export_m3u_writes_verified_content_to_disk_when_path_given() {
         .execute(&db)
         .await
         .unwrap();
-    seed_playlist_track(&db, 5, 0, "Real Track", Some(61_000), Some("A B"), Some(file_a.to_str().unwrap())).await;
+    seed_playlist_track(
+        &db,
+        5,
+        0,
+        "Real Track",
+        Some(61_000),
+        Some("A B"),
+        Some(file_a.to_str().unwrap()),
+    )
+    .await;
 
     let out_path = tmp.path().join("nested").join("playlist.m3u");
     let result = export_playlist_m3u_core(&db, 5, Some(out_path.to_string_lossy().into_owned()))
         .await
         .expect("write must succeed");
 
-    assert_eq!(result.file_path.as_deref(), Some(out_path.to_str().unwrap()));
+    assert_eq!(
+        result.file_path.as_deref(),
+        Some(out_path.to_str().unwrap())
+    );
     let bytes = result.bytes_written.expect("bytes_written must be set");
     assert_eq!(bytes as usize, result.m3u_content.len());
 
@@ -421,7 +484,10 @@ async fn export_m3u_writes_verified_content_to_disk_when_path_given() {
     assert_eq!(on_disk, result.m3u_content);
     assert_eq!(
         on_disk,
-        format!("#EXTM3U\n#EXTINF:61,A B - Real Track\n{}\n", file_a.display())
+        format!(
+            "#EXTM3U\n#EXTINF:61,A B - Real Track\n{}\n",
+            file_a.display()
+        )
     );
 }
 
@@ -477,4 +543,3 @@ fn playlist_track_position_serde_camel_case() {
     assert_eq!(pos.track_id, 101);
     assert_eq!(pos.new_position, 3);
 }
-

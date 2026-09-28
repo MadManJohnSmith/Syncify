@@ -9,14 +9,16 @@
 //! 3. Database association of guest artists into `track_artists` with `role = 'featured'` during enrichment.
 //! 4. Querying of artist appearances (`fetch_artist_appearances` and `fetch_artist`).
 
+use sqlx::SqlitePool;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use sqlx::SqlitePool;
 use syncify_core_domain::metadata::clean_title_and_extract_featured;
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 use syncify_tauri_lib::commands::library::{fetch_artist, fetch_artist_appearances};
-use syncify_tauri_lib::services::enrichment::{EnrichmentEngine, OriginTrackMetadata, SyncTrackInput};
+use syncify_tauri_lib::services::enrichment::{
+    EnrichmentEngine, OriginTrackMetadata, SyncTrackInput,
+};
 use tempfile::tempdir;
 
 fn generate_synthetic_pcm() -> Vec<f32> {
@@ -92,7 +94,8 @@ fn test_clean_title_and_extract_featured_edge_cases() {
     assert_eq!(a1, vec!["Sasha Dobson"]);
 
     // 2. Parenthesized multiple guests with &
-    let (t2, a2) = clean_title_and_extract_featured("4 Minutes (feat. Justin Timberlake & Timbaland)");
+    let (t2, a2) =
+        clean_title_and_extract_featured("4 Minutes (feat. Justin Timberlake & Timbaland)");
     assert_eq!(t2, "4 Minutes");
     assert_eq!(a2, vec!["Justin Timberlake", "Timbaland"]);
 
@@ -153,7 +156,11 @@ fn test_flac_metadata_multi_artist_vorbis_comments() {
     };
 
     let result = apply_and_verify_flac_tags(&file_path, &meta);
-    assert!(result.is_ok(), "Tag writing and verification must succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Tag writing and verification must succeed: {:?}",
+        result.err()
+    );
 
     // Inspect physical VorbisComment blocks via metaflac
     let tag = metaflac::Tag::read_from_path(&file_path).expect("Read tagged flac");
@@ -209,7 +216,11 @@ async fn test_enrichment_associates_featured_in_track_artists() {
     };
 
     let result = engine.enrich_and_persist_sync_track(&pool, input).await;
-    assert!(result.is_ok(), "Track persistence must succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Track persistence must succeed: {:?}",
+        result.err()
+    );
     let res = result.unwrap();
 
     // 1. Verify tracks.title was cleaned
@@ -263,21 +274,25 @@ async fn test_appearances_query_and_attribution() {
     let pool = setup_test_db().await;
 
     // 1. Create Artists: Artist A ("Gorillaz") and Artist B ("Shaun Ryder")
-    let gorillaz_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Gorillaz') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let gorillaz_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Gorillaz') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let shaun_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Shaun Ryder') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let shaun_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Shaun Ryder') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // 2. Create Album by Gorillaz ("Demon Days")
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, release_date) VALUES ('Demon Days', '2005-05-23') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, release_date) VALUES ('Demon Days', '2005-05-23') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
         .bind(album_id)
@@ -301,11 +316,13 @@ async fn test_appearances_query_and_attribution() {
         .unwrap();
 
     // 4. Track 2: "DARE" (Gorillaz primary, Shaun Ryder featured)
-    let t2_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, duration_ms) VALUES ('DARE', ?, 244000) RETURNING id")
-        .bind(album_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let t2_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, duration_ms) VALUES ('DARE', ?, 244000) RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
         .bind(t2_id)
@@ -327,10 +344,11 @@ async fn test_appearances_query_and_attribution() {
         .await
         .unwrap();
 
-    let va_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Various Artists') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let va_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Various Artists') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     sqlx::query("INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
         .bind(comp_album_id)
@@ -354,14 +372,24 @@ async fn test_appearances_query_and_attribution() {
 
     // 6. Test fetch_artist_appearances for Shaun Ryder
     let appearances = fetch_artist_appearances(&pool, shaun_id).await.unwrap();
-    assert_eq!(appearances.len(), 2, "Shaun Ryder should have exactly 2 appearances");
+    assert_eq!(
+        appearances.len(),
+        2,
+        "Shaun Ryder should have exactly 2 appearances"
+    );
 
-    let t2_appearance = appearances.iter().find(|a| a.id == t2_id).expect("DARE must be an appearance");
+    let t2_appearance = appearances
+        .iter()
+        .find(|a| a.id == t2_id)
+        .expect("DARE must be an appearance");
     assert_eq!(t2_appearance.title, "DARE");
     assert_eq!(t2_appearance.album.as_deref(), Some("Demon Days"));
     assert_eq!(t2_appearance.role.as_deref(), Some("featured"));
 
-    let t3_appearance = appearances.iter().find(|a| a.id == t3_id).expect("Madchester Song must be an appearance");
+    let t3_appearance = appearances
+        .iter()
+        .find(|a| a.id == t3_id)
+        .expect("Madchester Song must be an appearance");
     assert_eq!(t3_appearance.title, "Madchester Song");
     assert_eq!(t3_appearance.album.as_deref(), Some("Soundtrack 90s"));
     assert_eq!(t3_appearance.role.as_deref(), Some("primary"));

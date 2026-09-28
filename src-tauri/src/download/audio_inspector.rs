@@ -101,14 +101,22 @@ impl PhysicalAudioMetadata {
     }
 
     /// Measures EBU R128 loudness and calculates ReplayGain metrics on the physical audio file.
-    pub fn measure_loudness(&mut self, path: &Path, target_lufs: Option<f64>) -> Result<&LoudnessAnalysis, String> {
+    pub fn measure_loudness(
+        &mut self,
+        path: &Path,
+        target_lufs: Option<f64>,
+    ) -> Result<&LoudnessAnalysis, String> {
         let analysis = calculate_loudness_ebur128(path, target_lufs)?;
         self.loudness = Some(analysis);
         Ok(self.loudness.as_ref().unwrap())
     }
 
     /// Measures EBU R128 loudness asynchronously.
-    pub async fn measure_loudness_async(&mut self, path: &Path, target_lufs: Option<f64>) -> Result<&LoudnessAnalysis, String> {
+    pub async fn measure_loudness_async(
+        &mut self,
+        path: &Path,
+        target_lufs: Option<f64>,
+    ) -> Result<&LoudnessAnalysis, String> {
         let analysis = calculate_loudness_ebur128_async(path, target_lufs).await?;
         self.loudness = Some(analysis);
         Ok(self.loudness.as_ref().unwrap())
@@ -150,7 +158,11 @@ pub fn enforce_post_download_quality_gate(
     format: &str,
 ) -> &'static str {
     let physical_q = classify_physical_audio_quality(bit_depth, sample_rate, format);
-    if claimed_quality.map(|q| q.eq_ignore_ascii_case("hires")).unwrap_or(false) && physical_q != "hires" {
+    if claimed_quality
+        .map(|q| q.eq_ignore_ascii_case("hires"))
+        .unwrap_or(false)
+        && physical_q != "hires"
+    {
         physical_q
     } else {
         physical_q
@@ -200,9 +212,16 @@ pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata>
                     }
                 });
 
-                let streaminfo_md5_valid = streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
+                let streaminfo_md5_valid =
+                    streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
                 let md5_signature = if streaminfo.md5.len() == 16 {
-                    Some(streaminfo.md5.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+                    Some(
+                        streaminfo
+                            .md5
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<String>(),
+                    )
                 } else {
                     None
                 };
@@ -425,7 +444,11 @@ pub fn parse_ebur128_output(stderr: &str, target_lufs: f64) -> Result<LoudnessAn
                 }
             }
             if true_peak_db.is_none() && (trimmed.contains("TPK:") || trimmed.contains("Peak:")) {
-                let marker = if trimmed.contains("TPK:") { "TPK:" } else { "Peak:" };
+                let marker = if trimmed.contains("TPK:") {
+                    "TPK:"
+                } else {
+                    "Peak:"
+                };
                 if let Some(pos) = trimmed.find(marker) {
                     let sub = trimmed[pos + marker.len()..].trim_start();
                     if let Some(token) = sub.split_whitespace().next() {
@@ -478,7 +501,10 @@ pub fn parse_ebur128_output(stderr: &str, target_lufs: f64) -> Result<LoudnessAn
 }
 
 /// Runs synchronous `ffmpeg` EBU R128 analysis on physical audio file.
-pub fn calculate_loudness_ebur128(path: &Path, target_lufs: Option<f64>) -> Result<LoudnessAnalysis, String> {
+pub fn calculate_loudness_ebur128(
+    path: &Path,
+    target_lufs: Option<f64>,
+) -> Result<LoudnessAnalysis, String> {
     if !path.exists() {
         return Err(format!("Audio file does not exist: {:?}", path));
     }

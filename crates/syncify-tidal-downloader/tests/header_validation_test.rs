@@ -9,11 +9,11 @@ use tempfile::NamedTempFile;
 async fn test_bounded_header_read_on_large_file_prevents_oom() {
     // Simulate a large 256 MB audio download using a sparse file
     let mut temp = NamedTempFile::new().expect("Create tempfile");
-    
+
     // Write a valid FLAC header (4 bytes 'fLaC' + 4 bytes metadata block header)
     temp.write_all(b"fLaC\x00\x00\x00\x22")
         .expect("Write FLAC magic");
-    
+
     // Extend file to 256 MB (sparse file on supported OS, instant O(1) allocation)
     const TARGET_SIZE: u64 = 256 * 1024 * 1024;
     temp.as_file()

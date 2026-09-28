@@ -28,30 +28,38 @@ async fn test_migration_0058_lifecycle_schema_and_idempotence() {
 
     // 1. Run canonical SQLx migrations
     let migrator = sqlx::migrate!("./migrations");
-    
+
     // Find migration 58 in the migrator
     let mig_58_def = migrator.iter().find(|m| m.version == 58);
-    assert!(mig_58_def.is_some(), "Migration 0058 must be registered in sqlx::migrate!");
+    assert!(
+        mig_58_def.is_some(),
+        "Migration 0058 must be registered in sqlx::migrate!"
+    );
 
     // Run full migrations
-    migrator.run(&pool).await.expect("Failed to run canonical migrations including 0058");
+    migrator
+        .run(&pool)
+        .await
+        .expect("Failed to run canonical migrations including 0058");
 
     // 2. Verify repair_history table exists
     let table_after: Option<(String,)> = sqlx::query_as(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='repair_history'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='repair_history'",
     )
     .fetch_optional(&pool)
     .await
     .unwrap();
-    assert!(table_after.is_some(), "repair_history table must exist after migration 0058");
+    assert!(
+        table_after.is_some(),
+        "repair_history table must exist after migration 0058"
+    );
 
     // 3. Verify all columns of repair_history table exist
-    let columns: Vec<(i64, String, String, i64, Option<String>, i64)> = sqlx::query_as(
-        "PRAGMA table_info(repair_history)"
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let columns: Vec<(i64, String, String, i64, Option<String>, i64)> =
+        sqlx::query_as("PRAGMA table_info(repair_history)")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
 
     let col_names: Vec<String> = columns.into_iter().map(|c| c.1).collect();
     let expected_cols = vec![
@@ -76,18 +84,29 @@ async fn test_migration_0058_lifecycle_schema_and_idempotence() {
     ];
 
     for col in &expected_cols {
-        assert!(col_names.contains(&col.to_string()), "Column '{}' must exist in repair_history", col);
+        assert!(
+            col_names.contains(&col.to_string()),
+            "Column '{}' must exist in repair_history",
+            col
+        );
     }
-    assert_eq!(col_names.len(), expected_cols.len(), "repair_history column count must match exactly");
+    assert_eq!(
+        col_names.len(),
+        expected_cols.len(),
+        "repair_history column count must match exactly"
+    );
 
     // 4. Verify indexes exist
     let idx_timestamp: Option<(String,)> = sqlx::query_as(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_repair_history_timestamp'"
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_repair_history_timestamp'",
     )
     .fetch_optional(&pool)
     .await
     .unwrap();
-    assert!(idx_timestamp.is_some(), "idx_repair_history_timestamp index must exist");
+    assert!(
+        idx_timestamp.is_some(),
+        "idx_repair_history_timestamp index must exist"
+    );
 
     let idx_download_id: Option<(String,)> = sqlx::query_as(
         "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_repair_history_download_id'"
@@ -95,25 +114,38 @@ async fn test_migration_0058_lifecycle_schema_and_idempotence() {
     .fetch_optional(&pool)
     .await
     .unwrap();
-    assert!(idx_download_id.is_some(), "idx_repair_history_download_id index must exist");
+    assert!(
+        idx_download_id.is_some(),
+        "idx_repair_history_download_id index must exist"
+    );
 
     // 5. Verify SQLx migration version 58 record and checksum
     let mig_58_rec: Option<(i64, String, bool, Vec<u8>)> = sqlx::query_as(
-        "SELECT version, description, success, checksum FROM _sqlx_migrations WHERE version = 58"
+        "SELECT version, description, success, checksum FROM _sqlx_migrations WHERE version = 58",
     )
     .fetch_optional(&pool)
     .await
     .unwrap();
-    assert!(mig_58_rec.is_some(), "Migration 58 record must exist in _sqlx_migrations");
+    assert!(
+        mig_58_rec.is_some(),
+        "Migration 58 record must exist in _sqlx_migrations"
+    );
     let (v, desc, success, checksum) = mig_58_rec.unwrap();
     assert_eq!(v, 58);
-    assert!(desc.contains("repair") && desc.contains("history"), "Description was: {}", desc);
+    assert!(
+        desc.contains("repair") && desc.contains("history"),
+        "Description was: {}",
+        desc
+    );
     assert!(success);
     assert!(!checksum.is_empty(), "Checksum must not be empty");
 
     // 6. Test idempotence: Rerun migrations second time
     let rerun_res = migrator.run(&pool).await;
-    assert!(rerun_res.is_ok(), "Rerunning migrations must be completely idempotent and succeed");
+    assert!(
+        rerun_res.is_ok(),
+        "Rerunning migrations must be completely idempotent and succeed"
+    );
 
     // 7. Verify append-only insertions succeed on migrated schema
     let inserted_id: i64 = sqlx::query_scalar(

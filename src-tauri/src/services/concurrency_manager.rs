@@ -358,18 +358,26 @@ mod tests {
         let mgr = Arc::new(ConcurrencyManager::new());
         let scope = LockScope::AccountSync(101);
 
-        let g1 = mgr.acquire(scope.clone(), Some("op-1"), Some(Duration::from_millis(50))).await.unwrap();
+        let g1 = mgr
+            .acquire(scope.clone(), Some("op-1"), Some(Duration::from_millis(50)))
+            .await
+            .unwrap();
         assert_eq!(g1.operation_id, "op-1");
 
         // Concurrent attempt with short timeout should time out
-        let g2_res = mgr.acquire(scope.clone(), Some("op-2"), Some(Duration::from_millis(50))).await;
+        let g2_res = mgr
+            .acquire(scope.clone(), Some("op-2"), Some(Duration::from_millis(50)))
+            .await;
         assert!(matches!(g2_res, Err(ConcurrencyError::Timeout { .. })));
 
         // Once g1 is dropped, g3 should succeed immediately
         drop(g1);
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        let g3 = mgr.acquire(scope, Some("op-3"), Some(Duration::from_millis(100))).await.unwrap();
+        let g3 = mgr
+            .acquire(scope, Some("op-3"), Some(Duration::from_millis(100)))
+            .await
+            .unwrap();
         assert_eq!(g3.operation_id, "op-3");
     }
 
@@ -377,8 +385,14 @@ mod tests {
     async fn test_concurrency_manager_different_accounts_coexist() {
         let mgr = Arc::new(ConcurrencyManager::new());
 
-        let g1 = mgr.acquire(LockScope::AccountSync(1), Some("op-acc-1"), None).await.unwrap();
-        let g2 = mgr.acquire(LockScope::AccountSync(2), Some("op-acc-2"), None).await.unwrap();
+        let g1 = mgr
+            .acquire(LockScope::AccountSync(1), Some("op-acc-1"), None)
+            .await
+            .unwrap();
+        let g2 = mgr
+            .acquire(LockScope::AccountSync(2), Some("op-acc-2"), None)
+            .await
+            .unwrap();
 
         assert_eq!(g1.operation_id, "op-acc-1");
         assert_eq!(g2.operation_id, "op-acc-2");
@@ -388,17 +402,37 @@ mod tests {
     async fn test_download_and_repair_mutual_exclusion() {
         let mgr = Arc::new(ConcurrencyManager::new());
 
-        let dl_guard = mgr.acquire(LockScope::Download(42), Some("op-dl"), Some(Duration::from_millis(50))).await.unwrap();
+        let dl_guard = mgr
+            .acquire(
+                LockScope::Download(42),
+                Some("op-dl"),
+                Some(Duration::from_millis(50)),
+            )
+            .await
+            .unwrap();
 
         // Attempting to acquire Repair on same track should fail with timeout
-        let rep_res = mgr.acquire(LockScope::Repair(42), Some("op-repair"), Some(Duration::from_millis(50))).await;
+        let rep_res = mgr
+            .acquire(
+                LockScope::Repair(42),
+                Some("op-repair"),
+                Some(Duration::from_millis(50)),
+            )
+            .await;
         assert!(matches!(rep_res, Err(ConcurrencyError::Timeout { .. })));
 
         drop(dl_guard);
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         // Now repair succeeds
-        let rep_guard = mgr.acquire(LockScope::Repair(42), Some("op-repair-2"), Some(Duration::from_millis(100))).await.unwrap();
+        let rep_guard = mgr
+            .acquire(
+                LockScope::Repair(42),
+                Some("op-repair-2"),
+                Some(Duration::from_millis(100)),
+            )
+            .await
+            .unwrap();
         assert_eq!(rep_guard.operation_id, "op-repair-2");
     }
 
@@ -412,13 +446,19 @@ mod tests {
             LockScope::AccountSync(1),
         ];
 
-        let multi_guard = mgr.acquire_multi(scopes, Some("op-batch"), None).await.unwrap();
+        let multi_guard = mgr
+            .acquire_multi(scopes, Some("op-batch"), None)
+            .await
+            .unwrap();
         assert_eq!(multi_guard.count(), 3);
 
         let ordered = multi_guard.scopes();
         assert_eq!(ordered[0], LockScope::AccountSync(1));
         assert_eq!(ordered[1], LockScope::CanonicalTrack(5));
-        assert_eq!(ordered[2], LockScope::FilesystemPath("C:/music/track.flac".to_string()));
+        assert_eq!(
+            ordered[2],
+            LockScope::FilesystemPath("C:/music/track.flac".to_string())
+        );
     }
 
     #[tokio::test]

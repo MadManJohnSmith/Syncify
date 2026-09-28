@@ -42,7 +42,10 @@ fn test_tidal_cover_url_construction_defaults_to_1280x1280() {
         url,
         "https://resources.tidal.com/images/687d56f7/c051/4c32/854c/f5947e448738/1280x1280.jpg"
     );
-    assert!(!url.contains("320x320.jpg"), "Must not use low-res 320x320 thumbnail");
+    assert!(
+        !url.contains("320x320.jpg"),
+        "Must not use low-res 320x320 thumbnail"
+    );
 
     // Parametric dimensions test
     let custom_url = album.cover_url_with_dimensions(640, 640).unwrap();
@@ -130,7 +133,7 @@ async fn test_migration_0073_cover_art_url_upgrade_and_recurrence_prevention() {
     sqlx::query(
         r#"
         INSERT INTO albums (id, title, release_date, tidal_id, cover_art_url)
-        VALUES 
+        VALUES
             (1, 'Album LowRes 1', '2020-01-01', '1001', 'https://resources.tidal.com/images/88a79f9d/6ae7/4ef3/ac57/ff66e5dd9bde/320x320.jpg'),
             (2, 'Album LowRes 2', '2021-01-01', '1002', 'https://resources.tidal.com/images/687d56f7/c051/4c32/854c/f5947e448738/320x320.jpg'),
             (3, 'Album Already HighRes', '2022-01-01', '1003', 'https://resources.tidal.com/images/11111111/2222/3333/4444/555555555555/1280x1280.jpg'),
@@ -148,7 +151,7 @@ async fn test_migration_0073_cover_art_url_upgrade_and_recurrence_prevention() {
         INSERT INTO accounts (service_id, display_name, email)
         VALUES ((SELECT id FROM services WHERE name = 'tidal'), 'Tidal User', 'user@example.com')
         RETURNING id
-        "#
+        "#,
     )
     .fetch_one(&pool)
     .await
@@ -179,13 +182,15 @@ async fn test_migration_0073_cover_art_url_upgrade_and_recurrence_prevention() {
     .expect("Seed playlists");
 
     // Pre-migration count check
-    let count_320_pre: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM albums WHERE cover_art_url LIKE '%/320x320.jpg%'"
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Count 320 pre-migration");
-    assert_eq!(count_320_pre, 2, "Must have exactly 2 low-res albums before migration");
+    let count_320_pre: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE cover_art_url LIKE '%/320x320.jpg%'")
+            .fetch_one(&pool)
+            .await
+            .expect("Count 320 pre-migration");
+    assert_eq!(
+        count_320_pre, 2,
+        "Must have exactly 2 low-res albums before migration"
+    );
 
     // 3. Apply full migrations including 0073
     let full_migrator = sqlx::migrate!("./migrations");
@@ -195,77 +200,94 @@ async fn test_migration_0073_cover_art_url_upgrade_and_recurrence_prevention() {
         .expect("Run all migrations through 0073");
 
     // 4. Post-migration verification: exactly 0 albums maintain 320x320
-    let count_320_post: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM albums WHERE cover_art_url LIKE '%/320x320.jpg%'"
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Count 320 post-migration");
-    assert_eq!(count_320_post, 0, "0 URLs in albums must retain /320x320.jpg");
-
-    // Albums 1 and 2 must now have 1280x1280
-    let (url1,): (Option<String>,) = sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let count_320_post: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE cover_art_url LIKE '%/320x320.jpg%'")
+            .fetch_one(&pool)
+            .await
+            .expect("Count 320 post-migration");
     assert_eq!(
-        url1.as_deref(),
-        Some("https://resources.tidal.com/images/88a79f9d/6ae7/4ef3/ac57/ff66e5dd9bde/1280x1280.jpg")
+        count_320_post, 0,
+        "0 URLs in albums must retain /320x320.jpg"
     );
 
-    let (url2,): (Option<String>,) = sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 2")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    // Albums 1 and 2 must now have 1280x1280
+    let (url1,): (Option<String>,) =
+        sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        url1.as_deref(),
+        Some(
+            "https://resources.tidal.com/images/88a79f9d/6ae7/4ef3/ac57/ff66e5dd9bde/1280x1280.jpg"
+        )
+    );
+
+    let (url2,): (Option<String>,) =
+        sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 2")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         url2.as_deref(),
-        Some("https://resources.tidal.com/images/687d56f7/c051/4c32/854c/f5947e448738/1280x1280.jpg")
+        Some(
+            "https://resources.tidal.com/images/687d56f7/c051/4c32/854c/f5947e448738/1280x1280.jpg"
+        )
     );
 
     // Album 3 (already high-res) must remain intact
-    let (url3,): (Option<String>,) = sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 3")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let (url3,): (Option<String>,) =
+        sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 3")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         url3.as_deref(),
-        Some("https://resources.tidal.com/images/11111111/2222/3333/4444/555555555555/1280x1280.jpg")
+        Some(
+            "https://resources.tidal.com/images/11111111/2222/3333/4444/555555555555/1280x1280.jpg"
+        )
     );
 
     // Album 4 (third-party) must remain intact
-    let (url4,): (Option<String>,) = sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 4")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let (url4,): (Option<String>,) =
+        sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 4")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         url4.as_deref(),
         Some("https://i.scdn.co/image/ab67616d0000b273b5f000")
     );
 
     // Album 5 (NULL) must remain NULL
-    let (url5,): (Option<String>,) = sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 5")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let (url5,): (Option<String>,) =
+        sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 5")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert!(url5.is_none());
 
     // Favorites post-migration check
-    let fav_count_320: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM favorites WHERE image_url LIKE '%/320x320.jpg%'"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(fav_count_320, 0, "0 URLs in favorites must retain /320x320.jpg");
+    let fav_count_320: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM favorites WHERE image_url LIKE '%/320x320.jpg%'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        fav_count_320, 0,
+        "0 URLs in favorites must retain /320x320.jpg"
+    );
 
     // Playlists post-migration check
-    let pl_count_320: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM playlists WHERE image_url LIKE '%/320x320.jpg%'"
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(pl_count_320, 0, "0 URLs in playlists must retain /320x320.jpg");
+    let pl_count_320: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE image_url LIKE '%/320x320.jpg%'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        pl_count_320, 0,
+        "0 URLs in playlists must retain /320x320.jpg"
+    );
 
     // 5. Test Recurrence Prevention Triggers
     // INSERT trigger test
@@ -277,13 +299,16 @@ async fn test_migration_0073_cover_art_url_upgrade_and_recurrence_prevention() {
     .await
     .expect("Insert with 320x320 URL must trigger auto-upgrade");
 
-    let (url6,): (Option<String>,) = sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 6")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let (url6,): (Option<String>,) =
+        sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 6")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         url6.as_deref(),
-        Some("https://resources.tidal.com/images/99999999/8888/7777/6666/555555555555/1280x1280.jpg"),
+        Some(
+            "https://resources.tidal.com/images/99999999/8888/7777/6666/555555555555/1280x1280.jpg"
+        ),
         "Trigger must auto-upgrade inserted 320x320 URL to 1280x1280"
     );
 
@@ -291,16 +316,17 @@ async fn test_migration_0073_cover_art_url_upgrade_and_recurrence_prevention() {
     sqlx::query(
         "UPDATE albums
          SET cover_art_url = 'https://resources.tidal.com/images/update_test/320x320.jpg'
-         WHERE id = 5"
+         WHERE id = 5",
     )
     .execute(&pool)
     .await
     .expect("Update with 320x320 URL must trigger auto-upgrade");
 
-    let (url5_updated,): (Option<String>,) = sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 5")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let (url5_updated,): (Option<String>,) =
+        sqlx::query_as("SELECT cover_art_url FROM albums WHERE id = 5")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         url5_updated.as_deref(),
         Some("https://resources.tidal.com/images/update_test/1280x1280.jpg"),
@@ -312,7 +338,11 @@ async fn test_migration_0073_cover_art_url_upgrade_and_recurrence_prevention() {
         .fetch_all(&pool)
         .await
         .expect("PRAGMA foreign_key_check must succeed");
-    assert!(fk_errors.is_empty(), "Foreign key check must return 0 errors: {:?}", fk_errors);
+    assert!(
+        fk_errors.is_empty(),
+        "Foreign key check must return 0 errors: {:?}",
+        fk_errors
+    );
 
     let integrity_result: String = sqlx::query_scalar("PRAGMA integrity_check")
         .fetch_one(&pool)

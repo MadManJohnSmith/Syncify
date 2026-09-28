@@ -129,8 +129,13 @@ async fn test_cancellation_during_transfer_purges_staging_part_file() {
     let part_file = staging_dir.join("test_item_99.part");
 
     // Write partial .part data
-    tokio::fs::write(&part_file, b"partial downloaded stream chunk data").await.unwrap();
-    assert!(part_file.exists(), ".part file must exist during active transfer");
+    tokio::fs::write(&part_file, b"partial downloaded stream chunk data")
+        .await
+        .unwrap();
+    assert!(
+        part_file.exists(),
+        ".part file must exist during active transfer"
+    );
 
     let mut tracker = DownloadPhaseTracker::new();
     tracker.start_phase(DownloadPhase::Transfer);
@@ -193,19 +198,78 @@ fn test_qobuz_and_tidal_parity_on_phase_contract() {
         transfer_source: "network".to_string(),
         bytes_transferred: 15_000_000,
         throughput_mibps: 9.53,
-        cache_hits: CacheHitReport { lyrics_hit: false, cover_hit: true, metadata_hit: true },
+        cache_hits: CacheHitReport {
+            lyrics_hit: false,
+            cover_hit: true,
+            metadata_hit: true,
+        },
         phases: vec![
-            DownloadPhaseRecord { phase: DownloadPhase::QueueWait, start_ms: 0, end_ms: 15, duration_ms: 15 },
-            DownloadPhaseRecord { phase: DownloadPhase::Auth, start_ms: 15, end_ms: 135, duration_ms: 120 },
-            DownloadPhaseRecord { phase: DownloadPhase::ResolveStream, start_ms: 135, end_ms: 385, duration_ms: 250 },
-            DownloadPhaseRecord { phase: DownloadPhase::Transfer, start_ms: 385, end_ms: 1885, duration_ms: 1500 },
-            DownloadPhaseRecord { phase: DownloadPhase::ValidateAudio, start_ms: 1885, end_ms: 1915, duration_ms: 30 },
-            DownloadPhaseRecord { phase: DownloadPhase::ResolveCover, start_ms: 1915, end_ms: 1985, duration_ms: 70 },
-            DownloadPhaseRecord { phase: DownloadPhase::ResolveLyrics, start_ms: 1985, end_ms: 2045, duration_ms: 60 },
-            DownloadPhaseRecord { phase: DownloadPhase::EnrichMetadata, start_ms: 2045, end_ms: 2125, duration_ms: 80 },
-            DownloadPhaseRecord { phase: DownloadPhase::Tagging, start_ms: 2125, end_ms: 2170, duration_ms: 45 },
-            DownloadPhaseRecord { phase: DownloadPhase::Promotion, start_ms: 2170, end_ms: 2180, duration_ms: 10 },
-            DownloadPhaseRecord { phase: DownloadPhase::Completed, start_ms: 2180, end_ms: 2180, duration_ms: 0 },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::QueueWait,
+                start_ms: 0,
+                end_ms: 15,
+                duration_ms: 15,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Auth,
+                start_ms: 15,
+                end_ms: 135,
+                duration_ms: 120,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::ResolveStream,
+                start_ms: 135,
+                end_ms: 385,
+                duration_ms: 250,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Transfer,
+                start_ms: 385,
+                end_ms: 1885,
+                duration_ms: 1500,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::ValidateAudio,
+                start_ms: 1885,
+                end_ms: 1915,
+                duration_ms: 30,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::ResolveCover,
+                start_ms: 1915,
+                end_ms: 1985,
+                duration_ms: 70,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::ResolveLyrics,
+                start_ms: 1985,
+                end_ms: 2045,
+                duration_ms: 60,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::EnrichMetadata,
+                start_ms: 2045,
+                end_ms: 2125,
+                duration_ms: 80,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Tagging,
+                start_ms: 2125,
+                end_ms: 2170,
+                duration_ms: 45,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Promotion,
+                start_ms: 2170,
+                end_ms: 2180,
+                duration_ms: 10,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Completed,
+                start_ms: 2180,
+                end_ms: 2180,
+                duration_ms: 0,
+            },
         ],
     };
 
@@ -227,20 +291,84 @@ fn test_qobuz_and_tidal_parity_on_phase_contract() {
         transfer_source: "network".to_string(),
         bytes_transferred: 14_000_000,
         throughput_mibps: 9.53,
-        cache_hits: CacheHitReport { lyrics_hit: true, cover_hit: true, metadata_hit: true },
+        cache_hits: CacheHitReport {
+            lyrics_hit: true,
+            cover_hit: true,
+            metadata_hit: true,
+        },
         phases: vec![
-            DownloadPhaseRecord { phase: DownloadPhase::QueueWait, start_ms: 0, end_ms: 20, duration_ms: 20 },
-            DownloadPhaseRecord { phase: DownloadPhase::Auth, start_ms: 20, end_ms: 120, duration_ms: 100 },
-            DownloadPhaseRecord { phase: DownloadPhase::ResolveStream, start_ms: 120, end_ms: 340, duration_ms: 220 },
-            DownloadPhaseRecord { phase: DownloadPhase::Transfer, start_ms: 340, end_ms: 1740, duration_ms: 1400 },
-            DownloadPhaseRecord { phase: DownloadPhase::ValidateAudio, start_ms: 1740, end_ms: 1765, duration_ms: 25 },
-            DownloadPhaseRecord { phase: DownloadPhase::ResolveCover, start_ms: 1765, end_ms: 1830, duration_ms: 65 },
-            DownloadPhaseRecord { phase: DownloadPhase::ResolveLyrics, start_ms: 1830, end_ms: 1885, duration_ms: 55 },
-            DownloadPhaseRecord { phase: DownloadPhase::EnrichMetadata, start_ms: 1885, end_ms: 1960, duration_ms: 75 },
-            DownloadPhaseRecord { phase: DownloadPhase::Tagging, start_ms: 1960, end_ms: 2000, duration_ms: 40 },
-            DownloadPhaseRecord { phase: DownloadPhase::Persisting, start_ms: 2000, end_ms: 2025, duration_ms: 25 },
-            DownloadPhaseRecord { phase: DownloadPhase::Promotion, start_ms: 2025, end_ms: 2040, duration_ms: 15 },
-            DownloadPhaseRecord { phase: DownloadPhase::Completed, start_ms: 2040, end_ms: 2040, duration_ms: 0 },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::QueueWait,
+                start_ms: 0,
+                end_ms: 20,
+                duration_ms: 20,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Auth,
+                start_ms: 20,
+                end_ms: 120,
+                duration_ms: 100,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::ResolveStream,
+                start_ms: 120,
+                end_ms: 340,
+                duration_ms: 220,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Transfer,
+                start_ms: 340,
+                end_ms: 1740,
+                duration_ms: 1400,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::ValidateAudio,
+                start_ms: 1740,
+                end_ms: 1765,
+                duration_ms: 25,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::ResolveCover,
+                start_ms: 1765,
+                end_ms: 1830,
+                duration_ms: 65,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::ResolveLyrics,
+                start_ms: 1830,
+                end_ms: 1885,
+                duration_ms: 55,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::EnrichMetadata,
+                start_ms: 1885,
+                end_ms: 1960,
+                duration_ms: 75,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Tagging,
+                start_ms: 1960,
+                end_ms: 2000,
+                duration_ms: 40,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Persisting,
+                start_ms: 2000,
+                end_ms: 2025,
+                duration_ms: 25,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Promotion,
+                start_ms: 2025,
+                end_ms: 2040,
+                duration_ms: 15,
+            },
+            DownloadPhaseRecord {
+                phase: DownloadPhase::Completed,
+                start_ms: 2040,
+                end_ms: 2040,
+                duration_ms: 0,
+            },
         ],
     };
 

@@ -9,12 +9,12 @@
 //! 6. When a fallback key exists and Keychain becomes available, the key is migrated to Keychain and the file purged.
 //! 7. AES-256-GCM encryption and decryption function identically and interoperably between keychain and fallback keys.
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::fs;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use syncify_tauri_lib::crypto::{
     decrypt_with_key, encrypt_with_key, generate_random_key, load_fallback_key,
     resolve_or_create_key, write_fallback_key,
@@ -179,7 +179,11 @@ fn test_load_fallback_key_hardens_insecure_permissions() {
     {
         fs::set_permissions(&fallback_key_path, fs::Permissions::from_mode(0o644))
             .expect("Failed to set 0644");
-        let mode_before = fs::metadata(&fallback_key_path).unwrap().permissions().mode() & 0o777;
+        let mode_before = fs::metadata(&fallback_key_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode_before, 0o644);
     }
 
@@ -188,7 +192,11 @@ fn test_load_fallback_key_hardens_insecure_permissions() {
 
     #[cfg(unix)]
     {
-        let mode_after = fs::metadata(&fallback_key_path).unwrap().permissions().mode() & 0o777;
+        let mode_after = fs::metadata(&fallback_key_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(
             mode_after, 0o600,
             "load_fallback_key must remediate insecure 0644 permissions to strict 0600"
@@ -222,7 +230,10 @@ fn test_fallback_migration_to_keychain_when_available() {
     .expect("resolve_or_create_key failed");
 
     assert_eq!(resolved_key, fallback_key);
-    assert!(migrated_to_kc.load(Ordering::SeqCst), "Fallback key should be migrated to Keychain");
+    assert!(
+        migrated_to_kc.load(Ordering::SeqCst),
+        "Fallback key should be migrated to Keychain"
+    );
     assert!(
         !fallback_key_path.exists(),
         "Fallback file should be purged after migration to Keychain"

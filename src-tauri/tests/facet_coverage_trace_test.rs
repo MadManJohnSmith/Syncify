@@ -6,12 +6,12 @@
 //! 3. TextRepresentation in MusicBrainz takes precedence.
 //! 4. Full propagation into FlacMetadata and Mp4Metadata.
 
-use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
-use syncify_tauri_lib::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
-use tempfile::tempdir;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
+use syncify_tauri_lib::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
+use tempfile::tempdir;
 
 fn generate_synthetic_pcm() -> Vec<f32> {
     let sample_rate = 44100;
@@ -105,16 +105,10 @@ async fn test_multi_genre_and_country_language_enrichment() {
     );
 
     // 2. STYLE is populated with secondary genres
-    assert_eq!(
-        enriched.style.value(),
-        Some("Art Rock; Post-Punk")
-    );
+    assert_eq!(enriched.style.value(), Some("Art Rock; Post-Punk"));
 
     // 3. TAGS (Album Tags) is populated
-    assert_eq!(
-        enriched.tags.value(),
-        Some("Art Rock; Post-Punk")
-    );
+    assert_eq!(enriched.tags.value(), Some("Art Rock; Post-Punk"));
 
     // 4. ARTISTS_TAGS is populated
     assert_eq!(
@@ -123,16 +117,10 @@ async fn test_multi_genre_and_country_language_enrichment() {
     );
 
     // 5. LANGUAGE is automatically derived as "eng" from country GB
-    assert_eq!(
-        enriched.language.value(),
-        Some("eng")
-    );
+    assert_eq!(enriched.language.value(), Some("eng"));
 
     // 6. COUNTRY is resolved to "United Kingdom"
-    assert_eq!(
-        enriched.release_country.value(),
-        Some("United Kingdom")
-    );
+    assert_eq!(enriched.release_country.value(), Some("United Kingdom"));
 
     // 7. Test write to FLAC file and verify Vorbis Comments
     let dir = tempdir().expect("tempdir");
@@ -158,34 +146,47 @@ async fn test_multi_genre_and_country_language_enrichment() {
     };
 
     let report = apply_and_verify_flac_tags(&file_path, &flac_meta).expect("FLAC write");
-    assert!(report.tags_match, "Tags verification failed: {:?}", report.mismatches);
+    assert!(
+        report.tags_match,
+        "Tags verification failed: {:?}",
+        report.mismatches
+    );
 
     let tag_obj = metaflac::Tag::read_from_path(&file_path).expect("Read flac tags");
     let comments = tag_obj.vorbis_comments().expect("vorbis comments");
 
-    assert_eq!(comments.get("GENRE"), Some(&vec![
-        "Alternative Rock".to_string(),
-        "Art Rock".to_string(),
-        "Post-Punk".to_string(),
-    ]));
-    assert_eq!(comments.get("STYLE"), Some(&vec![
-        "Art Rock".to_string(),
-        "Post-Punk".to_string(),
-    ]));
-    assert_eq!(comments.get("TAGS"), Some(&vec![
-        "Art Rock".to_string(),
-        "Post-Punk".to_string(),
-    ]));
-    assert_eq!(comments.get("ARTISTS_TAGS"), Some(&vec![
-        "Alternative Rock".to_string(),
-        "Art Rock".to_string(),
-        "Post-Punk".to_string(),
-    ]));
+    assert_eq!(
+        comments.get("GENRE"),
+        Some(&vec![
+            "Alternative Rock".to_string(),
+            "Art Rock".to_string(),
+            "Post-Punk".to_string(),
+        ])
+    );
+    assert_eq!(
+        comments.get("STYLE"),
+        Some(&vec!["Art Rock".to_string(), "Post-Punk".to_string(),])
+    );
+    assert_eq!(
+        comments.get("TAGS"),
+        Some(&vec!["Art Rock".to_string(), "Post-Punk".to_string(),])
+    );
+    assert_eq!(
+        comments.get("ARTISTS_TAGS"),
+        Some(&vec![
+            "Alternative Rock".to_string(),
+            "Art Rock".to_string(),
+            "Post-Punk".to_string(),
+        ])
+    );
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
     // (enrichment still resolves "eng" internally; the wire carries "English").
     assert_eq!(comments.get("LANGUAGE"), Some(&vec!["English".to_string()]));
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
-    assert_eq!(comments.get("RELEASECOUNTRY"), Some(&vec!["United Kingdom".to_string()]));
+    assert_eq!(
+        comments.get("RELEASECOUNTRY"),
+        Some(&vec!["United Kingdom".to_string()])
+    );
 }
 
 #[tokio::test]
@@ -218,5 +219,8 @@ async fn test_spanish_country_language_enrichment() {
     assert_eq!(enriched.release_country.value(), Some("Spain"));
     assert_eq!(enriched.style.value(), Some("Rock en Español"));
     assert_eq!(enriched.tags.value(), Some("Rock en Español"));
-    assert_eq!(enriched.artist_tags.value(), Some("Pop Rock; Rock en Español"));
+    assert_eq!(
+        enriched.artist_tags.value(),
+        Some("Pop Rock; Rock en Español")
+    );
 }

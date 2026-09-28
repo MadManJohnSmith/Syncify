@@ -49,11 +49,12 @@ async fn setup() -> Pool<Sqlite> {
         .execute(&pool)
         .await
         .unwrap();
-        let pl_id: i64 = sqlx::query_scalar("SELECT id FROM playlists WHERE service_playlist_id = ?")
-            .bind(pid)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let pl_id: i64 =
+            sqlx::query_scalar("SELECT id FROM playlists WHERE service_playlist_id = ?")
+                .bind(pid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         // Distinct track per link: UNIQUE(playlist_id, track_id) in schema.
         for pos in 0..*count {
             let tid = 1000 + pos;
@@ -62,13 +63,15 @@ async fn setup() -> Pool<Sqlite> {
                 .execute(&pool)
                 .await
                 .unwrap();
-            sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)")
-                .bind(pl_id)
-                .bind(tid)
-                .bind(pos)
-                .execute(&pool)
-                .await
-                .unwrap();
+            sqlx::query(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+            )
+            .bind(pl_id)
+            .bind(tid)
+            .bind(pos)
+            .execute(&pool)
+            .await
+            .unwrap();
         }
     }
     pool

@@ -38,15 +38,21 @@ async fn test_shared_and_created_clients_are_valid() {
 
 #[tokio::test]
 async fn test_clients_are_functional_for_network_requests() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind ephemeral test port");
-    let port = listener.local_addr().expect("Failed to get local addr").port();
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind ephemeral test port");
+    let port = listener
+        .local_addr()
+        .expect("Failed to get local addr")
+        .port();
 
     tokio::spawn(async move {
         while let Ok((mut socket, _)) = listener.accept().await {
             tokio::spawn(async move {
                 let mut buf = [0u8; 1024];
                 let _ = socket.read(&mut buf).await;
-                let response = "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSYNCIFY";
+                let response =
+                    "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSYNCIFY";
                 let _ = socket.write_all(response.as_bytes()).await;
             });
         }

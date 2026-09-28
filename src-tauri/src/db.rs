@@ -79,7 +79,9 @@ mod tests {
         assert!(!is_sqlite_locked_error(
             "error returned from database: (code: 2067) UNIQUE constraint failed: artists.name"
         ));
-        assert!(!is_sqlite_locked_error("Failed to insert artist 'X': column null"));
+        assert!(!is_sqlite_locked_error(
+            "Failed to insert artist 'X': column null"
+        ));
     }
 }
 
@@ -89,28 +91,33 @@ pub async fn get_db_path(app_handle: &tauri::AppHandle) -> PathBuf {
         .path()
         .app_local_data_dir()
         .expect("No app local data dir available");
-        
-    tokio::fs::create_dir_all(&db_dir)
-        .await
-        .ok();
-        
+
+    tokio::fs::create_dir_all(&db_dir).await.ok();
+
     let new_db_path = db_dir.join("syncify.db");
-    
+
     // Migration logic from legacy CWD/exe-based path to OS-native app data path
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-        
+
     let old_db_path = exe_dir.as_ref().map(|d| d.join("data").join("syncify.db"));
-    
+
     if let Some(old_path) = old_db_path {
         if old_path.exists() && !new_db_path.exists() {
             tracing::info!("Migrating pre-existing legacy database to OS app data directory...");
             if let Err(e) = tokio::fs::rename(&old_path, &new_db_path).await {
-                tracing::error!("Failed to migrate database (old path: {}): {}", old_path.display(), e);
+                tracing::error!(
+                    "Failed to migrate database (old path: {}): {}",
+                    old_path.display(),
+                    e
+                );
             } else {
-                tracing::info!("Database successfully migrated to {}", new_db_path.display());
-                
+                tracing::info!(
+                    "Database successfully migrated to {}",
+                    new_db_path.display()
+                );
+
                 // Attempt to move WAL and SHM files if they exist
                 if let Some(parent) = exe_dir {
                     let old_wal = parent.join("data").join("syncify.db-wal");
@@ -123,12 +130,9 @@ pub async fn get_db_path(app_handle: &tauri::AppHandle) -> PathBuf {
             }
         }
     }
-    
+
     new_db_path
 }
- 
- 
- 
 
 /// S195-fix: lock de escritor POR SERVICIO+CUENTA basado en flock del SO.
 ///

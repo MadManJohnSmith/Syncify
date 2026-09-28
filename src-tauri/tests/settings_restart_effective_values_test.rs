@@ -23,10 +23,14 @@ use tempfile::TempDir;
 async fn test_effective_settings_persist_across_restart() {
     let temp_dir = TempDir::new().expect("Failed to create tempdir");
     let db_path = temp_dir.path().join("syncify_test_restart.db");
-    let db_url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy().replace('\\', "/"));
+    let db_url = format!(
+        "sqlite://{}?mode=rwc",
+        db_path.to_string_lossy().replace('\\', "/")
+    );
 
     let custom_download_dir = temp_dir.path().join("MyCustomLibrary");
-    std::fs::create_dir_all(&custom_download_dir).expect("Failed to create custom download directory");
+    std::fs::create_dir_all(&custom_download_dir)
+        .expect("Failed to create custom download directory");
     let custom_download_path = custom_download_dir.to_string_lossy().to_string();
 
     // ==============================================
@@ -168,10 +172,11 @@ async fn test_effective_settings_persist_across_restart() {
             .expect("Failed to reconnect to test DB in lifecycle 2");
 
         // Read saved concurrency from sync_settings or advanced_settings
-        let saved_concurrency: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
-            .fetch_one(&restarted_pool)
-            .await
-            .unwrap();
+        let saved_concurrency: i32 =
+            sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+                .fetch_one(&restarted_pool)
+                .await
+                .unwrap();
 
         let restarted_state = AppState {
             db: restarted_pool.clone(),
@@ -199,28 +204,45 @@ async fn test_effective_settings_persist_across_restart() {
         assert_eq!(effective.generate_booklet, false);
         assert_eq!(effective.generate_lyrics_lrc, true);
         assert_eq!(effective.folder_template, "{AlbumArtist}/{Year} - {Album}");
-        assert_eq!(effective.file_template, "{DiscNumber}-{TrackNumber:pad2} {Title}");
+        assert_eq!(
+            effective.file_template,
+            "{DiscNumber}-{TrackNumber:pad2} {Title}"
+        );
         assert_eq!(effective.artist_separator, " / ");
         assert_eq!(effective.replace_spaces_with, Some("_".to_string()));
         assert_eq!(effective.max_path_length, 220);
 
         // Verify provider priorities order survived restart
-        assert_eq!(effective.preferred_download_service, Some("tidal".to_string()));
-        assert_eq!(effective.service_priority_order, vec![
-            "tidal".to_string(),
-            "qobuz".to_string(),
-            "deezer".to_string(),
-            "spotify".to_string(),
-            "soundcloud".to_string(),
-        ]);
+        assert_eq!(
+            effective.preferred_download_service,
+            Some("tidal".to_string())
+        );
+        assert_eq!(
+            effective.service_priority_order,
+            vec![
+                "tidal".to_string(),
+                "qobuz".to_string(),
+                "deezer".to_string(),
+                "spotify".to_string(),
+                "soundcloud".to_string(),
+            ]
+        );
 
         // Verify quality preferences per service survived restart
-        let tidal_q = effective.service_qualities.iter().find(|q| q.service_name == "tidal").unwrap();
+        let tidal_q = effective
+            .service_qualities
+            .iter()
+            .find(|q| q.service_name == "tidal")
+            .unwrap();
         assert_eq!(tidal_q.max_quality, "hires");
         assert_eq!(tidal_q.preferred_format, "flac");
         assert_eq!(tidal_q.fallback_quality, "lossless");
 
-        let qobuz_q = effective.service_qualities.iter().find(|q| q.service_name == "qobuz").unwrap();
+        let qobuz_q = effective
+            .service_qualities
+            .iter()
+            .find(|q| q.service_name == "qobuz")
+            .unwrap();
         assert_eq!(qobuz_q.max_quality, "lossless");
         assert_eq!(qobuz_q.preferred_format, "flac");
         assert_eq!(qobuz_q.fallback_quality, "high");

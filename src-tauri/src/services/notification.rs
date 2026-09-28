@@ -1,12 +1,12 @@
 //! Service notification deduplication and dispatch module
 //! Manages structured, deduplicated notifications across sync and download operations.
 
+use crate::commands::types::ServiceNotification;
+use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use lazy_static::lazy_static;
 use tracing::info;
-use crate::commands::types::ServiceNotification;
 
 lazy_static! {
     static ref NOTIFICATION_CACHE: Mutex<HashMap<String, Instant>> = Mutex::new(HashMap::new());
@@ -23,7 +23,14 @@ pub fn create_service_notification(
     severity: &str,  // "info" | "warning" | "error"
     message: &str,
 ) -> ServiceNotification {
-    let dedupe_key = format!("{}:{}:{}:{}:{}", service, account_id.unwrap_or(0), operation, kind, message);
+    let dedupe_key = format!(
+        "{}:{}:{}:{}:{}",
+        service,
+        account_id.unwrap_or(0),
+        operation,
+        kind,
+        message
+    );
     ServiceNotification {
         service: service.to_string(),
         account_id,

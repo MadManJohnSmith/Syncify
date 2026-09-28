@@ -36,14 +36,7 @@ impl<'a> GenreContext<'a> {
 }
 
 /// Substrings that immediately disqualify a string from being a valid musical genre.
-const JUNK_SUBSTRINGS: &[&str] = &[
-    "feat.",
-    "remaster",
-    "version",
-    "live",
-    "deluxe",
-    "edition",
-];
+const JUNK_SUBSTRINGS: &[&str] = &["feat.", "remaster", "version", "live", "deluxe", "edition"];
 
 /// Blacklist of exact mood descriptors that are not musical genres.
 const MOOD_BLACKLIST: &[&str] = &[
@@ -102,12 +95,7 @@ const CONTEXT_BLACKLIST: &[&str] = &[
 ];
 
 /// Blacklist of isolated languages or continents (not composite styles).
-const ISOLATED_TERMS_BLACKLIST: &[&str] = &[
-    "english",
-    "spanish",
-    "áfrica",
-    "africa",
-];
+const ISOLATED_TERMS_BLACKLIST: &[&str] = &["english", "spanish", "áfrica", "africa"];
 
 /// Checks whether a genre string is a corrupt scraper concatenation (e.g. `Dance_electronic`, `Indieindie`, `Rerip Grunge`).
 pub fn is_corrupt_concatenation(lower: &str) -> bool {
@@ -282,7 +270,10 @@ pub fn is_valid_genre_with_context(val: &str, context: Option<&GenreContext>) ->
 const CANONICAL_GENRE_VARIANTS: &[(&[&str], &str)] = &[
     (&["R B", "R&B", "Rnb"], "R&B"),
     (&["Soul And R B", "Soul And R&b"], "Soul And R&B"),
-    (&["Rock And Roll", "Rock & Roll", "Rock Roll"], "Rock And Roll"),
+    (
+        &["Rock And Roll", "Rock & Roll", "Rock Roll"],
+        "Rock And Roll",
+    ),
     (&["Hip-Hop", "Hip Hop"], "Hip Hop"),
     (&["Synth-Pop", "Synthpop", "Synth Pop"], "Synth-Pop"),
     (&["Dance Pop", "Dance-Pop"], "Dance Pop"),
@@ -390,7 +381,9 @@ pub fn normalize_genre_token(token: &str) -> String {
                             let s = sub.to_lowercase();
                             let mut chars = s.chars();
                             match chars.next() {
-                                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                                Some(first) => {
+                                    first.to_uppercase().collect::<String>() + chars.as_str()
+                                }
                                 None => String::new(),
                             }
                         })
@@ -475,7 +468,10 @@ pub fn fuse_genres_with_context_and_delimiters(
                     if !cleaned.is_empty() {
                         // Also check normalized form against collected genres
                         let cleaned_lower = cleaned.to_lowercase();
-                        if !unique_genres.iter().any(|g| g.to_lowercase() == cleaned_lower) {
+                        if !unique_genres
+                            .iter()
+                            .any(|g| g.to_lowercase() == cleaned_lower)
+                        {
                             unique_genres.push(cleaned);
                         }
                     }
@@ -552,16 +548,16 @@ mod tests {
         assert_eq!(canonicalize_genre("Country-Rock"), "Country Rock");
         assert_eq!(canonicalize_genre("Jazz-Rock"), "Jazz Rock"); // TIE -> hyphen-free
         assert_eq!(canonicalize_genre("Rap Metal"), "Rap-Metal"); // winner keeps hyphen
-        assert_eq!(canonicalize_genre("Rap-Rock"), "Rap Rock");   // TIE -> hyphen-free
+        assert_eq!(canonicalize_genre("Rap-Rock"), "Rap Rock"); // TIE -> hyphen-free
         assert_eq!(canonicalize_genre("Trip-Hop"), "Trip Hop");
-        assert_eq!(canonicalize_genre("Post-Bop"), "Post Bop");   // TIE -> hyphen-free
+        assert_eq!(canonicalize_genre("Post-Bop"), "Post Bop"); // TIE -> hyphen-free
         assert_eq!(canonicalize_genre("Punk-Pop"), "Pop Punk");
         assert_eq!(canonicalize_genre("Pop-Punk"), "Pop Punk");
         assert_eq!(canonicalize_genre("Darkwave"), "Dark Wave");
-        assert_eq!(canonicalize_genre("Neo-Glam"), "Neo Glam");   // TIE -> hyphen-free
+        assert_eq!(canonicalize_genre("Neo-Glam"), "Neo Glam"); // TIE -> hyphen-free
         assert_eq!(canonicalize_genre("Hairmetal"), "Hair Metal");
         assert_eq!(canonicalize_genre("Psychadelic"), "Psychedelic"); // typo correction
-        assert_eq!(canonicalize_genre("Two Tone"), "2 Tone");     // TIE -> audited label
+        assert_eq!(canonicalize_genre("Two Tone"), "2 Tone"); // TIE -> audited label
 
         // ARBITRATED ROW (Orchestrator S184): Hip-Hop(20)/Hip Hop(21) fuse to the audit
         // winner "Hip Hop"; every spelling and casing collapses to it.
@@ -577,7 +573,10 @@ mod tests {
         assert_eq!(canonicalize_genre("Early R&B"), "Early R&B");
         assert_eq!(canonicalize_genre("Rhythm And Blues"), "Rhythm And Blues");
         assert_eq!(canonicalize_genre("Rhythm & Blues"), "Rhythm & Blues");
-        assert_eq!(canonicalize_genre("Adult Contemporary R&B"), "Adult Contemporary R&B");
+        assert_eq!(
+            canonicalize_genre("Adult Contemporary R&B"),
+            "Adult Contemporary R&B"
+        );
         assert_eq!(canonicalize_genre("Emo-Pop"), "Emo-Pop");
         assert_eq!(canonicalize_genre("World-Fusion"), "World-Fusion");
 
@@ -598,8 +597,14 @@ mod tests {
         assert_eq!(canonicalize_genre("Indie Rock"), "Indie Rock");
         assert_eq!(canonicalize_genre("K-Pop"), "K-Pop");
         assert_eq!(canonicalize_genre("Synthpop Legends"), "Synthpop Legends");
-        assert_eq!(canonicalize_genre("Progressive / Ambient"), "Progressive / Ambient");
-        assert_eq!(canonicalize_genre("Glam Rock / Berlin Trilogy"), "Glam Rock / Berlin Trilogy");
+        assert_eq!(
+            canonicalize_genre("Progressive / Ambient"),
+            "Progressive / Ambient"
+        );
+        assert_eq!(
+            canonicalize_genre("Glam Rock / Berlin Trilogy"),
+            "Glam Rock / Berlin Trilogy"
+        );
     }
 
     #[test]
@@ -610,9 +615,15 @@ mod tests {
 
         // Variants arriving from different providers collapse into one winner
         let fused_multi = fuse_genres(&["Synthpop", "Synth Pop", "Rock"]);
-        assert_eq!(fused_multi, vec!["Synth-Pop".to_string(), "Rock".to_string()]);
+        assert_eq!(
+            fused_multi,
+            vec!["Synth-Pop".to_string(), "Rock".to_string()]
+        );
 
         // Junk still wins over canonicalization: validation happens first
-        assert_eq!(fuse_genres(&["Synthpop_soft Rock_pop"]), Vec::<String>::new());
+        assert_eq!(
+            fuse_genres(&["Synthpop_soft Rock_pop"]),
+            Vec::<String>::new()
+        );
     }
 }

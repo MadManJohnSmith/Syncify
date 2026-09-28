@@ -21,11 +21,12 @@ async fn test_update_track_metadata_prevents_sql_injection() {
         .expect("Migrations must apply cleanly");
 
     // Insert dummy artist, album, track
-    let artist_id: i64 = sqlx::query("INSERT INTO artists (name) VALUES ('Original Artist') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap()
-        .get(0);
+    let artist_id: i64 =
+        sqlx::query("INSERT INTO artists (name) VALUES ('Original Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get(0);
 
     let album_id: i64 = sqlx::query("INSERT INTO albums (title, release_date) VALUES ('Original Album', '2020-01-01') RETURNING id")
         .fetch_one(&pool)
@@ -82,16 +83,29 @@ async fn test_update_track_metadata_prevents_sql_injection() {
     };
 
     let result = update_track_metadata(app_state, track_id, malicious_payload).await;
-    assert!(result.is_ok(), "update_track_metadata should succeed cleanly: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "update_track_metadata should succeed cleanly: {:?}",
+        result.err()
+    );
 
     let updated_track = result.unwrap();
 
     // Verify all fields are stored as literal strings without executing any SQL commands.
     // Note: TASK-142 triggers normalize genre on ';' and '/', extracting the primary genre "Rock'".
     assert_eq!(updated_track.title, "Test'; DROP TABLE tracks; --");
-    assert_eq!(updated_track.artist_name, Some("Artist'; DROP TABLE artists; --".to_string()));
-    assert_eq!(updated_track.album_name, Some("Album'; DROP TABLE albums; --".to_string()));
-    assert_eq!(updated_track.isrc, Some("US123'; DELETE FROM tracks; --".to_string()));
+    assert_eq!(
+        updated_track.artist_name,
+        Some("Artist'; DROP TABLE artists; --".to_string())
+    );
+    assert_eq!(
+        updated_track.album_name,
+        Some("Album'; DROP TABLE albums; --".to_string())
+    );
+    assert_eq!(
+        updated_track.isrc,
+        Some("US123'; DELETE FROM tracks; --".to_string())
+    );
     assert_eq!(updated_track.genre, Some("Rock'".to_string()));
     assert_eq!(updated_track.musical_key, Some("Am' OR 1=1 --".to_string()));
     assert_eq!(updated_track.bpm, Some(128.5));
@@ -101,7 +115,10 @@ async fn test_update_track_metadata_prevents_sql_injection() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(tracks_count, 1, "tracks table must still exist and contain 1 record");
+    assert_eq!(
+        tracks_count, 1,
+        "tracks table must still exist and contain 1 record"
+    );
 
     let artists_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artists")
         .fetch_one(&pool)

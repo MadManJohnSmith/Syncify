@@ -30,10 +30,11 @@ async fn test_migration_0067_version_and_columns_exist() {
     let pool = setup_migrated_db().await;
 
     // Verify migration version is at least 67
-    let (max_version,): (Option<i64>,) = sqlx::query_as("SELECT MAX(version) FROM _sqlx_migrations")
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to query migration version");
+    let (max_version,): (Option<i64>,) =
+        sqlx::query_as("SELECT MAX(version) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to query migration version");
     assert!(
         max_version.unwrap_or(0) >= 67,
         "Migration version must be >= 67, got {:?}",
@@ -154,20 +155,22 @@ async fn test_library_items_exact_migration_queries() {
     .expect("Must insert into library_items with service column");
 
     // Verify trigger synced service <-> source_service
-    let (src_svc, svc): (String, String) =
-        sqlx::query_as("SELECT source_service, service FROM library_items WHERE external_id = 'qb-202'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (src_svc, svc): (String, String) = sqlx::query_as(
+        "SELECT source_service, service FROM library_items WHERE external_id = 'qb-202'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(src_svc, "qobuz");
     assert_eq!(svc, "qobuz");
 
     // 2. Exact query from migration.rs lines 201-204
-    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM library_items WHERE source_service = ?")
-        .bind("spotify")
-        .fetch_one(&pool)
-        .await
-        .expect("Exact query lines 201-204 must succeed");
+    let count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM library_items WHERE source_service = ?")
+            .bind("spotify")
+            .fetch_one(&pool)
+            .await
+            .expect("Exact query lines 201-204 must succeed");
     assert_eq!(count.0, 1);
 
     // 3. Exact query from migration.rs lines 263-267
@@ -187,8 +190,8 @@ async fn test_library_items_exact_migration_queries() {
     // 4. Exact query from migration.rs lines 948-960
     let search_results: Vec<(String, String, String, Option<String>, i64, Option<String>)> =
         sqlx::query_as(
-            r#"SELECT external_id, title, artist, album, duration_ms, quality 
-               FROM library_items 
+            r#"SELECT external_id, title, artist, album, duration_ms, quality
+               FROM library_items
                WHERE source_service = ? AND (title LIKE ? OR artist LIKE ?)
                ORDER BY title LIMIT 20"#,
         )
@@ -213,25 +216,21 @@ async fn test_library_items_exact_migration_queries() {
 
     let lib_item_id = tracks[0].0;
     // We also need a canonical track for foreign key reference in playlist_tracks
-    sqlx::query(
-        "INSERT INTO tracks (id, title, duration_ms) VALUES (?, 'Test Song 1', 180000)",
-    )
-    .bind(lib_item_id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO tracks (id, title, duration_ms) VALUES (?, 'Test Song 1', 180000)")
+        .bind(lib_item_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
-    sqlx::query(
-        "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (1, ?, 1)",
-    )
-    .bind(lib_item_id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (1, ?, 1)")
+        .bind(lib_item_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let pl_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM library_items li 
-         JOIN playlist_tracks pt ON pt.track_id = li.id 
+        "SELECT COUNT(*) FROM library_items li
+         JOIN playlist_tracks pt ON pt.track_id = li.id
          WHERE pt.playlist_id = (SELECT id FROM playlists WHERE external_id = ?)",
     )
     .bind("pl-ext-999")

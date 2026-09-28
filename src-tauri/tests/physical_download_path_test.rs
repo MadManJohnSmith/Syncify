@@ -14,9 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
 use syncify_tauri_lib::commands::{
-    perform_batch_health_check, perform_get_download_settings,
-    perform_save_download_settings, perform_set_max_concurrent_downloads,
-    validate_directory_path, DownloadSettingsDto,
+    perform_batch_health_check, perform_get_download_settings, perform_save_download_settings,
+    perform_set_max_concurrent_downloads, validate_directory_path, DownloadSettingsDto,
 };
 use syncify_tauri_lib::enrichment_worker::EnrichmentWorkerState;
 use syncify_tauri_lib::services::manifest_writer::ManifestWriter;
@@ -72,8 +71,14 @@ async fn test_physical_directory_validation_and_drive_mounting() {
 
     assert!(res.valid, "Target directory must be validated as writable");
     assert!(res.drive_mounted, "Drive must be mounted and accessible");
-    assert!(res.available_bytes > 0, "Available bytes must be greater than zero");
-    assert!(res.error_message.is_none(), "There should be no error message");
+    assert!(
+        res.available_bytes > 0,
+        "Available bytes must be greater than zero"
+    );
+    assert!(
+        res.error_message.is_none(),
+        "There should be no error message"
+    );
 }
 
 #[tokio::test]
@@ -141,20 +146,35 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
         .await
         .expect("get_download_settings should succeed post-restart");
 
-    assert_eq!(loaded.download_path, physical_str, "Download path must survive restart");
+    assert_eq!(
+        loaded.download_path, physical_str,
+        "Download path must survive restart"
+    );
     assert_eq!(loaded.fallback_action, "strict");
 
     // 3. Process Track 1 with Concurrency = 1
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Pink Floyd') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, upc) VALUES ('The Dark Side of the Moon', '5099902894523') RETURNING id")
         .fetch_one(&pool).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let track_id_1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Time', ?, 'GBAYE7300063') RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(track_id_1).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(track_id_1)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'qobuz_time', 'FLAC', 24, 96000, 100, 1)")
         .bind(track_id_1).execute(&pool).await.unwrap();
 
@@ -168,7 +188,11 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
     let staging_audio = staging_dir.join("temp_audio.flac");
     std::fs::write(&staging_audio, FAKE_FLAC_HEADER).unwrap();
     let staging_lrc = staging_dir.join("temp.lrc");
-    std::fs::write(&staging_lrc, "[00:01.00]Ticking away the moments that make up a dull day\n").unwrap();
+    std::fs::write(
+        &staging_lrc,
+        "[00:01.00]Ticking away the moments that make up a dull day\n",
+    )
+    .unwrap();
     let staging_cover = staging_dir.join("cover.jpg");
     std::fs::write(&staging_cover, b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01").unwrap();
 
@@ -223,13 +247,19 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
         .unwrap();
 
     // 4. Repeat with Track 2 & Concurrency = 3
-    let _ = perform_set_max_concurrent_downloads(&restarted_state, 3).await.unwrap();
+    let _ = perform_set_max_concurrent_downloads(&restarted_state, 3)
+        .await
+        .unwrap();
     assert_eq!(restarted_state.worker_state.max_concurrent(), 3);
 
     let track_id_2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Money', ?, 'GBAYE7300064') RETURNING id")
         .bind(album_id).fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(track_id_2).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(track_id_2)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'qobuz_money', 'FLAC', 24, 96000, 100, 1)")
         .bind(track_id_2).execute(&pool).await.unwrap();
 
@@ -283,9 +313,18 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
     // 5. Assert Physical Artifacts on Disk
     assert!(final_dest_1.exists(), "Track 1 must exist on physical disk");
     assert!(final_dest_2.exists(), "Track 2 must exist on physical disk");
-    assert!(final_lrc_1.exists(), "Track 1 .lrc sidecar must exist on physical disk");
-    assert!(final_lrc_2.exists(), "Track 2 .lrc sidecar must exist on physical disk");
-    assert!(final_cover.exists(), "Album cover.jpg must exist on physical disk");
+    assert!(
+        final_lrc_1.exists(),
+        "Track 1 .lrc sidecar must exist on physical disk"
+    );
+    assert!(
+        final_lrc_2.exists(),
+        "Track 2 .lrc sidecar must exist on physical disk"
+    );
+    assert!(
+        final_cover.exists(),
+        "Album cover.jpg must exist on physical disk"
+    );
 
     // Assert staging is 100% clean
     let staging_root = physical_target.join(".staging");
@@ -298,13 +337,21 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
                 found.push(entry.path().to_string_lossy().to_string());
             }
         }
-        assert_eq!(count, 0, "Staging directory must contain 0 residual files or directories, found: {:?}", found);
+        assert_eq!(
+            count, 0,
+            "Staging directory must contain 0 residual files or directories, found: {:?}",
+            found
+        );
     }
 
     // 6. Run System Batch Health Check
-    let health = perform_batch_health_check(&pool, Some(&staging_root), Some(&restarted_state.worker_state))
-        .await
-        .expect("perform_batch_health_check should succeed");
+    let health = perform_batch_health_check(
+        &pool,
+        Some(&staging_root),
+        Some(&restarted_state.worker_state),
+    )
+    .await
+    .expect("perform_batch_health_check should succeed");
 
     assert_eq!(health.database_integrity, "ok");
     assert!(health.foreign_keys_valid);
@@ -314,5 +361,8 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
 
     // Assert manifest.json exists on target root
     let manifest_file = physical_target.join("manifest.json");
-    assert!(manifest_file.exists(), "manifest.json must exist in physical library root");
+    assert!(
+        manifest_file.exists(),
+        "manifest.json must exist in physical library root"
+    );
 }

@@ -2,9 +2,8 @@
 use super::*;
 
 // Enrichment Commands - submodule of crate::commands
-// 
+//
 // Metadata enrichment (Spotify Audio Features, Last.fm Genre, MusicBrainz)
-
 
 // ==============================================
 // METADATA ENRICHMENT COMMANDS
@@ -14,12 +13,11 @@ use super::*;
 /// Metadata tab UI), then the LASTFM_API_KEY environment variable. Mirrors the
 /// SpotifyConfig::from_parts BD>env precedence from S196.
 pub(crate) async fn resolve_lastfm_api_key(db: &crate::DbPool) -> Result<String, String> {
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT value FROM settings WHERE key = 'lastfm_api_key' LIMIT 1",
-    )
-    .fetch_optional(db)
-    .await
-    .map_err(|e| e.to_string())?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM settings WHERE key = 'lastfm_api_key' LIMIT 1")
+            .fetch_optional(db)
+            .await
+            .map_err(|e| e.to_string())?;
 
     if let Some((key,)) = row {
         let key = key.trim().to_string();
@@ -35,7 +33,10 @@ pub(crate) async fn resolve_lastfm_api_key(db: &crate::DbPool) -> Result<String,
         }
     }
 
-    Err("Last.fm API key no configurada — ponla en la tab Metadata → Auto-Fix → Last.fm".to_string())
+    Err(
+        "Last.fm API key no configurada — ponla en la tab Metadata → Auto-Fix → Last.fm"
+            .to_string(),
+    )
 }
 
 /// Enrich tracks with genre from Last.fm tags
@@ -55,9 +56,9 @@ pub async fn enrich_genre_lastfm(
 
     // Get tracks that need genre enrichment (have artist but no genre)
     let tracks: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT t.id, 
-                (SELECT a.name FROM track_artists ta 
-                 JOIN artists a ON a.id = ta.artist_id 
+        "SELECT t.id,
+                (SELECT a.name FROM track_artists ta
+                 JOIN artists a ON a.id = ta.artist_id
                  WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1) as artist,
                 t.title
          FROM tracks t
@@ -157,13 +158,13 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
 
     // Get track info
     let track: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT t.title, 
-                (SELECT a.name FROM track_artists ta 
-                 JOIN artists a ON a.id = ta.artist_id 
+        "SELECT t.title,
+                (SELECT a.name FROM track_artists ta
+                 JOIN artists a ON a.id = ta.artist_id
                  WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1) as artist,
                 t.isrc,
-                (SELECT ts.service_track_id FROM track_sources ts 
-                 JOIN services s ON s.id = ts.service_id 
+                (SELECT ts.service_track_id FROM track_sources ts
+                 JOIN services s ON s.id = ts.service_id
                  WHERE ts.track_id = t.id AND s.name = 'spotify' LIMIT 1) as spotify_id
          FROM tracks t WHERE t.id = ?",
     )
@@ -248,13 +249,13 @@ pub async fn enrich_before_download(
     for track_id in &track_ids {
         // Just call enrich_track for each - it's idempotent
         let track: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT t.title, 
-                    (SELECT a.name FROM track_artists ta 
-                     JOIN artists a ON a.id = ta.artist_id 
+            "SELECT t.title,
+                    (SELECT a.name FROM track_artists ta
+                     JOIN artists a ON a.id = ta.artist_id
                      WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1) as artist,
                     t.isrc,
-                    (SELECT ts.service_track_id FROM track_sources ts 
-                     JOIN services s ON s.id = ts.service_id 
+                    (SELECT ts.service_track_id FROM track_sources ts
+                     JOIN services s ON s.id = ts.service_id
                      WHERE ts.track_id = t.id AND s.name = 'spotify' LIMIT 1) as spotify_id
              FROM tracks t WHERE t.id = ?",
         )
@@ -357,6 +358,7 @@ pub async fn cancel_library_enrichment() -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub async fn get_library_enrichment_status() -> Result<Option<crate::services::incremental_enrichment::EnrichmentJobSummary>, String> {
+pub async fn get_library_enrichment_status(
+) -> Result<Option<crate::services::incremental_enrichment::EnrichmentJobSummary>, String> {
     Ok(GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE.get_job_status())
 }

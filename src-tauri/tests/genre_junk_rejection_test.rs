@@ -23,19 +23,52 @@ fn test_rejection_of_entity_matches_title_artist_album_label() {
         .with_label(Some("RCA Records"));
 
     // Exact matches
-    assert!(!FieldValidator::is_valid_genre_with_context("Dear Rosemary", Some(&ctx)));
-    assert!(!FieldValidator::is_valid_genre_with_context("dear rosemary", Some(&ctx)));
-    assert!(!FieldValidator::is_valid_genre_with_context("  Foo Fighters  ", Some(&ctx)));
-    assert!(!FieldValidator::is_valid_genre_with_context("foo fighters", Some(&ctx)));
-    assert!(!FieldValidator::is_valid_genre_with_context("Wasting Light", Some(&ctx)));
-    assert!(!FieldValidator::is_valid_genre_with_context("wasting light", Some(&ctx)));
-    assert!(!FieldValidator::is_valid_genre_with_context("RCA Records", Some(&ctx)));
-    assert!(!FieldValidator::is_valid_genre_with_context("rca records", Some(&ctx)));
+    assert!(!FieldValidator::is_valid_genre_with_context(
+        "Dear Rosemary",
+        Some(&ctx)
+    ));
+    assert!(!FieldValidator::is_valid_genre_with_context(
+        "dear rosemary",
+        Some(&ctx)
+    ));
+    assert!(!FieldValidator::is_valid_genre_with_context(
+        "  Foo Fighters  ",
+        Some(&ctx)
+    ));
+    assert!(!FieldValidator::is_valid_genre_with_context(
+        "foo fighters",
+        Some(&ctx)
+    ));
+    assert!(!FieldValidator::is_valid_genre_with_context(
+        "Wasting Light",
+        Some(&ctx)
+    ));
+    assert!(!FieldValidator::is_valid_genre_with_context(
+        "wasting light",
+        Some(&ctx)
+    ));
+    assert!(!FieldValidator::is_valid_genre_with_context(
+        "RCA Records",
+        Some(&ctx)
+    ));
+    assert!(!FieldValidator::is_valid_genre_with_context(
+        "rca records",
+        Some(&ctx)
+    ));
 
     // Unrelated valid genres must be accepted
-    assert!(FieldValidator::is_valid_genre_with_context("Post-Grunge", Some(&ctx)));
-    assert!(FieldValidator::is_valid_genre_with_context("Alternative Rock", Some(&ctx)));
-    assert!(FieldValidator::is_valid_genre_with_context("Hard Rock", Some(&ctx)));
+    assert!(FieldValidator::is_valid_genre_with_context(
+        "Post-Grunge",
+        Some(&ctx)
+    ));
+    assert!(FieldValidator::is_valid_genre_with_context(
+        "Alternative Rock",
+        Some(&ctx)
+    ));
+    assert!(FieldValidator::is_valid_genre_with_context(
+        "Hard Rock",
+        Some(&ctx)
+    ));
 }
 
 #[test]
@@ -77,21 +110,8 @@ fn test_rejection_of_junk_substring_patterns() {
 #[test]
 fn test_rejection_of_placeholders() {
     let placeholders = [
-        "",
-        "   ",
-        "unknown",
-        "Unknown",
-        "UNKNOWN",
-        "n/a",
-        "N/A",
-        "null",
-        "Null",
-        "NULL",
-        "None",
-        "none",
-        "NONE",
-        "???",
-        "-",
+        "", "   ", "unknown", "Unknown", "UNKNOWN", "n/a", "N/A", "null", "Null", "NULL", "None",
+        "none", "NONE", "???", "-",
     ];
 
     for ph in &placeholders {
@@ -126,10 +146,7 @@ fn test_fuse_genres_filtering_junk_mixed_with_valid() {
     let fused = fuse_genres_with_context(&raw_inputs, Some(&ctx));
     assert_eq!(
         fused,
-        vec![
-            "Electro House".to_string(),
-            "Progressive House".to_string(),
-        ]
+        vec!["Electro House".to_string(), "Progressive House".to_string(),]
     );
 
     let formatted = format_fused_genres_with_context(&raw_inputs, Some(&ctx));

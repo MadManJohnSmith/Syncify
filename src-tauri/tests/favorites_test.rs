@@ -88,7 +88,7 @@ async fn create_test_db() -> sqlx::Pool<sqlx::Sqlite> {
         );
         CREATE INDEX idx_tracks_favorite ON tracks(is_favorite);
         CREATE INDEX idx_tracks_favorite_at ON tracks(is_favorite, favorite_at DESC);
-        "#
+        "#,
     )
     .execute(&pool)
     .await
@@ -100,8 +100,12 @@ async fn create_test_db() -> sqlx::Pool<sqlx::Sqlite> {
 #[tokio::test]
 async fn test_insert_favorite() {
     let db = create_test_db().await;
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Heroes', 'USJT11700035') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Heroes', 'USJT11700035') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     // Toggle to favorite
     let res: (i32,) = sqlx::query_as(
@@ -109,7 +113,7 @@ async fn test_insert_favorite() {
          SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END, \
              favorite_at = CASE WHEN is_favorite = 0 THEN datetime('now') ELSE NULL END \
          WHERE id = ? \
-         RETURNING is_favorite"
+         RETURNING is_favorite",
     )
     .bind(track_id)
     .fetch_one(&db)
@@ -118,14 +122,18 @@ async fn test_insert_favorite() {
 
     assert_eq!(res.0, 1, "Track must be marked as favorite (1)");
 
-    let row: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(track_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let row: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     assert_eq!(row.0, 1);
-    assert!(row.1.is_some(), "favorite_at timestamp must be populated on insert");
+    assert!(
+        row.1.is_some(),
+        "favorite_at timestamp must be populated on insert"
+    );
 }
 
 #[tokio::test]
@@ -140,7 +148,7 @@ async fn test_remove_favorite() {
          SET is_favorite = CASE WHEN is_favorite = 0 THEN 1 ELSE 0 END, \
              favorite_at = CASE WHEN is_favorite = 0 THEN datetime('now') ELSE NULL END \
          WHERE id = ? \
-         RETURNING is_favorite"
+         RETURNING is_favorite",
     )
     .bind(track_id)
     .fetch_one(&db)
@@ -149,21 +157,29 @@ async fn test_remove_favorite() {
 
     assert_eq!(res.0, 0, "Track must be unmarked as favorite (0)");
 
-    let row: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(track_id)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let row: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     assert_eq!(row.0, 0);
-    assert!(row.1.is_none(), "favorite_at timestamp must be cleared on remove");
+    assert!(
+        row.1.is_none(),
+        "favorite_at timestamp must be cleared on remove"
+    );
 }
 
 #[tokio::test]
 async fn test_idempotence_insert_favorite() {
     let db = create_test_db().await;
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Heroes', 'USJT11700035') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Heroes', 'USJT11700035') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     for _ in 0..3 {
         sqlx::query("UPDATE tracks SET is_favorite = 1, favorite_at = COALESCE(favorite_at, datetime('now')) WHERE id = ?")
@@ -174,7 +190,10 @@ async fn test_idempotence_insert_favorite() {
     }
 
     let is_fav: i32 = sqlx::query_scalar("SELECT is_favorite FROM tracks WHERE id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
+        .bind(track_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(is_fav, 1, "Idempotent set_favorite(true) must remain 1");
 }
 
@@ -193,17 +212,28 @@ async fn test_idempotence_remove_favorite() {
     }
 
     let is_fav: i32 = sqlx::query_scalar("SELECT is_favorite FROM tracks WHERE id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
+        .bind(track_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(is_fav, 0, "Idempotent set_favorite(false) must remain 0");
 }
 
 #[tokio::test]
 async fn test_favorite_downloaded_track() {
     let db = create_test_db().await;
-    let service_id: i64 = sqlx::query_scalar("INSERT INTO services (name, supports_download) VALUES ('tidal', 1) RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Heroes', 'USJT11700035') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let service_id: i64 = sqlx::query_scalar(
+        "INSERT INTO services (name, supports_download) VALUES ('tidal', 1) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Heroes', 'USJT11700035') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     let dummy_path = "C:/Users/tardis/Music/Syncify/David Bowie/Heroes/03 - Heroes.flac";
     sqlx::query("INSERT INTO downloads (track_id, source_service_id, file_path, file_format, status) VALUES (?, ?, ?, 'FLAC', 'verified')")
@@ -211,46 +241,79 @@ async fn test_favorite_downloaded_track() {
 
     // Mark as favorite
     sqlx::query("UPDATE tracks SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
-        .bind(track_id).execute(&db).await.unwrap();
+        .bind(track_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Invariant: downloads row must be completely unaffected
-    let dl_row: (String, String) = sqlx::query_as("SELECT file_path, status FROM downloads WHERE track_id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
+    let dl_row: (String, String) =
+        sqlx::query_as("SELECT file_path, status FROM downloads WHERE track_id = ?")
+            .bind(track_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
-    assert_eq!(dl_row.0, dummy_path, "Physical file path must not be modified by favorite toggle");
-    assert_eq!(dl_row.1, "verified", "Download verification status must remain verified");
+    assert_eq!(
+        dl_row.0, dummy_path,
+        "Physical file path must not be modified by favorite toggle"
+    );
+    assert_eq!(
+        dl_row.1, "verified",
+        "Download verification status must remain verified"
+    );
 }
 
 #[tokio::test]
 async fn test_favorite_non_downloaded_track() {
     let db = create_test_db().await;
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Cigaro', 'USSM10502123') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Cigaro', 'USSM10502123') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     // Verify 0 downloads
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE track_id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
+        .bind(track_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(count, 0, "Track has no physical download record");
 
     // Mark favorite
     sqlx::query("UPDATE tracks SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
-        .bind(track_id).execute(&db).await.unwrap();
+        .bind(track_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
     let is_fav: i32 = sqlx::query_scalar("SELECT is_favorite FROM tracks WHERE id = ?")
-        .bind(track_id).fetch_one(&db).await.unwrap();
-    assert_eq!(is_fav, 1, "Non-downloaded track must support favorite status without downloads record");
+        .bind(track_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        is_fav, 1,
+        "Non-downloaded track must support favorite status without downloads record"
+    );
 }
 
 #[tokio::test]
 async fn test_favorite_persistence_across_reconnect() {
     use sqlx::sqlite::SqliteConnectOptions;
 
-    let temp_db_path = std::env::temp_dir().join(format!("syncify_fav_test_{}.db", uuid::Uuid::new_v4()));
+    let temp_db_path =
+        std::env::temp_dir().join(format!("syncify_fav_test_{}.db", uuid::Uuid::new_v4()));
     let opts = SqliteConnectOptions::new()
         .filename(&temp_db_path)
         .create_if_missing(true);
 
-    let pool1 = SqlitePoolOptions::new().connect_with(opts.clone()).await.unwrap();
+    let pool1 = SqlitePoolOptions::new()
+        .connect_with(opts.clone())
+        .await
+        .unwrap();
     sqlx::query("CREATE TABLE tracks (id INTEGER PRIMARY KEY, title TEXT, is_favorite INTEGER DEFAULT 0, favorite_at TEXT);")
         .execute(&pool1).await.unwrap();
 
@@ -261,10 +324,17 @@ async fn test_favorite_persistence_across_reconnect() {
 
     // Reopen connection pool
     let pool2 = SqlitePoolOptions::new().connect_with(opts).await.unwrap();
-    let row: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(track_id).fetch_one(&pool2).await.unwrap();
+    let row: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool2)
+            .await
+            .unwrap();
 
-    assert_eq!(row.0, 1, "Favorite status must persist across app restart/reconnect");
+    assert_eq!(
+        row.0, 1,
+        "Favorite status must persist across app restart/reconnect"
+    );
     assert_eq!(row.1.as_deref(), Some("2026-08-15T00:00:00Z"));
 
     drop(pool2);
@@ -274,24 +344,40 @@ async fn test_favorite_persistence_across_reconnect() {
 #[tokio::test]
 async fn test_deduplication_by_isrc_and_service_track_id() {
     let db = create_test_db().await;
-    let service_id: i64 = sqlx::query_scalar("INSERT INTO services (name) VALUES ('tidal') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let service_id: i64 =
+        sqlx::query_scalar("INSERT INTO services (name) VALUES ('tidal') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES ('Track A', 'USJT11700035') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, isrc) VALUES ('Track A', 'USJT11700035') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, '80654035')")
         .bind(track_id).bind(service_id).execute(&db).await.unwrap();
 
     // Duplicate ISRC must fail UNIQUE constraint
-    let dup_isrc_res = sqlx::query("INSERT INTO tracks (title, isrc) VALUES ('Track A Duplicate', 'USJT11700035')")
-        .execute(&db).await;
-    assert!(dup_isrc_res.is_err(), "Duplicate ISRC insertion must be rejected by UNIQUE constraint");
+    let dup_isrc_res = sqlx::query(
+        "INSERT INTO tracks (title, isrc) VALUES ('Track A Duplicate', 'USJT11700035')",
+    )
+    .execute(&db)
+    .await;
+    assert!(
+        dup_isrc_res.is_err(),
+        "Duplicate ISRC insertion must be rejected by UNIQUE constraint"
+    );
 
     // Duplicate Service Track ID must fail UNIQUE constraint
     let dup_source_res = sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (999, ?, '80654035')")
         .bind(service_id).execute(&db).await;
-    assert!(dup_source_res.is_err(), "Duplicate (service_id, service_track_id) must be rejected by UNIQUE constraint");
+    assert!(
+        dup_source_res.is_err(),
+        "Duplicate (service_id, service_track_id) must be rejected by UNIQUE constraint"
+    );
 }
 
 #[tokio::test]
@@ -306,10 +392,19 @@ async fn test_sqlite_error_rollback_safety() {
     .await
     .unwrap();
 
-    assert!(result.is_none(), "Updating non-existent track must return None / Err");
+    assert!(
+        result.is_none(),
+        "Updating non-existent track must return None / Err"
+    );
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(&db).await.unwrap();
-    assert_eq!(count, 0, "No tracks created or corrupted on invalid favorite toggle");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "No tracks created or corrupted on invalid favorite toggle"
+    );
 }
 
 #[tokio::test]
@@ -318,20 +413,28 @@ async fn test_filter_favorites_pagination() {
 
     for i in 1..=15 {
         let is_fav = if i % 2 == 1 { 1 } else { 0 };
-        let fav_at = if is_fav == 1 { Some(format!("2026-08-15T00:{:02}:00Z", i)) } else { None };
-        sqlx::query("INSERT INTO tracks (title, isrc, is_favorite, favorite_at) VALUES (?, ?, ?, ?)")
-            .bind(format!("Song {:02}", i))
-            .bind(format!("ISRC{:08}", i))
-            .bind(is_fav)
-            .bind(fav_at)
-            .execute(&db)
-            .await
-            .unwrap();
+        let fav_at = if is_fav == 1 {
+            Some(format!("2026-08-15T00:{:02}:00Z", i))
+        } else {
+            None
+        };
+        sqlx::query(
+            "INSERT INTO tracks (title, isrc, is_favorite, favorite_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(format!("Song {:02}", i))
+        .bind(format!("ISRC{:08}", i))
+        .bind(is_fav)
+        .bind(fav_at)
+        .execute(&db)
+        .await
+        .unwrap();
     }
 
     // Total favorites = 8 (odd numbers: 1, 3, 5, 7, 9, 11, 13, 15)
     let total_favs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE is_favorite = 1")
-        .fetch_one(&db).await.unwrap();
+        .fetch_one(&db)
+        .await
+        .unwrap();
     assert_eq!(total_favs, 8);
 
     // Page 1: limit 5, offset 0
@@ -353,7 +456,10 @@ async fn test_filter_favorites_pagination() {
     .fetch_all(&db).await.unwrap();
 
     assert_eq!(page1_tracks.len(), 5);
-    assert_eq!(page1_tracks[0].title, "Song 15", "First song in page must be the most recently favorited (Song 15)");
+    assert_eq!(
+        page1_tracks[0].title, "Song 15",
+        "First song in page must be the most recently favorited (Song 15)"
+    );
     assert_eq!(page1_tracks[4].title, "Song 07");
 
     // Page 2: limit 5, offset 5
@@ -374,7 +480,11 @@ async fn test_filter_favorites_pagination() {
     )
     .fetch_all(&db).await.unwrap();
 
-    assert_eq!(page2_tracks.len(), 3, "Page 2 must contain remaining 3 favorites");
+    assert_eq!(
+        page2_tracks.len(),
+        3,
+        "Page 2 must contain remaining 3 favorites"
+    );
     assert_eq!(page2_tracks[0].title, "Song 05");
     assert_eq!(page2_tracks[2].title, "Song 01");
 }
@@ -393,14 +503,19 @@ async fn test_migration_0044_clean_db_and_reapply_idempotence() {
         .expect("Clean migration up to 0044 must succeed");
 
     // Verify favorite_at column and default is_favorite = 0
-    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Migration Test Track') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title) VALUES ('Migration Test Track') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
-    let row: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(track_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let row: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(row.0, 0, "Default is_favorite must be 0");
     assert_eq!(row.1, None, "Default favorite_at must be NULL");
@@ -428,41 +543,71 @@ async fn test_migration_0044_from_prior_favorites_state() {
             is_favorite INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX idx_tracks_favorite ON tracks(is_favorite);
-        "#
+        "#,
     )
-    .execute(&pool).await.unwrap();
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Insert existing favorite and non-favorite tracks before migration 0044
-    let fav_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, is_favorite) VALUES ('Pre-existing Favorite', 1) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let non_fav_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, is_favorite) VALUES ('Pre-existing Normal', 0) RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let fav_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, is_favorite) VALUES ('Pre-existing Favorite', 1) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let non_fav_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, is_favorite) VALUES ('Pre-existing Normal', 0) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // Execute migration 0044 manually
     sqlx::query(
         r#"
         ALTER TABLE tracks ADD COLUMN favorite_at TEXT;
         CREATE INDEX IF NOT EXISTS idx_tracks_favorite_at ON tracks(is_favorite, favorite_at DESC);
-        "#
+        "#,
     )
-    .execute(&pool).await.unwrap();
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Verify existing favorite state is preserved
-    let fav_row: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(fav_id).fetch_one(&pool).await.unwrap();
+    let fav_row: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(fav_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(fav_row.0, 1, "Pre-existing favorite flag must NOT be lost");
-    assert_eq!(fav_row.1, None, "Pre-existing favorite initially has NULL favorite_at until updated");
+    assert_eq!(
+        fav_row.1, None,
+        "Pre-existing favorite initially has NULL favorite_at until updated"
+    );
 
-    let non_fav_row: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(non_fav_id).fetch_one(&pool).await.unwrap();
+    let non_fav_row: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(non_fav_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(non_fav_row.0, 0);
     assert_eq!(non_fav_row.1, None);
 
     // Toggle pre-existing favorite to update timestamp
     sqlx::query("UPDATE tracks SET favorite_at = datetime('now') WHERE id = ?")
-        .bind(fav_id).execute(&pool).await.unwrap();
-    let updated_fav: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(fav_id).fetch_one(&pool).await.unwrap();
+        .bind(fav_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let updated_fav: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(fav_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(updated_fav.0, 1);
     assert!(updated_fav.1.is_some());
 }
@@ -479,23 +624,34 @@ async fn test_migration_0044_incompatible_schema_fails_explicitly() {
         r#"
         ALTER TABLE tracks ADD COLUMN favorite_at TEXT;
         CREATE INDEX IF NOT EXISTS idx_tracks_favorite_at ON tracks(is_favorite, favorite_at DESC);
-        "#
+        "#,
     )
-    .execute(&pool).await;
+    .execute(&pool)
+    .await;
 
-    assert!(res.is_err(), "Migration 0044 must return an explicit Err if the target schema is incompatible");
+    assert!(
+        res.is_err(),
+        "Migration 0044 must return an explicit Err if the target schema is incompatible"
+    );
 }
 
 #[tokio::test]
 async fn test_favorites_distinct_masters_editions_no_auto_merge() {
     let db = create_test_db().await;
-    let service_id: i64 = sqlx::query_scalar("INSERT INTO services (name) VALUES ('tidal') RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let service_id: i64 =
+        sqlx::query_scalar("INSERT INTO services (name) VALUES ('tidal') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     // Two distinct versions of "Heroes": Standard Release (1977) vs Remastered (2017)
     // Both share the same logical title and artist, but have distinct service_track_ids and releases
-    let track_std_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, release_year) VALUES ('Heroes (Original)', 1977) RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let track_std_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, release_year) VALUES ('Heroes (Original)', 1977) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
     let track_rem_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title, release_year) VALUES ('Heroes (2017 Remaster)', 2017) RETURNING id")
         .fetch_one(&db).await.unwrap();
 
@@ -506,14 +662,28 @@ async fn test_favorites_distinct_masters_editions_no_auto_merge() {
 
     // Mark ONLY the Remaster as favorite
     sqlx::query("UPDATE tracks SET is_favorite = 1, favorite_at = datetime('now') WHERE id = ?")
-        .bind(track_rem_id).execute(&db).await.unwrap();
+        .bind(track_rem_id)
+        .execute(&db)
+        .await
+        .unwrap();
 
-    let std_fav: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(track_std_id).fetch_one(&db).await.unwrap();
-    let rem_fav: (i32, Option<String>) = sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
-        .bind(track_rem_id).fetch_one(&db).await.unwrap();
+    let std_fav: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(track_std_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let rem_fav: (i32, Option<String>) =
+        sqlx::query_as("SELECT is_favorite, favorite_at FROM tracks WHERE id = ?")
+            .bind(track_rem_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
 
     assert_eq!(std_fav.0, 0, "Standard release must remain not favorite");
     assert_eq!(rem_fav.0, 1, "Remaster release must be favorite");
-    assert_ne!(track_std_id, track_rem_id, "Different editions/masters must not be merged automatically");
+    assert_ne!(
+        track_std_id, track_rem_id,
+        "Different editions/masters must not be merged automatically"
+    );
 }

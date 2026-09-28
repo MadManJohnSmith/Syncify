@@ -2,16 +2,14 @@
 use super::*;
 
 // Settings Commands - submodule of crate::commands
-// 
+//
 // Service preferences, sync, quality, folder, lyrics settings
-
-
 
 // ==============================================
 // SPRINT 1: SERVICE PREFERENCES & SYNC SETTINGS
 // ==============================================
 
-use crate::models::{ServicePreference, ServiceSyncSettings, SyncSettings, MetadataPreferences};
+use crate::models::{MetadataPreferences, ServicePreference, ServiceSyncSettings, SyncSettings};
 
 /// Get all service preferences ordered by priority
 #[tauri::command]
@@ -103,9 +101,9 @@ pub async fn get_sync_settings(state: State<'_, AppState>) -> Result<SyncSetting
     tracing::info!("get_sync_settings called");
 
     sqlx::query_as::<_, SyncSettings>(
-        "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup, 
-         background_download, max_concurrent_downloads, rate_limit_delay_ms, 
-         pause_on_metered, pause_on_low_battery FROM sync_settings WHERE id = 1"
+        "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup,
+         background_download, max_concurrent_downloads, rate_limit_delay_ms,
+         pause_on_metered, pause_on_low_battery FROM sync_settings WHERE id = 1",
     )
     .fetch_one(&state.db)
     .await
@@ -168,8 +166,8 @@ pub async fn get_service_sync_settings(
                   IFNULL(sync_purchases, 0) as sync_purchases,
                   IFNULL(sync_library_history, 0) as sync_library_history,
                   IFNULL(sync_include_appearances, 0) as sync_include_appearances,
-                  incremental_sync, last_synced 
-           FROM service_sync_settings"#
+                  incremental_sync, last_synced
+           FROM service_sync_settings"#,
     )
     .fetch_all(&state.db)
     .await
@@ -186,7 +184,7 @@ pub async fn perform_update_service_sync_settings(
     incremental_sync: bool,
 ) -> Result<ServiceSyncSettings, String> {
     sqlx::query(
-        "UPDATE service_sync_settings SET sync_favorites = ?, sync_playlists = ?, sync_albums = ?, 
+        "UPDATE service_sync_settings SET sync_favorites = ?, sync_playlists = ?, sync_albums = ?,
          incremental_sync = ?, updated_at = CURRENT_TIMESTAMP WHERE service_name = ?",
     )
     .bind(sync_favorites)
@@ -204,8 +202,8 @@ pub async fn perform_update_service_sync_settings(
                   IFNULL(sync_purchases, 0) as sync_purchases,
                   IFNULL(sync_library_history, 0) as sync_library_history,
                   IFNULL(sync_include_appearances, 0) as sync_include_appearances,
-                  incremental_sync, last_synced 
-           FROM service_sync_settings WHERE service_name = ?"#
+                  incremental_sync, last_synced
+           FROM service_sync_settings WHERE service_name = ?"#,
     )
     .bind(service_name)
     .fetch_one(db)
@@ -250,7 +248,7 @@ pub async fn perform_get_service_import_preferences(
                   IFNULL(sync_include_appearances, 0),
                   IFNULL(incremental_sync, 1)
            FROM service_sync_settings
-           WHERE service_name = ?"#
+           WHERE service_name = ?"#,
     )
     .bind(service_name)
     .fetch_optional(db)
@@ -258,18 +256,20 @@ pub async fn perform_get_service_import_preferences(
     .map_err(|e| format!("Database error fetching import preferences: {}", e))?;
 
     match row {
-        Some((fav_t, fav_a, fav_art, pl, pur, lib_hist, inc_app, inc_sync)) => Ok(ImportPreferences {
-            service_name: service_name.to_string(),
-            favorite_tracks: fav_t,
-            favorite_albums: fav_a,
-            favorite_artists: fav_art,
-            playlists: pl,
-            purchases: pur,
-            library_history: lib_hist,
-            include_appearances: inc_app,
-            incremental_sync: inc_sync,
-            force_retry_unavailable: false,
-        }),
+        Some((fav_t, fav_a, fav_art, pl, pur, lib_hist, inc_app, inc_sync)) => {
+            Ok(ImportPreferences {
+                service_name: service_name.to_string(),
+                favorite_tracks: fav_t,
+                favorite_albums: fav_a,
+                favorite_artists: fav_art,
+                playlists: pl,
+                purchases: pur,
+                library_history: lib_hist,
+                include_appearances: inc_app,
+                incremental_sync: inc_sync,
+                force_retry_unavailable: false,
+            })
+        }
         None => Ok(ImportPreferences {
             service_name: service_name.to_string(),
             ..ImportPreferences::default()
@@ -283,7 +283,7 @@ pub async fn perform_update_service_import_preferences(
     prefs: ImportPreferences,
 ) -> Result<ImportPreferences, String> {
     sqlx::query(
-        r#"INSERT INTO service_sync_settings 
+        r#"INSERT INTO service_sync_settings
            (service_name, sync_favorites, sync_albums, sync_favorite_artists, sync_playlists, sync_purchases, sync_library_history, sync_include_appearances, incremental_sync)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(service_name) DO UPDATE SET
@@ -345,7 +345,7 @@ pub async fn perform_get_quality_preferences(
     tracing::info!("get_quality_preferences");
 
     sqlx::query_as::<_, QualityPreference>(
-        "SELECT id, service_name, max_quality, preferred_format, fallback_quality, fallback_format 
+        "SELECT id, service_name, max_quality, preferred_format, fallback_quality, fallback_format
          FROM quality_preferences ORDER BY service_name",
     )
     .fetch_all(db)
@@ -370,7 +370,12 @@ pub async fn perform_update_quality_preference(
     fallback_quality: String,
     fallback_format: String,
 ) -> Result<QualityPreference, String> {
-    tracing::info!("update_quality_preference: service={}, max={}, format={}", service_name, max_quality, preferred_format);
+    tracing::info!(
+        "update_quality_preference: service={}, max={}, format={}",
+        service_name,
+        max_quality,
+        preferred_format
+    );
 
     sqlx::query(
         r#"INSERT INTO quality_preferences (service_name, max_quality, preferred_format, fallback_quality, fallback_format, updated_at)
@@ -392,7 +397,7 @@ pub async fn perform_update_quality_preference(
     .map_err(|e| format!("Update error: {}", e))?;
 
     sqlx::query_as::<_, QualityPreference>(
-        "SELECT id, service_name, max_quality, preferred_format, fallback_quality, fallback_format 
+        "SELECT id, service_name, max_quality, preferred_format, fallback_quality, fallback_format
          FROM quality_preferences WHERE service_name = ?",
     )
     .bind(&service_name)
@@ -427,7 +432,7 @@ pub async fn perform_get_folder_settings(db: &crate::DbPool) -> Result<FolderSet
     tracing::info!("get_folder_settings");
 
     sqlx::query_as::<_, FolderSettings>(
-        "SELECT id, base_folder, folder_template, file_template, artist_separator, 
+        "SELECT id, base_folder, folder_template, file_template, artist_separator,
          replace_spaces_with, max_path_length, fallback_action FROM folder_settings WHERE id = 1",
     )
     .fetch_one(db)
@@ -450,7 +455,7 @@ pub async fn perform_update_folder_settings(
 
     sqlx::query(
         "UPDATE folder_settings SET base_folder = ?, folder_template = ?, file_template = ?,
-         artist_separator = ?, replace_spaces_with = ?, max_path_length = ?, 
+         artist_separator = ?, replace_spaces_with = ?, max_path_length = ?,
          fallback_action = ?, updated_at = datetime('now') WHERE id = 1",
     )
     .bind(&settings.base_folder)
@@ -500,17 +505,17 @@ pub async fn preview_folder_path(
     // Get track info
     let track: (String, String, String, Option<String>, Option<i32>, i64, String) = sqlx::query_as(
         r#"
-        SELECT 
-            t.title, 
+        SELECT
+            t.title,
             COALESCE(
                 (SELECT art.name FROM track_artists ta JOIN artists art ON art.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
                 (SELECT art.name FROM album_artists aa JOIN artists art ON art.id = aa.artist_id WHERE aa.album_id = t.album_id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1),
                 'Unknown Artist'
-            ) as artist, 
-            COALESCE(alb.title, 'Unknown Album') as album, 
+            ) as artist,
+            COALESCE(alb.title, 'Unknown Album') as album,
             alb.release_date,
-            t.disc_number, 
-            COALESCE(CAST(t.track_number AS INTEGER), 1) as track_number, 
+            t.disc_number,
+            COALESCE(CAST(t.track_number AS INTEGER), 1) as track_number,
             COALESCE(LOWER(d.file_format), 'flac') as format
         FROM tracks t
         LEFT JOIN albums alb ON t.album_id = alb.id
@@ -524,7 +529,9 @@ pub async fn preview_folder_path(
     .map_err(|e| format!("Track not found: {}", e))?;
 
     let (title, artist, album, rel_date, disc_number, track_number, format) = track;
-    let rel_year = rel_date.as_deref().and_then(|d| d.split('-').next().and_then(|y| y.parse::<i32>().ok()));
+    let rel_year = rel_date
+        .as_deref()
+        .and_then(|d| d.split('-').next().and_then(|y| y.parse::<i32>().ok()));
 
     let template_config = syncify_core_domain::FolderFileTemplateConfig {
         folder_template: settings.folder_template,
@@ -612,7 +619,7 @@ pub async fn get_audio_processing_settings(
 
     sqlx::query_as::<_, AudioProcessingSettings>(
         "SELECT id, replay_gain_mode, target_loudness_lufs, transcode_enabled, transcode_format,
-         transcode_bitrate, keep_original_after_transcode, embed_lyrics, embed_artwork, artwork_max_size 
+         transcode_bitrate, keep_original_after_transcode, embed_lyrics, embed_artwork, artwork_max_size
          FROM audio_processing_settings WHERE id = 1"
     )
     .fetch_one(&state.db)
@@ -646,7 +653,7 @@ pub async fn update_audio_processing_settings(
     sqlx::query(
         "UPDATE audio_processing_settings SET replay_gain_mode = ?, target_loudness_lufs = ?,
          transcode_enabled = ?, transcode_format = ?, transcode_bitrate = ?,
-         keep_original_after_transcode = ?, embed_lyrics = ?, embed_artwork = ?, 
+         keep_original_after_transcode = ?, embed_lyrics = ?, embed_artwork = ?,
          artwork_max_size = ?, updated_at = datetime('now') WHERE id = 1",
     )
     .bind(&mode_norm)
@@ -676,9 +683,7 @@ pub struct LoudnessStats {
 
 /// Get library loudness normalization statistics
 #[tauri::command]
-pub async fn get_loudness_stats(
-    state: State<'_, AppState>,
-) -> Result<LoudnessStats, String> {
+pub async fn get_loudness_stats(state: State<'_, AppState>) -> Result<LoudnessStats, String> {
     tracing::info!("get_loudness_stats");
 
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
@@ -693,12 +698,11 @@ pub async fn get_loudness_stats(
     .await
     .map_err(|e| format!("DB error: {}", e))?;
 
-    let avg_lufs: Option<f64> = sqlx::query_scalar(
-        "SELECT AVG(loudness) FROM tracks WHERE loudness IS NOT NULL"
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("DB error: {}", e))?;
+    let avg_lufs: Option<f64> =
+        sqlx::query_scalar("SELECT AVG(loudness) FROM tracks WHERE loudness IS NOT NULL")
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| format!("DB error: {}", e))?;
 
     Ok(LoudnessStats {
         total_tracks: total,
@@ -714,15 +718,15 @@ pub async fn get_loudness_stats(
 
 /// Get metadata preferences
 #[tauri::command]
-pub async fn get_metadata_preferences(state: State<'_, AppState>) -> Result<MetadataPreferences, String> {
+pub async fn get_metadata_preferences(
+    state: State<'_, AppState>,
+) -> Result<MetadataPreferences, String> {
     tracing::info!("get_metadata_preferences called");
 
-    sqlx::query_as::<_, MetadataPreferences>(
-        "SELECT * FROM metadata_preferences WHERE id = 1"
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))
+    sqlx::query_as::<_, MetadataPreferences>("SELECT * FROM metadata_preferences WHERE id = 1")
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| format!("Database error: {}", e))
 }
 
 /// Update metadata preferences
@@ -735,8 +739,8 @@ pub async fn update_metadata_preferences(
 
     sqlx::query(
         r#"
-        UPDATE metadata_preferences 
-        SET 
+        UPDATE metadata_preferences
+        SET
             enable_musicbrainz = ?,
             enable_lastfm = ?,
             enable_acoustid = ?,
@@ -760,7 +764,7 @@ pub async fn update_metadata_preferences(
             weight_year = ?,
             weight_genre = ?
         WHERE id = 1
-        "#
+        "#,
     )
     .bind(settings.enable_musicbrainz)
     .bind(settings.enable_lastfm)
@@ -805,7 +809,7 @@ pub async fn get_lyrics_providers(
     tracing::info!("get_lyrics_providers");
 
     sqlx::query_as::<_, LyricsProviderSetting>(
-        "SELECT id, provider_id, provider_name, enabled, priority, sync_level 
+        "SELECT id, provider_id, provider_name, enabled, priority, sync_level
          FROM lyrics_provider_settings ORDER BY priority ASC",
     )
     .fetch_all(&state.db)
@@ -835,7 +839,7 @@ pub async fn update_lyrics_provider(
     .map_err(|e| format!("Update error: {}", e))?;
 
     sqlx::query_as::<_, LyricsProviderSetting>(
-        "SELECT id, provider_id, provider_name, enabled, priority, sync_level 
+        "SELECT id, provider_id, provider_name, enabled, priority, sync_level
          FROM lyrics_provider_settings WHERE provider_id = ?",
     )
     .bind(&provider_id)
@@ -873,8 +877,8 @@ pub async fn get_lyrics_config(state: State<'_, AppState>) -> Result<LyricsConfi
     tracing::info!("get_lyrics_config");
 
     sqlx::query_as::<_, LyricsConfig>(
-        "SELECT id, min_sync_level, preferred_language, storage_format, 
-         auto_fetch_on_import, retry_failed, retry_frequency 
+        "SELECT id, min_sync_level, preferred_language, storage_format,
+         auto_fetch_on_import, retry_failed, retry_frequency
          FROM lyrics_config WHERE id = 1",
     )
     .fetch_one(&state.db)
@@ -919,11 +923,7 @@ pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
 
     let output = crate::cmd_utils::create_std_command(&python_cmd)
         .arg(&script_path)
-        .args(&[
-            "test",
-            "--provider",
-            &provider_id,
-        ])
+        .args(&["test", "--provider", &provider_id])
         .current_dir(&project_root)
         .output()
         .map_err(|e| format!("Failed to run Python: {}", e))?;
@@ -957,14 +957,13 @@ pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
         return Err("Lyrics bridge produced empty output".to_string());
     }
 
-    let result: serde_json::Value =
-        serde_json::from_str(trimmed_stdout).map_err(|e| {
-            if !trimmed_stderr.is_empty() {
-                format!("Parse error: {} (stderr: {})", e, trimmed_stderr)
-            } else {
-                format!("Parse error: {} (output: {})", e, trimmed_stdout)
-            }
-        })?;
+    let result: serde_json::Value = serde_json::from_str(trimmed_stdout).map_err(|e| {
+        if !trimmed_stderr.is_empty() {
+            format!("Parse error: {} (stderr: {})", e, trimmed_stderr)
+        } else {
+            format!("Parse error: {} (output: {})", e, trimmed_stdout)
+        }
+    })?;
 
     Ok(result
         .get("success")
@@ -996,7 +995,10 @@ pub fn default_download_path() -> String {
         }
     }
 
-    std::env::temp_dir().join("Syncify").to_string_lossy().into_owned()
+    std::env::temp_dir()
+        .join("Syncify")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Creates `dir` (including parents) and verifies it accepts writes via a probe file.
@@ -1027,12 +1029,24 @@ pub async fn get_default_download_path() -> Result<String, String> {
 
 fn default_temp_path() -> String {
     if let Some(cache_dir) = dirs::cache_dir() {
-        return cache_dir.join("Syncify").join(".staging").to_string_lossy().into_owned();
+        return cache_dir
+            .join("Syncify")
+            .join(".staging")
+            .to_string_lossy()
+            .into_owned();
     }
     if let Some(local_data) = dirs::data_local_dir() {
-        return local_data.join("Syncify").join(".staging").to_string_lossy().into_owned();
+        return local_data
+            .join("Syncify")
+            .join(".staging")
+            .to_string_lossy()
+            .into_owned();
     }
-    std::env::temp_dir().join("Syncify").join(".staging").to_string_lossy().into_owned()
+    std::env::temp_dir()
+        .join("Syncify")
+        .join(".staging")
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[tauri::command]
@@ -1069,7 +1083,7 @@ pub async fn validate_directory_path(path: String) -> Result<PathValidationResul
     }
 
     let p = std::path::Path::new(trimmed);
-    
+
     // Check drive / root existence
     let drive_mounted = if let Some(prefix) = p.components().next() {
         match prefix {
@@ -1094,7 +1108,10 @@ pub async fn validate_directory_path(path: String) -> Result<PathValidationResul
             available_bytes: 0,
             drive_mounted: false,
             canonical_path: trimmed.to_string(),
-            error_message: Some(format!("Drive or volume for path '{}' is not mounted or accessible", trimmed)),
+            error_message: Some(format!(
+                "Drive or volume for path '{}' is not mounted or accessible",
+                trimmed
+            )),
         });
     }
 
@@ -1114,11 +1131,19 @@ pub async fn validate_directory_path(path: String) -> Result<PathValidationResul
                 available_bytes: 0,
                 drive_mounted: true,
                 canonical_path: trimmed.to_string(),
-                error_message: Some("Specified path exists but is a file, not a directory".to_string()),
+                error_message: Some(
+                    "Specified path exists but is a file, not a directory".to_string(),
+                ),
             });
         }
-        
-        let probe_file = p.join(format!(".syncify_probe_{}.tmp", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+
+        let probe_file = p.join(format!(
+            ".syncify_probe_{}.tmp",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
         match std::fs::write(&probe_file, b"probe") {
             Ok(_) => {
                 let _ = std::fs::remove_file(&probe_file);
@@ -1177,7 +1202,10 @@ pub async fn validate_directory_path(path: String) -> Result<PathValidationResul
                 }
             }
             None => {
-                write_err = Some(format!("No existing parent directory found for path '{}'", trimmed));
+                write_err = Some(format!(
+                    "No existing parent directory found for path '{}'",
+                    trimmed
+                ));
             }
         }
     }
@@ -1228,7 +1256,9 @@ pub struct EffectiveDownloadPaths {
 }
 
 /// Deterministic resolution for effective download library root and staging paths
-pub async fn resolve_effective_download_paths(db: &crate::DbPool) -> Result<EffectiveDownloadPaths, String> {
+pub async fn resolve_effective_download_paths(
+    db: &crate::DbPool,
+) -> Result<EffectiveDownloadPaths, String> {
     // 1. Canonical source: folder_settings.base_folder
     let base_folder_opt: Option<String> = sqlx::query_scalar(
         "SELECT base_folder FROM folder_settings WHERE id = 1 AND base_folder IS NOT NULL AND TRIM(base_folder) != ''"
@@ -1294,13 +1324,17 @@ pub async fn resolve_effective_download_paths(db: &crate::DbPool) -> Result<Effe
 }
 
 /// Perform get effective download paths
-pub async fn perform_get_effective_download_paths(db: &crate::DbPool) -> Result<EffectiveDownloadPaths, String> {
+pub async fn perform_get_effective_download_paths(
+    db: &crate::DbPool,
+) -> Result<EffectiveDownloadPaths, String> {
     resolve_effective_download_paths(db).await
 }
 
 /// Expose single effective download paths query for UI & backend commands
 #[tauri::command]
-pub async fn get_effective_download_paths(state: State<'_, AppState>) -> Result<EffectiveDownloadPaths, String> {
+pub async fn get_effective_download_paths(
+    state: State<'_, AppState>,
+) -> Result<EffectiveDownloadPaths, String> {
     perform_get_effective_download_paths(&state.db).await
 }
 
@@ -1316,7 +1350,8 @@ pub async fn perform_save_setting(
         return perform_save_spotify_setting(db, &key, value.trim()).await;
     }
 
-    let is_dl_path_key = key == "dl_download_path" || key == "download_dir" || key == "download_path";
+    let is_dl_path_key =
+        key == "dl_download_path" || key == "download_dir" || key == "download_path";
     let trimmed_val = value.trim();
 
     // TASK-100 (SEC-016): Guard against overwriting secrets with masked placeholders
@@ -1326,7 +1361,10 @@ pub async fn perform_save_setting(
             || trimmed_val == "********"
             || trimmed_val.contains("****")
         {
-            tracing::debug!("save ignored for '{}': value is the masked placeholder", key);
+            tracing::debug!(
+                "save ignored for '{}': value is the masked placeholder",
+                key
+            );
             return Ok(());
         }
     }
@@ -1362,7 +1400,7 @@ pub async fn perform_save_setting(
     }
 
     sqlx::query(
-        "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))"
+        "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))",
     )
     .bind(&key)
     .bind(&value)
@@ -1392,7 +1430,9 @@ fn mask_lastfm_key(key: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn get_lastfm_api_key_status(state: State<'_, AppState>) -> Result<LastfmKeyStatus, String> {
+pub async fn get_lastfm_api_key_status(
+    state: State<'_, AppState>,
+) -> Result<LastfmKeyStatus, String> {
     let row: Option<(String,)> =
         sqlx::query_as("SELECT value FROM settings WHERE key = 'lastfm_api_key' LIMIT 1")
             .fetch_optional(&state.db)
@@ -1426,10 +1466,7 @@ pub async fn get_lastfm_api_key_status(state: State<'_, AppState>) -> Result<Las
 
 /// Persist (or clear with an empty value) the Last.fm API key.
 #[tauri::command]
-pub async fn set_lastfm_api_key(
-    state: State<'_, AppState>,
-    api_key: String,
-) -> Result<(), String> {
+pub async fn set_lastfm_api_key(state: State<'_, AppState>, api_key: String) -> Result<(), String> {
     let trimmed = api_key.trim().to_string();
     perform_save_setting(&state.db, "lastfm_api_key".to_string(), trimmed).await
 }
@@ -1467,7 +1504,8 @@ pub fn parse_canonical_global_max_quality(raw: &str) -> Option<&'static str> {
         "any" | "best" | "auto" | "" => Some("any"),
         "high" | "normal" | "320" | "320kbps" => Some("high"),
         "lossless" | "cd" | "flac" | "16-44" | "flac_16" => Some("lossless"),
-        "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "master" | "24-96" | "24-192" | "flac_24" => Some("hires"),
+        "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "master"
+        | "24-96" | "24-192" | "flac_24" => Some("hires"),
         _ => None,
     }
 }
@@ -1504,7 +1542,8 @@ pub fn service_max_quality_rank(raw: Option<&str>) -> Option<u8> {
     match v.to_ascii_lowercase().as_str() {
         "high" | "normal" | "320" | "320kbps" | "medium" => Some(1),
         "lossless" | "cd" | "flac" | "16-44" | "flac_16" => Some(2),
-        "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "master" | "24-96" | "24-192" | "flac_24" => Some(3),
+        "hires" | "hi_res" | "hi-res" | "hi_res_lossless" | "hires_lossless" | "master"
+        | "24-96" | "24-192" | "flac_24" => Some(3),
         // Explicit "no cap" rows constrain nothing.
         "any" | "best" | "auto" | "unlimited" => Some(3),
         _ => None,
@@ -1541,12 +1580,11 @@ pub fn clamp_quality_request(requested: Option<&str>, ceiling_rank: u8) -> Strin
 /// Read the global ceiling from the settings KV, canonicalized.
 /// Missing row / empty / unreadable → "any" (current behaviour preserved).
 pub async fn perform_get_global_max_quality(db: &crate::DbPool) -> Result<String, String> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM settings WHERE key = ? LIMIT 1")
-            .bind(GLOBAL_MAX_QUALITY_KEY)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| format!("Database error reading {}: {}", GLOBAL_MAX_QUALITY_KEY, e))?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ? LIMIT 1")
+        .bind(GLOBAL_MAX_QUALITY_KEY)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| format!("Database error reading {}: {}", GLOBAL_MAX_QUALITY_KEY, e))?;
 
     let raw = row.map(|(v,)| v);
     if let Some(ref v) = raw {
@@ -1604,7 +1642,8 @@ pub async fn save_setting(
     state: State<'_, AppState>,
     key: String,
     value: String,
-) -> Result<(), String> {    perform_save_setting(&state.db, key.clone(), value).await?;
+) -> Result<(), String> {
+    perform_save_setting(&state.db, key.clone(), value).await?;
     if key.starts_with("spotify_") {
         refresh_spotify_credentials_cache(&state.db).await;
     }
@@ -1650,7 +1689,9 @@ pub async fn perform_get_kv_settings(
         }
     }
 
-    let requested_download_path = keys.iter().any(|key| key == "dl_download_path" || key == "download_dir" || key == "download_path");
+    let requested_download_path = keys
+        .iter()
+        .any(|key| key == "dl_download_path" || key == "download_dir" || key == "download_path");
     let missing_or_blank_download_path = requested_download_path
         && result
             .get("dl_download_path")
@@ -1660,7 +1701,8 @@ pub async fn perform_get_kv_settings(
             .unwrap_or(true);
 
     if missing_or_blank_download_path {
-        let eff = resolve_effective_download_paths(db).await
+        let eff = resolve_effective_download_paths(db)
+            .await
             .map(|e| e.library_root)
             .unwrap_or_else(|_| default_download_path());
 
@@ -1694,21 +1736,24 @@ pub async fn perform_save_settings_batch(
     db: &crate::DbPool,
     settings: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
-    let mut tx = db.begin_with("BEGIN IMMEDIATE")
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
     let mut new_dl_path: Option<String> = None;
     let mut saved_spotify_keys = false;
     for (k, v) in &settings {
-        if (k == "dl_download_path" || k == "download_dir" || k == "download_path") && !v.trim().is_empty() {
+        if (k == "dl_download_path" || k == "download_dir" || k == "download_path")
+            && !v.trim().is_empty()
+        {
             new_dl_path = Some(v.trim().to_string());
         }
     }
 
     if let Some(ref path) = new_dl_path {
         sqlx::query(
-            "UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1"
+            "UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1",
         )
         .bind(path)
         .execute(&mut *tx)
@@ -1736,7 +1781,8 @@ pub async fn perform_save_settings_batch(
                 continue;
             }
         }
-        let is_dl_key = key == "dl_download_path" || key == "download_dir" || key == "download_path";
+        let is_dl_key =
+            key == "dl_download_path" || key == "download_dir" || key == "download_path";
         if is_dl_key && value.trim().is_empty() && new_dl_path.is_none() {
             // Guard against wiping configured path
             continue;
@@ -1816,14 +1862,16 @@ pub struct DownloadSettingsDto {
 }
 
 /// Perform get unified download and file structure settings
-pub async fn perform_get_download_settings(state: &AppState) -> Result<DownloadSettingsDto, String> {
+pub async fn perform_get_download_settings(
+    state: &AppState,
+) -> Result<DownloadSettingsDto, String> {
     tracing::info!("get_download_settings called");
 
     let folder: FolderSettings = perform_get_folder_settings(&state.db).await?;
     let sync: SyncSettings = sqlx::query_as::<_, SyncSettings>(
-        "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup, 
-         background_download, max_concurrent_downloads, rate_limit_delay_ms, 
-         pause_on_metered, pause_on_low_battery FROM sync_settings WHERE id = 1"
+        "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup,
+         background_download, max_concurrent_downloads, rate_limit_delay_ms,
+         pause_on_metered, pause_on_low_battery FROM sync_settings WHERE id = 1",
     )
     .fetch_one(&state.db)
     .await
@@ -1842,19 +1890,56 @@ pub async fn perform_get_download_settings(state: &AppState) -> Result<DownloadS
     }
 
     let download_path = effective.library_root.clone();
-    let temporary_root = dl_map.get("dl_temp_dir").or_else(|| dl_map.get("temp_dir")).cloned().or_else(|| Some(effective.staging_root.clone()));
-    let retry_failed = dl_map.get("dl_retry_failed").map(|v| v == "true" || v == "1").unwrap_or(true);
-    let retry_count = dl_map.get("dl_retry_count").and_then(|v| v.parse().ok()).unwrap_or(3);
-    let retry_delay_ms = dl_map.get("dl_retry_delay").and_then(|v| v.parse().ok()).unwrap_or(sync.rate_limit_delay_ms as i64);
-    let auto_download_favorites = dl_map.get("dl_auto_download_favorites").map(|v| v == "true" || v == "1").unwrap_or(false);
-    let organize_by_artist = dl_map.get("dl_create_artist_folder").map(|v| v == "true" || v == "1").unwrap_or(true);
-    let organize_by_album = dl_map.get("dl_create_album_folder").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let temporary_root = dl_map
+        .get("dl_temp_dir")
+        .or_else(|| dl_map.get("temp_dir"))
+        .cloned()
+        .or_else(|| Some(effective.staging_root.clone()));
+    let retry_failed = dl_map
+        .get("dl_retry_failed")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    let retry_count = dl_map
+        .get("dl_retry_count")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    let retry_delay_ms = dl_map
+        .get("dl_retry_delay")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(sync.rate_limit_delay_ms as i64);
+    let auto_download_favorites = dl_map
+        .get("dl_auto_download_favorites")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    let organize_by_artist = dl_map
+        .get("dl_create_artist_folder")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    let organize_by_album = dl_map
+        .get("dl_create_album_folder")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
 
-    let generate_lyrics_lrc = dl_map.get("dl_generate_lyrics_lrc").map(|v| v == "true" || v == "1").unwrap_or(true);
-    let generate_cover_art = dl_map.get("dl_generate_cover_art").map(|v| v == "true" || v == "1").unwrap_or(true);
-    let generate_animated_cover = dl_map.get("dl_generate_animated_cover").map(|v| v == "true" || v == "1").unwrap_or(true);
-    let generate_booklet = dl_map.get("dl_generate_booklet").map(|v| v == "true" || v == "1").unwrap_or(true);
-    let generate_artist_sidecars = dl_map.get("dl_generate_artist_sidecars").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let generate_lyrics_lrc = dl_map
+        .get("dl_generate_lyrics_lrc")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    let generate_cover_art = dl_map
+        .get("dl_generate_cover_art")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    let generate_animated_cover = dl_map
+        .get("dl_generate_animated_cover")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    let generate_booklet = dl_map
+        .get("dl_generate_booklet")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    let generate_artist_sidecars = dl_map
+        .get("dl_generate_artist_sidecars")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
 
     let max_concurrent = state.worker_state.max_concurrent() as i64;
 
@@ -1888,7 +1973,9 @@ pub async fn perform_get_download_settings(state: &AppState) -> Result<DownloadS
 
 /// Get unified download and file structure settings
 #[tauri::command]
-pub async fn get_download_settings(state: State<'_, AppState>) -> Result<DownloadSettingsDto, String> {
+pub async fn get_download_settings(
+    state: State<'_, AppState>,
+) -> Result<DownloadSettingsDto, String> {
     perform_get_download_settings(&state).await
 }
 
@@ -1902,8 +1989,8 @@ pub async fn perform_save_download_settings(
     // 1. Update folder_settings table (canonical library_root)
     sqlx::query(
         "UPDATE folder_settings SET base_folder = ?, folder_template = ?, file_template = ?,
-         artist_separator = ?, replace_spaces_with = ?, max_path_length = ?, 
-         fallback_action = ?, updated_at = datetime('now') WHERE id = 1"
+         artist_separator = ?, replace_spaces_with = ?, max_path_length = ?,
+         fallback_action = ?, updated_at = datetime('now') WHERE id = 1",
     )
     .bind(&settings.download_path)
     .bind(&settings.folder_template)
@@ -1933,25 +2020,66 @@ pub async fn perform_save_download_settings(
     .execute(&state.db)
     .await;
 
-    state.worker_state.set_max_concurrent(settings.max_concurrent_downloads as usize);
+    state
+        .worker_state
+        .set_max_concurrent(settings.max_concurrent_downloads as usize);
 
     // 3. Update settings key-value table and keep all legacy keys synchronized
     let mut kv_pairs = vec![
-        ("dl_download_path".to_string(), settings.download_path.clone()),
+        (
+            "dl_download_path".to_string(),
+            settings.download_path.clone(),
+        ),
         ("download_dir".to_string(), settings.download_path.clone()),
         ("download_path".to_string(), settings.download_path.clone()),
-        ("dl_concurrent_downloads".to_string(), settings.max_concurrent_downloads.to_string()),
-        ("dl_retry_failed".to_string(), settings.retry_failed.to_string()),
-        ("dl_retry_count".to_string(), settings.retry_count.to_string()),
-        ("dl_retry_delay".to_string(), settings.retry_delay_ms.to_string()),
-        ("dl_create_artist_folder".to_string(), settings.organize_by_artist.to_string()),
-        ("dl_create_album_folder".to_string(), settings.organize_by_album.to_string()),
-        ("dl_auto_download_favorites".to_string(), settings.auto_download_favorites.to_string()),
-        ("dl_generate_lyrics_lrc".to_string(), settings.generate_lyrics_lrc.to_string()),
-        ("dl_generate_cover_art".to_string(), settings.generate_cover_art.to_string()),
-        ("dl_generate_animated_cover".to_string(), settings.generate_animated_cover.to_string()),
-        ("dl_generate_booklet".to_string(), settings.generate_booklet.to_string()),
-        ("dl_generate_artist_sidecars".to_string(), settings.generate_artist_sidecars.to_string()),
+        (
+            "dl_concurrent_downloads".to_string(),
+            settings.max_concurrent_downloads.to_string(),
+        ),
+        (
+            "dl_retry_failed".to_string(),
+            settings.retry_failed.to_string(),
+        ),
+        (
+            "dl_retry_count".to_string(),
+            settings.retry_count.to_string(),
+        ),
+        (
+            "dl_retry_delay".to_string(),
+            settings.retry_delay_ms.to_string(),
+        ),
+        (
+            "dl_create_artist_folder".to_string(),
+            settings.organize_by_artist.to_string(),
+        ),
+        (
+            "dl_create_album_folder".to_string(),
+            settings.organize_by_album.to_string(),
+        ),
+        (
+            "dl_auto_download_favorites".to_string(),
+            settings.auto_download_favorites.to_string(),
+        ),
+        (
+            "dl_generate_lyrics_lrc".to_string(),
+            settings.generate_lyrics_lrc.to_string(),
+        ),
+        (
+            "dl_generate_cover_art".to_string(),
+            settings.generate_cover_art.to_string(),
+        ),
+        (
+            "dl_generate_animated_cover".to_string(),
+            settings.generate_animated_cover.to_string(),
+        ),
+        (
+            "dl_generate_booklet".to_string(),
+            settings.generate_booklet.to_string(),
+        ),
+        (
+            "dl_generate_artist_sidecars".to_string(),
+            settings.generate_artist_sidecars.to_string(),
+        ),
     ];
 
     if let Some(ref tr) = settings.temporary_root {
@@ -1986,11 +2114,13 @@ pub async fn perform_update_fallback_action(
     fallback_action: String,
 ) -> Result<String, String> {
     tracing::info!("update_fallback_action: {}", fallback_action);
-    sqlx::query("UPDATE folder_settings SET fallback_action = ?, updated_at = datetime('now') WHERE id = 1")
-        .bind(&fallback_action)
-        .execute(db)
-        .await
-        .map_err(|e| format!("Database error: {}", e))?;
+    sqlx::query(
+        "UPDATE folder_settings SET fallback_action = ?, updated_at = datetime('now') WHERE id = 1",
+    )
+    .bind(&fallback_action)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Database error: {}", e))?;
     Ok(fallback_action)
 }
 
@@ -2014,14 +2144,15 @@ pub struct SidecarSettingsDto {
 }
 
 /// Perform get sidecar generation flags
-pub async fn perform_get_sidecar_settings(db: &crate::DbPool) -> Result<SidecarSettingsDto, String> {
+pub async fn perform_get_sidecar_settings(
+    db: &crate::DbPool,
+) -> Result<SidecarSettingsDto, String> {
     tracing::info!("get_sidecar_settings called");
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM settings WHERE key LIKE 'dl_generate_%'"
-    )
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE 'dl_generate_%'")
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
 
     let mut dto = SidecarSettingsDto {
         generate_lyrics_lrc: true,
@@ -2047,7 +2178,9 @@ pub async fn perform_get_sidecar_settings(db: &crate::DbPool) -> Result<SidecarS
 
 /// Get sidecar generation flags
 #[tauri::command]
-pub async fn get_sidecar_settings(state: State<'_, AppState>) -> Result<SidecarSettingsDto, String> {
+pub async fn get_sidecar_settings(
+    state: State<'_, AppState>,
+) -> Result<SidecarSettingsDto, String> {
     perform_get_sidecar_settings(&state.db).await
 }
 
@@ -2059,11 +2192,23 @@ pub async fn perform_update_sidecar_settings(
     tracing::info!("update_sidecar_settings: {:?}", settings);
 
     let kvs = vec![
-        ("dl_generate_lyrics_lrc", settings.generate_lyrics_lrc.to_string()),
-        ("dl_generate_cover_art", settings.generate_cover_art.to_string()),
-        ("dl_generate_animated_cover", settings.generate_animated_cover.to_string()),
+        (
+            "dl_generate_lyrics_lrc",
+            settings.generate_lyrics_lrc.to_string(),
+        ),
+        (
+            "dl_generate_cover_art",
+            settings.generate_cover_art.to_string(),
+        ),
+        (
+            "dl_generate_animated_cover",
+            settings.generate_animated_cover.to_string(),
+        ),
         ("dl_generate_booklet", settings.generate_booklet.to_string()),
-        ("dl_generate_artist_sidecars", settings.generate_artist_sidecars.to_string()),
+        (
+            "dl_generate_artist_sidecars",
+            settings.generate_artist_sidecars.to_string(),
+        ),
     ];
 
     for (k, v) in kvs {
@@ -2102,23 +2247,25 @@ pub async fn resolve_effective_download_preferences(
     let effective_paths = resolve_effective_download_paths(db).await?;
 
     // 2. Folder settings
-    let folder: FolderSettings = perform_get_folder_settings(db).await
-        .unwrap_or_else(|_| FolderSettings {
-            id: 1,
-            base_folder: effective_paths.library_root.clone(),
-            folder_template: "{AlbumArtist}/[{Year}] {Album}".to_string(),
-            file_template: "{TrackNumber:pad2} - {Title}".to_string(),
-            artist_separator: ", ".to_string(),
-            replace_spaces_with: None,
-            max_path_length: 255,
-            fallback_action: "try_next".to_string(),
-        });
+    let folder: FolderSettings =
+        perform_get_folder_settings(db)
+            .await
+            .unwrap_or_else(|_| FolderSettings {
+                id: 1,
+                base_folder: effective_paths.library_root.clone(),
+                folder_template: "{AlbumArtist}/[{Year}] {Album}".to_string(),
+                file_template: "{TrackNumber:pad2} - {Title}".to_string(),
+                artist_separator: ", ".to_string(),
+                replace_spaces_with: None,
+                max_path_length: 255,
+                fallback_action: "try_next".to_string(),
+            });
 
     // 3. Sync settings
     let sync: SyncSettings = sqlx::query_as::<_, SyncSettings>(
-        "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup, 
-         background_download, max_concurrent_downloads, rate_limit_delay_ms, 
-         pause_on_metered, pause_on_low_battery FROM sync_settings WHERE id = 1"
+        "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup,
+         background_download, max_concurrent_downloads, rate_limit_delay_ms,
+         pause_on_metered, pause_on_low_battery FROM sync_settings WHERE id = 1",
     )
     .fetch_optional(db)
     .await
@@ -2143,17 +2290,23 @@ pub async fn resolve_effective_download_preferences(
         retry_delay_seconds: Option<i32>,
     }
     let adv: Option<AdvRow> = sqlx::query_as(
-        "SELECT max_retries, retry_delay_seconds FROM advanced_settings WHERE id = 1"
+        "SELECT max_retries, retry_delay_seconds FROM advanced_settings WHERE id = 1",
     )
     .fetch_optional(db)
     .await
     .unwrap_or(None);
 
     let max_retries = adv.as_ref().and_then(|a| a.max_retries).unwrap_or(3).max(0) as u32;
-    let retry_delay_seconds = adv.as_ref().and_then(|a| a.retry_delay_seconds).unwrap_or(5).max(0) as u32;
+    let retry_delay_seconds = adv
+        .as_ref()
+        .and_then(|a| a.retry_delay_seconds)
+        .unwrap_or(5)
+        .max(0) as u32;
 
     // 5. Quality preferences
-    let service_qualities = perform_get_quality_preferences(db).await.unwrap_or_default();
+    let service_qualities = perform_get_quality_preferences(db)
+        .await
+        .unwrap_or_default();
 
     // 6. Service preferences (priority order)
     let service_prefs: Vec<ServicePreference> = sqlx::query_as(
@@ -2163,16 +2316,17 @@ pub async fn resolve_effective_download_preferences(
     .await
     .unwrap_or_default();
 
-    let service_priority_order: Vec<String> = service_prefs.into_iter().map(|p| p.service_name).collect();
+    let service_priority_order: Vec<String> =
+        service_prefs.into_iter().map(|p| p.service_name).collect();
 
     // 7. Preferred download service: first downloadable service according to priority order
     let preferred_download_service: Option<String> = sqlx::query_scalar(
-        r#"SELECT sp.service_name 
-           FROM service_preferences sp 
-           JOIN services s ON s.name = sp.service_name 
-           WHERE s.supports_download = 1 
-           ORDER BY sp.priority ASC 
-           LIMIT 1"#
+        r#"SELECT sp.service_name
+           FROM service_preferences sp
+           JOIN services s ON s.name = sp.service_name
+           WHERE s.supports_download = 1
+           ORDER BY sp.priority ASC
+           LIMIT 1"#,
     )
     .fetch_optional(db)
     .await
@@ -2180,7 +2334,8 @@ pub async fn resolve_effective_download_preferences(
 
     // 8. Global quality & format derived from top downloadable service or default
     let (max_quality, preferred_format) = if let Some(ref pref_svc) = preferred_download_service {
-        service_qualities.iter()
+        service_qualities
+            .iter()
             .find(|q| q.service_name.eq_ignore_ascii_case(pref_svc))
             .map(|q| (q.max_quality.clone(), q.preferred_format.clone()))
             .unwrap_or_else(|| ("hires".to_string(), "flac".to_string()))
@@ -2189,21 +2344,38 @@ pub async fn resolve_effective_download_preferences(
     };
 
     // 9. Sidecar flags & KV settings
-    let kv_rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM settings WHERE key LIKE 'dl_%'"
-    )
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
+    let kv_rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE 'dl_%'")
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
 
     let kv_map: std::collections::HashMap<String, String> = kv_rows.into_iter().collect();
 
-    let auto_download_favorites = kv_map.get("dl_auto_download_favorites").map(|v| v == "true" || v == "1").unwrap_or(false);
-    let generate_lyrics_lrc = kv_map.get("dl_generate_lyrics_lrc").map(|v| v == "true" || v == "1").unwrap_or(true);
-    let generate_cover_art = kv_map.get("dl_generate_cover_art").map(|v| v == "true" || v == "1").unwrap_or(true);
-    let generate_animated_cover = kv_map.get("dl_generate_animated_cover").map(|v| v == "true" || v == "1").unwrap_or(true);
-    let generate_booklet = kv_map.get("dl_generate_booklet").map(|v| v == "true" || v == "1").unwrap_or(true);
-    let generate_artist_sidecars = kv_map.get("dl_generate_artist_sidecars").map(|v| v == "true" || v == "1").unwrap_or(true);
+    let auto_download_favorites = kv_map
+        .get("dl_auto_download_favorites")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    let generate_lyrics_lrc = kv_map
+        .get("dl_generate_lyrics_lrc")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    let generate_cover_art = kv_map
+        .get("dl_generate_cover_art")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    let generate_animated_cover = kv_map
+        .get("dl_generate_animated_cover")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    let generate_booklet = kv_map
+        .get("dl_generate_booklet")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
+    let generate_artist_sidecars = kv_map
+        .get("dl_generate_artist_sidecars")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(true);
 
     let max_concurrent_downloads = worker_state.max_concurrent().max(1) as u32;
 
@@ -2271,36 +2443,47 @@ pub async fn perform_save_effective_download_preferences(
 
     let validation = validate_directory_path(trimmed_path.to_string()).await?;
     if !validation.drive_mounted {
-        return Err(format!("Drive for path '{}' is not mounted or accessible", trimmed_path));
+        return Err(format!(
+            "Drive for path '{}' is not mounted or accessible",
+            trimmed_path
+        ));
     }
     if !validation.valid || !validation.is_writable {
         return Err(format!(
             "Directory path '{}' is invalid or not writable: {}",
             trimmed_path,
-            validation.error_message.unwrap_or_else(|| "Permission denied".to_string())
+            validation
+                .error_message
+                .unwrap_or_else(|| "Permission denied".to_string())
         ));
     }
 
     let canonical_path = validation.canonical_path;
 
     // 2. Begin atomic SQLite transaction
-    let mut tx = state.db.begin_with("BEGIN IMMEDIATE")
+    let mut tx = state
+        .db
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
     // 3. Update folder_settings
     let fallback_act = if prefs.fallback_action.is_empty() {
-        if prefs.allow_downgrade { "try_next".to_string() } else { "skip".to_string() }
+        if prefs.allow_downgrade {
+            "try_next".to_string()
+        } else {
+            "skip".to_string()
+        }
     } else {
         prefs.fallback_action.clone()
     };
 
     sqlx::query(
-        r#"UPDATE folder_settings 
+        r#"UPDATE folder_settings
            SET base_folder = ?, folder_template = ?, file_template = ?,
-               artist_separator = ?, replace_spaces_with = ?, max_path_length = ?, 
-               fallback_action = ?, updated_at = datetime('now') 
-           WHERE id = 1"#
+               artist_separator = ?, replace_spaces_with = ?, max_path_length = ?,
+               fallback_action = ?, updated_at = datetime('now')
+           WHERE id = 1"#,
     )
     .bind(&canonical_path)
     .bind(&prefs.folder_template)
@@ -2315,12 +2498,12 @@ pub async fn perform_save_effective_download_preferences(
 
     // 4. Update sync_settings
     sqlx::query(
-        r#"UPDATE sync_settings 
+        r#"UPDATE sync_settings
            SET auto_sync_enabled = ?, sync_interval_value = ?, sync_interval_unit = ?,
-               sync_on_startup = ?, background_download = ?, max_concurrent_downloads = ?, 
+               sync_on_startup = ?, background_download = ?, max_concurrent_downloads = ?,
                rate_limit_delay_ms = ?, pause_on_metered = ?, pause_on_low_battery = ?,
-               updated_at = CURRENT_TIMESTAMP 
-           WHERE id = 1"#
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = 1"#,
     )
     .bind(prefs.auto_sync_enabled)
     .bind(prefs.sync_interval_value as i32)
@@ -2337,10 +2520,10 @@ pub async fn perform_save_effective_download_preferences(
 
     // 5. Update advanced_settings
     let _ = sqlx::query(
-        r#"UPDATE advanced_settings 
+        r#"UPDATE advanced_settings
            SET max_concurrent_downloads = ?,
-               max_retries = ?, retry_delay_seconds = ?, updated_at = datetime('now') 
-           WHERE id = 1"#
+               max_retries = ?, retry_delay_seconds = ?, updated_at = datetime('now')
+           WHERE id = 1"#,
     )
     .bind(prefs.max_concurrent_downloads as i32)
     .bind(prefs.max_retries as i32)
@@ -2385,17 +2568,47 @@ pub async fn perform_save_effective_download_preferences(
         ("dl_download_path".to_string(), canonical_path.clone()),
         ("download_dir".to_string(), canonical_path.clone()),
         ("download_path".to_string(), canonical_path.clone()),
-        ("dl_concurrent_downloads".to_string(), prefs.max_concurrent_downloads.to_string()),
-        ("dl_retry_failed".to_string(), (prefs.max_retries > 0).to_string()),
+        (
+            "dl_concurrent_downloads".to_string(),
+            prefs.max_concurrent_downloads.to_string(),
+        ),
+        (
+            "dl_retry_failed".to_string(),
+            (prefs.max_retries > 0).to_string(),
+        ),
         ("dl_retry_count".to_string(), prefs.max_retries.to_string()),
-        ("dl_retry_delay".to_string(), (prefs.retry_delay_seconds * 1000).to_string()),
-        ("dl_auto_download_favorites".to_string(), prefs.auto_download_favorites.to_string()),
-        ("dl_generate_lyrics_lrc".to_string(), prefs.generate_lyrics_lrc.to_string()),
-        ("dl_generate_cover_art".to_string(), prefs.generate_cover_art.to_string()),
-        ("dl_generate_animated_cover".to_string(), prefs.generate_animated_cover.to_string()),
-        ("dl_generate_booklet".to_string(), prefs.generate_booklet.to_string()),
-        ("dl_generate_artist_sidecars".to_string(), prefs.generate_artist_sidecars.to_string()),
-        ("dl_allow_downgrade".to_string(), (fallback_act != "skip").to_string()),
+        (
+            "dl_retry_delay".to_string(),
+            (prefs.retry_delay_seconds * 1000).to_string(),
+        ),
+        (
+            "dl_auto_download_favorites".to_string(),
+            prefs.auto_download_favorites.to_string(),
+        ),
+        (
+            "dl_generate_lyrics_lrc".to_string(),
+            prefs.generate_lyrics_lrc.to_string(),
+        ),
+        (
+            "dl_generate_cover_art".to_string(),
+            prefs.generate_cover_art.to_string(),
+        ),
+        (
+            "dl_generate_animated_cover".to_string(),
+            prefs.generate_animated_cover.to_string(),
+        ),
+        (
+            "dl_generate_booklet".to_string(),
+            prefs.generate_booklet.to_string(),
+        ),
+        (
+            "dl_generate_artist_sidecars".to_string(),
+            prefs.generate_artist_sidecars.to_string(),
+        ),
+        (
+            "dl_allow_downgrade".to_string(),
+            (fallback_act != "skip").to_string(),
+        ),
     ];
 
     for (k, v) in kv_pairs {
@@ -2715,11 +2928,17 @@ mod settings_tests {
     async fn test_save_and_load_setting() {
         let pool = setup_test_db().await;
         // manually insert a setting
-        sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('test_key', 'test_value')")
-            .execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('test_key', 'test_value')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         // and fetch it
         let row: (String,) = sqlx::query_as("SELECT value FROM settings WHERE key = 'test_key'")
-            .fetch_one(&pool).await.unwrap();
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(row.0, "test_value");
     }
 
@@ -2727,21 +2946,31 @@ mod settings_tests {
     async fn test_save_overwrites() {
         let pool = setup_test_db().await;
         sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('overwrite_key', 'v1')")
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
         // insert with same key should replace
         sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('overwrite_key', 'v2')")
-            .execute(&pool).await.unwrap();
-            
-        let row: (String,) = sqlx::query_as("SELECT value FROM settings WHERE key = 'overwrite_key'")
-            .fetch_one(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let row: (String,) =
+            sqlx::query_as("SELECT value FROM settings WHERE key = 'overwrite_key'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(row.0, "v2");
     }
 
     #[tokio::test]
     async fn test_get_nonexistent_setting_returns_empty() {
         let pool = setup_test_db().await;
-        let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = 'nonexistent'")
-            .fetch_optional(&pool).await.unwrap();
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM settings WHERE key = 'nonexistent'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
         assert!(row.is_none());
     }
 
@@ -2779,7 +3008,10 @@ mod settings_tests {
         assert_eq!(canonical_global_max_quality(Some("HI_RES")), "hires");
         assert_eq!(canonical_global_max_quality(Some("master")), "hires"); // migration 0009 tidal seed
         assert_eq!(canonical_global_max_quality(Some("normal")), "high");
-        assert_eq!(canonical_global_max_quality(Some("  Lossless  ")), "lossless");
+        assert_eq!(
+            canonical_global_max_quality(Some("  Lossless  ")),
+            "lossless"
+        );
         // Missing / empty / unknown degrade safely to 'any' (documented default).
         assert_eq!(canonical_global_max_quality(None), "any");
         assert_eq!(canonical_global_max_quality(Some("")), "any");
@@ -2809,7 +3041,11 @@ mod settings_tests {
         assert_eq!(service_max_quality_rank(Some("master")), Some(3)); // tidal seed row
         assert_eq!(service_max_quality_rank(Some("lossless")), Some(2));
         assert_eq!(service_max_quality_rank(Some("high")), Some(1));
-        assert_eq!(service_max_quality_rank(Some("normal")), Some(1), "S203: 'normal' maps to high");
+        assert_eq!(
+            service_max_quality_rank(Some("normal")),
+            Some(1),
+            "S203: 'normal' maps to high"
+        );
         // No usable constraint → None (global ceiling alone applies).
         assert_eq!(service_max_quality_rank(None), None);
         assert_eq!(service_max_quality_rank(Some("")), None);
@@ -2824,7 +3060,11 @@ mod settings_tests {
         assert_eq!(clamp_quality_request(None, 3), "HI_RES_LOSSLESS");
         // 'lossless' ceiling caps both the default and an explicit hires ask.
         assert_eq!(clamp_quality_request(None, 2), "LOSSLESS");
-        assert_eq!(clamp_quality_request(Some("hires"), 2), "LOSSLESS", "24-bit ask must be clamped to 16-bit under a lossless ceiling");
+        assert_eq!(
+            clamp_quality_request(Some("hires"), 2),
+            "LOSSLESS",
+            "24-bit ask must be clamped to 16-bit under a lossless ceiling"
+        );
         assert_eq!(clamp_quality_request(Some("lossless"), 2), "LOSSLESS");
         // 'high' ceiling caps everything down to the 320 tier.
         assert_eq!(clamp_quality_request(Some("hires"), 1), "HIGH");
@@ -2843,16 +3083,24 @@ mod settings_tests {
         assert_eq!(default_val, "any");
 
         // Write via the generic KV path used by the UI wrapper...
-        perform_save_setting(&pool, GLOBAL_MAX_QUALITY_KEY.to_string(), "lossless".to_string())
-            .await
-            .unwrap();
+        perform_save_setting(
+            &pool,
+            GLOBAL_MAX_QUALITY_KEY.to_string(),
+            "lossless".to_string(),
+        )
+        .await
+        .unwrap();
         let stored = perform_get_global_max_quality(&pool).await.unwrap();
         assert_eq!(stored, "lossless");
 
         // Unknown stored value fails open to 'any' instead of bricking downloads.
-        perform_save_setting(&pool, GLOBAL_MAX_QUALITY_KEY.to_string(), "bogus_tier".to_string())
-            .await
-            .unwrap();
+        perform_save_setting(
+            &pool,
+            GLOBAL_MAX_QUALITY_KEY.to_string(),
+            "bogus_tier".to_string(),
+        )
+        .await
+        .unwrap();
         let degraded = perform_get_global_max_quality(&pool).await.unwrap();
         assert_eq!(degraded, "any");
     }
@@ -2871,22 +3119,29 @@ mod settings_tests {
 
         // Global ceiling allows everything; the service row ('master'→rank 3) does not restrict either.
         let global = perform_get_global_max_quality(&pool).await.unwrap();
-        let svc_row: Option<(String,)> =
-            sqlx::query_as("SELECT max_quality FROM quality_preferences WHERE service_name = 'tidal'")
-                .fetch_optional(&pool)
-                .await
-                .unwrap();
+        let svc_row: Option<(String,)> = sqlx::query_as(
+            "SELECT max_quality FROM quality_preferences WHERE service_name = 'tidal'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
         let svc_rank = service_max_quality_rank(svc_row.map(|(m,)| m).as_deref());
         let ceiling = svc_rank.unwrap_or(global_ceiling_rank(&global));
         assert_eq!(ceiling, 3);
         assert_eq!(clamp_quality_request(None, ceiling), "HI_RES_LOSSLESS");
 
         // Tighten the global ceiling to lossless: effective = min(2, 3) = 2.
-        perform_save_setting(&pool, GLOBAL_MAX_QUALITY_KEY.to_string(), "lossless".to_string())
-            .await
-            .unwrap();
+        perform_save_setting(
+            &pool,
+            GLOBAL_MAX_QUALITY_KEY.to_string(),
+            "lossless".to_string(),
+        )
+        .await
+        .unwrap();
         let global = perform_get_global_max_quality(&pool).await.unwrap();
-        let ceiling = svc_rank.unwrap_or(global_ceiling_rank(&global)).min(global_ceiling_rank(&global));
+        let ceiling = svc_rank
+            .unwrap_or(global_ceiling_rank(&global))
+            .min(global_ceiling_rank(&global));
         assert_eq!(
             clamp_quality_request(Some("hires"), ceiling),
             "LOSSLESS",
@@ -2895,16 +3150,17 @@ mod settings_tests {
 
         // A stricter per-service row wins over a looser global ceiling: qobuz set to 'high'.
         sqlx::query(
-            "INSERT INTO quality_preferences (service_name, max_quality) VALUES ('qobuz', 'high')"
+            "INSERT INTO quality_preferences (service_name, max_quality) VALUES ('qobuz', 'high')",
         )
         .execute(&pool)
         .await
         .unwrap();
-        let qobuz_row: Option<(String,)> =
-            sqlx::query_as("SELECT max_quality FROM quality_preferences WHERE service_name = 'qobuz'")
-                .fetch_optional(&pool)
-                .await
-                .unwrap();
+        let qobuz_row: Option<(String,)> = sqlx::query_as(
+            "SELECT max_quality FROM quality_preferences WHERE service_name = 'qobuz'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
         let qobuz_rank = service_max_quality_rank(qobuz_row.map(|(m,)| m).as_deref()).unwrap_or(3);
         let ceiling = qobuz_rank.min(global_ceiling_rank(&global));
         assert_eq!(ceiling, 1);
@@ -3048,7 +3304,10 @@ where
     }
 
     if is_spotify_secret_masked(trimmed_value) {
-        tracing::debug!("save ignored for '{}': value is the masked placeholder", key);
+        tracing::debug!(
+            "save ignored for '{}': value is the masked placeholder",
+            key
+        );
         return Ok(());
     }
 
@@ -3081,15 +3340,14 @@ where
 pub async fn perform_load_spotify_api_credentials(
     db: &crate::DbPool,
 ) -> Result<Option<crate::services::spotify::SpotifyApiCredentials>, String> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key, value FROM settings WHERE key IN (?, ?, ?)",
-    )
-    .bind(SPOTIFY_KEY_CLIENT_ID)
-    .bind(SPOTIFY_KEY_CLIENT_SECRET)
-    .bind(SPOTIFY_KEY_REDIRECT_URI)
-    .fetch_all(db)
-    .await
-    .map_err(|e| format!("Database error fetching Spotify API credentials: {}", e))?;
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT key, value FROM settings WHERE key IN (?, ?, ?)")
+            .bind(SPOTIFY_KEY_CLIENT_ID)
+            .bind(SPOTIFY_KEY_CLIENT_SECRET)
+            .bind(SPOTIFY_KEY_REDIRECT_URI)
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("Database error fetching Spotify API credentials: {}", e))?;
 
     let mut map: std::collections::HashMap<String, String> = rows.into_iter().collect();
     let client_id = map.remove(SPOTIFY_KEY_CLIENT_ID).unwrap_or_default();
@@ -3124,7 +3382,11 @@ pub async fn perform_load_spotify_api_credentials(
     let creds = crate::services::spotify::SpotifyApiCredentials {
         client_id: client_id.to_string(),
         client_secret,
-        redirect_uri: if redirect.is_empty() { None } else { Some(redirect.to_string()) },
+        redirect_uri: if redirect.is_empty() {
+            None
+        } else {
+            Some(redirect.to_string())
+        },
     };
     crate::services::spotify::set_cached_spotify_credentials(Some(creds.clone()));
     Ok(Some(creds))
@@ -3180,13 +3442,23 @@ mod spotify_api_credentials_tests {
         init_test_crypto();
         let pool = memory_pool().await;
 
-        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_ID, "my_client_id").await.unwrap();
-        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "super_secret_value_42").await.unwrap();
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_ID, "my_client_id")
+            .await
+            .unwrap();
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "super_secret_value_42")
+            .await
+            .unwrap();
 
         let stored: String =
             sqlx::query_scalar("SELECT value FROM settings WHERE key = 'spotify_client_secret'")
-                .fetch_one(&pool).await.unwrap();
-        assert_ne!(stored.trim(), "super_secret_value_42", "secret must never be stored raw");
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_ne!(
+            stored.trim(),
+            "super_secret_value_42",
+            "secret must never be stored raw"
+        );
 
         let creds = perform_load_spotify_api_credentials(&pool).await.unwrap();
         let creds = creds.expect("complete trio must resolve");
@@ -3208,9 +3480,15 @@ mod spotify_api_credentials_tests {
         init_test_crypto();
         let pool = memory_pool().await;
 
-        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_ID, "id").await.unwrap();
-        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "sec").await.unwrap();
-        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_ID, "").await.unwrap();
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_ID, "id")
+            .await
+            .unwrap();
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "sec")
+            .await
+            .unwrap();
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_ID, "")
+            .await
+            .unwrap();
 
         let creds = perform_load_spotify_api_credentials(&pool).await.unwrap();
         assert!(creds.is_none(), "missing client id ⇒ not configured");
@@ -3222,18 +3500,29 @@ mod spotify_api_credentials_tests {
         init_test_crypto();
         let pool = memory_pool().await;
 
-        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "original_secret").await.unwrap();
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "original_secret")
+            .await
+            .unwrap();
         let before: String =
             sqlx::query_scalar("SELECT value FROM settings WHERE key = 'spotify_client_secret'")
-                .fetch_one(&pool).await.unwrap();
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         // UI sends the mask back untouched → save must be a no-op.
-        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "****ret_").await.unwrap();
+        perform_save_spotify_setting(&pool, SPOTIFY_KEY_CLIENT_SECRET, "****ret_")
+            .await
+            .unwrap();
 
         let after: String =
             sqlx::query_scalar("SELECT value FROM settings WHERE key = 'spotify_client_secret'")
-                .fetch_one(&pool).await.unwrap();
-        assert_eq!(before, after, "masked save must not touch the stored ciphertext");
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            before, after,
+            "masked save must not touch the stored ciphertext"
+        );
     }
 
     #[test]
@@ -3242,6 +3531,9 @@ mod spotify_api_credentials_tests {
         let ciphertext = crate::crypto::encrypt("abcdefgh1234").unwrap();
         let masked = mask_stored_spotify_secret(&ciphertext);
         assert_eq!(masked, "****1234");
-        assert!(!masked.contains("abcdefgh"), "mask must not leak the plaintext");
+        assert!(
+            !masked.contains("abcdefgh"),
+            "mask must not leak the plaintext"
+        );
     }
 }

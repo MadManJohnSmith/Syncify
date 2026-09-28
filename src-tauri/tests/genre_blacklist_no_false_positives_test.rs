@@ -43,9 +43,7 @@ fn test_compound_genres_not_falsely_rejected() {
 
 #[test]
 fn test_fuse_genres_preserves_compound_genres() {
-    let inputs = [
-        "Party Rap; Oldies Rock; English Folk; Spanish Pop; Video Game Music",
-    ];
+    let inputs = ["Party Rap; Oldies Rock; English Folk; Spanish Pop; Video Game Music"];
 
     let fused = fuse_genres(&inputs);
     assert_eq!(

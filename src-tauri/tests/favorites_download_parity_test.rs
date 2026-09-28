@@ -35,12 +35,19 @@ async fn create_test_db() -> SqlitePool {
         .execute(&pool).await.unwrap();
 
     // Insert baseline artist and album
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Daft Punk') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Daft Punk') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, upc) VALUES ('Random Access Memories', '886443926588') RETURNING id")
         .fetch_one(&pool).await.unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-        .bind(album_id).bind(artist_id).execute(&pool).await.unwrap();
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     pool
 }
@@ -75,7 +82,7 @@ async fn test_download_favorites_tracks_enqueues_correctly() {
         LEFT JOIN favorites f ON f.item_type = 'track' AND f.service_item_id = ts.service_track_id
         WHERE (t.favorite_at IS NOT NULL OR f.id IS NOT NULL)
           AND s.name = 'tidal'
-        "#
+        "#,
     )
     .fetch_all(&db)
     .await
@@ -88,8 +95,11 @@ async fn test_download_favorites_tracks_enqueues_correctly() {
     sqlx::query("INSERT INTO download_queue (track_id, priority, position, status, quality_preference, resumable) VALUES (?, 60, 0, 'queued', 'lossless', 1)")
         .bind(t1).execute(&db).await.unwrap();
 
-    let queued_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
-        .fetch_one(&db).await.unwrap();
+    let queued_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM download_queue WHERE status = 'queued'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
     assert_eq!(queued_count.0, 1);
 }
 
@@ -99,16 +109,24 @@ async fn test_download_favorites_album_expansion() {
 
     // Create 3 tracks under album 1
     for i in 1..=3 {
-        let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES (?, 1) RETURNING id")
-            .bind(format!("RAM Track {}", i))
-            .fetch_one(&db).await.unwrap();
+        let tid: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES (?, 1) RETURNING id")
+                .bind(format!("RAM Track {}", i))
+                .fetch_one(&db)
+                .await
+                .unwrap();
         sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, 1)")
-            .bind(tid).execute(&db).await.unwrap();
+            .bind(tid)
+            .execute(&db)
+            .await
+            .unwrap();
     }
 
     // Mark album 1 as favorite
     sqlx::query("UPDATE albums SET favorite_at = datetime('now') WHERE id = 1")
-        .execute(&db).await.unwrap();
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Query tracks from favorite albums
     let album_tracks: Vec<(i64,)> = sqlx::query_as(
@@ -153,17 +171,31 @@ async fn test_download_favorites_artist_expansion() {
     let db = create_test_db().await;
 
     // Create 2 tracks for Daft Punk (artist 1)
-    let t1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('Around the World', 1) RETURNING id")
-        .fetch_one(&db).await.unwrap();
-    let t2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id) VALUES ('One More Time', 1) RETURNING id")
-        .fetch_one(&db).await.unwrap();
+    let t1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('Around the World', 1) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let t2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id) VALUES ('One More Time', 1) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, 1), (?, 1)")
-        .bind(t1).bind(t2).execute(&db).await.unwrap();
+        .bind(t1)
+        .bind(t2)
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Mark artist 1 as favorite
     sqlx::query("UPDATE artists SET favorite_at = datetime('now') WHERE id = 1")
-        .execute(&db).await.unwrap();
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Query tracks from favorite artists
     let artist_tracks: Vec<(i64,)> = sqlx::query_as(
@@ -197,14 +229,20 @@ async fn test_download_favorites_skips_already_downloaded() {
         .bind(t1).execute(&db).await.unwrap();
 
     // Verify it is recognized as already downloaded
-    let download_info: Option<(String,)> = sqlx::query_as("SELECT file_path FROM downloads WHERE track_id = ?")
-        .bind(t1)
-        .fetch_optional(&db)
-        .await
-        .unwrap();
+    let download_info: Option<(String,)> =
+        sqlx::query_as("SELECT file_path FROM downloads WHERE track_id = ?")
+            .bind(t1)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
 
-    let has_file = download_info.map(|(fp,)| !fp.trim().is_empty()).unwrap_or(false);
-    assert!(has_file, "Existing file_path in downloads must be recognized to prevent re-download");
+    let has_file = download_info
+        .map(|(fp,)| !fp.trim().is_empty())
+        .unwrap_or(false);
+    assert!(
+        has_file,
+        "Existing file_path in downloads must be recognized to prevent re-download"
+    );
 }
 
 #[tokio::test]
@@ -229,7 +267,10 @@ async fn test_download_favorites_skips_already_queued() {
     .await
     .unwrap();
 
-    assert!(queue_item.is_some(), "Track already in queued state must be skipped from duplicate enqueueing");
+    assert!(
+        queue_item.is_some(),
+        "Track already in queued state must be skipped from duplicate enqueueing"
+    );
 }
 
 #[tokio::test]
@@ -257,5 +298,8 @@ async fn test_download_favorites_flac_and_m4a_parity_contracts() {
     assert_eq!(row.0, 60, "Favorites priority must be 60");
     assert_eq!(row.1, 0, "Initial position must be 0");
     assert_eq!(row.2, "lossless");
-    assert_eq!(row.3, 1, "Resumable flag must be set for HTTP Range support");
+    assert_eq!(
+        row.3, 1,
+        "Resumable flag must be set for HTTP Range support"
+    );
 }

@@ -142,8 +142,9 @@ async fn spawn_mock_songlink_server() -> (String, oneshot::Sender<()>) {
 #[tokio::test]
 async fn test_parse_streaming_url_matrix() {
     // Spotify URLs
-    let p_spot = parse_streaming_url("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=abc")
-        .expect("Spotify track URL must parse");
+    let p_spot =
+        parse_streaming_url("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT?si=abc")
+            .expect("Spotify track URL must parse");
     assert_eq!(p_spot.service, "spotify");
     assert_eq!(p_spot.content_type, "track");
     assert_eq!(p_spot.id, "4cOdK2wGLETKBW3PvgPWqT");
@@ -199,8 +200,12 @@ async fn test_malformed_url_returns_error_and_no_ghost_queue() {
     assert_eq!(init_tracks_count, 0);
 
     // Attempt import with unsupported domain
-    let err_unsupported = perform_import_from_url(&pool, None, "https://youtube.com/watch?v=dQw4w9WgXcQ").await;
-    assert!(err_unsupported.is_err(), "Unsupported URL must return error");
+    let err_unsupported =
+        perform_import_from_url(&pool, None, "https://youtube.com/watch?v=dQw4w9WgXcQ").await;
+    assert!(
+        err_unsupported.is_err(),
+        "Unsupported URL must return error"
+    );
     let msg = err_unsupported.unwrap_err();
     assert!(
         msg.contains("Unsupported URL"),
@@ -209,7 +214,8 @@ async fn test_malformed_url_returns_error_and_no_ghost_queue() {
     );
 
     // Attempt import with malformed Spotify URL
-    let err_malformed = perform_import_from_url(&pool, None, "https://open.spotify.com/invalid_shape").await;
+    let err_malformed =
+        perform_import_from_url(&pool, None, "https://open.spotify.com/invalid_shape").await;
     assert!(err_malformed.is_err());
 
     // Attempt import with empty string
@@ -240,13 +246,9 @@ async fn test_malformed_url_returns_error_and_no_ghost_queue() {
 async fn test_import_tidal_url_resolves_and_enqueues_into_download_queue() {
     let pool = setup_test_db().await;
 
-    let res = perform_import_from_url(
-        &pool,
-        None,
-        "https://tidal.com/browse/track/34782012",
-    )
-    .await
-    .expect("Tidal track import must succeed");
+    let res = perform_import_from_url(&pool, None, "https://tidal.com/browse/track/34782012")
+        .await
+        .expect("Tidal track import must succeed");
 
     assert_eq!(res.service, "tidal");
     assert_eq!(res.content_type, "track");
@@ -349,8 +351,14 @@ async fn test_import_spotify_url_resolves_via_songlink_and_enqueues_matched_nati
     .expect("Row must exist in download_queue");
 
     assert_eq!(queue_row.0, tid);
-    assert_eq!(queue_row.1, "tidal", "Must be routed to native Tidal engine");
-    assert_eq!(queue_row.2, "34782012", "Must use Tidal track ID from SongLink");
+    assert_eq!(
+        queue_row.1, "tidal",
+        "Must be routed to native Tidal engine"
+    );
+    assert_eq!(
+        queue_row.2, "34782012",
+        "Must use Tidal track ID from SongLink"
+    );
     assert_eq!(queue_row.3, "queued");
     assert_eq!(queue_row.4.as_deref(), Some("spotify"));
     assert_eq!(queue_row.5.as_deref(), Some("spotify_tidal_match"));
@@ -363,7 +371,8 @@ async fn test_import_spotify_url_without_songlink_falls_back_gracefully() {
     let pool = setup_test_db().await;
 
     // Point SongLink to an unreachable port to test offline / failure resilience
-    let unreachable_client = Arc::new(SongLinkClient::new().with_base_url("http://127.0.0.1:1".to_string()));
+    let unreachable_client =
+        Arc::new(SongLinkClient::new().with_base_url("http://127.0.0.1:1".to_string()));
     let orchestrator = DownloadOrchestrator::new().with_songlink(unreachable_client);
 
     let res = perform_import_from_url(
@@ -392,21 +401,13 @@ async fn test_import_spotify_url_without_songlink_falls_back_gracefully() {
 async fn test_import_url_idempotency_reuses_existing_queue_item() {
     let pool = setup_test_db().await;
 
-    let res1 = perform_import_from_url(
-        &pool,
-        None,
-        "https://tidal.com/browse/track/99887766",
-    )
-    .await
-    .expect("First import must succeed");
+    let res1 = perform_import_from_url(&pool, None, "https://tidal.com/browse/track/99887766")
+        .await
+        .expect("First import must succeed");
 
-    let res2 = perform_import_from_url(
-        &pool,
-        None,
-        "https://tidal.com/browse/track/99887766",
-    )
-    .await
-    .expect("Second import of same URL must succeed");
+    let res2 = perform_import_from_url(&pool, None, "https://tidal.com/browse/track/99887766")
+        .await
+        .expect("Second import of same URL must succeed");
 
     assert_eq!(
         res1.queue_id, res2.queue_id,
@@ -451,8 +452,16 @@ async fn test_unsupported_content_type_rejected_without_queueing() {
     let pool = setup_test_db().await;
 
     // Album URL should be rejected for single-track queue import
-    let err = perform_import_from_url(&pool, None, "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy").await;
-    assert!(err.is_err(), "Album URL must be rejected for track queue import");
+    let err = perform_import_from_url(
+        &pool,
+        None,
+        "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy",
+    )
+    .await;
+    assert!(
+        err.is_err(),
+        "Album URL must be rejected for track queue import"
+    );
     let msg = err.unwrap_err();
     assert!(
         msg.contains("supports individual tracks"),

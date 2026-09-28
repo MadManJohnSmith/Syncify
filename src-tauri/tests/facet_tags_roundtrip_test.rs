@@ -107,21 +107,42 @@ fn test_style_mood_tags_language_roundtrip() {
     let style = comments.get("STYLE").expect("STYLE tag");
     assert_eq!(style, &["New Wave".to_string(), "Dark Wave".to_string()]);
     let album_style = comments.get("ALBUMSTYLE").expect("ALBUMSTYLE tag");
-    assert_eq!(album_style, &["New Wave".to_string(), "Dark Wave".to_string()]);
+    assert_eq!(
+        album_style,
+        &["New Wave".to_string(), "Dark Wave".to_string()]
+    );
     let track_style = comments.get("TRACKSTYLE").expect("TRACKSTYLE tag");
-    assert_eq!(track_style, &["New Wave".to_string(), "Dark Wave".to_string()]);
+    assert_eq!(
+        track_style,
+        &["New Wave".to_string(), "Dark Wave".to_string()]
+    );
 
     // Check MOOD / ALBUMMOOD / TRACKMOOD
     let mood = comments.get("MOOD").expect("MOOD tag");
-    assert_eq!(mood, &["Melancholic".to_string(), "Atmospheric".to_string()]);
+    assert_eq!(
+        mood,
+        &["Melancholic".to_string(), "Atmospheric".to_string()]
+    );
     let album_mood = comments.get("ALBUMMOOD").expect("ALBUMMOOD tag");
-    assert_eq!(album_mood, &["Melancholic".to_string(), "Atmospheric".to_string()]);
+    assert_eq!(
+        album_mood,
+        &["Melancholic".to_string(), "Atmospheric".to_string()]
+    );
     let track_mood = comments.get("TRACKMOOD").expect("TRACKMOOD tag");
-    assert_eq!(track_mood, &["Melancholic".to_string(), "Atmospheric".to_string()]);
+    assert_eq!(
+        track_mood,
+        &["Melancholic".to_string(), "Atmospheric".to_string()]
+    );
 
     // Check TAGS / ALBUMTAGS
     let tags = comments.get("TAGS").expect("TAGS tag");
-    assert_eq!(tags, &["80s Classics".to_string(), "Synthpop Legends".to_string()]);
+    assert_eq!(
+        tags,
+        &["80s Classics".to_string(), "Synthpop Legends".to_string()]
+    );
     let album_tags = comments.get("ALBUMTAGS").expect("ALBUMTAGS tag");
-    assert_eq!(album_tags, &["80s Classics".to_string(), "Synthpop Legends".to_string()]);
+    assert_eq!(
+        album_tags,
+        &["80s Classics".to_string(), "Synthpop Legends".to_string()]
+    );
 }

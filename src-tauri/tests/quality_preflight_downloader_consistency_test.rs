@@ -45,10 +45,19 @@ fn test_strict_quality_rejection_consistency_between_preflight_and_downloader() 
     assert_eq!(downloader.decision, QualityDecisionKind::RejectedQuality);
 
     // Both must agree on fallback flags
-    assert_eq!(preflight.quality_fallback_used, downloader.quality_fallback_used);
-    assert_eq!(preflight.provider_fallback_used, downloader.provider_fallback_used);
+    assert_eq!(
+        preflight.quality_fallback_used,
+        downloader.quality_fallback_used
+    );
+    assert_eq!(
+        preflight.provider_fallback_used,
+        downloader.provider_fallback_used
+    );
     assert_eq!(preflight.strict_quality, downloader.strict_quality);
-    assert_eq!(preflight.allow_lossy_fallback, downloader.allow_lossy_fallback);
+    assert_eq!(
+        preflight.allow_lossy_fallback,
+        downloader.allow_lossy_fallback
+    );
 
     // Both must agree that this is terminal (non-retryable)
     assert!(!preflight.retryable);
@@ -91,8 +100,14 @@ fn test_opt_in_fallback_consistency_between_preflight_and_downloader() {
     );
 
     // Preflight is ReadyQualityFallback, Downloader is CompletedWithQualityFallback
-    assert_eq!(preflight.decision, QualityDecisionKind::ReadyQualityFallback);
-    assert_eq!(downloader.decision, QualityDecisionKind::CompletedWithQualityFallback);
+    assert_eq!(
+        preflight.decision,
+        QualityDecisionKind::ReadyQualityFallback
+    );
+    assert_eq!(
+        downloader.decision,
+        QualityDecisionKind::CompletedWithQualityFallback
+    );
 
     // Both must have quality_fallback_used = true
     assert!(preflight.quality_fallback_used);
@@ -139,7 +154,10 @@ fn test_exact_hires_consistency_between_preflight_and_downloader() {
     );
 
     assert_eq!(preflight.decision, QualityDecisionKind::ReadyExactQuality);
-    assert_eq!(downloader.decision, QualityDecisionKind::CompletedExactQuality);
+    assert_eq!(
+        downloader.decision,
+        QualityDecisionKind::CompletedExactQuality
+    );
     assert_eq!(preflight.effective_format, "flac");
     assert_eq!(downloader.effective_format, "flac");
     assert!(!preflight.quality_fallback_used);

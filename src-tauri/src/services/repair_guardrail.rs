@@ -3,8 +3,8 @@
 //! Provides baseline snapshotting, pre-flight revalidation, audio content hash extraction,
 //! and complete audit reporting for repair operations.
 
-use std::path::Path;
 use sha2::{Digest, Sha256};
+use std::path::Path;
 use syncify_core_domain::repair::{RepairFileBaseline, RepairValidationStatus};
 
 /// Compute SHA-256 hash of a file on disk asynchronously.
@@ -159,16 +159,14 @@ pub async fn compute_repair_baseline(
     let audio_content_hash = extract_audio_content_hash_from_bytes(&bytes).ok();
 
     // Check LRC sidecar if provided or if existing alongside audio
-    let effective_lrc = lrc_path
-        .map(|p| p.to_path_buf())
-        .or_else(|| {
-            let candidate = audio_path.with_extension("lrc");
-            if candidate.exists() {
-                Some(candidate)
-            } else {
-                None
-            }
-        });
+    let effective_lrc = lrc_path.map(|p| p.to_path_buf()).or_else(|| {
+        let candidate = audio_path.with_extension("lrc");
+        if candidate.exists() {
+            Some(candidate)
+        } else {
+            None
+        }
+    });
 
     let (lrc_path_str, lrc_sha256, lrc_size, lrc_modified_at) = match effective_lrc {
         Some(ref lp) if lp.exists() => {
@@ -255,7 +253,8 @@ pub async fn validate_repair_baseline(
 
     // Check audio content hash if present in baseline
     if let Some(ref base_audio_hash) = baseline.audio_content_hash {
-        let current_audio_hash = extract_audio_content_hash_from_bytes(&current_bytes).unwrap_or_default();
+        let current_audio_hash =
+            extract_audio_content_hash_from_bytes(&current_bytes).unwrap_or_default();
         if &current_audio_hash != base_audio_hash {
             return RepairValidationStatus::RepairInputChanged {
                 reason: format!(
@@ -346,9 +345,13 @@ mod tests {
         let lrc_path = temp.path().join("test.lrc");
 
         write_test_flac(&flac_path, b"ORIGINAL_AUDIO_PAYLOAD_123");
-        tokio::fs::write(&lrc_path, b"[00:01.00] Test Lyrics").await.unwrap();
+        tokio::fs::write(&lrc_path, b"[00:01.00] Test Lyrics")
+            .await
+            .unwrap();
 
-        let baseline = compute_repair_baseline(&flac_path, Some(&lrc_path)).await.unwrap();
+        let baseline = compute_repair_baseline(&flac_path, Some(&lrc_path))
+            .await
+            .unwrap();
         assert_eq!(baseline.file_path, flac_path.to_string_lossy().to_string());
         assert!(baseline.audio_content_hash.is_some());
         assert!(baseline.lrc_sha256.is_some());
@@ -359,11 +362,14 @@ mod tests {
 
         // 2. Modified audio payload fails with RepairInputChanged
         write_test_flac(&flac_path, b"MODIFIED_AUDIO_PAYLOAD_456");
-        let val_audio_changed = validate_repair_baseline(&baseline, &flac_path, Some(&lrc_path)).await;
+        let val_audio_changed =
+            validate_repair_baseline(&baseline, &flac_path, Some(&lrc_path)).await;
         assert!(!val_audio_changed.is_valid());
         match val_audio_changed {
             RepairValidationStatus::RepairInputChanged { reason } => {
-                assert!(reason.contains("File SHA-256 mismatch") || reason.contains("size changed"));
+                assert!(
+                    reason.contains("File SHA-256 mismatch") || reason.contains("size changed")
+                );
             }
             other => panic!("Expected RepairInputChanged, got {:?}", other),
         }

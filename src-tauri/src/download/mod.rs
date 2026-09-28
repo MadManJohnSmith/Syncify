@@ -14,14 +14,14 @@ pub mod tidal;
 #[allow(unused_imports)]
 pub use audio_inspector::{
     classify_physical_audio_quality, enforce_post_download_quality_gate,
-    inspect_physical_audio_file, populate_flac_streaminfo_md5,
-    verify_flac_stream_integrity, PhysicalAudioMetadata,
+    inspect_physical_audio_file, populate_flac_streaminfo_md5, verify_flac_stream_integrity,
+    PhysicalAudioMetadata,
 };
 
 #[allow(unused_imports)]
 pub use lyrics::LyricsClient;
 #[allow(unused_imports)]
 pub use orchestrator::{DownloadOrchestrator, SongLinkEngineTarget};
+pub use progress::*;
 #[allow(unused_imports)]
 pub use songlink::{SongLinkAvailability, SongLinkClient, TrackAvailability};
-pub use progress::*;

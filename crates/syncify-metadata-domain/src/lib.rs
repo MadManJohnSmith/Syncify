@@ -47,10 +47,23 @@ impl std::fmt::Display for MusicBrainzValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EmptyOrWhitespace => write!(f, "MusicBrainz ID is empty or whitespace"),
-            Self::SentinelValue(s) => write!(f, "MusicBrainz ID is a placeholder/sentinel value: '{}'", s),
-            Self::MalformedUuid(s) => write!(f, "MusicBrainz ID is not a valid 36-char canonical UUID: '{}'", s),
-            Self::NilUuid => write!(f, "MusicBrainz ID is nil UUID (00000000-0000-0000-0000-000000000000)"),
-            Self::SyntheticApocryphalId(s) => write!(f, "MusicBrainz ID is an apocryphal/synthetic UUIDv5: '{}'", s),
+            Self::SentinelValue(s) => {
+                write!(f, "MusicBrainz ID is a placeholder/sentinel value: '{}'", s)
+            }
+            Self::MalformedUuid(s) => write!(
+                f,
+                "MusicBrainz ID is not a valid 36-char canonical UUID: '{}'",
+                s
+            ),
+            Self::NilUuid => write!(
+                f,
+                "MusicBrainz ID is nil UUID (00000000-0000-0000-0000-000000000000)"
+            ),
+            Self::SyntheticApocryphalId(s) => write!(
+                f,
+                "MusicBrainz ID is an apocryphal/synthetic UUIDv5: '{}'",
+                s
+            ),
         }
     }
 }
@@ -76,9 +89,8 @@ impl SourcePriority {
     pub fn from_source_name(source: &str) -> Self {
         match source.to_lowercase().as_str() {
             "manual" | "user" | "user_override" => SourcePriority::Manual,
-            "qobuz" | "tidal" | "deezer" | "apple_music" | "stream" | "origin" | "input" | "streaming" | "streamingservice" => {
-                SourcePriority::StreamingService
-            }
+            "qobuz" | "tidal" | "deezer" | "apple_music" | "stream" | "origin" | "input"
+            | "streaming" | "streamingservice" => SourcePriority::StreamingService,
             "musicbrainz" | "mb" => SourcePriority::MusicBrainz,
             "spotify" | "spotify_metadata" | "spotifymetadata" => SourcePriority::SpotifyMetadata,
             _ => SourcePriority::Inferred,
@@ -135,20 +147,101 @@ pub struct ConflictInfo {
 pub struct FieldValidator;
 
 const KNOWN_TECHNICAL_ROLE_PREFIXES: &[&str] = &[
-    "guitar", "electric guitar", "acoustic guitar", "classical guitar", "lead guitar", "rhythm guitar",
-    "bass", "bass guitar", "acoustic bass", "double bass", "contrabass",
-    "drums", "drum", "percussion", "timpani", "cymbals", "snare", "tambourine", "congas", "bongos",
-    "vocals", "vocal", "lead vocals", "backing vocals", "background vocals", "voice", "singer", "soloist",
-    "choir", "chorus",
-    "piano", "keyboards", "keyboard", "organ", "synthesizer", "synth", "clavinet", "harpsichord", "accordion",
-    "violin", "viola", "cello", "violoncello", "strings", "harp", "fiddle", "banjo", "mandolin", "ukulele",
-    "trumpet", "trombone", "tuba", "french horn", "horn", "horns", "brass", "flugelhorn",
-    "saxophone", "sax", "alto saxophone", "tenor saxophone", "baritone saxophone", "soprano saxophone",
-    "flute", "clarinet", "oboe", "bassoon", "woodwinds", "harmonica",
-    "producer", "co-producer", "executive producer", "associate producer", "additional producer",
-    "composer", "songwriter", "writer", "lyricist", "arranger", "conductor", "director",
-    "mixer", "mixing", "mixing engineer", "sound engineer", "audio engineer", "recording engineer",
-    "engineer", "mastering engineer", "mastering", "remastering", "editing engineer", "programmer", "programming", "dj",
+    "guitar",
+    "electric guitar",
+    "acoustic guitar",
+    "classical guitar",
+    "lead guitar",
+    "rhythm guitar",
+    "bass",
+    "bass guitar",
+    "acoustic bass",
+    "double bass",
+    "contrabass",
+    "drums",
+    "drum",
+    "percussion",
+    "timpani",
+    "cymbals",
+    "snare",
+    "tambourine",
+    "congas",
+    "bongos",
+    "vocals",
+    "vocal",
+    "lead vocals",
+    "backing vocals",
+    "background vocals",
+    "voice",
+    "singer",
+    "soloist",
+    "choir",
+    "chorus",
+    "piano",
+    "keyboards",
+    "keyboard",
+    "organ",
+    "synthesizer",
+    "synth",
+    "clavinet",
+    "harpsichord",
+    "accordion",
+    "violin",
+    "viola",
+    "cello",
+    "violoncello",
+    "strings",
+    "harp",
+    "fiddle",
+    "banjo",
+    "mandolin",
+    "ukulele",
+    "trumpet",
+    "trombone",
+    "tuba",
+    "french horn",
+    "horn",
+    "horns",
+    "brass",
+    "flugelhorn",
+    "saxophone",
+    "sax",
+    "alto saxophone",
+    "tenor saxophone",
+    "baritone saxophone",
+    "soprano saxophone",
+    "flute",
+    "clarinet",
+    "oboe",
+    "bassoon",
+    "woodwinds",
+    "harmonica",
+    "producer",
+    "co-producer",
+    "executive producer",
+    "associate producer",
+    "additional producer",
+    "composer",
+    "songwriter",
+    "writer",
+    "lyricist",
+    "arranger",
+    "conductor",
+    "director",
+    "mixer",
+    "mixing",
+    "mixing engineer",
+    "sound engineer",
+    "audio engineer",
+    "recording engineer",
+    "engineer",
+    "mastering engineer",
+    "mastering",
+    "remastering",
+    "editing engineer",
+    "programmer",
+    "programming",
+    "dj",
 ];
 
 /// Checks if an artist string starts with a recognized technical role prefix like "Guitar - ...", "Producer - ..."
@@ -162,7 +255,12 @@ pub fn has_technical_role_prefix(val: &str) -> bool {
         let p_len = prefix.len();
         if lower.starts_with(prefix) {
             let rest = &t[p_len..];
-            if rest.starts_with(" - ") || rest.starts_with(" – ") || rest.starts_with(" — ") || rest.starts_with(": ") || rest.starts_with(", ") {
+            if rest.starts_with(" - ")
+                || rest.starts_with(" – ")
+                || rest.starts_with(" — ")
+                || rest.starts_with(": ")
+                || rest.starts_with(", ")
+            {
                 let after = rest[3..].trim();
                 if !after.is_empty() {
                     return true;
@@ -190,7 +288,13 @@ impl FieldValidator {
     /// 'Various Artists' and 'Various' are strictly VALID for compilation albums.
     pub fn is_valid_artist(val: &str) -> bool {
         let t = val.trim();
-        if t.is_empty() || t == "???" || t == "null" || t == "None" || t.contains('\r') || t.contains('\n') {
+        if t.is_empty()
+            || t == "???"
+            || t == "null"
+            || t == "None"
+            || t.contains('\r')
+            || t.contains('\n')
+        {
             return false;
         }
         if has_technical_role_prefix(t) {
@@ -211,7 +315,13 @@ impl FieldValidator {
     /// Validate identifier (ISRC, UPC, MBID): empty, '0', 'null', 'None' rejected.
     pub fn is_valid_identifier(val: &str) -> bool {
         let t = val.trim();
-        !t.is_empty() && t != "0" && t != "0000" && t != "null" && t != "None" && t != "???" && t != "N/A"
+        !t.is_empty()
+            && t != "0"
+            && t != "0000"
+            && t != "null"
+            && t != "None"
+            && t != "???"
+            && t != "N/A"
     }
 
     /// Validate label / organization: whitespace-only, generic 'N/A' rejected.
@@ -233,13 +343,17 @@ impl FieldValidator {
     /// Validate language code (ISO 639-1 / 639-2)
     pub fn is_valid_language(val: &str) -> bool {
         let t = val.trim();
-        !t.is_empty() && (t.len() == 2 || t.len() == 3) && t.chars().all(|c| c.is_ascii_alphabetic())
+        !t.is_empty()
+            && (t.len() == 2 || t.len() == 3)
+            && t.chars().all(|c| c.is_ascii_alphabetic())
     }
 
     /// Validate ISO 3166-1 country code
     pub fn is_valid_country(val: &str) -> bool {
         let t = val.trim();
-        !t.is_empty() && (t.len() == 2 || t.len() == 3) && t.chars().all(|c| c.is_ascii_alphabetic())
+        !t.is_empty()
+            && (t.len() == 2 || t.len() == 3)
+            && t.chars().all(|c| c.is_ascii_alphabetic())
     }
 
     /// Validate BPM
@@ -250,7 +364,11 @@ impl FieldValidator {
     /// Validate musical key
     pub fn is_valid_key(val: &str) -> bool {
         let t = val.trim();
-        !t.is_empty() && !t.eq_ignore_ascii_case("unknown") && t != "null" && t != "None" && t != "???"
+        !t.is_empty()
+            && !t.eq_ignore_ascii_case("unknown")
+            && t != "null"
+            && t != "None"
+            && t != "???"
     }
 
     /// Validate AcoustID ID (UUID / hex format)
@@ -268,7 +386,11 @@ impl FieldValidator {
     /// Validate ReplayGain / EBU R128 gain string
     pub fn is_valid_gain(val: &str) -> bool {
         let t = val.trim();
-        !t.is_empty() && !t.eq_ignore_ascii_case("unknown") && t != "null" && t != "None" && t != "???"
+        !t.is_empty()
+            && !t.eq_ignore_ascii_case("unknown")
+            && t != "null"
+            && t != "None"
+            && t != "???"
     }
 
     /// Check if a string is a syntactically valid canonical UUID (36 chars: 8-4-4-4-12 hex).
@@ -384,7 +506,9 @@ impl FieldValidator {
 
         // Synthetic apocryphal check
         if Self::is_synthetic_musicbrainz_id(t, artist_name) {
-            return Err(MusicBrainzValidationError::SyntheticApocryphalId(t.to_string()));
+            return Err(MusicBrainzValidationError::SyntheticApocryphalId(
+                t.to_string(),
+            ));
         }
 
         Ok(())
@@ -479,7 +603,10 @@ impl FieldResolution {
 
                 // If identical value, retain and update confidence if higher
                 if value == &clean_val {
-                    if force || new_prio > curr_prio || (new_prio == curr_prio && confidence > *curr_conf) {
+                    if force
+                        || new_prio > curr_prio
+                        || (new_prio == curr_prio && confidence > *curr_conf)
+                    {
                         *curr_src = source.to_string();
                         *curr_conf = confidence;
                         *resolved_at = now_ts.to_string();
@@ -488,15 +615,24 @@ impl FieldResolution {
                 }
 
                 // Conflicting values: compare priority first, then confidence (or force)
-                if force || new_prio > curr_prio || (new_prio == curr_prio && confidence > *curr_conf) {
+                if force
+                    || new_prio > curr_prio
+                    || (new_prio == curr_prio && confidence > *curr_conf)
+                {
                     *conflict = Some(ConflictInfo {
                         alternate_source: curr_src.clone(),
                         alternate_value: value.clone(),
                         alternate_confidence: *curr_conf,
                         conflict_reason: format!(
                             "Replaced by {}candidate from {} (prio: {:?}, conf: {:.2})",
-                            if force { "force-overridden " } else { "higher-priority " },
-                            source, new_prio, confidence
+                            if force {
+                                "force-overridden "
+                            } else {
+                                "higher-priority "
+                            },
+                            source,
+                            new_prio,
+                            confidence
                         ),
                     });
                     *value = clean_val;
@@ -530,8 +666,6 @@ impl FieldResolution {
     }
 }
 
-
-
 /// Fuses language candidates from multiple providers:
 /// - Normalizes to ISO 639-2 (3-letter lowercase)
 /// - Resolves conflicts using strict source precedence (Manual > StreamingService > MusicBrainz > SpotifyMetadata > Inferred)
@@ -553,11 +687,15 @@ pub fn fuse_languages(lang_inputs: &[(&str, &str, f64)]) -> Option<String> {
 
     // Sort by Priority desc, then confidence desc
     resolved_candidates.sort_by(|a, b| {
-        b.1.cmp(&a.1).then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+        b.1.cmp(&a.1)
+            .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
     });
 
     let highest_prio = resolved_candidates[0].1;
-    let top_tier: Vec<_> = resolved_candidates.iter().filter(|c| c.1 == highest_prio).collect();
+    let top_tier: Vec<_> = resolved_candidates
+        .iter()
+        .filter(|c| c.1 == highest_prio)
+        .collect();
 
     // If multiple candidates in top tier, find majority or highest confidence
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -565,11 +703,14 @@ pub fn fuse_languages(lang_inputs: &[(&str, &str, f64)]) -> Option<String> {
         *counts.entry(&c.0).or_insert(0) += 1;
     }
 
-    top_tier.iter()
+    top_tier
+        .iter()
         .max_by(|a, b| {
             let count_a = counts.get(a.0.as_str()).unwrap_or(&0);
             let count_b = counts.get(b.0.as_str()).unwrap_or(&0);
-            count_a.cmp(count_b).then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+            count_a
+                .cmp(count_b)
+                .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
         })
         .map(|c| c.0.clone())
 }
@@ -612,7 +753,8 @@ pub fn fuse_countries(country_inputs: &[(&str, &str, f64)]) -> Option<String> {
     }
 
     candidates.sort_by(|a, b| {
-        b.1.cmp(&a.1).then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+        b.1.cmp(&a.1)
+            .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
     });
 
     Some(candidates[0].0.clone())
@@ -628,7 +770,9 @@ pub fn fuse_labels(label_inputs: &[&str]) -> Vec<String> {
             // Split by ';' if composite
             for token in trimmed.split(';') {
                 let t = token.trim();
-                if FieldValidator::is_valid_label(t) && !unique_labels.iter().any(|l| l.eq_ignore_ascii_case(t)) {
+                if FieldValidator::is_valid_label(t)
+                    && !unique_labels.iter().any(|l| l.eq_ignore_ascii_case(t))
+                {
                     unique_labels.push(t.to_string());
                 }
             }
@@ -739,56 +883,68 @@ impl EnrichedMetadata {
     ) {
         if let Some(bpm_val) = analysis.bpm {
             if FieldValidator::is_valid_bpm(bpm_val) {
-                self.bpm.merge_candidate(Some(bpm_val.to_string()), source, 0.85, now_ts);
+                self.bpm
+                    .merge_candidate(Some(bpm_val.to_string()), source, 0.85, now_ts);
             }
         }
         if let Some(ref key_val) = analysis.initial_key {
             if FieldValidator::is_valid_key(key_val) {
-                self.initial_key.merge_candidate(Some(key_val.clone()), source, 0.85, now_ts);
+                self.initial_key
+                    .merge_candidate(Some(key_val.clone()), source, 0.85, now_ts);
             }
         }
         if let Some(en) = analysis.energy {
-            self.energy.merge_candidate(Some(format!("{:.2}", en)), source, 0.85, now_ts);
+            self.energy
+                .merge_candidate(Some(format!("{:.2}", en)), source, 0.85, now_ts);
         }
         if let Some(da) = analysis.danceability {
-            self.danceability.merge_candidate(Some(format!("{:.2}", da)), source, 0.85, now_ts);
+            self.danceability
+                .merge_candidate(Some(format!("{:.2}", da)), source, 0.85, now_ts);
         }
         if let Some(lo) = analysis.loudness {
-            self.loudness.merge_candidate(Some(format!("{:.1}", lo)), source, 0.85, now_ts);
+            self.loudness
+                .merge_candidate(Some(format!("{:.1}", lo)), source, 0.85, now_ts);
         }
         if let Some(ref rtg) = analysis.replaygain_track_gain {
             if FieldValidator::is_valid_gain(rtg) {
-                self.replaygain_track_gain.merge_candidate(Some(rtg.clone()), source, 0.85, now_ts);
+                self.replaygain_track_gain
+                    .merge_candidate(Some(rtg.clone()), source, 0.85, now_ts);
             }
         }
         if let Some(ref rtp) = analysis.replaygain_track_peak {
             if FieldValidator::is_valid_gain(rtp) {
-                self.replaygain_track_peak.merge_candidate(Some(rtp.clone()), source, 0.85, now_ts);
+                self.replaygain_track_peak
+                    .merge_candidate(Some(rtp.clone()), source, 0.85, now_ts);
             }
         }
         if let Some(ref rag) = analysis.replaygain_album_gain {
             if FieldValidator::is_valid_gain(rag) {
-                self.replaygain_album_gain.merge_candidate(Some(rag.clone()), source, 0.85, now_ts);
+                self.replaygain_album_gain
+                    .merge_candidate(Some(rag.clone()), source, 0.85, now_ts);
             }
         }
         if let Some(ref rap) = analysis.replaygain_album_peak {
             if FieldValidator::is_valid_gain(rap) {
-                self.replaygain_album_peak.merge_candidate(Some(rap.clone()), source, 0.85, now_ts);
+                self.replaygain_album_peak
+                    .merge_candidate(Some(rap.clone()), source, 0.85, now_ts);
             }
         }
         if let Some(ref r128) = analysis.r128_track_gain {
             if FieldValidator::is_valid_gain(r128) {
-                self.r128_track_gain.merge_candidate(Some(r128.clone()), source, 0.85, now_ts);
+                self.r128_track_gain
+                    .merge_candidate(Some(r128.clone()), source, 0.85, now_ts);
             }
         }
         if let Some(ref aid) = analysis.acoustid_id {
             if FieldValidator::is_valid_acoustid(aid) {
-                self.acoustid_id.merge_candidate(Some(aid.clone()), source, 0.90, now_ts);
+                self.acoustid_id
+                    .merge_candidate(Some(aid.clone()), source, 0.90, now_ts);
             }
         }
         if let Some(ref fp) = analysis.acoustid_fingerprint {
             if !fp.trim().is_empty() {
-                self.acoustid_fingerprint.merge_candidate(Some(fp.clone()), source, 0.90, now_ts);
+                self.acoustid_fingerprint
+                    .merge_candidate(Some(fp.clone()), source, 0.90, now_ts);
             }
         }
     }
@@ -871,7 +1027,12 @@ mod tests {
         assert_eq!(field.value(), Some("MB Album"));
 
         // Streaming candidate (higher priority) arrives
-        field.merge_candidate(Some("Official Stream Album".to_string()), "qobuz", 0.90, &now);
+        field.merge_candidate(
+            Some("Official Stream Album".to_string()),
+            "qobuz",
+            0.90,
+            &now,
+        );
         assert_eq!(field.value(), Some("Official Stream Album"));
         assert_eq!(field.source(), Some("qobuz"));
 
@@ -916,18 +1077,26 @@ mod tests {
 
     #[test]
     fn test_musicbrainz_exact_match_fixture_parsing() {
-        let json_val: serde_json::Value = serde_json::from_str(FIXTURE_MB_EXACT_RECORDING_JSON).unwrap();
-        assert_eq!(json_val["id"].as_str(), Some("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"));
+        let json_val: serde_json::Value =
+            serde_json::from_str(FIXTURE_MB_EXACT_RECORDING_JSON).unwrap();
+        assert_eq!(
+            json_val["id"].as_str(),
+            Some("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d")
+        );
         assert_eq!(json_val["title"].as_str(), Some("Heroes"));
         let releases = json_val["releases"].as_array().unwrap();
         assert_eq!(releases.len(), 1);
         assert_eq!(releases[0]["date"].as_str(), Some("1977-10-14"));
-        assert_eq!(releases[0]["label-info"][0]["label"]["name"].as_str(), Some("RCA Victor"));
+        assert_eq!(
+            releases[0]["label-info"][0]["label"]["name"].as_str(),
+            Some("RCA Victor")
+        );
     }
 
     #[test]
     fn test_musicbrainz_alternative_release_selection() {
-        let json_val: serde_json::Value = serde_json::from_str(FIXTURE_MB_ALTERNATIVE_RELEASE_JSON).unwrap();
+        let json_val: serde_json::Value =
+            serde_json::from_str(FIXTURE_MB_ALTERNATIVE_RELEASE_JSON).unwrap();
         let releases = json_val["releases"].as_array().unwrap();
 
         let norm_album = normalize_title("Heroes");
@@ -938,7 +1107,10 @@ mod tests {
 
         assert!(matched_rel.is_some());
         let rel = matched_rel.unwrap();
-        assert_eq!(rel["id"].as_str(), Some("673752e3-2e06-4447-aa72-a080ef8a1768"));
+        assert_eq!(
+            rel["id"].as_str(),
+            Some("673752e3-2e06-4447-aa72-a080ef8a1768")
+        );
         assert_eq!(rel["date"].as_str(), Some("1977-10-14"));
     }
 
@@ -1016,7 +1188,12 @@ mod tests {
 
     #[test]
     fn test_fuse_genres_splitting_dedup_and_multilingual() {
-        let inputs = ["Rock; Pop/Disco", "rock", "Variété française", "Synth-pop/Disco; Pop"];
+        let inputs = [
+            "Rock; Pop/Disco",
+            "rock",
+            "Variété française",
+            "Synth-pop/Disco; Pop",
+        ];
         let fused = fuse_genres(&inputs);
         // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
         // S184 genre canonicalization matrix: "Synth-pop"/"Synthpop"/"Synth Pop" fuse to
@@ -1086,9 +1263,15 @@ mod tests {
     #[test]
     fn test_musicbrainz_id_validation_canonical_and_nil() {
         // Legitimate MusicBrainz UUIDs
-        assert!(FieldValidator::is_valid_musicbrainz_id("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"));
-        assert!(FieldValidator::is_valid_musicbrainz_id("8882d694-77a8-4113-8525-f3436e21ea9f"));
-        assert!(FieldValidator::is_valid_musicbrainz_id("07b6020a-c539-4d68-aeef-f159f3befc76"));
+        assert!(FieldValidator::is_valid_musicbrainz_id(
+            "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d"
+        ));
+        assert!(FieldValidator::is_valid_musicbrainz_id(
+            "8882d694-77a8-4113-8525-f3436e21ea9f"
+        ));
+        assert!(FieldValidator::is_valid_musicbrainz_id(
+            "07b6020a-c539-4d68-aeef-f159f3befc76"
+        ));
 
         // Sentinels and placeholders rejected
         assert!(!FieldValidator::is_valid_musicbrainz_id(""));
@@ -1103,12 +1286,20 @@ mod tests {
         assert!(!FieldValidator::is_valid_musicbrainz_id("0000"));
 
         // Malformed UUIDs rejected
-        assert!(!FieldValidator::is_valid_musicbrainz_id("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600")); // 35 chars
-        assert!(!FieldValidator::is_valid_musicbrainz_id("b10bbbfc-cf9e-42e0-be17-e2c3e1d2600dz")); // invalid hex
-        assert!(!FieldValidator::is_valid_musicbrainz_id("b10bbbfc_cf9e_42e0_be17_e2c3e1d2600d")); // underscores instead of dashes
+        assert!(!FieldValidator::is_valid_musicbrainz_id(
+            "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600"
+        )); // 35 chars
+        assert!(!FieldValidator::is_valid_musicbrainz_id(
+            "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600dz"
+        )); // invalid hex
+        assert!(!FieldValidator::is_valid_musicbrainz_id(
+            "b10bbbfc_cf9e_42e0_be17_e2c3e1d2600d"
+        )); // underscores instead of dashes
 
         // Nil UUID rejected
-        assert!(!FieldValidator::is_valid_musicbrainz_id("00000000-0000-0000-0000-000000000000"));
+        assert!(!FieldValidator::is_valid_musicbrainz_id(
+            "00000000-0000-0000-0000-000000000000"
+        ));
     }
 
     #[test]
@@ -1121,19 +1312,35 @@ mod tests {
         assert_eq!(soft_jazz_synth, "bb5aea5e-ebdb-5181-869c-8d67f9a16a54");
 
         // Verified rejection via synthetic detector
-        assert!(FieldValidator::is_synthetic_musicbrainz_id(&alan_synth, Some("Alan Mearns")));
-        assert!(FieldValidator::is_synthetic_musicbrainz_id(&alan_synth, None)); // in KNOWN_SYNTHETIC_MBIDS
+        assert!(FieldValidator::is_synthetic_musicbrainz_id(
+            &alan_synth,
+            Some("Alan Mearns")
+        ));
+        assert!(FieldValidator::is_synthetic_musicbrainz_id(
+            &alan_synth,
+            None
+        )); // in KNOWN_SYNTHETIC_MBIDS
         assert!(!FieldValidator::is_valid_musicbrainz_id(&alan_synth));
-        assert!(!FieldValidator::is_valid_musicbrainz_artist_id(&alan_synth, Some("Alan Mearns")));
+        assert!(!FieldValidator::is_valid_musicbrainz_artist_id(
+            &alan_synth,
+            Some("Alan Mearns")
+        ));
 
         // Rejection when artist name matches synthetic formula even if not in static list
         let custom_artist = "Unknown Synthetic Band 2026";
         let custom_synth = FieldValidator::compute_synthetic_artist_mbid(custom_artist);
-        assert!(FieldValidator::is_synthetic_musicbrainz_id(&custom_synth, Some(custom_artist)));
-        assert!(!FieldValidator::is_valid_musicbrainz_artist_id(&custom_synth, Some(custom_artist)));
+        assert!(FieldValidator::is_synthetic_musicbrainz_id(
+            &custom_synth,
+            Some(custom_artist)
+        ));
+        assert!(!FieldValidator::is_valid_musicbrainz_artist_id(
+            &custom_synth,
+            Some(custom_artist)
+        ));
 
         // Error enum verification
-        let err = FieldValidator::validate_musicbrainz_id(&custom_synth, Some(custom_artist)).unwrap_err();
+        let err = FieldValidator::validate_musicbrainz_id(&custom_synth, Some(custom_artist))
+            .unwrap_err();
         match err {
             MusicBrainzValidationError::SyntheticApocryphalId(id) => assert_eq!(id, custom_synth),
             other => panic!("Expected SyntheticApocryphalId, got {:?}", other),
@@ -1150,7 +1357,9 @@ mod tests {
             );
             let err = FieldValidator::validate_musicbrainz_id(known_synth, None).unwrap_err();
             match err {
-                MusicBrainzValidationError::SyntheticApocryphalId(id) => assert_eq!(id, known_synth),
+                MusicBrainzValidationError::SyntheticApocryphalId(id) => {
+                    assert_eq!(id, known_synth)
+                }
                 other => panic!("Expected SyntheticApocryphalId, got {:?}", other),
             }
         }

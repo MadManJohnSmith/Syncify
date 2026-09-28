@@ -8,10 +8,7 @@ async fn setup_test_db() -> Pool<Sqlite> {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
 
     // Run all migrations to build exact production schema
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
     // Seed services and accounts
     sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (1, 'spotify')")

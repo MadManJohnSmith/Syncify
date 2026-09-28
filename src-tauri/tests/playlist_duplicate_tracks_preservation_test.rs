@@ -8,10 +8,9 @@
 //! 4. Pagination (offset / limit) works accurately across duplicate occurrences.
 //! 5. Multiple `track_sources` for a duplicate track aggregate cleanly without creating cartesian artifacts.
 
-use std::sync::Arc;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
-use tauri::Manager;
+use std::sync::Arc;
 use syncify_tauri_lib::{
     commands::{fetch_local_playlist_tracks_page, get_local_playlist_tracks, get_playlist_tracks},
     enrichment_worker::EnrichmentWorkerState,
@@ -19,6 +18,7 @@ use syncify_tauri_lib::{
     worker::DownloadWorkerState,
     AppState,
 };
+use tauri::Manager;
 
 async fn setup_test_db() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -58,15 +58,17 @@ fn create_test_app_state(pool: SqlitePool) -> AppState {
 async fn test_duplicate_tracks_preservation_in_playlist_query() {
     let pool = setup_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Daft Punk') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Daft Punk') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Discovery') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Discovery') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Insert track 100 ("One More Time") and track 200 ("Aerodynamic")
     let track_id_100: i64 = sqlx::query_scalar(
@@ -110,7 +112,7 @@ async fn test_duplicate_tracks_preservation_in_playlist_query() {
             (?, ?, 1),
             (?, ?, 3),
             (?, ?, 5);
-        "#
+        "#,
     )
     .bind(playlist_id)
     .bind(track_id_100)
@@ -157,7 +159,10 @@ async fn test_duplicate_tracks_preservation_in_playlist_query() {
 
     assert_eq!(page.total, 3, "Total tracks in playlist must be 3");
     assert_eq!(page.tracks.len(), 3, "Page tracks count must be 3");
-    assert!(!page.has_more, "has_more must be false when all tracks are fetched");
+    assert!(
+        !page.has_more,
+        "has_more must be false when all tracks are fetched"
+    );
 
     assert_eq!(page.tracks[0].id, track_id_100);
     assert_eq!(page.tracks[0].position, Some(1));
@@ -173,15 +178,17 @@ async fn test_duplicate_tracks_preservation_in_playlist_query() {
 async fn test_duplicate_tracks_pagination() {
     let pool = setup_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('The Beatles') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('The Beatles') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Abbey Road') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Abbey Road') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let track_id: i64 = sqlx::query_scalar(
         "INSERT INTO tracks (id, title, album_id, duration_ms, track_number) VALUES (300, 'Come Together', ?, 259000, 1) RETURNING id"
@@ -207,7 +214,7 @@ async fn test_duplicate_tracks_pagination() {
 
     // Insert the same track at position 1 and position 5
     sqlx::query(
-        "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 1), (?, ?, 5)"
+        "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 1), (?, ?, 5)",
     )
     .bind(playlist_id)
     .bind(track_id)
@@ -231,7 +238,10 @@ async fn test_duplicate_tracks_pagination() {
     assert_eq!(page1.tracks.len(), 1);
     assert_eq!(page1.tracks[0].id, track_id);
     assert_eq!(page1.tracks[0].position, Some(1));
-    assert!(page1.has_more, "has_more must be true after page 1 (1 of 2)");
+    assert!(
+        page1.has_more,
+        "has_more must be true after page 1 (1 of 2)"
+    );
 
     // Page 2: limit 1, offset 1 -> position 5
     let page2 = get_playlist_tracks(app_state.clone(), playlist_id, Some(1), Some(1))
@@ -242,22 +252,28 @@ async fn test_duplicate_tracks_pagination() {
     assert_eq!(page2.tracks.len(), 1);
     assert_eq!(page2.tracks[0].id, track_id);
     assert_eq!(page2.tracks[0].position, Some(5));
-    assert!(!page2.has_more, "has_more must be false after page 2 (2 of 2)");
+    assert!(
+        !page2.has_more,
+        "has_more must be false after page 2 (2 of 2)"
+    );
 }
 
 #[tokio::test]
 async fn test_duplicate_tracks_with_multiple_sources_not_cartesian_multiplied() {
     let pool = setup_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Queen') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Queen') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title) VALUES ('A Night at the Opera') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title) VALUES ('A Night at the Opera') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     let track_id: i64 = sqlx::query_scalar(
         "INSERT INTO tracks (id, title, album_id, duration_ms, track_number) VALUES (400, 'Bohemian Rhapsody', ?, 354000, 11) RETURNING id"
@@ -300,7 +316,7 @@ async fn test_duplicate_tracks_with_multiple_sources_not_cartesian_multiplied() 
 
     // Insert same track at pos 1 and pos 5
     sqlx::query(
-        "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 1), (?, ?, 5)"
+        "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 1), (?, ?, 5)",
     )
     .bind(playlist_id)
     .bind(track_id)

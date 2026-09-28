@@ -14,9 +14,7 @@
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 use syncify_metadata_domain::{chrono_now_iso, EnrichedMetadata};
 use syncify_tauri_lib::services::enrichment::EnrichmentEngine;
-use syncify_tauri_lib::services::musicbrainz::{
-    MusicBrainzRecording, MusicBrainzReleaseWithMedia,
-};
+use syncify_tauri_lib::services::musicbrainz::{MusicBrainzRecording, MusicBrainzReleaseWithMedia};
 
 const REAL_MUSICBRAINZ_RECORDING_JSON: &str = r#"{
   "id": "b32810a9-2b81-4279-bbd1-580ea52e729a",
@@ -150,8 +148,8 @@ fn create_test_flac_file() -> (tempfile::TempDir, std::path::PathBuf) {
         0x10, 0x00, 0x10, 0x00, // min/max block size
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // min/max frame size
         0x0A, 0xC4, 0x42, 0xF0, // 44.1kHz, 2 channels, 16 bits, 0 samples
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
     ]);
     std::fs::write(&path, &flac_bytes).expect("Failed to write initial FLAC bytes");
     (temp_dir, path)
@@ -165,7 +163,9 @@ fn test_musicbrainz_recording_kebab_case_artist_credit_deserialization() {
     assert_eq!(rec.id, "b32810a9-2b81-4279-bbd1-580ea52e729a");
     assert_eq!(rec.title, "Bohemian Rhapsody");
 
-    let credits = rec.artist_credit.expect("artist_credit was None; kebab-case 'artist-credit' deserialization broken!");
+    let credits = rec
+        .artist_credit
+        .expect("artist_credit was None; kebab-case 'artist-credit' deserialization broken!");
     assert_eq!(credits.len(), 1);
 
     let first = &credits[0];
@@ -178,8 +178,14 @@ fn test_musicbrainz_recording_kebab_case_artist_credit_deserialization() {
     // Releases artist-credit check
     let releases = rec.releases.expect("releases was None");
     assert_eq!(releases.len(), 1);
-    let rel_credits = releases[0].artist_credit.as_ref().expect("release artist-credit was None");
-    assert_eq!(rel_credits[0].artist.id, "0383dadf-2a4e-4d10-a46a-e6e041da8eb3");
+    let rel_credits = releases[0]
+        .artist_credit
+        .as_ref()
+        .expect("release artist-credit was None");
+    assert_eq!(
+        rel_credits[0].artist.id,
+        "0383dadf-2a4e-4d10-a46a-e6e041da8eb3"
+    );
 }
 
 #[test]
@@ -187,7 +193,9 @@ fn test_musicbrainz_recording_snake_case_alias() {
     let rec: MusicBrainzRecording = serde_json::from_str(SNAKE_CASE_RECORDING_JSON)
         .expect("Failed to deserialize MusicBrainzRecording with snake_case artist_credit");
 
-    let credits = rec.artist_credit.expect("artist_credit alias failed to deserialize");
+    let credits = rec
+        .artist_credit
+        .expect("artist_credit alias failed to deserialize");
     assert_eq!(credits.len(), 1);
     assert_eq!(credits[0].name, "David Bowie");
     assert_eq!(credits[0].artist.id, "5441c29d-3602-48f7-b1a9-30704df52227");
@@ -201,12 +209,21 @@ fn test_musicbrainz_release_and_tracks_artist_credit() {
         .expect("Failed to deserialize MusicBrainzReleaseWithMedia");
 
     let rel_credits = rel.artist_credit.expect("Release artist-credit was None");
-    assert_eq!(rel_credits[0].artist.id, "0383dadf-2a4e-4d10-a46a-e6e041da8eb3");
+    assert_eq!(
+        rel_credits[0].artist.id,
+        "0383dadf-2a4e-4d10-a46a-e6e041da8eb3"
+    );
 
     let media = rel.media.expect("Media was None");
     let tracks = media[0].tracks.as_ref().expect("Tracks was None");
-    let track_credits = tracks[0].artist_credit.as_ref().expect("Track artist-credit was None");
-    assert_eq!(track_credits[0].artist.id, "0383dadf-2a4e-4d10-a46a-e6e041da8eb3");
+    let track_credits = tracks[0]
+        .artist_credit
+        .as_ref()
+        .expect("Track artist-credit was None");
+    assert_eq!(
+        track_credits[0].artist.id,
+        "0383dadf-2a4e-4d10-a46a-e6e041da8eb3"
+    );
 }
 
 #[test]
@@ -224,20 +241,40 @@ fn test_flac_vorbis_comment_musicbrainz_artistid_emission() {
     };
 
     let res = apply_and_verify_flac_tags(&flac_path, &meta);
-    assert!(res.is_ok(), "Failed to apply and verify FLAC tags: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "Failed to apply and verify FLAC tags: {:?}",
+        res.err()
+    );
     let verification = res.unwrap();
     assert!(verification.flac_valid, "FLAC file invalid after tagging");
-    assert!(verification.tags_match, "Tags mismatch: {:?}", verification.mismatches);
+    assert!(
+        verification.tags_match,
+        "Tags mismatch: {:?}",
+        verification.mismatches
+    );
 
     // Verify directly with metaflac low-level reader
     let tag = metaflac::Tag::read_from_path(&flac_path).expect("Failed to read tag with metaflac");
-    let vorbis = tag.vorbis_comments().expect("No Vorbis comments found in FLAC");
+    let vorbis = tag
+        .vorbis_comments()
+        .expect("No Vorbis comments found in FLAC");
 
-    let artist_mbids = vorbis.get("MUSICBRAINZ_ARTISTID").expect("MUSICBRAINZ_ARTISTID not written!");
-    assert_eq!(artist_mbids, &["0383dadf-2a4e-4d10-a46a-e6e041da8eb3".to_string()]);
+    let artist_mbids = vorbis
+        .get("MUSICBRAINZ_ARTISTID")
+        .expect("MUSICBRAINZ_ARTISTID not written!");
+    assert_eq!(
+        artist_mbids,
+        &["0383dadf-2a4e-4d10-a46a-e6e041da8eb3".to_string()]
+    );
 
-    let track_mbids = vorbis.get("MUSICBRAINZ_TRACKID").expect("MUSICBRAINZ_TRACKID not written!");
-    assert_eq!(track_mbids, &["b32810a9-2b81-4279-bbd1-580ea52e729a".to_string()]);
+    let track_mbids = vorbis
+        .get("MUSICBRAINZ_TRACKID")
+        .expect("MUSICBRAINZ_TRACKID not written!");
+    assert_eq!(
+        track_mbids,
+        &["b32810a9-2b81-4279-bbd1-580ea52e729a".to_string()]
+    );
 }
 
 #[test]
@@ -253,12 +290,23 @@ fn test_flac_vorbis_comment_musicbrainz_artistid_trimmed() {
     };
 
     let res = apply_and_verify_flac_tags(&flac_path, &meta);
-    assert!(res.is_ok(), "apply_and_verify_flac_tags failed: {:?}", res.err());
+    assert!(
+        res.is_ok(),
+        "apply_and_verify_flac_tags failed: {:?}",
+        res.err()
+    );
 
     let tag = metaflac::Tag::read_from_path(&flac_path).expect("Failed to read tag with metaflac");
-    let vorbis = tag.vorbis_comments().expect("No Vorbis comments found in FLAC");
-    let artist_mbids = vorbis.get("MUSICBRAINZ_ARTISTID").expect("MUSICBRAINZ_ARTISTID not found");
-    assert_eq!(artist_mbids, &["5441c29d-3602-48f7-b1a9-30704df52227".to_string()]);
+    let vorbis = tag
+        .vorbis_comments()
+        .expect("No Vorbis comments found in FLAC");
+    let artist_mbids = vorbis
+        .get("MUSICBRAINZ_ARTISTID")
+        .expect("MUSICBRAINZ_ARTISTID not found");
+    assert_eq!(
+        artist_mbids,
+        &["5441c29d-3602-48f7-b1a9-30704df52227".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -276,14 +324,23 @@ async fn test_database_persistence_and_backfill_of_artist_mbid() {
         .execute(&pool).await.unwrap();
 
     // Insert artist initially without MBID
-    sqlx::query("INSERT INTO artists (name) VALUES ('Queen');").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO tracks (title, enrichment_status) VALUES ('Bohemian Rhapsody', 'pending');").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO artists (name) VALUES ('Queen');")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (title, enrichment_status) VALUES ('Bohemian Rhapsody', 'pending');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let engine = EnrichmentEngine::new();
     let mut meta = EnrichedMetadata::default();
     let now = chrono_now_iso();
 
-    meta.artist.merge_candidate(Some("Queen".to_string()), "stream", 1.0, &now);
+    meta.artist
+        .merge_candidate(Some("Queen".to_string()), "stream", 1.0, &now);
     meta.musicbrainz_artist_id.merge_candidate(
         Some("0383dadf-2a4e-4d10-a46a-e6e041da8eb3".to_string()),
         "musicbrainz",
@@ -294,11 +351,17 @@ async fn test_database_persistence_and_backfill_of_artist_mbid() {
     let res = engine.apply_to_database(&pool, 1, &meta, None).await;
     assert!(res.is_ok(), "apply_to_database failed: {:?}", res.err());
 
-    let (name, mbid): (String, Option<String>) = sqlx::query_as("SELECT name, musicbrainz_id FROM artists WHERE id = 1")
-        .fetch_one(&pool).await.unwrap();
+    let (name, mbid): (String, Option<String>) =
+        sqlx::query_as("SELECT name, musicbrainz_id FROM artists WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(name, "Queen");
-    assert_eq!(mbid.as_deref(), Some("0383dadf-2a4e-4d10-a46a-e6e041da8eb3"));
+    assert_eq!(
+        mbid.as_deref(),
+        Some("0383dadf-2a4e-4d10-a46a-e6e041da8eb3")
+    );
 }
 
 #[tokio::test]
@@ -314,14 +377,21 @@ async fn test_database_persistence_rejects_synthetic_apocryphal_mbid() {
     sqlx::query("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, release_date TEXT, upc TEXT, total_tracks INTEGER, label TEXT, musicbrainz_id TEXT);")
         .execute(&pool).await.unwrap();
 
-    sqlx::query("INSERT INTO artists (name) VALUES ('Alan Mearns');").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO tracks (title, enrichment_status) VALUES ('Track 1', 'pending');").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO artists (name) VALUES ('Alan Mearns');")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tracks (title, enrichment_status) VALUES ('Track 1', 'pending');")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let engine = EnrichmentEngine::new();
     let mut meta = EnrichedMetadata::default();
     let now = chrono_now_iso();
 
-    meta.artist.merge_candidate(Some("Alan Mearns".to_string()), "stream", 1.0, &now);
+    meta.artist
+        .merge_candidate(Some("Alan Mearns".to_string()), "stream", 1.0, &now);
     // Synthetic apocryphal ID from TASK-127
     meta.musicbrainz_artist_id.merge_candidate(
         Some("e774d650-ebf2-5345-acff-8a5ad5cb0ce9".to_string()),
@@ -333,11 +403,17 @@ async fn test_database_persistence_rejects_synthetic_apocryphal_mbid() {
     let res = engine.apply_to_database(&pool, 1, &meta, None).await;
     assert!(res.is_ok());
 
-    let (name, mbid): (String, Option<String>) = sqlx::query_as("SELECT name, musicbrainz_id FROM artists WHERE id = 1")
-        .fetch_one(&pool).await.unwrap();
+    let (name, mbid): (String, Option<String>) =
+        sqlx::query_as("SELECT name, musicbrainz_id FROM artists WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(name, "Alan Mearns");
-    assert_eq!(mbid, None, "Synthetic apocryphal MBID must NOT be saved to artists table");
+    assert_eq!(
+        mbid, None,
+        "Synthetic apocryphal MBID must NOT be saved to artists table"
+    );
 }
 
 #[tokio::test]
@@ -354,14 +430,23 @@ async fn test_database_persistence_repairs_stale_not_found_mbid() {
         .execute(&pool).await.unwrap();
 
     // Existing artist had 'NOT_FOUND' sentinel in musicbrainz_id
-    sqlx::query("INSERT INTO artists (name, musicbrainz_id) VALUES ('Queen', 'NOT_FOUND');").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO tracks (title, enrichment_status) VALUES ('Bohemian Rhapsody', 'pending');").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO artists (name, musicbrainz_id) VALUES ('Queen', 'NOT_FOUND');")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (title, enrichment_status) VALUES ('Bohemian Rhapsody', 'pending');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let engine = EnrichmentEngine::new();
     let mut meta = EnrichedMetadata::default();
     let now = chrono_now_iso();
 
-    meta.artist.merge_candidate(Some("Queen".to_string()), "stream", 1.0, &now);
+    meta.artist
+        .merge_candidate(Some("Queen".to_string()), "stream", 1.0, &now);
     meta.musicbrainz_artist_id.merge_candidate(
         Some("0383dadf-2a4e-4d10-a46a-e6e041da8eb3".to_string()),
         "musicbrainz",
@@ -372,8 +457,11 @@ async fn test_database_persistence_repairs_stale_not_found_mbid() {
     let res = engine.apply_to_database(&pool, 1, &meta, None).await;
     assert!(res.is_ok());
 
-    let (name, mbid): (String, Option<String>) = sqlx::query_as("SELECT name, musicbrainz_id FROM artists WHERE id = 1")
-        .fetch_one(&pool).await.unwrap();
+    let (name, mbid): (String, Option<String>) =
+        sqlx::query_as("SELECT name, musicbrainz_id FROM artists WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(name, "Queen");
     assert_eq!(

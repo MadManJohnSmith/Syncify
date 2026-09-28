@@ -26,8 +26,7 @@ use std::sync::Arc;
 
 use sqlx::sqlite::SqlitePoolOptions;
 use syncify_tauri_lib::commands::{
-    is_plausible_qobuz_credential_value, resolve_qobuz_user_auth_token_with,
-    upsert_service_account,
+    is_plausible_qobuz_credential_value, resolve_qobuz_user_auth_token_with, upsert_service_account,
 };
 use syncify_tauri_lib::crypto;
 
@@ -89,7 +88,9 @@ async fn stored_credentials_json(pool: &sqlx::SqlitePool, account_id: i64) -> St
     crypto::decrypt(&encrypted).expect("decrypt succeeds")
 }
 
-fn ok_login(token: &'static str) -> impl Fn(String, String) -> std::future::Ready<Result<String, String>> {
+fn ok_login(
+    token: &'static str,
+) -> impl Fn(String, String) -> std::future::Ready<Result<String, String>> {
     move |_u, _p| std::future::ready(Ok(token.to_string()))
 }
 
@@ -115,25 +116,25 @@ async fn test_s186_sync_uses_stored_viable_token_without_network_or_rewrite() {
         "username": "owner@example.com",
         "password": "real_password",
     });
-    let account_id = insert_qobuz_account(&pool, Some("owner@example.com"), &creds.to_string(), false).await;
+    let account_id =
+        insert_qobuz_account(&pool, Some("owner@example.com"), &creds.to_string(), false).await;
     let before = stored_credentials_json(&pool, account_id).await;
 
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_clone = calls.clone();
-    let resolved = resolve_qobuz_user_auth_token_with(
-        &pool,
-        account_id,
-        &creds,
-        move |_u, _p| {
-            calls_clone.fetch_add(1, Ordering::SeqCst);
-            std::future::ready(Ok("SHOULD_NOT_BE_USED_1234567890".to_string()))
-        },
-    )
+    let resolved = resolve_qobuz_user_auth_token_with(&pool, account_id, &creds, move |_u, _p| {
+        calls_clone.fetch_add(1, Ordering::SeqCst);
+        std::future::ready(Ok("SHOULD_NOT_BE_USED_1234567890".to_string()))
+    })
     .await
     .expect("stored viable token resolves");
 
     assert_eq!(resolved, "stored_viable_qobuz_token_123456");
-    assert_eq!(calls.load(Ordering::SeqCst), 0, "login must not run when a viable token is stored");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "login must not run when a viable token is stored"
+    );
     assert_eq!(
         stored_credentials_json(&pool, account_id).await,
         before,
@@ -188,11 +189,12 @@ async fn test_s186_sync_autologin_with_stored_credentials_persists_fresh_token()
         "non-credential metadata survives the refresh"
     );
 
-    let flags: i64 = sqlx::query_scalar("SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?")
-        .bind(account_id)
-        .fetch_one(&pool)
-        .await
-        .expect("row exists");
+    let flags: i64 =
+        sqlx::query_scalar("SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("row exists");
     assert_eq!(flags, 0, "refreshed credentials are clean");
 }
 
@@ -207,12 +209,9 @@ async fn test_s186_sync_autologin_failure_reports_requires_auth_not_missing() {
     });
     let account_id = insert_qobuz_account(&pool, None, &creds.to_string(), false).await;
 
-    let err = resolve_qobuz_user_auth_token_with(
-        &pool,
-        account_id,
-        &creds,
-        |_u, _p| std::future::ready(Err("Qobuz API error (401): bad credentials".to_string())),
-    )
+    let err = resolve_qobuz_user_auth_token_with(&pool, account_id, &creds, |_u, _p| {
+        std::future::ready(Err("Qobuz API error (401): bad credentials".to_string()))
+    })
     .await
     .expect_err("failed auto-login surfaces an error");
 
@@ -232,7 +231,8 @@ async fn test_s186_multiline_refresh_touches_only_target_row() {
 
     // Hermana vieja: inválida e inactiva (resto de ciclos previos).
     let old_creds = serde_json::json!({ "user_auth_token": null, "username": "old@example.com", "password": "old_pw" });
-    let old_id = insert_qobuz_account(&pool, Some("old@example.com"), &old_creds.to_string(), true).await;
+    let old_id =
+        insert_qobuz_account(&pool, Some("old@example.com"), &old_creds.to_string(), true).await;
     sqlx::query("UPDATE accounts SET is_active = 0, invalid_reason = 'HTTP 401' WHERE id = ?")
         .bind(old_id)
         .execute(&pool)
@@ -241,11 +241,22 @@ async fn test_s186_multiline_refresh_touches_only_target_row() {
 
     // Fila objetivo activa sin token.
     let target_creds = serde_json::json!({ "user_auth_token": null, "username": "new@example.com", "password": "new_pw" });
-    let target_id = insert_qobuz_account(&pool, Some("new@example.com"), &target_creds.to_string(), false).await;
+    let target_id = insert_qobuz_account(
+        &pool,
+        Some("new@example.com"),
+        &target_creds.to_string(),
+        false,
+    )
+    .await;
 
-    resolve_qobuz_user_auth_token_with(&pool, target_id, &target_creds, ok_login("multiline_fresh_token_12345"))
-        .await
-        .expect("target row resolves");
+    resolve_qobuz_user_auth_token_with(
+        &pool,
+        target_id,
+        &target_creds,
+        ok_login("multiline_fresh_token_12345"),
+    )
+    .await
+    .expect("target row resolves");
 
     let target_persisted = stored_credentials_json(&pool, target_id).await;
     assert!(
@@ -277,7 +288,8 @@ async fn test_s186_email_distinct_login_leaves_single_usable_active_row() {
     let pool = setup_test_db().await;
     let service_id = qobuz_service_id(&pool).await;
 
-    let encrypted_a = crypto::encrypt(r#"{"user_auth_token":"stale_old_row_token_999999"}"#).unwrap();
+    let encrypted_a =
+        crypto::encrypt(r#"{"user_auth_token":"stale_old_row_token_999999"}"#).unwrap();
     sqlx::query(
         r#"INSERT INTO accounts (service_id, display_name, email, credentials_json, credentials_invalid, is_active)
            VALUES (?, 'Old', 'a@example.com', ?, 1, 1)"#,
@@ -288,7 +300,9 @@ async fn test_s186_email_distinct_login_leaves_single_usable_active_row() {
     .await
     .expect("insert row A");
 
-    let encrypted_b = crypto::encrypt(r#"{"user_auth_token":null,"username":"b@example.com","password":"pw_b"}"#).unwrap();
+    let encrypted_b =
+        crypto::encrypt(r#"{"user_auth_token":null,"username":"b@example.com","password":"pw_b"}"#)
+            .unwrap();
     sqlx::query(
         r#"INSERT INTO accounts (service_id, display_name, email, credentials_json, credentials_invalid, is_active)
            VALUES (?, 'New', 'b@example.com', ?, 0, 1)"#,
@@ -320,7 +334,8 @@ async fn test_s186_email_distinct_login_leaves_single_usable_active_row() {
     .expect("rows exist");
 
     assert_eq!(rows.len(), 2);
-    let active_rows: Vec<&(String, i64, String)> = rows.iter().filter(|(_, active, _)| *active == 1).collect();
+    let active_rows: Vec<&(String, i64, String)> =
+        rows.iter().filter(|(_, active, _)| *active == 1).collect();
     assert_eq!(
         active_rows.len(),
         1,
@@ -328,7 +343,9 @@ async fn test_s186_email_distinct_login_leaves_single_usable_active_row() {
     );
     assert_eq!(active_rows[0].0, "b@example.com");
     assert!(
-        crypto::decrypt(&active_rows[0].2).unwrap().contains("brand_new_login_token_424242"),
+        crypto::decrypt(&active_rows[0].2)
+            .unwrap()
+            .contains("brand_new_login_token_424242"),
         "active row carries the fresh login credentials"
     );
 
@@ -366,18 +383,17 @@ async fn test_s186_console_artifact_password_never_qualifies() {
 
     assert!(is_plausible_qobuz_credential_value("S3cure-Passw0rd!"));
     assert!(is_plausible_qobuz_credential_value("plainpassword"));
-    assert!(is_plausible_qobuz_credential_value("alansalasctf@gmail.com"));
+    assert!(is_plausible_qobuz_credential_value(
+        "alansalasctf@gmail.com"
+    ));
 
     // La fila envenenada real NO puede auto-loguearse: el resolver la rechaza
     // en seco (sin round-trip) con un mensaje accionable.
     let poisoned = poisoned_owner_payload();
     let account_id = insert_qobuz_account(&pool, None, &poisoned.to_string(), false).await;
-    let err = resolve_qobuz_user_auth_token_with(
-        &pool,
-        account_id,
-        &poisoned,
-        |_, _| std::future::ready(Ok("token_from_bad_password_12345".to_string())),
-    )
+    let err = resolve_qobuz_user_auth_token_with(&pool, account_id, &poisoned, |_, _| {
+        std::future::ready(Ok("token_from_bad_password_12345".to_string()))
+    })
     .await
     .expect_err("poisoned password cannot produce a working account silently");
 

@@ -105,4 +105,3 @@ pub struct RepairHistoryRecord {
     pub result: String,
     pub details_json: Option<String>,
 }
-

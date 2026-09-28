@@ -62,14 +62,16 @@ async fn test_recalculate_album_total_tracks_fixes_divergences() {
     .await
     .unwrap();
 
-    sqlx::query("INSERT INTO tracks (title, album_id) VALUES ('T1', ?), ('T2', ?), ('T3', ?), ('T4', ?)")
-        .bind(alb2_id)
-        .bind(alb2_id)
-        .bind(alb2_id)
-        .bind(alb2_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (title, album_id) VALUES ('T1', ?), ('T2', ?), ('T3', ?), ('T4', ?)",
+    )
+    .bind(alb2_id)
+    .bind(alb2_id)
+    .bind(alb2_id)
+    .bind(alb2_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Album 3: NULL total_tracks with 3 tracks
     let alb3_id: i64 = sqlx::query_scalar(
@@ -107,8 +109,14 @@ async fn test_recalculate_album_total_tracks_fixes_divergences() {
         .await
         .expect("perform_recalculate_album_total_tracks failed");
 
-    assert_eq!(report.divergent_before, 3, "Expected 3 divergent albums before repair");
-    assert_eq!(report.divergent_after, 0, "Expected 0 divergent albums after repair");
+    assert_eq!(
+        report.divergent_before, 3,
+        "Expected 3 divergent albums before repair"
+    );
+    assert_eq!(
+        report.divergent_after, 0,
+        "Expected 0 divergent albums after repair"
+    );
 
     // Verify reconciled values
     let tt1: i32 = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
@@ -154,7 +162,10 @@ async fn test_recalculate_album_total_tracks_fixes_divergences() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(tt1_again, 2, "Single album recalculation should reset Album 1 to 2 tracks");
+    assert_eq!(
+        tt1_again, 2,
+        "Single album recalculation should reset Album 1 to 2 tracks"
+    );
 }
 
 #[tokio::test]
@@ -174,19 +185,25 @@ async fn test_stubs_preserve_declared_total_tracks() {
         .await
         .expect("Recalculation should succeed");
 
-    assert_eq!(report.divergent_before, 0, "Stub should not be counted as divergent");
+    assert_eq!(
+        report.divergent_before, 0,
+        "Stub should not be counted as divergent"
+    );
     assert_eq!(report.divergent_after, 0);
 
     // Verify stub's total_tracks is completely untouched
-    let (stub_tt, is_stub): (Option<i32>, i64) = sqlx::query_as(
-        "SELECT total_tracks, is_stub FROM albums WHERE id = ?"
-    )
-    .bind(stub_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let (stub_tt, is_stub): (Option<i32>, i64) =
+        sqlx::query_as("SELECT total_tracks, is_stub FROM albums WHERE id = ?")
+            .bind(stub_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    assert_eq!(stub_tt, Some(12), "Stub album must preserve declared total_tracks");
+    assert_eq!(
+        stub_tt,
+        Some(12),
+        "Stub album must preserve declared total_tracks"
+    );
     assert_eq!(is_stub, 1, "Album must remain marked as stub");
 }
 
@@ -221,7 +238,10 @@ async fn test_recurrence_triggers_maintain_total_tracks() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(tt1, 1, "Trigger must update total_tracks to 1 on first track insert");
+    assert_eq!(
+        tt1, 1,
+        "Trigger must update total_tracks to 1 on first track insert"
+    );
 
     // 2. Insert second track -> trigger should update total_tracks to 2
     let t2_id: i64 = sqlx::query_scalar(
@@ -237,7 +257,10 @@ async fn test_recurrence_triggers_maintain_total_tracks() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(tt2, 2, "Trigger must update total_tracks to 2 on second track insert");
+    assert_eq!(
+        tt2, 2,
+        "Trigger must update total_tracks to 2 on second track insert"
+    );
 
     // 3. Move track 2 to a new album -> both albums must reflect their updated counts
     let alb2_id: i64 = sqlx::query_scalar(
@@ -280,17 +303,21 @@ async fn test_recurrence_triggers_maintain_total_tracks() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(tt_final, 0, "Original album must decrement to 0 tracks upon deletion");
+    assert_eq!(
+        tt_final, 0,
+        "Original album must decrement to 0 tracks upon deletion"
+    );
 }
 
 #[tokio::test]
 async fn test_merge_duplicates_synchronizes_total_tracks() {
     let pool = setup_test_db().await;
 
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Deduplicated Album', 2, 0) RETURNING id")
         .fetch_one(&pool)
@@ -328,7 +355,10 @@ async fn test_merge_duplicates_synchronizes_total_tracks() {
         .await
         .unwrap();
 
-    let s1: (i64,) = sqlx::query_as("SELECT id FROM services ORDER BY id LIMIT 1").fetch_one(&pool).await.unwrap();
+    let s1: (i64,) = sqlx::query_as("SELECT id FROM services ORDER BY id LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, 'src1'), (?, ?, 'src2')")
         .bind(t1)
@@ -352,7 +382,10 @@ async fn test_merge_duplicates_synchronizes_total_tracks() {
         .await
         .expect("merge_level2_3_duplicates_inner should execute cleanly");
 
-    assert_eq!(merge_res.tracks_removed, 1, "Expected 1 duplicate track removed");
+    assert_eq!(
+        merge_res.tracks_removed, 1,
+        "Expected 1 duplicate track removed"
+    );
 
     // Verify album total_tracks is now synchronized to 1
     let tt_post: i32 = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
@@ -360,7 +393,10 @@ async fn test_merge_duplicates_synchronizes_total_tracks() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(tt_post, 1, "Album total_tracks must be updated to 1 following merge");
+    assert_eq!(
+        tt_post, 1,
+        "Album total_tracks must be updated to 1 following merge"
+    );
 }
 
 #[tokio::test]
@@ -407,7 +443,8 @@ async fn test_python_script_execution_and_assertions() {
     // Close pool so Python script can open the file without locks
     pool.close().await;
 
-    let script_path = if std::path::Path::new("scripts/recalculate_album_total_tracks.py").exists() {
+    let script_path = if std::path::Path::new("scripts/recalculate_album_total_tracks.py").exists()
+    {
         "scripts/recalculate_album_total_tracks.py".to_string()
     } else if std::path::Path::new("../scripts/recalculate_album_total_tracks.py").exists() {
         "../scripts/recalculate_album_total_tracks.py".to_string()
@@ -430,11 +467,17 @@ async fn test_python_script_execution_and_assertions() {
         .expect("Failed to execute python script dry-run");
 
     if !dry_output.status.success() {
-        eprintln!("dry_run stderr: {}", String::from_utf8_lossy(&dry_output.stderr));
+        eprintln!(
+            "dry_run stderr: {}",
+            String::from_utf8_lossy(&dry_output.stderr)
+        );
     }
     assert!(dry_output.status.success(), "Dry run must succeed");
     let dry_stdout = String::from_utf8_lossy(&dry_output.stdout);
-    assert!(dry_stdout.contains("[DRY RUN]"), "Stdout must indicate dry run");
+    assert!(
+        dry_stdout.contains("[DRY RUN]"),
+        "Stdout must indicate dry run"
+    );
 
     // 2. Test repair mode
     let repair_output = Command::new("python3")
@@ -447,14 +490,29 @@ async fn test_python_script_execution_and_assertions() {
         .expect("Failed to execute python script repair");
 
     if !repair_output.status.success() {
-        eprintln!("repair stderr: {}", String::from_utf8_lossy(&repair_output.stderr));
+        eprintln!(
+            "repair stderr: {}",
+            String::from_utf8_lossy(&repair_output.stderr)
+        );
     }
     assert!(repair_output.status.success(), "Repair run must succeed");
     let repair_stdout = String::from_utf8_lossy(&repair_output.stdout);
-    assert!(repair_stdout.contains("POST-REPAIR VERIFICATION:"), "Stdout must contain verification section");
-    assert!(repair_stdout.contains("Divergent albums remaining:       0"), "Remaining divergence must be 0");
-    assert!(repair_stdout.contains("PRAGMA integrity_check: OK"), "Integrity check must pass");
-    assert!(repair_stdout.contains("PRAGMA foreign_key_check: OK"), "Foreign key check must pass");
+    assert!(
+        repair_stdout.contains("POST-REPAIR VERIFICATION:"),
+        "Stdout must contain verification section"
+    );
+    assert!(
+        repair_stdout.contains("Divergent albums remaining:       0"),
+        "Remaining divergence must be 0"
+    );
+    assert!(
+        repair_stdout.contains("PRAGMA integrity_check: OK"),
+        "Integrity check must pass"
+    );
+    assert!(
+        repair_stdout.contains("PRAGMA foreign_key_check: OK"),
+        "Foreign key check must pass"
+    );
 
     // 3. Re-open pool and verify values
     let check_pool = SqlitePoolOptions::new()
@@ -475,7 +533,10 @@ async fn test_python_script_execution_and_assertions() {
         .fetch_one(&check_pool)
         .await
         .unwrap();
-    assert_eq!(stub_tt, 15, "Stub album must preserve declared total_tracks = 15");
+    assert_eq!(
+        stub_tt, 15,
+        "Stub album must preserve declared total_tracks = 15"
+    );
 
     check_pool.close().await;
 }

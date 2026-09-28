@@ -116,13 +116,19 @@ pub fn derive_track_version(input: &VersionDerivationInput) -> DerivedVersionInf
     // 5. Check for Low Confidence: Unstructured comment text or notes
     if let Some(ref comment) = input.comment_text {
         let cm = comment.trim();
-        if cm.to_ascii_lowercase().contains("remix") || cm.to_ascii_lowercase().contains("live") || cm.to_ascii_lowercase().contains("version") {
+        if cm.to_ascii_lowercase().contains("remix")
+            || cm.to_ascii_lowercase().contains("live")
+            || cm.to_ascii_lowercase().contains("version")
+        {
             return DerivedVersionInfo {
                 source_title,
                 display_title: None,
                 file_disambiguator: None,
                 confidence: VersionConfidence::Low,
-                reason: format!("Low confidence heuristic from free-form comment text: '{}'", cm),
+                reason: format!(
+                    "Low confidence heuristic from free-form comment text: '{}'",
+                    cm
+                ),
             };
         }
     }
@@ -161,8 +167,20 @@ fn format_display_title(base_title: &str, disambiguator: &str) -> String {
 
 fn extract_version_from_title(title: &str) -> Option<String> {
     let keywords = [
-        "remix", "mix", "edit", "live", "remaster", "remastered", "version",
-        "acoustic", "deluxe", "extended", "instrumental", "re-recorded", "club mix", "radio edit"
+        "remix",
+        "mix",
+        "edit",
+        "live",
+        "remaster",
+        "remastered",
+        "version",
+        "acoustic",
+        "deluxe",
+        "extended",
+        "instrumental",
+        "re-recorded",
+        "club mix",
+        "radio edit",
     ];
 
     // Check parentheses (...)

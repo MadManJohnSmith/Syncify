@@ -62,8 +62,10 @@ fn create_synthetic_flac(path: &PathBuf) {
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "flac",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "flac",
             path.to_str().unwrap(),
         ])
         .output()
@@ -106,9 +108,12 @@ fn create_synthetic_m4a(path: &PathBuf) {
     let status = std::process::Command::new("ffmpeg")
         .args([
             "-y",
-            "-i", temp_wav.to_str().unwrap(),
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "-i",
+            temp_wav.to_str().unwrap(),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             path.to_str().unwrap(),
         ])
         .output()
@@ -175,12 +180,26 @@ fn test_flac_country_and_releasecountry_tags() {
     let read_tag = metaflac::Tag::read_from_path(&file_path).expect("Read FLAC");
     let vorbis = read_tag.vorbis_comments().expect("Vorbis comments");
 
-    let country_val = vorbis.get("COUNTRY").and_then(|v| v.first()).map(|s| s.as_str());
+    let country_val = vorbis
+        .get("COUNTRY")
+        .and_then(|v| v.first())
+        .map(|s| s.as_str());
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
-    assert_eq!(country_val, Some("United States"), "COUNTRY tag must carry the canonical name 'United States'");
+    assert_eq!(
+        country_val,
+        Some("United States"),
+        "COUNTRY tag must carry the canonical name 'United States'"
+    );
 
-    let rel_country_val = vorbis.get("RELEASECOUNTRY").and_then(|v| v.first()).map(|s| s.as_str());
-    assert_eq!(rel_country_val, Some("United States"), "RELEASECOUNTRY tag must carry the canonical name 'United States'");
+    let rel_country_val = vorbis
+        .get("RELEASECOUNTRY")
+        .and_then(|v| v.first())
+        .map(|s| s.as_str());
+    assert_eq!(
+        rel_country_val,
+        Some("United States"),
+        "RELEASECOUNTRY tag must carry the canonical name 'United States'"
+    );
 }
 
 #[test]
@@ -209,9 +228,18 @@ fn test_m4a_country_and_releasecountry_atoms() {
     let country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "COUNTRY");
     let read_country = read_tag.strings_of(&country_ident).next();
     // directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183
-    assert_eq!(read_country, Some("United Kingdom"), "M4A COUNTRY must be 'United Kingdom'");
+    assert_eq!(
+        read_country,
+        Some("United Kingdom"),
+        "M4A COUNTRY must be 'United Kingdom'"
+    );
 
-    let rel_country_ident = mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
+    let rel_country_ident =
+        mp4ameta::FreeformIdent::new_static("com.apple.iTunes", "RELEASECOUNTRY");
     let read_rel_country = read_tag.strings_of(&rel_country_ident).next();
-    assert_eq!(read_rel_country, Some("United Kingdom"), "M4A RELEASECOUNTRY must be 'United Kingdom'");
+    assert_eq!(
+        read_rel_country,
+        Some("United Kingdom"),
+        "M4A RELEASECOUNTRY must be 'United Kingdom'"
+    );
 }

@@ -32,17 +32,48 @@ struct DbCounts {
 }
 
 async fn capture_counts(pool: &sqlx::SqlitePool) -> DbCounts {
-    let tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks").fetch_one(pool).await.unwrap_or(0);
-    let albums_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums").fetch_one(pool).await.unwrap_or(0);
-    let artists_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artists").fetch_one(pool).await.unwrap_or(0);
-    let track_sources_tidal_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE service_id = 3").fetch_one(pool).await.unwrap_or(0);
-    let playlist_tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playlist_tracks").fetch_one(pool).await.unwrap_or(0);
-    let unknown_artist_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artists WHERE name = 'Unknown Artist'").fetch_one(pool).await.unwrap_or(0);
-    let unknown_album_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE title = 'Unknown Album'").fetch_one(pool).await.unwrap_or(0);
-    let tidal_track_placeholder_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE title LIKE 'Tidal Track %'").fetch_one(pool).await.unwrap_or(0);
+    let tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let albums_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let artists_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artists")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let track_sources_tidal_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE service_id = 3")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+    let playlist_tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playlist_tracks")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    let unknown_artist_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM artists WHERE name = 'Unknown Artist'")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+    let unknown_album_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE title = 'Unknown Album'")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+    let tidal_track_placeholder_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE title LIKE 'Tidal Track %'")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
     let orphan_tracks_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE album_id IS NOT NULL AND album_id NOT IN (SELECT id FROM albums)").fetch_one(pool).await.unwrap_or(0);
     let orphan_albums_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks WHERE album_id IS NOT NULL)").fetch_one(pool).await.unwrap_or(0);
-    let downloads_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads").fetch_one(pool).await.unwrap_or(0);
+    let downloads_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
 
     DbCounts {
         tracks_count,
@@ -71,12 +102,20 @@ async fn test_s164_fresh_controlled_tidal_import() {
 
     // 1. Initialize keychain crypto
     let crypto_init = syncify_tauri_lib::crypto::init_keychain_crypto();
-    assert!(crypto_init.is_ok(), "Keychain crypto initialization must succeed");
+    assert!(
+        crypto_init.is_ok(),
+        "Keychain crypto initialization must succeed"
+    );
 
     // 2. Connect to runtime SQLite database
     let db_path = std::env::var("SYNCIFY_AUDIT_DB_PATH").unwrap_or_else(|_| {
         dirs::data_local_dir()
-            .map(|p| p.join("com.syncify.app").join("syncify.db").to_string_lossy().to_string())
+            .map(|p| {
+                p.join("com.syncify.app")
+                    .join("syncify.db")
+                    .to_string_lossy()
+                    .to_string()
+            })
             .unwrap_or_else(|| "syncify.db".to_string())
     });
     let db_url = format!("sqlite:///{}", db_path.replace('\\', "/"));
@@ -90,22 +129,27 @@ async fn test_s164_fresh_controlled_tidal_import() {
 
     // 3. Load account 50 credentials
     let account_id: i64 = 50;
-    let account_row: (String, Option<i64>) = sqlx::query_as(
-        "SELECT credentials_json, credentials_invalid FROM accounts WHERE id = ?"
-    )
-    .bind(account_id)
-    .fetch_one(&pool)
-    .await
-    .expect("Account 50 must exist in accounts table");
+    let account_row: (String, Option<i64>) =
+        sqlx::query_as("SELECT credentials_json, credentials_invalid FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("Account 50 must exist in accounts table");
 
-    assert_eq!(account_row.1.unwrap_or(0), 0, "Account 50 credentials must not be marked invalid");
+    assert_eq!(
+        account_row.1.unwrap_or(0),
+        0,
+        "Account 50 credentials must not be marked invalid"
+    );
 
-    let decrypted = syncify_tauri_lib::crypto::decrypt(&account_row.0)
-        .expect("Decrypt account 50 credentials");
-    let creds: serde_json::Value = serde_json::from_str(&decrypted)
-        .expect("Parse decrypted credentials JSON");
+    let decrypted =
+        syncify_tauri_lib::crypto::decrypt(&account_row.0).expect("Decrypt account 50 credentials");
+    let creds: serde_json::Value =
+        serde_json::from_str(&decrypted).expect("Parse decrypted credentials JSON");
 
-    let access_token = creds["access_token"].as_str().expect("Access token in credentials");
+    let access_token = creds["access_token"]
+        .as_str()
+        .expect("Access token in credentials");
     let user_id = creds["user_id"]
         .as_str()
         .or_else(|| creds["user"]["userId"].as_str())
@@ -133,17 +177,41 @@ async fn test_s164_fresh_controlled_tidal_import() {
     println!("   Tracks:                   {}", before.tracks_count);
     println!("   Albums:                   {}", before.albums_count);
     println!("   Artists:                  {}", before.artists_count);
-    println!("   Track Sources (Tidal):    {}", before.track_sources_tidal_count);
-    println!("   Playlist Tracks:          {}", before.playlist_tracks_count);
-    println!("   Unknown Artist:           {}", before.unknown_artist_count);
-    println!("   Unknown Album:            {}", before.unknown_album_count);
-    println!("   Tidal Track Placeholders: {}", before.tidal_track_placeholder_count);
-    println!("   Orphan Tracks:            {}", before.orphan_tracks_count);
-    println!("   Orphan Albums:            {}", before.orphan_albums_count);
+    println!(
+        "   Track Sources (Tidal):    {}",
+        before.track_sources_tidal_count
+    );
+    println!(
+        "   Playlist Tracks:          {}",
+        before.playlist_tracks_count
+    );
+    println!(
+        "   Unknown Artist:           {}",
+        before.unknown_artist_count
+    );
+    println!(
+        "   Unknown Album:            {}",
+        before.unknown_album_count
+    );
+    println!(
+        "   Tidal Track Placeholders: {}",
+        before.tidal_track_placeholder_count
+    );
+    println!(
+        "   Orphan Tracks:            {}",
+        before.orphan_tracks_count
+    );
+    println!(
+        "   Orphan Albums:            {}",
+        before.orphan_albums_count
+    );
     println!("   Downloads Count:          {}", before.downloads_count);
 
     // 6. Execute Scoped Import
-    println!("\n4. Executing scoped Tidal playlist import for playlist {} (max {} tracks)...", playlist_uuid, max_tracks);
+    println!(
+        "\n4. Executing scoped Tidal playlist import for playlist {} (max {} tracks)...",
+        playlist_uuid, max_tracks
+    );
     let start_instant = std::time::Instant::now();
     let import_report = client
         .import_single_playlist_scoped(&pool, account_id, playlist_uuid, Some(max_tracks))
@@ -153,18 +221,54 @@ async fn test_s164_fresh_controlled_tidal_import() {
 
     println!("   Import completed in {:.2}s", elapsed.as_secs_f64());
     println!("\n5. Import Execution Report:");
-    println!("   Playlist Name:            {}", import_report.playlist_name);
-    println!("   Playlist DB ID:           {}", import_report.playlist_db_id);
-    println!("   Total In Playlist:        {}", import_report.total_tracks_in_playlist);
-    println!("   Tracks Processed:         {}", import_report.tracks_processed);
-    println!("   New Canonical Tracks:     {}", import_report.new_canonical_tracks);
-    println!("   New Source Mappings:      {}", import_report.new_source_mappings);
-    println!("   New Playlist Links:       {}", import_report.new_playlist_links);
-    println!("   Deduped Existing Tracks:  {}", import_report.deduped_existing_tracks);
-    println!("   Metadata Updates:         {}", import_report.metadata_updates);
-    println!("   Unique Tracks Changed:    {}", import_report.tracks_changed_unique);
-    println!("   Ghost Candidates:         {}", import_report.ghost_candidates);
-    println!("   Failed Expansions:        {}", import_report.failed_expansions);
+    println!(
+        "   Playlist Name:            {}",
+        import_report.playlist_name
+    );
+    println!(
+        "   Playlist DB ID:           {}",
+        import_report.playlist_db_id
+    );
+    println!(
+        "   Total In Playlist:        {}",
+        import_report.total_tracks_in_playlist
+    );
+    println!(
+        "   Tracks Processed:         {}",
+        import_report.tracks_processed
+    );
+    println!(
+        "   New Canonical Tracks:     {}",
+        import_report.new_canonical_tracks
+    );
+    println!(
+        "   New Source Mappings:      {}",
+        import_report.new_source_mappings
+    );
+    println!(
+        "   New Playlist Links:       {}",
+        import_report.new_playlist_links
+    );
+    println!(
+        "   Deduped Existing Tracks:  {}",
+        import_report.deduped_existing_tracks
+    );
+    println!(
+        "   Metadata Updates:         {}",
+        import_report.metadata_updates
+    );
+    println!(
+        "   Unique Tracks Changed:    {}",
+        import_report.tracks_changed_unique
+    );
+    println!(
+        "   Ghost Candidates:         {}",
+        import_report.ghost_candidates
+    );
+    println!(
+        "   Failed Expansions:        {}",
+        import_report.failed_expansions
+    );
 
     // 7. Capture AFTER Metrics
     let after = capture_counts(&pool).await;
@@ -172,26 +276,53 @@ async fn test_s164_fresh_controlled_tidal_import() {
     println!("   Tracks:                   {}", after.tracks_count);
     println!("   Albums:                   {}", after.albums_count);
     println!("   Artists:                  {}", after.artists_count);
-    println!("   Track Sources (Tidal):    {}", after.track_sources_tidal_count);
-    println!("   Playlist Tracks:          {}", after.playlist_tracks_count);
-    println!("   Unknown Artist:           {}", after.unknown_artist_count);
+    println!(
+        "   Track Sources (Tidal):    {}",
+        after.track_sources_tidal_count
+    );
+    println!(
+        "   Playlist Tracks:          {}",
+        after.playlist_tracks_count
+    );
+    println!(
+        "   Unknown Artist:           {}",
+        after.unknown_artist_count
+    );
     println!("   Unknown Album:            {}", after.unknown_album_count);
-    println!("   Tidal Track Placeholders: {}", after.tidal_track_placeholder_count);
+    println!(
+        "   Tidal Track Placeholders: {}",
+        after.tidal_track_placeholder_count
+    );
     println!("   Orphan Tracks:            {}", after.orphan_tracks_count);
     println!("   Orphan Albums:            {}", after.orphan_albums_count);
     println!("   Downloads Count:          {}", after.downloads_count);
 
     // 8. Strict Acceptance Criteria Assertions
     // Criterion A: No audio downloads triggered
-    assert_eq!(after.downloads_count, before.downloads_count, "Import must NEVER trigger audio downloads");
+    assert_eq!(
+        after.downloads_count, before.downloads_count,
+        "Import must NEVER trigger audio downloads"
+    );
 
     // Criterion B: No new placeholder entities created
-    assert_eq!(after.unknown_artist_count, before.unknown_artist_count, "No new Unknown Artist records must be created");
-    assert_eq!(after.unknown_album_count, before.unknown_album_count, "No new Unknown Album records must be created");
-    assert_eq!(after.tidal_track_placeholder_count, before.tidal_track_placeholder_count, "No 'Tidal Track <id>' placeholders must be created");
+    assert_eq!(
+        after.unknown_artist_count, before.unknown_artist_count,
+        "No new Unknown Artist records must be created"
+    );
+    assert_eq!(
+        after.unknown_album_count, before.unknown_album_count,
+        "No new Unknown Album records must be created"
+    );
+    assert_eq!(
+        after.tidal_track_placeholder_count, before.tidal_track_placeholder_count,
+        "No 'Tidal Track <id>' placeholders must be created"
+    );
 
     // Criterion C: No orphan tracks
-    assert_eq!(after.orphan_tracks_count, 0, "All tracks must link to valid albums");
+    assert_eq!(
+        after.orphan_tracks_count, 0,
+        "All tracks must link to valid albums"
+    );
 
     // Criterion D: Every imported track in playlist maps to exactly one canonical track
     let playlist_tracks: Vec<(i64, i32, String, Option<String>, Option<String>)> = sqlx::query_as(
@@ -204,7 +335,7 @@ async fn test_s164_fresh_controlled_tidal_import() {
         LEFT JOIN track_sources ts ON ts.track_id = t.id AND ts.service_id = 3
         WHERE pt.playlist_id = ?
         ORDER BY pt.position ASC
-        "#
+        "#,
     )
     .bind(import_report.playlist_db_id)
     .fetch_all(&pool)
@@ -213,16 +344,33 @@ async fn test_s164_fresh_controlled_tidal_import() {
 
     println!("\n7. Sample Imported Playlist Tracks (first 5):");
     for (trk_id, pos, title, artist, stid) in playlist_tracks.iter().take(5) {
-        println!("   Pos {}: Track {} - {} by {:?} (Tidal ID: {:?})", pos, trk_id, title, artist, stid);
-        assert!(!title.starts_with("Tidal Track "), "Track title must be resolved");
-        assert_ne!(artist.as_deref(), Some("Unknown Artist"), "Artist must be resolved");
+        println!(
+            "   Pos {}: Track {} - {} by {:?} (Tidal ID: {:?})",
+            pos, trk_id, title, artist, stid
+        );
+        assert!(
+            !title.starts_with("Tidal Track "),
+            "Track title must be resolved"
+        );
+        assert_ne!(
+            artist.as_deref(),
+            Some("Unknown Artist"),
+            "Artist must be resolved"
+        );
     }
 
-    assert_eq!(playlist_tracks.len(), import_report.tracks_processed, "Playlist track count must match processed tracks");
+    assert_eq!(
+        playlist_tracks.len(),
+        import_report.tracks_processed,
+        "Playlist track count must match processed tracks"
+    );
 
     // Criterion E: Playlist positions are strictly monotonic and preserved
     for (idx, (_, pos, _, _, _)) in playlist_tracks.iter().enumerate() {
-        assert_eq!(*pos as usize, idx, "Playlist track positions must be strictly sequential (0..N-1)");
+        assert_eq!(
+            *pos as usize, idx,
+            "Playlist track positions must be strictly sequential (0..N-1)"
+        );
     }
 
     // Criterion F: No duplicate Tidal service_track_id mappings for this playlist
@@ -232,13 +380,16 @@ async fn test_s164_fresh_controlled_tidal_import() {
         FROM playlist_tracks pt
         JOIN track_sources ts ON ts.track_id = pt.track_id AND ts.service_id = 3
         WHERE pt.playlist_id = ?
-        "#
+        "#,
     )
     .bind(import_report.playlist_db_id)
     .fetch_one(&pool)
     .await
     .unwrap_or(0);
-    assert_eq!(duplicate_tidal_ids, 0, "All playlist tracks must have distinct Tidal service track IDs");
+    assert_eq!(
+        duplicate_tidal_ids, 0,
+        "All playlist tracks must have distinct Tidal service track IDs"
+    );
 
     // Criterion G: Internal consistency of tracks_changed_unique
     assert_eq!(
@@ -376,7 +527,10 @@ async fn test_s164_fresh_controlled_tidal_import() {
     });
     writeln!(ndjson_file, "{}", serde_json::to_string(&line6).unwrap()).unwrap();
 
-    println!("\n8. NDJSON Evidence successfully written to: {:?}", ndjson_path);
+    println!(
+        "\n8. NDJSON Evidence successfully written to: {:?}",
+        ndjson_path
+    );
     println!("================================================================================");
     println!("       S164: FRESH CONTROLLED TIDAL IMPORT PASSED 100%                         ");
     println!("================================================================================");

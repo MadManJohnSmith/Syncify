@@ -9,12 +9,12 @@
 //! 7. Redownload with force overwrite explicit
 
 use std::path::PathBuf;
-use tempfile::TempDir;
 use syncify_core_domain::layout::{LibraryLayout, TrackLayoutContext};
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::enrichment::{
     EnrichmentEngine, OriginTrackMetadata, SyncTrackInput,
 };
+use tempfile::TempDir;
 
 async fn setup_test_db() -> sqlx::SqlitePool {
     let _ = crypto::init_keychain_crypto().or_else(|_| crypto::init_crypto([42u8; 32]));
@@ -33,7 +33,11 @@ async fn setup_test_db() -> sqlx::SqlitePool {
     pool
 }
 
-async fn create_test_account(pool: &sqlx::SqlitePool, service_name: &str, display_name: &str) -> (i64, i64) {
+async fn create_test_account(
+    pool: &sqlx::SqlitePool,
+    service_name: &str,
+    display_name: &str,
+) -> (i64, i64) {
     let service_id: i64 = match sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
         .bind(service_name)
         .fetch_optional(pool)
@@ -42,17 +46,15 @@ async fn create_test_account(pool: &sqlx::SqlitePool, service_name: &str, displa
         .flatten()
     {
         Some(id) => id,
-        None => {
-            sqlx::query_scalar("INSERT OR IGNORE INTO services (name) VALUES (?) RETURNING id")
-                .bind(service_name)
-                .fetch_one(pool)
-                .await
-                .unwrap_or(2)
-        }
+        None => sqlx::query_scalar("INSERT OR IGNORE INTO services (name) VALUES (?) RETURNING id")
+            .bind(service_name)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(2),
     };
 
     let account_id: i64 = sqlx::query_scalar(
-        "INSERT INTO accounts (service_id, display_name, is_active) VALUES (?, ?, 1) RETURNING id"
+        "INSERT INTO accounts (service_id, display_name, is_active) VALUES (?, ?, 1) RETURNING id",
     )
     .bind(service_id)
     .bind(display_name)
@@ -125,8 +127,14 @@ async fn test_same_artist_and_title_in_different_albums() {
         album_provider_track_id: None,
     };
 
-    let res1 = engine.enrich_and_persist_sync_track(&pool, input1).await.unwrap();
-    let res2 = engine.enrich_and_persist_sync_track(&pool, input2).await.unwrap();
+    let res1 = engine
+        .enrich_and_persist_sync_track(&pool, input1)
+        .await
+        .unwrap();
+    let res2 = engine
+        .enrich_and_persist_sync_track(&pool, input2)
+        .await
+        .unwrap();
 
     assert!(res1.is_new_global_track);
     // Track 2 has same ISRC, so it maps to the canonical track or adds a new source
@@ -169,7 +177,10 @@ async fn test_same_artist_and_title_in_different_albums() {
     let path1 = layout.resolve_track_path(&ctx1);
     let path2 = layout.resolve_track_path(&ctx2);
 
-    assert_ne!(path1, path2, "Tracks in different albums must resolve to distinct folder paths");
+    assert_ne!(
+        path1, path2,
+        "Tracks in different albums must resolve to distinct folder paths"
+    );
     assert!(path1.to_string_lossy().contains("Gorillaz"));
     assert!(path2.to_string_lossy().contains("The Singles Collection"));
 }
@@ -236,18 +247,30 @@ async fn test_two_distinct_masters_and_editions_same_album() {
         album_provider_track_id: None,
     };
 
-    let res11 = engine.enrich_and_persist_sync_track(&pool, t11).await.unwrap();
-    let res17 = engine.enrich_and_persist_sync_track(&pool, t17).await.unwrap();
+    let res11 = engine
+        .enrich_and_persist_sync_track(&pool, t11)
+        .await
+        .unwrap();
+    let res17 = engine
+        .enrich_and_persist_sync_track(&pool, t17)
+        .await
+        .unwrap();
 
     // Both must be new global tracks because their ISRCs differ!
     assert!(res11.is_new_global_track);
-    assert!(res17.is_new_global_track, "Distinct ISRCs/masters must remain separate track records");
+    assert!(
+        res17.is_new_global_track,
+        "Distinct ISRCs/masters must remain separate track records"
+    );
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE title = '19-2000'")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count, 2, "Both masters must be independently persisted in tracks table");
+    assert_eq!(
+        count, 2,
+        "Both masters must be independently persisted in tracks table"
+    );
 }
 
 #[tokio::test]
@@ -272,10 +295,14 @@ async fn test_destination_collision_resolution_with_disambiguator() {
     };
 
     let base_path = layout.resolve_track_path(&ctx);
-    tokio::fs::create_dir_all(base_path.parent().unwrap()).await.unwrap();
+    tokio::fs::create_dir_all(base_path.parent().unwrap())
+        .await
+        .unwrap();
 
     // Create the existing base file to simulate collision
-    tokio::fs::write(&base_path, b"ORIGINAL_TRACK_DATA").await.unwrap();
+    tokio::fs::write(&base_path, b"ORIGINAL_TRACK_DATA")
+        .await
+        .unwrap();
     assert!(base_path.exists());
 
     // Resolve disambiguated path for remix edition
@@ -283,7 +310,10 @@ async fn test_destination_collision_resolution_with_disambiguator() {
 
     assert_ne!(base_path, disambiguated);
     assert!(disambiguated.to_string_lossy().contains("Soulchild Remix"));
-    assert!(!disambiguated.exists(), "Disambiguated target file should not collide");
+    assert!(
+        !disambiguated.exists(),
+        "Disambiguated target file should not collide"
+    );
 }
 
 #[tokio::test]
@@ -292,5 +322,8 @@ async fn test_sidecar_lrc_matches_audio_stem() {
     let audio_path = PathBuf::from("/Music/Gorillaz/[2001] Gorillaz/11 - 19-2000.flac");
     let lrc_path = layout.lyrics_path_for_track(&audio_path);
 
-    assert_eq!(lrc_path, PathBuf::from("/Music/Gorillaz/[2001] Gorillaz/11 - 19-2000.lrc"));
+    assert_eq!(
+        lrc_path,
+        PathBuf::from("/Music/Gorillaz/[2001] Gorillaz/11 - 19-2000.lrc")
+    );
 }

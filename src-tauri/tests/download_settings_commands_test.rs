@@ -13,12 +13,13 @@ use std::sync::Arc;
 use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
 use syncify_tauri_lib::commands::{
     perform_batch_health_check, perform_clear_download_history, perform_force_redownload_tracks,
-    perform_get_download_settings, perform_get_effective_download_paths, perform_get_folder_settings,
-    perform_get_quality_preferences, perform_get_sidecar_settings, perform_reset_download_history,
-    perform_save_download_settings, perform_save_setting, perform_set_max_concurrent_downloads,
-    perform_update_fallback_action, perform_update_quality_preference,
-    perform_update_sidecar_settings, resolve_effective_download_paths, validate_directory_path,
-    DownloadSettingsDto, SidecarSettingsDto,
+    perform_get_download_settings, perform_get_effective_download_paths,
+    perform_get_folder_settings, perform_get_quality_preferences, perform_get_sidecar_settings,
+    perform_reset_download_history, perform_save_download_settings, perform_save_setting,
+    perform_set_max_concurrent_downloads, perform_update_fallback_action,
+    perform_update_quality_preference, perform_update_sidecar_settings,
+    resolve_effective_download_paths, validate_directory_path, DownloadSettingsDto,
+    SidecarSettingsDto,
 };
 use syncify_tauri_lib::enrichment_worker::EnrichmentWorkerState;
 use syncify_tauri_lib::worker::DownloadWorkerState;
@@ -126,8 +127,14 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
     // 2. Assert return value matches saved configuration
     assert_eq!(saved_settings.download_path, new_custom_path);
     assert_eq!(saved_settings.max_concurrent_downloads, 5);
-    assert_eq!(saved_settings.folder_template, "{AlbumArtist}/{Year} - {Album}");
-    assert_eq!(saved_settings.file_template, "{DiscNumber}-{TrackNumber:pad2} {Title}");
+    assert_eq!(
+        saved_settings.folder_template,
+        "{AlbumArtist}/{Year} - {Album}"
+    );
+    assert_eq!(
+        saved_settings.file_template,
+        "{DiscNumber}-{TrackNumber:pad2} {Title}"
+    );
     assert_eq!(saved_settings.artist_separator, " / ");
     assert_eq!(saved_settings.replace_spaces_with, Some("_".to_string()));
     assert_eq!(saved_settings.max_path_length, 240);
@@ -139,22 +146,25 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
     assert_eq!(saved_settings.generate_booklet, false);
 
     // 3. Verify SQLite tables persistence directly
-    let db_folder_base: String = sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let db_folder_base: String =
+        sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(db_folder_base, new_custom_path);
 
-    let db_sync_max: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let db_sync_max: i32 =
+        sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(db_sync_max, 5);
 
-    let db_kv_concurrent: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let db_kv_concurrent: String =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(db_kv_concurrent, "5");
 }
 
@@ -182,7 +192,10 @@ async fn test_quality_preferences_and_fallback_action_commands() {
         .await
         .expect("get_quality_preferences should succeed");
     assert!(!all_prefs.is_empty());
-    let qobuz_entry = all_prefs.iter().find(|p| p.service_name == "qobuz").unwrap();
+    let qobuz_entry = all_prefs
+        .iter()
+        .find(|p| p.service_name == "qobuz")
+        .unwrap();
     assert_eq!(qobuz_entry.max_quality, "24_96");
 
     // 2. Update fallback action
@@ -191,15 +204,14 @@ async fn test_quality_preferences_and_fallback_action_commands() {
         .expect("update_fallback_action should succeed");
     assert_eq!(fallback, "strict");
 
-    let current_folder_settings = perform_get_folder_settings(&state.db)
-        .await
-        .unwrap();
+    let current_folder_settings = perform_get_folder_settings(&state.db).await.unwrap();
     assert_eq!(current_folder_settings.fallback_action, "strict");
 
-    let db_action: String = sqlx::query_scalar("SELECT fallback_action FROM folder_settings WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let db_action: String =
+        sqlx::query_scalar("SELECT fallback_action FROM folder_settings WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(db_action, "strict");
 }
 
@@ -216,17 +228,19 @@ async fn test_set_max_concurrent_downloads_command_persists() {
     assert_eq!(state.worker_state.max_concurrent(), 4);
 
     // Verify sync_settings in DB
-    let sync_max: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let sync_max: i32 =
+        sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(sync_max, 4);
 
     // Verify settings KV in DB
-    let kv_val: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let kv_val: String =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(kv_val, "4");
 }
 
@@ -235,16 +249,38 @@ async fn test_force_redownload_and_clear_history_commands() {
     let (state, pool, temp_dir) = setup_test_app_state(3).await;
 
     // Create test artists, albums, tracks
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Redownload Artist') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    let album_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, upc) VALUES ('Redownload Album', '123456789012') RETURNING id")
-        .fetch_one(&pool).await.unwrap();
-    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)").bind(album_id).bind(artist_id).execute(&pool).await.unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Redownload Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, upc) VALUES ('Redownload Album', '123456789012') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+        .bind(album_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
-    let track_id_1: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Track 1', ?, 'USRC1001') RETURNING id")
-        .bind(album_id).fetch_one(&pool).await.unwrap();
-    let track_id_2: i64 = sqlx::query_scalar("INSERT INTO tracks (title, album_id, isrc) VALUES ('Track 2', ?, 'USRC1002') RETURNING id")
-        .bind(album_id).fetch_one(&pool).await.unwrap();
+    let track_id_1: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, isrc) VALUES ('Track 1', ?, 'USRC1001') RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let track_id_2: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, isrc) VALUES ('Track 2', ?, 'USRC1002') RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary'), (?, ?, 'primary')")
         .bind(track_id_1).bind(artist_id)
@@ -285,7 +321,9 @@ async fn test_force_redownload_and_clear_history_commands() {
         .unwrap();
 
     let initial_download_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(initial_download_count, 2);
 
     // 1. Force re-download track 1
@@ -309,11 +347,12 @@ async fn test_force_redownload_and_clear_history_commands() {
     assert_eq!(count_t1, 0);
 
     // Track 1 should now be queued in download_queue with priority 70
-    let queue_status: (String, i64) = sqlx::query_as("SELECT status, priority FROM download_queue WHERE track_id = ?")
-        .bind(track_id_1)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let queue_status: (String, i64) =
+        sqlx::query_as("SELECT status, priority FROM download_queue WHERE track_id = ?")
+            .bind(track_id_1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(queue_status.0, "queued");
     assert_eq!(queue_status.1, 70);
 
@@ -333,15 +372,19 @@ async fn test_force_redownload_and_clear_history_commands() {
 
     // downloads ledger remains intact
     let total_downloads_after_clear: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
-        .fetch_one(&pool).await.unwrap();
-    assert_eq!(total_downloads_after_clear, 1);
-
-    // download_queue history for track 2 is removed
-    let queue_count_t2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE track_id = ? AND status = 'complete'")
-        .bind(track_id_2)
         .fetch_one(&pool)
         .await
         .unwrap();
+    assert_eq!(total_downloads_after_clear, 1);
+
+    // download_queue history for track 2 is removed
+    let queue_count_t2: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM download_queue WHERE track_id = ? AND status = 'complete'",
+    )
+    .bind(track_id_2)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(queue_count_t2, 0);
 
     // 3. Reset download history
@@ -386,10 +429,11 @@ async fn test_sidecar_settings_commands_toggle() {
     assert_eq!(updated.generate_artist_sidecars, false);
 
     // Assert persistence in settings table
-    let db_booklet: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_generate_booklet'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let db_booklet: String =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_generate_booklet'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(db_booklet, "false");
 }
 
@@ -403,7 +447,13 @@ async fn test_configured_download_path_respected_in_library_layout() {
 
     let settings_to_save = DownloadSettingsDto {
         download_path: custom_path_str.clone(),
-        temporary_root: Some(temp_dir.path().join(".staging").to_string_lossy().to_string()),
+        temporary_root: Some(
+            temp_dir
+                .path()
+                .join(".staging")
+                .to_string_lossy()
+                .to_string(),
+        ),
         folder_template: "{Artist}/{Album}".to_string(),
         file_template: "{TrackNumber:pad2} - {Title}".to_string(),
         artist_separator: ", ".to_string(),
@@ -443,7 +493,10 @@ async fn test_configured_download_path_respected_in_library_layout() {
         max_path_length: active_settings.max_path_length as usize,
     };
 
-    let layout = LibraryLayout::with_config(std::path::Path::new(&active_settings.download_path), layout_config);
+    let layout = LibraryLayout::with_config(
+        std::path::Path::new(&active_settings.download_path),
+        layout_config,
+    );
 
     let ctx = TrackLayoutContext {
         artist: "Pink Floyd",
@@ -462,9 +515,14 @@ async fn test_configured_download_path_respected_in_library_layout() {
     };
 
     let resolved_path = layout.resolve_track_path(&ctx);
-    assert!(resolved_path.starts_with(&custom_library_dir), "Track path must be inside configured custom directory");
+    assert!(
+        resolved_path.starts_with(&custom_library_dir),
+        "Track path must be inside configured custom directory"
+    );
     assert!(resolved_path.to_string_lossy().contains("Pink Floyd"));
-    assert!(resolved_path.to_string_lossy().contains("The Dark Side of the Moon"));
+    assert!(resolved_path
+        .to_string_lossy()
+        .contains("The Dark Side of the Moon"));
     assert!(resolved_path.to_string_lossy().contains("06 - Money.flac"));
 }
 
@@ -492,7 +550,10 @@ async fn test_effective_paths_deterministic_priority_and_compatibility() {
         .unwrap();
     let eff_legacy_1 = resolve_effective_download_paths(&pool).await.unwrap();
     assert_eq!(eff_legacy_1.library_root, "C:/LegacyMusicPath");
-    let exp_stg_1 = std::path::Path::new("C:/LegacyMusicPath").join(".staging").to_string_lossy().to_string();
+    let exp_stg_1 = std::path::Path::new("C:/LegacyMusicPath")
+        .join(".staging")
+        .to_string_lossy()
+        .to_string();
     assert_eq!(eff_legacy_1.staging_root, exp_stg_1);
 
     // 3. Priority: `dl_download_path` takes precedence over legacy `download_path`
@@ -510,11 +571,16 @@ async fn test_effective_paths_deterministic_priority_and_compatibility() {
         .unwrap();
     let eff_canonical = resolve_effective_download_paths(&pool).await.unwrap();
     assert_eq!(eff_canonical.library_root, "D:/CanonicalLibrary");
-    let exp_stg_canon = std::path::Path::new("D:/CanonicalLibrary").join(".staging").to_string_lossy().to_string();
+    let exp_stg_canon = std::path::Path::new("D:/CanonicalLibrary")
+        .join(".staging")
+        .to_string_lossy()
+        .to_string();
     assert_eq!(eff_canonical.staging_root, exp_stg_canon);
 
     // 5. Anti-drift Guard: Saving blank or stale legacy key does NOT wipe canonical configured path
-    perform_save_setting(&pool, "dl_download_path".to_string(), "".to_string()).await.unwrap();
+    perform_save_setting(&pool, "dl_download_path".to_string(), "".to_string())
+        .await
+        .unwrap();
     let eff_preserved = resolve_effective_download_paths(&pool).await.unwrap();
     assert_eq!(eff_preserved.library_root, "D:/CanonicalLibrary");
 }
@@ -553,7 +619,9 @@ async fn test_microsd_or_custom_path_staging_derivation_and_space() {
         free_space_bytes: None,
     };
 
-    let saved = perform_save_download_settings(&state, settings).await.unwrap();
+    let saved = perform_save_download_settings(&state, settings)
+        .await
+        .unwrap();
     assert_eq!(saved.download_path, custom_target_str);
     assert_eq!(saved.library_root, Some(custom_target_str.clone()));
     let expected_staging = custom_target.join(".staging").to_string_lossy().to_string();
@@ -578,7 +646,9 @@ async fn test_unmounted_drive_path_status_detection() {
     } else {
         "/mnt/nonexistent_drive_unmounted_volume/MusicLibrary".to_string()
     };
-    let res = validate_directory_path(unmounted_path.clone()).await.unwrap();
+    let res = validate_directory_path(unmounted_path.clone())
+        .await
+        .unwrap();
     assert!(!res.valid);
     assert!(!res.drive_mounted || !res.exists);
     assert!(res.error_message.is_some());
@@ -602,14 +672,21 @@ async fn test_batch_health_check_reports_effective_download_and_staging_paths() 
         .expect("Health check must succeed");
 
     assert_eq!(health.effective_download_path, custom_target_str);
-    assert_eq!(health.effective_staging_path, custom_target.join(".staging").to_string_lossy().to_string());
+    assert_eq!(
+        health.effective_staging_path,
+        custom_target.join(".staging").to_string_lossy().to_string()
+    );
     assert!(health.healthy);
 }
 
 #[tokio::test]
 async fn test_save_download_settings_synchronizes_all_legacy_keys() {
     let (state, pool, temp_dir) = setup_test_app_state(2).await;
-    let new_path = temp_dir.path().join("SyncedTarget").to_string_lossy().to_string();
+    let new_path = temp_dir
+        .path()
+        .join("SyncedTarget")
+        .to_string_lossy()
+        .to_string();
 
     let settings = DownloadSettingsDto {
         download_path: new_path.clone(),
@@ -638,17 +715,31 @@ async fn test_save_download_settings_synchronizes_all_legacy_keys() {
         free_space_bytes: None,
     };
 
-    let _ = perform_save_download_settings(&state, settings).await.unwrap();
+    let _ = perform_save_download_settings(&state, settings)
+        .await
+        .unwrap();
 
     // Verify all keys in SQLite directly
-    let base_folder: String = sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
-        .fetch_one(&pool).await.unwrap();
-    let dl_download_path: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_download_path'")
-        .fetch_one(&pool).await.unwrap();
-    let download_dir: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_dir'")
-        .fetch_one(&pool).await.unwrap();
-    let download_path: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_path'")
-        .fetch_one(&pool).await.unwrap();
+    let base_folder: String =
+        sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let dl_download_path: String =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_download_path'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let download_dir: String =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_dir'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let download_path: String =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_path'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(base_folder, new_path);
     assert_eq!(dl_download_path, new_path);
@@ -662,17 +753,29 @@ async fn test_concurrency_persistence_and_restart_simulation() {
 
     for target_concurrency in [1usize, 3usize, 5usize] {
         // 1. Set concurrency via perform_set_max_concurrent_downloads
-        let res = perform_set_max_concurrent_downloads(&state, target_concurrency).await.unwrap();
+        let res = perform_set_max_concurrent_downloads(&state, target_concurrency)
+            .await
+            .unwrap();
         assert_eq!(res, target_concurrency);
         assert_eq!(state.worker_state.max_concurrent(), target_concurrency);
 
         // 2. Verify all DB persistence tables match
-        let sync_val: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
-            .fetch_one(&pool).await.unwrap();
-        let adv_val: i32 = sqlx::query_scalar("SELECT max_concurrent_downloads FROM advanced_settings WHERE id = 1")
-            .fetch_one(&pool).await.unwrap();
-        let kv_val: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-            .fetch_one(&pool).await.unwrap();
+        let sync_val: i32 =
+            sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let adv_val: i32 = sqlx::query_scalar(
+            "SELECT max_concurrent_downloads FROM advanced_settings WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let kv_val: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         assert_eq!(sync_val as usize, target_concurrency);
         assert_eq!(adv_val as usize, target_concurrency);
@@ -680,7 +783,10 @@ async fn test_concurrency_persistence_and_restart_simulation() {
 
         // 3. Verify get_download_settings matches
         let settings = perform_get_download_settings(&state).await.unwrap();
-        assert_eq!(settings.max_concurrent_downloads as usize, target_concurrency);
+        assert_eq!(
+            settings.max_concurrent_downloads as usize,
+            target_concurrency
+        );
 
         // 4. Simulate App Restart (re-loading persisted max_concurrent from SQLite)
         let loaded_after_restart: usize = {
@@ -699,7 +805,10 @@ async fn test_concurrency_persistence_and_restart_simulation() {
             val.map(|v| v.max(1) as usize).unwrap_or(2)
         };
 
-        assert_eq!(loaded_after_restart, target_concurrency, "Restored concurrency after simulated restart must match target");
+        assert_eq!(
+            loaded_after_restart, target_concurrency,
+            "Restored concurrency after simulated restart must match target"
+        );
 
         let restarted_worker = DownloadWorkerState::new(loaded_after_restart);
         assert_eq!(restarted_worker.max_concurrent(), target_concurrency);
@@ -712,11 +821,19 @@ async fn test_resolve_effective_download_paths_respects_temp_dir_configuration()
 
     // 1. Initial resolution without temp_dir -> defaults to {canonical_root}/.staging
     let eff = resolve_effective_download_paths(&pool).await.unwrap();
-    let expected_default_staging = temp_dir.path().join(".staging").to_string_lossy().to_string();
+    let expected_default_staging = temp_dir
+        .path()
+        .join(".staging")
+        .to_string_lossy()
+        .to_string();
     assert_eq!(eff.staging_root, expected_default_staging);
 
     // 2. Set generic temp_dir
-    let custom_temp_1 = temp_dir.path().join("CustomTemp1").to_string_lossy().to_string();
+    let custom_temp_1 = temp_dir
+        .path()
+        .join("CustomTemp1")
+        .to_string_lossy()
+        .to_string();
     sqlx::query("INSERT INTO settings (key, value) VALUES ('temp_dir', ?)")
         .bind(&custom_temp_1)
         .execute(&pool)
@@ -727,7 +844,11 @@ async fn test_resolve_effective_download_paths_respects_temp_dir_configuration()
     assert_eq!(eff_temp1.staging_root, custom_temp_1);
 
     // 3. Set dl_temp_dir -> should take priority over temp_dir
-    let custom_dl_temp = temp_dir.path().join("CustomDlTemp").to_string_lossy().to_string();
+    let custom_dl_temp = temp_dir
+        .path()
+        .join("CustomDlTemp")
+        .to_string_lossy()
+        .to_string();
     sqlx::query("INSERT INTO settings (key, value) VALUES ('dl_temp_dir', ?)")
         .bind(&custom_dl_temp)
         .execute(&pool)
@@ -753,7 +874,8 @@ async fn test_resolve_effective_download_paths_respects_temp_dir_configuration()
         .unwrap();
 
     let eff_canonical_fallback = resolve_effective_download_paths(&pool).await.unwrap();
-    assert_eq!(eff_canonical_fallback.staging_root, expected_default_staging);
+    assert_eq!(
+        eff_canonical_fallback.staging_root,
+        expected_default_staging
+    );
 }
-
-

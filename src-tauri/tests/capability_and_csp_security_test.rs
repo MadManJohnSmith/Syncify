@@ -90,7 +90,8 @@ fn test_tauri_conf_with_global_tauri_disabled() {
     let conf_path = get_src_tauri_dir().join("tauri.conf.json");
     let content = fs::read_to_string(&conf_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", conf_path.display(), e));
-    let json: Value = serde_json::from_str(&content).expect("Valid JSON expected in tauri.conf.json");
+    let json: Value =
+        serde_json::from_str(&content).expect("Valid JSON expected in tauri.conf.json");
 
     let with_global_tauri = json
         .get("app")
@@ -109,7 +110,8 @@ fn test_tauri_conf_csp_connect_src_no_localhost_wildcards() {
     let conf_path = get_src_tauri_dir().join("tauri.conf.json");
     let content = fs::read_to_string(&conf_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", conf_path.display(), e));
-    let json: Value = serde_json::from_str(&content).expect("Valid JSON expected in tauri.conf.json");
+    let json: Value =
+        serde_json::from_str(&content).expect("Valid JSON expected in tauri.conf.json");
 
     let csp = json
         .get("app")
@@ -119,7 +121,11 @@ fn test_tauri_conf_csp_connect_src_no_localhost_wildcards() {
         .expect("Expected app.security.csp string in tauri.conf.json");
 
     // Parse CSP directives
-    let directives: Vec<&str> = csp.split(';').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let directives: Vec<&str> = csp
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
 
     let connect_src = directives
         .iter()
@@ -145,7 +151,10 @@ fn test_tauri_conf_csp_connect_src_no_localhost_wildcards() {
 
     // Must strictly include necessary origins
     let tokens: Vec<&str> = connect_src.split_whitespace().collect();
-    assert!(tokens.contains(&"'self'"), "connect-src must include 'self'");
+    assert!(
+        tokens.contains(&"'self'"),
+        "connect-src must include 'self'"
+    );
     assert!(tokens.contains(&"ipc:"), "connect-src must include ipc:");
     assert!(
         tokens.contains(&"http://ipc.localhost"),
@@ -180,7 +189,8 @@ fn test_tauri_conf_csp_secure_baseline_directives() {
     let conf_path = get_src_tauri_dir().join("tauri.conf.json");
     let content = fs::read_to_string(&conf_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", conf_path.display(), e));
-    let json: Value = serde_json::from_str(&content).expect("Valid JSON expected in tauri.conf.json");
+    let json: Value =
+        serde_json::from_str(&content).expect("Valid JSON expected in tauri.conf.json");
 
     let csp = json
         .get("app")
@@ -189,7 +199,11 @@ fn test_tauri_conf_csp_secure_baseline_directives() {
         .and_then(Value::as_str)
         .expect("Expected app.security.csp string in tauri.conf.json");
 
-    let directives: Vec<&str> = csp.split(';').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let directives: Vec<&str> = csp
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
 
     // 1. default-src 'self'
     let default_src = directives
@@ -238,7 +252,8 @@ fn test_tauri_conf_plugin_shell_scope_hardening() {
     let conf_path = get_src_tauri_dir().join("tauri.conf.json");
     let content = fs::read_to_string(&conf_path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", conf_path.display(), e));
-    let json: Value = serde_json::from_str(&content).expect("Valid JSON expected in tauri.conf.json");
+    let json: Value =
+        serde_json::from_str(&content).expect("Valid JSON expected in tauri.conf.json");
 
     let open_validator = json
         .get("plugins")

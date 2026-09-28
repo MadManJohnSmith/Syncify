@@ -26,8 +26,7 @@ fn test_gitignore_contains_bundle_and_backup_rules() {
         gitignore_path
     );
 
-    let content = std::fs::read_to_string(&gitignore_path)
-        .expect("Failed to read .gitignore");
+    let content = std::fs::read_to_string(&gitignore_path).expect("Failed to read .gitignore");
 
     let lines: Vec<&str> = content.lines().map(|l| l.trim()).collect();
 
@@ -55,8 +54,7 @@ fn test_gitignore_contains_bundle_and_backup_rules() {
 #[test]
 fn test_no_bundle_files_in_repository_root() {
     let repo_root = get_repo_root();
-    let entries = std::fs::read_dir(&repo_root)
-        .expect("Failed to read repo root directory");
+    let entries = std::fs::read_dir(&repo_root).expect("Failed to read repo root directory");
 
     let mut residual_bundles = Vec::new();
 
@@ -110,7 +108,10 @@ fn test_git_check_ignore_simulates_bundle_and_backup_rejection() {
         (".dummy.bundle", ".*.bundle"),
         ("src-tauri/temp.bundle", "*.bundle"),
         ("dummy.db.backup", "*.db.backup"),
-        ("syncify_backup_pre_repair_TASK-151.db", "syncify_backup_*.db"),
+        (
+            "syncify_backup_pre_repair_TASK-151.db",
+            "syncify_backup_*.db",
+        ),
     ];
 
     for (target_path, expected_rule) in test_cases {

@@ -16,7 +16,9 @@
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::path::Path;
 use syncify_core_domain::metadata::{parse_credits_string, sanitize_artist_name};
-use syncify_core_domain::quality::{classify_audio_tier, AudioTier, QualityDecisionKind, QualityPolicy};
+use syncify_core_domain::quality::{
+    classify_audio_tier, AudioTier, QualityDecisionKind, QualityPolicy,
+};
 use syncify_tauri_lib::commands::{
     check_queue_guardrail, perform_clear_download_history, perform_reset_download_history,
     upsert_playlist_and_source, QueueGuardrailMatch,
@@ -70,7 +72,10 @@ fn create_synthetic_flac(path: &Path) {
         ])
         .output()
         .expect("ffmpeg FLAC creation must execute");
-    assert!(status.status.success(), "ffmpeg FLAC synthesis must succeed");
+    assert!(
+        status.status.success(),
+        "ffmpeg FLAC synthesis must succeed"
+    );
 }
 
 /// Minimal valid synthetic JPEG bytes (SOI + APP0 + DQT + SOF0 + DHT + SOS + EOI)
@@ -207,7 +212,10 @@ async fn test_02_c1_playlist_gapless_multi_position_and_unique_constraint() {
     .bind(0)
     .execute(&pool)
     .await;
-    assert!(res1.is_ok(), "Initial track insertion at position 0 must succeed");
+    assert!(
+        res1.is_ok(),
+        "Initial track insertion at position 0 must succeed"
+    );
 
     // 2. Insert the SAME track 1 at position 1 (valid for repeats / multi-appearance in playlist)
     let res2 = sqlx::query(
@@ -337,13 +345,15 @@ async fn test_03_c2_playlist_sources_traceability_and_dedup() {
     );
 
     // Verify playlists count for this account is exactly 2
-    let (pl_count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM playlists WHERE account_id = ?")
-            .bind(acc_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(pl_count, 2, "Playlists table must contain exactly 2 playlists");
+    let (pl_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlists WHERE account_id = ?")
+        .bind(acc_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        pl_count, 2,
+        "Playlists table must contain exactly 2 playlists"
+    );
 
     // Verify each playlist has its own record in playlist_sources without collisions
     let (sources_count1,): (i64,) =
@@ -532,8 +542,10 @@ async fn test_05_c4_immutability_of_downloads_ledger_on_queue_purge() {
         .await
         .unwrap();
 
-    let queue_count_before: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM download_queue").fetch_one(&pool).await.unwrap();
+    let queue_count_before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(queue_count_before.0, 3);
 
     // 1. Perform clear_download_history
@@ -543,8 +555,10 @@ async fn test_05_c4_immutability_of_downloads_ledger_on_queue_purge() {
     assert_eq!(affected, 3);
 
     // Assert download_queue is emptied
-    let queue_count_after: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM download_queue").fetch_one(&pool).await.unwrap();
+    let queue_count_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM download_queue")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(queue_count_after.0, 0);
 
     // Assert downloads ledger remains 100% intact
@@ -554,7 +568,10 @@ async fn test_05_c4_immutability_of_downloads_ledger_on_queue_purge() {
             .fetch_optional(&pool)
             .await
             .unwrap();
-    assert!(dl_row.is_some(), "Downloads ledger entry must NOT be deleted by clear_history");
+    assert!(
+        dl_row.is_some(),
+        "Downloads ledger entry must NOT be deleted by clear_history"
+    );
     assert_eq!(dl_row.unwrap().1, "/storage/library/track.flac");
 
     // 2. Insert new queue item and test perform_reset_download_history
@@ -609,11 +626,13 @@ async fn test_06_c5_clean_artists_and_roles_in_track_credits() {
     // Persist cleanly into DB as done by EnrichmentEngine
     let mut tx = pool.begin().await.unwrap();
     for (p_name, p_role) in parsed {
-        let p_art_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-            .bind(&p_name)
-            .fetch_optional(&mut *tx)
-            .await
-            .unwrap()
+        let p_art_id: i64 = match sqlx::query_scalar(
+            "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1",
+        )
+        .bind(&p_name)
+        .fetch_optional(&mut *tx)
+        .await
+        .unwrap()
         {
             Some(id) => id,
             None => {
@@ -629,7 +648,7 @@ async fn test_06_c5_clean_artists_and_roles_in_track_credits() {
         };
 
         sqlx::query(
-            "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
+            "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)",
         )
         .bind(t_id)
         .bind(p_art_id)
@@ -641,11 +660,12 @@ async fn test_06_c5_clean_artists_and_roles_in_track_credits() {
     tx.commit().await.unwrap();
 
     // 1. Assert NO artists contain '\r' or role prefix in the artists table
-    let corrupt_count: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM artists WHERE name LIKE '%\r%' OR name LIKE 'Piano - %'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let corrupt_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM artists WHERE name LIKE '%\r%' OR name LIKE 'Piano - %'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         corrupt_count.0, 0,
         "No artist name may contain carriage returns or role prefixes"
@@ -657,14 +677,17 @@ async fn test_06_c5_clean_artists_and_roles_in_track_credits() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(gould_exists.0, 1, "Artist 'Glenn Gould' must be present cleanly");
+    assert_eq!(
+        gould_exists.0, 1,
+        "Artist 'Glenn Gould' must be present cleanly"
+    );
 
     // 3. Assert roles are properly separated in track_credits
     let roles: Vec<(String, String)> = sqlx::query_as(
         r#"
-        SELECT a.name, tc.role 
-        FROM track_credits tc 
-        JOIN artists a ON a.id = tc.artist_id 
+        SELECT a.name, tc.role
+        FROM track_credits tc
+        JOIN artists a ON a.id = tc.artist_id
         WHERE tc.track_id = ?
         ORDER BY a.name ASC
         "#,
@@ -676,7 +699,10 @@ async fn test_06_c5_clean_artists_and_roles_in_track_credits() {
 
     assert_eq!(roles.len(), 2);
     assert_eq!(roles[0], ("Glenn Gould".to_string(), "Piano".to_string()));
-    assert_eq!(roles[1], ("Yehudi Menuhin".to_string(), "Violin".to_string()));
+    assert_eq!(
+        roles[1],
+        ("Yehudi Menuhin".to_string(), "Violin".to_string())
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -709,7 +735,11 @@ fn test_07_c6_native_audio_tier_computation_and_no_downgrade() {
         Some("MP3"),
         Some("high"),
     );
-    assert_eq!(eff1, Some(AudioTier::HiRes), "Existing HiRes tier must never be degraded by lossy source");
+    assert_eq!(
+        eff1,
+        Some(AudioTier::HiRes),
+        "Existing HiRes tier must never be degraded by lossy source"
+    );
 
     // Existing lossy + incoming 16/44.1 FLAC -> promotes to Lossless
     let eff2 = EnrichmentEngine::compute_effective_audio_tier(
@@ -720,7 +750,11 @@ fn test_07_c6_native_audio_tier_computation_and_no_downgrade() {
         Some("FLAC"),
         Some("lossless"),
     );
-    assert_eq!(eff2, Some(AudioTier::Lossless), "Lossy track promoted to Lossless when CD FLAC arrives");
+    assert_eq!(
+        eff2,
+        Some(AudioTier::Lossless),
+        "Lossy track promoted to Lossless when CD FLAC arrives"
+    );
 
     // Existing lossy + incoming 24/192 FLAC -> promotes to HiRes
     let eff3 = EnrichmentEngine::compute_effective_audio_tier(
@@ -731,7 +765,11 @@ fn test_07_c6_native_audio_tier_computation_and_no_downgrade() {
         Some("FLAC"),
         Some("hires"),
     );
-    assert_eq!(eff3, Some(AudioTier::HiRes), "Lossy track promoted to HiRes when 24/192 FLAC arrives");
+    assert_eq!(
+        eff3,
+        Some(AudioTier::HiRes),
+        "Lossy track promoted to HiRes when 24/192 FLAC arrives"
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -741,15 +779,7 @@ fn test_07_c6_native_audio_tier_computation_and_no_downgrade() {
 fn test_08_c7_streaminfo_quality_shortfall_detection() {
     // Hi-Res requested ("hires"), stream resolution provides FLAC 16-bit / 44.1kHz (CD quality)
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "hires",
-        "lossless",
-        "FLAC",
-        16,
-        44100.0,
-        "tidal",
-        "tidal",
-        true,
-        false,
+        "hires", "lossless", "FLAC", 16, 44100.0, "tidal", "tidal", true, false,
     );
 
     assert_eq!(
@@ -765,7 +795,10 @@ fn test_08_c7_streaminfo_quality_shortfall_detection() {
         !decision.provider_fallback_used,
         "provider_fallback_used must be false when provider is unchanged"
     );
-    assert!(decision.reason.is_some(), "Quality shortfall must report an explanatory reason");
+    assert!(
+        decision.reason.is_some(),
+        "Quality shortfall must report an explanatory reason"
+    );
     let reason = decision.reason.unwrap();
     assert!(
         reason.contains("Quality shortfall"),
@@ -782,28 +815,32 @@ async fn test_09_m6_m7_unique_constraints_isrc_and_service_track() {
     let pool = setup_fresh_test_db().await;
 
     // 1. M6: Case-insensitive unique constraint on tracks(isrc)
-    let res_isrc_1 = sqlx::query("INSERT INTO tracks (title, isrc) VALUES ('Song A', 'USRC12345678')")
-        .execute(&pool)
-        .await;
+    let res_isrc_1 =
+        sqlx::query("INSERT INTO tracks (title, isrc) VALUES ('Song A', 'USRC12345678')")
+            .execute(&pool)
+            .await;
     assert!(res_isrc_1.is_ok());
 
-    let res_isrc_2 = sqlx::query("INSERT INTO tracks (title, isrc) VALUES ('Song B', 'usrc12345678')")
-        .execute(&pool)
-        .await;
+    let res_isrc_2 =
+        sqlx::query("INSERT INTO tracks (title, isrc) VALUES ('Song B', 'usrc12345678')")
+            .execute(&pool)
+            .await;
     assert!(
         res_isrc_2.is_err(),
         "Colliding lowercase ISRC must be rejected by idx_tracks_isrc_unique"
     );
 
     // 2. M7: UNIQUE(service_id, service_track_id) on track_sources
-    let (t1_id,): (i64,) = sqlx::query_as("INSERT INTO tracks (title) VALUES ('Source Trk 1') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    let (t2_id,): (i64,) = sqlx::query_as("INSERT INTO tracks (title) VALUES ('Source Trk 2') RETURNING id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let (t1_id,): (i64,) =
+        sqlx::query_as("INSERT INTO tracks (title) VALUES ('Source Trk 1') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let (t2_id,): (i64,) =
+        sqlx::query_as("INSERT INTO tracks (title) VALUES ('Source Trk 2') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let res_src_1 = sqlx::query(
         "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'tidal_trk_555')"
@@ -850,17 +887,22 @@ async fn test_10_m15_html_entity_decoding_in_artist_sanitization() {
         .unwrap();
 
     // Verify stored row in database
-    let stored_name: (String,) = sqlx::query_as("SELECT name FROM artists WHERE name LIKE '%SNEAKER%'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let stored_name: (String,) =
+        sqlx::query_as("SELECT name FROM artists WHERE name LIKE '%SNEAKER%'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(stored_name.0, "SNEAKER KIDS & Eli Noir");
 
-    let raw_entity_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM artists WHERE name LIKE '%&amp;%'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(raw_entity_count.0, 0, "No raw '&amp;' entities permitted in artists table");
+    let raw_entity_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM artists WHERE name LIKE '%&amp;%'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        raw_entity_count.0, 0,
+        "No raw '&amp;' entities permitted in artists table"
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -879,16 +921,28 @@ async fn test_11_m17_m18_flac_picture_preservation_without_webp() {
     // 2. Embed standard JPEG CoverFront block using metaflac
     let jpeg_bytes = create_synthetic_jpeg_bytes();
     {
-        let mut flac_tag = metaflac::Tag::read_from_path(&flac_path).expect("Read synthetic FLAC with metaflac");
-        flac_tag.add_picture("image/jpeg", metaflac::block::PictureType::CoverFront, jpeg_bytes.clone());
-        flac_tag.write_to_path(&flac_path).expect("Write JPEG PICTURE block to FLAC");
+        let mut flac_tag =
+            metaflac::Tag::read_from_path(&flac_path).expect("Read synthetic FLAC with metaflac");
+        flac_tag.add_picture(
+            "image/jpeg",
+            metaflac::block::PictureType::CoverFront,
+            jpeg_bytes.clone(),
+        );
+        flac_tag
+            .write_to_path(&flac_path)
+            .expect("Write JPEG PICTURE block to FLAC");
     }
 
     // Verify initial picture block
     {
-        let flac_tag = metaflac::Tag::read_from_path(&flac_path).expect("Read FLAC after initial tagging");
+        let flac_tag =
+            metaflac::Tag::read_from_path(&flac_path).expect("Read FLAC after initial tagging");
         let pictures: Vec<_> = flac_tag.pictures().collect();
-        assert_eq!(pictures.len(), 1, "Must contain exactly 1 picture block initially");
+        assert_eq!(
+            pictures.len(),
+            1,
+            "Must contain exactly 1 picture block initially"
+        );
         assert_eq!(pictures[0].mime_type, "image/jpeg");
         assert_eq!(pictures[0].data, jpeg_bytes);
     }
@@ -900,7 +954,8 @@ async fn test_11_m17_m18_flac_picture_preservation_without_webp() {
 
     // 4. Resolve animated cover in target_dir where the FLAC file is located
     let client = reqwest::Client::new();
-    let status = resolve_and_download_animated_cover(&client, "Test Artist", "Test Album", target_dir).await;
+    let status =
+        resolve_and_download_animated_cover(&client, "Test Artist", "Test Album", target_dir).await;
     assert!(
         matches!(status, AnimatedCoverStatus::Success(_)),
         "resolve_and_download_animated_cover must report Success with cached bytes: {:?}",
@@ -911,10 +966,14 @@ async fn test_11_m17_m18_flac_picture_preservation_without_webp() {
     let cover_webp = target_dir.join("cover.webp");
     let cover_animated_webp = target_dir.join("cover.animated.webp");
     assert!(cover_webp.exists(), "Sidecar cover.webp must exist");
-    assert!(cover_animated_webp.exists(), "Sidecar cover.animated.webp must exist");
+    assert!(
+        cover_animated_webp.exists(),
+        "Sidecar cover.animated.webp must exist"
+    );
 
     // 6. Verify FLAC file PICTURE blocks were NOT overwritten with WebP (mitigates M17/M18)
-    let flac_tag_after = metaflac::Tag::read_from_path(&flac_path).expect("Read FLAC after animated cover download");
+    let flac_tag_after =
+        metaflac::Tag::read_from_path(&flac_path).expect("Read FLAC after animated cover download");
     let pictures_after: Vec<_> = flac_tag_after.pictures().collect();
 
     assert_eq!(
@@ -923,13 +982,11 @@ async fn test_11_m17_m18_flac_picture_preservation_without_webp() {
         "FLAC must still have exactly 1 picture block, no duplicate or extra frames"
     );
     assert_eq!(
-        pictures_after[0].mime_type,
-        "image/jpeg",
+        pictures_after[0].mime_type, "image/jpeg",
         "FLAC picture block must remain 'image/jpeg', never converted to 'image/webp'"
     );
     assert_eq!(
-        pictures_after[0].data,
-        jpeg_bytes,
+        pictures_after[0].data, jpeg_bytes,
         "FLAC JPEG picture bytes must remain exactly identical"
     );
     assert!(

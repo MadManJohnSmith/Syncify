@@ -2,8 +2,8 @@
 //! Service import pagination (Apple Music), purchases persistence (Qobuz is_purchased = 1),
 //! and added_at timestamp normalization (no NULL, no 1970 epoch).
 
-use std::sync::{Arc, Mutex};
 use sqlx::sqlite::SqlitePoolOptions;
+use std::sync::{Arc, Mutex};
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::import_pagination::{
     next_apple_music_offset, normalize_added_at, parse_apple_music_next_offset,
@@ -50,7 +50,9 @@ where
 
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
             let reqs = reqs.clone();
             let handler = handler.clone();
 
@@ -109,10 +111,11 @@ async fn test_apple_music_pagination_multiple_pages_imported() {
     let pool = setup_test_db().await;
 
     // Ensure apple_music service exists
-    let apple_svc_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'apple_music'")
-        .fetch_one(&pool)
-        .await
-        .expect("apple_music service must exist");
+    let apple_svc_id: i64 =
+        sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'apple_music'")
+            .fetch_one(&pool)
+            .await
+            .expect("apple_music service must exist");
 
     let account_id: i64 = sqlx::query_scalar(
         "INSERT INTO accounts (service_id, display_name, is_active) VALUES (?, 'Apple Music User', 1) RETURNING id",
@@ -180,14 +183,21 @@ async fn test_apple_music_pagination_multiple_pages_imported() {
         } else {
             (404, r#"{"error":"not found"}"#.to_string())
         }
-    }).await;
+    })
+    .await;
 
     let client = AppleMusicClient::new("fake_dev_token".into(), "fake_user_token".into())
         .with_base_url(mock_url);
 
-    let result = client.import_library(&pool, account_id).await.expect("import_library succeeds");
+    let result = client
+        .import_library(&pool, account_id)
+        .await
+        .expect("import_library succeeds");
 
-    assert_eq!(result.imported, 3, "All 3 songs across 2 pages must be imported");
+    assert_eq!(
+        result.imported, 3,
+        "All 3 songs across 2 pages must be imported"
+    );
     assert_eq!(result.skipped, 0);
 
     // Verify pagination made 2 requests
@@ -195,22 +205,23 @@ async fn test_apple_music_pagination_multiple_pages_imported() {
     assert_eq!(reqs.len(), 2, "Expected 2 requests to follow pagination");
 
     // Verify entries in library_entries
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
-        .bind(account_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(count, 3);
 
     // Verify added_at normalization healed the 1970 date
     let dates: Vec<(String, String)> = sqlx::query_as(
         r#"
-        SELECT t.title, le.added_at 
-        FROM library_entries le 
-        JOIN tracks t ON t.id = le.track_id 
+        SELECT t.title, le.added_at
+        FROM library_entries le
+        JOIN tracks t ON t.id = le.track_id
         WHERE le.account_id = ?
         ORDER BY t.title ASC
-        "#
+        "#,
     )
     .bind(account_id)
     .fetch_all(&pool)
@@ -238,10 +249,11 @@ async fn test_qobuz_purchases_import_persists_is_purchased() {
     let _guard = DB_LOCK.lock().unwrap();
     let pool = setup_test_db().await;
 
-    let qobuz_svc_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'qobuz'")
-        .fetch_one(&pool)
-        .await
-        .expect("qobuz service must exist");
+    let qobuz_svc_id: i64 =
+        sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = 'qobuz'")
+            .fetch_one(&pool)
+            .await
+            .expect("qobuz service must exist");
 
     let account_id: i64 = sqlx::query_scalar(
         "INSERT INTO accounts (service_id, display_name, is_active) VALUES (?, 'Qobuz Purchases User', 1) RETURNING id",
@@ -304,7 +316,8 @@ async fn test_qobuz_purchases_import_persists_is_purchased() {
         } else {
             (404, r#"{"error":"not found"}"#.to_string())
         }
-    }).await;
+    })
+    .await;
 
     let client = QobuzClient::new_with_token(
         "mock_app_id".into(),
@@ -313,7 +326,10 @@ async fn test_qobuz_purchases_import_persists_is_purchased() {
     )
     .with_base_url(mock_url);
 
-    let result = client.import_purchases(&pool, account_id).await.expect("import_purchases succeeds");
+    let result = client
+        .import_purchases(&pool, account_id)
+        .await
+        .expect("import_purchases succeeds");
     assert_eq!(result.imported, 2, "2 purchased tracks must be imported");
 
     // Assert that is_purchased is strictly 1 in library_entries
@@ -327,9 +343,22 @@ async fn test_qobuz_purchases_import_persists_is_purchased() {
 
     assert_eq!(purchased_entries.len(), 2);
     for (t_id, _is_liked, is_purchased, added_at) in &purchased_entries {
-        assert_eq!(*is_purchased, 1, "Track ID {} must have is_purchased = 1", t_id);
-        assert!(!added_at.starts_with("1970"), "Track ID {} added_at cannot be 1970 epoch: {}", t_id, added_at);
-        assert!(!added_at.is_empty(), "Track ID {} added_at cannot be empty", t_id);
+        assert_eq!(
+            *is_purchased, 1,
+            "Track ID {} must have is_purchased = 1",
+            t_id
+        );
+        assert!(
+            !added_at.starts_with("1970"),
+            "Track ID {} added_at cannot be 1970 epoch: {}",
+            t_id,
+            added_at
+        );
+        assert!(
+            !added_at.is_empty(),
+            "Track ID {} added_at cannot be empty",
+            t_id
+        );
     }
 
     // Verify track_sources was inserted with 24/96 FLAC
@@ -346,16 +375,34 @@ async fn test_qobuz_purchases_import_persists_is_purchased() {
 #[test]
 fn test_pagination_and_added_at_invariants() {
     // 1. Pagination helpers
-    assert_eq!(parse_apple_music_next_offset("/v1/me/library/albums?offset=150"), Some(150));
-    assert_eq!(parse_apple_music_next_offset("/v1/me/library/playlists?offset=50&limit=25"), Some(50));
+    assert_eq!(
+        parse_apple_music_next_offset("/v1/me/library/albums?offset=150"),
+        Some(150)
+    );
+    assert_eq!(
+        parse_apple_music_next_offset("/v1/me/library/playlists?offset=50&limit=25"),
+        Some(50)
+    );
     assert_eq!(parse_apple_music_next_offset(""), None);
 
     assert_eq!(
-        next_apple_music_offset(0, 100, 100, Some("/v1/me/library/songs?offset=100"), Some(300)),
+        next_apple_music_offset(
+            0,
+            100,
+            100,
+            Some("/v1/me/library/songs?offset=100"),
+            Some(300)
+        ),
         Some(100)
     );
     assert_eq!(
-        next_apple_music_offset(100, 100, 100, Some("/v1/me/library/songs?offset=200"), Some(300)),
+        next_apple_music_offset(
+            100,
+            100,
+            100,
+            Some("/v1/me/library/songs?offset=200"),
+            Some(300)
+        ),
         Some(200)
     );
     assert_eq!(

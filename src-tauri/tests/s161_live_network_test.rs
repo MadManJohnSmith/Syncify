@@ -25,7 +25,8 @@ use syncify_tauri_lib::services::tidal_pipeline::{
 };
 
 fn compute_sha256(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(format!("{:x}", hasher.finalize()))
@@ -44,8 +45,10 @@ struct FfprobeInfo {
 fn inspect_ffprobe(path: &Path) -> Result<FfprobeInfo, String> {
     let output = Command::new("ffprobe")
         .args([
-            "-v", "error",
-            "-print_format", "json",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
             "-show_format",
             "-show_streams",
             path.to_str().ok_or("Invalid path")?,
@@ -54,7 +57,10 @@ fn inspect_ffprobe(path: &Path) -> Result<FfprobeInfo, String> {
         .map_err(|e| format!("Failed to execute ffprobe: {}", e))?;
 
     if !output.status.success() {
-        return Err(format!("ffprobe error: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(format!(
+            "ffprobe error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let json_val: serde_json::Value = serde_json::from_slice(&output.stdout)
@@ -65,7 +71,10 @@ fn inspect_ffprobe(path: &Path) -> Result<FfprobeInfo, String> {
         .and_then(|arr| arr.first())
         .ok_or("No audio streams found")?;
 
-    let codec_name = stream["codec_name"].as_str().unwrap_or("unknown").to_string();
+    let codec_name = stream["codec_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
     let sample_rate = stream["sample_rate"]
         .as_str()
         .and_then(|s| s.parse::<u32>().ok())
@@ -105,12 +114,20 @@ async fn test_s161_live_network_single_track_creation() {
 
     // 1. Decrypt runtime keychain tokens
     let crypto_init = syncify_tauri_lib::crypto::init_keychain_crypto();
-    assert!(crypto_init.is_ok(), "Keychain crypto initialization must succeed");
+    assert!(
+        crypto_init.is_ok(),
+        "Keychain crypto initialization must succeed"
+    );
 
     // 2. Connect to runtime SQLite database
     let db_path = std::env::var("SYNCIFY_AUDIT_DB_PATH").unwrap_or_else(|_| {
         dirs::data_local_dir()
-            .map(|p| p.join("com.syncify.app").join("syncify.db").to_string_lossy().to_string())
+            .map(|p| {
+                p.join("com.syncify.app")
+                    .join("syncify.db")
+                    .to_string_lossy()
+                    .to_string()
+            })
             .unwrap_or_else(|| "syncify.db".to_string())
     });
     let db_url = format!("sqlite:///{}", db_path.replace('\\', "/"));
@@ -126,7 +143,13 @@ async fn test_s161_live_network_single_track_creation() {
     let target_track_id: i64 = 57;
     let target_tidal_id: &'static str = "77624122";
 
-    let db_track_before: Option<(String, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+    let db_track_before: Option<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
         r#"
         SELECT t.title, ar.name, al.title, al.release_date, t.isrc
         FROM tracks t
@@ -134,7 +157,7 @@ async fn test_s161_live_network_single_track_creation() {
         LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'primary'
         LEFT JOIN artists ar ON ta.artist_id = ar.id
         WHERE t.id = ?
-        "#
+        "#,
     )
     .bind(target_track_id)
     .fetch_optional(&pool)
@@ -169,17 +192,29 @@ async fn test_s161_live_network_single_track_creation() {
 
     println!("   Track Sources Count (Before): {}", sources_before.len());
     for (sid, s_id, stid) in &sources_before {
-        println!("     - Source ID {}: service_id={}, service_track_id={}", sid, s_id, stid);
+        println!(
+            "     - Source ID {}: service_id={}, service_track_id={}",
+            sid, s_id, stid
+        );
     }
-    assert!(sources_before.iter().any(|(_, s, stid)| *s == 3 && stid == target_tidal_id), "Tidal track source must be mapped");
+    assert!(
+        sources_before
+            .iter()
+            .any(|(_, s, stid)| *s == 3 && stid == target_tidal_id),
+        "Tidal track source must be mapped"
+    );
 
     // PHASE 1: DB Before Audit
-    let dl_id_before: Option<i64> = sqlx::query_scalar("SELECT id FROM downloads WHERE track_id = ?")
-        .bind(target_track_id)
-        .fetch_optional(&pool)
-        .await
-        .expect("Query download before");
-    assert!(dl_id_before.is_none(), "Track 57 must NOT be downloaded before fresh test execution");
+    let dl_id_before: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM downloads WHERE track_id = ?")
+            .bind(target_track_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("Query download before");
+    assert!(
+        dl_id_before.is_none(),
+        "Track 57 must NOT be downloaded before fresh test execution"
+    );
 
     // PHASE 2: Preflight Before
     let preflight_before = evaluate_track_preflight(
@@ -196,24 +231,49 @@ async fn test_s161_live_network_single_track_creation() {
     println!("3. Preflight Decision (Before):");
     println!("   Status:           {:?}", preflight_before.status);
     println!("   Is Eligible:      {}", preflight_before.is_eligible);
-    println!("   Resolved Service: {:?}", preflight_before.resolved_service_name);
-    println!("   Resolved Svc ID:  {:?}", preflight_before.resolved_service_track_id);
-    assert_eq!(preflight_before.status, DownloadPreflightStatus::ReadyExactSource);
+    println!(
+        "   Resolved Service: {:?}",
+        preflight_before.resolved_service_name
+    );
+    println!(
+        "   Resolved Svc ID:  {:?}",
+        preflight_before.resolved_service_track_id
+    );
+    assert_eq!(
+        preflight_before.status,
+        DownloadPreflightStatus::ReadyExactSource
+    );
     assert!(preflight_before.is_eligible);
-    assert_eq!(preflight_before.resolved_service_name.as_deref(), Some("tidal"));
-    assert_eq!(preflight_before.resolved_service_track_id.as_deref(), Some(target_tidal_id));
+    assert_eq!(
+        preflight_before.resolved_service_name.as_deref(),
+        Some("tidal")
+    );
+    assert_eq!(
+        preflight_before.resolved_service_track_id.as_deref(),
+        Some(target_tidal_id)
+    );
 
     // Resolve base folder
-    let base_folder: String = sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap_or_else(|_| "./downloads_test".to_string());
+    let base_folder: String =
+        sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|_| "./downloads_test".to_string());
     println!("   Base Library Path: {}", base_folder);
 
     // Predicted path
     let predicted_filename = format!("01 - {}.flac", title_before);
-    let predicted_rel_path = format!("{}\\{} - {}\\{}", artist_before, &rel_date_before[..4], album_before, predicted_filename);
-    println!("   Predicted Path:    {}/{}", base_folder, predicted_rel_path);
+    let predicted_rel_path = format!(
+        "{}\\{} - {}\\{}",
+        artist_before,
+        &rel_date_before[..4],
+        album_before,
+        predicted_filename
+    );
+    println!(
+        "   Predicted Path:    {}/{}",
+        base_folder, predicted_rel_path
+    );
 
     // PHASE 3: Live-Network Download Execution
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -234,7 +294,10 @@ async fn test_s161_live_network_single_track_creation() {
         hint_isrc: Some(isrc_before.clone()),
     };
 
-    println!("\n4. Executing live-network download pipeline for Tidal Track {}...", target_tidal_id);
+    println!(
+        "\n4. Executing live-network download pipeline for Tidal Track {}...",
+        target_tidal_id
+    );
     let start_instant = std::time::Instant::now();
     let download_res = execute_tidal_single_track_download(&pool, request.clone(), move |ev| {
         let mut list = events_clone.lock().unwrap();
@@ -243,8 +306,15 @@ async fn test_s161_live_network_single_track_creation() {
     .await;
 
     let elapsed = start_instant.elapsed();
-    println!("   Pipeline execution completed in {:.2}s", elapsed.as_secs_f64());
-    assert!(download_res.is_ok(), "Download execution must succeed: {:?}", download_res.err());
+    println!(
+        "   Pipeline execution completed in {:.2}s",
+        elapsed.as_secs_f64()
+    );
+    assert!(
+        download_res.is_ok(),
+        "Download execution must succeed: {:?}",
+        download_res.err()
+    );
 
     let res = download_res.unwrap();
     println!("5. Download Pipeline Result:");
@@ -282,7 +352,10 @@ async fn test_s161_live_network_single_track_creation() {
 
     assert_eq!(dl_trk_id, target_track_id);
     assert_eq!(dl_fmt, "FLAC");
-    assert!(dl_size > 0, "Downloads row file_size_bytes must be positive");
+    assert!(
+        dl_size > 0,
+        "Downloads row file_size_bytes must be positive"
+    );
     assert_eq!(dl_meta_comp, 100);
 
     // Verify absence of ghost tracks for this download
@@ -292,7 +365,11 @@ async fn test_s161_live_network_single_track_creation() {
         .fetch_one(&pool)
         .await
         .unwrap_or(0);
-    assert_eq!(ghost_tracks_count, 0, "No ghost track must be created for Tidal ID {}", target_tidal_id);
+    assert_eq!(
+        ghost_tracks_count, 0,
+        "No ghost track must be created for Tidal ID {}",
+        target_tidal_id
+    );
 
     // Verify absence of duplicate track_sources
     let tidal_sources_count: i64 = sqlx::query_scalar(
@@ -302,7 +379,10 @@ async fn test_s161_live_network_single_track_creation() {
     .fetch_one(&pool)
     .await
     .unwrap_or(0);
-    assert_eq!(tidal_sources_count, 1, "Exactly one Tidal source row must exist for track 57");
+    assert_eq!(
+        tidal_sources_count, 1,
+        "Exactly one Tidal source row must exist for track 57"
+    );
 
     // PHASE 5: Preflight After Audit
     let preflight_after = evaluate_track_preflight(
@@ -319,18 +399,26 @@ async fn test_s161_live_network_single_track_creation() {
     println!("7. Preflight Decision (After):");
     println!("   Status:           {:?}", preflight_after.status);
     println!("   Is Eligible:      {}", preflight_after.is_eligible);
-    assert_eq!(preflight_after.status, DownloadPreflightStatus::AlreadyDownloaded);
+    assert_eq!(
+        preflight_after.status,
+        DownloadPreflightStatus::AlreadyDownloaded
+    );
     assert!(!preflight_after.is_eligible);
 
     // PHASE 6: Physical File and Tag Audit
     let final_path = PathBuf::from(&res.file_path);
-    assert!(final_path.exists(), "Final audio file must exist on disk at {:?}", final_path);
+    assert!(
+        final_path.exists(),
+        "Final audio file must exist on disk at {:?}",
+        final_path
+    );
     assert!(final_path.is_file(), "Final path must be a regular file");
 
     let file_bytes = std::fs::read(&final_path).expect("Read final audio file");
     let file_size = file_bytes.len();
     let file_sha256 = compute_sha256(&final_path).expect("Compute file SHA256");
-    let audio_payload_hash = extract_audio_content_hash_from_bytes(&file_bytes).expect("Extract audio payload hash");
+    let audio_payload_hash =
+        extract_audio_content_hash_from_bytes(&file_bytes).expect("Extract audio payload hash");
 
     println!("\n8. Physical File & Hash Verification:");
     println!("   Path:               {:?}", final_path);
@@ -346,14 +434,33 @@ async fn test_s161_live_network_single_track_creation() {
     println!("   Bit Depth:   {:?} bits", ffprobe.bits_per_raw_sample);
     println!("   Channels:    {}", ffprobe.channels);
     println!("   Duration:    {:.2}s", ffprobe.duration);
-    println!("   Tags:\n{}", serde_json::to_string_pretty(&ffprobe.tags).unwrap());
+    println!(
+        "   Tags:\n{}",
+        serde_json::to_string_pretty(&ffprobe.tags).unwrap()
+    );
 
     // Strict Stop-Conditions Checks
-    assert_eq!(ffprobe.codec_name, "flac", "Strict lossless FLAC must be downloaded");
-    assert!(!res.file_path.contains("Unknown Artist"), "Path must NOT contain Unknown Artist");
-    assert!(!res.file_path.contains("Unknown Album"), "Path must NOT contain Unknown Album");
-    assert!(!res.file_path.contains("Tidal Track "), "Path must NOT contain Tidal Track placeholder");
-    assert_eq!(res.track_id, target_tidal_id.parse::<i64>().unwrap(), "Response must reference Tidal track ID");
+    assert_eq!(
+        ffprobe.codec_name, "flac",
+        "Strict lossless FLAC must be downloaded"
+    );
+    assert!(
+        !res.file_path.contains("Unknown Artist"),
+        "Path must NOT contain Unknown Artist"
+    );
+    assert!(
+        !res.file_path.contains("Unknown Album"),
+        "Path must NOT contain Unknown Album"
+    );
+    assert!(
+        !res.file_path.contains("Tidal Track "),
+        "Path must NOT contain Tidal Track placeholder"
+    );
+    assert_eq!(
+        res.track_id,
+        target_tidal_id.parse::<i64>().unwrap(),
+        "Response must reference Tidal track ID"
+    );
 
     // Verify staging directory is clean
     let staging_path = PathBuf::from(&base_folder).join(".staging");
@@ -361,7 +468,10 @@ async fn test_s161_live_network_single_track_creation() {
         let staging_entries = std::fs::read_dir(&staging_path)
             .map(|rd| rd.filter_map(|e| e.ok()).count())
             .unwrap_or(0);
-        println!("10. Staging Directory Status: {} remaining files", staging_entries);
+        println!(
+            "10. Staging Directory Status: {} remaining files",
+            staging_entries
+        );
         assert_eq!(staging_entries, 0, "Staging directory must be clean");
     }
 
@@ -511,9 +621,11 @@ async fn test_s161_live_network_single_track_creation() {
     });
     writeln!(ndjson_file, "{}", serde_json::to_string(&line8).unwrap()).unwrap();
 
-    println!("\n11. NDJSON Evidence successfully written to: {:?}", ndjson_path);
+    println!(
+        "\n11. NDJSON Evidence successfully written to: {:?}",
+        ndjson_path
+    );
     println!("================================================================================");
     println!("       S161: LIVE NETWORK TEST PASSED 100% WITH ZERO ANOMALIES                ");
     println!("================================================================================");
 }
-

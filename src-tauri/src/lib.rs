@@ -15,9 +15,9 @@ pub mod tray;
 pub mod worker;
 
 use db::DbPool;
+pub use enrichment_worker::EnrichmentWorkerState;
 use std::sync::Arc;
 use worker::DownloadWorkerState;
-pub use enrichment_worker::EnrichmentWorkerState;
 
 /// Application state shared across commands
 pub struct AppState {

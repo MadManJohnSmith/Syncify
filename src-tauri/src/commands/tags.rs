@@ -30,13 +30,12 @@ async fn resolve_track_audio_path(
     state: &State<'_, crate::AppState>,
     track_id: i64,
 ) -> Result<(String, String), String> {
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT file_path, file_format FROM downloads WHERE track_id = ? LIMIT 1",
-    )
-    .bind(track_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT file_path, file_format FROM downloads WHERE track_id = ? LIMIT 1")
+            .bind(track_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
 
     match row {
         Some((path, format)) => Ok((path, format.unwrap_or_else(|| "FLAC".to_string()))),
@@ -64,34 +63,35 @@ pub async fn read_track_tags(
     }
 
     // metaflac is blocking file IO; keep the async runtime free.
-    let snapshot = tauri::async_runtime::spawn_blocking(move || -> Result<TrackTagsSnapshot, String> {
-        let tag = metaflac::Tag::read_from_path(&file_path)
-            .map_err(|e| format!("No se pudo leer el archivo FLAC: {}", e))?;
+    let snapshot =
+        tauri::async_runtime::spawn_blocking(move || -> Result<TrackTagsSnapshot, String> {
+            let tag = metaflac::Tag::read_from_path(&file_path)
+                .map_err(|e| format!("No se pudo leer el archivo FLAC: {}", e))?;
 
-        let mut all_tags = BTreeMap::new();
-        if let Some(comments) = tag.vorbis_comments() {
-            for (key, values) in comments.comments.iter() {
-                all_tags.insert(key.to_uppercase(), values.clone());
+            let mut all_tags = BTreeMap::new();
+            if let Some(comments) = tag.vorbis_comments() {
+                for (key, values) in comments.comments.iter() {
+                    all_tags.insert(key.to_uppercase(), values.clone());
+                }
             }
-        }
 
-        let (has_cover, cover_mime) = tag
-            .pictures()
-            .next()
-            .map(|p| (true, Some(p.mime_type.clone())))
-            .unwrap_or((false, None));
+            let (has_cover, cover_mime) = tag
+                .pictures()
+                .next()
+                .map(|p| (true, Some(p.mime_type.clone())))
+                .unwrap_or((false, None));
 
-        Ok(TrackTagsSnapshot {
-            track_id,
-            file_path,
-            file_format,
-            all_tags,
-            has_cover,
-            cover_mime,
+            Ok(TrackTagsSnapshot {
+                track_id,
+                file_path,
+                file_format,
+                all_tags,
+                has_cover,
+                cover_mime,
+            })
         })
-    })
-    .await
-    .map_err(|e| format!("join error: {}", e))??;
+        .await
+        .map_err(|e| format!("join error: {}", e))??;
 
     Ok(snapshot)
 }
@@ -109,8 +109,10 @@ async fn read_tags_via_ffprobe(
 ) -> Result<TrackTagsSnapshot, String> {
     let output = crate::cmd_utils::create_tokio_command("ffprobe")
         .args([
-            "-v", "quiet",
-            "-print_format", "json",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
             "-show_format",
             &file_path,
         ])
@@ -126,8 +128,8 @@ async fn read_tags_via_ffprobe(
         ));
     }
 
-    let parsed: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|e| format!("ffprobe JSON inválido: {}", e))?;
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("ffprobe JSON inválido: {}", e))?;
 
     let mut all_tags = BTreeMap::new();
     if let Some(tags) = parsed.pointer("/format/tags").and_then(|t| t.as_object()) {
@@ -159,26 +161,46 @@ pub struct TagEditPayload {
     pub title: String,
     pub artist: String,
     pub album: String,
-    #[serde(default)] pub album_artist: Option<String>,
-    #[serde(default)] pub composer: Option<String>,
-    #[serde(default)] pub genre: Option<String>,
-    #[serde(default)] pub style: Option<String>,
-    #[serde(default)] pub mood: Option<String>,
-    #[serde(default)] pub grouping: Option<String>,
-    #[serde(default)] pub language: Option<String>,
-    #[serde(default)] pub copyright: Option<String>,
-    #[serde(default)] pub label: Option<String>,
-    #[serde(default)] pub catalog_number: Option<String>,
-    #[serde(default)] pub isrc: Option<String>,
-    #[serde(default)] pub release_year: Option<String>,
-    #[serde(default)] pub comment: Option<String>,
-    #[serde(default)] pub track_number: Option<u32>,
-    #[serde(default)] pub track_total: Option<u32>,
-    #[serde(default)] pub disc_number: Option<u32>,
-    #[serde(default)] pub disc_total: Option<u32>,
-    #[serde(default)] pub bpm: Option<u32>,
-    #[serde(default)] pub initial_key: Option<String>,
-    #[serde(default)] pub artists: Option<Vec<String>>,
+    #[serde(default)]
+    pub album_artist: Option<String>,
+    #[serde(default)]
+    pub composer: Option<String>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    #[serde(default)]
+    pub style: Option<String>,
+    #[serde(default)]
+    pub mood: Option<String>,
+    #[serde(default)]
+    pub grouping: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub copyright: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub catalog_number: Option<String>,
+    #[serde(default)]
+    pub isrc: Option<String>,
+    #[serde(default)]
+    pub release_year: Option<String>,
+    #[serde(default)]
+    pub comment: Option<String>,
+    #[serde(default)]
+    pub track_number: Option<u32>,
+    #[serde(default)]
+    pub track_total: Option<u32>,
+    #[serde(default)]
+    pub disc_number: Option<u32>,
+    #[serde(default)]
+    pub disc_total: Option<u32>,
+    #[serde(default)]
+    pub bpm: Option<u32>,
+    #[serde(default)]
+    pub initial_key: Option<String>,
+    #[serde(default)]
+    pub artists: Option<Vec<String>>,
 }
 
 impl From<TagEditPayload> for syncify_flac_writer::FlacMetadata {

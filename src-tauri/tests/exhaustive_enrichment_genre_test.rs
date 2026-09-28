@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
-use syncify_metadata_domain::{fuse_genres, format_fused_genres};
+use syncify_metadata_domain::{format_fused_genres, fuse_genres};
 use syncify_tauri_lib::services::enrichment::{EnrichmentEngine, OriginTrackMetadata};
 use syncify_tauri_lib::services::mp4_writer::{apply_and_verify_mp4_tags, Mp4Metadata};
 use tempfile::TempDir;
@@ -22,11 +22,9 @@ fn create_minimal_flac(path: &Path) {
     let streaminfo_header = [0x00, 0x00, 0x00, 0x22];
     file.write_all(&streaminfo_header).unwrap();
     let streaminfo_data = [
-        0x10, 0x00, 0x10, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x0A, 0xC4, 0x42, 0xF0, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0xC4, 0x42, 0xF0, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
     ];
     file.write_all(&streaminfo_data).unwrap();
     let padding_header = [0x81, 0x00, 0x00, 0x10];
@@ -148,14 +146,16 @@ async fn test_exhaustive_enrichment_genre_multi_provider_collection() {
         ..Default::default()
     };
 
-    let enriched = engine.resolve_exhaustive_track_metadata(
-        "Édith Piaf",
-        "L'Essentiel",
-        "La Foule",
-        None,
-        &[qobuz_source, tidal_source, spotify_source],
-        false,
-    ).await;
+    let enriched = engine
+        .resolve_exhaustive_track_metadata(
+            "Édith Piaf",
+            "L'Essentiel",
+            "La Foule",
+            None,
+            &[qobuz_source, tidal_source, spotify_source],
+            false,
+        )
+        .await;
 
     let expected_genres = [
         "Chanson française",

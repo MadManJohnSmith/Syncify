@@ -1,9 +1,11 @@
 //! Tidal Downloader for `src-tauri` — re-exported from `syncify-tidal-downloader`.
 
+use crate::download::progress::{
+    DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
+};
+use crate::download::qobuz::derive_acoustid_id;
 use anyhow::{anyhow, Result};
 use std::path::Path;
-use crate::download::progress::{DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER};
-use crate::download::qobuz::derive_acoustid_id;
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 
 pub use syncify_tidal_downloader::*;
@@ -37,12 +39,32 @@ impl TidalOrchestratorExt for TidalDownloader {
                 requested_quality: Some(request.quality.clone()),
                 output_dir: Some(request.output_dir.clone()),
                 allow_lossy_fallback: Some(request.allow_fallback || !request.strict_quality),
-                hint_title: if request.track_name.is_empty() { None } else { Some(request.track_name.clone()) },
-                hint_artist: if request.artist_name.is_empty() { None } else { Some(request.artist_name.clone()) },
-                hint_album: if request.album_name.is_empty() { None } else { Some(request.album_name.clone()) },
+                hint_title: if request.track_name.is_empty() {
+                    None
+                } else {
+                    Some(request.track_name.clone())
+                },
+                hint_artist: if request.artist_name.is_empty() {
+                    None
+                } else {
+                    Some(request.artist_name.clone())
+                },
+                hint_album: if request.album_name.is_empty() {
+                    None
+                } else {
+                    Some(request.album_name.clone())
+                },
                 hint_isrc: request.isrc.clone(),
-                hint_track_number: if request.track_number > 0 { Some(request.track_number) } else { None },
-                hint_disc_number: if request.disc_number > 0 { Some(request.disc_number) } else { None },
+                hint_track_number: if request.track_number > 0 {
+                    Some(request.track_number)
+                } else {
+                    None
+                },
+                hint_disc_number: if request.disc_number > 0 {
+                    Some(request.disc_number)
+                } else {
+                    None
+                },
                 hint_release_date: request.release_date.clone(),
                 hint_track_id: request.canonical_track_id,
             };
@@ -51,24 +73,25 @@ impl TidalOrchestratorExt for TidalDownloader {
             let res = crate::services::tidal_pipeline::execute_tidal_single_track_download(
                 db,
                 req,
-                move |event| {
-                    match event.status {
-                        syncify_core_domain::events::PipelineStepStatus::Downloading => {
-                            let speed_kbps = event.speed_bytes_per_sec.map(|s| s as f64 / 1024.0).unwrap_or(0.0);
-                            PROGRESS_TRACKER.update(DownloadProgress::downloading_bytes(
-                                &item_id_clone,
-                                "tidal",
-                                event.bytes_downloaded,
-                                event.total_bytes,
-                                speed_kbps,
-                                speed_kbps,
-                            ));
-                        }
-                        syncify_core_domain::events::PipelineStepStatus::Tagging => {
-                            PROGRESS_TRACKER.update(DownloadProgress::finalizing(&item_id_clone));
-                        }
-                        _ => {}
+                move |event| match event.status {
+                    syncify_core_domain::events::PipelineStepStatus::Downloading => {
+                        let speed_kbps = event
+                            .speed_bytes_per_sec
+                            .map(|s| s as f64 / 1024.0)
+                            .unwrap_or(0.0);
+                        PROGRESS_TRACKER.update(DownloadProgress::downloading_bytes(
+                            &item_id_clone,
+                            "tidal",
+                            event.bytes_downloaded,
+                            event.total_bytes,
+                            speed_kbps,
+                            speed_kbps,
+                        ));
                     }
+                    syncify_core_domain::events::PipelineStepStatus::Tagging => {
+                        PROGRESS_TRACKER.update(DownloadProgress::finalizing(&item_id_clone));
+                    }
+                    _ => {}
                 },
             )
             .await
@@ -92,28 +115,96 @@ impl TidalOrchestratorExt for TidalDownloader {
         }
 
         // Fallback if no DB is attached
-        let (track_id, _track_title, _artist_name, _album_name) = if let Some(ref s_track_id) = request.service_track_id {
-            if let Ok(tid) = s_track_id.parse::<i64>() {
-                (tid, request.track_name.clone(), request.artist_name.clone(), request.album_name.clone())
+        let (track_id, _track_title, _artist_name, _album_name) =
+            if let Some(ref s_track_id) = request.service_track_id {
+                if let Ok(tid) = s_track_id.parse::<i64>() {
+                    (
+                        tid,
+                        request.track_name.clone(),
+                        request.artist_name.clone(),
+                        request.album_name.clone(),
+                    )
+                } else if let Some(ref isrc) = request.isrc {
+                    let t = self
+                        .search_by_isrc(isrc, (request.duration_ms / 1000) as i32)
+                        .await?;
+                    (
+                        t.id,
+                        t.title,
+                        t.artist
+                            .map(|a| a.name)
+                            .unwrap_or_else(|| request.artist_name.clone()),
+                        t.album
+                            .map(|a| a.title)
+                            .unwrap_or_else(|| request.album_name.clone()),
+                    )
+                } else {
+                    let t = self
+                        .search_by_metadata(
+                            &request.track_name,
+                            &request.artist_name,
+                            (request.duration_ms / 1000) as i32,
+                        )
+                        .await?;
+                    (
+                        t.id,
+                        t.title,
+                        t.artist
+                            .map(|a| a.name)
+                            .unwrap_or_else(|| request.artist_name.clone()),
+                        t.album
+                            .map(|a| a.title)
+                            .unwrap_or_else(|| request.album_name.clone()),
+                    )
+                }
             } else if let Some(ref isrc) = request.isrc {
-                let t = self.search_by_isrc(isrc, (request.duration_ms / 1000) as i32).await?;
-                (t.id, t.title, t.artist.map(|a| a.name).unwrap_or_else(|| request.artist_name.clone()), t.album.map(|a| a.title).unwrap_or_else(|| request.album_name.clone()))
+                let t = match self
+                    .search_by_isrc(isrc, (request.duration_ms / 1000) as i32)
+                    .await
+                {
+                    Ok(t) => t,
+                    Err(_) => {
+                        self.search_by_metadata(
+                            &request.track_name,
+                            &request.artist_name,
+                            (request.duration_ms / 1000) as i32,
+                        )
+                        .await?
+                    }
+                };
+                (
+                    t.id,
+                    t.title,
+                    t.artist
+                        .map(|a| a.name)
+                        .unwrap_or_else(|| request.artist_name.clone()),
+                    t.album
+                        .map(|a| a.title)
+                        .unwrap_or_else(|| request.album_name.clone()),
+                )
             } else {
-                let t = self.search_by_metadata(&request.track_name, &request.artist_name, (request.duration_ms / 1000) as i32).await?;
-                (t.id, t.title, t.artist.map(|a| a.name).unwrap_or_else(|| request.artist_name.clone()), t.album.map(|a| a.title).unwrap_or_else(|| request.album_name.clone()))
-            }
-        } else if let Some(ref isrc) = request.isrc {
-            let t = match self.search_by_isrc(isrc, (request.duration_ms / 1000) as i32).await {
-                Ok(t) => t,
-                Err(_) => self.search_by_metadata(&request.track_name, &request.artist_name, (request.duration_ms / 1000) as i32).await?,
+                let t = self
+                    .search_by_metadata(
+                        &request.track_name,
+                        &request.artist_name,
+                        (request.duration_ms / 1000) as i32,
+                    )
+                    .await?;
+                (
+                    t.id,
+                    t.title,
+                    t.artist
+                        .map(|a| a.name)
+                        .unwrap_or_else(|| request.artist_name.clone()),
+                    t.album
+                        .map(|a| a.title)
+                        .unwrap_or_else(|| request.album_name.clone()),
+                )
             };
-            (t.id, t.title, t.artist.map(|a| a.name).unwrap_or_else(|| request.artist_name.clone()), t.album.map(|a| a.title).unwrap_or_else(|| request.album_name.clone()))
-        } else {
-            let t = self.search_by_metadata(&request.track_name, &request.artist_name, (request.duration_ms / 1000) as i32).await?;
-            (t.id, t.title, t.artist.map(|a| a.name).unwrap_or_else(|| request.artist_name.clone()), t.album.map(|a| a.title).unwrap_or_else(|| request.album_name.clone()))
-        };
 
-        let stream_res = self.get_stream_resolution(track_id, Some(&request.quality), None, true).await?;
+        let stream_res = self
+            .get_stream_resolution(track_id, Some(&request.quality), None, true)
+            .await?;
 
         let filename = format!(
             "{:02} - {}.{}",
@@ -126,17 +217,31 @@ impl TidalOrchestratorExt for TidalDownloader {
         let output_path = output_dir.join(&filename);
 
         PROGRESS_TRACKER.update(DownloadProgress::downloading(item_id, "tidal", 0, 0));
-        self.download_audio_payload(&stream_res.url, &output_path).await?;
+        self.download_audio_payload(&stream_res.url, &output_path)
+            .await?;
 
         let header_bytes = tokio::fs::read(&output_path).await.unwrap_or_default();
-        if stream_res.codec == "FLAC" && !syncify_core_domain::byte_validators::AudioByteValidator::is_flac_magic(&header_bytes) && !syncify_core_domain::byte_validators::AudioByteValidator::is_isobmff_container(&header_bytes) {
+        if stream_res.codec == "FLAC"
+            && !syncify_core_domain::byte_validators::AudioByteValidator::is_flac_magic(
+                &header_bytes,
+            )
+            && !syncify_core_domain::byte_validators::AudioByteValidator::is_isobmff_container(
+                &header_bytes,
+            )
+        {
             let _ = tokio::fs::remove_file(&output_path).await;
-            return Err(anyhow!("Downloaded audio failed FLAC/ISOBMFF magic verification"));
+            return Err(anyhow!(
+                "Downloaded audio failed FLAC/ISOBMFF magic verification"
+            ));
         }
 
         // F3.4: Inspect STREAMINFO header from downloaded FLAC to extract true physical bit_depth and sample_rate
         let (real_bit_depth, real_sample_rate) = if stream_res.codec == "FLAC" {
-            if let Some(info) = syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(&header_bytes) {
+            if let Some(info) =
+                syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(
+                    &header_bytes,
+                )
+            {
                 (info.bits_per_sample as i32, info.sample_rate as f64)
             } else if let Ok(tag) = metaflac::Tag::read_from_path(&output_path) {
                 if let Some(info) = tag.get_streaminfo() {
@@ -203,9 +308,7 @@ impl TidalOrchestratorExt for TidalDownloader {
                 release_date: request.release_date.clone(),
                 // TASK-75: locked source identity + relational acoustic identifiers.
                 musicbrainz_track_id: request.musicbrainz_recording_id.clone(),
-                acoustid_id: acoustid_fingerprint
-                    .as_deref()
-                    .and_then(derive_acoustid_id),
+                acoustid_id: acoustid_fingerprint.as_deref().and_then(derive_acoustid_id),
                 acoustid_fingerprint,
                 audio_source: Some("Tidal".to_string()),
                 ..Default::default()

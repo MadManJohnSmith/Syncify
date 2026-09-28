@@ -67,13 +67,9 @@ async fn test_get_kv_settings_masks_sensitive_keys() {
     .await
     .unwrap();
 
-    perform_save_setting(
-        &pool,
-        "short_key".to_string(),
-        "secret".to_string(),
-    )
-    .await
-    .unwrap();
+    perform_save_setting(&pool, "short_key".to_string(), "secret".to_string())
+        .await
+        .unwrap();
 
     // 4. Non-sensitive key (should NOT be masked)
     perform_save_setting(
@@ -136,8 +132,15 @@ async fn test_get_kv_settings_masks_sensitive_keys() {
 
     // Generic auth token verification
     let token = result.get("custom_auth_token").expect("must exist");
-    assert!(token.contains("****"), "Auth token must be masked: {}", token);
-    assert!(!token.contains("secret_value"), "Auth token must not leak value");
+    assert!(
+        token.contains("****"),
+        "Auth token must be masked: {}",
+        token
+    );
+    assert!(
+        !token.contains("secret_value"),
+        "Auth token must not leak value"
+    );
 
     // Generic password verification
     let pass = result.get("admin_password").expect("must exist");
@@ -153,18 +156,15 @@ async fn test_get_kv_settings_masks_sensitive_keys() {
     assert_eq!(concurrent, "5", "Non-sensitive setting must not be masked");
 
     // Masked save protection: saving back the masked value must not corrupt the real stored value
-    perform_save_setting(
-        &pool,
-        "lastfm_api_key".to_string(),
-        lastfm.clone(),
-    )
-    .await
-    .unwrap();
-
-    let raw_db_val: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'lastfm_api_key'")
-        .fetch_one(&pool)
+    perform_save_setting(&pool, "lastfm_api_key".to_string(), lastfm.clone())
         .await
         .unwrap();
+
+    let raw_db_val: String =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'lastfm_api_key'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         raw_db_val, "b25b959554ed76058ac220b7b2e0a026",
         "Saving masked placeholder must never overwrite the original stored secret"
@@ -232,7 +232,8 @@ fn test_log_sanitization_for_session_cookies_and_headers() {
     assert!(sanitized_json.contains("[REDACTED]"));
 
     // 6. URL query parameters with session cookies
-    let raw_url = "https://api.syncify.local/stream?sp_dc=AQB_query_cookie_123&arl=query_arl_456&normal=ok";
+    let raw_url =
+        "https://api.syncify.local/stream?sp_dc=AQB_query_cookie_123&arl=query_arl_456&normal=ok";
     let sanitized_url = sanitize_log_message(raw_url);
     assert!(!sanitized_url.contains("AQB_query_cookie_123"));
     assert!(!sanitized_url.contains("query_arl_456"));

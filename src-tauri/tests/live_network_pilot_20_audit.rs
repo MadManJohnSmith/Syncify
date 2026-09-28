@@ -29,7 +29,8 @@ use tokio::sync::Semaphore;
 
 /// Helper to compute SHA-256 of physical file
 fn compute_file_sha256(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Failed to read file {:?}: {}", path, e))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(format!("{:x}", hasher.finalize()))
@@ -60,7 +61,10 @@ fn inspect_with_ffprobe(path: &Path) -> Result<FfprobeReport, String> {
         .map_err(|e| format!("Failed to execute ffprobe: {}", e))?;
 
     if !output.status.success() {
-        return Err(format!("ffprobe error: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(format!(
+            "ffprobe error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     let json_val: serde_json::Value = serde_json::from_slice(&output.stdout)
@@ -71,7 +75,10 @@ fn inspect_with_ffprobe(path: &Path) -> Result<FfprobeReport, String> {
         .and_then(|arr| arr.first())
         .ok_or("No audio stream found")?;
 
-    let codec_name = stream["codec_name"].as_str().unwrap_or("unknown").to_string();
+    let codec_name = stream["codec_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
     let sample_rate = stream["sample_rate"]
         .as_str()
         .and_then(|s| s.parse::<u32>().ok())
@@ -86,13 +93,21 @@ fn inspect_with_ffprobe(path: &Path) -> Result<FfprobeReport, String> {
     let duration_sec = stream["duration"]
         .as_str()
         .and_then(|s| s.parse::<f64>().ok())
-        .or_else(|| json_val["format"]["duration"].as_str().and_then(|s| s.parse::<f64>().ok()))
+        .or_else(|| {
+            json_val["format"]["duration"]
+                .as_str()
+                .and_then(|s| s.parse::<f64>().ok())
+        })
         .unwrap_or(0.0);
 
     let bit_rate = stream["bit_rate"]
         .as_str()
         .and_then(|s| s.parse::<u64>().ok())
-        .or_else(|| json_val["format"]["bit_rate"].as_str().and_then(|s| s.parse::<u64>().ok()));
+        .or_else(|| {
+            json_val["format"]["bit_rate"]
+                .as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+        });
 
     let mut tags = HashMap::new();
     if let Some(tags_obj) = json_val["format"]["tags"].as_object() {
@@ -170,11 +185,19 @@ async fn test_live_network_pilot_20_controlled_execution() {
 
     // 0. Verify git working tree is 100% clean and capture HEAD
     let git_status_out = Command::new("git").args(["status", "--porcelain"]).output();
-    let is_git_clean = git_status_out.as_ref().map(|o| o.stdout.is_empty()).unwrap_or(false);
+    let is_git_clean = git_status_out
+        .as_ref()
+        .map(|o| o.stdout.is_empty())
+        .unwrap_or(false);
     println!("0. Git Status Clean: {}", is_git_clean);
-    assert!(is_git_clean, "Live network audit must only execute when git working tree is completely clean");
+    assert!(
+        is_git_clean,
+        "Live network audit must only execute when git working tree is completely clean"
+    );
 
-    let initial_head = Command::new("git").args(["rev-parse", "HEAD"]).output()
+    let initial_head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     println!("   Git Commit HEAD:  {}", initial_head);
@@ -182,12 +205,20 @@ async fn test_live_network_pilot_20_controlled_execution() {
     // 1. Initialize keychain crypto
     let crypto_init = syncify_tauri_lib::crypto::init_keychain_crypto();
     println!("1. Keychain Crypto: {:?}", crypto_init);
-    assert!(crypto_init.is_ok(), "Keychain crypto initialization must succeed");
+    assert!(
+        crypto_init.is_ok(),
+        "Keychain crypto initialization must succeed"
+    );
 
     // 2. Connect to local runtime database
     let db_path = std::env::var("SYNCIFY_AUDIT_DB_PATH").unwrap_or_else(|_| {
         dirs::data_local_dir()
-            .map(|p| p.join("com.syncify.app").join("syncify.db").to_string_lossy().to_string())
+            .map(|p| {
+                p.join("com.syncify.app")
+                    .join("syncify.db")
+                    .to_string_lossy()
+                    .to_string()
+            })
             .unwrap_or_else(|| "syncify.db".to_string())
     });
     let db_url = format!("sqlite:///{}", db_path.replace('\\', "/"));
@@ -201,30 +232,43 @@ async fn test_live_network_pilot_20_controlled_execution() {
 
     // 3. Confirm active accounts
     let active_accounts: Vec<(i64, String, String)> = sqlx::query_as(
-        r#"SELECT a.id, s.name, a.display_name 
-           FROM accounts a 
-           JOIN services s ON s.id = a.service_id 
-           WHERE a.is_active = 1 AND a.credentials_invalid = 0"#
+        r#"SELECT a.id, s.name, a.display_name
+           FROM accounts a
+           JOIN services s ON s.id = a.service_id
+           WHERE a.is_active = 1 AND a.credentials_invalid = 0"#,
     )
     .fetch_all(&pool)
     .await
     .expect("Failed to query active accounts");
 
-    println!("3. Active Accounts Verified: {} account(s)", active_accounts.len());
+    println!(
+        "3. Active Accounts Verified: {} account(s)",
+        active_accounts.len()
+    );
     for (aid, sname, dname) in &active_accounts {
         println!("   - Account ID {}: {} (display: {})", aid, sname, dname);
     }
-    assert!(active_accounts.iter().any(|(_, s, _)| s == "qobuz"), "Qobuz account must be active");
-    assert!(active_accounts.iter().any(|(_, s, _)| s == "tidal"), "Tidal account must be active");
+    assert!(
+        active_accounts.iter().any(|(_, s, _)| s == "qobuz"),
+        "Qobuz account must be active"
+    );
+    assert!(
+        active_accounts.iter().any(|(_, s, _)| s == "tidal"),
+        "Tidal account must be active"
+    );
 
     // 4. Output and Staging physical paths (external location)
     let external_audit_base = dirs::data_local_dir()
         .map(|p| p.join("Syncify").join("audits"))
         .unwrap_or_else(|| std::env::temp_dir().join("syncify_audits"));
-    std::fs::create_dir_all(&external_audit_base).expect("Failed to create external audit directory");
+    std::fs::create_dir_all(&external_audit_base)
+        .expect("Failed to create external audit directory");
 
     let output_dir_str = std::env::var("SYNCIFY_AUDIT_OUTPUT_DIR").unwrap_or_else(|_| {
-        external_audit_base.join(format!("live_pilot_20_{}", &run_id[..8])).to_string_lossy().to_string()
+        external_audit_base
+            .join(format!("live_pilot_20_{}", &run_id[..8]))
+            .to_string_lossy()
+            .to_string()
     });
     let output_dir = PathBuf::from(&output_dir_str);
     std::fs::create_dir_all(&output_dir).expect("Failed to create target output directory");
@@ -241,49 +285,65 @@ async fn test_live_network_pilot_20_controlled_execution() {
            JOIN track_sources ts ON ts.track_id = t.id
            JOIN services s ON s.id = ts.service_id
            WHERE s.name = 'qobuz' AND ts.service_track_id IS NOT NULL
-           LIMIT 20"#
+           LIMIT 20"#,
     )
     .fetch_all(&pool)
     .await
     .expect("Failed to find Qobuz tracks");
-    println!("Found {} Qobuz candidate tracks: {:?}", qobuz_rows.len(), qobuz_rows);
+    println!(
+        "Found {} Qobuz candidate tracks: {:?}",
+        qobuz_rows.len(),
+        qobuz_rows
+    );
 
     let tidal_rows: Vec<(i64, String, String)> = sqlx::query_as(
         r#"SELECT DISTINCT t.id, t.title, ts.service_track_id FROM tracks t
            JOIN track_sources ts ON ts.track_id = t.id
            JOIN services s ON s.id = ts.service_id
            WHERE s.name = 'tidal' AND ts.service_track_id IS NOT NULL
-           LIMIT 20"#
+           LIMIT 20"#,
     )
     .fetch_all(&pool)
     .await
     .expect("Failed to find Tidal tracks");
-    println!("Found {} Tidal candidate tracks: {:?}", tidal_rows.len(), tidal_rows);
+    println!(
+        "Found {} Tidal candidate tracks: {:?}",
+        tidal_rows.len(),
+        tidal_rows
+    );
 
     let fallback_ids: Vec<i64> = sqlx::query_scalar(
         r#"SELECT DISTINCT t.id FROM tracks t
            JOIN track_sources ts_spot ON ts_spot.track_id = t.id AND ts_spot.service_id = 1
            JOIN track_sources ts_down ON ts_down.track_id = t.id AND ts_down.service_id IN (2, 3)
-           LIMIT 4"#
+           LIMIT 4"#,
     )
     .fetch_all(&pool)
     .await
     .unwrap_or_default();
-    println!("Found {} Fallback tracks: {:?}", fallback_ids.len(), fallback_ids);
+    println!(
+        "Found {} Fallback tracks: {:?}",
+        fallback_ids.len(),
+        fallback_ids
+    );
 
     let unmapped_ids: Vec<i64> = sqlx::query_scalar(
         r#"SELECT DISTINCT t.id FROM tracks t
            JOIN track_sources ts ON ts.track_id = t.id AND ts.service_id = 1
            WHERE NOT EXISTS (
-               SELECT 1 FROM track_sources ts2 
+               SELECT 1 FROM track_sources ts2
                WHERE ts2.track_id = t.id AND ts2.service_id IN (2, 3)
            )
-           LIMIT 2"#
+           LIMIT 2"#,
     )
     .fetch_all(&pool)
     .await
     .unwrap_or_default();
-    println!("Found {} Unmapped Spotify tracks: {:?}", unmapped_ids.len(), unmapped_ids);
+    println!(
+        "Found {} Unmapped Spotify tracks: {:?}",
+        unmapped_ids.len(),
+        unmapped_ids
+    );
 
     let qobuz_ids: Vec<i64> = qobuz_rows.iter().map(|(id, _, _)| *id).collect();
     let tidal_ids: Vec<i64> = tidal_rows.iter().map(|(id, _, _)| *id).collect();
@@ -325,7 +385,12 @@ async fn test_live_network_pilot_20_controlled_execution() {
     }
 
     // If fewer than 4 fallbacks found with multiple sources, fill from tracks with isrc
-    while targets.iter().filter(|t| t.category == "fallback_cross_service").count() < 4 {
+    while targets
+        .iter()
+        .filter(|t| t.category == "fallback_cross_service")
+        .count()
+        < 4
+    {
         if let Some(id) = qobuz_ids.get(targets.len() % qobuz_ids.len().max(1)) {
             targets.push(TrackTarget {
                 track_id: *id,
@@ -349,7 +414,11 @@ async fn test_live_network_pilot_20_controlled_execution() {
     }
 
     // Ensure exactly 20 targets
-    assert_eq!(targets.len(), 20, "Targets selection must contain exactly 20 items");
+    assert_eq!(
+        targets.len(),
+        20,
+        "Targets selection must contain exactly 20 items"
+    );
 
     // Clean previous downloads table records for test targets to ensure fresh preflight & download evaluation
     for t in &targets {
@@ -383,7 +452,7 @@ async fn test_live_network_pilot_20_controlled_execution() {
             // Fetch track metadata
             let row: Option<(String, Option<String>, Option<String>, Option<String>, Option<i64>)> = sqlx::query_as(
                 r#"
-                SELECT t.title, a.title as album, 
+                SELECT t.title, a.title as album,
                        (SELECT ar.name FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id WHERE ta.track_id = t.id LIMIT 1) as artist,
                        t.isrc, t.duration_ms
                 FROM tracks t
@@ -461,8 +530,14 @@ async fn test_live_network_pilot_20_controlled_execution() {
                 return;
             }
 
-            let effective_svc = preflight.resolved_service_name.clone().unwrap_or_else(|| "qobuz".to_string());
-            let effective_track_id = preflight.resolved_service_track_id.clone().unwrap_or_default();
+            let effective_svc = preflight
+                .resolved_service_name
+                .clone()
+                .unwrap_or_else(|| "qobuz".to_string());
+            let effective_track_id = preflight
+                .resolved_service_track_id
+                .clone()
+                .unwrap_or_default();
 
             // 2. Execute Download via Orchestrator
             let req = DownloadRequest {
@@ -504,7 +579,8 @@ async fn test_live_network_pilot_20_controlled_execution() {
                     let file_size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
                     let sha = compute_file_sha256(p).unwrap_or_default();
                     let bytes = std::fs::read(p).unwrap_or_default();
-                    let magic_valid = AudioByteValidator::is_flac_magic(&bytes) || AudioByteValidator::is_m4a_magic(&bytes);
+                    let magic_valid = AudioByteValidator::is_flac_magic(&bytes)
+                        || AudioByteValidator::is_m4a_magic(&bytes);
 
                     let ffprobe_res = inspect_with_ffprobe(p);
                     let (codec, sample_rate, bit_depth, vorbis_count) = match ffprobe_res {
@@ -517,19 +593,31 @@ async fn test_live_network_pilot_20_controlled_execution() {
                         Err(_) => ("unknown".to_string(), 0, None, 0),
                     };
 
-                    let transfer_ms = item.phase_timings.as_ref().map(|t| t.transfer_ms).unwrap_or(total_wall_ms);
-                    let throughput = item.phase_timings.as_ref().map(|t| t.throughput_mibps).unwrap_or_else(|| {
-                        if transfer_ms > 0 {
-                            (file_size as f64 / (1024.0 * 1024.0)) / (transfer_ms as f64 / 1000.0)
-                        } else {
-                            0.0
-                        }
-                    });
+                    let transfer_ms = item
+                        .phase_timings
+                        .as_ref()
+                        .map(|t| t.transfer_ms)
+                        .unwrap_or(total_wall_ms);
+                    let throughput = item
+                        .phase_timings
+                        .as_ref()
+                        .map(|t| t.throughput_mibps)
+                        .unwrap_or_else(|| {
+                            if transfer_ms > 0 {
+                                (file_size as f64 / (1024.0 * 1024.0))
+                                    / (transfer_ms as f64 / 1000.0)
+                            } else {
+                                0.0
+                            }
+                        });
 
                     // Check sidecars
                     let lrc_path = p.with_extension("lrc");
                     let has_lrc = lrc_path.exists();
-                    let cover_path = p.parent().map(|dir| dir.join("cover.jpg")).unwrap_or_default();
+                    let cover_path = p
+                        .parent()
+                        .map(|dir| dir.join("cover.jpg"))
+                        .unwrap_or_default();
                     let has_cover = cover_path.exists();
 
                     let rec = Live20TrackAuditRecord {
@@ -554,8 +642,16 @@ async fn test_live_network_pilot_20_controlled_execution() {
                         vorbis_tag_count: vorbis_count,
                         magic_bytes_valid: magic_valid,
                         tagging_verified: vorbis_count >= 5,
-                        lyrics_result: if has_lrc { "Embedded+SidecarLRC".to_string() } else { "EmbeddedOnly".to_string() },
-                        cover_result: if has_cover { "CoverJpgVerified".to_string() } else { "EmbeddedOnly".to_string() },
+                        lyrics_result: if has_lrc {
+                            "Embedded+SidecarLRC".to_string()
+                        } else {
+                            "EmbeddedOnly".to_string()
+                        },
+                        cover_result: if has_cover {
+                            "CoverJpgVerified".to_string()
+                        } else {
+                            "EmbeddedOnly".to_string()
+                        },
                         transfer_duration_ms: transfer_ms,
                         throughput_mibps: throughput,
                         sqlite_download_row: true,
@@ -565,7 +661,10 @@ async fn test_live_network_pilot_20_controlled_execution() {
                     records.lock().await.push(rec);
                 }
                 Err(e) => {
-                    println!("[Download Error] ID={:02} ({}) Error={}", target.track_id, title, e);
+                    println!(
+                        "[Download Error] ID={:02} ({}) Error={}",
+                        target.track_id, title, e
+                    );
                     let rec = Live20TrackAuditRecord {
                         track_id: target.track_id,
                         title,
@@ -634,8 +733,10 @@ async fn test_live_network_pilot_20_controlled_execution() {
     println!("\n========================================================================================================================");
     println!("                                PHYSICAL 20-TRACK LIVE NETWORK AUDIT METRICS REPORT                                     ");
     println!("========================================================================================================================");
-    println!("{:<4} | {:<22} | {:<12} | {:<10} | {:<12} | {:<10} | {:<12} | {:<15}", 
-        "ID", "Title", "Provider", "Bytes", "Transfer(ms)", "MiB/s", "ffprobe", "Staging Residuals");
+    println!(
+        "{:<4} | {:<22} | {:<12} | {:<10} | {:<12} | {:<10} | {:<12} | {:<15}",
+        "ID", "Title", "Provider", "Bytes", "Transfer(ms)", "MiB/s", "ffprobe", "Staging Residuals"
+    );
     println!("------------------------------------------------------------------------------------------------------------------------");
 
     let mut total_bytes = 0u64;
@@ -658,14 +759,19 @@ async fn test_live_network_pilot_20_controlled_execution() {
             excluded_count += 1;
         }
 
-        let title_trunc = if r.title.len() > 20 { format!("{}...", &r.title[0..17]) } else { r.title.clone() };
+        let title_trunc = if r.title.len() > 20 {
+            format!("{}...", &r.title[0..17])
+        } else {
+            r.title.clone()
+        };
         let ffprobe_summary = if !r.ffprobe_codec.is_empty() {
             format!("{}/{}Hz", r.ffprobe_codec, r.ffprobe_sample_rate)
         } else {
             "-".to_string()
         };
 
-        println!("{:<4} | {:<22} | {:<12} | {:<10} | {:<12} | {:<10.2} | {:<12} | {:<15}",
+        println!(
+            "{:<4} | {:<22} | {:<12} | {:<10} | {:<12} | {:<10.2} | {:<12} | {:<15}",
             r.track_id,
             title_trunc,
             r.effective_provider,
@@ -678,17 +784,28 @@ async fn test_live_network_pilot_20_controlled_execution() {
     }
     println!("========================================================================================================================");
     println!("Total Execution Time:    {:.2}s", elapsed.as_secs_f64());
-    println!("Total Physical Bytes:    {:.2} MiB ({} bytes)", total_bytes as f64 / (1024.0 * 1024.0), total_bytes);
+    println!(
+        "Total Physical Bytes:    {:.2} MiB ({} bytes)",
+        total_bytes as f64 / (1024.0 * 1024.0),
+        total_bytes
+    );
     println!("Lossless Downloads:      {}/20", lossless_count);
-    println!("Quality Fallback:        {}/20 (AAC Streams)", fallback_count);
-    println!("Preflight Excluded:      {}/20 (Spotify unmapped)", excluded_count);
+    println!(
+        "Quality Fallback:        {}/20 (AAC Streams)",
+        fallback_count
+    );
+    println!(
+        "Preflight Excluded:      {}/20 (Spotify unmapped)",
+        excluded_count
+    );
     println!("Staging Residuals:       0 files (100% atomic promotion & cleanup)");
     println!("========================================================================================================================\n");
 
     let ended_at = chrono::Utc::now().to_rfc3339();
 
     // 9. Write external JSON audit log outside repository
-    let audit_log_path = external_audit_base.join(format!("pilot_20_live_audit_{}.json", &run_id[..8]));
+    let audit_log_path =
+        external_audit_base.join(format!("pilot_20_live_audit_{}.json", &run_id[..8]));
     let audit_payload = serde_json::json!({
         "run_id": run_id,
         "started_at": started_at,
@@ -703,12 +820,23 @@ async fn test_live_network_pilot_20_controlled_execution() {
         "staging_residuals": residual_staging.len(),
         "records": records,
     });
-    let _ = std::fs::write(&audit_log_path, serde_json::to_string_pretty(&audit_payload).unwrap_or_default());
-    println!("Audit Log Persisted Externally: {}", audit_log_path.display());
+    let _ = std::fs::write(
+        &audit_log_path,
+        serde_json::to_string_pretty(&audit_payload).unwrap_or_default(),
+    );
+    println!(
+        "Audit Log Persisted Externally: {}",
+        audit_log_path.display()
+    );
 
     // 10. Assert HEAD did not change during test execution
-    let current_head = Command::new("git").args(["rev-parse", "HEAD"]).output()
+    let current_head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
-    assert_eq!(initial_head, current_head, "Git HEAD must remain completely invariant during live audit execution");
+    assert_eq!(
+        initial_head, current_head,
+        "Git HEAD must remain completely invariant during live audit execution"
+    );
 }

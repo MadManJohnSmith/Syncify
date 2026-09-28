@@ -6,8 +6,8 @@
 //! 3. Destination is removed if integrity check fails.
 //! 4. Clean promotion when copy and hash verification succeed.
 
-use tempfile::TempDir;
 use syncify_tauri_lib::services::repair_guardrail::compute_bytes_sha256;
+use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_verified_cross_volume_promotion_success() {
@@ -40,8 +40,14 @@ async fn test_verified_cross_volume_promotion_success() {
     // Only delete staging file after verification succeeds
     tokio::fs::remove_file(&staged_file).await.unwrap();
 
-    assert!(final_dest.exists(), "Promoted file must exist in destination");
-    assert!(!staged_file.exists(), "Staged file must be removed after verified copy");
+    assert!(
+        final_dest.exists(),
+        "Promoted file must exist in destination"
+    );
+    assert!(
+        !staged_file.exists(),
+        "Staged file must be removed after verified copy"
+    );
 }
 
 #[tokio::test]
@@ -63,20 +69,31 @@ async fn test_verified_cross_volume_promotion_detects_corruption() {
     let staged_size = staged_bytes.len() as u64;
 
     // Simulate corrupted write (e.g. incomplete I/O)
-    tokio::fs::write(&final_dest, b"CORRUPTED_TRUNCATED_DATA").await.unwrap();
+    tokio::fs::write(&final_dest, b"CORRUPTED_TRUNCATED_DATA")
+        .await
+        .unwrap();
 
     let dest_meta = tokio::fs::metadata(&final_dest).await.unwrap();
     let dest_bytes = tokio::fs::read(&final_dest).await.unwrap();
     let dest_sha256 = compute_bytes_sha256(&dest_bytes);
 
     let verification_passed = dest_meta.len() == staged_size && dest_sha256 == staged_sha256;
-    assert!(!verification_passed, "Integrity check must fail on corrupted copy");
+    assert!(
+        !verification_passed,
+        "Integrity check must fail on corrupted copy"
+    );
 
     if !verification_passed {
         // Rollback corrupted destination file, retain staging file
         let _ = tokio::fs::remove_file(&final_dest).await;
     }
 
-    assert!(!final_dest.exists(), "Corrupted destination file must be cleaned up");
-    assert!(staged_file.exists(), "Staging file must remain preserved for retry");
+    assert!(
+        !final_dest.exists(),
+        "Corrupted destination file must be cleaned up"
+    );
+    assert!(
+        staged_file.exists(),
+        "Staging file must remain preserved for retry"
+    );
 }

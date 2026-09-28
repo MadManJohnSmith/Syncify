@@ -128,7 +128,11 @@ pub fn fixture_http_error(code: u16) -> LyricsResolution {
     if code == 401 || code == 403 {
         LyricsResolution::new_requires_auth("Spotify", "color_lyrics", format!("HTTP {}", code))
     } else {
-        LyricsResolution::new_source_unavailable("Spotify", "color_lyrics", format!("HTTP {}", code))
+        LyricsResolution::new_source_unavailable(
+            "Spotify",
+            "color_lyrics",
+            format!("HTTP {}", code),
+        )
     }
 }
 

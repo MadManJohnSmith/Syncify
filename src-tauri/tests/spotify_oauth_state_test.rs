@@ -142,7 +142,9 @@ fn test_callback_rejected_when_spotify_returns_oauth_error() {
     let result = validate_spotify_callback(&error_request, expected_state);
     assert_eq!(
         result,
-        Err(SpotifyCallbackError::OAuthError("access_denied".to_string()))
+        Err(SpotifyCallbackError::OAuthError(
+            "access_denied".to_string()
+        ))
     );
 
     let (status, _, body) = process_spotify_callback_request(&error_request, expected_state);
@@ -154,8 +156,7 @@ fn test_callback_rejected_when_spotify_returns_oauth_error() {
 #[test]
 fn test_callback_rejected_for_non_callback_endpoints() {
     let expected_state = "some_state";
-    let non_callback_request =
-        "GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n";
+    let non_callback_request = "GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n";
 
     let result = validate_spotify_callback(non_callback_request, expected_state);
     assert_eq!(result, Err(SpotifyCallbackError::NotCallback));
@@ -207,7 +208,10 @@ async fn test_tcp_listener_end_to_end_state_enforcement() {
             .await
             .expect("Connect failed");
         let req = "GET /callback?code=unverified_code_001 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-        stream.write_all(req.as_bytes()).await.expect("Write failed");
+        stream
+            .write_all(req.as_bytes())
+            .await
+            .expect("Write failed");
 
         let mut res = String::new();
         stream.read_to_string(&mut res).await.expect("Read failed");
@@ -224,7 +228,10 @@ async fn test_tcp_listener_end_to_end_state_enforcement() {
             .await
             .expect("Connect failed");
         let req = "GET /callback?code=unverified_code_002&state=tampered_or_divergent_state HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-        stream.write_all(req.as_bytes()).await.expect("Write failed");
+        stream
+            .write_all(req.as_bytes())
+            .await
+            .expect("Write failed");
 
         let mut res = String::new();
         stream.read_to_string(&mut res).await.expect("Read failed");
@@ -244,7 +251,10 @@ async fn test_tcp_listener_end_to_end_state_enforcement() {
             "GET /callback?code=legitimate_auth_code_777&state={} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
             expected_state
         );
-        stream.write_all(req.as_bytes()).await.expect("Write failed");
+        stream
+            .write_all(req.as_bytes())
+            .await
+            .expect("Write failed");
 
         let mut res = String::new();
         stream.read_to_string(&mut res).await.expect("Read failed");

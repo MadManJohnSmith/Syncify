@@ -41,13 +41,12 @@ pub async fn resolve_playback_source(
 ) -> Result<PlaybackSource, String> {
     tracing::info!("resolve_playback_source: track_id={}", track_id);
 
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT file_path, file_format FROM downloads WHERE track_id = ? LIMIT 1",
-    )
-    .bind(track_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
+    let row: Option<(String, Option<String>)> =
+        sqlx::query_as("SELECT file_path, file_format FROM downloads WHERE track_id = ? LIMIT 1")
+            .bind(track_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
 
     let Some((file_path, format)) = row else {
         return Err(format!(
@@ -163,7 +162,8 @@ pub fn handle_media_protocol_request_async(
 }
 
 /// Serve a byte range of a granted audio file. Public for main.rs wiring.
-pub fn handle_media_protocol_request(request: Request<Vec<u8>>) -> Response<Vec<u8>> {    let Some(raw_path) = extract_file_path(&request.uri().to_string()) else {
+pub fn handle_media_protocol_request(request: Request<Vec<u8>>) -> Response<Vec<u8>> {
+    let Some(raw_path) = extract_file_path(&request.uri().to_string()) else {
         return simple_response(400, "syncify-media: ruta inválida");
     };
 

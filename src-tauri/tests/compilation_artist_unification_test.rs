@@ -26,8 +26,8 @@ use std::borrow::Cow;
 use std::path::Path;
 use std::process::Command;
 use syncify_core_domain::metadata::{
-    is_various_artists_variant, normalize_compilation_artist,
-    normalize_compilation_artist_name, sanitize_artist_name, CANONICAL_VARIOUS_ARTISTS,
+    is_various_artists_variant, normalize_compilation_artist, normalize_compilation_artist_name,
+    sanitize_artist_name, CANONICAL_VARIOUS_ARTISTS,
 };
 
 #[test]
@@ -60,13 +60,25 @@ fn test_domain_various_artists_detection_and_normalization() {
     assert!(!is_various_artists_variant("The Various"));
 
     // 2. Direct sanitization of artist variants
-    assert_eq!(sanitize_artist_name("Various Interprets"), CANONICAL_VARIOUS_ARTISTS);
-    assert_eq!(sanitize_artist_name("various interprets"), CANONICAL_VARIOUS_ARTISTS);
-    assert_eq!(sanitize_artist_name("Various Interpret"), CANONICAL_VARIOUS_ARTISTS);
+    assert_eq!(
+        sanitize_artist_name("Various Interprets"),
+        CANONICAL_VARIOUS_ARTISTS
+    );
+    assert_eq!(
+        sanitize_artist_name("various interprets"),
+        CANONICAL_VARIOUS_ARTISTS
+    );
+    assert_eq!(
+        sanitize_artist_name("Various Interpret"),
+        CANONICAL_VARIOUS_ARTISTS
+    );
     assert_eq!(sanitize_artist_name("V.A."), CANONICAL_VARIOUS_ARTISTS);
     assert_eq!(sanitize_artist_name("VA"), CANONICAL_VARIOUS_ARTISTS);
     assert_eq!(sanitize_artist_name("Various"), CANONICAL_VARIOUS_ARTISTS);
-    assert_eq!(sanitize_artist_name("Verschiedene Interpreten"), CANONICAL_VARIOUS_ARTISTS);
+    assert_eq!(
+        sanitize_artist_name("Verschiedene Interpreten"),
+        CANONICAL_VARIOUS_ARTISTS
+    );
 
     // 3. Normalization with compilation context
     assert_eq!(
@@ -93,14 +105,8 @@ fn test_domain_various_artists_detection_and_normalization() {
         normalize_compilation_artist_name("Unknown Artist", false),
         "Unknown Artist"
     );
-    assert_eq!(
-        normalize_compilation_artist_name("Queen", true),
-        "Queen"
-    );
-    assert_eq!(
-        normalize_compilation_artist_name("Queen", false),
-        "Queen"
-    );
+    assert_eq!(normalize_compilation_artist_name("Queen", true), "Queen");
+    assert_eq!(normalize_compilation_artist_name("Queen", false), "Queen");
 
     // 4. normalize_compilation_artist helper
     assert_eq!(
@@ -119,10 +125,7 @@ fn test_domain_various_artists_detection_and_normalization() {
         normalize_compilation_artist("VA"),
         CANONICAL_VARIOUS_ARTISTS
     );
-    assert_eq!(
-        normalize_compilation_artist("Daft Punk"),
-        "Daft Punk"
-    );
+    assert_eq!(normalize_compilation_artist("Daft Punk"), "Daft Punk");
 }
 
 #[tokio::test]
@@ -179,9 +182,10 @@ async fn test_sqlite_migration_0081_clean_application_and_triggers() {
         .await;
     assert!(res_va_dot.is_err(), "Trigger must reject inserting 'V.A.'");
 
-    let res_single_interpret = sqlx::query("INSERT INTO artists (name) VALUES ('Various Interpret')")
-        .execute(&pool)
-        .await;
+    let res_single_interpret =
+        sqlx::query("INSERT INTO artists (name) VALUES ('Various Interpret')")
+            .execute(&pool)
+            .await;
     assert!(
         res_single_interpret.is_err(),
         "Trigger must reject inserting 'Various Interpret'"
@@ -205,18 +209,18 @@ async fn test_sqlite_migration_0081_clean_application_and_triggers() {
     );
 
     // Verify automatic album compilation flag trigger
-    let va_artist_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('Various Artists') RETURNING id",
+    let va_artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Various Artists') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .expect("Insert Various Artists");
+
+    let standard_album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, is_compilation) VALUES ('Soundtrack 2025', 0) RETURNING id",
     )
     .fetch_one(&pool)
     .await
-    .expect("Insert Various Artists");
-
-    let standard_album_id: i64 =
-        sqlx::query_scalar("INSERT INTO albums (title, is_compilation) VALUES ('Soundtrack 2025', 0) RETURNING id")
-            .fetch_one(&pool)
-            .await
-            .expect("Insert standard album");
+    .expect("Insert standard album");
 
     // Link standard album to Various Artists
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
@@ -237,11 +241,15 @@ async fn test_sqlite_migration_0081_clean_application_and_triggers() {
     );
 
     // Integrity checks
-    let fk_violations: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check;")
-        .fetch_all(&pool)
-        .await
-        .expect("FK check");
-    assert!(fk_violations.is_empty(), "0 foreign key violations expected");
+    let fk_violations: Vec<(String, i64, String, i64)> =
+        sqlx::query_as("PRAGMA foreign_key_check;")
+            .fetch_all(&pool)
+            .await
+            .expect("FK check");
+    assert!(
+        fk_violations.is_empty(),
+        "0 foreign key violations expected"
+    );
 }
 
 #[tokio::test]
@@ -286,33 +294,29 @@ async fn test_sqlite_migration_0081_unifies_variants_and_remaps_albums() {
 
     // 2. Seed dirty state matching production diagnosis:
     // Artists:
-    let vi_artist_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('Various Interprets') RETURNING id",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let vi_artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Various Interprets') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let unknown_art_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('Unknown Artist') RETURNING id",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let unknown_art_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Unknown Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let unknown_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('Unknown') RETURNING id",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let unknown_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Unknown') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
-    let queen_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('Queen') RETURNING id",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let queen_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Queen') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     // Compilations assigned to Various Interprets:
     let alb_matrix: i64 = sqlx::query_scalar(
@@ -328,12 +332,11 @@ async fn test_sqlite_migration_0081_unifies_variants_and_remaps_albums() {
         .await
         .unwrap();
 
-    let alb_shrek: i64 = sqlx::query_scalar(
-        "INSERT INTO albums (title) VALUES ('Shrek 2') RETURNING id",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let alb_shrek: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Shrek 2') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
         .bind(alb_shrek)
         .bind(vi_artist_id)
@@ -369,12 +372,11 @@ async fn test_sqlite_migration_0081_unifies_variants_and_remaps_albums() {
         .unwrap();
 
     // Album assigned to Unknown:
-    let alb_unknown: i64 = sqlx::query_scalar(
-        "INSERT INTO albums (title) VALUES ('50 Best Classics') RETURNING id",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let alb_unknown: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('50 Best Classics') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
         .bind(alb_unknown)
         .bind(unknown_id)
@@ -439,7 +441,7 @@ async fn test_sqlite_migration_0081_unifies_variants_and_remaps_albums() {
         SELECT COUNT(*) FROM album_artists aa
         JOIN artists ar ON ar.id = aa.artist_id
         WHERE LOWER(TRIM(ar.name)) IN ('various interprets', 'unknown', 'unknown artist')
-        "#
+        "#,
     )
     .fetch_one(&pool)
     .await
@@ -458,7 +460,13 @@ async fn test_sqlite_migration_0081_unifies_variants_and_remaps_albums() {
     .unwrap();
 
     // Assert the 5 compilations are now remapped to canonical Various Artists
-    for aid in [alb_matrix, alb_shrek, alb_austin, alb_unknown_art, alb_unknown] {
+    for aid in [
+        alb_matrix,
+        alb_shrek,
+        alb_austin,
+        alb_unknown_art,
+        alb_unknown,
+    ] {
         let mapped_artist: (i64, String) = sqlx::query_as(
             r#"
             SELECT ar.id, ar.name FROM album_artists aa
@@ -479,7 +487,11 @@ async fn test_sqlite_migration_0081_unifies_variants_and_remaps_albums() {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(is_comp.0, 1, "Compilation album {} must have is_compilation = 1", aid);
+        assert_eq!(
+            is_comp.0, 1,
+            "Compilation album {} must have is_compilation = 1",
+            aid
+        );
     }
 
     // Assert Queen's album remains under Queen and has is_compilation = 0
@@ -502,29 +514,32 @@ async fn test_sqlite_migration_0081_unifies_variants_and_remaps_albums() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(queen_is_comp.0, 0, "Queen album must have is_compilation = 0");
+    assert_eq!(
+        queen_is_comp.0, 0,
+        "Queen album must have is_compilation = 0"
+    );
 
     // Assert track artist remapped to Various Artists
-    let track_mapped_artist: (i64,) = sqlx::query_as(
-        "SELECT artist_id FROM track_artists WHERE track_id = ?",
-    )
-    .bind(trk_matrix)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let track_mapped_artist: (i64,) =
+        sqlx::query_as("SELECT artist_id FROM track_artists WHERE track_id = ?")
+            .bind(trk_matrix)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(track_mapped_artist.0, canonical_va_id);
 
     // Assert obsolete residual artists were purged
-    let purged_count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM artists WHERE id IN (?, ?, ?)",
-    )
-    .bind(vi_artist_id)
-    .bind(unknown_art_id)
-    .bind(unknown_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(purged_count.0, 0, "Obsolete residual artists must be purged from artists table");
+    let purged_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM artists WHERE id IN (?, ?, ?)")
+        .bind(vi_artist_id)
+        .bind(unknown_art_id)
+        .bind(unknown_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        purged_count.0, 0,
+        "Obsolete residual artists must be purged from artists table"
+    );
 
     // Assert Queen remains intact
     let queen_exists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM artists WHERE id = ?")
@@ -535,11 +550,15 @@ async fn test_sqlite_migration_0081_unifies_variants_and_remaps_albums() {
     assert_eq!(queen_exists.0, 1, "Queen must remain in artists table");
 
     // Verify foreign key integrity
-    let fk_violations: Vec<(String, i64, String, i64)> = sqlx::query_as("PRAGMA foreign_key_check;")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-    assert!(fk_violations.is_empty(), "0 foreign key violations expected after migration");
+    let fk_violations: Vec<(String, i64, String, i64)> =
+        sqlx::query_as("PRAGMA foreign_key_check;")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        fk_violations.is_empty(),
+        "0 foreign key violations expected after migration"
+    );
 }
 
 #[test]
@@ -558,7 +577,10 @@ fn test_python_script_execution_and_backup_creation() {
         .arg("--help")
         .output()
         .expect("Failed to execute python script help");
-    assert!(help_output.status.success(), "Help command must exit with 0");
+    assert!(
+        help_output.status.success(),
+        "Help command must exit with 0"
+    );
     let stdout = String::from_utf8_lossy(&help_output.stdout);
     assert!(stdout.contains("Unify compilation artist variants"));
 
@@ -579,7 +601,10 @@ fn test_python_script_execution_and_backup_creation() {
             .arg("--dry-run")
             .output()
             .expect("Failed to execute python dry-run");
-        assert!(dry_output.status.success(), "Dry-run command must exit with 0");
+        assert!(
+            dry_output.status.success(),
+            "Dry-run command must exit with 0"
+        );
         let dry_stdout = String::from_utf8_lossy(&dry_output.stdout);
         assert!(dry_stdout.contains("[DRY RUN] Complete"));
     }

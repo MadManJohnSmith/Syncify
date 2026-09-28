@@ -18,7 +18,10 @@ pub struct WebpStructureInfo {
 /// Errors occurring during pure WebP structure validation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebpValidationError {
-    TooSmall { min_expected: usize, actual: usize },
+    TooSmall {
+        min_expected: usize,
+        actual: usize,
+    },
     InvalidRiffHeader,
     InvalidWebpHeader,
     MissingVp8xChunk,
@@ -35,17 +38,36 @@ pub enum WebpValidationError {
 impl std::fmt::Display for WebpValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WebpValidationError::TooSmall { min_expected, actual } => {
-                write!(f, "Payload too small for WebP (expected >= {}, got {})", min_expected, actual)
+            WebpValidationError::TooSmall {
+                min_expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "Payload too small for WebP (expected >= {}, got {})",
+                    min_expected, actual
+                )
             }
             WebpValidationError::InvalidRiffHeader => write!(f, "Missing 'RIFF' magic header"),
             WebpValidationError::InvalidWebpHeader => write!(f, "Missing 'WEBP' format identifier"),
             WebpValidationError::MissingVp8xChunk => write!(f, "Extended WebP missing VP8X chunk"),
             WebpValidationError::AnimationBitNotSet => write!(f, "VP8X animation flag is not set"),
-            WebpValidationError::NoAnmfFramesFound => write!(f, "No ANMF animation frames found in WebP"),
-            WebpValidationError::CorruptedChunkStructure(msg) => write!(f, "Corrupted chunk structure: {}", msg),
-            WebpValidationError::ChunkOutOfBounds { offset, chunk_size, buffer_len } => {
-                write!(f, "Chunk at offset {} with size {} exceeds buffer length {}", offset, chunk_size, buffer_len)
+            WebpValidationError::NoAnmfFramesFound => {
+                write!(f, "No ANMF animation frames found in WebP")
+            }
+            WebpValidationError::CorruptedChunkStructure(msg) => {
+                write!(f, "Corrupted chunk structure: {}", msg)
+            }
+            WebpValidationError::ChunkOutOfBounds {
+                offset,
+                chunk_size,
+                buffer_len,
+            } => {
+                write!(
+                    f,
+                    "Chunk at offset {} with size {} exceeds buffer length {}",
+                    offset, chunk_size, buffer_len
+                )
             }
         }
     }
@@ -210,8 +232,10 @@ impl WebpByteValidator {
         }
 
         // 24-bit 1-based canvas dimensions
-        let canvas_width = 1 + (bytes[24] as u32 | ((bytes[25] as u32) << 8) | ((bytes[26] as u32) << 16));
-        let canvas_height = 1 + (bytes[27] as u32 | ((bytes[28] as u32) << 8) | ((bytes[29] as u32) << 16));
+        let canvas_width =
+            1 + (bytes[24] as u32 | ((bytes[25] as u32) << 8) | ((bytes[26] as u32) << 16));
+        let canvas_height =
+            1 + (bytes[27] as u32 | ((bytes[28] as u32) << 8) | ((bytes[29] as u32) << 16));
 
         // Scan for ANMF chunks with checked integer arithmetic and strict boundary validation
         let mut offset = 12usize;
@@ -252,14 +276,11 @@ impl WebpByteValidator {
 
             // RIFF chunks are padded to even length: (chunk_size + 1) & !1.
             // Protect against integer overflow when adding 1.
-            let padded_size = chunk_size
-                .checked_add(1)
-                .ok_or_else(|| {
-                    WebpValidationError::CorruptedChunkStructure(
-                        "Integer overflow computing padded chunk size".to_string(),
-                    )
-                })?
-                & !1;
+            let padded_size = chunk_size.checked_add(1).ok_or_else(|| {
+                WebpValidationError::CorruptedChunkStructure(
+                    "Integer overflow computing padded chunk size".to_string(),
+                )
+            })? & !1;
 
             // Compute next chunk offset with checked arithmetic
             let next_offset = offset
@@ -386,13 +407,18 @@ impl ImageByteValidator {
                 if len < 2 {
                     break;
                 }
-                let is_sof = matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF);
+                let is_sof =
+                    matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF);
                 if is_sof && len >= 8 && offset + 8 <= bytes.len() {
                     let precision = bytes[offset + 2] as u32;
                     height = u16::from_be_bytes([bytes[offset + 3], bytes[offset + 4]]) as u32;
                     width = u16::from_be_bytes([bytes[offset + 5], bytes[offset + 6]]) as u32;
                     let components = bytes[offset + 7] as u32;
-                    depth = if components > 0 { precision * components } else { 24 };
+                    depth = if components > 0 {
+                        precision * components
+                    } else {
+                        24
+                    };
                     found_sof = true;
                     break;
                 }
@@ -428,8 +454,14 @@ impl ImageByteValidator {
             if bytes.len() >= 16 {
                 let fourcc = &bytes[12..16];
                 if fourcc == b"VP8X" && bytes.len() >= 30 {
-                    let width = 1 + (bytes[24] as u32 | ((bytes[25] as u32) << 8) | ((bytes[26] as u32) << 16));
-                    let height = 1 + (bytes[27] as u32 | ((bytes[28] as u32) << 8) | ((bytes[29] as u32) << 16));
+                    let width = 1
+                        + (bytes[24] as u32
+                            | ((bytes[25] as u32) << 8)
+                            | ((bytes[26] as u32) << 16));
+                    let height = 1
+                        + (bytes[27] as u32
+                            | ((bytes[28] as u32) << 8)
+                            | ((bytes[29] as u32) << 16));
                     let has_alpha = (bytes[20] & 0x10) != 0;
                     return Some(ImageDimensions {
                         width,
@@ -484,14 +516,24 @@ mod tests {
         assert!(AudioByteValidator::is_mp3_magic(&[0xFF, 0xFB, 0x90, 0x64]));
         assert!(!AudioByteValidator::is_mp3_magic(b"fLaC"));
 
-        assert!(AudioByteValidator::is_m4a_magic(b"\x00\x00\x00\x20ftypM4A "));
-        assert!(AudioByteValidator::is_isobmff_container(b"\x00\x00\x00\x18ftypdash"));
+        assert!(AudioByteValidator::is_m4a_magic(
+            b"\x00\x00\x00\x20ftypM4A "
+        ));
+        assert!(AudioByteValidator::is_isobmff_container(
+            b"\x00\x00\x00\x18ftypdash"
+        ));
     }
 
     #[test]
     fn test_detect_cover_type() {
-        assert_eq!(WebpByteValidator::detect_cover_type(b"\xFF\xD8\xFF\xE0"), CoverType::StaticJpeg);
-        assert_eq!(WebpByteValidator::detect_cover_type(b"\x89PNG\r\n\x1a\n"), CoverType::StaticPng);
+        assert_eq!(
+            WebpByteValidator::detect_cover_type(b"\xFF\xD8\xFF\xE0"),
+            CoverType::StaticJpeg
+        );
+        assert_eq!(
+            WebpByteValidator::detect_cover_type(b"\x89PNG\r\n\x1a\n"),
+            CoverType::StaticPng
+        );
         assert_eq!(WebpByteValidator::detect_cover_type(b""), CoverType::None);
     }
 
@@ -532,7 +574,8 @@ mod tests {
         flac_header.extend_from_slice(&[0x00, 0x0D, 0x75, 0x50]); // ts_lo
         flac_header.extend_from_slice(&[0u8; 16]); // md5
 
-        let parsed = AudioByteValidator::parse_flac_streaminfo(&flac_header).expect("Must parse FLAC header");
+        let parsed = AudioByteValidator::parse_flac_streaminfo(&flac_header)
+            .expect("Must parse FLAC header");
         assert_eq!(parsed.min_block_size, 4096);
         assert_eq!(parsed.max_block_size, 4096);
         assert_eq!(parsed.sample_rate, 44100);
@@ -552,14 +595,16 @@ mod tests {
         hires_flac[8 + 12] = 0x03;
         hires_flac[8 + 13] = 0x70;
 
-        let parsed_hires = AudioByteValidator::parse_flac_streaminfo(&hires_flac).expect("Must parse HiRes FLAC");
+        let parsed_hires =
+            AudioByteValidator::parse_flac_streaminfo(&hires_flac).expect("Must parse HiRes FLAC");
         assert_eq!(parsed_hires.sample_rate, 96000);
         assert_eq!(parsed_hires.channels, 2);
         assert_eq!(parsed_hires.bits_per_sample, 24);
 
         // Test raw 34-byte payload (without fLaC header)
         let raw_streaminfo = &hires_flac[8..42];
-        let parsed_raw = AudioByteValidator::parse_flac_streaminfo(raw_streaminfo).expect("Must parse raw streaminfo");
+        let parsed_raw = AudioByteValidator::parse_flac_streaminfo(raw_streaminfo)
+            .expect("Must parse raw streaminfo");
         assert_eq!(parsed_raw.sample_rate, 96000);
         assert_eq!(parsed_raw.bits_per_sample, 24);
     }
@@ -585,7 +630,9 @@ mod tests {
 
         // 2. Synthetic JPEG with SOF0
         let mut jpeg = Vec::new();
-        jpeg.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x08, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01]);
+        jpeg.extend_from_slice(&[
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x08, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+        ]);
         jpeg.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x0B, 0x08]); // SOF0, len 11, 8-bit precision
         jpeg.extend_from_slice(&300u16.to_be_bytes()); // height
         jpeg.extend_from_slice(&500u16.to_be_bytes()); // width
@@ -678,7 +725,11 @@ mod tests {
         let res = WebpByteValidator::validate_animated_webp(&data);
         assert!(res.is_err(), "Gigantic chunk size must return error");
         match res.unwrap_err() {
-            WebpValidationError::ChunkOutOfBounds { offset, chunk_size, buffer_len } => {
+            WebpValidationError::ChunkOutOfBounds {
+                offset,
+                chunk_size,
+                buffer_len,
+            } => {
                 assert_eq!(offset, 30);
                 assert_eq!(chunk_size, (u32::MAX - 2) as usize);
                 assert_eq!(buffer_len, data.len());
@@ -712,7 +763,8 @@ mod tests {
         let res = WebpByteValidator::validate_animated_webp(&data);
         assert!(res.is_err(), "u32::MAX chunk size must return error");
         match res.unwrap_err() {
-            WebpValidationError::ChunkOutOfBounds { .. } | WebpValidationError::CorruptedChunkStructure(_) => {}
+            WebpValidationError::ChunkOutOfBounds { .. }
+            | WebpValidationError::CorruptedChunkStructure(_) => {}
             other => panic!("Unexpected error variant: {:?}", other),
         }
     }
@@ -742,7 +794,8 @@ mod tests {
         data.extend_from_slice(&16u32.to_le_bytes());
         data.extend_from_slice(&[0u8; 16]);
 
-        let info = WebpByteValidator::validate_animated_webp(&data).expect("0-size chunks must advance safely");
+        let info = WebpByteValidator::validate_animated_webp(&data)
+            .expect("0-size chunks must advance safely");
         assert_eq!(info.anmf_frame_count, 1);
     }
 
@@ -788,7 +841,11 @@ mod tests {
         let res2 = WebpByteValidator::validate_animated_webp(&data2);
         assert!(matches!(
             res2,
-            Err(WebpValidationError::ChunkOutOfBounds { offset: 30, chunk_size: 50, .. })
+            Err(WebpValidationError::ChunkOutOfBounds {
+                offset: 30,
+                chunk_size: 50,
+                ..
+            })
         ));
     }
 }
