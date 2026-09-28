@@ -81,6 +81,7 @@ pub async fn run_auth_bridge_subprocess(
     );
 
     let mut cmd = crate::cmd_utils::create_tokio_command(&python_cmd);
+    cmd.kill_on_drop(true);
     cmd.arg(&script_path)
         .arg(service)
         .arg(action)
@@ -101,7 +102,13 @@ pub async fn run_auth_bridge_subprocess(
     if let Some(payload) = stdin_payload {
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
-            stdin.write_all(payload.as_bytes()).await.map_err(|e| {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                stdin.write_all(payload.as_bytes()),
+            )
+            .await
+            .map_err(|_| "Timed out writing credentials to auth_bridge stdin".to_string())?
+            .map_err(|e| {
                 format!(
                     "Failed to write credentials payload to auth_bridge stdin: {}",
                     e
@@ -112,10 +119,13 @@ pub async fn run_auth_bridge_subprocess(
         }
     }
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("Failed to wait for auth_bridge: {}", e))?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| "Authentication bridge timed out after 120 seconds".to_string())?
+    .map_err(|e| format!("Failed to wait for auth_bridge: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

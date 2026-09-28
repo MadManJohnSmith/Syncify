@@ -287,6 +287,63 @@ pub fn validate_safe_backup_export_path(
     validate_safe_backup_export_path_with_bases(target_path, &allowed_bases)
 }
 
+/// Maximum accepted import manifest size. This bounds renderer-triggered memory use.
+pub const MAX_BACKUP_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
+
+pub fn validate_safe_backup_import_path_with_bases(
+    target_path: &std::path::Path,
+    allowed_bases: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    if !target_path.is_absolute()
+        || target_path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(
+            "Access denied: backup import path must be absolute and cannot contain traversal"
+                .to_string(),
+        );
+    }
+    if target_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("json"))
+        != Some(true)
+    {
+        return Err("Access denied: backup import must be a .json file".to_string());
+    }
+    let canonical = std::fs::canonicalize(target_path)
+        .map_err(|e| format!("Failed to resolve backup import path: {}", e))?;
+    let metadata = std::fs::symlink_metadata(target_path)
+        .map_err(|e| format!("Failed to inspect backup import file: {}", e))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("Access denied: backup import must be a regular, non-symlink file".to_string());
+    }
+    let allowed = allowed_bases
+        .iter()
+        .filter_map(|base| std::fs::canonicalize(base).ok())
+        .any(|base| canonical.starts_with(base));
+    if !allowed {
+        return Err("Access denied: backup import is outside allowed user directories".to_string());
+    }
+    if metadata.len() > MAX_BACKUP_IMPORT_BYTES {
+        return Err(format!(
+            "Backup import exceeds the {} byte size limit",
+            MAX_BACKUP_IMPORT_BYTES
+        ));
+    }
+    Ok(canonical)
+}
+
+pub fn validate_safe_backup_import_path(
+    target_path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    validate_safe_backup_import_path_with_bases(
+        target_path,
+        &get_allowed_backup_export_directories(),
+    )
+}
+
 /// Export the full library into a portable, versioned backup manifest JSON file
 #[tauri::command]
 pub async fn export_library(
@@ -532,13 +589,10 @@ pub async fn import_library(
     file_path: String,
     ignore_checksum_error: Option<bool>,
 ) -> Result<ImportLibraryResult, String> {
-    let p = std::path::Path::new(&file_path);
-    if !p.exists() {
-        return Err(format!("Backup file does not exist: {}", file_path));
-    }
-
-    let content =
-        std::fs::read_to_string(p).map_err(|e| format!("Failed to read backup file: {}", e))?;
+    let p = validate_safe_backup_import_path(std::path::Path::new(&file_path))?;
+    let content = tokio::fs::read_to_string(&p)
+        .await
+        .map_err(|e| format!("Failed to read backup file: {}", e))?;
 
     let manifest: LibraryBackupManifest = serde_json::from_str(&content)
         .map_err(|e| format!("Invalid backup manifest format: {}", e))?;
