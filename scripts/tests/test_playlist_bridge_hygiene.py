@@ -282,6 +282,41 @@ class TestPlaylistBridgeHygiene(unittest.TestCase):
             self.assertIn("#EXTM3U", payload.get("content", ""))
             self.assertIn("/music/test_artist/test_track.flac", payload.get("content", ""))
 
+    def test_qobuz_bridge_uses_service_credentials_and_user_auth_token(self):
+        """Qobuz bridge must construct the current service API without network access."""
+        from types import ModuleType
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        fake_service = MagicMock()
+        fake_service.get_user_playlists = AsyncMock(return_value=[{"id": "p1", "name": "Playlist"}])
+        fake_service.close = AsyncMock()
+
+        service_cls = MagicMock(return_value=fake_service)
+        qobuz_module = ModuleType("services.qobuz_service")
+        qobuz_module.QobuzService = service_cls
+        aiohttp_module = ModuleType("aiohttp")
+        aiohttp_module.ClientSession = MagicMock(return_value=MagicMock())
+
+        with patch.dict(os.environ, {
+            "QOBUZ_APP_ID": "app-id",
+            "QOBUZ_APP_SECRET": "app-secret",
+            "QOBUZ_AUTH_TOKEN": "user-token",
+        }, clear=False), patch.dict(sys.modules, {
+            "services.qobuz_service": qobuz_module,
+            "aiohttp": aiohttp_module,
+        }):
+            playlists = playlist_bridge.get_qobuz_playlists()
+
+        credentials = service_cls.call_args.args[0]
+        self.assertEqual(credentials.app_id, "app-id")
+        self.assertEqual(credentials.app_secret, "app-secret")
+        self.assertEqual(credentials.token, "user-token")
+        self.assertEqual(fake_service.user_auth_token, "user-token")
+        self.assertTrue(fake_service._authenticated)
+        self.assertEqual(playlists, [{"id": "p1", "name": "Playlist"}])
+        fake_service.get_user_playlists.assert_awaited_once_with()
+        fake_service.close.assert_awaited_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

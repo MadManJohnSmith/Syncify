@@ -162,74 +162,64 @@ def get_spotify_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
 # QOBUZ SERVICE IMPLEMENTATION
 # ==============================================================================
 
-def get_qobuz_playlists() -> List[Dict[str, Any]]:
-    """Get playlists from Qobuz."""
+def _qobuz_configuration():
+    app_id = os.getenv("QOBUZ_APP_ID")
+    app_secret = os.getenv("QOBUZ_APP_SECRET")
+    token = os.getenv("QOBUZ_AUTH_TOKEN")
+    if not all([app_id, app_secret, token]):
+        raise Exception("Qobuz credentials not configured (QOBUZ_APP_ID, QOBUZ_APP_SECRET, QOBUZ_AUTH_TOKEN)")
+    return app_id, app_secret, token
+
+
+async def _with_qobuz_service(operation):
+    import aiohttp
+    from services.qobuz_service import QobuzService
+    from services.service_base import ServiceCredentials, ServiceType
+
+    app_id, app_secret, token = _qobuz_configuration()
+    credentials = ServiceCredentials(
+        service_type=ServiceType.QOBUZ,
+        token=token,
+        app_id=app_id,
+        app_secret=app_secret,
+    )
+    service = QobuzService(credentials)
+    service.APP_ID = app_id
+    service.APP_SECRET = app_secret
+    service.user_auth_token = token
+    service._authenticated = True
+    service.session = aiohttp.ClientSession(headers={"X-App-Id": app_id})
     try:
-        from services.qobuz_service import QobuzService
+        return await operation(service)
+    finally:
+        await service.close()
 
-        app_id = os.getenv("QOBUZ_APP_ID")
-        app_secret = os.getenv("QOBUZ_APP_SECRET")
-        token = os.getenv("QOBUZ_AUTH_TOKEN")
 
-        if not all([app_id, app_secret, token]):
-            raise Exception("Qobuz credentials not configured (QOBUZ_APP_ID, QOBUZ_APP_SECRET, QOBUZ_AUTH_TOKEN)")
-
-        service = QobuzService(app_id, app_secret)
-        service.auth_token = token
-
-        try:
-            user_playlists = asyncio.run(service.get_user_playlists())
-            if user_playlists:
-                return user_playlists
-        except Exception:
-            pass
-
-        # Fallback to favorite albums as pseudo-playlists
-        favorites = asyncio.run(service.get_favorites())
-        playlists = []
-        for album in favorites.get("albums", []):
-            playlists.append({
-                "id": album.get("id"),
-                "name": album.get("title", "Unknown Album"),
-                "description": f"By {album.get('artist', {}).get('name', 'Unknown')}",
-                "track_count": album.get("tracks_count", 0),
-                "owner": "Qobuz",
-                "type": "album",
-            })
-        return playlists
+def get_qobuz_playlists() -> List[Dict[str, Any]]:
+    """Get playlists from Qobuz using the current service contract."""
+    try:
+        return asyncio.run(_with_qobuz_service(lambda service: service.get_user_playlists()))
     except Exception as e:
         raise Exception(f"Qobuz error: {e}")
 
 
 def get_qobuz_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
     """Get tracks from a Qobuz playlist."""
+    async def fetch(service):
+        tracks_meta = await service.get_playlist_tracks(playlist_id)
+        return [{
+            "id": str(t.service_id),
+            "title": t.title or "Unknown",
+            "artist": ", ".join(t.artists) if t.artists else "Unknown",
+            "album": t.album or "",
+            "duration_ms": t.duration_ms or 0,
+            "isrc": t.isrc,
+            "file_path": None,
+            "url": getattr(t, "url", None),
+        } for t in tracks_meta]
+
     try:
-        from services.qobuz_service import QobuzService
-
-        app_id = os.getenv("QOBUZ_APP_ID")
-        app_secret = os.getenv("QOBUZ_APP_SECRET")
-        token = os.getenv("QOBUZ_AUTH_TOKEN")
-
-        if not all([app_id, app_secret, token]):
-            raise Exception("Qobuz credentials not configured (QOBUZ_APP_ID, QOBUZ_APP_SECRET, QOBUZ_AUTH_TOKEN)")
-
-        service = QobuzService(app_id, app_secret)
-        service.auth_token = token
-
-        tracks_meta = asyncio.run(service.get_playlist_tracks(playlist_id))
-        tracks = []
-        for t in tracks_meta:
-            tracks.append({
-                "id": str(t.service_id),
-                "title": t.title or "Unknown",
-                "artist": ", ".join(t.artists) if t.artists else "Unknown",
-                "album": t.album or "",
-                "duration_ms": t.duration_ms or 0,
-                "isrc": t.isrc,
-                "file_path": None,
-                "url": getattr(t, "url", None),
-            })
-        return tracks
+        return asyncio.run(_with_qobuz_service(fetch))
     except Exception as e:
         raise Exception(f"Qobuz error: {e}")
 

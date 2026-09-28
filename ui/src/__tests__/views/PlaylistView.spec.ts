@@ -185,4 +185,53 @@ describe('PlaylistView', () => {
 
         expect(invokeCalls.find(c => c.cmd === 'export_playlist_m3u')).toBeUndefined();
     });
+    it('imports a supported playlist URL through the matching persisted service command', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'import_spotify_playlists') return { imported: 2, skipped: 0 };
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        const importButton = wrapper.findAll('button').find((b: any) => b.text().includes('Import URL'));
+        expect(importButton).toBeDefined();
+        await importButton!.trigger('click');
+        await flushPromises();
+
+        const input = document.body.querySelector('input[type="url"]') as HTMLInputElement;
+        input.value = 'https://open.spotify.com/playlist/abc123';
+        input.dispatchEvent(new Event('input'));
+        const confirm = bodyButtons().find(b => b.textContent?.trim() === 'Import');
+        expect(confirm).toBeDefined();
+        confirm!.click();
+        await flushPromises();
+
+        expect(invokeCalls.some(c => c.cmd === 'import_spotify_playlists')).toBe(true);
+        expect(document.body.querySelector('input[type="url"]')).toBeNull();
+    });
+
+    it('keeps the import dialog open for unsupported URLs without invoking an import', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_playlists') return mockPlaylists;
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('button').find((b: any) => b.text().includes('Import URL'))!.trigger('click');
+        const input = document.body.querySelector('input[type="url"]') as HTMLInputElement;
+        input.value = 'https://example.com/playlist/abc';
+        input.dispatchEvent(new Event('input'));
+        bodyButtons().find(b => b.textContent?.trim() === 'Import')!.click();
+        await flushPromises();
+
+        expect(document.body.querySelector('input[type="url"]')).not.toBeNull();
+        expect(invokeCalls.some(c => c.cmd.startsWith('import_'))).toBe(false);
+    });
+
 });

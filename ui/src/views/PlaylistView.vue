@@ -565,7 +565,7 @@
                   class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50"
                 >
               </div>
-              <p class="text-xs text-gray-500">Supports Spotify, Qobuz, Tidal, and Deezer playlist URLs</p>
+              <p class="text-xs text-gray-500">Imports playlists from the Spotify, Qobuz, Tidal, or Deezer account identified by the URL.</p>
               <label class="flex items-center gap-3 cursor-pointer">
                 <input type="checkbox" v-model="autoSyncImport" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
                 <span class="text-sm text-gray-600 dark:text-gray-400">Auto-sync this playlist</span>
@@ -575,8 +575,8 @@
               <button @click="showImportModal = false" class="flex-1 py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 rounded-lg">
                 Cancel
               </button>
-              <button @click="importPlaylist" class="flex-1 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium">
-                Import
+              <button @click="importPlaylist" :disabled="isImporting" class="flex-1 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium disabled:opacity-50">
+                {{ isImporting ? 'Importing…' : 'Import' }}
               </button>
             </div>
           </div>
@@ -639,7 +639,7 @@
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
-import { playlistsApi, exportPlaylistM3u, type MissingPlaylistFile } from '@/api/playlists'
+import { playlistsApi, exportPlaylistM3u, importPlaylists, type MissingPlaylistFile } from '@/api/playlists'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { Playlist, LibraryTrack } from '@/api/types'
 import { useToast } from '@/composables/useToast'
@@ -697,6 +697,7 @@ const smartPlaylist = ref({
 // Import
 const importUrl = ref('')
 const autoSyncImport = ref(true)
+const isImporting = ref(false)
 
 const favoritesPlaylist = ref<any>({
   id: -1, // Changed from 'favorites' string to number
@@ -931,10 +932,41 @@ function removeRule(index: number) {
   smartPlaylist.value.rules.splice(index, 1)
 }
 
-function importPlaylist() {
-  console.log('Importing:', importUrl.value)
-  showImportModal.value = false
-  importUrl.value = ''
+function serviceFromPlaylistUrl(rawUrl: string): string | null {
+  try {
+    const host = new URL(rawUrl.trim()).hostname.toLowerCase().replace(/^www\./, '')
+    if (host === 'open.spotify.com' || host.endsWith('.spotify.com')) return 'spotify'
+    if (host === 'play.qobuz.com' || host.endsWith('.qobuz.com')) return 'qobuz'
+    if (host === 'listen.tidal.com' || host.endsWith('.tidal.com')) return 'tidal'
+    if (host === 'deezer.com' || host.endsWith('.deezer.com')) return 'deezer'
+  } catch {
+    return null
+  }
+  return null
+}
+
+async function importPlaylist() {
+  const service = serviceFromPlaylistUrl(importUrl.value)
+  if (!service) {
+    toast.error('Unsupported playlist URL', 'Use a Spotify, Qobuz, Tidal, or Deezer URL.')
+    return
+  }
+
+  isImporting.value = true
+  try {
+    const result = await importPlaylists(service)
+    if (result.errors.length > 0 && result.imported === 0) {
+      throw new Error(result.errors.join('; '))
+    }
+    toast.success(`Imported ${result.imported} playlist${result.imported === 1 ? '' : 's'} from ${service}`)
+    showImportModal.value = false
+    importUrl.value = ''
+    await loadPlaylists()
+  } catch (error) {
+    toast.error('Failed to import playlists', String(error))
+  } finally {
+    isImporting.value = false
+  }
 }
 
 async function playTrack(track: any) {
