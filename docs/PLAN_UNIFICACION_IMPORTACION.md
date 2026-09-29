@@ -1,8 +1,13 @@
 # Plan: Unificación del pipeline de importación entre servicios
 
-> Estado: propuesta aprobada (pendiente de ejecución)
+> Estado: EN EJECUCIÓN — F0, F1, F2 y F4 ejecutadas; F3 bloqueada por credenciales del propietario
 > Origen: comparativa manual de los métodos de importación de todos los servicios
 > Fecha: 2025-08-25
+> Última revisión de estado: `b9559da` (SYNC-AUD-069). El detalle commit a commit de
+> lo ya ejecutado está en `docs/MATRIZ_PARIDAD_IMPORTACION.md`; el bloqueo pendiente, en
+> `docs/Deuda_Tecnica_y_UX.md` (D-01). Este documento ya no es una propuesta: es el plan
+> con su estado real, y lo que queda por debajo de la línea es **solo** SoundCloud y
+> Apple Music.
 
 ## Objetivo
 
@@ -61,7 +66,7 @@ Asimetrías **intencionales que se conservan**: compras (solo Qobuz lo expone), 
 
 1. Eliminar código muerto: `SpotifyClient::import_library` (sin llamadores), `refresh_from_sp_dc` (letras usan su propio camino), pipeline audio-features legacy S68 (API retirada), `#![allow(dead_code)]` de sc/am donde aplique.
 2. Documentar decisión de identidad: `track_sources(service_id, service_track_id)` es la clave maestra para servicios sin columna dedicada (no se crean columnas `tidal_id`/`deezer_id` — Check A ya cubre).
-3. Matriz de paridad viva en `docs/` + actualización de `Deuda_Tecnica_y_UX.md`.
+3. Matriz de paridad viva en `docs/` + actualización de `docs/Deuda_Tecnica_y_UX.md`.
 
 ## Fase 5 — Tests (en paralelo con cada fase)
 
@@ -78,9 +83,18 @@ Asimetrías **intencionales que se conservan**: compras (solo Qobuz lo expone), 
 - **Apple Music exige developer_token vigente** → mensajes `RequiresAuth` accionables, sin crash del import.
 - **Cambios aditivos**: `EnrichmentEngine` ya es la vía de las descargas; no se toca su contrato.
 
-## Orden de ejecución recomendado
+## Orden de ejecución (original) y estado real
 
-Fase 0 → Fase 1 → Fase 2 → Fase 3 → Fase 4, con los tests de la Fase 5 escritos junto a cada fase (no al final).
+El orden de abajo es el que fija el plan; el estado real de cada fase está en
+`docs/MATRIZ_PARIDAD_IMPORTACION.md`:
+
+| Fase | Estado | Ancla |
+|---|---|---|
+| F0 | ejecutada | `f84219f` (S198+F0) |
+| F1 | ejecutada | `413da34` / `c27fc0c` / `ba5ba37` (Deezer) |
+| F2 | ejecutada | `2d43e5e` (F2-3), `2043672` (F2-5), `6ee9ce4` (F2-4) |
+| F3 | **bloqueada** | credenciales del propietario (OAuth app de SoundCloud, developer token de Apple Music) — `docs/Deuda_Tecnica_y_UX.md` D-01 |
+| F4 | ejecutada | `aa806b8` (F4-1), `docs/DECISION_IDENTIDAD_TRACKS.md` (F4-2) |
 
 ## Observaciones que motivan el plan
 

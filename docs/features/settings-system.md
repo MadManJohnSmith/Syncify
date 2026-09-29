@@ -1,6 +1,6 @@
 # Settings System
 
-**Estado de revisión:** 2026-09-05 — pendiente de revalidación contra la implementación actual. Úsalo como referencia de diseño y verifica el código fuente antes de confiar en los detalles.
+**Estado de revisión:** 2026-09-29 — revalidado por contraste automático de rutas contra el árbol (gate de CI: `scripts/tests/test_docs_consistency.py`): todas las rutas citadas existen o están declaradas como eliminadas. La narrativa sigue siendo referencia de diseño, no una descripción verificada del comportamiento; contrasta con el código antes de confiar en los detalles.
 
 **Último cambio:** S40 — 2026-03-30 — archivos: `commands/settings.rs`, composables
 **Leer antes de modificar:** `models.rs` (struct definitions), migrations 0007–0016
@@ -124,7 +124,7 @@ export function useXxxSettings() {
 | `useAccounts.ts` | Account connection state, import triggers | Commands |
 | `useAccountsStatus.ts` | Service connection status polling | Commands |
 | `useLibrary.ts` | Library data loading, search | Commands |
-| `useQueue.ts` | Download queue state | Commands |
+| ~~`useQueue.ts`~~ | ELIMINADO sin consumidores (`417a0eb`); la API de cola vive en `ui/src/api/queue.ts` y su configuración en `useDownloadSettings.ts` | Commands |
 | `useGlobalTasks.ts` | Background task coordination, toasts | Events |
 | `useEventBus.ts` | Cross-component event communication | Vue |
 | `useToast.ts` | Toast notification management | Vue |

@@ -1648,7 +1648,7 @@ pub async fn import_deezer_library(
 /// S190-interín: núcleo del import de likes de SoundCloud, COMPARTIDO por el
 /// comando legacy y el brazo "soundcloud" del motor unificado. Ruta CRUD
 /// directa (dedup título+duración, sin identidad canónica ISRC) hasta la
-/// integración real de Fase 3 — documentado en Deuda_Tecnica_y_UX.md.
+/// integración real de Fase 3 — documentado en `docs/Deuda_Tecnica_y_UX.md` (D-01).
 async fn run_soundcloud_likes_import(
     db: &DbPool,
     mut on_progress: impl FnMut(u64),

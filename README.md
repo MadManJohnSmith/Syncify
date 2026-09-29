@@ -57,7 +57,7 @@ cargo tauri dev
 ## Para desarrolladores
 
 - **Arquitectura**: escritorio Tauri v2 con núcleo en Rust multihilo (workers, primitivas atómicas y Tokio Notify) sobre SQLite en modo WAL con 84 migraciones sqlx; UI en Vue 3 + TailwindCSS v4 comunicada por IPC tipado.
-- **Estructura del Cargo Workspace**: Workspace virtual puro (`Cargo.toml` raíz) que agrupa `src-tauri` (aplicación de escritorio) y los crates miembros en `crates/`. El binario stub `syncify-core` (`src/main.rs`) ha sido retirado y el prototipo experimental `legacy/syncify-cli` ha sido clasificado y archivado fuera del árbol de compilación activo en `workspace/audit_archive/legacy/syncify-cli`.
+- **Estructura del Cargo Workspace**: Workspace virtual puro (`Cargo.toml` raíz) que agrupa `src-tauri` (aplicación de escritorio) y los crates miembros en `crates/`. El binario stub `syncify-core` (`src/main.rs`) ha sido retirado y el prototipo experimental `legacy/syncify-cli` ya no está en el árbol: quedó archivado solo en la máquina local del autor, bajo `workspace/audit_archive/legacy/syncify-cli`, ruta que `.gitignore` excluye y que por tanto **no existe en ningún checkout ni en CI**.
 - **Crates de dominio**: `syncify-core-domain` (calidad, identidad), `syncify-flac-writer` (escritura Vorbis/FLAC validada), `syncify-lyrics-domain` (contrato compartido de la cascada de letras), `syncify-metadata-domain` y `syncify-tidal-downloader`.
 - **Puentes Python**: Playwright (OAuth y captura de sesión), Mutagen (etiquetado), AcoustID/fpcalc (huellas acústicas).
 - **Descargas**: pipelines nativos de desencriptado DASH (Qobuz) y cliente Tidal con política estricta de calidad y fallback vía SongLink/Odesli.
@@ -108,7 +108,7 @@ El CI del repositorio ejecuta además `cargo clippy` y `cargo fmt`; te recomenda
 
 - Crea una rama descriptiva y mantén los commits enfocados, con mensajes estilo convencional (`feat:`, `fix:`, `docs:`, `refactor:`).
 - Si añades una funcionalidad visible, incluye cómo probarla; si tocas el pipeline de descargas o metadatos, añade o actualiza tests.
-- Abre un Pull Request contra `syncify-graphical` describiendo el qué y el porqué del cambio.
+- Abre un Pull Request contra `syncify-app` describiendo el qué y el porqué del cambio. Es la rama de desarrollo: `origin/syncify-graphical` está 29 commits por detrás y es un ancestro de `syncify-app`, así que apuntar allí enviaría la contribución a una base obsoleta.
 
 ### 5. Reporta bugs y propone ideas
 

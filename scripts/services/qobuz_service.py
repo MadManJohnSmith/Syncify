@@ -6,10 +6,20 @@ Based on QobuzDownloaderX-MOD architecture.
 import asyncio
 import aiohttp
 import hashlib
+import os
 import time
 from typing import List, Optional, Callable, TYPE_CHECKING
 from pathlib import Path
 import logging
+
+
+class QobuzSigningSecretMissing(ValueError):
+    """Raised when a Qobuz request would be signed with an empty app secret.
+
+    Qobuz signs `track/getFileUrl` with md5(payload + app_secret). An empty
+    secret produces a syntactically valid but always rejected signature, so the
+    only safe behaviour is to refuse instead of sending it.
+    """
 
 if TYPE_CHECKING:
     from core_logic.migration_engine import AudioQualityConfig, MetadataTagConfig
@@ -39,10 +49,18 @@ class QobuzService(MusicService):
     # API Configuration
     BASE_URL = "https://www.qobuz.com/api.json/0.2"
     
-    # Credentials extracted from Qobuz Web Player via streamrip's spoofer
-    # These are validated working credentials as of November 2025
+    # Public Qobuz application id. It is a client identifier, not a secret, and
+    # its presence in the tree is an accepted, documented risk
+    # (docs/Deuda_Tecnica_y_UX.md). Override it per deployment with the
+    # operator credentials or the QOBUZ_APP_ID environment variable.
     APP_ID = "798273057"
-    APP_SECRET = ""  # Working secret (verified)
+    # No signing secret is ever committed. This empty value is only a
+    # placeholder: it is replaced at runtime from the operator credentials
+    # (ServiceCredentials.app_secret / client_secret / extra["app_secret"]) or
+    # from the QOBUZ_APP_SECRET environment variable. Signing with the empty
+    # placeholder is refused by _sign_file_url_request instead of silently
+    # producing a signature that Qobuz always rejects.
+    APP_SECRET = ""
     
     # Quality mapping: DownloadQuality → Qobuz format_id
     # Qobuz format IDs (verified from QobuzDownloaderX-MOD):
@@ -71,11 +89,77 @@ class QobuzService(MusicService):
         self.user_id: Optional[str] = None
         self.subscription_credential: dict = {}
         self.logger = logging.getLogger(__name__)
-        
+
+        # Instance-level app credentials: the values supplied by the operator
+        # win over the class placeholders (SYNC-AUD-062).
+        self.APP_ID = self._resolve_app_id(credentials)
+        self.APP_SECRET = self._resolve_app_secret(credentials)
+        if not self.APP_SECRET:
+            self.logger.warning(
+                "Qobuz app secret not configured: file URL requests will be "
+                "refused until QOBUZ_APP_SECRET or credentials.app_secret is set"
+            )
+
         # Metadata enrichment configuration
         self.enable_metadata_enrichment = enable_metadata_enrichment
         self.lastfm_api_key = lastfm_api_key
-    
+
+    @staticmethod
+    def _first_credential_value(credentials: ServiceCredentials, *keys: str) -> Optional[str]:
+        """Return the first non-empty string among the credential aliases."""
+        extra = getattr(credentials, "extra", None) or {}
+        for key in keys:
+            for candidate in (getattr(credentials, key, None), extra.get(key)):
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+        return None
+
+    @classmethod
+    def _resolve_app_id(cls, credentials: ServiceCredentials) -> str:
+        """Resolve the Qobuz app id: operator credentials, then env, then default."""
+        return (
+            cls._first_credential_value(credentials, "app_id", "client_id")
+            or (os.getenv("QOBUZ_APP_ID") or "").strip()
+            or cls.APP_ID
+        )
+
+    @classmethod
+    def _resolve_app_secret(cls, credentials: ServiceCredentials) -> str:
+        """Resolve the Qobuz app secret: operator credentials, then env, then default.
+
+        The committed default is intentionally empty; returning it means "no
+        secret configured", which callers must treat as a hard stop before
+        signing (see `_sign_file_url_request`).
+        """
+        return (
+            cls._first_credential_value(credentials, "app_secret", "client_secret")
+            or (os.getenv("QOBUZ_APP_SECRET") or "").strip()
+            or cls.APP_SECRET
+        ).strip()
+
+    def has_signing_secret(self) -> bool:
+        """True when a non-empty app secret is available to sign requests."""
+        return bool((self.APP_SECRET or "").strip())
+
+    def _sign_file_url_request(self, format_id: str, track_id: str, timestamp) -> str:
+        """Build the `track/getFileUrl` signature, refusing to sign without a secret.
+
+        The concatenation order is the one of the Rust core
+        (`download/qobuz.rs::build_request_signature`): given the same
+        format_id, track_id, timestamp string and secret, both implementations
+        produce the same MD5 digest. They render the timestamp differently
+        (Rust integer seconds, Python float), which only changes the value that
+        travels in `request_ts`, never the algorithm.
+        """
+        secret = (self.APP_SECRET or "").strip()
+        if not secret:
+            raise QobuzSigningSecretMissing(
+                "Qobuz app secret is empty: set QOBUZ_APP_SECRET or pass "
+                "credentials.app_secret; refusing to sign track/getFileUrl"
+            )
+        sign_string = f"trackgetFileUrlformat_id{format_id}intentstreamtrack_id{track_id}{timestamp}{secret}"
+        return hashlib.md5(sign_string.encode()).hexdigest()
+
     def _get_max_quality(self, track_data: dict) -> str:
         """Determine maximum available quality from track data."""
         if track_data.get('maximum_bit_depth'):
@@ -1092,16 +1176,26 @@ class QobuzService(MusicService):
         if not self.user_auth_token:
             self._log("Cannot get download URL without authentication", "error")
             return None
-        
+
+        # Refuse before any request: an empty secret yields a signature Qobuz
+        # always rejects, and sending it hides a configuration error (SYNC-AUD-062).
+        if not self.has_signing_secret():
+            self._log(
+                "Qobuz app secret is not configured: set QOBUZ_APP_SECRET or pass "
+                "credentials.app_secret. Refusing to sign track/getFileUrl with an "
+                "empty secret.",
+                "error",
+            )
+            return None
+
         try:
             # Generate request signature (using streamrip's proven algorithm)
             timestamp = time.time()  # Use float timestamp like streamrip
             format_id_str = str(format_id)
             track_id_str = str(track_id)
-            
+
             # Signature string format from streamrip (verified working)
-            sign_string = f"trackgetFileUrlformat_id{format_id_str}intentstreamtrack_id{track_id_str}{timestamp}{self.APP_SECRET}"
-            request_sig = hashlib.md5(sign_string.encode()).hexdigest()
+            request_sig = self._sign_file_url_request(format_id_str, track_id_str, timestamp)
             
             params = {
                 "track_id": track_id_str,

@@ -1,6 +1,6 @@
 # Metadata Enrichment
 
-**Estado de revisión:** 2026-09-05 — pendiente de revalidación contra la implementación actual. Úsalo como referencia de diseño y verifica el código fuente antes de confiar en los detalles.
+**Estado de revisión:** 2026-09-29 — revalidado por contraste automático de rutas contra el árbol (gate de CI: `scripts/tests/test_docs_consistency.py`): todas las rutas citadas existen o están declaradas como eliminadas. La narrativa sigue siendo referencia de diseño, no una descripción verificada del comportamiento; contrasta con el código antes de confiar en los detalles.
 
 **Último cambio:** S199 — 2026-08-25 — archivos: `commands/metadata.rs`, `commands/tools.rs`, `main.rs`, `ui/src/views/MetadataView.vue`
 **Leer antes de modificar:** `services/lastfm.rs`, `services/spotify.rs` (audio features), `models.rs`

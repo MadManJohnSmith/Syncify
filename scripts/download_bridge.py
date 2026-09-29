@@ -174,6 +174,14 @@ async def download_qobuz(track_id: str, output_path: str, quality: str) -> Downl
     """Download a track from Qobuz."""
     service = await get_qobuz_service()
     try:
+        # Qobuz signs every track/getFileUrl request with the app secret; an
+        # empty secret is always rejected, so fail here with an actionable
+        # message instead of downloading nothing (SYNC-AUD-062).
+        if not getattr(service, "has_signing_secret", lambda: True)():
+            raise RuntimeError(
+                "Qobuz app secret is not configured: set QOBUZ_APP_SECRET before "
+                "downloading. Qobuz rejects file URL requests signed with an empty secret."
+            )
         dl_quality = map_quality(quality)
         dest_path = resolve_output_path(output_path, "qobuz", track_id, dl_quality)
         return await service.download_track(
