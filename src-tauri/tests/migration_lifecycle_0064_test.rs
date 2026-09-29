@@ -277,16 +277,36 @@ async fn test_migration_0064_upgrade_stepwise_with_existing_data() {
             .unwrap();
     assert_eq!(pt_count.0, 3);
 
-    // Verify track 603 was merged into 601 and repointed in playlist_tracks
-    let pt_pos2: (i64,) = sqlx::query_as(
-        "SELECT track_id FROM playlist_tracks WHERE playlist_id = 200 AND position = 2",
+    // Verify track 603 was merged into 601 and repointed in playlist_tracks.
+    // The row is identified by its stable id, not by `position`: migration 0064 merged the loser
+    // into the winner on the row that was inserted with position 2, but the later migration
+    // 0077 renumbers playlist positions to 1..N, so that row now sits at position 3.
+    let repointed: (i64, i64) = sqlx::query_as(
+        "SELECT track_id, position FROM playlist_tracks WHERE id = 3 AND playlist_id = 200",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
     assert_eq!(
-        pt_pos2.0, 601,
-        "Playlist track at pos 2 must be repointed from loser 603 to winner 601"
+        repointed.0, 601,
+        "Playlist track row 3 must be repointed from loser 603 to winner 601"
+    );
+    assert_eq!(
+        repointed.1, 3,
+        "Migration 0077 must compact playlist positions to 1..N"
+    );
+
+    // Positions are 1-indexed, sequential and gap-free after 0077
+    let positions: Vec<(i64,)> = sqlx::query_as(
+        "SELECT position FROM playlist_tracks WHERE playlist_id = 200 ORDER BY position",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        positions.iter().map(|p| p.0).collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "Playlist positions must be compacted to 1..N"
     );
 
     // Verify winner 601 inherited is_favorite = 1 from loser 603

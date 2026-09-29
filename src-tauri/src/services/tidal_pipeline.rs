@@ -3559,8 +3559,8 @@ pub async fn reenrich_download_file_with_baseline(
     use syncify_core_domain::repair::{RepairOutputHashes, RepairValidationStatus};
 
     // 1. Resolve download and track records
-    let row: Option<(i64, i64, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<String>, Option<i64>)> = sqlx::query_as(
-        r#"SELECT d.id, d.track_id, d.file_path, d.file_format, ts.service_track_id, t.title, ar.name, al.title, t.track_number, t.disc_number, t.isrc, t.album_id
+    let row: Option<(i64, i64, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<String>, Option<i64>, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT d.id, d.track_id, d.file_path, d.file_format, ts.service_track_id, t.title, ar.name, al.title, t.track_number, t.disc_number, t.isrc, t.album_id, al.release_date, al.cover_art_url
            FROM downloads d
            LEFT JOIN tracks t ON t.id = d.track_id
            LEFT JOIN track_sources ts ON ts.track_id = t.id AND ts.service_id = (SELECT id FROM services WHERE LOWER(name) = 'tidal' LIMIT 1)
@@ -3589,6 +3589,8 @@ pub async fn reenrich_download_file_with_baseline(
         disc_num_opt,
         isrc_opt,
         ghost_album_id_opt,
+        local_release_date_opt,
+        local_cover_opt,
     ) = row.ok_or_else(|| {
         format!(
             "Download record not found for ID {}",
@@ -3686,62 +3688,116 @@ pub async fn reenrich_download_file_with_baseline(
             rt_cover,
         ),
         None => {
-            let mut resolved_track: Option<TidalTrack> = None;
-            if let Ok(tid_num) = tidal_id.parse::<i64>() {
-                if let Ok(t) = downloader
-                    .get_track_with_country(tid_num, country_code)
+            // The download's own track row is the only local candidate: `local_real_track`
+            // deliberately excludes the row being repaired, so a library that holds a single
+            // Tidal-sourced track used to leave nothing local and force a network round trip.
+            // The artist is also recoverable without the network: it is the one linked to the
+            // same Tidal id, even when no `track_artists` row was written yet.
+            let local_artist: Option<String> = match artist_opt.clone() {
+                Some(artist) => Some(artist),
+                None => match tidal_id.parse::<i64>() {
+                    Ok(tid) => sqlx::query_scalar(
+                        "SELECT name FROM artists WHERE tidal_id = ? ORDER BY id LIMIT 1",
+                    )
+                    .bind(tid)
+                    .fetch_optional(db)
                     .await
-                {
-                    resolved_track = Some(t);
-                }
-            }
+                    .unwrap_or(None),
+                    Err(_) => None,
+                },
+            };
 
-            if resolved_track.is_none() {
-                if let (Some(ref t), Some(ref a)) = (&title_opt, &artist_opt) {
-                    if !t.starts_with("Tidal Track ") && a != "Unknown Artist" {
-                        if let Ok(t) = downloader.search_by_metadata(t, a, 0).await {
-                            resolved_track = Some(t);
+            let local_title_is_placeholder = title_opt
+                .as_deref()
+                .map(|t| t.starts_with("Tidal Track ") || t.is_empty())
+                .unwrap_or(true);
+
+            // Only reach for the network when the library cannot answer the question itself.
+            let local_is_complete =
+                !local_title_is_placeholder && local_artist.is_some() && album_opt.is_some();
+
+            let mut resolved_track: Option<TidalTrack> = None;
+            if !local_is_complete {
+                if let Ok(tid_num) = tidal_id.parse::<i64>() {
+                    if let Ok(t) = downloader
+                        .get_track_with_country(tid_num, country_code)
+                        .await
+                    {
+                        resolved_track = Some(t);
+                    }
+                }
+
+                if resolved_track.is_none() {
+                    if let (Some(ref t), Some(ref a)) = (&title_opt, &artist_opt) {
+                        if !t.starts_with("Tidal Track ") && a != "Unknown Artist" {
+                            if let Ok(t) = downloader.search_by_metadata(t, a, 0).await {
+                                resolved_track = Some(t);
+                            }
                         }
                     }
                 }
             }
 
-            let track = resolved_track.ok_or_else(|| {
-                format!(
-                    "MetadataResolutionFailed: Unable to resolve metadata for Tidal track ID {}",
-                    tidal_id
-                )
-            })?;
-            let f_title = track.title.clone();
-            let f_artist = track
-                .artist_name()
-                .or(artist_opt)
-                .unwrap_or_else(|| "Unknown Artist".to_string());
-            let f_album = track
-                .album_title()
-                .or(album_opt)
-                .unwrap_or_else(|| "Unknown Album".to_string());
-            let f_rel = track
-                .album
-                .as_ref()
-                .and_then(|a| a.release_date.clone())
-                .unwrap_or_else(|| "2024-01-01".to_string());
-            let f_num = track.get_track_number().max(trk_num_opt.unwrap_or(1));
-            let f_disc = track.get_disc_number().max(disc_num_opt.unwrap_or(1));
-            let f_isrc = track.isrc.clone().or(isrc_opt).unwrap_or_default();
-            let f_cover = track.album.as_ref().and_then(|a| a.cover_url());
+            match resolved_track {
+                Some(track) => {
+                    let f_title = track.title.clone();
+                    let f_artist = track
+                        .artist_name()
+                        .or(local_artist.clone())
+                        .unwrap_or_else(|| "Unknown Artist".to_string());
+                    let f_album = track
+                        .album_title()
+                        .or(album_opt.clone())
+                        .unwrap_or_else(|| "Unknown Album".to_string());
+                    let f_rel = track
+                        .album
+                        .as_ref()
+                        .and_then(|a| a.release_date.clone())
+                        .unwrap_or_else(|| "2024-01-01".to_string());
+                    let f_num = track.get_track_number().max(trk_num_opt.unwrap_or(1));
+                    let f_disc = track.get_disc_number().max(disc_num_opt.unwrap_or(1));
+                    let f_isrc = track.isrc.clone().or(isrc_opt.clone()).unwrap_or_default();
+                    let f_cover = track.album.as_ref().and_then(|a| a.cover_url());
 
-            (
-                old_track_id,
-                f_title,
-                f_artist,
-                f_album,
-                f_rel,
-                f_num,
-                f_disc,
-                f_isrc,
-                f_cover,
-            )
+                    (
+                        old_track_id,
+                        f_title,
+                        f_artist,
+                        f_album,
+                        f_rel,
+                        f_num,
+                        f_disc,
+                        f_isrc,
+                        f_cover,
+                    )
+                }
+                // Offline or unauthorized: keep the metadata the library already holds instead of
+                // failing the repair with an error only the Tidal API could clear. Repairing
+                // must never require undeclared network access.
+                None => {
+                    tracing::warn!(
+                        "No Tidal metadata resolved for track {}; keeping the local library values",
+                        tidal_id
+                    );
+                    (
+                        old_track_id,
+                        title_opt
+                            .clone()
+                            .unwrap_or_else(|| format!("Tidal Track {}", tidal_id)),
+                        local_artist.unwrap_or_else(|| "Unknown Artist".to_string()),
+                        album_opt
+                            .clone()
+                            .unwrap_or_else(|| "Unknown Album".to_string()),
+                        local_release_date_opt
+                            .clone()
+                            .unwrap_or_else(|| "2024-01-01".to_string()),
+                        trk_num_opt.unwrap_or(1),
+                        disc_num_opt.unwrap_or(1),
+                        isrc_opt.clone().unwrap_or_default(),
+                        local_cover_opt.clone(),
+                    )
+                }
+            }
         }
     };
 

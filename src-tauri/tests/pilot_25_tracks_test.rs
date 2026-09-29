@@ -83,8 +83,9 @@ async fn setup_pilot_db() -> (SqlitePool, TempDir) {
         sqlx::query(
             r#"INSERT INTO tracks (
                 id, title, source_title, album_id, track_number, isrc, musicbrainz_id,
-                release_year, genre, record_label, bpm, musical_key, enrichment_status
-            ) VALUES (?, ?, ?, 10, ?, ?, ?, 2001, 'Alternative', 'Parlophone', 120.0, 'Am', 'enriched')"#
+                release_year, genre, record_label, bpm, musical_key, acoustid_fingerprint,
+                enrichment_status
+            ) VALUES (?, ?, ?, 10, ?, ?, ?, 2001, 'Alternative', 'Parlophone', 120.0, 'Am', ?, 'enriched')"#
         )
         .bind(i)
         .bind(format!("Pre-enriched Track {}", i))
@@ -92,6 +93,7 @@ async fn setup_pilot_db() -> (SqlitePool, TempDir) {
         .bind(i)
         .bind(format!("GBAYE01000{:02}", i))
         .bind(format!("mb-rec-pre-{}", i))
+        .bind(format!("AQAD-pilot-pre-enriched-{}", i))
         .execute(&pool)
         .await
         .unwrap();

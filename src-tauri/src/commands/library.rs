@@ -3329,9 +3329,12 @@ pub async fn auto_resolve_duplicates_inner(
             }
         }
 
-        // TASK-138: Sincronizar total_tracks tras merge y deduplicacion
+        // TASK-138: derive total_tracks from the library, but only when the album has no declared
+        // count yet. Merging removes a duplicate *representation* of a track, not a track of the
+        // album, so a declared count still describes the album and must survive; recounting
+        // unconditionally collapsed a declared 10 to the number of surviving local rows.
         let _ = sqlx::query(
-            "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)"
+            "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0)"
         )
         .bind(album_id)
         .execute(&mut *tx).await;
