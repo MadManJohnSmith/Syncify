@@ -324,8 +324,13 @@ fn test_sanitize_flac_pictures_remediates_legacy_corrupt_blocks() {
     assert_eq!(pics[0].height, 0);
 
     // Apply sanitize_flac_pictures
-    let repaired = sanitize_flac_pictures(&flac_path).expect("sanitize_flac_pictures must succeed");
-    assert!(repaired, "Sanitizer must report modification/repair");
+    let report = sanitize_flac_pictures(&flac_path).expect("sanitize_flac_pictures must succeed");
+    assert!(report.modified, "Sanitizer must report modification/repair");
+    assert!(
+        report.dropped_unrepairable_blocks.is_empty(),
+        "A block that can be transcoded must be repaired, never dropped: {:?}",
+        report.dropped_unrepairable_blocks
+    );
 
     if !animated_webp_decode_available() {
         // The repair contract below needs the runner's FFmpeg to transcode the legacy
@@ -351,7 +356,63 @@ fn test_sanitize_flac_pictures_remediates_legacy_corrupt_blocks() {
     // Idempotence test
     let second_run = sanitize_flac_pictures(&flac_path).expect("second sanitize run");
     assert!(
-        !second_run,
+        !second_run.modified,
         "Second run on already compliant file must report no modification"
     );
+}
+
+/// SYNC-AUD-066: an irreparable PICTURE block is removed from the file, and that
+/// loss is now part of the returned report instead of a log line plus `Ok(true)`.
+#[test]
+fn test_sanitize_flac_pictures_reports_unrepairable_blocks() {
+    let dir = tempdir().expect("tempdir");
+    let flac_path = dir.path().join("unrepairable_cover.flac");
+    create_synthetic_flac(&flac_path);
+
+    // Corrupt WebP payload: `prepare_flac_picture` rejects it, and the failure is
+    // pure container validation, so this needs no FFmpeg decoder on the runner.
+    let mut tag = Tag::read_from_path(&flac_path).expect("read FLAC");
+    let mut pic = metaflac::block::Picture::new();
+    pic.picture_type = PictureType::CoverFront;
+    pic.mime_type = "image/webp".to_string();
+    pic.width = 0;
+    pic.height = 0;
+    pic.data =
+        b"RIFF\x14\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+            .to_vec();
+    tag.push_block(metaflac::block::Block::Picture(pic));
+    tag.write_to_path(&flac_path)
+        .expect("write FLAC with unrepairable cover");
+
+    let report = sanitize_flac_pictures(&flac_path).expect("sanitize_flac_pictures must succeed");
+
+    assert!(report.modified, "the block is removed from the file");
+    assert_eq!(report.repaired_blocks, 0, "nothing could be repaired");
+    assert!(
+        report.dropped_cover_art(),
+        "losing the cover art must be visible to the caller"
+    );
+    assert_eq!(
+        report.dropped_unrepairable_blocks.len(),
+        1,
+        "exactly the irrepairable block must be reported: {:?}",
+        report.dropped_unrepairable_blocks
+    );
+    assert!(
+        report.dropped_unrepairable_blocks[0].contains("CoverFront"),
+        "the report must identify the lost block: {:?}",
+        report.dropped_unrepairable_blocks
+    );
+
+    let after = Tag::read_from_path(&flac_path).expect("read FLAC after sanitize");
+    assert_eq!(
+        after.pictures().count(),
+        0,
+        "the irrepairable block must not stay embedded"
+    );
+
+    // A compliant file reports no modification and no loss.
+    let clean = sanitize_flac_pictures(&flac_path).expect("second sanitize run");
+    assert!(!clean.modified);
+    assert!(clean.dropped_unrepairable_blocks.is_empty());
 }

@@ -1327,20 +1327,46 @@ impl FlacTagExt for metaflac::Tag {
     }
 }
 
+/// Outcome of a [`sanitize_flac_pictures`] run.
+///
+/// `dropped_unrepairable_blocks` is what used to be invisible: a PICTURE block
+/// that cannot be repaired is removed from the file, and until SYNC-AUD-066 that
+/// data loss was only a `tracing::warn` plus a bare `Ok(true)`, so neither the
+/// pipeline nor the user learned that the cover art was gone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FlacPictureSanitizeReport {
+    /// True when the file on disk was rewritten.
+    pub modified: bool,
+    /// Blocks replaced by a repaired copy.
+    pub repaired_blocks: usize,
+    /// One entry per block removed without a replacement (block kind, size, cause).
+    pub dropped_unrepairable_blocks: Vec<String>,
+}
+
+impl FlacPictureSanitizeReport {
+    /// True when embedded art was lost instead of repaired.
+    pub fn dropped_cover_art(&self) -> bool {
+        !self.dropped_unrepairable_blocks.is_empty()
+    }
+}
+
 /// Inspect a FLAC file and sanitize any embedded PICTURE blocks that violate
 /// the compatibility contract (dimensions 0x0, size > 800 KB, or oversized/corrupt WebP).
 ///
-/// Returns `Ok(true)` if repairs were applied, `Ok(false)` if already compliant.
-pub fn sanitize_flac_pictures(file_path: &Path) -> Result<bool, String> {
+/// Returns the run report: `modified` tells whether the file was rewritten,
+/// `repaired_blocks` how many blocks were fixed and `dropped_unrepairable_blocks`
+/// which ones had to be discarded because no valid replacement exists. Callers
+/// must surface the drops: the block is gone from the file either way (SYNC-AUD-066).
+pub fn sanitize_flac_pictures(file_path: &Path) -> Result<FlacPictureSanitizeReport, String> {
     let mut tag = metaflac::Tag::read_from_path(file_path)
         .map_err(|e| format!("Failed to read FLAC file: {}", e))?;
 
     let pictures: Vec<_> = tag.pictures().cloned().collect();
     if pictures.is_empty() {
-        return Ok(false);
+        return Ok(FlacPictureSanitizeReport::default());
     }
 
-    let mut modified = false;
+    let mut report = FlacPictureSanitizeReport::default();
     let mut sanitized_blocks = Vec::new();
 
     for pic in pictures {
@@ -1353,15 +1379,27 @@ pub fn sanitize_flac_pictures(file_path: &Path) -> Result<bool, String> {
                 Ok(mut clean_pic) => {
                     clean_pic.picture_type = pic.picture_type;
                     sanitized_blocks.push(clean_pic);
-                    modified = true;
+                    report.repaired_blocks += 1;
+                    report.modified = true;
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Removing unrepairable picture block from {:?}: {}",
+                    // The block is removed, but the loss is now an explicit part
+                    // of the result instead of a log line nobody reads.
+                    tracing::error!(
+                        "Removing unrepairable picture block ({:?}, {} bytes) from {:?}: {}",
+                        pic.picture_type,
+                        pic.data.len(),
                         file_path,
                         e
                     );
-                    modified = true;
+                    report.dropped_unrepairable_blocks.push(format!(
+                        "{:?} ({} bytes, {}): {}",
+                        pic.picture_type,
+                        pic.data.len(),
+                        pic.mime_type,
+                        e
+                    ));
+                    report.modified = true;
                 }
             }
         } else {
@@ -1369,7 +1407,7 @@ pub fn sanitize_flac_pictures(file_path: &Path) -> Result<bool, String> {
         }
     }
 
-    if modified {
+    if report.modified {
         let orig_md5: Option<[u8; 16]> = tag.get_streaminfo().and_then(|info| {
             if info.md5.len() == 16 && info.md5.iter().any(|&b| b != 0) {
                 let mut arr = [0u8; 16];
@@ -1398,7 +1436,7 @@ pub fn sanitize_flac_pictures(file_path: &Path) -> Result<bool, String> {
             .map_err(|e| format!("Failed to write sanitized FLAC tags: {}", e))?;
     }
 
-    Ok(modified)
+    Ok(report)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

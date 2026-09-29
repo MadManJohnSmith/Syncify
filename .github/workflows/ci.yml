@@ -1,7 +1,10 @@
 # Primer pipeline de CI de Syncify.
 # Tres jobs independientes en paralelo: Rust (src-tauri), Frontend (ui/) y smoke de sintaxis de los bridges Python (scripts/).
-# Nota Deuda A12: los 2 tests de batch_50_audit_test se cuelgan >60 s en paralelo,
-# por eso se excluyen del pase general y se re-ejecutan serializados (--test-threads=1).
+# Deuda A12 CERRADA: los 2 tests de batch_50_audit_test ya no se excluyen del pase general ni
+# necesitan un pase serializado para no colgarse. La causa no era el paralelismo, sino el pool
+# SQLite en memoria compartida (SYNC-AUD-060), y ademas ya no escriben fuera de su TempDir
+# (SYNC-AUD-061). El paso (c) se conserva unicamente como corrida aislada con cota de tiempo
+# propia (timeout-minutes: 10), no como mitigacion.
 # Los tests live-network están marcados #[ignore]: NO usamos --include-ignored.
 
 name: CI
