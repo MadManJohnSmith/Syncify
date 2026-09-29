@@ -369,6 +369,46 @@ async fn test_merge_duplicates_synchronizes_total_tracks() {
         .await
         .unwrap();
 
+    // Second album, this one with NO declared total, and its own duplicate pair with a distinct
+    // title so it forms a separate merge component. It keeps the "merge derives a
+    // missing total" behaviour covered now that a declared total is preserved instead.
+    let album2_id: i64 = sqlx::query_scalar("INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Undeclared Album', NULL, 0) RETURNING id")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let t3: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, duration_ms, audio_quality, track_number, disc_number) VALUES ('Other Song', ?, 200000, 'lossless', 1, 1) RETURNING id",
+    )
+    .bind(album2_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let t4: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, duration_ms, audio_quality, track_number, disc_number) VALUES ('Other Song', ?, 200500, 'lossy', 1, 1) RETURNING id",
+    )
+    .bind(album2_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary'), (?, ?, 'primary')")
+        .bind(t3).bind(artist_id)
+        .bind(t4).bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, 'src3'), (?, ?, 'src4')")
+        .bind(t3)
+        .bind(s1.0)
+        .bind(t4)
+        .bind(s1.0)
+        .execute(&pool)
+        .await
+        .unwrap();
+
     // Prior to merge, total_tracks is 2
     let tt_pre: i32 = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
         .bind(album_id)
@@ -383,19 +423,41 @@ async fn test_merge_duplicates_synchronizes_total_tracks() {
         .expect("merge_level2_3_duplicates_inner should execute cleanly");
 
     assert_eq!(
-        merge_res.tracks_removed, 1,
-        "Expected 1 duplicate track removed"
+        merge_res.tracks_removed, 2,
+        "Expected 1 duplicate track removed per album (2 albums)"
     );
 
-    // Verify album total_tracks is now synchronized to 1
-    let tt_post: i32 = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
+    // A declared total describes the album, and merging removes a duplicate representation of a
+    // track rather than a track of the album, so the declared count must survive the merge.
+    let tt_post: Option<i32> = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
         .bind(album_id)
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(
-        tt_post, 1,
-        "Album total_tracks must be updated to 1 following merge"
+        tt_post,
+        Some(2),
+        "Declared album total_tracks must be preserved across the merge"
+    );
+
+    // The duplicate really was removed: the album now holds a single row for that track.
+    let survivors: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE album_id = ?")
+        .bind(album_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(survivors, 1, "Merge must leave one surviving track row");
+
+    // An album with no declared count still gets it derived from the library.
+    let tt2_post: Option<i32> = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
+        .bind(album2_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        tt2_post,
+        Some(1),
+        "Album without a declared total must be synchronized to its surviving track count"
     );
 }
 

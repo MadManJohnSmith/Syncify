@@ -141,7 +141,7 @@ async fn test_flac_tagging_and_conditional_sqlite_persistence_roundtrip() {
         .execute(&pool).await.unwrap();
     sqlx::query("CREATE TABLE track_artists (track_id INTEGER, artist_id INTEGER, role TEXT, PRIMARY KEY(track_id, artist_id));")
         .execute(&pool).await.unwrap();
-    sqlx::query("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, release_date TEXT, upc TEXT, total_tracks INTEGER, label TEXT, musicbrainz_id TEXT);")
+    sqlx::query("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, release_date TEXT, upc TEXT, total_tracks INTEGER, label TEXT, musicbrainz_id TEXT, is_stub INTEGER NOT NULL DEFAULT 0);")
         .execute(&pool).await.unwrap();
 
     sqlx::query("INSERT INTO artists (name) VALUES ('David Bowie');")

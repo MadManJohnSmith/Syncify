@@ -1953,12 +1953,22 @@ impl EnrichmentEngine {
                     .await;
             }
             if let Some(tt) = meta.track_total.value().and_then(|s| s.parse::<i32>().ok()) {
-                let _ =
-                    sqlx::query("UPDATE albums SET total_tracks = ? WHERE id = ? AND is_stub = 1")
-                        .bind(tt)
-                        .bind(album_id)
-                        .execute(&mut *tx)
-                        .await;
+                // The provider's track_total is authoritative album metadata: it describes the
+                // album itself, not how many of its tracks happen to be in the library yet, so
+                // it is persisted for every album. It used to be restricted to `is_stub = 1`,
+                // which left non-stub albums without a declared total at all.
+                if let Err(e) = sqlx::query("UPDATE albums SET total_tracks = ? WHERE id = ?")
+                    .bind(tt)
+                    .bind(album_id)
+                    .execute(&mut *tx)
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to persist provider track_total for album {}: {}",
+                        album_id,
+                        e
+                    );
+                }
             }
             if let Some(lbl) = meta.label.value() {
                 let _ = sqlx::query("UPDATE albums SET label = ? WHERE id = ?")
@@ -1975,13 +1985,23 @@ impl EnrichmentEngine {
                     .await;
             }
 
-            // TASK-138: For non-stub albums, ensure total_tracks accurately reflects COUNT(tracks) in library
-            let _ = sqlx::query(
-                "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)"
+            // TASK-138: for non-stub albums without a declared track count, derive it from the
+            // library. An already recorded count describes the album and is left alone:
+            // recounting unconditionally collapsed a 10-track album to the number of its
+            // locally downloaded tracks, so a partial library mislabelled every album.
+            if let Err(e) = sqlx::query(
+                "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0)"
             )
             .bind(album_id)
             .execute(&mut *tx)
-            .await;
+            .await
+            {
+                tracing::warn!(
+                    "Failed to derive total_tracks for album {}: {}",
+                    album_id,
+                    e
+                );
+            }
         }
 
         tx.commit()
@@ -3300,24 +3320,37 @@ impl EnrichmentEngine {
         let is_new_import =
             is_new_global_track || is_new_source_for_service || is_new_library_entry_for_account;
 
-        // TASK-138: Sincronizar total_tracks de albumes afectados con el conteo real de pistas
+        // TASK-138: derive total_tracks of affected albums from the library, but only when the
+        // album has no declared count yet. A provider track_total (or a previously derived one)
+        // describes the album, so it survives a partial sync instead of collapsing to the
+        // number of tracks that happen to be downloaded.
         if let Some(aid) = album_id_opt {
-            let _ = sqlx::query(
-                "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)"
+            if let Err(e) = sqlx::query(
+                "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0)"
             )
             .bind(aid)
             .execute(&mut *tx)
-            .await;
+            .await
+            {
+                tracing::warn!("Failed to derive total_tracks for album {}: {}", aid, e);
+            }
         }
 
         if let Some(old_aid) = old_album_id {
             if Some(old_aid) != album_id_opt {
-                let _ = sqlx::query(
-                    "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)"
+                if let Err(e) = sqlx::query(
+                    "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0)"
                 )
                 .bind(old_aid)
                 .execute(&mut *tx)
-                .await;
+                .await
+                {
+                    tracing::warn!(
+                        "Failed to derive total_tracks for album {}: {}",
+                        old_aid,
+                        e
+                    );
+                }
             }
         }
 
