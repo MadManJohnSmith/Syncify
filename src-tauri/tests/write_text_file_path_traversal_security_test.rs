@@ -9,6 +9,9 @@
 //! 4. Prevention of symlink hijacking / traversal.
 //! 5. Successful writes for legitimate paths and formats with cleanup in allowed directories.
 
+mod common;
+
+use common::{resolve_sandbox_test_base, resolve_secondary_sandbox_dir};
 use std::fs;
 use std::path::PathBuf;
 use syncify_tauri_lib::commands::{
@@ -16,22 +19,35 @@ use syncify_tauri_lib::commands::{
     write_text_file, ALLOWED_WRITE_EXTENSIONS,
 };
 
-/// Resolves a writable directory that is strictly confined within Documents for live tests.
+/// Resolves a writable directory strictly confined to the write sandbox for live tests.
+///
+/// The base is derived from `get_allowed_write_directories()` rather than from
+/// `dirs::document_dir()`, which only reads `$XDG_CONFIG_HOME/user-dirs.dirs`
+/// on Linux and returns `None` without it: on the `ubuntu-latest` CI runner
+/// these helpers used to panic in `expect` before any assertion ran.
 fn resolve_writable_documents_test_dir() -> PathBuf {
-    let doc_dir = dirs::document_dir().expect("Documents directory must be resolvable");
-    let candidate = if doc_dir.join("Syncify/target").exists() {
-        doc_dir.join("Syncify/target/sec003_e2e_tests")
-    } else {
-        doc_dir.join("syncify_sec003_e2e_tests")
-    };
-    let _ = fs::create_dir_all(&candidate);
-    candidate
+    resolve_sandbox_test_base(
+        &[get_allowed_write_directories()],
+        "syncify_sec003_e2e_tests",
+    )
+}
+
+/// Returns a second allowed base outside the primary sandbox, so the suite can
+/// still assert that legitimate paths outside the primary test directory are
+/// accepted. Falls back to the primary base when the platform discovers no
+/// further allowed directory, which is the case on a bare CI runner.
+fn secondary_allowed_write_dir() -> PathBuf {
+    resolve_secondary_sandbox_dir(
+        &resolve_writable_documents_test_dir(),
+        &[get_allowed_write_directories()],
+        "syncify_sec003_e2e_tests",
+    )
 }
 
 #[tokio::test]
 async fn test_path_traversal_sequences_rejected() {
-    let download_dir = dirs::download_dir().expect("Downloads directory must be resolvable");
-    let doc_dir = dirs::document_dir().expect("Documents directory must be resolvable");
+    let download_dir = secondary_allowed_write_dir();
+    let doc_dir = resolve_writable_documents_test_dir();
 
     // Traversal using .. components toward sensitive targets (/etc/, ~/.bashrc, ~/.ssh/)
     let traversal_cases = [
@@ -106,8 +122,8 @@ async fn test_relative_paths_rejected() {
 
 #[tokio::test]
 async fn test_dangerous_extensions_rejected_in_allowed_directories() {
-    let download_dir = dirs::download_dir().expect("Downloads directory must be resolvable");
-    let doc_dir = dirs::document_dir().expect("Documents directory must be resolvable");
+    let download_dir = secondary_allowed_write_dir();
+    let doc_dir = resolve_writable_documents_test_dir();
 
     let dangerous_files = [
         download_dir.join("malware.sh"),
@@ -163,7 +179,7 @@ async fn test_empty_path_or_content_rejected() {
         "Whitespace-only path must be rejected"
     );
 
-    let doc_dir = dirs::document_dir().expect("Documents directory must be resolvable");
+    let doc_dir = resolve_writable_documents_test_dir();
     let valid_path = doc_dir.join("empty_test.txt").to_string_lossy().to_string();
     let res_empty_content = write_text_file(valid_path, "".to_string()).await;
     assert!(res_empty_content.is_err(), "Empty content must be rejected");
@@ -174,13 +190,13 @@ async fn test_legitimate_writes_in_documents_and_downloads() {
     let base_test_dir = resolve_writable_documents_test_dir();
     let test_dir = base_test_dir.join("e2e_legitimate_writes");
     let _ = fs::create_dir_all(&test_dir);
-    let doc_dir = dirs::document_dir().expect("Documents directory must be resolvable");
-    let download_dir = dirs::download_dir().expect("Downloads directory must be resolvable");
+    let doc_dir = resolve_writable_documents_test_dir();
+    let download_dir = secondary_allowed_write_dir();
 
-    // Verify test_dir is strictly inside Document directory
+    // Verify test_dir is strictly inside the resolved write sandbox
     assert!(
         test_dir.starts_with(&doc_dir),
-        "test_dir must be inside Document directory"
+        "test_dir must be inside the resolved write sandbox"
     );
 
     // 1. Full E2E write execution in Documents for allowed formats: .txt, .json, .m3u, .lrc, .csv
@@ -232,19 +248,19 @@ async fn test_legitimate_writes_in_documents_and_downloads() {
         let _ = fs::remove_file(&target_path);
     }
 
-    // 2. Validate Downloads path validation for legitimate exports
-    let legitimate_download_paths = [
+    // 2. Validate a second allowed base accepts legitimate exports
+    let legitimate_secondary_paths = [
         download_dir.join("lyrics_export.lrc"),
         download_dir.join("tracklist.m3u8"),
         download_dir.join("metadata_dump.json"),
         download_dir.join("summary.txt"),
     ];
 
-    for p in &legitimate_download_paths {
+    for p in &legitimate_secondary_paths {
         let res = validate_safe_write_path(p);
         assert!(
             res.is_ok(),
-            "Validation for legitimate Downloads path {:?} should succeed: {:?}",
+            "Validation for legitimate second allowed base path {:?} should succeed: {:?}",
             p,
             res.err()
         );
