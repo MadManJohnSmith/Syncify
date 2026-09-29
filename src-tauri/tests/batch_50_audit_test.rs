@@ -10,10 +10,11 @@
 //! 7. Manifest generation and artifact reconciliation with `ManifestWriter`
 //! 8. Batch diagnostic health check `run_batch_health_check` / `perform_batch_health_check`
 
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use syncify_core_domain::byte_validators::AudioByteValidator;
 use syncify_core_domain::{BatchDownloadManifest, LibraryLayout, TrackLayoutContext};
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
@@ -23,14 +24,172 @@ use syncify_tauri_lib::services::ManifestWriter;
 use syncify_tauri_lib::worker::DownloadWorkerState;
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
+use tokio::time::timeout;
+
+/// Deadline for a single SQLite round-trip (SYNC-AUD-060).
+///
+/// Every statement of this suite runs under it on purpose. sqlx-sqlite answers a
+/// locked shared-cache database with `sqlite3_unlock_notify` and parks the calling
+/// thread on a Condvar until the holder unlocks. The fixture no longer allows such a
+/// lock to outlive its statement, so this is a backstop that turns any future
+/// regression into a failure naming the statement instead of a silent hang.
+const DB_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Deadline for the analysis and tagging stage of a single track (SYNC-AUD-060).
+const STAGE_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Deadline for the whole 50-track fan-out (SYNC-AUD-060).
+const FANOUT_DEADLINE: Duration = Duration::from_secs(600);
+
+/// Deadline for a whole `perform_batch_health_check` audit (SYNC-AUD-060).
+const HEALTH_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Runs one `INSERT ... RETURNING` and returns the single generated id.
+///
+/// Draining the statement with `fetch_all` instead of `fetch_one` is necessary but not
+/// sufficient. SQLite commits the implicit write transaction when the statement is
+/// reset or finalized, **not** when it reaches `SQLITE_DONE`, and sqlx only resets a
+/// cached statement when the same SQL runs again on that connection. `create_test_db`
+/// is what actually closes the hole, by dropping the statement cache and keeping a
+/// single connection; see the note there. With that in place, every statement here is
+/// finalized as soon as it finishes, so no write transaction can outlive it
+/// (SYNC-AUD-060).
+macro_rules! insert_returning_id {
+    ($db:expr, $sql:expr $(, $bind:expr)* $(,)?) => {{
+        let mut ids = timeout(
+            DB_DEADLINE,
+            sqlx::query_scalar::<_, i64>($sql)
+                $(.bind($bind))*
+                .fetch_all($db),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "{}: INSERT ... RETURNING did not answer within {:?}; a pooled \
+                 connection is most likely holding an open write transaction",
+                $sql, DB_DEADLINE
+            )
+        })
+        .unwrap_or_else(|e| panic!("{}: {}", $sql, e));
+        assert_eq!(ids.len(), 1, "{} must return exactly one id", $sql);
+        ids.remove(0)
+    }};
+}
+
+/// Confines the paths the batch diagnostics resolve to the test's own `TempDir`.
+///
+/// `perform_batch_health_check` calls `resolve_effective_download_paths`, which reads
+/// `folder_settings.base_folder`; when that is empty it falls back to
+/// `default_download_path()`, whose `ensure_writable_dir` does `create_dir_all` and
+/// writes a probe file on the first candidate that answers, today `~/Audio/Syncify` or
+/// `~/Music/Syncify` of the real user. The suite then depends on the host filesystem
+/// and leaves directories behind in the home (SYNC-AUD-061).
+async fn seed_paths_inside(db: &SqlitePool, library_root: &Path, staging_root: &Path) {
+    let library = library_root.to_string_lossy().into_owned();
+    let staging = staging_root.to_string_lossy().into_owned();
+
+    let updated = sqlx::query("UPDATE folder_settings SET base_folder = ? WHERE id = 1")
+        .bind(&library)
+        .execute(db)
+        .await
+        .expect("folder_settings must be seedable");
+    assert_eq!(
+        updated.rows_affected(),
+        1,
+        "folder_settings must hold its singleton row for the test to be hermetic"
+    );
+
+    for (key, value) in [("dl_download_path", &library), ("dl_temp_dir", &staging)] {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(db)
+        .await
+        .unwrap_or_else(|e| panic!("settings.{} must be seedable: {}", key, e));
+    }
+}
+
+/// Runs one full batch diagnostic under a deadline (SYNC-AUD-060).
+async fn health_check(
+    db: &SqlitePool,
+    staging_dir: &Path,
+    worker_state: &DownloadWorkerState,
+) -> BatchHealthReport {
+    timeout(
+        HEALTH_DEADLINE,
+        perform_batch_health_check(db, Some(staging_dir), Some(worker_state)),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "perform_batch_health_check did not answer within {:?}; a pooled connection \
+             is most likely holding an open write transaction",
+            HEALTH_DEADLINE
+        )
+    })
+    .expect("perform_batch_health_check must succeed")
+}
+
+/// Asserts that a path the product resolved for itself stays inside the `TempDir`.
+fn assert_inside_temp(root: &Path, resolved: &str, label: &str) {
+    let path = Path::new(resolved);
+    assert!(
+        path.starts_with(root),
+        "{} escaped the TempDir: {} (TempDir is {})",
+        label,
+        path.display(),
+        root.display()
+    );
+}
 
 /// Create an in-memory SQLite database initialized with all standard migrations
+///
+/// The pool is one connection and has the prepared-statement cache disabled. Both
+/// are load-bearing, and the reason is the real cause of the hang this suite had
+/// (SYNC-AUD-060), which no deadline can fix:
+///
+/// 1. SQLite commits an implicit write transaction when the statement that opened it
+///    is **reset or finalized**, not when it reaches `SQLITE_DONE`. sqlx only resets a
+///    *cached* statement when the same SQL runs again on that connection, and it
+///    finalizes it when the cache evicts it. So any write statement that is never
+///    executed twice on the same connection keeps its table locked for the rest of the
+///    test. Draining with `fetch_all` does not change that, which is why the earlier
+///    pass removed the deterministic hang but left it intermittent (1 run in 5 here).
+/// 2. `sqlite::memory:` opens the pool in shared-cache mode, so the connection holding
+///    that lock is not the only one that matters: any *other* connection meeting a
+///    locked table gets `SQLITE_LOCKED_SHAREDCACHE`, and sqlx-sqlite answers it with
+///    `sqlite3_unlock_notify`, parking the thread on a Condvar until the holder resets
+///    or finalizes. For the holder, that moment may never come, so the wait is
+///    unbounded: `PRAGMA integrity_check` parks forever with 0 % CPU and every thread
+///    in `futex_wait`, and `--test-threads=1` cannot help because the deadlock lives
+///    inside a single test.
+///
+/// Disabling the cache finalizes every statement the moment it finishes, so no write
+///    transaction can outlive its statement, and the single connection means no second
+///    connection can ever observe a lock. `PERFORMANCE_HINT` documents what that costs:
+/// a handful of extra prepares on an in-memory database.
 async fn create_test_db() -> SqlitePool {
+    const PERFORMANCE_HINT: &str =
+        "one connection and no statement cache: see the note on create_test_db";
+
+    let options: SqliteConnectOptions = "sqlite::memory:"
+        .parse()
+        .expect("sqlite::memory: must be a valid connect string");
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite::memory:")
+        .max_connections(1)
+        .connect_with(options.statement_cache_capacity(0))
         .await
         .expect("Failed to connect to in-memory test DB");
+
+    assert_eq!(
+        pool.options().get_max_connections(),
+        1,
+        "{}",
+        PERFORMANCE_HINT
+    );
 
     sqlx::migrate!("./migrations")
         .run(&pool)
@@ -183,22 +342,24 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
 
     let layout = LibraryLayout::new(&base_music_dir);
 
+    // SYNC-AUD-061: the diagnostics below resolve the library root from the database,
+    // so the sandbox has to be seeded before anything can fall back to the real home.
+    seed_paths_inside(&db, &base_music_dir, &staging_dir).await;
+
     // 1. Seed database with 50 tracks under 1 artist and 2 albums
     let artist_name = "Syncify Master Ensemble";
-    let artist_id: i64 = sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
-        .bind(artist_name)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+    let artist_id: i64 = insert_returning_id!(
+        &db,
+        "INSERT INTO artists (name) VALUES (?) RETURNING id",
+        artist_name
+    );
 
     let album1_name = "The 50 Track Odyssey Vol 1";
-    let album1_id: i64 = sqlx::query_scalar(
+    let album1_id: i64 = insert_returning_id!(
+        &db,
         "INSERT INTO albums (title, release_date) VALUES (?, '2026-08-17') RETURNING id",
-    )
-    .bind(album1_name)
-    .fetch_one(&db)
-    .await
-    .unwrap();
+        album1_name
+    );
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
         .bind(album1_id)
         .bind(artist_id)
@@ -207,13 +368,11 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
         .unwrap();
 
     let album2_name = "The 50 Track Odyssey Vol 2";
-    let album2_id: i64 = sqlx::query_scalar(
+    let album2_id: i64 = insert_returning_id!(
+        &db,
         "INSERT INTO albums (title, release_date) VALUES (?, '2026-08-17') RETURNING id",
-    )
-    .bind(album2_name)
-    .fetch_one(&db)
-    .await
-    .unwrap();
+        album2_name
+    );
     sqlx::query("INSERT INTO album_artists (album_id, artist_id) VALUES (?, ?)")
         .bind(album2_id)
         .bind(artist_id)
@@ -233,17 +392,15 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
         let track_title = format!("Odyssey Movement {:02}", i);
         let track_isrc = format!("USSYN26000{:02}", i);
 
-        let tid: i64 = sqlx::query_scalar(
-            "INSERT INTO tracks (title, album_id, duration_ms, track_number, isrc, audio_quality) VALUES (?, ?, ?, ?, ?, '24-96') RETURNING id"
-        )
-        .bind(&track_title)
-        .bind(cur_album_id)
-        .bind(240000 + (i as i64 * 1000))
-        .bind(i as i32)
-        .bind(&track_isrc)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+        let tid: i64 = insert_returning_id!(
+            &db,
+            "INSERT INTO tracks (title, album_id, duration_ms, track_number, isrc, audio_quality) VALUES (?, ?, ?, ?, ?, '24-96') RETURNING id",
+            &track_title,
+            cur_album_id,
+            240000 + (i as i64 * 1000),
+            i as i32,
+            &track_isrc
+        );
 
         sqlx::query(
             "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
@@ -261,7 +418,8 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
         .bind(tid).bind(&qobuz_item_id).execute(&db).await.unwrap();
 
         // Enqueue into download_queue with locked source identity
-        let qid: i64 = sqlx::query_scalar(
+        let qid: i64 = insert_returning_id!(
+            &db,
             r#"
             INSERT INTO download_queue (
                 track_id, priority, position, status, quality_preference, resumable,
@@ -271,19 +429,16 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
             )
             VALUES (?, 100 - ?, ?, 'queued', 'lossless', 1, 2, 'qobuz', ?, ?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP)
             RETURNING id
-            "#
-        )
-        .bind(tid)
-        .bind(i as i64)
-        .bind((i - 1) as i64)
-        .bind(&qobuz_item_id)
-        .bind(&track_title)
-        .bind(artist_name)
-        .bind(cur_album_name)
-        .bind(&track_isrc)
-        .fetch_one(&db)
-        .await
-        .unwrap();
+            "#,
+            tid,
+            i as i64,
+            (i - 1) as i64,
+            &qobuz_item_id,
+            &track_title,
+            artist_name,
+            cur_album_name,
+            &track_isrc
+        );
 
         track_ids.push(tid);
         queue_ids.push(qid);
@@ -327,11 +482,15 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
             );
 
             // A. Mark item as downloading in SQLite
-            sqlx::query("UPDATE download_queue SET status = 'downloading', started_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .bind(qid)
-                .execute(&db_clone)
-                .await
-                .unwrap();
+            timeout(
+                DB_DEADLINE,
+                sqlx::query("UPDATE download_queue SET status = 'downloading', started_at = CURRENT_TIMESTAMP WHERE id = ?")
+                    .bind(qid)
+                    .execute(&db_clone),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("track {}: queue update exceeded {:?}", i, DB_DEADLINE))
+            .unwrap_or_else(|e| panic!("track {}: queue update failed: {}", i, e));
 
             // B. Simulate in-flight streaming into staging directory
             let staging_item_base = format!("track_{:03}_staging", i);
@@ -371,8 +530,14 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
             .unwrap();
 
             // C. AudioAnalyzer & Complete 48 VorbisComments Tagging
-            let analysis = AudioAnalyzer::analyze_file(&staging_flac)
+            let analysis = timeout(STAGE_DEADLINE, AudioAnalyzer::analyze_file(&staging_flac))
                 .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "track {}: AudioAnalyzer::analyze_file exceeded {:?}",
+                        i, STAGE_DEADLINE
+                    )
+                })
                 .unwrap_or_default();
             let mut meta = build_48_field_metadata(i, artist_name, cur_album, &track_title);
             if analysis.bpm.is_some() {
@@ -382,7 +547,23 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
                 meta.initial_key = analysis.initial_key;
             }
 
-            let tag_res = apply_and_verify_flac_tags(&staging_flac, &meta);
+            // SYNC-AUD-060: this test drives its 50 tasks on a single-threaded tokio
+            // runtime, and tagging rewrites the whole FLAC file in process (metaflac)
+            // after converting the cover with an ffmpeg subprocess. Running it inline
+            // occupies the one thread that also has to drive the other tasks, their
+            // SQLite round-trips and the subprocess reaping, so the suite degrades to a
+            // park with 0 % CPU. The blocking stage goes to the blocking pool and every
+            // stage is bounded, so a stuck subprocess fails the test instead.
+            let staged_flac = staging_flac.clone();
+            let tag_res = timeout(
+                STAGE_DEADLINE,
+                tokio::task::spawn_blocking(move || {
+                    apply_and_verify_flac_tags(&staged_flac, &meta)
+                }),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("track {}: tagging exceeded {:?}", i, STAGE_DEADLINE))
+            .expect("tagging task join failed");
             assert!(
                 tag_res.is_ok(),
                 "apply_and_verify_flac_tags failed for track {}: {:?}",
@@ -470,35 +651,43 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
             let file_size_bytes = std::fs::metadata(&final_track_path).unwrap().len() as i64;
             let path_str = final_track_path.to_string_lossy().to_string();
 
-            sqlx::query(
-                "UPDATE download_queue SET status = 'complete', completed_at = CURRENT_TIMESTAMP, progress_percent = 100.0 WHERE id = ?"
-            )
-            .bind(qid)
-            .execute(&db_clone)
-            .await
-            .unwrap();
-
-            sqlx::query(
-                r#"
-                INSERT INTO downloads (
-                    track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at
+            timeout(
+                DB_DEADLINE,
+                sqlx::query(
+                    "UPDATE download_queue SET status = 'complete', completed_at = CURRENT_TIMESTAMP, progress_percent = 100.0 WHERE id = ?"
                 )
-                VALUES (?, 2, ?, 'FLAC', 24, 96000, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(track_id) DO UPDATE SET
-                    file_path = excluded.file_path,
-                    file_format = excluded.file_format,
-                    bit_depth = excluded.bit_depth,
-                    sample_rate = excluded.sample_rate,
-                    file_size_bytes = excluded.file_size_bytes,
-                    downloaded_at = CURRENT_TIMESTAMP
-                "#
+                .bind(qid)
+                .execute(&db_clone),
             )
-            .bind(tid)
-            .bind(&path_str)
-            .bind(file_size_bytes)
-            .execute(&db_clone)
             .await
-            .unwrap();
+            .unwrap_or_else(|_| panic!("track {}: completion update exceeded {:?}", i, DB_DEADLINE))
+            .unwrap_or_else(|e| panic!("track {}: completion update failed: {}", i, e));
+
+            timeout(
+                DB_DEADLINE,
+                sqlx::query(
+                    r#"
+                    INSERT INTO downloads (
+                        track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at
+                    )
+                    VALUES (?, 2, ?, 'FLAC', 24, 96000, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(track_id) DO UPDATE SET
+                        file_path = excluded.file_path,
+                        file_format = excluded.file_format,
+                        bit_depth = excluded.bit_depth,
+                        sample_rate = excluded.sample_rate,
+                        file_size_bytes = excluded.file_size_bytes,
+                        downloaded_at = CURRENT_TIMESTAMP
+                    "#
+                )
+                .bind(tid)
+                .bind(&path_str)
+                .bind(file_size_bytes)
+                .execute(&db_clone),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("track {}: downloads upsert exceeded {:?}", i, DB_DEADLINE))
+            .unwrap_or_else(|e| panic!("track {}: downloads upsert failed: {}", i, e));
 
             active_clone.fetch_sub(1, Ordering::SeqCst);
         });
@@ -506,9 +695,13 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
         tasks.push(task);
     }
 
-    // Await all 50 concurrent download tasks
+    // Await all 50 concurrent download tasks, under a deadline: a task parked on a
+    // lock or on a subprocess must fail the suite with a message, never hang CI.
     for task in tasks {
-        task.await.expect("Task join failed");
+        timeout(FANOUT_DEADLINE, task)
+            .await
+            .unwrap_or_else(|_| panic!("batch fan-out did not finish within {:?}", FANOUT_DEADLINE))
+            .expect("Task join failed");
     }
 
     // Verify concurrency reached 3
@@ -828,10 +1021,31 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
     // ═════════════════════════════════════════════════════════════════
     // FORENSIC AUDIT 5: Diagnostic Health Check Command Audit
     // ═════════════════════════════════════════════════════════════════
-    let health_report: BatchHealthReport =
-        perform_batch_health_check(&db, Some(&staging_dir), Some(&worker_state))
-            .await
-            .expect("perform_batch_health_check must succeed");
+    let health_report: BatchHealthReport = timeout(
+        HEALTH_DEADLINE,
+        perform_batch_health_check(&db, Some(&staging_dir), Some(&worker_state)),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "perform_batch_health_check did not answer within {:?}; a pooled \
+             connection is most likely holding an open write transaction",
+            HEALTH_DEADLINE
+        )
+    })
+    .expect("perform_batch_health_check must succeed");
+
+    // SYNC-AUD-061: the audit must resolve the sandbox it was given, never the home.
+    assert_inside_temp(
+        temp_root.path(),
+        &health_report.effective_download_path,
+        "effective_download_path",
+    );
+    assert_inside_temp(
+        temp_root.path(),
+        &health_report.effective_staging_path,
+        "effective_staging_path",
+    );
 
     assert!(health_report.database_healthy, "Database must be healthy");
     assert_eq!(health_report.database_integrity.trim(), "ok");
@@ -864,26 +1078,37 @@ async fn test_batch_50_pipeline_e2e_concurrency_and_forensic_audit() {
 async fn test_batch_health_check_detects_anomalies_and_staging_orphans() {
     let db = create_test_db().await;
     let temp_root = TempDir::new().unwrap();
+    let base_music_dir = temp_root.path().join("Music");
     let staging_dir = temp_root.path().join(".staging");
+    std::fs::create_dir_all(&base_music_dir).unwrap();
     std::fs::create_dir_all(&staging_dir).unwrap();
+
+    // SYNC-AUD-061: without this the diagnostics resolve the library root through
+    // default_download_path() and create it inside the real home of whoever runs the
+    // suite, so the result depends on the host filesystem.
+    seed_paths_inside(&db, &base_music_dir, &staging_dir).await;
 
     let worker_state = DownloadWorkerState::new(3);
 
     // Initial clean check
-    let clean_report: BatchHealthReport =
-        perform_batch_health_check(&db, Some(&staging_dir), Some(&worker_state))
-            .await
-            .unwrap();
+    let clean_report: BatchHealthReport = health_check(&db, &staging_dir, &worker_state).await;
     assert!(clean_report.healthy);
+    assert_inside_temp(
+        temp_root.path(),
+        &clean_report.effective_download_path,
+        "effective_download_path",
+    );
+    assert_inside_temp(
+        temp_root.path(),
+        &clean_report.effective_staging_path,
+        "effective_staging_path",
+    );
 
     // Anomaly 1: Staging orphan file left behind
     let orphan_file = staging_dir.join("orphan_chunk.part");
     std::fs::write(&orphan_file, b"corrupt partial chunk").unwrap();
 
-    let orphan_report: BatchHealthReport =
-        perform_batch_health_check(&db, Some(&staging_dir), Some(&worker_state))
-            .await
-            .unwrap();
+    let orphan_report: BatchHealthReport = health_check(&db, &staging_dir, &worker_state).await;
     assert!(
         !orphan_report.healthy,
         "Must report unhealthy when orphan is in staging"
@@ -899,21 +1124,27 @@ async fn test_batch_health_check_detects_anomalies_and_staging_orphans() {
     std::fs::remove_file(&orphan_file).unwrap();
 
     // Anomaly 2: Download row points to non-existent file on disk
-    let tid: i64 =
-        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Ghost Track') RETURNING id")
-            .fetch_one(&db)
-            .await
-            .unwrap();
-    sqlx::query(
-        "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes) VALUES (?, 'C:/NonExistent/ghost.flac', 'FLAC', 16, 44100, 5000)"
+    // SYNC-AUD-060: this INSERT ... RETURNING read with `fetch_one` is what deadlocked
+    // the suite. Stopping at the first row leaves the implicit write transaction open
+    // on that pooled connection, and the following integrity check parks forever on the
+    // unlock-notify Condvar of another connection of the same shared in-memory cache.
+    let tid: i64 = insert_returning_id!(
+        &db,
+        "INSERT INTO tracks (title) VALUES ('Ghost Track') RETURNING id"
+    );
+    timeout(
+        DB_DEADLINE,
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes) VALUES (?, 'C:/NonExistent/ghost.flac', 'FLAC', 16, 44100, 5000)"
+        )
+        .bind(tid)
+        .execute(&db),
     )
-    .bind(tid)
-    .execute(&db).await.unwrap();
+    .await
+    .unwrap_or_else(|_| panic!("ghost download insert exceeded {:?}", DB_DEADLINE))
+    .unwrap_or_else(|e| panic!("ghost download insert failed: {}", e));
 
-    let missing_report: BatchHealthReport =
-        perform_batch_health_check(&db, Some(&staging_dir), Some(&worker_state))
-            .await
-            .unwrap();
+    let missing_report: BatchHealthReport = health_check(&db, &staging_dir, &worker_state).await;
     assert!(
         !missing_report.healthy,
         "Must report unhealthy when downloaded track is missing on disk"
