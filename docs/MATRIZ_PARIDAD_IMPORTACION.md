@@ -36,6 +36,12 @@ Ver `docs/DECISION_IDENTIDAD_TRACKS.md`: clave maestra
 
 ## Deuda conocida de paridad (orden del plan)
 
+> Las filas ⛔ de SoundCloud y Apple Music son **alcance condicionado**, no defectos
+> ni trabajo pendiente: están registradas con su condición de cierre en
+> `docs/Deuda_Tecnica_y_UX.md` (D-01 y D-02) y dependen de credenciales del
+> propietario. La matriz no afirma que la funcionalidad esté completa; afirma que lo
+> que falta está declarado (SYNC-AUD-077).
+
 1. **Fase 3 — BLOQUEADA en credenciales reales del propietario**: SoundCloud
    (OAuth app) y Apple Music (developer token JWT). Los arreglos a ciegas de
    pagination/storefront/publisher-metadata se harán junto a esa verificación.
@@ -45,19 +51,31 @@ Ver `docs/DECISION_IDENTIDAD_TRACKS.md`: clave maestra
 
 ## Gates que avalan esta matriz
 
-Cifras **medidas el 2026-09-29** sobre `b9559da` + las reparaciones de
-SYNC-AUD-062 a SYNC-AUD-071. Cada una lleva su comando, para que cualquiera la
-repita en lugar de heredarla de un sprint anterior (SYNC-AUD-068).
+Cifras **medidas el 2026-09-29 sobre `bc2006c`**, la revisión que las reparaciones de
+SYNC-AUD-072 a SYNC-AUD-077 dejan en la candidata. Cada fila lleva su comando, la
+revisión que la respalda y si la cifra está medida o no, para que cualquiera la repita
+en lugar de heredarla de un sprint anterior (SYNC-AUD-068 y SYNC-AUD-072).
 
-| Gate | Comando | Resultado medido |
-|---|---|---|
-| Suite Rust, pase general | `cargo test --locked -- --skip test_batch_50_pipeline_e2e_concurrency_and_forensic_audit --skip test_batch_health_check_detects_anomalies_and_staging_orphans` | **1756 passed / 0 failed / 10 ignored**, 252 binarios de test (7 unit + 245 integración) |
-| Suite Rust, `batch_50` serializado | `cargo test --locked --test batch_50_audit_test -- --test-threads=1` | **2 passed / 0 failed** → **1758** en el pase general que ejecuta CI |
-| Tipos | `cargo check --all-targets --locked` | 0 errores |
-| Lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 avisos |
-| Formato | `cargo fmt --all -- --check` | limpio |
-| Puentes Python | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | **137 passed / 0 failed** (incluye el gate de coherencia documental de SYNC-AUD-070 y el de riesgo aceptado de SYNC-AUD-071) |
-| Frontend (vitest) | `npm --prefix ui run test:run` | **sin medir**: la reparación se ejecuta sin red y sin `ui/node_modules`. No se publica aquí una cifra que nadie ha reproducido en esta revisión |
+Los comandos se escriben desde la raíz del repositorio con `--manifest-path`. La forma
+`cargo --manifest-path <ruta> test` no la acepta el cargo 1.98.1 de este proyecto
+(`unexpected argument '--manifest-path' found`), así que publicarla sería publicar un
+comando que no se puede copiar y pegar. CI los ejecuta desde `src-tauri/` sin
+`--manifest-path`, que es la misma ejecución.
+
+| Gate | Comando (desde la raíz) | Revisión | Resultado medido |
+|---|---|---|---|
+| Suite Rust, pase general | `cargo test --manifest-path src-tauri/Cargo.toml --locked -- --skip test_batch_50_pipeline_e2e_concurrency_and_forensic_audit --skip test_batch_health_check_detects_anomalies_and_staging_orphans` | `bc2006c` | **1589 passed / 0 failed / 10 ignored**, 243 binarios de test |
+| Suite Rust, `batch_50` serializado | `cargo test --manifest-path src-tauri/Cargo.toml --locked --test batch_50_audit_test -- --test-threads=1` | `bc2006c` | **2 passed / 0 failed** → **1591** en el pase general que ejecuta CI |
+| Tipos | `cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked` | `bc2006c` | 0 errores |
+| Lint | `cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked -- -D warnings` | `bc2006c` | exit 0, 0 avisos |
+| Formato | `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` | `bc2006c` | limpio |
+| Puentes Python | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | `bc2006c` | **152 tests, 0 fallos** (incluye los gates de SYNC-AUD-070 y SYNC-AUD-071, los 4 diagnósticos de Qobuz de SYNC-AUD-076, los 5 de higiene de artefactos de SYNC-AUD-074, los 4 de alcance condicionado de SYNC-AUD-077 y los 2 de trazabilidad de gates de SYNC-AUD-072) |
+| Frontend (vitest) | `npm --prefix ui run test:run` y `npx --prefix ui vue-tsc --noEmit` | — | **sin medir**: el árbol no trae `ui/node_modules` y el modo de reparación prohíbe instalar dependencias de red. La instalación sin red tampoco es posible: la caché local de npm no está completa (`npm ci --offline` falla con `ENOTCACHED` en `xmlchars@2.2.0`). No se publica aquí una cifra que nadie ha reproducido en esta revisión |
+
+La cifra de Python cambió respecto a la publicada antes (137 → 152) por los 15 tests
+nuevos de esta revisión, no por una regresión. La de Rust también cambia respecto a la
+publicada para `b9559da` (1756 → 1589 sobre 243 binarios): son revisiones distintas
+del árbol, y la cifra de esta tabla es la medida en `bc2006c`, no la heredada.
 
 Commits ancla: `f84219f` (S198+F0) · `413da34`/`c27fc0c`/`ba5ba37` (F1/F2 deezer)
 · `2043672` (F2-5) · `6ee9ce4` (F2-4) · `aa806b8` (F4-1) · `2d43e5e` (F2-3).

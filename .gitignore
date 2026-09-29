@@ -76,6 +76,24 @@ tsc.txt
 src-tauri/check.txt
 src-tauri/check_full.txt
 
+# Local sweep output (SYNC-AUD-074): machine logs of a single workstation that
+# were tracked by mistake and travelled in every checkout. Nothing reads them,
+# the build results live in CI, and a frozen log only misleads whoever opens it.
+src-tauri/check_err.txt
+src-tauri/current_tests.txt
+src-tauri/db_evidence.txt
+src-tauri/db_verification_output.txt
+src-tauri/full_test_results.txt
+src-tauri/run_out.txt
+src-tauri/test_err.txt
+src-tauri/test_list.txt
+src-tauri/test_out*.txt
+src-tauri/test_output.txt
+src-tauri/tests.txt
+ui/build_log*.txt
+ui/build_output*.txt
+ui/tauri_dev_output.txt
+
 # Test coverage reports
 coverage/
 .nyc_output/
