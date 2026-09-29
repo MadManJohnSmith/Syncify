@@ -87,15 +87,19 @@ jobs:
       - name: cargo check --all-targets --locked
         run: cargo check --all-targets --locked
 
-      # b) Suite completa EXCLUYENDO los 2 tests flaky conocidos (se cuelgan en paralelo, Deuda A12).
-      - name: Suite de tests completa (sin los 2 flaky de batch_50)
-        run: >
-          cargo test --locked --
-          --skip test_batch_50_pipeline_e2e_concurrency_and_forensic_audit
-          --skip test_batch_health_check_detects_anomalies_and_staging_orphans
+      # b) Suite completa. Los 2 tests de batch_50 vuelven a entrar aquí (Deuda A12
+      #    cerrada): no se colgaban por ejecutarse en paralelo, sino por dejar
+      #    transacciones de escritura abiertas en el pool SQLite en memoria
+      #    compartida, que bloqueaban el PRAGMA integrity_check de otra conexión
+      #    (SYNC-AUD-060). Además ya no escriben fuera de su TempDir (SYNC-AUD-061).
+      - name: Suite de tests completa
+        run: cargo test --locked
 
-      # c) El binario flaky aparte, serializado: en un solo hilo no se cuelgan.
+      # c) Los 2 tests de batch_50 aparte, con cota de tiempo propia. Antes este paso
+      #    no tenía timeout propio y su mitigación documentada (--test-threads=1) no
+      #    evitaba el bloqueo, así que consumía el presupuesto del job entero.
       - name: batch_50_audit_test serializado (--test-threads=1)
+        timeout-minutes: 10
         run: cargo test --locked --test batch_50_audit_test -- --test-threads=1
 
       # d) Lint bloqueante y reproducible para todo el workspace.
