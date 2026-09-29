@@ -130,7 +130,6 @@ pub fn get_allowed_backup_export_directories() -> Vec<std::path::PathBuf> {
 
 /// Validates that a backup export destination path conforms to sandbox confinement,
 /// path traversal restrictions, and JSON extension enforcement.
-#[allow(dead_code)]
 pub fn validate_safe_backup_export_path_with_bases(
     target_path: &std::path::Path,
     allowed_bases: &[std::path::PathBuf],
@@ -279,14 +278,6 @@ pub fn validate_safe_backup_export_path_with_bases(
     Ok(safe_target)
 }
 
-/// Helper to validate a backup export destination path against default allowed directories.
-pub fn validate_safe_backup_export_path(
-    target_path: &std::path::Path,
-) -> Result<std::path::PathBuf, String> {
-    let allowed_bases = get_allowed_backup_export_directories();
-    validate_safe_backup_export_path_with_bases(target_path, &allowed_bases)
-}
-
 /// Maximum accepted import manifest size. This bounds renderer-triggered memory use.
 pub const MAX_BACKUP_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -333,15 +324,6 @@ pub fn validate_safe_backup_import_path_with_bases(
         ));
     }
     Ok(canonical)
-}
-
-pub fn validate_safe_backup_import_path(
-    target_path: &std::path::Path,
-) -> Result<std::path::PathBuf, String> {
-    validate_safe_backup_import_path_with_bases(
-        target_path,
-        &get_allowed_backup_export_directories(),
-    )
 }
 
 /// Export the full library into a portable, versioned backup manifest JSON file
