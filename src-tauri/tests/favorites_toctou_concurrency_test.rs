@@ -30,7 +30,7 @@ async fn setup_test_db() -> SqlitePool {
             is_favorite INTEGER NOT NULL DEFAULT 0,
             favorite_at TEXT
         );
-        CREATE UNIQUE INDEX idx_artists_name_unique ON artists(name);
+        CREATE UNIQUE INDEX idx_artists_name_unique_nocase ON artists(name COLLATE NOCASE);
 
         CREATE TABLE albums (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,7 +38,14 @@ async fn setup_test_db() -> SqlitePool {
             upc TEXT,
             cover_art_url TEXT,
             is_favorite INTEGER NOT NULL DEFAULT 0,
-            favorite_at TEXT
+            favorite_at TEXT,
+            is_stub INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            album_id INTEGER REFERENCES albums(id)
         );
 
         CREATE TABLE album_artists (
