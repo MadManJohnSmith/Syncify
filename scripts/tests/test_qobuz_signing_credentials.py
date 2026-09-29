@@ -16,7 +16,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 for site_packages in REPO_ROOT.glob(".venv/lib/python*/site-packages"):
@@ -181,6 +181,78 @@ class QobuzSigningSecretTests(unittest.IsolatedAsyncioTestCase):
     async def test_placeholder_secret_stays_empty_in_source(self):
         """No signing secret is committed: the class default is an empty placeholder."""
         self.assertEqual(QobuzService.APP_SECRET.strip(), "")
+
+
+class QobuzDownloadFailureDiagnosisTests(unittest.IsolatedAsyncioTestCase):
+    """SYNC-AUD-076: the closed failure branch must report its own cause.
+
+    `_get_download_url` already refused to sign without an app secret, but its
+    only return was None and the caller turned every None into "check
+    subscription tier", so an operator configuring a new deployment was pointed
+    at the plan instead of at the missing `QOBUZ_APP_SECRET`. The security
+    behaviour is unchanged (nothing is signed or sent); what was missing was the
+    diagnosis.
+    """
+
+    def setUp(self):
+        for name in ("QOBUZ_APP_ID", "QOBUZ_APP_SECRET"):
+            os.environ.pop(name, None)
+
+    async def _download(self, service):
+        """Run `download_track` with authentication and metadata stubbed out."""
+        with patch.object(service, "is_authenticated", AsyncMock(return_value=True)):
+            with patch.object(
+                service, "get_track_metadata", AsyncMock(return_value={"id": VECTOR_TRACK_ID})
+            ):
+                return await service.download_track(
+                    VECTOR_TRACK_ID, "/tmp/syncify-offline-diagnosis.flac"
+                )
+
+    async def test_missing_secret_is_named_and_the_tier_is_not_blamed(self):
+        service = _service()
+        session = RecordingSession({"url": "https://example.invalid/track.flac"})
+        service.session = session
+
+        result = await self._download(service)
+
+        self.assertFalse(result.success)
+        self.assertIn("QOBUZ_APP_SECRET", result.error_message or "")
+        self.assertIn("app secret", (result.error_message or "").lower())
+        self.assertNotIn("check subscription tier", result.error_message or "")
+        self.assertEqual(session.calls, [], "no request may be sent without a secret")
+
+    async def test_200_without_url_keeps_the_tier_as_the_stated_cause(self):
+        service = _service(app_secret="operator-secret")
+        service.session = RecordingSession({})
+
+        result = await self._download(service)
+
+        self.assertFalse(result.success)
+        self.assertIn("tier", (result.error_message or "").lower())
+        self.assertNotIn("QOBUZ_APP_SECRET", result.error_message or "")
+
+    async def test_http_failure_names_the_status_and_the_upstream_message(self):
+        service = _service(app_secret="operator-secret")
+        service.session = RecordingSession({"message": "forbidden"}, status=403)
+
+        result = await self._download(service)
+
+        self.assertFalse(result.success)
+        self.assertIn("HTTP 403", result.error_message or "")
+        self.assertIn("forbidden", result.error_message or "")
+
+    async def test_a_later_success_clears_the_previous_diagnosis(self):
+        refused = _service()
+        refused.session = RecordingSession({})
+        await refused._get_download_url(VECTOR_TRACK_ID, 6)
+        self.assertIsNotNone(refused._last_download_url_error)
+
+        service = _service(app_secret="operator-secret")
+        service.session = RecordingSession({"url": "https://example.invalid/track.flac"})
+        url = await service._get_download_url(VECTOR_TRACK_ID, 6)
+
+        self.assertEqual(url, "https://example.invalid/track.flac")
+        self.assertIsNone(service._last_download_url_error)
 
 
 if __name__ == "__main__":

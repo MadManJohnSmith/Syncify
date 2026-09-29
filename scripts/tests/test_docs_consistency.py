@@ -14,6 +14,10 @@ Covered:
 * SYNC-AUD-068 — the parity matrix must not republish a stale suite figure.
 * SYNC-AUD-070 — every file path the design docs cite must resolve, so "revalidated"
   is a checkable statement.
+* SYNC-AUD-072 — the gate table must name, for every row, whether the figure was
+  measured on the revision it claims and which command produces it.
+* SYNC-AUD-077 — the conditioned scope (D-01 to D-04) must be declared as such
+  instead of being read as pending work.
 """
 
 import re
@@ -245,6 +249,50 @@ class ParityMatrixGateTests(unittest.TestCase):
         for row in rows[2:]:
             self.assertIn("`", row, f"gate row without a reproducible command: {row!r}")
 
+    def test_every_gate_row_states_whether_it_was_measured(self):
+        """SYNC-AUD-072: a figure must be attributable to a revision and to a run.
+
+        A gate that was not measured has to say so in its own row instead of
+        leaving the reader to assume the neighbouring figures cover it.
+        """
+        matrix = _doc_text("docs/MATRIZ_PARIDAD_IMPORTACION.md")
+        section = matrix.split("## Gates que avalan esta matriz", 1)[1]
+        header, *rows = [line for line in section.splitlines() if line.startswith("|")]
+        self.assertIn("Revisión", header, "the gates table must carry a revision column")
+        for row in rows[1:]:
+            if set(row) <= set("|-: "):
+                continue
+            cells = [cell.strip().strip("`") for cell in row.strip("|").split("|")]
+            self.assertEqual(
+                len(cells), 4, f"gate row does not match the four-column table: {row!r}"
+            )
+            revision, outcome = cells[2], cells[3]
+            if revision == "—":
+                self.assertIn(
+                    "sin medir",
+                    outcome,
+                    f"a row with no revision must declare itself unmeasured: {row!r}",
+                )
+            else:
+                self.assertRegex(
+                    revision, r"^[0-9a-f]{7,40}$", f"unattributable revision: {row!r}"
+                )
+
+    def test_gate_rows_publish_a_command_cargo_accepts(self):
+        """cargo 1.98 rejects `cargo --manifest-path <path> test`."""
+        matrix = _doc_text("docs/MATRIZ_PARIDAD_IMPORTACION.md")
+        section = matrix.split("## Gates que avalan esta matriz", 1)[1]
+        rows = [line for line in section.splitlines() if line.startswith("|")]
+        for row in rows[2:]:
+            if set(row) <= set("|-: "):
+                continue
+            command = row.strip("|").split("|")[1]
+            self.assertNotIn(
+                "cargo --manifest-path",
+                command,
+                f"gate row publishes a command form cargo rejects: {row!r}",
+            )
+
 
 class PlanStateTests(unittest.TestCase):
     """SYNC-AUD-069: the plan must state what actually executed."""
@@ -297,6 +345,76 @@ class AcceptedQobuzAppIdRiskTests(unittest.TestCase):
             self._committed_public_app_id(),
             core,
             "the Rust core keeps a development placeholder for the app id",
+        )
+
+
+class ConditionedScopeDeclarationTests(unittest.TestCase):
+    """SYNC-AUD-077: the conditioned scope must be declared, not left implicit.
+
+    D-01 to D-04 are registered with their closing condition and none of them
+    depends on work the team can do on its own: they are scope conditioned by an
+    external input, not defects. A closure that lists them as pending work
+    promises something the project cannot deliver, so the declaration is gated.
+    """
+
+    def setUp(self):
+        self.register = _doc_text("docs/Deuda_Tecnica_y_UX.md")
+        self.matrix = _doc_text("docs/MATRIZ_PARIDAD_IMPORTACION.md")
+
+    def test_register_declares_the_conditioned_scope(self):
+        self.assertIn(
+            "Alcance condicionado",
+            self.register,
+            "the debt register must carry the conditioned-scope declaration",
+        )
+        self.assertIn(
+            "no trabajo pendiente",
+            self.register,
+            "the declaration must say these entries are not pending work",
+        )
+        self.assertIn(
+            "NO declara como pendiente",
+            self.register,
+            "the section heading must state what the register does not declare",
+        )
+
+    def test_every_conditioned_entry_is_named_with_its_condition(self):
+        section = self.register.split("Alcance condicionado", 1)[1].split("## Cerrado", 1)[0]
+        for entry in ("D-01", "D-02", "D-03", "D-04"):
+            with self.subTest(entry=entry):
+                self.assertIn(
+                    entry,
+                    section,
+                    f"{entry} is open debt but is missing from the conditioned-scope table",
+                )
+        self.assertIn(
+            "Credenciales del propietario",
+            section,
+            "the table must name the external input that conditions the scope",
+        )
+
+    def test_register_does_not_claim_the_product_is_complete(self):
+        self.assertIn(
+            "que la funcionalidad del producto",
+            self.register,
+            "the declaration must state explicitly what it does not claim",
+        )
+        self.assertIn(
+            "esté completa",
+            self.register,
+            "the completeness caveat must survive the declaration",
+        )
+
+    def test_matrix_marks_the_incomplete_rows_as_conditioned_scope(self):
+        self.assertIn(
+            "alcance condicionado",
+            self.matrix,
+            "the matrix must label its SoundCloud/Apple Music rows as conditioned scope",
+        )
+        self.assertIn(
+            "Deuda_Tecnica_y_UX.md",
+            self.matrix,
+            "the matrix must point at the register entry that holds the condition",
         )
 
 

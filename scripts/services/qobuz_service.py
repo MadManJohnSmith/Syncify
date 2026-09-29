@@ -100,6 +100,12 @@ class QobuzService(MusicService):
                 "refused until QOBUZ_APP_SECRET or credentials.app_secret is set"
             )
 
+        # Diagnostic channel of `_get_download_url`: the cause of the last
+        # refusal travels with the call so `download_track` can report the
+        # actionable reason instead of blaming the subscription tier
+        # (SYNC-AUD-076). None means "no failure recorded for this call".
+        self._last_download_url_error: Optional[str] = None
+
         # Metadata enrichment configuration
         self.enable_metadata_enrichment = enable_metadata_enrichment
         self.lastfm_api_key = lastfm_api_key
@@ -1171,15 +1177,28 @@ class QobuzService(MusicService):
             format_id: Quality format ID (5, 7, or 27)
             
         Returns:
-            Download URL or None if not available
+            Download URL, or None when it is not available. The reason of every
+            refusal is recorded in `_last_download_url_error` so the caller can
+            propagate the real cause (SYNC-AUD-076).
         """
+        self._last_download_url_error = None
+
         if not self.user_auth_token:
+            self._last_download_url_error = (
+                "Failed to get download URL: no Qobuz user auth token; the "
+                "account is not authenticated"
+            )
             self._log("Cannot get download URL without authentication", "error")
             return None
 
         # Refuse before any request: an empty secret yields a signature Qobuz
         # always rejects, and sending it hides a configuration error (SYNC-AUD-062).
         if not self.has_signing_secret():
+            self._last_download_url_error = (
+                "Failed to get download URL: the Qobuz app secret is not "
+                "configured, so nothing was signed or sent. Set "
+                "QOBUZ_APP_SECRET or pass credentials.app_secret."
+            )
             self._log(
                 "Qobuz app secret is not configured: set QOBUZ_APP_SECRET or pass "
                 "credentials.app_secret. Refusing to sign track/getFileUrl with an "
@@ -1226,15 +1245,27 @@ class QobuzService(MusicService):
                         self._log(f"✓ Got download URL (format: {format_id})")
                         return url
                     else:
+                        self._last_download_url_error = (
+                            "Failed to get download URL: Qobuz answered 200 with "
+                            "no URL for this track/format; the account usually "
+                            "lacks the tier that licenses this format"
+                        )
                         self._log("Response missing download URL", "error")
                         return None
                 else:
                     error_data = await response.json()
                     error_msg = error_data.get('message', 'Unknown error')
+                    self._last_download_url_error = (
+                        f"Failed to get download URL: Qobuz returned HTTP "
+                        f"{response.status} ({error_msg}). A 401/403 means the "
+                        f"account is not entitled to this format; any other "
+                        f"status is a Qobuz-side error."
+                    )
                     self._log(f"Failed to get download URL (HTTP {response.status}): {error_msg}", "error")
                     return None
         
         except Exception as e:
+            self._last_download_url_error = f"Failed to get download URL: {e}"
             self._log(f"Error getting download URL: {e}", "error")
             return None
     
@@ -1284,9 +1315,17 @@ class QobuzService(MusicService):
             download_url = await self._get_download_url(track_id, format_id)
             
             if not download_url:
+                # Propagate the cause recorded by `_get_download_url`: the
+                # missing app secret and a missing tier are different problems
+                # with different fixes, and the caller used to report the
+                # second one for both (SYNC-AUD-076).
                 return DownloadResult(
                     success=False,
-                    error_message="Failed to get download URL - check subscription tier"
+                    error_message=(
+                        self._last_download_url_error
+                        or "Failed to get download URL: the account is not "
+                        "entitled to the requested format"
+                    )
                 )
             
             # Step 3: Download file with progress tracking

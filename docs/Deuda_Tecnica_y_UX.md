@@ -71,6 +71,30 @@ declaran como tales y no se reopened por reflejo.
   código. El encabezado de cada uno lo dice (SYNC-AUD-070).
 - **Cierra**: una relectura por subsistema cuando toque modificar ese subsistema.
 
+## Alcance condicionado: lo que este registro NO declara como pendiente
+
+Las cuatro entradas anteriores (D-01, D-02, D-03 y D-04) están **registradas, con su
+condición de cierre y sin ninguna depende de trabajo que el equipo pueda hacer por su
+cuenta**. No son defectos: son alcance condicionado por una entrada externa. Un cierre
+correcto las declara como tales y no como trabajo pendiente, porque confundirlas
+convierte un bloqueo conocido en una promesa que el proyecto no puede cumplir.
+
+| ID | Condiciona | Entrada externa que la resuelve |
+|---|---|---|
+| D-01 | Fase 3 del plan: SoundCloud y Apple Music | Credenciales del propietario (OAuth app y developer token JWT) |
+| D-02 | `sync_favorites` para los 6 servicios | Las mismas credenciales que D-01 |
+| D-03 | Ruta de recuperación del arte de portada irreparable | Decisión de producto (re-encode en el host o sidecar externo) |
+| D-04 | Narrativa de los docs de `docs/features/` re-derivada del código | Tiempo de lectura por subsistema, no una dependencia externa |
+
+Lo que este registro **no** afirma en ningún caso: que la funcionalidad del producto
+esté completa. Las capacidades marcadas como condicionadas en
+`docs/MATRIZ_PARIDAD_IMPORTACION.md` (SoundCloud y Apple Music) siguen sin estar
+cubiertas, y la matriz lo dice en cada fila afectada.
+
+- **Cierra**: la declaración misma. Cada entrada se reabre cuando llegue su entrada
+  externa, y se convierte en deuda abierta solo si aparece trabajo que el equipo sí
+  pueda hacer.
+
 ## Cerrado en esta revisión
 
 | ID | Qué se cerró | Evidencia |
