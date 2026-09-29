@@ -7,6 +7,12 @@
 //! 4. Conversion of incoming animated WebP to static JPEG for FLAC embedded PICTURE block
 //!    while preserving external animated WebP sidecars (`cover.webp`, `animated.webp`) for Symfonium.
 //! 5. Sanitization of existing/legacy FLAC files containing 0x0 or oversized picture blocks.
+//!
+//! The animated WebP payload is the tracked fixture `fixtures/animated-cover.webp`
+//! instead of a payload encoded at test time by the runner's FFmpeg: encoding it
+//! inline tied this suite to an FFmpeg build whose output the validator (or the
+//! WebP -> JPEG conversion) may not accept, which is exactly the capability the CI
+//! preflight reports as unverified.
 
 use metaflac::block::PictureType;
 use metaflac::Tag;
@@ -17,6 +23,17 @@ use syncify_tauri_lib::services::tag_writer::{
     MAX_EMBEDDED_PICTURE_BYTES,
 };
 use tempfile::tempdir;
+
+/// Versioned animated WebP (3 ANMF frames), the same fixture the CI preflight decodes.
+const ANIMATED_WEBP_FIXTURE: &[u8] = include_bytes!("fixtures/animated-cover.webp");
+
+/// The CI preflight sets `SYNCIFY_ANIMATED_WEBP_E2E=0` when the runner's FFmpeg cannot
+/// decode animated WebP. Container validation is pure and hermetic; only the
+/// WebP -> JPEG conversion needs that decoder, so it is skipped explicitly instead of
+/// failing. Same gate as `animated_cover_mp4_sidecar_test.rs`.
+fn animated_webp_decode_available() -> bool {
+    std::env::var_os("SYNCIFY_ANIMATED_WEBP_E2E").as_deref() != Some(std::ffi::OsStr::new("0"))
+}
 
 fn create_synthetic_flac(path: &Path) {
     let status = std::process::Command::new("ffmpeg")
@@ -37,31 +54,8 @@ fn create_synthetic_flac(path: &Path) {
     assert!(status.success(), "ffmpeg synthetic FLAC creation failed");
 }
 
-fn create_synthetic_animated_webp() -> Vec<u8> {
-    let output = std::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc=size=200x200:rate=10",
-            "-t",
-            "0.5",
-            "-vcodec",
-            "libwebp",
-            "-loop",
-            "0",
-            "-f",
-            "webp",
-            "pipe:1",
-        ])
-        .output()
-        .expect("ffmpeg must generate animated webp");
-    assert!(
-        output.status.success(),
-        "ffmpeg animated webp generation must succeed"
-    );
-    output.stdout
+fn create_animated_webp_fixture() -> Vec<u8> {
+    ANIMATED_WEBP_FIXTURE.to_vec()
 }
 
 fn create_large_jpeg() -> Vec<u8> {
@@ -219,10 +213,17 @@ fn test_picture_block_size_limit_bounded_to_800kb() {
 
 #[test]
 fn test_convert_animated_webp_to_static_jpeg_while_preserving_external_sidecar() {
-    let anim_webp = create_synthetic_animated_webp();
+    let anim_webp = create_animated_webp_fixture();
     let frame_count =
         validate_animated_webp_bytes(&anim_webp).expect("Must be valid animated WebP");
     assert!(frame_count > 1, "Must have > 1 animation frames");
+
+    if !animated_webp_decode_available() {
+        eprintln!(
+            "skipping animated WebP -> JPEG conversion: CI preflight reported no decoder support"
+        );
+        return;
+    }
 
     let dir = tempdir().expect("tempdir");
     let album_dir = dir.path();
@@ -304,7 +305,7 @@ fn test_sanitize_flac_pictures_remediates_legacy_corrupt_blocks() {
 
     // Manually inject a legacy corrupt PICTURE block: WebP with 0x0 dimensions
     let mut tag = Tag::read_from_path(&flac_path).expect("read FLAC");
-    let anim_webp = create_synthetic_animated_webp();
+    let anim_webp = create_animated_webp_fixture();
 
     let mut legacy_pic = metaflac::block::Picture::new();
     legacy_pic.picture_type = PictureType::CoverFront;
@@ -325,6 +326,17 @@ fn test_sanitize_flac_pictures_remediates_legacy_corrupt_blocks() {
     // Apply sanitize_flac_pictures
     let repaired = sanitize_flac_pictures(&flac_path).expect("sanitize_flac_pictures must succeed");
     assert!(repaired, "Sanitizer must report modification/repair");
+
+    if !animated_webp_decode_available() {
+        // The repair contract below needs the runner's FFmpeg to transcode the legacy
+        // WebP payload, a capability the CI preflight reports as absent when the gate
+        // is 0. Everything asserted up to here is hermetic and still ran; the
+        // transcoding outcome is left to the E2E-capable run.
+        eprintln!(
+            "skipping legacy block repair assertions: CI preflight reported no decoder support"
+        );
+        return;
+    }
 
     // Verify repaired file has valid dimensions and JPEG mime type
     let cleaned_tag = Tag::read_from_path(&flac_path).expect("read cleaned FLAC");

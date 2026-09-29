@@ -8,33 +8,11 @@
 use syncify_tauri_lib::services::animated_cover::validate_animated_webp_bytes;
 use tempfile::tempdir;
 
-fn create_synthetic_animated_webp_bytes() -> Vec<u8> {
-    let temp_dir = tempdir().expect("tempdir");
-    let out_webp = temp_dir.path().join("anim.webp");
-
-    let status = std::process::Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc=duration=1:size=64x64:rate=10",
-            "-vcodec",
-            "libwebp",
-            "-loop",
-            "0",
-            "-an",
-            out_webp.to_str().unwrap(),
-        ])
-        .output()
-        .expect("ffmpeg must execute");
-
-    assert!(
-        status.status.success(),
-        "ffmpeg animated WebP creation must succeed"
-    );
-    std::fs::read(&out_webp).expect("read anim.webp")
-}
+/// Versioned animated WebP (3 ANMF frames). Generating it at test time with the runner's
+/// FFmpeg made this suite depend on an encoder whose output CI already declares
+/// unverified, so container integrity is now checked against the tracked fixture with
+/// no external process involved.
+const ANIMATED_WEBP_FIXTURE: &[u8] = include_bytes!("fixtures/animated-cover.webp");
 
 #[tokio::test]
 async fn test_animated_cover_files_written_and_visible() {
@@ -42,7 +20,7 @@ async fn test_animated_cover_files_written_and_visible() {
     let dest_dir = dir.path().join("Artist").join("Album");
     tokio::fs::create_dir_all(&dest_dir).await.unwrap();
 
-    let animated_bytes = create_synthetic_animated_webp_bytes();
+    let animated_bytes = ANIMATED_WEBP_FIXTURE.to_vec();
     assert!(
         validate_animated_webp_bytes(&animated_bytes).is_ok(),
         "Synthetic WebP must be valid"

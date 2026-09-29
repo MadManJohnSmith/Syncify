@@ -299,8 +299,20 @@ impl WebpByteValidator {
                 ));
             }
 
-            // Chunk payload and padding must not exceed total buffer bounds
-            if next_offset > bytes.len() {
+            // The chunk payload must be fully contained in the buffer. The RIFF pad
+            // byte exists only to align the *next* chunk, so a final odd-sized chunk
+            // may legitimately end at EOF without it; bounds are therefore checked
+            // against the payload end, not against the padded end.
+            let payload_end = offset
+                .checked_add(8)
+                .and_then(|o| o.checked_add(chunk_size))
+                .ok_or_else(|| {
+                    WebpValidationError::CorruptedChunkStructure(
+                        "Integer overflow computing chunk payload end offset".to_string(),
+                    )
+                })?;
+
+            if payload_end > bytes.len() {
                 return Err(WebpValidationError::ChunkOutOfBounds {
                     offset,
                     chunk_size,
@@ -842,5 +854,70 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// Header shared by the chunk-tail tests: RIFF/WEBP/VP8X with the animation bit.
+    fn animated_webp_header() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"RIFF");
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(b"WEBP");
+        data.extend_from_slice(b"VP8X");
+        data.extend_from_slice(&10u32.to_le_bytes());
+        data.push(0x02); // animation bit
+        data.extend_from_slice(&[0u8; 3]);
+        data.extend_from_slice(&[0x00, 0x01, 0x00]);
+        data.extend_from_slice(&[0x00, 0x01, 0x00]);
+        data
+    }
+
+    #[test]
+    fn test_validate_animated_webp_accepts_unpadded_odd_final_chunk() {
+        let mut data = animated_webp_header();
+
+        // Mid-file odd-sized chunk: the pad byte IS present because another chunk follows.
+        data.extend_from_slice(b"DUM1");
+        data.extend_from_slice(&3u32.to_le_bytes());
+        data.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+        data.push(0x00); // padding
+
+        // Final odd-sized ANMF chunk ending exactly at EOF: no pad byte, which the
+        // WebP container format permits and which real decoders accept.
+        data.extend_from_slice(b"ANMF");
+        data.extend_from_slice(&15u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 15]);
+
+        let info = WebpByteValidator::validate_animated_webp(&data)
+            .expect("final odd chunk without pad byte must stay valid");
+        assert!(info.is_animated);
+        // 24-bit 1-based canvas: 1 + 0x0100 = 257
+        assert_eq!(info.canvas_width, 257);
+        assert_eq!(info.canvas_height, 257);
+        assert_eq!(info.anmf_frame_count, 1);
+        assert_eq!(info.file_size_bytes, data.len());
+    }
+
+    #[test]
+    fn test_validate_animated_webp_rejects_truncated_final_chunk_payload() {
+        let mut data = animated_webp_header();
+
+        // Final chunk claims one byte more than the buffer actually holds.
+        data.extend_from_slice(b"ANMF");
+        data.extend_from_slice(&15u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 14]);
+
+        let res = WebpByteValidator::validate_animated_webp(&data);
+        assert!(
+            matches!(
+                res,
+                Err(WebpValidationError::ChunkOutOfBounds {
+                    offset: 30,
+                    chunk_size: 15,
+                    buffer_len: 52,
+                })
+            ),
+            "A truncated payload must still be rejected: {:?}",
+            res
+        );
     }
 }
