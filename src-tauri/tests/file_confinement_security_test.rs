@@ -19,6 +19,9 @@
 //!    - Rejection of unauthorized destinations (/etc, ~/.ssh, etc.).
 //!    - Success of legitimate export with explicit path and default (None) path.
 
+mod common;
+
+use common::resolve_sandbox_test_base;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,15 +36,23 @@ use syncify_tauri_lib::AppState;
 use syncify_tauri_lib::EnrichmentWorkerState;
 use tauri::Manager;
 
-/// Resolves a writable sandbox-compliant directory inside Documents for test artifacts.
+/// Resolves a writable sandbox-compliant directory for test artifacts.
 /// Each test receives its own isolated directory to avoid parallel test race conditions.
+///
+/// The base is derived from the production allowed-directory resolvers rather
+/// than from `dirs::document_dir()`, which only reads
+/// `$XDG_CONFIG_HOME/user-dirs.dirs` on Linux and returns `None` without it:
+/// on the `ubuntu-latest` CI runner this helper used to panic in `expect`
+/// before any confinement assertion ran.
 fn resolve_writable_test_dir(test_name: &str) -> PathBuf {
-    let doc_dir = dirs::document_dir().expect("Documents directory must be resolvable");
-    let base = if doc_dir.join("Syncify/target").exists() {
-        doc_dir.join("Syncify/target/sec006_e2e_tests")
-    } else {
-        doc_dir.join("syncify_sec006_e2e_tests")
-    };
+    let base = resolve_sandbox_test_base(
+        &[
+            get_allowed_lyrics_read_directories(),
+            get_allowed_m3u_directories(),
+            get_allowed_backup_export_directories(),
+        ],
+        "syncify_sec006_e2e_tests",
+    );
     let test_dir = base.join(test_name);
     let _ = fs::create_dir_all(&test_dir);
     test_dir

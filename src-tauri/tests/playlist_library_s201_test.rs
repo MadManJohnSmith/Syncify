@@ -7,9 +7,13 @@
 //! REAL production SQL against an in-memory schema so any drift between the
 //! SELECT column list and the required fields of `LibraryTrack` fails here.
 
+mod common;
+
+use common::resolve_sandbox_test_base;
 use sqlx::sqlite::SqlitePoolOptions;
 use syncify_tauri_lib::commands::{
     build_m3u_content, export_playlist_m3u_core, fetch_local_playlist_tracks_page,
+    get_allowed_m3u_directories,
 };
 
 async fn create_test_db() -> sqlx::Pool<sqlx::Sqlite> {
@@ -425,26 +429,12 @@ async fn export_m3u_empty_playlist_is_header_only() {
 #[tokio::test]
 async fn export_m3u_writes_verified_content_to_disk_when_path_given() {
     let db = create_test_db().await;
-    let allowed_base = dirs::document_dir()
-        .map(|d| {
-            if let Ok(cwd) = std::env::current_dir() {
-                if cwd.starts_with(&d) {
-                    let target = cwd.join("target");
-                    if target.exists() {
-                        return target;
-                    }
-                    return cwd;
-                }
-            }
-            if d.join("Syncify/target").exists() {
-                d.join("Syncify/target")
-            } else {
-                d
-            }
-        })
-        .or_else(dirs::download_dir)
-        .or_else(dirs::audio_dir)
-        .expect("at least one standard directory (docs/downloads/audio) must be resolvable");
+    // The M3U export path is confined by `get_allowed_m3u_directories()`, which
+    // only reports Documents/Downloads/Audio when the runner provides
+    // `$XDG_CONFIG_HOME/user-dirs.dirs`. Deriving the base from that resolver
+    // keeps the test inside the sandbox it writes to, on every runner.
+    let allowed_base =
+        resolve_sandbox_test_base(&[get_allowed_m3u_directories()], "syncify_s201_tests");
     let _ = std::fs::create_dir_all(&allowed_base);
     let tmp = tempfile::Builder::new()
         .prefix("syncify_test_m3u_")
