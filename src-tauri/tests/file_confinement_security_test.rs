@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use syncify_tauri_lib::commands::{
     export_library, get_allowed_backup_export_directories, get_allowed_lyrics_read_directories,
-    get_allowed_m3u_directories, import_lyrics_file, validate_safe_backup_export_path,
+    get_allowed_m3u_directories, import_lyrics_file, validate_safe_backup_export_path_with_bases,
     write_m3u_to_disk, MAX_LYRICS_FILE_SIZE_BYTES,
 };
 use syncify_tauri_lib::worker::DownloadWorkerState;
@@ -623,7 +623,10 @@ async fn test_backup_export_legitimate_destinations_succeed() {
             let filename = format!("Syncify_Backup_{}.json", timestamp);
             let default_dir = dirs::download_dir().unwrap();
             let default_path = default_dir.join(filename);
-            let validated = validate_safe_backup_export_path(&default_path);
+            let validated = validate_safe_backup_export_path_with_bases(
+                &default_path,
+                &get_allowed_backup_export_directories(),
+            );
             assert!(
                 validated.is_ok(),
                 "Default path must pass safe validation: {:?}",
