@@ -195,7 +195,7 @@
     </div>
 
     <!-- Active Filters Bar -->
-    <div v-if="activeFilters.length > 1 || searchQuery" class="active-filters px-8 pb-2 flex items-center gap-2 shrink-0 flex-wrap">
+    <div v-if="hasRemovableFilters || searchQuery" class="active-filters px-8 pb-2 flex items-center gap-2 shrink-0 flex-wrap">
       <span class="text-xs text-text-secondary">Active filters:</span>
       <div class="flex items-center gap-2 flex-wrap">
         <span 
@@ -698,7 +698,7 @@
                 
                 <!-- Hover Overlay -->
                 <div class="tile-overlay absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-all duration-300 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100">
-                  <button class="w-14 h-14 rounded-full bg-primary text-white flex items-center justify-center shadow-xl transform scale-75 group-hover:scale-100 transition-transform duration-300">
+                  <button @click.stop="handleAlbumPlay(album)" class="w-14 h-14 rounded-full bg-primary text-white flex items-center justify-center shadow-xl transform scale-75 group-hover:scale-100 transition-transform duration-300" title="Play album">
                     <span class="material-symbols-outlined text-[28px]">play_arrow</span>
                   </button>
                   <span class="absolute bottom-3 text-white text-xs font-medium">{{ album.trackCount }} track{{ album.trackCount !== 1 ? 's' : '' }}</span>
@@ -957,6 +957,16 @@ function handleArtistClick(artistId: number | null | undefined) {
   if (artistId) router.push({ name: 'ArtistDetail', params: { id: artistId.toString() } })
 }
 
+// FE-9: the grid tile's play affordance was decorative — the click only bubbled
+// up to the album navigation. Play the album's first track instead, and stop
+// the event so the tile does not also navigate.
+function handleAlbumPlay(album: { tracks: Track[] }) {
+  const first = album.tracks[0]
+  if (first) {
+    void handleTrackPlay(first)
+  }
+}
+
 // Fetch real data from backend
 const isLoading = ref(true)
 
@@ -1049,6 +1059,12 @@ const filterPills = [
 ]
 
 const activeFilters = ref(['all'])
+
+// FE-10: the deep-link 'quality' filter is not a pill, so the pills row cannot
+// show it as selected — and any single active filter was hidden from the bar
+// too. Keep the Active Filters bar visible whenever something removable is
+// applied so every filter (pills and deep-links alike) can be cleared.
+const hasRemovableFilters = computed(() => activeFilters.value.some(f => f !== 'all'))
 
 // FE-10: dashboard deep-link /library?filter=quality&quality=<bucket label>.
 // The bucket label comes from get_audio_quality_distribution ('Hi-Res
@@ -2236,26 +2252,34 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
-// Lifecycle
-onMounted(async () => {
-  document.addEventListener('click', closeContextMenu)
-  window.addEventListener('keydown', handleKeydown)
-  
-  const filterParam = route?.query?.filter as string
+// FE-10: consume the DashboardView deep-links. `?filter=quality&quality=<bucket>`
+// comes from the quality cards and `?filter=duplicates` from the duplicates
+// shortcut. Reading it on mount alone left a stale filter when the query
+// changes in place (back/forward, or another deep-link to the same route),
+// so the query is watched like MetadataView does for `?filter=needs_work`.
+function applyRouteFilters() {
+  const filterParam = route?.query?.filter
+  if (typeof filterParam !== 'string' || filterParam === '') return
+
   if (filterParam === 'quality') {
-    // FE-10: consume the quality deep-link (DashboardView quality cards):
-    // /library?filter=quality&quality=Hi-Res%20(24-bit%2B)
     const qualityParam = route?.query?.quality
     qualityFilter.value = typeof qualityParam === 'string' && qualityParam ? qualityParam : ''
     if (qualityFilter.value) {
       activeFilters.value = ['quality']
     }
-  } else if (filterParam === 'duplicates') {
-    activeFilters.value = ['duplicates']
-  } else if (filterParam) {
-    activeFilters.value = [filterParam]
+    return
   }
-  
+
+  activeFilters.value = [filterParam]
+}
+
+// Lifecycle
+onMounted(async () => {
+  document.addEventListener('click', closeContextMenu)
+  window.addEventListener('keydown', handleKeydown)
+
+  applyRouteFilters()
+
   await loadLibrary()
 
   eventBus.on(TauriEvents.LIBRARY_UPDATED, async () => {
@@ -2275,6 +2299,12 @@ watch(() => [...activeFilters.value], async (newFilters, oldFilters) => {
   if (hasNow !== hadBefore) {
     await loadLibrary();
   }
+})
+
+// FE-10: react to deep-link query changes on the same route (e.g. browser
+// back between two quality buckets) instead of keeping the mount-time filter.
+watch(() => [route?.query?.filter, route?.query?.quality], () => {
+  applyRouteFilters()
 })
 
 onUnmounted(() => {

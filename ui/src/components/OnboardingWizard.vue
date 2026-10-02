@@ -75,7 +75,9 @@
                   <span class="material-symbols-outlined text-3xl">folder</span>
                 </div>
                 <div class="flex-1 min-w-0">
-                  <p class="text-white font-medium truncate">{{ downloadPath }}</p>
+                  <p class="font-medium truncate" :class="downloadPath ? 'text-white' : 'text-gray-400'">
+                    {{ downloadPath || 'No folder selected yet — choose one to enable downloads' }}
+                  </p>
                   <p v-if="availableSpaceLabel" class="text-sm text-gray-400 mt-1">
                     Available space: <span class="text-green-400">{{ availableSpaceLabel }}</span>
                   </p>
@@ -360,7 +362,7 @@
                 <span class="material-symbols-outlined text-amber-400">folder</span>
                 <div>
                   <p class="text-sm text-gray-400">Download location</p>
-                  <p class="text-white font-medium truncate text-sm">{{ downloadPath }}</p>
+                  <p class="text-white font-medium truncate text-sm">{{ downloadPath || 'Not set' }}</p>
                 </div>
               </div>
               <div class="p-4 bg-white/5 border border-white/10 rounded-xl flex items-center gap-3 text-left">
@@ -386,11 +388,7 @@
                 <span class="text-gray-300">Take a quick tour</span>
               </label>
               <label class="flex items-center gap-3 cursor-pointer">
-                <input type="checkbox" v-model="showTips" checked class="w-4 h-4 rounded border-gray-600 text-primary focus:ring-primary">
-                <span class="text-gray-300">Show me tips and tricks</span>
-              </label>
-              <label class="flex items-center gap-3 cursor-pointer">
-                <input type="checkbox" v-model="autoUpdate" checked class="w-4 h-4 rounded border-gray-600 text-primary focus:ring-primary">
+                <input type="checkbox" v-model="autoUpdate" class="w-4 h-4 rounded border-gray-600 text-primary focus:ring-primary">
                 <span class="text-gray-300">Check for updates automatically</span>
               </label>
             </div>
@@ -466,7 +464,8 @@ const isVisible = ref(true)
 const currentStep = ref(0)
 
 // Step 1: Download Location
-const downloadPath = ref('C:\\Users\\username\\Music\\Syncify')
+// Empty until the real OS default resolves: never show or persist a made-up path.
+const downloadPath = ref('')
 const availableSpaceLabel = ref<string | null>(null)
 const isChoosingFolder = ref(false)
 
@@ -534,7 +533,6 @@ const importPlanLabel = computed(() => {
 
 // Step 5: Completion
 const takeTour = ref(false)
-const showTips = ref(true)
 const autoUpdate = ref(true)
 
 // Tour State — targets are real app elements marked with data-tour in App.vue
@@ -747,6 +745,7 @@ async function importFromUrlInput() {
 /**
  * Persists the onboarding choices with the existing settings APIs:
  *  - download location (KV + folder settings, same keys as Settings > General)
+ *  - auto-updates toggle (KV `auto_updates`, same key as Settings > General)
  *  - quality preset (per-service quality preferences, same as Settings > Quality)
  *  - import options (per-service import preferences, upserted)
  *  - auto-download favorites (dl_auto_download_favorites KV)
@@ -755,19 +754,28 @@ async function importFromUrlInput() {
 async function persistOnboardingChoices(): Promise<string[]> {
   const failures: string[] = []
 
-  // 1. Download location
+  // 1. Download location (only when one was actually resolved or chosen) +
+  //    the auto-updates preference from the last step
   const path = downloadPath.value.trim()
+  const batch: Record<string, string> = {
+    auto_updates: autoUpdate.value ? 'true' : 'false',
+  }
   if (path) {
-    try {
-      await saveSettingsBatch({ dl_download_path: path, download_dir: path })
+    batch.dl_download_path = path
+    batch.download_dir = path
+  }
+  try {
+    await saveSettingsBatch(batch)
+    if (path) {
       const folder = await getFolderSettings()
       if (folder && typeof folder === 'object') {
         folder.base_folder = path
         await updateFolderSettings(folder)
       }
-    } catch (err) {
-      failures.push(`download location (${err instanceof Error ? err.message : String(err)})`)
     }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    failures.push(path ? `download location (${detail})` : `general settings (${detail})`)
   }
 
   // 2. Quality preset across all services (same path as Settings > Quality)

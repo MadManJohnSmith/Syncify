@@ -143,6 +143,61 @@ describe('OnboardingWizard persistence (FE-5)', () => {
     expect((folder!.args?.settings as Record<string, unknown>).base_folder).toBe('/music/real')
   })
 
+  it('never persists or renders a made-up path when the default location cannot be resolved', async () => {
+    const wrapper = await mountWizard(calls, { get_default_download_path: null })
+    const vm = wrapper.vm as any
+
+    expect(vm.downloadPath).toBe('')
+
+    vm.currentStep = 1
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).not.toContain('C:\\Users')
+    expect(wrapper.text()).not.toContain('450 GB')
+    expect(wrapper.text()).toContain('No folder selected yet')
+
+    await vm.completeSetup()
+
+    const batch = calls.find(c => c.command === 'save_settings_batch')
+    expect(batch).toBeTruthy()
+    const settings = batch!.args?.settings as Record<string, string>
+    expect(settings.dl_download_path).toBeUndefined()
+    expect(settings.download_dir).toBeUndefined()
+    // Nothing real to sync into the folder settings table either
+    expect(calls.some(c => c.command === 'update_folder_settings')).toBe(false)
+    // Without a location there is nothing to measure
+    expect(calls.some(c => c.command === 'validate_directory_path')).toBe(false)
+  })
+
+  it('persists the auto-update toggle with the same auto_updates key as Settings > General', async () => {
+    const wrapper = await mountWizard(calls)
+    const vm = wrapper.vm as any
+
+    expect(vm.autoUpdate).toBe(true)
+    await vm.completeSetup()
+    let batch = calls.find(c => c.command === 'save_settings_batch')
+    expect((batch!.args?.settings as Record<string, string>).auto_updates).toBe('true')
+
+    vm.autoUpdate = false
+    calls.length = 0
+    await vm.completeSetup()
+    batch = calls.find(c => c.command === 'save_settings_batch')
+    expect((batch!.args?.settings as Record<string, string>).auto_updates).toBe('false')
+  })
+
+  it('offers no toggle for features the app does not have', async () => {
+    const wrapper = await mountWizard(calls)
+    const vm = wrapper.vm as any
+
+    vm.currentStep = 5
+    await wrapper.vm.$nextTick()
+
+    // There is no tips feature anywhere in the app, so the wizard must not
+    // offer a preference for it.
+    expect(wrapper.text()).not.toContain('tips')
+    const labels = wrapper.findAll('label').map(l => l.text())
+    expect(labels).toEqual(['Take a quick tour', 'Check for updates automatically'])
+  })
+
   it('persists the selected import options per connected service, preserving unmanaged fields', async () => {
     const wrapper = await mountWizard(calls)
     const vm = wrapper.vm as any

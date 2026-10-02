@@ -518,7 +518,7 @@
               <!-- STEP 4: Preview & Match Review -->
               <div v-else-if="currentStep === 3" key="step4" class="wizard-step">
                 <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Review matches</h2>
-                <p class="text-text-secondary mb-6">The preview really matches your {{ getServiceName(sourceService) }} tracks against {{ destinationNames }} (ISRC and metadata search) without adding anything</p>
+                <p class="text-text-secondary mb-6" data-testid="preview-description">{{ previewDescription }}</p>
 
                 <!-- Preview loading -->
                 <div v-if="migration.isPreviewing.value" data-testid="preview-loading" class="flex items-center justify-center gap-3 py-12 text-text-secondary">
@@ -1584,6 +1584,24 @@ const unmatchedPercent = computed(() => {
 const unmatchedCountDisplay = computed(() => previewSummary.value.unmatched ?? 0)
 
 const previewPlaylists = computed(() => migration.previewResult.value?.playlists ?? [])
+
+/**
+ * What the review step really previews: preview_migration takes a single
+ * destination, so with several services selected only the first one is
+ * previewed here and each extra destination is matched when its own migration
+ * runs. The copy names that destination instead of the whole selection.
+ */
+const previewedDestinationName = computed(() =>
+  getServiceName(destinationServices.value[0] || '')
+)
+
+const previewDescription = computed(() => {
+  const base = `The preview really matches your ${getServiceName(sourceService.value)} tracks against ${previewedDestinationName.value} (ISRC and metadata search) without adding anything`
+  if (destinationServices.value.length > 1) {
+    return `${base}. ${destinationNames.value} are all selected, so each additional destination is matched when its own migration runs.`
+  }
+  return `${base}.`
+})
 
 /** Load the real preview from the backend when the wizard reaches step 4. */
 async function loadPreview(): Promise<void> {
