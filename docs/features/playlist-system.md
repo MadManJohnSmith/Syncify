@@ -6,9 +6,9 @@
 **Leer antes de modificar:** `commands/tools.rs` (Python bridge playlist commands), `scripts/playlist_bridge.py`
 **Archivos core:**
 - `migrations/0006_playlists.sql` (schema)
-- `src-tauri/src/commands/service.rs` L816 (`import_spotify_playlists`), L1352 (`import_qobuz_playlists`), L1384 (`import_tidal_library`), L1470 (`import_deezer_library`), L1858 (`import_apple_music_library`), L43 (`upsert_playlist_and_source`)
+- `src-tauri/src/commands/service.rs` L816 (`import_spotify_playlists`), L1352 (`import_qobuz_playlists`), L1384 (`import_tidal_library`), L1470 (`import_deezer_library`), L2165 (`import_apple_music_library`), L43 (`upsert_playlist_and_source`)
 - `src-tauri/src/commands/library.rs` (`get_local_playlist_tracks`, `get_playlists`, `add_to_playlist`, `create_playlist`)
-- `src-tauri/src/commands/tools.rs` L858 (`fetch_remote_playlist_tracks`), L867 (`export_playlist`), L886 (`match_playlist_to_service`)
+- `src-tauri/src/commands/tools.rs` L857 (`fetch_remote_playlist_tracks`), L866 (`export_playlist`), L885 (`match_playlist_to_service`)
 - `scripts/playlist_bridge.py` (Python bridge for cross-service ops)
 
 ---
