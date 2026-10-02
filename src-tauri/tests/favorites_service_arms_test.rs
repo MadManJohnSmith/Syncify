@@ -737,6 +737,85 @@ async fn apple_music_push_rejects_artists() {
     assert!(err.contains("no artist favorites"), "got: {}", err);
 }
 
+/// Apple Music writes go through the same shared transient criterion as the
+/// other five clients: a `429` keeps the attempt alive and the shared limiter
+/// suspends the retry for the `Retry-After` the server asked for, instead of
+/// aborting the whole import or push on the first rejection.
+#[tokio::test]
+async fn apple_music_write_honours_the_retry_after_penalty_on_429() {
+    let _env = lock_env();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counter = attempts.clone();
+    let mock = spawn_mock(Arc::new(move |_m, _t| {
+        if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+            (429, "Retry-After: 1\r\n".to_string(), "{}".to_string())
+        } else {
+            (204, String::new(), String::new())
+        }
+    }))
+    .await;
+    std::env::set_var("SYNCIFY_APPLE_MUSIC_BASE_URL", format!("{}/v1", mock.base));
+
+    let pool = setup_db().await;
+    seed_account(
+        &pool,
+        "apple_music",
+        serde_json::json!({ "developer_token": "dev", "music_user_token": "user" }),
+    )
+    .await;
+
+    let started = Instant::now();
+    perform_push_favorite_to_service(&pool, "apple_music", "album", "1440857780", true)
+        .await
+        .expect("a 429 is transient: the write must still land");
+    let elapsed = started.elapsed();
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2, "429 then retry");
+    assert!(
+        elapsed >= Duration::from_secs(1),
+        "the shared limiter must suspend the retry for the Retry-After delay, waited {:?}",
+        elapsed
+    );
+}
+
+/// A terminal rejection (`404` here) is the opposite: the shared criterion
+/// classifies it as final, so the client surfaces it on the first attempt
+/// instead of burning retries the criterion forbids.
+#[tokio::test]
+async fn apple_music_write_surfaces_a_terminal_status_without_retries() {
+    let _env = lock_env();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counter = attempts.clone();
+    let mock = spawn_mock(Arc::new(move |_m, _t| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        (404, String::new(), "{}".to_string())
+    }))
+    .await;
+    std::env::set_var("SYNCIFY_APPLE_MUSIC_BASE_URL", format!("{}/v1", mock.base));
+
+    let pool = setup_db().await;
+    seed_account(
+        &pool,
+        "apple_music",
+        serde_json::json!({ "developer_token": "dev", "music_user_token": "user" }),
+    )
+    .await;
+
+    let err = perform_push_favorite_to_service(&pool, "apple_music", "album", "1440857780", true)
+        .await
+        .expect_err("a 404 is terminal for the attempt loop");
+    assert!(
+        err.contains("404"),
+        "the original status must reach the caller, got: {}",
+        err
+    );
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "a terminal status must not be retried"
+    );
+}
+
 #[tokio::test]
 async fn apple_music_sync_favorites_imports_library_songs_and_albums() {
     let _env = lock_env();
