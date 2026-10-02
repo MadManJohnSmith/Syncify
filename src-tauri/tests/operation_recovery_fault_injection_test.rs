@@ -28,7 +28,11 @@ use sqlx::sqlite::SqlitePoolOptions;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use syncify_core_domain::{OperationJournalEntry, OperationPhase, OperationStatus, OperationType};
+use syncify_tauri_lib::commands::{
+    perform_sync_service_with_emitter, SyncProgressEmitter, SyncProgressEvent,
+};
 use syncify_tauri_lib::services::operation_recovery::{
     begin_service_sync_operation, begin_tidal_download_operation, classify_operation_error,
     create_operation_journal, download_staging_path, get_recovery_audit_summary,
@@ -997,4 +1001,109 @@ async fn production_error_classification_matches_retry_semantics() {
             taxonomy
         );
     }
+}
+/// Collector used to observe that the sync really ran while asserting on the
+/// journal row it leaves behind.
+#[derive(Clone, Default)]
+struct RecordingSyncEmitter {
+    events: Arc<Mutex<Vec<String>>>,
+}
+impl RecordingSyncEmitter {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn phases(&self) -> Vec<String> {
+        self.events.lock().unwrap().clone()
+    }
+}
+impl SyncProgressEmitter for RecordingSyncEmitter {
+    fn emit_sync_progress(&self, event: &SyncProgressEvent) {
+        self.events.lock().unwrap().push(event.phase.clone());
+    }
+}
+/// BD-9 regression: the shipping entry point `perform_sync_service_with_emitter`
+/// itself must open a journal entry and close it, without any test-injected row.
+///
+/// The tests above drive the journal API; this one drives the real command that
+/// production calls (tray, `import_qobuz_library`, `unified_sync_service`,
+/// playlist import). If the wrapper stops calling `begin_service_sync_operation`,
+/// or forgets to close what it opened, the row below disappears or stays scannable
+/// and this test fails — which is exactly the state the post-crash reconciler
+/// cannot repair on its own.
+#[tokio::test]
+async fn production_service_sync_entry_point_journals_and_closes_its_own_run() {
+    let (_temp, pool) = migrated_pool("production_sync_entry_point.sqlite").await;
+    let emitter = RecordingSyncEmitter::new();
+
+    // No accounts are seeded, so the sync stops at `RequiresAuth` without touching
+    // the network — the run still has to be journaled end to end.
+    let err = perform_sync_service_with_emitter(&pool, "qobuz", None, None, Some(&emitter))
+        .await
+        .expect_err("a sync without credentials must fail");
+    assert!(
+        err.starts_with("RequiresAuth:"),
+        "unexpected sync error: {}",
+        err
+    );
+    assert!(
+        !emitter.phases().is_empty(),
+        "the sync must have run, otherwise the journal row proves nothing"
+    );
+
+    // 1. The wrapper created the entry (operation type + entity as the reconciler
+    //    expects for a service sync).
+    let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT operation_id, status, operation_type, error_taxonomy FROM operation_journal \
+         WHERE operation_type = 'service_sync' AND entity_id = 'qobuz'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the production sync entry point must journal exactly one run, got {:?}",
+        rows
+    );
+    let (operation_id, status, operation_type, taxonomy) = &rows[0];
+    assert_eq!(operation_type, "service_sync");
+    assert!(
+        operation_id.starts_with("op-sync-qobuz-"),
+        "unexpected operation id: {}",
+        operation_id
+    );
+
+    // 2. It closed the entry with the classified error instead of leaving it open.
+    assert_eq!(
+        status, "failed_terminal",
+        "RequiresAuth must close the entry as terminal, got {}",
+        status
+    );
+    let taxonomy = taxonomy
+        .as_deref()
+        .unwrap_or_else(|| panic!("the failed sync must record its error taxonomy"));
+    assert!(
+        taxonomy.contains("AuthInvalid"),
+        "the journal must classify the auth failure the same way the reconciler \
+         does, got {}",
+        taxonomy
+    );
+
+    // 3. A closed entry is invisible to startup reconciliation: no re-repair, no
+    //    audit rows, and the run is not reconsidered on every restart.
+    let summary = reconcile_startup_operations(&pool, None).await.unwrap();
+    assert_eq!(
+        summary.total_journal_scanned, 0,
+        "a closed sync entry must not be scanned again"
+    );
+    let audited: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM operation_recovery_audit WHERE operation_id = ?")
+            .bind(operation_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        audited, 0,
+        "a closed sync entry must not produce recovery audit rows"
+    );
 }

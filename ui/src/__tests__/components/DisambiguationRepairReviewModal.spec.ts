@@ -19,53 +19,54 @@ describe('DisambiguationRepairReviewModal', () => {
     clearAllHistory();
   });
 
+  // Wire payload produced by `plan_disambiguation_repair` (snake_case, like the rest of the IPC contract).
   const dryRunPlanPayload = {
-    dryRun: true,
+    dry_run: true,
     items: [
       {
-        trackId: 2507,
+        track_id: 2507,
         isrc: 'USSM12345678',
-        currentAudioPath: '/Music/UPSAHL/2020 - 12345SEX/19-2000.flac',
-        targetAudioPath: '/Music/UPSAHL/2020 - 12345SEX/19-2000 (Remastered).flac',
-        currentLrcPath: '/Music/UPSAHL/2020 - 12345SEX/19-2000.lrc',
-        targetLrcPath: '/Music/UPSAHL/2020 - 12345SEX/19-2000 (Remastered).lrc',
-        sourceTitle: '19-2000 (Soulchild Remix)',
-        displayTitle: '19-2000',
-        fileDisambiguator: 'Remastered',
-        sha256Before: 'abc123hash',
+        current_audio_path: '/Music/UPSAHL/2020 - 12345SEX/19-2000.flac',
+        target_audio_path: '/Music/UPSAHL/2020 - 12345SEX/19-2000 (Remastered).flac',
+        current_lrc_path: '/Music/UPSAHL/2020 - 12345SEX/19-2000.lrc',
+        target_lrc_path: '/Music/UPSAHL/2020 - 12345SEX/19-2000 (Remastered).lrc',
+        source_title: '19-2000 (Soulchild Remix)',
+        display_title: '19-2000',
+        file_disambiguator: 'Remastered',
+        sha256_before: 'abc123hash',
         status: 'ready',
         baseline: {
-          filePath: '/Music/UPSAHL/2020 - 12345SEX/19-2000.flac',
-          inputSha256: 'abc123hash',
-          inputSize: 4096,
-          inputModifiedAt: 1755000000,
+          file_path: '/Music/UPSAHL/2020 - 12345SEX/19-2000.flac',
+          input_sha256: 'abc123hash',
+          input_size: 4096,
+          input_modified_at: 1755000000,
         },
-        appliedActions: [],
-        rollbackState: null,
+        applied_actions: [],
+        rollback_state: null,
         errors: [],
       },
     ],
-    totalCandidates: 1,
-    totalRenamed: 0,
-    totalSkipped: 0,
+    total_candidates: 1,
+    total_renamed: 0,
+    total_skipped: 0,
     errors: [],
-    appliedActions: [],
-    rollbackState: null,
+    applied_actions: [],
+    rollback_state: null,
   };
 
   const executedPlanPayload = {
     ...dryRunPlanPayload,
-    dryRun: false,
-    totalRenamed: 1,
+    dry_run: false,
+    total_renamed: 1,
     items: [
       {
         ...dryRunPlanPayload.items[0],
         status: 'repaired_success',
-        outputHashes: {
-          fileHashBefore: 'abc123hash',
-          fileHashAfter: 'abc123hash',
+        output_hashes: {
+          file_hash_before: 'abc123hash',
+          file_hash_after: 'abc123hash',
         },
-        appliedActions: ['Renamed audio file', 'Renamed LRC sidecar', 'SQLiteUpdated'],
+        applied_actions: ['Renamed audio file', 'Renamed LRC sidecar', 'SQLiteUpdated'],
       },
     ],
   };
@@ -94,7 +95,7 @@ describe('DisambiguationRepairReviewModal', () => {
   it('renders the empty state when the library has no ambiguous tracks', async () => {
     mockInvoke((cmd) => {
       if (cmd === 'plan_disambiguation_repair') {
-        return { ...dryRunPlanPayload, items: [], totalCandidates: 0 };
+        return { ...dryRunPlanPayload, items: [], total_candidates: 0 };
       }
       return null;
     });
@@ -153,6 +154,18 @@ describe('DisambiguationRepairReviewModal', () => {
 
     expect(executedArgs).not.toBeNull();
     expect((executedArgs as unknown as { confirmed: boolean }).confirmed).toBe(true);
+
+    // The plan must reach the backend in the snake_case shape it deserializes back.
+    const sentPlan = (executedArgs as unknown as { plan: Record<string, unknown> }).plan;
+    expect(sentPlan.total_candidates).toBe(1);
+    expect(sentPlan.items).toEqual([
+      expect.objectContaining({
+        track_id: 2507,
+        current_audio_path: '/Music/UPSAHL/2020 - 12345SEX/19-2000.flac',
+        target_audio_path: '/Music/UPSAHL/2020 - 12345SEX/19-2000 (Remastered).flac',
+      }),
+    ]);
+    expect(Object.keys(sentPlan)).not.toContain('totalCandidates');
 
     const toastTitles = useToast().toasts.value.map((t) => t.title);
     expect(toastTitles.some((title) => title.includes('Repaired 1 of 1 tracks'))).toBe(true);

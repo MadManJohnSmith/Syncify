@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::disambiguation_repair::{
     compute_file_sha256, execute_disambiguation_repair, plan_disambiguation_repair,
-    resolve_disambiguated_target_path,
+    resolve_disambiguated_target_path, DisambiguationRepairReport,
 };
 use tempfile::TempDir;
 
@@ -434,4 +434,90 @@ async fn test_plan_disambiguation_repair_skips_invalid_path_without_panic() {
         0,
         "Invalid path candidate should be safely skipped"
     );
+}
+
+/// The frontend holds the plan as its canonical snake_case contract
+/// (`DisambiguationRepairReport` in ui/src/api/types.ts, produced by
+/// `normalizeDisambiguationRepairReport` in ui/src/api/metadata.ts) and sends that
+/// object straight back as the `plan` argument of `execute_disambiguation_repair`.
+/// The Rust argument must therefore accept snake_case, otherwise the UI's "Apply repair"
+/// button can never reach the executor.
+#[test]
+fn test_execute_plan_argument_accepts_frontend_snake_case_payload() {
+    let payload = serde_json::json!({
+        "dry_run": true,
+        "items": [{
+            "track_id": 2507,
+            "isrc": "GBAYE1400480",
+            "current_audio_path": "/music/Gorillaz/17 - 19-2000.flac",
+            "target_audio_path": "/music/Gorillaz/17 - 19-2000 [Soulchild Remix].flac",
+            "current_lrc_path": "/music/Gorillaz/17 - 19-2000.lrc",
+            "target_lrc_path": "/music/Gorillaz/17 - 19-2000 [Soulchild Remix].lrc",
+            "source_title": "19-2000",
+            "display_title": "19-2000 (Soulchild Remix)",
+            "file_disambiguator": "Soulchild Remix",
+            "sha256_before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "status": "ready",
+            "baseline": {
+                "file_path": "/music/Gorillaz/17 - 19-2000.flac",
+                "input_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "input_size": 4096,
+                "input_modified_at": 1755000000u64,
+                "audio_content_hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                "lrc_path": "/music/Gorillaz/17 - 19-2000.lrc",
+                "lrc_sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+                "lrc_size": 128,
+                "lrc_modified_at": 1755000001u64,
+            },
+            "output_hashes": null,
+            "applied_actions": [],
+            "rollback_state": null,
+        }],
+        "total_candidates": 1,
+        "total_renamed": 0,
+        "total_skipped": 0,
+        "errors": [],
+        "applied_actions": [],
+        "rollback_state": null,
+    });
+
+    let plan: DisambiguationRepairReport = serde_json::from_value(payload).unwrap_or_else(|e| {
+        panic!(
+            "execute_disambiguation_repair cannot deserialize the plan the frontend sends: {}",
+            e
+        )
+    });
+
+    assert_eq!(plan.items.len(), 1);
+    assert_eq!(plan.items[0].track_id, 2507);
+    assert_eq!(plan.items[0].status, "ready");
+    let baseline = plan.items[0]
+        .baseline
+        .as_ref()
+        .expect("baseline must survive the frontend round-trip");
+    assert_eq!(baseline.input_size, 4096);
+    assert_eq!(
+        baseline.input_sha256,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+}
+
+/// The dry-run plan travels to the frontend as the payload it will later send back,
+/// so serializing and deserializing it must be lossless in both directions.
+#[tokio::test]
+async fn test_plan_report_round_trips_through_its_own_wire_format() {
+    let (pool, _temp) = setup_test_db().await;
+
+    let empty_plan = plan_disambiguation_repair(&pool).await.unwrap();
+    let wire = serde_json::to_value(&empty_plan).unwrap();
+    let parsed: DisambiguationRepairReport = serde_json::from_value(wire).unwrap();
+
+    assert_eq!(parsed.dry_run, empty_plan.dry_run);
+    assert_eq!(parsed.items.len(), empty_plan.items.len());
+    assert_eq!(parsed.total_candidates, empty_plan.total_candidates);
+    assert_eq!(parsed.total_renamed, empty_plan.total_renamed);
+    assert_eq!(parsed.total_skipped, empty_plan.total_skipped);
+    assert_eq!(parsed.applied_actions, empty_plan.applied_actions);
+    assert_eq!(parsed.errors, empty_plan.errors);
+    assert_eq!(parsed.rollback_state, empty_plan.rollback_state);
 }

@@ -4,8 +4,11 @@ use serde::{Deserialize, Serialize};
 
 /// Snapshot baseline of an audio file and its optional sidecar LRC
 /// calculated during the dry-run inspection phase.
+///
+/// Serialized and deserialized as snake_case, matching the rest of the IPC contract:
+/// a baseline embedded in a dry-run plan is sent back to the backend verbatim by
+/// `execute_disambiguation_repair`, so both directions must use the same field names.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct RepairFileBaseline {
     pub file_path: String,
     pub input_sha256: String,
@@ -20,8 +23,9 @@ pub struct RepairFileBaseline {
 
 /// Output hash audit capturing before-and-after states of the file,
 /// audio payload, and optional sidecar LRC.
+///
+/// snake_case on the wire for the same round-trip reason as `RepairFileBaseline`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct RepairOutputHashes {
     pub file_hash_before: String,
     pub file_hash_after: Option<String>,
