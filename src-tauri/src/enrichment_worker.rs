@@ -1,7 +1,7 @@
 //! Background Metadata Enrichment Worker
 //!
-//! Automatically enriches tracks in the background with MusicBrainz, Spotify audio features,
-//! and Last.fm genres, respecting centralized RateLimiter, backoff, and progress persistence.
+//! Automatically enriches tracks in the background with MusicBrainz,
+//! respecting centralized RateLimiter, backoff, and progress persistence.
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;

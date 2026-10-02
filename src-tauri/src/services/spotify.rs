@@ -1142,9 +1142,6 @@ impl SpotifyClient {
         }
     }
 
-    /// Get audio features for multiple tracks (max 100 per request)
-    /// Returns a HashMap of track_id -> AudioFeatures for easy lookup
-    /// Supports 401 Unauthorized auto-refresh if refresh_token and db access provided
     /// Process a batch of Spotify tracks (public for testing)
     #[allow(dead_code)] // Cubierta por `tests/spotify_import_test.rs`.
     pub async fn process_spotify_import_batch(

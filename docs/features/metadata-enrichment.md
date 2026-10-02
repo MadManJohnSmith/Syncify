@@ -6,11 +6,11 @@
 **Leer antes de modificar:** `services/lastfm.rs`, `services/musicbrainz.rs`, `models.rs`
 **Archivos core:**
 - `src-tauri/src/commands/enrichment.rs` (325 lines)
-- `src-tauri/src/enrichment_worker.rs` (298 lines) — worker de fondo
+- `src-tauri/src/enrichment_worker.rs` (297 lines) — worker de fondo
 - `src-tauri/src/services/enrichment.rs` (`EnrichmentEngine`, el motor que invoca el worker)
 - `src-tauri/src/services/musicbrainz.rs` (1453 lines)
 - `src-tauri/src/services/lastfm.rs` (193 lines)
-- `src-tauri/src/services/rate_limiter.rs` (557 lines)
+- `src-tauri/src/services/rate_limiter.rs` (555 lines)
 - `src-tauri/src/services/tempo_analyzer.rs` — escritura de `bpm`/`musical_key`/`energy` por análisis local
 - `src-tauri/src/commands/library.rs` (`enrich_metadata_musicbrainz`)
 - `src-tauri/src/commands/metadata.rs` (`fetch_missing_cover_art`)
