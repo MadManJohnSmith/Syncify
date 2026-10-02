@@ -1051,6 +1051,26 @@ pub async fn start_migration<R: tauri::Runtime>(
         .await
         .ok();
 
+    // Emit initial progress before the per-item rows are written: the job id
+    // reaches the UI (and becomes cancellable) as soon as the job is running,
+    // not after the whole library has been inserted.
+    let started_at = std::time::Instant::now();
+    let _ = app.emit(
+        "migration-progress",
+        build_migration_progress(
+            started_at.elapsed().as_secs_f64(),
+            &job_id,
+            0,
+            total_items,
+            "Starting migration...".to_string(),
+            "Starting migration...".to_string(),
+            "running",
+            0,
+            0,
+            0,
+        ),
+    );
+
     // Insert migration items up front (status 'pending') and keep each row's id
     // so the per-item result update addresses exactly that row (BD-7).
     let mut item_ids: Vec<Option<i64>> = Vec::with_capacity(tracks.len());
@@ -1069,24 +1089,6 @@ pub async fn start_migration<R: tauri::Runtime>(
         item_ids.push(item_id);
     }
 
-    // Emit initial progress
-    let started_at = std::time::Instant::now();
-    let _ = app.emit(
-        "migration-progress",
-        build_migration_progress(
-            started_at.elapsed().as_secs_f64(),
-            &job_id,
-            0,
-            total_items,
-            "Starting migration...".to_string(),
-            "Starting migration...".to_string(),
-            "running",
-            0,
-            0,
-            0,
-        ),
-    );
-
     // Destination clients for matching/transferring, built from the stored
     // account credentials of the destination service.
     let clients = DestinationClients::for_destination(&state.db, &destination_service).await;
@@ -1095,6 +1097,9 @@ pub async fn start_migration<R: tauri::Runtime>(
     let mut completed = 0i64;
     let mut failed = 0i64;
     let mut skipped = 0i64;
+    // Set when cancel_migration flipped the job while the loop was running:
+    // the loop stops early, so the job must not be reported as completed.
+    let mut cancelled = false;
 
     for (i, (track, item_id)) in tracks.iter().zip(item_ids.iter()).enumerate() {
         let ext_id = track.external_id.as_str();
@@ -1111,6 +1116,7 @@ pub async fn start_migration<R: tauri::Runtime>(
                 .flatten();
 
         if job.as_ref().map(|j| j.0.as_str()) == Some("cancelled") {
+            cancelled = true;
             break;
         }
 
@@ -1230,10 +1236,19 @@ pub async fn start_migration<R: tauri::Runtime>(
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    // Update job as completed
+    // Close the job with the status it really ended in: a job the user
+    // cancelled stopped early, so writing 'completed' here would claim a
+    // transfer that never finished (and the UI would show it as finished).
+    let processed = completed + failed + skipped;
+    let (final_status, final_message) = if cancelled {
+        ("cancelled", "Migration cancelled")
+    } else {
+        ("completed", "Migration complete")
+    };
     sqlx::query(
-        "UPDATE migration_jobs SET status = 'completed', completed_items = ?, failed_items = ?, skipped_items = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?"
+        "UPDATE migration_jobs SET status = ?, completed_items = ?, failed_items = ?, skipped_items = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?"
     )
+    .bind(final_status)
     .bind(completed)
     .bind(failed)
     .bind(skipped)
@@ -1248,11 +1263,11 @@ pub async fn start_migration<R: tauri::Runtime>(
         build_migration_progress(
             started_at.elapsed().as_secs_f64(),
             &job_id,
+            processed,
             total_items,
-            total_items,
-            "Migration complete".to_string(),
-            "Migration complete".to_string(),
-            "completed",
+            final_message.to_string(),
+            final_message.to_string(),
+            final_status,
             completed,
             failed,
             skipped,

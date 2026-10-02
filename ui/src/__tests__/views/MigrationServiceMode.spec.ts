@@ -381,4 +381,319 @@ describe('MigrationView service → service mode (post-audit 4.2)', () => {
     expect(wrapper.text()).not.toContain('Transferring...')
     expect(wrapper.find('[data-testid="start-transfer-btn"]').exists()).toBe(true)
   })
+
+  it('stays cancelled when the engine reports the cancelled job as finished, without claiming a transfer', async () => {
+    let resolveStart!: (value: unknown) => void
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    mockInvoke((cmd, args) => {
+      calls.push({ cmd, args })
+      if (cmd === 'start_migration') return new Promise((resolve) => { resolveStart = resolve })
+      if (cmd === 'get_service_statuses') return connectedStatuses
+      if (cmd === 'get_migration_destinations') return engineDestinations
+      if (cmd === 'preview_migration') return { total_tracks: 100, matched_tracks: 90, unmatched_tracks: 10, playlists: [] }
+      return []
+    })
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await selectServiceSource(wrapper, 'spotify')
+    const qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper)
+    await clickNext(wrapper)
+
+    await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
+    await flushPromises()
+    emitMockEvent('migration-progress', {
+      job_id: 'job-cancel',
+      current_item: 12,
+      total_items: 100,
+      current_track: 'Real Song',
+      status: 'running',
+      completed_count: 10,
+      failed_count: 1,
+      skipped_count: 1,
+      percent: 12,
+      speed: 12.5,
+      eta: '6 min 40 s',
+      current_action: 'Searching for match',
+    })
+    await flushPromises()
+
+    await clickButtonByText(wrapper, 'Cancel Transfer')
+    await flushPromises()
+    expect(calls.find(c => c.cmd === 'cancel_migration')!.args?.jobId).toBe('job-cancel')
+
+    // The engine closes the job it stopped early: the last event says
+    // cancelled, with the real counts, never a completed migration.
+    emitMockEvent('migration-progress', {
+      job_id: 'job-cancel',
+      current_item: 12,
+      total_items: 100,
+      current_track: 'Migration cancelled',
+      status: 'cancelled',
+      completed_count: 10,
+      failed_count: 1,
+      skipped_count: 1,
+      percent: 12,
+      speed: 12.5,
+      eta: '0 s',
+      current_action: 'Migration cancelled',
+    })
+    resolveStart('job-cancel')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="transfer-complete"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Transfer complete!')
+    expect(wrapper.find('[data-testid="start-transfer-btn"]').exists()).toBe(true)
+  })
+
+  it('starts each migration from zero instead of showing the previous job numbers', async () => {
+    let resolveStart!: (value: unknown) => void
+    const starts: unknown[] = []
+    mockInvoke((cmd) => {
+      if (cmd === 'start_migration') {
+        starts.push(cmd)
+        return new Promise((resolve) => { resolveStart = resolve })
+      }
+      if (cmd === 'get_service_statuses') return connectedStatuses
+      if (cmd === 'get_migration_destinations') return engineDestinations
+      if (cmd === 'preview_migration') return { total_tracks: 100, matched_tracks: 90, unmatched_tracks: 10, playlists: [] }
+      return []
+    })
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+
+    // First job: real numbers arrive through migration-progress events.
+    await enterServiceMode(wrapper)
+    await selectServiceSource(wrapper, 'spotify')
+    let qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper)
+    await clickNext(wrapper)
+    await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
+    await flushPromises()
+    emitMockEvent('migration-progress', {
+      job_id: 'job-first',
+      current_item: 73,
+      total_items: 100,
+      current_track: 'First Song',
+      status: 'running',
+      completed_count: 70,
+      failed_count: 1,
+      skipped_count: 2,
+      percent: 73,
+      speed: 20,
+      eta: '2 min',
+      current_action: 'Transferring First Song',
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('73 / 100')
+    resolveStart('job-first')
+    emitMockEvent('migration-progress', {
+      job_id: 'job-first',
+      current_item: 100,
+      total_items: 100,
+      current_track: 'Migration complete',
+      status: 'completed',
+      completed_count: 97,
+      failed_count: 1,
+      skipped_count: 2,
+      percent: 100,
+      speed: 20,
+      eta: '0 s',
+      current_action: 'Migration complete',
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="transfer-complete"]').exists()).toBe(true)
+
+    // Second job: nothing of the finished one may leak into its progress screen.
+    await clickButtonByText(wrapper, 'New Migration')
+    await selectServiceSource(wrapper, 'spotify')
+    qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper)
+    await clickNext(wrapper)
+    await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(starts.length).toBe(2)
+    expect(wrapper.text()).toContain('0 / 0 tracks')
+    expect(wrapper.text()).toContain('0%')
+    expect(wrapper.text()).not.toContain('73 / 100')
+    expect(wrapper.text()).not.toContain('97 tracks')
+
+    // The engine's first event of the new job carries the new job's id.
+    emitMockEvent('migration-progress', {
+      job_id: 'job-second',
+      current_item: 0,
+      total_items: 42,
+      current_track: 'Starting migration...',
+      status: 'running',
+      completed_count: 0,
+      failed_count: 0,
+      skipped_count: 0,
+      percent: 0,
+      speed: 0,
+      eta: 'calculating...',
+      current_action: 'Starting migration...',
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('0 / 42 tracks')
+  })
+
+  it('never cancels the previous job when a new migration has not reported its id yet', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    let startResolve!: (value: unknown) => void
+    let pendingStart = true
+    mockInvoke((cmd, args) => {
+      calls.push({ cmd, args })
+      if (cmd === 'start_migration') {
+        pendingStart = true
+        return new Promise((resolve) => { startResolve = resolve })
+      }
+      if (cmd === 'get_service_statuses') return connectedStatuses
+      if (cmd === 'get_migration_destinations') return engineDestinations
+      if (cmd === 'preview_migration') return { total_tracks: 10, matched_tracks: 8, unmatched_tracks: 2, playlists: [] }
+      return []
+    })
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+
+    // First job runs to completion and reports its real job id.
+    await selectServiceSource(wrapper, 'spotify')
+    let qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper)
+    await clickNext(wrapper)
+    await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
+    await flushPromises()
+    emitMockEvent('migration-progress', {
+      job_id: 'job-done',
+      current_item: 10,
+      total_items: 10,
+      current_track: 'Migration complete',
+      status: 'completed',
+      completed_count: 10,
+      failed_count: 0,
+      skipped_count: 0,
+      percent: 100,
+      speed: 30,
+      eta: '0 s',
+      current_action: 'Migration complete',
+    })
+    pendingStart = false
+    startResolve('job-done')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="transfer-complete"]').exists()).toBe(true)
+
+    // Second job starts; its invoke has not resolved yet, so no event of the
+    // new job has arrived and only the finished job's id is known.
+    await clickButtonByText(wrapper, 'New Migration')
+    await selectServiceSource(wrapper, 'spotify')
+    qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper)
+    await clickNext(wrapper)
+    await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
+    await flushPromises()
+    expect(pendingStart).toBe(true)
+
+    await clickButtonByText(wrapper, 'Cancel Transfer')
+    await flushPromises()
+
+    const cancelCalls = calls.filter(c => c.cmd === 'cancel_migration')
+    // Nothing to cancel yet: the honest outcome is no cancel call at all, never
+    // one aimed at the finished job (cancel_migration would silently no-op).
+    expect(cancelCalls.length).toBe(0)
+
+    // Once the engine reports the running job, cancelling targets that job.
+    emitMockEvent('migration-progress', {
+      job_id: 'job-running',
+      current_item: 1,
+      total_items: 10,
+      current_track: 'Real Song',
+      status: 'running',
+      completed_count: 0,
+      failed_count: 0,
+      skipped_count: 0,
+      percent: 10,
+      speed: 5,
+      eta: '2 min',
+      current_action: 'Transferring Real Song',
+    })
+    await flushPromises()
+    await clickButtonByText(wrapper, 'Cancel Transfer')
+    await flushPromises()
+    expect(calls.filter(c => c.cmd === 'cancel_migration').map(c => c.args?.jobId)).toEqual(['job-running'])
+  })
+
+  it('reloads the reviewable matches of the job that just ran when going back to the review step', async () => {
+    let startResolve!: (value: unknown) => void
+    const finishedJob: MigrationJob = { ...reviewJob, id: 'svc-job-2', status: 'completed', completed_items: 2, skipped_items: 0 }
+    const finishedItem = { ...reviewItem, id: 8, job_id: 'svc-job-2', status: 'transferred', destination_track_id: 'dest-9' }
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    mockInvoke((cmd, args) => {
+      calls.push({ cmd, args })
+      if (cmd === 'start_migration') return new Promise((resolve) => { startResolve = resolve })
+      if (cmd === 'get_service_statuses') return connectedStatuses
+      if (cmd === 'get_migration_destinations') return engineDestinations
+      if (cmd === 'preview_migration') return { total_tracks: 1, matched_tracks: 1, unmatched_tracks: 0, playlists: [] }
+      // The job only exists once it has run: history starts empty.
+      if (cmd === 'get_migration_history') return calls.some(c => c.cmd === 'start_migration') ? [finishedJob] : []
+      if (cmd === 'get_migration_items_by_status') return [finishedItem]
+      return []
+    })
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await selectServiceSource(wrapper, 'spotify')
+    const qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper)
+
+    // Before the job runs there is nothing to review.
+    expect(wrapper.find('[data-testid="svc-review-step"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="svc-review-item-row"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('This will be the first migration')
+
+    await clickNext(wrapper)
+    await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
+    await flushPromises()
+    emitMockEvent('migration-progress', {
+      job_id: 'svc-job-2',
+      current_item: 1,
+      total_items: 1,
+      current_track: 'Migration complete',
+      status: 'completed',
+      completed_count: 1,
+      failed_count: 0,
+      skipped_count: 0,
+      percent: 100,
+      speed: 12,
+      eta: '0 s',
+      current_action: 'Migration complete',
+    })
+    startResolve('svc-job-2')
+    await flushPromises()
+
+    // Going back reviews the matches of the job that just ran.
+    const backButton = wrapper.findAll('button').find(b => b.text().includes('Back'))
+    expect(backButton, 'Back button should exist').toBeTruthy()
+    await backButton!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="svc-review-step"]').exists()).toBe(true)
+    const itemCalls = calls.filter(c => c.cmd === 'get_migration_items_by_status')
+    expect(itemCalls[itemCalls.length - 1].args?.jobId).toBe('svc-job-2')
+    const row = wrapper.find('[data-testid="svc-review-item-row"]')
+    expect(row.exists()).toBe(true)
+    expect(row.text()).toContain('Unknown Track')
+  })
 })

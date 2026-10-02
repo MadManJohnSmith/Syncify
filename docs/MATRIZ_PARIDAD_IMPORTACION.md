@@ -62,7 +62,7 @@
 | Sin cliente de destino | `start_migration` no declara transferencia de ninguna pista — tampoco de las emparejadas a mano. Nada fabrica un éxito |
 | Emparejamientos manuales | `find_manual_match` recupera el último matching manual de la misma ruta origen → destino, así que lo revisado en una pasada sirve en la siguiente |
 | Alcance del trabajo | ✅ respeta las playlists seleccionadas (BD-6) y contabiliza por fila de `migration_items` (BD-7), con `source_playlist_id`, `source_playlist_name` y `error_message` |
-| `library_items` | ✅ poblada en continuo por los triggers de `migrations/0086_library_items_continuous_sync.sql`, ya desde `migrations/0085_alignment_audit.sql` (BD-4): los tres comandos que la leen ven datos |
+| `library_items` | ✅ poblada en continuo por los triggers de `migrations/0086_library_items_continuous_sync.sql` (identidad en `track_sources`) y `migrations/0087_library_items_artist_link_sync.sql` (link de artistas, el segundo punto de escritura del metadato), ya desde `migrations/0085_alignment_audit.sql` (BD-4): los tres comandos que la leen ven datos |
 | Cobertura | `tests/migration_service_mode_test.rs`, `tests/migration_job_scope_and_accounting_test.rs`, `tests/library_items_continuous_sync_test.rs` |
 
 ## Identidad

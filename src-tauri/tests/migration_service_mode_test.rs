@@ -10,6 +10,8 @@
 //!      matches are effective on the next migration.
 //!   3. start_migration without a destination client never claims a transfer
 //!      — not even for a manually matched track (nothing fabricates success).
+//!   4. a job the user cancels is never closed as 'completed': the loop stops
+//!      early and the final migration-progress event says 'cancelled'.
 //!
 //! get_migration_destinations is the data-driven destination list the wizard
 //! renders; adding a backend destination must require no UI change.
@@ -19,8 +21,8 @@ use sqlx::SqlitePool;
 use std::sync::Arc;
 
 use syncify_tauri_lib::commands::migration::{
-    find_manual_match, get_migration_destinations, preview_migration, start_migration,
-    MIGRATION_DESTINATION_SERVICES,
+    cancel_migration, find_manual_match, get_migration_destinations, preview_migration,
+    start_migration, MIGRATION_DESTINATION_SERVICES,
 };
 use syncify_tauri_lib::models::MigrationOptions;
 use syncify_tauri_lib::worker::DownloadWorkerState;
@@ -375,4 +377,127 @@ fn test_get_migration_destinations_lists_the_engine_supported_services() {
             "destination {destination} must have matching client support"
         );
     }
+}
+
+// ============================================================================
+// 4. Cancelling a running job: the progress channel never claims completion
+// ============================================================================
+
+/// Seeds `count` spotify tracks so the migration loop lasts long enough for a
+/// cancellation to land while it runs (the engine sleeps 100 ms per item).
+async fn seed_many_source_tracks(pool: &SqlitePool, count: usize) {
+    sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (1, 'spotify'), (2, 'qobuz')")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title) VALUES ('Cancel Album') RETURNING id",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let artist_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name) VALUES ('Cancel Artist') RETURNING id",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+
+    for index in 0..count {
+        let track_id: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, duration_ms) VALUES (?, ?, 200000) RETURNING id",
+        )
+        .bind(format!("Cancel Song {}", index))
+        .bind(album_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+            .bind(track_id)
+            .bind(artist_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, ?)",
+        )
+        .bind(track_id)
+        .bind(format!("sp-cancel-{}", index))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    sqlx::query(
+        "INSERT INTO accounts (service_id, email, credentials_json, is_active) VALUES (1, 'cancel@test.dev', '{}', 1)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_start_migration_stays_cancelled_instead_of_reporting_completion() {
+    let pool = setup_test_db().await;
+    seed_many_source_tracks(&pool, 12).await;
+    let app = test_app(pool.clone());
+
+    // The real cancel command, issued as soon as the job is running: the loop
+    // polls the row before every item, so it stops early.
+    let cancel_when_running = async {
+        for _ in 0..2000 {
+            let row: Option<(String, String)> = sqlx::query_as(
+                "SELECT id, status FROM migration_jobs WHERE source_service = 'spotify'
+                 ORDER BY rowid DESC LIMIT 1",
+            )
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            if let Some((id, status)) = row {
+                if status == "running" {
+                    cancel_migration(app.state::<AppState>(), id.clone())
+                        .await
+                        .expect("cancel_migration must succeed");
+                    return Some(id);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        None
+    };
+
+    let (result, cancelled_id) = tokio::join!(
+        start_migration(
+            app.handle().clone(),
+            app.state::<AppState>(),
+            "spotify".to_string(),
+            "qobuz".to_string(),
+            None,
+            options(),
+        ),
+        cancel_when_running,
+    );
+
+    let job_id = result.expect("start_migration must succeed");
+    let cancelled_id = cancelled_id.expect("the job must have been cancelled while running");
+    assert_eq!(cancelled_id, job_id);
+
+    let (status, total_items, completed_items): (String, i64, i64) = sqlx::query_as(
+        "SELECT status, total_items, completed_items FROM migration_jobs WHERE id = ?",
+    )
+    .bind(&job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        status, "cancelled",
+        "a job the user cancelled must not be reported as completed"
+    );
+    assert_eq!(total_items, 12, "the whole source library was queued");
+    assert!(
+        completed_items < total_items,
+        "the loop stopped early, so not every queued item was processed"
+    );
 }
