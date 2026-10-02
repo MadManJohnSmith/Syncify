@@ -322,6 +322,12 @@ impl AppleMusicClient {
 
     /// Authenticated request with the MusicKit headers Apple requires; returns
     /// the raw response for the caller to read (or discard).
+    ///
+    /// Every Apple Music call funnels through here, so this is where the shared
+    /// retryability criterion (`http_retry::is_transient_status`) and the shared
+    /// limiter meet: `429`/`408`/`5xx` and transport hiccups are retried with
+    /// backoff, while `401`/`403`/`404` reach the caller immediately — a token
+    /// or a missing resource is not fixed by trying again.
     async fn send(
         &self,
         method: Method,
@@ -330,43 +336,74 @@ impl AppleMusicClient {
     ) -> Result<reqwest::Response, String> {
         let url = self.absolute_url(path_or_url);
 
-        crate::services::rate_limiter::GLOBAL_RATE_LIMITER
-            .acquire("apple_music")
-            .await;
+        let max_retries = 3;
+        let mut last_error = String::new();
 
-        let mut request = self
-            .client
-            .request(method, &url)
-            .header("Authorization", format!("Bearer {}", self.developer_token))
-            .header("media-user-token", &self.music_user_token)
-            .header("Origin", "https://music.apple.com")
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            );
+        for attempt in 0..max_retries {
+            crate::services::rate_limiter::GLOBAL_RATE_LIMITER
+                .acquire("apple_music")
+                .await;
 
-        if let Some(body) = body {
-            request = request.json(body);
+            let mut request = self
+                .client
+                .request(method.clone(), &url)
+                .header("Authorization", format!("Bearer {}", self.developer_token))
+                .header("media-user-token", &self.music_user_token)
+                .header("Origin", "https://music.apple.com")
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                );
+
+            if let Some(body) = body {
+                request = request.json(body);
+            }
+
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        return Ok(response);
+                    } else if crate::services::http_retry::is_transient_status(status) {
+                        crate::services::rate_limiter::penalize_on_rate_limit(
+                            "apple_music",
+                            status,
+                            response.headers(),
+                        )
+                        .await;
+                        let text = response.text().await.unwrap_or_default();
+                        last_error =
+                            format!("API error ({}): {}", status, &text[..text.len().min(100)]);
+                        tracing::warn!(
+                            "Apple Music request attempt {} failed ({}), retrying...",
+                            attempt + 1,
+                            status
+                        );
+                    } else {
+                        let text = response.text().await.unwrap_or_default();
+                        return Err(format!("Apple Music API error {}: {}", status, text));
+                    }
+                }
+                Err(e) => {
+                    last_error = format!("Request failed: {}", e);
+                    tracing::warn!(
+                        "Apple Music request attempt {} failed: {}, retrying...",
+                        attempt + 1,
+                        e
+                    );
+                }
+            }
+
+            if attempt < max_retries - 1 {
+                let delay = 500 * (1 << attempt);
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+            }
         }
 
-        let response = request
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            crate::services::rate_limiter::penalize_on_rate_limit(
-                "apple_music",
-                status,
-                response.headers(),
-            )
-            .await;
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("Apple Music API error {}: {}", status, body));
-        }
-
-        Ok(response)
+        Err(format!(
+            "Apple Music request failed after {} retries: {}",
+            max_retries, last_error
+        ))
     }
 
     /// Get user's library songs (paginated)
