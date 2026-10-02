@@ -118,6 +118,34 @@ export interface TagVerification {
     mismatches?: Array<[string, string, string]>;
 }
 
+/**
+ * Dry-run result of `plan_country_repair` (see
+ * `crates/syncify-metadata-domain/src/country.rs`): what RELEASECOUNTRY /
+ * RELEASEREGION should contain, computed by the same helpers the tag writers use.
+ */
+export interface CountryTagRepairPlan {
+    original_country?: string | null;
+    original_region?: string | null;
+    target_country?: string | null;
+    target_region?: string | null;
+    needs_repair: boolean;
+    reason?: string | null;
+}
+
+/** Report returned by `plan_country_tag_repair` (dry run) and `apply_country_tag_repair`. */
+export interface CountryTagRepairReport {
+    track_id: number;
+    file_path: string;
+    /** `false` for the dry run. */
+    applied: boolean;
+    needs_repair: boolean;
+    plan: CountryTagRepairPlan;
+    /** Tag values read back from the file after the repair (empty when dry run). */
+    applied_tags: Record<string, string[]>;
+    /** Values present on disk at planning time. */
+    current_tags: Record<string, string[]>;
+}
+
 // ==============================================
 // METADATA MANAGEMENT
 // ==============================================
@@ -510,6 +538,23 @@ export async function readMetadataFromFile(trackIdOrPath: number | string): Prom
         return readTrackTags(parsed);
     }
     return invokeCommand<Partial<LibraryTrack>>('read_track_tags', { trackId: 0, filePath: trackIdOrPath });
+}
+
+/**
+ * Dry run of the country/region tag repair (FLAC only): reports what
+ * RELEASECOUNTRY / COUNTRY / RELEASEREGION would become without touching the file.
+ * Delegates to native `plan_country_tag_repair`.
+ */
+export async function planCountryTagRepair(trackId: number): Promise<CountryTagRepairReport> {
+    return invokeCommand<CountryTagRepairReport>('plan_country_tag_repair', { trackId });
+}
+
+/**
+ * Applies the country/region tag repair to the file on disk and re-reads it to
+ * verify every tag landed. Delegates to native `apply_country_tag_repair`.
+ */
+export async function applyCountryTagRepair(trackId: number): Promise<CountryTagRepairReport> {
+    return invokeCommand<CountryTagRepairReport>('apply_country_tag_repair', { trackId });
 }
 
 /**
@@ -1001,6 +1046,8 @@ export const metadataApi = {
     readTrackTags,
     writeMetadataToFile,
     readMetadataFromFile,
+    planCountryTagRepair,
+    applyCountryTagRepair,
     getMetadataStats,
     getTracksNeedingMetadata,
     getTidalRepairDryRun,

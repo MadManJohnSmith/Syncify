@@ -9,6 +9,7 @@
  * 4. `enrichAllNeeding` -> `start_library_enrichment` with { mode: 'incomplete_only' }
  * 5. Incremental library enrichment suite (`startLibraryEnrichment`, `previewLibraryEnrichment`, etc.)
  * 6. `autoMatchMusicBrainz` and `enrichMetadataMusicBrainz` -> `enrich_metadata_musicbrainz` / `start_library_enrichment`
+ * 7. `planCountryTagRepair` / `applyCountryTagRepair` -> `plan_country_tag_repair` / `apply_country_tag_repair`
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -27,6 +28,9 @@ import {
     type TrackTags,
     type TrackTagsSnapshot,
     type TagVerification,
+    planCountryTagRepair,
+    applyCountryTagRepair,
+    type CountryTagRepairReport,
 } from '@/api/metadata';
 import { mockInvoke, resetMocks } from '../setup';
 
@@ -180,6 +184,73 @@ describe('TASK-04: Metadata and Tag Tauri IPC Commands', () => {
             expect(invokedCmd).toBe('read_track_tags');
             expect(invokedPayload).toEqual({ trackId: 88 });
             expect((resStr as TrackTagsSnapshot).track_id).toBe(88);
+        });
+    });
+
+    describe('Country/Region Tag Repair IPC Alignment', () => {
+        // Regression for the IN-5 triage: `plan_country_tag_repair` /
+        // `apply_country_tag_repair` were registered but unreachable — no
+        // frontend wrapper invoked them. These wrappers are the UI path.
+        const dryRunReport: CountryTagRepairReport = {
+            track_id: 42,
+            file_path: '/music/Pink Floyd/Money.flac',
+            applied: false,
+            needs_repair: true,
+            plan: {
+                original_country: 'US',
+                original_region: null,
+                target_country: 'United States',
+                target_region: null,
+                needs_repair: true,
+                reason: 'alpha-2 RELEASECOUNTRY pre-2026-08-24 contract',
+            },
+            applied_tags: {},
+            current_tags: { RELEASECOUNTRY: ['US'] },
+        };
+
+        it('planCountryTagRepair invokes plan_country_tag_repair and returns the dry-run report', async () => {
+            let invokedCmd = '';
+            let invokedPayload: unknown = null;
+
+            mockInvoke((cmd, args) => {
+                invokedCmd = cmd;
+                invokedPayload = args;
+                return cmd === 'plan_country_tag_repair' ? dryRunReport : null;
+            });
+
+            const report = await planCountryTagRepair(42);
+
+            expect(invokedCmd).toBe('plan_country_tag_repair');
+            expect(invokedPayload).toEqual({ trackId: 42 });
+            expect(report.applied).toBe(false);
+            expect(report.needs_repair).toBe(true);
+            expect(report.plan.original_country).toBe('US');
+            expect(report.plan.target_country).toBe('United States');
+        });
+
+        it('applyCountryTagRepair invokes apply_country_tag_repair and returns the verified report', async () => {
+            let invokedCmd = '';
+            let invokedPayload: unknown = null;
+
+            mockInvoke((cmd, args) => {
+                invokedCmd = cmd;
+                invokedPayload = args;
+                if (cmd === 'apply_country_tag_repair') {
+                    return {
+                        ...dryRunReport,
+                        applied: true,
+                        applied_tags: { RELEASECOUNTRY: ['United States'] },
+                    };
+                }
+                return null;
+            });
+
+            const report = await applyCountryTagRepair(42);
+
+            expect(invokedCmd).toBe('apply_country_tag_repair');
+            expect(invokedPayload).toEqual({ trackId: 42 });
+            expect(report.applied).toBe(true);
+            expect(report.applied_tags.RELEASECOUNTRY).toEqual(['United States']);
         });
     });
 

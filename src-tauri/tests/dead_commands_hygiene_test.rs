@@ -15,14 +15,17 @@
 //!    download_track, batch_download_tracks, fetch_lyrics, get_artist_appearances,
 //!    merge_level2_3_duplicates, get_effective_download_paths, get_sidecar_settings,
 //!    update_sidecar_settings, reset_download_history, enrich_before_download,
-//!    update_tray_icon_command.
-//! 3. No duplicate queue or handler registrations exist in `generate_handler!`
+//!    update_tray_icon_command, retry_all_failed.
+//! 3. Every command registered in `generate_handler!` is reachable from the
+//!    frontend: the UI production sources invoke it by name (the IN-5 end state —
+//!    zero registered commands without a caller).
+//! 4. No duplicate queue or handler registrations exist in `generate_handler!`
 //!    and every registered command resolves to a declared function.
-//! 4. Canonical commands remain registered and intact:
-//!    - `get_album`, `get_artist`, `toggle_favorite`, `retry_failed`, `retry_all_failed`, `clear_completed`.
-//! 5. The `sync_playlist` phantom command (invoked by the removed
+//! 5. Canonical commands remain registered and intact:
+//!    - `get_album`, `get_artist`, `toggle_favorite`, `retry_failed`, `clear_completed`.
+//! 6. The `sync_playlist` phantom command (invoked by the removed
 //!    `syncPlaylist` UI wrapper) does not exist anywhere in the backend.
-//! 6. Notification pipeline types and deduplication logic are active and functional.
+//! 7. Notification pipeline types and deduplication logic are active and functional.
 
 use std::collections::HashSet;
 use std::fs;
@@ -149,6 +152,8 @@ fn test_purged_in5_commands_are_gone_from_source_and_handler() {
         "reset_download_history",
         "enrich_before_download",
         "update_tray_icon_command",
+        // Exact duplicate of `retry_failed(None)` — both call `perform_retry_all_failed`.
+        "retry_all_failed",
     ];
 
     let handler_block = extract_handler_block();
@@ -200,6 +205,186 @@ fn extract_handler_block() -> String {
     main_rs[handler_start..handler_start + handler_end].to_string()
 }
 
+/// Every `commands::name` / `tray::name` entry listed in `generate_handler!`.
+fn extract_registered_commands() -> Vec<String> {
+    extract_handler_block()
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            line.trim_end_matches(',')
+                .strip_prefix("commands::")
+                .or_else(|| line.trim_end_matches(',').strip_prefix("tray::"))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn is_command_literal(literal: &str) -> bool {
+    let mut chars = literal.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Collects the command names the frontend passes as first string argument to
+/// `invoke(...)` / `invokeCommand(...)`, mirroring the `invokeCommand` helper in
+/// `ui/src/api/tauri.ts`. Generic arguments (`invokeCommand<Record<string,
+/// string>>(...)`) are skipped with a nesting-aware scan.
+fn collect_invoke_command_names(source: &str, out: &mut HashSet<String>) {
+    let bytes = source.as_bytes();
+    let mut cursor = 0usize;
+
+    while cursor < bytes.len() {
+        let Some(rel) = source[cursor..].find("invoke") else {
+            break;
+        };
+        let start = cursor + rel;
+        let mut i = start + "invoke".len();
+        cursor = i;
+        if start > 0 && is_ident_byte(bytes[start - 1]) {
+            continue; // part of a longer identifier (e.g. `myInvoke`)
+        }
+        while i < bytes.len() && is_ident_byte(bytes[i]) {
+            i += 1; // `invokeCommand` -> `invoke`
+        }
+        let mut j = i;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j >= bytes.len() || (bytes[j] != b'(' && bytes[j] != b'<') {
+            continue;
+        }
+        let mut pos = j;
+        if bytes[pos] == b'<' {
+            let mut depth = 0usize;
+            while pos < bytes.len() {
+                match bytes[pos] {
+                    b'<' => depth += 1,
+                    b'>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            pos += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                pos += 1;
+            }
+            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+                pos += 1;
+            }
+            if pos >= bytes.len() || bytes[pos] != b'(' {
+                continue;
+            }
+        }
+        pos += 1; // step past the opening paren of the call
+
+        let mut depth = 0i32;
+        let mut is_first_argument = true;
+        while pos < bytes.len() {
+            match bytes[pos] {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => {
+                    if depth == 0 {
+                        break; // end of the invoke() call
+                    }
+                    depth -= 1;
+                }
+                b'\'' | b'"' if depth == 0 && is_first_argument => {
+                    let quote = bytes[pos];
+                    let literal_start = pos + 1;
+                    let mut end = literal_start;
+                    while end < bytes.len() && bytes[end] != quote {
+                        end += 1;
+                    }
+                    if end >= bytes.len() {
+                        break;
+                    }
+                    let literal = &source[literal_start..end];
+                    if is_command_literal(literal) {
+                        out.insert(literal.to_string());
+                    }
+                    is_first_argument = false;
+                    pos = end + 1;
+                    continue;
+                }
+                _ => {}
+            }
+            pos += 1;
+        }
+    }
+}
+
+/// Command names invoked by the frontend production sources (`__tests__` excluded:
+/// a mock is not a caller).
+fn ui_invoked_commands() -> HashSet<String> {
+    let ui_src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repo root")
+        .join("ui")
+        .join("src");
+
+    let mut names = HashSet::new();
+    if !ui_src.exists() {
+        return names;
+    }
+    for entry in walkdir::WalkDir::new(&ui_src)
+        .into_iter()
+        .filter_entry(|e| e.path().file_name().is_none_or(|n| n != "__tests__"))
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path().is_file()
+                && e.path().extension().is_some_and(|ext| {
+                    matches!(ext.to_str(), Some("ts" | "tsx" | "js" | "jsx" | "vue"))
+                })
+        })
+    {
+        if let Ok(source) = fs::read_to_string(entry.path()) {
+            collect_invoke_command_names(&source, &mut names);
+        }
+    }
+    names
+}
+
+/// IN-5 end state: a command registered in `generate_handler!` that nothing in
+/// the frontend invokes is dead IPC surface — it can only ever fail at runtime.
+#[test]
+fn test_every_registered_command_is_invoked_by_the_frontend() {
+    let invoked = ui_invoked_commands();
+    assert!(
+        !invoked.is_empty(),
+        "no frontend invocation could be parsed from ui/src; the scan is broken, not the app"
+    );
+    // Sanity anchors: if these are missing the parser stopped understanding the
+    // frontend call style and the orphan assertion below would pass vacuously.
+    for anchor in [
+        "get_album",          // plain `invokeCommand('x')`
+        "get_kv_settings",    // `invokeCommand<Record<string, string>>('x')`
+        "read_track_tags",    // multi-line payload
+    ] {
+        assert!(
+            invoked.contains(anchor),
+            "ui_invoked_commands() must resolve {}, otherwise the scan is broken",
+            anchor
+        );
+    }
+
+    let orphans: Vec<String> = extract_registered_commands()
+        .into_iter()
+        .filter(|cmd| !invoked.contains(cmd))
+        .collect();
+
+    assert!(
+        orphans.is_empty(),
+        "every command in generate_handler! must be invoked from ui/src (IN-5); orphans: {:?}",
+        orphans
+    );
+}
+
 #[test]
 fn test_generate_handler_retains_canonical_commands() {
     let handler_block = extract_handler_block();
@@ -209,7 +394,6 @@ fn test_generate_handler_retains_canonical_commands() {
         "commands::get_artist",
         "commands::toggle_favorite",
         "commands::retry_failed",
-        "commands::retry_all_failed",
         "commands::clear_completed",
         "commands::download_tidal_single_track",
     ];

@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import QuickActionsFab from '@/components/QuickActionsFab.vue'
 import type { ActionCallback } from '@/components/QuickActionsFab.vue'
+import { mockInvoke, resetMocks } from '../setup'
+import { createMemoryHistory, createRouter } from 'vue-router'
 
 describe('QuickActionsFab.vue (TASK-20)', () => {
   beforeEach(() => {
@@ -433,6 +435,216 @@ describe('App.vue + QuickActionsFab Event Wiring (TASK-20)', () => {
       const p = registeredPromise as unknown as Promise<unknown>
       await p.catch(() => {})
     }
+  })
+})
+
+// ============================================================================
+// IN-3: the FAB actions are only meaningful if the handler bound in App.vue
+// really reaches the backend command. Asserting "a promise was registered"
+// is not enough: an empty handler would also pass. These tests drive the FAB
+// through executeAction and check the IPC contract end to end.
+// ============================================================================
+
+const APP_STUBS = {
+  RouterView: true,
+  RouterLink: true,
+  SplashScreen: true,
+  StatusBar: true,
+  NowPlayingBar: true,
+  ToastNotifications: true,
+  CommandPalette: true,
+  KeyboardShortcuts: true,
+  HelpPanel: true,
+  OnboardingWizard: true
+}
+
+describe('QuickActionsFab real backend commands (IN-3)', () => {
+  let calls: Array<{ command: string; args?: Record<string, unknown> }>
+
+  beforeEach(() => {
+    calls = []
+    resetMocks()
+  })
+
+  afterEach(() => {
+    resetMocks()
+  })
+
+  /** Records every invoke and answers with the given per-command behaviour. */
+  function stubInvoke(
+    handler: (command: string, args?: Record<string, unknown>) => unknown
+  ) {
+    mockInvoke((command, args) => {
+      calls.push({ command, args })
+      return handler(command, args)
+    })
+  }
+
+  function invokedCommands(command: string): Array<Record<string, unknown> | undefined> {
+    return calls.filter(c => c.command === command).map(c => c.args)
+  }
+
+  async function mountAppAtTab(tab: string) {
+    const { default: App } = await import('@/App.vue')
+    // A memory router is required: App derives `currentTab` from the route,
+    // which is what decides which FAB actions are offered.
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/:tab(.*)', component: { template: '<div />' } }]
+    })
+    router.push(`/${tab}`)
+    await router.isReady()
+
+    const wrapper = mount(App, {
+      global: { plugins: [router], stubs: { ...APP_STUBS } }
+    })
+    const fab = wrapper.findComponent(QuickActionsFab)
+    expect(fab.exists()).toBe(true)
+    return fab
+  }
+
+  function actionById(fab: any, id: string): any {
+    const action = fab.vm.visibleActions.find((a: any) => a.id === id)
+    expect(action, `action "${id}" is not offered on the current tab`).toBeDefined()
+    return action
+  }
+
+  it('every action offered on any tab is consumed by a handler bound in App.vue', async () => {
+    stubInvoke(() => undefined)
+
+    const offered = new Map<string, string>()
+    for (const tab of ['dashboard', 'library', 'downloads', 'metadata', 'lyrics']) {
+      const fab = await mountAppAtTab(tab)
+      for (const action of fab.vm.visibleActions) {
+        offered.set(action.event, action.label)
+      }
+    }
+
+    // Every tab-scoped action must still be reachable somewhere.
+    for (const event of [
+      'pause-all',
+      'retry-failed',
+      'clear-completed',
+      'auto-fix',
+      'fetch-metadata',
+      'fetch-lyrics',
+      'upgrade-lyrics'
+    ]) {
+      expect([...offered.keys()]).toContain(event)
+    }
+
+    const fab = await mountAppAtTab('dashboard')
+    const pending: Promise<unknown>[] = []
+    for (const [event, label] of offered) {
+      let registered = false
+      const cb: ActionCallback = Object.assign(
+        (errOrPromise?: unknown) => {
+          registered = true
+          if (errOrPromise instanceof Promise) {
+            // Attach the rejection handler immediately so a failing operation
+            // (e.g. a scan that fails) is not reported as an unhandled rejection.
+            errOrPromise.catch(() => {})
+            pending.push(errOrPromise)
+          }
+        },
+        {
+          resolve: () => { registered = true },
+          reject: () => { registered = true },
+          waitUntil: () => { registered = true },
+          defer: () => { registered = true }
+        }
+      )
+
+      fab.vm.$emit(event, cb)
+      await flushPromises()
+
+      expect(registered, `no handler consumed the "${label}" action`).toBe(true)
+    }
+
+    await Promise.all(pending.map(p => p.catch(() => {})))
+  })
+
+  it('auto-fix invokes enrich_metadata_musicbrainz and only succeeds once it resolves', async () => {
+    let release: (value: unknown) => void = () => {}
+    const pending = new Promise(resolve => { release = resolve })
+    stubInvoke(cmd => (cmd === 'enrich_metadata_musicbrainz' ? pending : undefined))
+
+    const fab = await mountAppAtTab('metadata')
+    const action = actionById(fab, 'auto-fix')
+
+    void fab.vm.executeAction(action)
+    await flushPromises()
+
+    expect(invokedCommands('enrich_metadata_musicbrainz')).toHaveLength(1)
+    expect(fab.vm.feedbackState).toBe('loading')
+
+    release({ total: 4, enriched: 3, failed: 1 })
+    await vi.waitFor(() => expect(fab.vm.feedbackState).toBe('success'))
+  })
+
+  it('fetch-metadata invokes start_library_enrichment in incomplete_only mode', async () => {
+    stubInvoke(cmd =>
+      cmd === 'start_library_enrichment'
+        ? { totalTracks: 5, modifiedTracks: 5, failedTracks: 0 }
+        : undefined
+    )
+
+    const fab = await mountAppAtTab('metadata')
+    await fab.vm.executeAction(actionById(fab, 'fetch-metadata'))
+
+    expect(invokedCommands('start_library_enrichment')).toEqual([{ mode: 'incomplete_only' }])
+    expect(fab.vm.feedbackState).toBe('success')
+  })
+
+  it('fetch-lyrics invokes fetch_missing_lyrics and reports success after it resolves', async () => {
+    stubInvoke(cmd =>
+      cmd === 'fetch_missing_lyrics' ? { fetched: 2, failed: 0, skipped: 1 } : undefined
+    )
+
+    const fab = await mountAppAtTab('lyrics')
+    await fab.vm.executeAction(actionById(fab, 'fetch-lyrics'))
+
+    expect(invokedCommands('fetch_missing_lyrics')).toHaveLength(1)
+    expect(fab.vm.feedbackState).toBe('success')
+  })
+
+  it('upgrade-lyrics re-fetches unsynced lyrics through fetch_and_save_lyrics', async () => {
+    const plain = {
+      id: 1,
+      track_id: 42,
+      format: 'plain',
+      sync_level: null,
+      source: null,
+      content: 'line',
+      language: null,
+      embedded_in_file: false,
+      created_at: '2026-01-01T00:00:00Z'
+    }
+    stubInvoke(cmd => {
+      if (cmd === 'get_all_lyrics') return [plain]
+      if (cmd === 'fetch_and_save_lyrics') return { ...plain, format: 'lrc' }
+      return undefined
+    })
+
+    const fab = await mountAppAtTab('lyrics')
+    await fab.vm.executeAction(actionById(fab, 'upgrade-lyrics'))
+
+    expect(invokedCommands('get_all_lyrics')).toHaveLength(1)
+    expect(invokedCommands('fetch_and_save_lyrics')).toEqual([{ trackId: 42 }])
+    expect(fab.vm.feedbackState).toBe('success')
+  })
+
+  it('shows error feedback, never success, when the backend command fails', async () => {
+    stubInvoke(cmd => {
+      if (cmd === 'fetch_missing_lyrics') throw new Error('lyrics backend unavailable')
+      return undefined
+    })
+
+    const fab = await mountAppAtTab('lyrics')
+    await fab.vm.executeAction(actionById(fab, 'fetch-lyrics'))
+
+    expect(fab.vm.feedbackState).toBe('error')
+    expect(fab.find('button.quick-actions-fab').classes()).toContain('bg-red-500')
   })
 })
 
