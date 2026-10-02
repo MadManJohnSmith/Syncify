@@ -13,7 +13,6 @@ pub use syncify_core_domain::repair::{RepairFileBaseline, RepairOutputHashes};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct DisambiguationRepairItem {
     pub track_id: i64,
     pub isrc: Option<String>,
@@ -32,8 +31,12 @@ pub struct DisambiguationRepairItem {
     pub rollback_state: Option<String>,
 }
 
+/// Dry-run plan and execution report for the disambiguation repair.
+///
+/// snake_case on the wire (like the rest of the IPC contract): the plan produced by
+/// `plan_disambiguation_repair` is reviewed in the UI and posted back verbatim as the
+/// `plan` argument of `execute_disambiguation_repair`, so both directions share field names.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct DisambiguationRepairReport {
     pub dry_run: bool,
     pub items: Vec<DisambiguationRepairItem>,
