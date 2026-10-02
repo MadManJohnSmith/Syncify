@@ -448,4 +448,84 @@ describe('S200: Last.fm API key + full tag visibility', () => {
         expect(wrapper.text()).toContain('Todas las facetas crudas (3 claves)');
         expect(wrapper.text()).toContain('REPLAYGAIN_TRACK_GAIN');
     });
+
+    // IN-5 regression: `plan_country_tag_repair` / `apply_country_tag_repair`
+    // were registered but nothing in the frontend could reach them.
+    it('plans and applies the country/region tag repair from the file-tag editor', async () => {
+        const calls: Array<{ cmd: string; args: unknown }> = [];
+        mockInvoke((cmd, args) => {
+            calls.push({ cmd, args });
+            if (cmd === 'get_library') return { tracks: [createTestTrack({ id: 3 })], total: 1, offset: 0, limit: 500, has_more: false };
+            if (cmd === 'get_metadata_stats') return STATS;
+            if (cmd === 'get_metadata_preferences') return PREFS;
+            if (cmd === 'read_track_tags') {
+                return {
+                    track_id: 3,
+                    file_path: '/music/test.flac',
+                    file_format: 'FLAC',
+                    all_tags: { TITLE: ['Hidden Song'], RELEASECOUNTRY: ['US'] },
+                    has_cover: true,
+                    cover_mime: 'image/jpeg',
+                };
+            }
+            if (cmd === 'plan_country_tag_repair') {
+                return {
+                    track_id: 3,
+                    file_path: '/music/test.flac',
+                    applied: false,
+                    needs_repair: true,
+                    plan: {
+                        original_country: 'US',
+                        original_region: null,
+                        target_country: 'United States',
+                        target_region: null,
+                        needs_repair: true,
+                        reason: 'alpha-2 RELEASECOUNTRY pre-2026-08-24 contract',
+                    },
+                    applied_tags: {},
+                    current_tags: { RELEASECOUNTRY: ['US'] },
+                };
+            }
+            if (cmd === 'apply_country_tag_repair') {
+                return {
+                    track_id: 3,
+                    file_path: '/music/test.flac',
+                    applied: true,
+                    needs_repair: true,
+                    plan: {
+                        original_country: 'US',
+                        original_region: null,
+                        target_country: 'United States',
+                        target_region: null,
+                        needs_repair: true,
+                        reason: 'alpha-2 RELEASECOUNTRY pre-2026-08-24 contract',
+                    },
+                    applied_tags: { RELEASECOUNTRY: ['United States'] },
+                    current_tags: { RELEASECOUNTRY: ['US'] },
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(MetadataView);
+        await flushPromises();
+        await wrapper.find('.track-row').trigger('click');
+        await flushPromises();
+
+        // The dry run is reachable without reading tags first.
+        await wrapper.findAll('button').find(b => b.text().includes('Revisar país/región'))!.trigger('click');
+        await flushPromises();
+
+        expect(calls.some(c => c.cmd === 'plan_country_tag_repair' && (c.args as { trackId: number }).trackId === 3)).toBe(true);
+        expect(wrapper.text()).toContain('RELEASECOUNTRY: US → United States');
+
+        // "Reparar en archivo" only appears once the plan says a repair is needed.
+        const applyBtn = wrapper.findAll('button').find(b => b.text().includes('Reparar en archivo'));
+        expect(applyBtn).toBeDefined();
+        await applyBtn!.trigger('click');
+        await flushPromises();
+
+        expect(calls.some(c => c.cmd === 'apply_country_tag_repair')).toBe(true);
+        expect(wrapper.text()).toContain('Escrituras verificadas en disco');
+    });
 });

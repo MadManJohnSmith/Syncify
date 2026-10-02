@@ -822,6 +822,31 @@
             </p>
             <div v-if="fileTagsError" class="mb-3 px-3 py-2 rounded-lg bg-error/10 border border-error/30 text-error text-xs">{{ fileTagsError }}</div>
 
+            <!-- S202: country/region tag repair (dry run + apply, FLAC only) -->
+            <div class="mb-4">
+              <div class="flex items-center gap-2 flex-wrap">
+                <button @click="planCountryTagRepair" :disabled="isPlanningCountryRepair || isApplyingCountryRepair || !currentTrack" class="px-3 py-1.5 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 flex items-center gap-1.5">
+                  <span v-if="isPlanningCountryRepair" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                  <span v-else class="material-symbols-outlined text-[14px]">fact_check</span>
+                  {{ isPlanningCountryRepair ? 'Calculando…' : 'Revisar país/región' }}
+                </button>
+                <button v-if="countryRepairReport?.needs_repair" @click="applyCountryTagRepair" :disabled="isApplyingCountryRepair || !currentTrack" class="px-3 py-1.5 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 flex items-center gap-1.5">
+                  <span v-if="isApplyingCountryRepair" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                  <span v-else class="material-symbols-outlined text-[14px]">build</span>
+                  {{ isApplyingCountryRepair ? 'Reparando…' : 'Reparar en archivo' }}
+                </button>
+              </div>
+              <div v-if="countryRepairReport" class="mt-2 px-3 py-2 rounded-lg text-xs bg-surface-highlight text-gray-700 dark:text-gray-300">
+                <p v-if="countryRepairReport.applied" class="mb-1 text-success">Escrituras verificadas en disco ✓</p>
+                <p v-if="!countryRepairReport.needs_repair" class="mb-1">Los tags de país/región ya son correctos — no hay nada que reparar.</p>
+                <template v-else>
+                  <p v-if="countryRepairReport.plan.reason" class="mb-1">{{ countryRepairReport.plan.reason }}</p>
+                  <p class="font-mono">RELEASECOUNTRY: {{ countryRepairReport.plan.original_country || '∅' }} → {{ countryRepairReport.plan.target_country || '∅' }}</p>
+                  <p class="font-mono">RELEASEREGION: {{ countryRepairReport.plan.original_region || '∅' }} → {{ countryRepairReport.plan.target_region || '∅' }}</p>
+                </template>
+              </div>
+            </div>
+
             <template v-if="fileTagsSnapshot">
               <p class="text-xs text-text-secondary mb-3 truncate" :title="fileTagsSnapshot.file_path">{{ fileTagsSnapshot.file_path }}</p>
               <!-- Editable facets -->
@@ -1221,6 +1246,7 @@ import { useRoute } from 'vue-router'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
 import { metadataApi } from '@/api/metadata'
+import type { CountryTagRepairReport } from '@/api/metadata'
 import { settingsApi } from '@/api/settings'
 import { toolsApi } from '@/api/tools'
 import { TauriEvents } from '@/api/tauri'
@@ -1746,6 +1772,48 @@ async function writeTrackFileTags() {
     fileTagsError.value = err instanceof Error ? err.message : String(err)
   } finally {
     isWritingFileTags.value = false
+  }
+}
+
+// ---- Country/region tag repair (FLAC) ----
+// RELEASECOUNTRY / COUNTRY / RELEASEREGION are written by the tag pipeline from
+// the track's release country, so a file tagged before the canonical-country
+// contract drifts. The backend plan is the dry run and the apply re-reads the
+// file to confirm every tag landed.
+const countryRepairReport = ref<CountryTagRepairReport | null>(null)
+const isPlanningCountryRepair = ref(false)
+const isApplyingCountryRepair = ref(false)
+
+watch(selectedTracks, () => { countryRepairReport.value = null })
+
+async function planCountryTagRepair() {
+  if (!currentTrack.value || isPlanningCountryRepair.value) return
+  isPlanningCountryRepair.value = true
+  countryRepairReport.value = null
+  fileTagsError.value = null
+  try {
+    countryRepairReport.value = await metadataApi.planCountryTagRepair(currentTrack.value.id)
+  } catch (err) {
+    console.error('Failed to plan country tag repair:', err)
+    fileTagsError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    isPlanningCountryRepair.value = false
+  }
+}
+
+async function applyCountryTagRepair() {
+  if (!currentTrack.value || isApplyingCountryRepair.value) return
+  isApplyingCountryRepair.value = true
+  fileTagsError.value = null
+  try {
+    countryRepairReport.value = await metadataApi.applyCountryTagRepair(currentTrack.value.id)
+    // Re-read so the raw dump reflects what actually landed in the file.
+    await readTrackFileTags()
+  } catch (err) {
+    console.error('Failed to apply country tag repair:', err)
+    fileTagsError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    isApplyingCountryRepair.value = false
   }
 }
 

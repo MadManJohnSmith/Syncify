@@ -633,7 +633,6 @@ fn main() {
             commands::cancel_queue_item,
             commands::retry_queue_item,
             commands::retry_failed,
-            commands::retry_all_failed,
             commands::clear_completed,
             commands::clear_queue,
             commands::remove_from_queue,

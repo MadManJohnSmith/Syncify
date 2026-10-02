@@ -614,7 +614,6 @@ async function handleSyncAll(callback?: ActionCallback) {
   if (callback) {
     callback(promise)
   }
-  return promise
 }
 
 async function handleScanFolder(callback?: ActionCallback) {
@@ -665,7 +664,6 @@ async function handleScanFolder(callback?: ActionCallback) {
   if (callback) {
     callback(promise)
   }
-  return promise
 }
 
 function handleDownloadUrl(callback?: ActionCallback) {
@@ -748,6 +746,11 @@ async function handleClearCompleted(callback?: ActionCallback) {
 // ==============================================
 // Metadata / Lyrics quick actions (FAB)
 // ==============================================
+//
+// These handlers hand the operation promise to the FAB callback, which is what
+// drives its loading/success/error feedback. They must NOT also return it: Vue
+// wraps every event-handler result and would report the same rejection a second
+// time as an unhandled error, duplicating the error the FAB already shows.
 
 async function handleAutoFixMetadata(callback?: ActionCallback) {
   const operation = async () => {
@@ -762,7 +765,6 @@ async function handleAutoFixMetadata(callback?: ActionCallback) {
   }
   const promise = operation()
   callback?.(promise)
-  return promise
 }
 
 async function handleFetchMissingMetadata(callback?: ActionCallback) {
@@ -778,7 +780,6 @@ async function handleFetchMissingMetadata(callback?: ActionCallback) {
   }
   const promise = operation()
   callback?.(promise)
-  return promise
 }
 
 async function handleFetchMissingLyrics(callback?: ActionCallback) {
@@ -794,7 +795,6 @@ async function handleFetchMissingLyrics(callback?: ActionCallback) {
   }
   const promise = operation()
   callback?.(promise)
-  return promise
 }
 
 const LYRICS_UPGRADE_BATCH = 100
@@ -843,7 +843,6 @@ async function handleUpgradeLyrics(callback?: ActionCallback) {
   }
   const promise = operation()
   callback?.(promise)
-  return promise
 }
 
 // Close dropdown on outside click

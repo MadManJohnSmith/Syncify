@@ -2303,7 +2303,12 @@ pub async fn perform_retry_queue_item(db: &crate::DbPool, queue_id: i64) -> Resu
     Ok(())
 }
 
-/// Retry failed downloads (canonical command, single or all)
+/// Retry failed downloads (canonical command, single or all).
+///
+/// `queue_id: None` is the "retry all transient failures" path: it delegates to
+/// [`perform_retry_all_failed`], which skips the terminal taxonomy verdicts
+/// (requires_auth / rejected_quality / ambiguous_source). There is deliberately
+/// no separate "retry all failed" command — it duplicated this exact call.
 #[tauri::command]
 pub async fn retry_failed(
     queue_id: Option<i64>,
@@ -2314,13 +2319,6 @@ pub async fn retry_failed(
     } else {
         perform_retry_all_failed(&state.db).await
     }
-}
-
-/// Retry transient failed downloads (excluding permanent requires_auth / rejected_quality /
-/// ambiguous_source items).
-#[tauri::command]
-pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String> {
-    perform_retry_all_failed(&state.db).await
 }
 
 /// The exclusion list is the same taxonomy verdict `perform_retry_queue_item`
