@@ -145,52 +145,34 @@ class AcoustIDMatcher:
     
     def identify(self, audio_path: Path) -> List[AcoustIDResult]:
         """Identify a track using its audio fingerprint.
-        
+
+        Fingerprints the file with fpcalc and delegates to
+        :meth:`identify_with_fingerprint`, the only lookup path that resolves
+        AcoustID ids and MusicBrainz artist MBIDs (the pyacoustid `match()`
+        helper yields no AcoustID id and no artist MBID).
+
         Returns list of possible matches sorted by score.
         """
         if not ACOUSTID_AVAILABLE:
             self._log("acoustid library not available")
             return []
-        
+
         if not self.api_key:
             self._log("AcoustID API key not configured - returning empty match results")
             return []
-        
+
         self._log(f"Identifying: {audio_path.name}")
-        
-        try:
-            # Use acoustid library which handles fpcalc internally
-            results = acoustid.match(
-                self.api_key,
-                str(audio_path),
-                parse=True
-            )
-            
-            matches = []
-            for score, recording_id, title, artist in results:
-                matches.append(AcoustIDResult(
-                    acoustid="",  # Not provided by this API
-                    score=score,
-                    recording_id=recording_id,
-                    title=title,
-                    artist=artist
-                ))
-            
-            self._log(f"Found {len(matches)} matches")
-            return sorted(matches, key=lambda x: x.score, reverse=True)
-            
-        except acoustid.NoBackendError:
-            self._log("No audio decoder backend found. Install ffmpeg.")
+
+        fingerprint = self.get_fingerprint(audio_path)
+        if fingerprint is None:
+            self._log("Fingerprint generation failed")
             return []
-        except acoustid.FingerprintGenerationError as e:
-            self._log(f"Fingerprint error: {e}")
-            return []
-        except acoustid.WebServiceError as e:
-            self._log(f"AcoustID API error: {e}")
-            return []
-        except Exception as e:
-            self._log(f"Error: {e}")
-            return []
+
+        duration, fingerprint_data = fingerprint
+        matches = self.identify_with_fingerprint(duration, fingerprint_data)
+
+        self._log(f"Found {len(matches)} matches")
+        return matches
     
     def identify_with_fingerprint(
         self,
@@ -207,9 +189,19 @@ class AcoustIDMatcher:
         
         try:
             import urllib.request
+            import urllib.parse
             import json
-            
-            url = f"https://api.acoustid.org/v2/lookup?client={self.api_key}&duration={duration}&fingerprint={fingerprint}&meta=recordings"
+
+            # Chromaprint fingerprints are base64 (they contain '+', '/' and '='),
+            # so they must be percent-encoded: raw '+' in a query string reaches the
+            # API as a space and the lookup resolves to nothing.
+            query = urllib.parse.urlencode({
+                "client": self.api_key,
+                "duration": duration,
+                "fingerprint": fingerprint,
+                "meta": "recordings",
+            })
+            url = f"https://api.acoustid.org/v2/lookup?{query}"
             
             with urllib.request.urlopen(url, timeout=30) as response:
                 data = json.loads(response.read().decode())

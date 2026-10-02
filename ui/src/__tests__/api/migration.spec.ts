@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
     getMigrationHistory,
     getMigrationTemplates,
+    getMigrationDestinations,
     retryFailedItems,
     previewMigration,
 } from '@/api/migration';
@@ -21,6 +22,15 @@ describe('migration_handles_missing_fields_test', () => {
         mockInvoke(() => null);
         expect(await getMigrationHistory(10)).toEqual([]);
         expect(await getMigrationTemplates()).toEqual([]);
+        expect(await getMigrationDestinations()).toEqual([]);
+    });
+
+    it('normalizes get_migration_destinations to lowercase service ids (4.2)', async () => {
+        mockInvoke((cmd) => (cmd === 'get_migration_destinations'
+            ? ['Qobuz', 'TIDAL', 'Spotify', 'deezer', 'soundcloud']
+            : null));
+
+        expect(await getMigrationDestinations()).toEqual(['qobuz', 'tidal', 'spotify', 'deezer', 'soundcloud']);
     });
 
     it('coerces retry_failed_items count to a number', async () => {

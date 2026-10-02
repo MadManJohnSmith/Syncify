@@ -1324,18 +1324,11 @@ pub async fn resolve_effective_download_paths(
 }
 
 /// Perform get effective download paths
+#[allow(dead_code)] // Cubierta por `tests/download_settings_commands_test.rs`.
 pub async fn perform_get_effective_download_paths(
     db: &crate::DbPool,
 ) -> Result<EffectiveDownloadPaths, String> {
     resolve_effective_download_paths(db).await
-}
-
-/// Expose single effective download paths query for UI & backend commands
-#[tauri::command]
-pub async fn get_effective_download_paths(
-    state: State<'_, AppState>,
-) -> Result<EffectiveDownloadPaths, String> {
-    perform_get_effective_download_paths(&state.db).await
 }
 
 /// Perform save a single setting and keep canonical folder_settings in sync
@@ -2134,6 +2127,7 @@ pub async fn update_fallback_action(
 
 /// Sidecar settings DTO
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)] // Cubierta por `tests/download_settings_commands_test.rs`.
 pub struct SidecarSettingsDto {
     pub generate_lyrics_lrc: bool,
     pub generate_cover_art: bool,
@@ -2143,6 +2137,7 @@ pub struct SidecarSettingsDto {
 }
 
 /// Perform get sidecar generation flags
+#[allow(dead_code)] // Cubierta por `tests/download_settings_commands_test.rs`.
 pub async fn perform_get_sidecar_settings(
     db: &crate::DbPool,
 ) -> Result<SidecarSettingsDto, String> {
@@ -2175,15 +2170,8 @@ pub async fn perform_get_sidecar_settings(
     Ok(dto)
 }
 
-/// Get sidecar generation flags
-#[tauri::command]
-pub async fn get_sidecar_settings(
-    state: State<'_, AppState>,
-) -> Result<SidecarSettingsDto, String> {
-    perform_get_sidecar_settings(&state.db).await
-}
-
 /// Perform update sidecar generation flags
+#[allow(dead_code)] // Cubierta por `tests/download_settings_commands_test.rs`.
 pub async fn perform_update_sidecar_settings(
     db: &crate::DbPool,
     settings: SidecarSettingsDto,
@@ -2220,15 +2208,6 @@ pub async fn perform_update_sidecar_settings(
     }
 
     perform_get_sidecar_settings(db).await
-}
-
-/// Update sidecar generation flags
-#[tauri::command]
-pub async fn update_sidecar_settings(
-    state: State<'_, AppState>,
-    settings: SidecarSettingsDto,
-) -> Result<SidecarSettingsDto, String> {
-    perform_update_sidecar_settings(&state.db, settings).await
 }
 
 // ==============================================

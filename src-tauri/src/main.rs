@@ -578,7 +578,6 @@ fn main() {
             commands::search_tracks,
             commands::search_library,
             commands::get_artist,
-            commands::get_artist_appearances,
             commands::get_album,
             commands::repair_artist_links,
             commands::get_playlists,
@@ -684,7 +683,6 @@ fn main() {
             commands::spotify_auth_webview,
             // Lyrics
             commands::resolve_track_lyrics,
-            commands::fetch_lyrics,
             commands::get_lyrics,
             commands::get_all_lyrics,
             commands::get_lyrics_stats,
@@ -713,10 +711,12 @@ fn main() {
             // S191: tag editor
             commands::read_track_tags,
             commands::write_track_tags,
+            // S202 / TASK-7.1 CR-5: country & region tag repair (dry-run + apply)
+            commands::plan_country_tag_repair,
+            commands::apply_country_tag_repair,
             // S194: local playback of downloaded tracks
             commands::resolve_playback_source,
             // Downloads
-            commands::download_track,
             // Metadata Enrichment
             commands::enrich_metadata,
             commands::enrich_metadata_musicbrainz,
@@ -727,7 +727,6 @@ fn main() {
             commands::purge_orphan_empty_albums,
             commands::enrich_genre_lastfm,
             commands::enrich_track,
-            commands::enrich_before_download,
             commands::start_enrichment_worker,
             commands::pause_enrichment_worker,
             commands::resume_enrichment_worker,
@@ -747,7 +746,8 @@ fn main() {
             commands::get_local_track_metadata,
             // Progress-Enabled Commands
             commands::scan_local_library_with_progress,
-            commands::batch_download_tracks,
+            // FE-6: detiene el watcher de auto-rescan de una ruta de biblioteca
+            commands::stop_library_watcher_command,
             commands::batch_enrich_metadata,
             // Playlist Commands
             commands::get_playlist_tracks,
@@ -809,11 +809,8 @@ fn main() {
             commands::get_effective_download_preferences,
             commands::save_effective_download_preferences,
             commands::update_fallback_action,
-            commands::get_sidecar_settings,
-            commands::update_sidecar_settings,
             commands::force_redownload_tracks,
             commands::clear_download_history,
-            commands::reset_download_history,
             // Sprint 3: Lyrics Tab + Settings
             commands::get_lyrics_providers,
             commands::update_lyrics_provider,
@@ -833,8 +830,6 @@ fn main() {
             commands::get_metadata_preferences,
             commands::update_metadata_preferences,
             commands::vacuum_database,
-            commands::get_cache_stats,
-            commands::clear_cache,
             commands::run_diagnostics,
             commands::reset_to_defaults,
             // Sprint 6: Migration Tab
@@ -842,6 +837,7 @@ fn main() {
             commands::get_migration_details,
             commands::get_migration_items_by_status,
             commands::preview_migration,
+            commands::get_migration_destinations,
             commands::start_migration,
             commands::cancel_migration,
             commands::retry_failed_items,
@@ -863,6 +859,9 @@ fn main() {
             commands::audit_catalog_identity,
             commands::plan_catalog_identity_repair,
             commands::apply_catalog_identity_repair,
+            // S143B/S159: retroactive track version disambiguation repair
+            commands::plan_disambiguation_repair,
+            commands::execute_disambiguation_repair,
             commands::get_recovery_audit_summary,
             commands::trigger_startup_reconciliation,
             commands::get_concurrency_stats_summary,
@@ -875,29 +874,30 @@ fn main() {
             commands::get_local_playlist_tracks,
             // S201: playlist download mode A (verify + M3U export)
             commands::export_playlist_m3u,
+            // FE-6: import de playlists desde archivo (.m3u/.m3u8/.csv/.txt)
+            commands::import_playlist_from_file,
             commands::get_audio_quality_distribution,
             commands::auto_resolve_duplicates,
-            commands::merge_level2_3_duplicates,
             // Service Settings (Sprint 12)
             commands::get_app_settings,
             commands::service_save_settings,
             commands::get_default_download_path,
             commands::get_default_temp_path,
             commands::validate_directory_path,
-            commands::get_effective_download_paths,
             // System Logging (Sprint 170)
             commands::get_system_logs,
             commands::clear_system_logs,
             commands::export_system_logs,
             commands::record_system_log,
             commands::get_logging_status,
+            // User Reports from Help panel (FE-8)
+            commands::save_user_report,
             // Local BPM & Tempo Analysis (Sprint 173)
             commands::analyze_library_bpm,
             commands::cancel_bpm_analysis,
             commands::update_track_bpm_manual,
             // System Tray & Desktop Notifications (TASK-120)
             tray::update_tray_icon,
-            tray::update_tray_icon_command,
             tray::update_tray_status,
             tray::update_tray_settings,
             tray::get_tray_settings,

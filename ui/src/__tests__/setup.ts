@@ -78,6 +78,10 @@ vi.mock('@tauri-apps/api/core', () => ({
         }
         return resolved;
     }),
+    // Required by the usePlayer composable (playback of downloaded files
+    // through the syncify-media:// protocol).
+    convertFileSrc: vi.fn((path: string, protocol?: string) =>
+        `${protocol ?? 'asset'}://localhost/${encodeURIComponent(path)}`),
 }));
 
 // Mock @tauri-apps/api/event

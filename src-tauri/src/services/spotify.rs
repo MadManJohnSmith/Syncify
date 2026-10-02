@@ -2,9 +2,7 @@
 //!
 //! Handles Spotify authentication and importing liked songs.
 
-#![allow(dead_code)]
-
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::SqlitePool;
 
@@ -88,15 +86,6 @@ pub struct SpotifyTokenResponse {
     pub expires_in: i64,
     pub refresh_token: Option<String>,
     pub scope: String,
-}
-
-/// Stored credentials format for database persistence
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredCredentials {
-    pub access_token: String,
-    pub refresh_token: Option<String>,
-    /// Unix timestamp (seconds) when the token expires
-    pub expires_at: i64,
 }
 
 /// Spotify user profile
@@ -198,6 +187,7 @@ impl SpotifyAlbum {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)] // Payload de la API de Spotify; se deserializa íntegra aunque el código solo lea `url`.
 pub struct SpotifyImage {
     #[serde(default, deserialize_with = "deserialize_null_as_empty_string")]
     pub url: String,
@@ -223,6 +213,7 @@ pub struct SpotifyFollowedArtistsResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Fila paginada de la API de Spotify; se deserializa íntegra aunque el código solo lea `items`.
 pub struct SpotifyArtistsCursorPaginated {
     pub items: Vec<SpotifyArtist>,
     pub next: Option<String>,
@@ -269,6 +260,7 @@ pub struct SpotifyPlaylist {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)] // Payload de la API de Spotify; se deserializa íntegra aunque el código solo lea `display_name`.
 pub struct SpotifyPlaylistOwner {
     #[serde(default)]
     pub id: String,
@@ -1093,7 +1085,14 @@ impl SpotifyClient {
             let status = response.status();
 
             // Handle rate limiting (429)
-            if status.as_u16() == 429 {
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                crate::services::rate_limiter::penalize_on_rate_limit(
+                    "spotify",
+                    status,
+                    response.headers(),
+                )
+                .await;
+
                 if retries >= max_retries {
                     return Err("Rate limited: max retries exceeded".into());
                 }
@@ -1147,6 +1146,7 @@ impl SpotifyClient {
     /// Returns a HashMap of track_id -> AudioFeatures for easy lookup
     /// Supports 401 Unauthorized auto-refresh if refresh_token and db access provided
     /// Process a batch of Spotify tracks (public for testing)
+    #[allow(dead_code)] // Cubierta por `tests/spotify_import_test.rs`.
     pub async fn process_spotify_import_batch(
         &self,
         db: &SqlitePool,
@@ -1534,7 +1534,14 @@ impl SpotifyClient {
                 .await
                 .map_err(|e| e.to_string())?;
 
-            if response.status() == 429 {
+            if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                crate::services::rate_limiter::penalize_on_rate_limit(
+                    "spotify",
+                    response.status(),
+                    response.headers(),
+                )
+                .await;
+
                 let retry_after = response
                     .headers()
                     .get("Retry-After")
@@ -1724,7 +1731,14 @@ impl SpotifyClient {
 
             let status = response.status();
 
-            if status.as_u16() == 429 {
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                crate::services::rate_limiter::penalize_on_rate_limit(
+                    "spotify",
+                    status,
+                    response.headers(),
+                )
+                .await;
+
                 if retries >= max_retries {
                     return Err("Rate limited: max retries exceeded".into());
                 }

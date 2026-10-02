@@ -147,6 +147,15 @@
                   <span v-else class="material-symbols-outlined text-[18px]">sync_disabled</span>
                   {{ syncingServices[service.id] ? 'Syncing...' : supportsFullCatalogSync(service.id) ? 'Sync' : 'Unavailable' }}
                 </button>
+                <button
+                  v-if="service.id === 'qobuz'"
+                  @click="importQobuzPurchases"
+                  :disabled="syncingServices[service.id]"
+                  class="px-3 py-2.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                  title="TASK-108: importar las compras de la cuenta Qobuz a la biblioteca"
+                >
+                  Purchases
+                </button>
                 <button 
                   @click="disconnectService(service.id)"
                   :disabled="authLoading !== null"
@@ -393,9 +402,6 @@
                 </tr>
               </tbody>
             </table>
-            <div class="px-4 py-3 border-t border-gray-200 dark:border-border-dark text-center">
-              <button class="text-sm text-primary hover:text-primary-hover font-medium">View All Activity</button>
-            </div>
           </div>
         </Transition>
       </section>
@@ -644,8 +650,15 @@
               <button @click="showScanDialog = false" class="px-5 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium transition-colors">
                 Cancel
               </button>
-              <button @click="startScan" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
-                Start Scan
+              <button
+                @click="startScan"
+                :disabled="isScanning"
+                :class="[
+                  'px-5 py-2 rounded-lg text-sm font-medium transition-colors',
+                  isScanning ? 'bg-primary/50 text-white cursor-not-allowed' : 'bg-primary hover:bg-primary-hover text-white'
+                ]"
+              >
+                {{ isScanning ? 'Scanning…' : 'Start Scan' }}
               </button>
             </div>
           </div>
@@ -661,6 +674,8 @@ import { useRouter } from 'vue-router'
 import { open } from '@tauri-apps/plugin-dialog'
 import { accountsApi } from '@/api/accounts'
 import { libraryApi } from '@/api/library'
+import { playlistsApi } from '@/api/playlists'
+import type { ImportPlaylistFromFileResult } from '@/api/playlists'
 import { useToast } from '@/composables/useToast'
 import type { ImportResult } from '@/api/types'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
@@ -880,6 +895,25 @@ async function syncFavoritesOnly(serviceName: string) {
   }
 }
 
+// TASK-108: import Qobuz purchases into the library with is_purchased = 1 (IN-5)
+async function importQobuzPurchases() {
+  if (syncingServices['qobuz']) {
+    showToast('Qobuz sync already in progress', 'info')
+    return
+  }
+  syncingServices['qobuz'] = true
+  showToast('Importing Qobuz purchases...', 'info')
+  try {
+    const res = await accountsApi.importQobuzPurchases()
+    showToast(`Qobuz purchases: ${res.imported} imported, ${res.skipped} processed${res.errors.length ? `, ${res.errors.length} errors` : ''}`, res.errors.length ? 'info' : 'success')
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    showToast(msg.includes('RequiresAuth') ? 'Qobuz authentication required' : msg, 'error')
+  } finally {
+    syncingServices['qobuz'] = false
+  }
+}
+
 // Import from service using unified sync_service with real auth & preferences
 async function importFromService(serviceName: string) {
   const serviceKey = serviceName.toLowerCase()
@@ -967,7 +1001,6 @@ async function importFromService(serviceName: string) {
 
     await fetchData()
     await eventBus.emit('library-updated')
-    await eventBus.emit('accounts-updated')
 
     const summaryParts: string[] = []
     if (changedTracks > 0) {
@@ -1074,7 +1107,7 @@ function triggerFileInput() {
   fileInput.value?.click()
 }
 
-function processImportedFile(file: File) {
+async function processImportedFile(file: File) {
   const allowedExtensions = ['.csv', '.m3u', '.m3u8', '.txt']
   const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase()
   if (!allowedExtensions.includes(ext)) {
@@ -1082,22 +1115,70 @@ function processImportedFile(file: File) {
     return
   }
 
-  showToast(`File "${file.name}" received. Playlist file parsing will be available in an upcoming update.`, 'info')
-}
+  try {
+    // FE-6: el archivo se lee en el frontend (File API) y se envía nombre+contenido;
+    // el backend parsea (.m3u/.m3u8/.csv/.txt), enlaza cada entrada con la
+    // biblioteca local y crea la playlist.
+    const content = await file.text()
+    const result: ImportPlaylistFromFileResult = await playlistsApi.importPlaylistFromFile({
+      fileName: file.name,
+      content,
+    })
 
-function handleFileDrop(e: DragEvent) {
-  isDragging.value = false
-  const files = e.dataTransfer?.files
-  if (files && files.length > 0 && files[0]) {
-    processImportedFile(files[0])
+    const unmatchedCount = result.unmatched.length
+    if (unmatchedCount > 0) {
+      const firstMissing = result.unmatched
+        .slice(0, 3)
+        .map(u => (u.artist ? `${u.artist} - ${u.title}` : u.title))
+        .join(', ')
+      showToast(
+        `Playlist "${result.playlistName}" created with ${result.matchedCount} of ${result.totalEntries} tracks matched. ${unmatchedCount} not in your library: ${firstMissing}${unmatchedCount > 3 ? '…' : ''}`,
+        'info',
+      )
+    } else {
+      showToast(
+        `Playlist "${result.playlistName}" created with ${result.matchedCount} tracks matched.`,
+        'success',
+      )
+    }
+
+    activityLog.value.unshift({
+      id: Date.now(),
+      time: 'Just now',
+      service: 'File',
+      serviceIcon: '📄',
+      action: 'Imported playlist from file',
+      result: `${result.matchedCount}/${result.totalEntries} tracks matched (${file.name})`,
+      success: true,
+    })
+  } catch (e: any) {
+    const errorMsg = e?.message || e?.toString() || String(e) || 'Unknown error'
+    showToast(`Playlist import failed: ${errorMsg.substring(0, 150)}`, 'error')
+    activityLog.value.unshift({
+      id: Date.now(),
+      time: 'Just now',
+      service: 'File',
+      serviceIcon: '📄',
+      action: 'Playlist file import failed',
+      result: errorMsg.substring(0, 100),
+      success: false,
+    })
   }
 }
 
-function handleFileSelect(e: Event) {
+async function handleFileDrop(e: DragEvent) {
+  isDragging.value = false
+  const files = e.dataTransfer?.files
+  if (files && files.length > 0 && files[0]) {
+    await processImportedFile(files[0])
+  }
+}
+
+async function handleFileSelect(e: Event) {
   const target = e.target as HTMLInputElement
   const files = target.files
   if (files && files.length > 0 && files[0]) {
-    processImportedFile(files[0])
+    await processImportedFile(files[0])
     target.value = ''
   }
 }
@@ -1266,9 +1347,12 @@ async function startScan() {
   showScanDialog.value = false
   
   try {
-    // Call backend scan with progress events
+    // Call backend scan with progress events. FE-6: watchForChanges lanza el
+    // watcher de auto-rescan; skipSmallFiles omite archivos < 1 MB en el scanner.
     const result = await libraryApi.scanLocalLibraryWithProgress(path, {
       recursive: scanOptions.includeSubfolders,
+      watchForChanges: scanOptions.watchForChanges,
+      skipSmallFiles: scanOptions.skipSmallFiles,
     })
     
     if (result.success && result.data) {
@@ -1365,6 +1449,8 @@ function removePath(pathEntry: LibraryPathEntry) {
   const index = libraryPaths.value.findIndex(p => p.id === pathEntry.id)
   if (index !== -1) {
     libraryPaths.value.splice(index, 1)
+    // FE-6: si la ruta tenía watcher de auto-rescan, detenerlo.
+    libraryApi.stopLibraryWatcher(pathEntry.path).catch(() => {})
     showToast('Library path removed', 'info')
   }
 }

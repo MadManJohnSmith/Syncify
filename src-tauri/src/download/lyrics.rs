@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // Lyrics engine - LRCLIB + Musixmatch Richsync for word-synced karaoke
 
 use crate::download::http_client::{create_http_client, LRCLIB_LIMITER};
@@ -116,15 +115,22 @@ impl LyricsResponse {
 
 /// LRCLIB API response
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Fields are used by serde deserialization
 pub struct LRCLibResponse {
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     id: Option<i64>,
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     name: Option<String>,
     #[serde(rename = "trackName")]
     track_name: Option<String>,
     #[serde(rename = "artistName")]
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     artist_name: Option<String>,
     #[serde(rename = "albumName")]
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     album_name: Option<String>,
     duration: Option<f64>,
     instrumental: Option<bool>,
@@ -143,6 +149,8 @@ struct MxmToken {
 /// Lyrics client with caching + Musixmatch token management + Spotify Color Lyrics direct access
 pub struct LyricsClient {
     client: Client,
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     cache: RwLock<HashMap<String, (LyricsResponse, Instant)>>,
     mxm_token: TokioMutex<Option<MxmToken>>,
     spotify_sp_dc: TokioMutex<Option<String>>,
@@ -205,83 +213,6 @@ impl LyricsClient {
             spotify_sp_dc: TokioMutex::new(env_sp_dc),
             spotify_access_token: TokioMutex::new(None),
         }
-    }
-
-    /// Set Spotify sp_dc session cookie for direct official Spotify Color Lyrics access
-    #[allow(dead_code)]
-    pub async fn set_spotify_sp_dc(&self, sp_dc: String) {
-        let mut guard = self.spotify_sp_dc.lock().await;
-        *guard = Some(sp_dc);
-        let mut tok_guard = self.spotify_access_token.lock().await;
-        *tok_guard = None; // Invalidate cached token to re-authenticate with new sp_dc
-    }
-
-    /// Generate cache key
-    fn cache_key(artist: &str, track: &str) -> String {
-        format!("{}|{}", artist.to_lowercase(), track.to_lowercase())
-    }
-
-    /// Check cache (24 hour TTL)
-    fn get_cached(&self, artist: &str, track: &str) -> Option<LyricsResponse> {
-        let key = Self::cache_key(artist, track);
-        if let Ok(cache) = self.cache.read() {
-            if let Some((lyrics, cached_at)) = cache.get(&key) {
-                if cached_at.elapsed() < Duration::from_secs(24 * 60 * 60) {
-                    return Some(lyrics.clone());
-                }
-            }
-        }
-        None
-    }
-
-    /// Store in cache
-    fn set_cached(&self, artist: &str, track: &str, lyrics: &LyricsResponse) {
-        let key = Self::cache_key(artist, track);
-        if let Ok(mut cache) = self.cache.write() {
-            cache.insert(key, (lyrics.clone(), Instant::now()));
-        }
-    }
-
-    /// Fetch lyrics by artist and track name (direct API)
-    pub async fn fetch_lyrics(&self, artist: &str, track: &str) -> Result<LyricsResponse> {
-        // Check cache
-        if let Some(cached) = self.get_cached(artist, track) {
-            debug!("[LRCLIB] Cache hit for {} - {}", artist, track);
-            return Ok(cached);
-        }
-
-        LRCLIB_LIMITER.wait("lrclib").await;
-
-        let url = format!(
-            "https://lrclib.net/api/get?artist_name={}&track_name={}",
-            urlencoding::encode(artist),
-            urlencoding::encode(track)
-        );
-
-        debug!("[LRCLIB] Fetching lyrics for {} - {}", artist, track);
-
-        let response = self.client.get(&url).send().await?;
-
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(anyhow!("Lyrics not found"));
-        }
-
-        if !response.status().is_success() {
-            return Err(anyhow!("LRCLIB request failed: HTTP {}", response.status()));
-        }
-
-        let lrc: LRCLibResponse = response.json().await?;
-        let lyrics = self.parse_response(&lrc)?;
-
-        self.set_cached(artist, track, &lyrics);
-        info!(
-            "[LRCLIB] Found lyrics for {} - {} ({} lines)",
-            artist,
-            track,
-            lyrics.lines.len()
-        );
-
-        Ok(lyrics)
     }
 
     /// Search for lyrics with duration matching
@@ -2000,85 +1931,6 @@ impl LyricsClient {
         })
     }
 
-    /// Fetch native lyrics directly from Qobuz API using user credentials
-    #[allow(dead_code)]
-    pub async fn fetch_qobuz_lyrics(
-        &self,
-        qobuz_track_id: i64,
-        app_id: &str,
-        user_token: &str,
-    ) -> Result<LyricsResponse> {
-        let url = format!(
-            "https://www.qobuz.com/api.json/0.2/track/get?track_id={}&extra=lyrics",
-            qobuz_track_id
-        );
-
-        let response = self
-            .client
-            .get(&url)
-            .header("X-App-Id", app_id)
-            .header("X-User-Auth-Token", user_token)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!(
-                "Qobuz lyrics request failed: HTTP {}",
-                response.status()
-            ));
-        }
-
-        let json: serde_json::Value = response.json().await?;
-        if let Some(lyrics_obj) = json.get("lyrics") {
-            let synced = lyrics_obj["synced_lyrics"]
-                .as_str()
-                .or(lyrics_obj["lrc"].as_str());
-            let text = lyrics_obj["text"].as_str().or(lyrics_obj["plain"].as_str());
-
-            if let Some(s) = synced {
-                if !s.trim().is_empty() {
-                    let mut lines = Vec::new();
-                    let is_karaoke = s.contains('<') && s.contains('>');
-                    for line in s.lines() {
-                        if let Some(parsed) = parse_lrc_line(line) {
-                            lines.push(parsed.into());
-                        }
-                    }
-                    return Ok(LyricsResponse {
-                        lines,
-                        sync_type: if is_karaoke {
-                            "KARAOKE_WORD_SYNCED".to_string()
-                        } else {
-                            "LINE_SYNCED".to_string()
-                        },
-                        instrumental: false,
-                        plain_lyrics: text.map(|t| t.to_string()),
-                        provider: "Qobuz Native".to_string(),
-                        source: "qobuz.com".to_string(),
-                        elrc_content: None,
-                    });
-                }
-            } else if let Some(t) = text {
-                if !t.trim().is_empty() {
-                    return Ok(LyricsResponse {
-                        lines: Vec::new(),
-                        sync_type: "UNSYNCED".to_string(),
-                        instrumental: false,
-                        plain_lyrics: Some(t.to_string()),
-                        provider: "Qobuz Native".to_string(),
-                        source: "qobuz.com".to_string(),
-                        elrc_content: None,
-                    });
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "No native lyrics on Qobuz for track {}",
-            qobuz_track_id
-        ))
-    }
-
     /// Parse LRCLIB response to our format
     pub fn parse_response(&self, lrc: &LRCLibResponse) -> Result<LyricsResponse> {
         let mut lines = Vec::new();
@@ -2131,92 +1983,6 @@ impl LyricsClient {
         lrc
     }
 
-    /// Resolve lyrics via NetEase Cloud Music adapter into domain contract
-    pub async fn resolve_netease(
-        &self,
-        artist: &str,
-        track: &str,
-        duration_sec: f64,
-    ) -> LyricsResolution {
-        match self.fetch_netease_lyrics(artist, track, duration_sec).await {
-            Ok(resp) => resp.to_domain_resolution(),
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("no songs found")
-                    || err_str.contains("no title/duration matching")
-                {
-                    LyricsResolution::new_not_found("NetEase", "netease_search")
-                } else if err_str.contains("request failed") || err_str.contains("timed out") {
-                    LyricsResolution::new_source_unavailable("NetEase", "netease_search", err_str)
-                } else {
-                    LyricsResolution::new_failed("NetEase", "netease_lyrics", err_str)
-                }
-            }
-        }
-    }
-
-    /// Resolve lyrics via LRCLIB adapter into domain contract
-    pub async fn resolve_lrclib(
-        &self,
-        artist: &str,
-        track: &str,
-        duration_sec: f64,
-    ) -> LyricsResolution {
-        match self.fetch_lyrics(artist, track).await {
-            Ok(resp) => resp.to_domain_resolution(),
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("not found") {
-                    // Try fallback search
-                    match self
-                        .search_lyrics(&format!("{} {}", artist, track), duration_sec)
-                        .await
-                    {
-                        Ok(resp) => {
-                            let mut res = resp.to_domain_resolution();
-                            res.fallback_applied = true;
-                            res
-                        }
-                        Err(_) => LyricsResolution::new_not_found("LRCLIB", "exact_and_search"),
-                    }
-                } else if err_str.contains("request failed") || err_str.contains("timed out") {
-                    LyricsResolution::new_source_unavailable("LRCLIB", "lrclib_get", err_str)
-                } else {
-                    LyricsResolution::new_failed("LRCLIB", "lrclib_get", err_str)
-                }
-            }
-        }
-    }
-
-    /// Resolve lyrics via LyricsPlus adapter into domain contract
-    pub async fn resolve_lyricsplus(
-        &self,
-        artist: &str,
-        track: &str,
-        duration_sec: f64,
-    ) -> LyricsResolution {
-        match self.fetch_lyricsplus(artist, track, duration_sec).await {
-            Ok(resp) => resp.to_domain_resolution(),
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("Empty lyrics")
-                    || err_str.contains("insufficient lines")
-                    || err_str.contains("No lyrics field")
-                {
-                    LyricsResolution::new_not_found("LyricsPlus", "lyricsplus_search")
-                } else if err_str.contains("search failed") || err_str.contains("timed out") {
-                    LyricsResolution::new_source_unavailable(
-                        "LyricsPlus",
-                        "lyricsplus_search",
-                        err_str,
-                    )
-                } else {
-                    LyricsResolution::new_failed("LyricsPlus", "lyricsplus_search", err_str)
-                }
-            }
-        }
-    }
-
     /// Orchestrate resolution across the full multi-tier priority cascade (16 tiers)
     /// Returns (LyricsResolution, elapsed_ms).
     pub async fn orchestrate_resolution(
@@ -2267,6 +2033,7 @@ impl Default for LyricsClient {
 }
 
 /// Generate sidecar `.lrc` file content (only for valid synced lyrics)
+#[allow(dead_code)] // Cubierta por `tests/lyrics_pipeline_test.rs`.
 pub fn generate_sidecar_lrc(resolution: &LyricsResolution) -> Option<String> {
     resolution.generate_sidecar_lrc()
 }
@@ -2276,6 +2043,7 @@ static LYRICS_CACHE: RwLock<Option<HashMap<String, (LyricsResolution, Option<Str
     RwLock::new(None);
 
 /// Clear in-memory lyrics cache (useful for testing)
+#[allow(dead_code)] // Cubierta por `tests/batch_cache_optimization_and_parity_test.rs`.
 pub fn clear_lyrics_cache() {
     if let Ok(mut guard) = LYRICS_CACHE.write() {
         *guard = Some(HashMap::new());
@@ -2283,6 +2051,7 @@ pub fn clear_lyrics_cache() {
 }
 
 /// Pre-seed lyrics cache (useful for testing)
+#[allow(dead_code)] // Cubierta por `tests/batch_cache_optimization_and_parity_test.rs`.
 pub fn set_cached_lyrics(
     artist: &str,
     title: &str,
@@ -2363,29 +2132,6 @@ impl LyricsPipelineService {
         }
 
         Ok(result)
-    }
-
-    /// Primary entrypoint to resolve lyrics, tag FLAC file, and produce optional sidecar LRC
-    pub async fn process_track_lyrics(
-        &self,
-        artist: &str,
-        title: &str,
-        album: Option<&str>,
-        duration_sec: f64,
-        flac_path: Option<&std::path::Path>,
-    ) -> Result<(LyricsResolution, Option<String>), String> {
-        let (resolution, sidecar_content) = self
-            .resolve_lyrics_and_sidecar(artist, title, album, duration_sec)
-            .await?;
-
-        if resolution.status == ResolutionStatus::Resolved {
-            if let Some(path) = flac_path {
-                validate_and_embed_flac_lyrics(path, &resolution)
-                    .map_err(|e| format!("Failed to embed lyrics tags: {}", e))?;
-            }
-        }
-
-        Ok((resolution, sidecar_content))
     }
 }
 

@@ -194,7 +194,7 @@ pub async fn remove_account(
 }
 
 /// Get decrypted credentials for an account (internal Rust backend use only; not exposed via IPC)
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/account_credentials_ipc_hygiene_test.rs` (el IPC no la expone).
 pub async fn get_internal_account_credentials(
     pool: &sqlx::SqlitePool,
     account_id: i64,
@@ -900,6 +900,99 @@ pub async fn perform_get_service_auth_status(
                     last_auth_error_at: last_auth_err_at,
                     last_checked: Some(now_iso),
                 })
+            }
+        }
+        "soundcloud" => {
+            // Un token guardado no prueba que siga sirviendo: se valida contra
+            // la API (`GET /me`) antes de reportar la cuenta como conectada.
+            let oauth_token = creds["oauth_token"]
+                .as_str()
+                .or_else(|| creds["access_token"].as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
+
+            let token = match oauth_token {
+                Some(token) => token,
+                None => return Ok(ServiceAuthStatus {
+                    service: svc_name,
+                    account_id: Some(id),
+                    status: "requires_auth".to_string(),
+                    is_authenticated: false,
+                    credentials_valid: false,
+                    credentials_expired: false,
+                    credentials_invalid: true,
+                    sync_available: false,
+                    download_entitled: false,
+                    download_auth_failed: false,
+                    display_name,
+                    email,
+                    error_message: Some(
+                        "SoundCloud OAuth token missing. Please reconnect in Settings > Accounts."
+                            .to_string(),
+                    ),
+                    last_auth_error: last_auth_err,
+                    last_auth_error_at: last_auth_err_at,
+                    last_checked: Some(now_iso),
+                }),
+            };
+
+            let client = crate::services::SoundCloudClient::new(token.to_string());
+            match client.get_current_user().await {
+                Ok(user) => Ok(ServiceAuthStatus {
+                    service: svc_name,
+                    account_id: Some(id),
+                    status: "connected_valid".to_string(),
+                    is_authenticated: true,
+                    credentials_valid: true,
+                    credentials_expired: false,
+                    credentials_invalid: false,
+                    sync_available: true,
+                    download_entitled: false,
+                    download_auth_failed: has_download_err,
+                    display_name: display_name.or_else(|| {
+                        let resolved = user.display_name().to_string();
+                        (!resolved.is_empty()).then_some(resolved)
+                    }),
+                    email,
+                    error_message: None,
+                    last_auth_error: last_auth_err,
+                    last_auth_error_at: last_auth_err_at,
+                    last_checked: Some(now_iso),
+                }),
+                // The API answered: 401/403 means the stored token no longer
+                // works; anything else is a transport hiccup worth retrying.
+                Err(err) => {
+                    let rejected = err.contains("401") || err.contains("403");
+                    Ok(ServiceAuthStatus {
+                        service: svc_name,
+                        account_id: Some(id),
+                        status: if rejected {
+                            "requires_auth".to_string()
+                        } else {
+                            "error".to_string()
+                        },
+                        is_authenticated: false,
+                        credentials_valid: false,
+                        credentials_expired: false,
+                        credentials_invalid: rejected,
+                        sync_available: false,
+                        download_entitled: false,
+                        download_auth_failed: false,
+                        display_name,
+                        email,
+                        error_message: Some(if rejected {
+                            format!(
+                                "SoundCloud rejected the stored OAuth token ({}). Please reconnect in Settings > Accounts.",
+                                err
+                            )
+                        } else {
+                            format!("SoundCloud auth check failed: {}", err)
+                        }),
+                        last_auth_error: last_auth_err,
+                        last_auth_error_at: last_auth_err_at,
+                        last_checked: Some(now_iso),
+                    })
+                }
             }
         }
         _ => {

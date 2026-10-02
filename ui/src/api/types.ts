@@ -44,6 +44,7 @@ export interface LibraryTrack {
     availability_summary?: string | null; // Summary string of availability states
     sources?: TrackSourceAvailability[]; // Detailed per-source availability
     quality: string | null;          // e.g. "24/96", "16/44.1", "320kbps"
+    quality_bucket?: string | null;  // FE-10: 'Hi-Res (24-bit+)' | 'CD Quality' | 'Lossy' (get_library only)
     download_status: string | null;  // "downloaded", "queued", "not_downloaded"
     metadata_score: number | null;   // 0-100 based on field completeness
     lyrics_type: LyricsType | null;  // "synced", "timed", "plain", "unsynced", "none"
@@ -839,9 +840,6 @@ export interface LibrarySnapshot {
     tracks_with_lyrics: number;
     tracks_lossless: number;
     tracks_hires: number;
-    metadata_excellent: number;
-    metadata_good: number;
-    metadata_needs_work: number;
     downloaded_tracks: number;
 }
 
@@ -964,16 +962,6 @@ export interface MetadataPreferences {
     weight_genre: number;
 }
 
-export interface CacheStats {
-    id: number;
-    cache_type: string;
-    size_bytes: number;
-    item_count: number;
-    hit_count: number;
-    miss_count: number;
-    last_updated: string;
-}
-
 export interface DiagnosticResult {
     check_name: string;
     status: string;
@@ -1062,6 +1050,14 @@ export interface MigrationProgress {
     completed_count: number;
     failed_count: number;
     skipped_count: number;
+    /** Completion percentage: current_item / total_items * 100 */
+    percent: number;
+    /** Estimated throughput in items per minute */
+    speed: number;
+    /** Estimated time remaining, derived from the observed throughput */
+    eta: string;
+    /** Human readable description of the operation being performed */
+    current_action: string;
 }
 
 export interface DestinationTrackMatch {
@@ -1294,6 +1290,54 @@ export interface CatalogRepairExecutionReport {
     db_backup_path?: string | null;
     db_backup_sha256?: string | null;
     errors: string[];
+}
+/** S143B/S159: snapshot of file + audio payload + sidecar LRC hashes taken during the dry-run */
+export interface DisambiguationRepairBaseline {
+    file_path: string;
+    input_sha256: string;
+    input_size: number;
+    input_modified_at: number;
+    audio_content_hash?: string | null;
+    lrc_path?: string | null;
+    lrc_sha256?: string | null;
+    lrc_size?: number | null;
+    lrc_modified_at?: number | null;
+}
+/** S143B/S159: before/after hash audit captured around an applied rename */
+export interface DisambiguationRepairOutputHashes {
+    file_hash_before: string;
+    file_hash_after?: string | null;
+    audio_content_hash_before?: string | null;
+    audio_content_hash_after?: string | null;
+    lrc_hash_before?: string | null;
+    lrc_hash_after?: string | null;
+}
+export interface DisambiguationRepairItem {
+    track_id: number;
+    isrc?: string | null;
+    current_audio_path: string;
+    target_audio_path: string;
+    current_lrc_path?: string | null;
+    target_lrc_path?: string | null;
+    source_title: string;
+    display_title: string;
+    file_disambiguator: string;
+    sha256_before: string;
+    status: string;
+    baseline?: DisambiguationRepairBaseline | null;
+    output_hashes?: DisambiguationRepairOutputHashes | null;
+    applied_actions: string[];
+    rollback_state?: string | null;
+}
+export interface DisambiguationRepairReport {
+    dry_run: boolean;
+    items: DisambiguationRepairItem[];
+    total_candidates: number;
+    total_renamed: number;
+    total_skipped: number;
+    errors: string[];
+    applied_actions: string[];
+    rollback_state?: string | null;
 }
 
 export interface OperationRecoveryDetail {

@@ -13,106 +13,9 @@ use super::*;
 // LYRICS COMMANDS
 // ==============================================
 
-/// Lyrics result from Python subprocess
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LyricsResult {
-    pub success: bool,
-    pub data: Option<LyricsData>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LyricsData {
-    pub synced_lyrics: Option<String>,
-    pub plain_lyrics: Option<String>,
-    pub word_synced: bool,
-    pub instrumental: Option<bool>,
-    pub source: Option<String>,
-}
-
-/// Fetch lyrics for a track (Rust-native via LRCLIB)
-#[tauri::command]
-pub async fn fetch_lyrics(
-    track: String,
-    artist: String,
-    _album: Option<String>,
-) -> Result<LyricsResult, String> {
-    tracing::info!("fetch_lyrics: {} - {}", artist, track);
-
-    let lyrics_client = crate::download::LyricsClient::new();
-
-    // Try fetching lyrics - use 0.0 duration to skip duration matching
-    match lyrics_client.fetch_all_sources(&artist, &track, 0.0).await {
-        Ok(lyrics) => {
-            // Convert LyricsResponse to LyricsData format
-            let synced_lyrics = if !lyrics.lines.is_empty() {
-                Some(crate::download::LyricsClient::to_lrc_string(&lyrics))
-            } else {
-                None
-            };
-
-            Ok(LyricsResult {
-                success: true,
-                data: Some(LyricsData {
-                    synced_lyrics,
-                    plain_lyrics: lyrics.plain_lyrics,
-                    word_synced: lyrics.sync_type == "WORD_SYNCED",
-                    instrumental: Some(lyrics.instrumental),
-                    source: Some(lyrics.source),
-                }),
-                error: None,
-            })
-        }
-        Err(e) => Ok(LyricsResult {
-            success: false,
-            data: None,
-            error: Some(e.to_string()),
-        }),
-    }
-}
-
 // ==============================================
 // DOWNLOAD COMMANDS
 // ==============================================
-
-/// Download result from Python subprocess
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadBridgeResult {
-    pub success: bool,
-    pub data: Option<DownloadData>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadData {
-    pub file_path: Option<String>,
-    pub format: Option<String>,
-    pub size_bytes: Option<i64>,
-}
-
-#[tauri::command]
-pub async fn download_track(
-    service: String,
-    track_id: String,
-    output_path: Option<String>,
-    quality: Option<String>,
-) -> Result<DownloadBridgeResult, String> {
-    tracing::info!("download_track: {} track {}", service, track_id);
-
-    let mut args = vec!["download", &service, &track_id];
-
-    if let Some(ref path) = output_path {
-        args.push("--output");
-        args.push(path);
-    }
-
-    if let Some(ref q) = quality {
-        args.push("--quality");
-        args.push(q);
-    }
-
-    run_bridge_command::<DownloadBridgeResult>("download_bridge.py", &args).await
-}
 
 // ==============================================
 // METADATA ENRICHMENT COMMANDS
@@ -202,38 +105,6 @@ pub struct BridgeResult {
 #[tauri::command]
 pub async fn check_ffmpeg_available() -> Result<BridgeResult, String> {
     run_bridge_command("conversion_bridge.py", &["check"]).await
-}
-
-/// Get audio file info (dead command purged from Tauri IPC handler)
-#[tauri::command]
-#[allow(dead_code)]
-pub async fn get_audio_info(file_path: String) -> Result<BridgeResult, String> {
-    run_bridge_command::<BridgeResult>("conversion_bridge.py", &["info", &file_path]).await
-}
-
-/// Convert audio file format (dead command purged from Tauri IPC handler)
-#[tauri::command]
-#[allow(dead_code)]
-pub async fn convert_audio(
-    input_path: String,
-    output_path: String,
-    format: String,
-    quality: Option<String>,
-) -> Result<BridgeResult, String> {
-    let quality_arg = quality.as_deref().unwrap_or("high");
-    run_bridge_command::<BridgeResult>(
-        "conversion_bridge.py",
-        &[
-            "convert",
-            &input_path,
-            &output_path,
-            "--format",
-            &format,
-            "--quality",
-            quality_arg,
-        ],
-    )
-    .await
 }
 
 // ==============================================
@@ -529,85 +400,243 @@ where
 }
 
 // ==============================================
-// ORGANIZER COMMANDS (File Organization)
-// ==============================================
-
-/// Preview how files would be organized (dead command purged from Tauri IPC handler)
-#[tauri::command]
-#[allow(dead_code)]
-pub async fn preview_organization(
-    source_dir: String,
-    pattern: Option<String>,
-) -> Result<BridgeResult, String> {
-    let pattern_arg = pattern
-        .as_deref()
-        .unwrap_or("{artist}/{album}/{track:02d} - {title}");
-    run_bridge_command::<BridgeResult>(
-        "organizer_bridge.py",
-        &["preview", &source_dir, "--pattern", pattern_arg],
-    )
-    .await
-}
-
-/// Organize audio files into folder structure (dead command purged from Tauri IPC handler)
-#[tauri::command]
-#[allow(dead_code)]
-pub async fn organize_files(
-    source_dir: String,
-    target_dir: String,
-    pattern: Option<String>,
-    copy: Option<bool>,
-) -> Result<BridgeResult, String> {
-    let pattern_arg = pattern
-        .as_deref()
-        .unwrap_or("{artist}/{album}/{track:02d} - {title}");
-    let mut args = vec![
-        "organize",
-        &source_dir,
-        &target_dir,
-        "--pattern",
-        pattern_arg,
-    ];
-
-    if copy == Some(true) {
-        args.push("--copy");
-    }
-
-    run_bridge_command::<BridgeResult>("organizer_bridge.py", &args).await
-}
-
-// ==============================================
 // PROGRESS-ENABLED COMMANDS
 // ==============================================
 
 /// Emit a progress event to the frontend
+///
+/// Single canonical progress channel (IN-4): consumers distinguish operations
+/// via `event.operation` ("scan" | "organize") and `event.status`.
 fn emit_progress(app_handle: &tauri::AppHandle, event: ProgressEvent) {
     let _ = app_handle.emit("syncify:progress", &event);
-    match event.operation.as_str() {
-        "scan" => {
-            if event.status == "completed" {
-                let _ = app_handle.emit("scan-complete", &event);
-            } else {
-                let _ = app_handle.emit("scan-progress", &event);
+}
+
+// ==============================================
+// WATCH DE BIBLIOTECA LOCAL («Watch for changes (auto-rescan)»)
+// ==============================================
+
+/// Umbral del checkbox «Skip files under 1 MB» del diálogo de scan: 1 MB.
+pub const SCAN_SKIP_SMALL_FILES_MIN_BYTES: i64 = 1_048_576;
+
+/// Intervalo de sondeo del watcher de biblioteca.
+const LIBRARY_WATCH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+type LibraryWatcherMap = std::collections::HashMap<String, tokio::task::JoinHandle<()>>;
+
+/// Registro global de watchers activos, por directorio canónico.
+/// Un nuevo scan del mismo directorio con watch activo reemplaza al anterior.
+static LIBRARY_WATCHERS: std::sync::OnceLock<std::sync::Mutex<LibraryWatcherMap>> =
+    std::sync::OnceLock::new();
+
+fn library_watchers() -> &'static std::sync::Mutex<LibraryWatcherMap> {
+    LIBRARY_WATCHERS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Clave estable para el registro de watchers (ruta canónica; fallback a la dada).
+fn watcher_key(directory: &str) -> String {
+    std::fs::canonicalize(directory)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| directory.to_string())
+}
+
+/// Firma barata del árbol de audio de un directorio: FNV-1a de
+/// (ruta, tamaño, mtime) de cada archivo de audio + conteo. Detecta
+/// añadidos, borrados, renombres y modificaciones sin leer contenido.
+fn audio_tree_signature(dir: &std::path::Path, recursive: bool) -> (u64, u64) {
+    // Directorios que nunca forman parte de una biblioteca musical.
+    const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target"];
+
+    fn walk(dir: &std::path::Path, recursive: bool, state: &mut (u64, u64)) {
+        let Ok(read) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in read.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str());
+                if recursive && !name.is_some_and(|n| SKIP_DIRS.contains(&n)) {
+                    walk(&path, recursive, state);
+                }
+                continue;
             }
-        }
-        "organize" => {
-            if event.status == "completed" {
-                let _ = app_handle.emit("organize-complete", &event);
-            } else {
-                let _ = app_handle.emit("organize-progress", &event);
+            if !file_type.is_file() {
+                continue;
             }
+            let is_audio = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| AUDIO_FILE_EXTENSIONS.contains(&e.to_lowercase().as_str()))
+                .unwrap_or(false);
+            if !is_audio {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            let rel = path.to_string_lossy();
+            let mut h = 0xcbf2_9ce4_8422_2325u64;
+            for byte in rel.as_bytes() {
+                h ^= *byte as u64;
+                h = h.wrapping_mul(0x100_0000_01b3);
+            }
+            h ^= meta.len();
+            h = h.wrapping_mul(0x100_0000_01b3);
+            h ^= mtime;
+            h = h.wrapping_mul(0x100_0000_01b3);
+            state.0 ^= h;
+            state.1 += 1;
         }
-        _ => {}
     }
+
+    let mut state = (0u64, 0u64);
+    walk(dir, recursive, &mut state);
+    state
+}
+
+/// Detiene (y devuelve true si existía) el watcher de auto-rescan de un directorio.
+pub fn stop_library_watcher(directory: &str) -> bool {
+    let key = watcher_key(directory);
+    let prev = library_watchers()
+        .lock()
+        .expect("library watchers mutex poisoned")
+        .remove(&key);
+    let existed = prev.is_some();
+    if let Some(handle) = prev {
+        handle.abort();
+        tracing::info!("library watcher stopped for {}", directory);
+    }
+    existed
+}
+
+/// Lanza el watcher de auto-rescan: cada LIBRARY_WATCH_POLL_INTERVAL compara la
+/// firma del árbol de audio; si cambió desde el último scan, re-ejecuta el scan
+/// real (mismos filtros) y emite el progreso por el canal estándar. Un watcher
+/// previo del mismo directorio se cancela.
+fn spawn_library_watcher(
+    app_handle: tauri::AppHandle,
+    directory: String,
+    recursive: bool,
+    min_size_bytes: Option<i64>,
+) {
+    let key = watcher_key(&directory);
+
+    {
+        let mut watchers = library_watchers()
+            .lock()
+            .expect("library watchers mutex poisoned");
+        if let Some(prev) = watchers.remove(&key) {
+            prev.abort();
+        }
+    }
+
+    let handle = tokio::spawn(async move {
+        let mut last_sig = tokio::task::spawn_blocking({
+            let dir = directory.clone();
+            move || audio_tree_signature(std::path::Path::new(&dir), recursive)
+        })
+        .await
+        .unwrap_or((0, 0));
+
+        loop {
+            tokio::time::sleep(LIBRARY_WATCH_POLL_INTERVAL).await;
+
+            let sig = tokio::task::spawn_blocking({
+                let dir = directory.clone();
+                move || audio_tree_signature(std::path::Path::new(&dir), recursive)
+            })
+            .await;
+            let Ok(sig) = sig else {
+                break; // watcher cancelado o runtime en apagado
+            };
+            if sig == last_sig {
+                continue;
+            }
+            last_sig = sig;
+
+            // El árbol cambió: re-scan real con los mismos filtros del scan original.
+            let min_size_str = min_size_bytes.map(|v| v.to_string());
+            let mut args = vec!["scan", directory.as_str()];
+            if !recursive {
+                args.push("--no-recursive");
+            }
+            if let Some(ref m) = min_size_str {
+                args.push("--min-size-bytes");
+                args.push(m);
+            }
+
+            let scan_id = uuid::Uuid::new_v4().to_string();
+            emit_progress(&app_handle, ProgressEvent::new("scan", &scan_id));
+            let result = run_bridge_command::<BridgeResult>("scanner_bridge.py", &args).await;
+            match &result {
+                Ok(r) if r.success => {
+                    let total = r
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.get("total_files"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    tracing::info!(
+                        "library watcher: auto-rescan of {} found {} files",
+                        directory,
+                        total
+                    );
+                    emit_progress(
+                        &app_handle,
+                        ProgressEvent::new("scan", &scan_id)
+                            .completed(&format!("Auto-rescan: {} files", total)),
+                    );
+                }
+                Ok(r) => {
+                    emit_progress(
+                        &app_handle,
+                        ProgressEvent::new("scan", &scan_id)
+                            .failed(r.error.as_deref().unwrap_or("Unknown error")),
+                    );
+                }
+                Err(e) => {
+                    emit_progress(&app_handle, ProgressEvent::new("scan", &scan_id).failed(e));
+                }
+            }
+        }
+    });
+
+    library_watchers()
+        .lock()
+        .expect("library watchers mutex poisoned")
+        .insert(key, handle);
+}
+
+/// FE-6: detiene el watcher de auto-rescan de una ruta de biblioteca
+/// (se invoca al quitar la ruta desde la UI).
+#[tauri::command]
+pub fn stop_library_watcher_command(directory: String) -> Result<bool, String> {
+    Ok(stop_library_watcher(&directory))
 }
 
 /// Scan local library with progress events
+///
+/// Opciones del diálogo «Add Local Library Path» (AccountsView):
+/// - `watch_for_changes`: tras un scan exitoso lanza un watcher de sondeo que
+///   re-escanea el directorio cuando cambia el árbol de audio (auto-rescan).
+///   Un scan posterior con watch desactivado detiene el watcher.
+/// - `skip_small_files`: pasa `--min-size-bytes` al scanner bridge para que
+///   ignore archivos por debajo de 1 MB (SCAN_SKIP_SMALL_FILES_MIN_BYTES).
 #[tauri::command]
 pub async fn scan_local_library_with_progress(
     app_handle: tauri::AppHandle,
     directory: String,
     recursive: Option<bool>,
+    watch_for_changes: Option<bool>,
+    skip_small_files: Option<bool>,
 ) -> Result<BridgeResult, String> {
     let scan_id = uuid::Uuid::new_v4().to_string();
 
@@ -618,6 +647,17 @@ pub async fn scan_local_library_with_progress(
     let mut args = vec!["scan", &directory];
     if recursive == Some(false) {
         args.push("--no-recursive");
+    }
+
+    // FE-6: «Skip files under 1 MB» — el filtro real vive en scanner_bridge.py.
+    let min_bytes = if skip_small_files == Some(true) {
+        Some(SCAN_SKIP_SMALL_FILES_MIN_BYTES.to_string())
+    } else {
+        None
+    };
+    if let Some(ref mb) = min_bytes {
+        args.push("--min-size-bytes");
+        args.push(mb.as_str());
     }
 
     let result = run_bridge_command::<BridgeResult>("scanner_bridge.py", &args).await;
@@ -648,102 +688,28 @@ pub async fn scan_local_library_with_progress(
         }
     }
 
-    result
-}
-
-/// Batch download tracks with progress events
-#[tauri::command]
-pub async fn batch_download_tracks(
-    app_handle: tauri::AppHandle,
-    tracks: Vec<serde_json::Value>,
-    service: String,
-    quality: Option<String>,
-) -> Result<BridgeResult, String> {
-    let batch_id = uuid::Uuid::new_v4().to_string();
-    let total = tracks.len() as u64;
-
-    // Emit start event
-    emit_progress(&app_handle, ProgressEvent::new("download", &batch_id));
-
-    let mut results = Vec::new();
-    let mut failed = 0u64;
-
-    for (i, track) in tracks.iter().enumerate() {
-        let track_id = track
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let track_title = track
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown Track");
-
-        // Emit progress
-        emit_progress(
-            &app_handle,
-            ProgressEvent::new("download", &batch_id).progress(
-                i as u64,
-                total,
-                &format!("Downloading: {}", track_title),
-            ),
-        );
-
-        // Download the track
-        let download_result = run_bridge_command::<BridgeResult>(
-            "download_bridge.py",
-            &[
-                "download",
-                &service,
-                track_id,
-                "--quality",
-                quality.as_deref().unwrap_or("high"),
-            ],
-        )
-        .await;
-
-        match download_result {
-            Ok(r) if r.success => {
-                results.push(serde_json::json!({
-                    "track_id": track_id,
-                    "success": true
-                }));
-            }
-            _ => {
-                failed += 1;
-                results.push(serde_json::json!({
-                    "track_id": track_id,
-                    "success": false
-                }));
+    // Watcher de auto-rescan (solo tras un scan exitoso).
+    if watch_for_changes == Some(true) {
+        if let Ok(r) = &result {
+            if r.success {
+                spawn_library_watcher(
+                    app_handle,
+                    directory,
+                    recursive != Some(false),
+                    if skip_small_files == Some(true) {
+                        Some(SCAN_SKIP_SMALL_FILES_MIN_BYTES)
+                    } else {
+                        None
+                    },
+                );
             }
         }
+    } else {
+        // Scan con watch desactivado: no dejar watchers huérfanos.
+        stop_library_watcher(&directory);
     }
 
-    // Emit completion
-    let message = if failed == 0 {
-        format!("Downloaded {} tracks", total)
-    } else {
-        format!("Downloaded {} tracks, {} failed", total - failed, failed)
-    };
-
-    emit_progress(
-        &app_handle,
-        ProgressEvent::new("download", &batch_id).completed(&message),
-    );
-
-    Ok(BridgeResult {
-        success: failed == 0,
-        data: Some(serde_json::json!({
-            "total": total,
-            "successful": total - failed,
-            "failed": failed,
-            "results": results
-        })),
-        error: if failed > 0 {
-            Some(format!("{} downloads failed", failed))
-        } else {
-            None
-        },
-    })
+    result
 }
 
 /// Batch enrich track metadata with progress
@@ -886,13 +852,6 @@ pub async fn batch_enrich_metadata(
 // PLAYLIST COMMANDS
 // ==============================================
 
-/// List playlists from a service (dead alias; UI uses get_playlists)
-#[tauri::command]
-#[allow(dead_code)]
-pub async fn list_playlists(service: String) -> Result<BridgeResult, String> {
-    run_bridge_command::<BridgeResult>("playlist_bridge.py", &["list", &service]).await
-}
-
 /// Get tracks from a remote playlist via bridge
 #[tauri::command]
 pub async fn fetch_remote_playlist_tracks(
@@ -917,7 +876,11 @@ pub async fn export_playlist(
     .await
 }
 
-/// Match playlist tracks to another service using ISRC
+/// Classify the entries of a playlist file by ISRC availability for a transfer to
+/// `target_service` (`playlist_bridge.py match`).
+/// The target service catalog is NOT queried: the bridge only reports which entries
+/// carry an ISRC. Real ISRC matching against the local library lives in
+/// `commands::playlists::match_entry_to_track`.
 #[tauri::command]
 pub async fn match_playlist_to_service(
     playlist_file: String,
@@ -1243,4 +1206,56 @@ pub async fn write_text_file(path: String, contents: String) -> Result<u64, Stri
         safe_target.display()
     );
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod library_watch_tests {
+    use super::*;
+
+    #[test]
+    fn test_audio_tree_signature_detects_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "syncify_watch_sig_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Directorio vacío.
+        let empty = audio_tree_signature(&dir, true);
+        assert_eq!(empty, (0, 0));
+
+        // Añadir un archivo de audio cambia la firma y el conteo.
+        std::fs::write(dir.join("song.mp3"), b"data").unwrap();
+        let with_one = audio_tree_signature(&dir, true);
+        assert_ne!(with_one, empty);
+        assert_eq!(with_one.1, 1);
+
+        // Los archivos que no son de audio no cuentan.
+        std::fs::write(dir.join("notes.txt"), b"data").unwrap();
+        assert_eq!(audio_tree_signature(&dir, true), with_one);
+
+        // Renombrar un archivo de audio cambia la firma (mismo conteo).
+        std::fs::rename(dir.join("song.mp3"), dir.join("renamed.flac")).unwrap();
+        let renamed = audio_tree_signature(&dir, true);
+        assert_ne!(renamed, with_one);
+        assert_eq!(renamed.1, 1);
+
+        // En modo no recursivo, un subdirectorio no afecta la firma.
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("deep.ogg"), b"data").unwrap();
+        assert_eq!(audio_tree_signature(&dir, false), renamed);
+        assert_ne!(audio_tree_signature(&dir, true), renamed);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_stop_library_watcher_reports_presence() {
+        // Sin watcher lanzado, stop devuelve false y no hace nada.
+        assert!(!stop_library_watcher("/definitely/not/watched/path"));
+    }
 }

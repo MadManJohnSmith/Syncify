@@ -103,7 +103,7 @@ impl LogBuffer {
     }
 
     /// Record a manual log entry directly
-    #[allow(dead_code)] // usado por commands/logging.rs y tests del módulo; el lint lo marca muerto por análisis de unidad
+    #[allow(dead_code)] // Cubierta por `tests/dev_file_logging_test.rs`, `tests/file_confinement_security_test.rs`.
     pub fn log(&self, level: &str, target: &str, module: &str, message: &str) {
         let entry = SystemLogEntry {
             id: String::new(),

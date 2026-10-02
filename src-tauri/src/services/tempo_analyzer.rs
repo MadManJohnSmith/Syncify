@@ -208,7 +208,7 @@ impl TempoAnalyzer {
     }
 
     /// Analyze an audio file using local DSP and return the estimated BPM with confidence.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Cubierta por `tests/batch_50_audit_test.rs`, `tests/bpm_container_roundtrip_test.rs`.
     pub async fn analyze_file(
         file_path: &Path,
         confidence_threshold: f64,

@@ -4,10 +4,48 @@
 //! server-directed `Retry-After` header parsing (seconds or HTTP-date),
 //! exponential backoff with jitter, and strict idempotency scoping.
 
-#![allow(dead_code)]
-
 use reqwest::{header, Method, StatusCode};
 use std::time::{Duration, SystemTime};
+
+/// The single retryability criterion shared by every service client (Tidal,
+/// Qobuz, Spotify, Deezer, SoundCloud and Apple Music) and by the download
+/// path.
+///
+/// Transient = worth trying again later without the caller changing anything:
+/// `429 Too Many Requests` (the service asked us to slow down), `408 Request
+/// Timeout` (nothing was answered in time) and any `5xx` server error.
+/// Everything else — including `401`/`403`, which only a re-authentication can
+/// fix — is terminal for the current attempt loop.
+///
+/// Clients that hand failures around as formatted strings instead of statuses
+/// must classify them with [`is_transient_error_message`].
+pub fn is_transient_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::REQUEST_TIMEOUT
+        || status.is_server_error()
+}
+
+/// [`is_transient_status`] for clients whose public API returns `Result<_, String>`
+/// (paginators, importers): the formatted message has to carry the classification.
+///
+/// Authentication/authorization failures are terminal and must be surfaced to
+/// the caller; rate limits and server/network hiccups are transient and worth
+/// another page fetch. A terminal HTTP status is recognised only as a
+/// standalone three-digit token, so an item id such as `401` in a message body
+/// does not masquerade as an auth rejection.
+pub fn is_transient_error_message(err: &str) -> bool {
+    if err.contains("RequiresAuth") || mentions_terminal_status(err) {
+        return false;
+    }
+    true
+}
+
+/// `true` when `err` mentions 401 or 403 as a standalone status code.
+fn mentions_terminal_status(err: &str) -> bool {
+    err.split(|c: char| !c.is_ascii_digit())
+        .filter(|token| token.len() == 3)
+        .any(|token| token == "401" || token == "403")
+}
 
 /// Configuration for HTTP retry policy
 #[derive(Debug, Clone)]
@@ -60,6 +98,7 @@ impl HttpRetryPolicy {
     }
 
     /// Create a policy with custom config
+    #[allow(dead_code)] // Cubierta por `tests/download_settings_commands_test.rs`, `tests/layout_sidecars_test.rs`.
     pub fn with_config(config: RetryConfig) -> Self {
         Self { config }
     }
@@ -236,7 +275,7 @@ impl HttpRetryPolicy {
         }
 
         // Check for 429 Too Many Requests or 5xx Transient Server Errors
-        let is_transient = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+        let is_transient = is_transient_status(status);
         if !is_transient {
             return RetryDecision::DoNotRetry(format!("Non-transient status code {}", status));
         }
@@ -269,6 +308,56 @@ impl Default for HttpRetryPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_transient_status_covers_the_whole_family() {
+        // Rate limiting, timeouts and every server error are retryable.
+        assert!(is_transient_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_transient_status(StatusCode::REQUEST_TIMEOUT));
+        assert!(is_transient_status(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_transient_status(StatusCode::BAD_GATEWAY));
+        assert!(is_transient_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_transient_status(StatusCode::GATEWAY_TIMEOUT));
+
+        // Success and terminal client errors are not.
+        assert!(!is_transient_status(StatusCode::OK));
+        assert!(!is_transient_status(StatusCode::CREATED));
+        assert!(!is_transient_status(StatusCode::UNAUTHORIZED));
+        assert!(!is_transient_status(StatusCode::FORBIDDEN));
+        assert!(!is_transient_status(StatusCode::NOT_FOUND));
+        assert!(!is_transient_status(StatusCode::UNPROCESSABLE_ENTITY));
+        assert!(!is_transient_status(StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn test_is_transient_error_message_matches_the_status_criterion() {
+        assert!(is_transient_error_message(
+            "Request failed: connection reset"
+        ));
+        assert!(is_transient_error_message("Deezer API error (503): busy"));
+        assert!(is_transient_error_message(
+            "Spotify API error (429): slow down"
+        ));
+        assert!(is_transient_error_message("Request timed out"));
+
+        // Terminal auth failures must reach the caller, never be retried away.
+        assert!(!is_transient_error_message(
+            "RequiresAuth: Tidal API authentication failed (HTTP 401)"
+        ));
+        assert!(!is_transient_error_message(
+            "Tidal API error (403): forbidden"
+        ));
+        assert!(!is_transient_error_message(
+            "SoundCloud API error 401 Unauthorized"
+        ));
+
+        // Only standalone three-digit tokens count as a status, so an id that
+        // merely contains 401/403 (as the previous substring match did) is not
+        // mistaken for an auth rejection.
+        assert!(is_transient_error_message(
+            "Add to favorites failed (404): track 1401 not in library"
+        ));
+    }
 
     #[test]
     fn test_parse_retry_after_seconds() {

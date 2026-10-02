@@ -155,17 +155,17 @@ describe('useEventBus Composable (TASK-14)', () => {
 
         it('allows identical events after the 50ms deduplication window elapses', async () => {
             const handler = vi.fn();
-            await eventBus.on(TauriEvents.SCAN_PROGRESS, handler);
+            await eventBus.on(TauriEvents.PROGRESS, handler);
 
             // First emit
-            await eventBus.emit(TauriEvents.SCAN_PROGRESS, { scanned: 10, total: 100 });
+            await eventBus.emit(TauriEvents.PROGRESS, { scanned: 10, total: 100 });
             expect(handler).toHaveBeenCalledTimes(1);
 
             // Wait beyond the 50ms window
             await new Promise((resolve) => setTimeout(resolve, 70));
 
             // Second identical emit outside the window
-            await eventBus.emit(TauriEvents.SCAN_PROGRESS, { scanned: 10, total: 100 });
+            await eventBus.emit(TauriEvents.PROGRESS, { scanned: 10, total: 100 });
             expect(handler).toHaveBeenCalledTimes(2);
         });
     });

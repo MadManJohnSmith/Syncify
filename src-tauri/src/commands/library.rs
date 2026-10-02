@@ -137,6 +137,14 @@ pub async fn get_library(
     offset: Option<i64>,
     limit: Option<i64>,
 ) -> Result<LibraryPage, String> {
+    get_library_inner(&state.db, offset, limit).await
+}
+
+async fn get_library_inner(
+    db: &sqlx::SqlitePool,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<LibraryPage, String> {
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(100).min(500); // Default 100, max 500 per request
 
@@ -144,7 +152,7 @@ pub async fn get_library(
 
     // Get total count first
     let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
-        .fetch_one(&state.db)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Count error: {}", e))?;
 
@@ -182,6 +190,15 @@ pub async fn get_library(
              JOIN services s_all ON s_all.id = ts_all.service_id
              WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
+            -- FE-10: same classification as get_audio_quality_distribution so the
+            -- /library?filter=quality&quality=<label> deep-link matches the
+            -- dashboard's quality card counts exactly.
+            CASE
+                WHEN d.track_id IS NULL THEN NULL
+                WHEN COALESCE(d.bit_depth, 0) >= 24 OR COALESCE(d.sample_rate, 0) > 48000 THEN 'Hi-Res (24-bit+)'
+                WHEN d.file_format IN ('FLAC', 'ALAC', 'WAV') THEN 'CD Quality'
+                ELSE 'Lossy'
+            END as quality_bucket,
             CASE
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
                 WHEN dq.status = 'queued' OR dq.status = 'downloading' THEN 'queued'
@@ -236,7 +253,7 @@ pub async fn get_library(
     )
     .bind(limit)
     .bind(offset)
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
     .map_err(|e| format!("Database error: {}", e))?;
 
@@ -636,15 +653,6 @@ pub async fn fetch_artist(
         top_tracks,
         appearances,
     })
-}
-
-/// Retrieve appearance tracks for an artist (guest / collaboration / compilation tracks)
-#[tauri::command]
-pub async fn get_artist_appearances(
-    state: State<'_, AppState>,
-    artist_id: i64,
-) -> Result<Vec<ArtistAppearanceTrack>, String> {
-    fetch_artist_appearances(&state.db, artist_id).await
 }
 
 pub async fn fetch_artist_appearances(
@@ -1347,13 +1355,8 @@ pub async fn perform_reset_database(db: &sqlx::SqlitePool) -> Result<String, Str
         .await
         .map_err(|e| e.to_string())?;
 
-    // 5. Clear sync logs
-    sqlx::query("DELETE FROM sync_log")
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // 6. Reset auto-increment counters for cleanliness (optional but nice)
+    // 5. Reset auto-increment counters for cleanliness (optional but nice)
+    // (the sync_log cleanup step was removed: 0085 dropped the dead table)
     sqlx::query("DELETE FROM sqlite_sequence WHERE name IN ('tracks', 'albums', 'artists', 'playlists', 'download_queue')")
         .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
@@ -1697,16 +1700,6 @@ pub async fn toggle_favorite(state: State<'_, AppState>, track_id: i64) -> Resul
     Ok(is_favorite)
 }
 
-/// Deprecated alias for toggle_favorite; consolidated to toggle_favorite
-#[tauri::command]
-#[allow(dead_code)]
-pub async fn toggle_track_favorite(
-    state: State<'_, AppState>,
-    track_id: i64,
-) -> Result<bool, String> {
-    toggle_favorite(state, track_id).await
-}
-
 /// Explicitly set the favorite status of a track
 #[tauri::command]
 pub async fn set_track_favorite(
@@ -1924,6 +1917,60 @@ mod library_tests {
             panic!("Migration failed in test: {}", e);
         }
         pool
+    }
+
+    // FE-10 regression: get_library must expose the same quality-bucket
+    // classification as get_audio_quality_distribution so the
+    // /library?filter=quality&quality=<label> deep-link matches the
+    // dashboard's quality card counts.
+    #[tokio::test]
+    async fn test_get_library_quality_bucket_matches_dashboard() {
+        let pool = setup_test_db().await;
+
+        sqlx::query("INSERT INTO tracks (title) VALUES ('HiRes Song')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracks (title) VALUES ('CD Song')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracks (title) VALUES ('Lossy Song')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracks (title) VALUES ('Stream Only')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // 24/96 FLAC -> Hi-Res (24-bit+); 16/44.1 FLAC -> CD Quality;
+        // MP3 -> Lossy; no downloads row -> NULL bucket.
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate) VALUES (1, '/tmp/hires.flac', 'FLAC', 24, 96000)",
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate) VALUES (2, '/tmp/cd.flac', 'FLAC', 16, 44100)",
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format) VALUES (3, '/tmp/lossy.mp3', 'MP3')",
+        ).execute(&pool).await.unwrap();
+
+        let page = get_library_inner(&pool, Some(0), Some(50)).await.unwrap();
+        assert_eq!(page.tracks.len(), 4);
+
+        let bucket = |title: &str| {
+            page.tracks
+                .iter()
+                .find(|t| t.title == title)
+                .unwrap()
+                .quality_bucket
+                .clone()
+        };
+        assert_eq!(bucket("HiRes Song").as_deref(), Some("Hi-Res (24-bit+)"));
+        assert_eq!(bucket("CD Song").as_deref(), Some("CD Quality"));
+        assert_eq!(bucket("Lossy Song").as_deref(), Some("Lossy"));
+        assert_eq!(bucket("Stream Only").as_deref(), None);
     }
 
     #[tokio::test]
@@ -2507,14 +2554,7 @@ pub async fn auto_resolve_duplicates(
     auto_resolve_duplicates_inner(&state.db).await
 }
 
-/// Merge Level 2 (intra-album) and Level 3 duplicates with ISRC reconciliation and explicit criteria
-#[tauri::command]
-pub async fn merge_level2_3_duplicates(
-    state: tauri::State<'_, AppState>,
-) -> Result<AutoResolveResult, String> {
-    merge_level2_3_duplicates_inner(&state.db).await
-}
-
+#[allow(dead_code)] // Cubierta por `tests/duplicates_level2_3_merge_test.rs` y `tests/album_total_tracks_recalculation_test.rs`.
 pub async fn merge_level2_3_duplicates_inner(
     db: &crate::db::DbPool,
 ) -> Result<AutoResolveResult, String> {
@@ -3375,6 +3415,102 @@ pub async fn get_track_sources_availability(
 }
 
 /// Non-destructive check of source availability for a track across its linked providers
+/// BD-3 helper: extracts the provider auth token from a decrypted credentials JSON payload,
+/// mirroring the key layouts used by the auth commands (qobuz stores `user_auth_token`, the
+/// OAuth services store `access_token`). Returns `None` when the payload carries no usable,
+/// non-empty token for the service.
+fn extract_provider_auth_token(service_lower: &str, creds: &serde_json::Value) -> Option<String> {
+    let candidate_keys: &[&str] = if service_lower == "qobuz" {
+        &["user_auth_token", "auth_token", "access_token"]
+    } else {
+        &["access_token", "auth_token", "user_auth_token"]
+    };
+    candidate_keys
+        .iter()
+        .find_map(|k| creds.get(*k).and_then(|v| v.as_str()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// BD-3 helper: validates an active account's credentials locally (non-destructive check —
+/// no network calls). An account counts as valid when it is not flagged invalid, stores an
+/// encrypted credentials blob, the blob decrypts with the active key, parses as JSON, and
+/// carries a non-empty provider token. Every failure mode is logged and returns `false`
+/// instead of silently degrading to "available".
+fn validate_account_credentials(
+    account_id: i64,
+    service_lower: &str,
+    credentials_json: Option<&str>,
+    credentials_invalid: bool,
+) -> bool {
+    if credentials_invalid {
+        tracing::warn!(
+            "check_track_availability: account {} for service '{}' has credentials marked invalid",
+            account_id,
+            service_lower
+        );
+        return false;
+    }
+
+    let encrypted = match credentials_json {
+        Some(enc) if !enc.trim().is_empty() => enc,
+        _ => {
+            tracing::warn!(
+                "check_track_availability: account {} for service '{}' stores no credentials",
+                account_id,
+                service_lower
+            );
+            return false;
+        }
+    };
+
+    let decrypted = match crate::crypto::decrypt(encrypted) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                "check_track_availability: failed to decrypt credentials for account {} (service '{}'): {}",
+                account_id,
+                service_lower,
+                e
+            );
+            return false;
+        }
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_str(&decrypted) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                "check_track_availability: credentials JSON for account {} (service '{}') does not parse: {}",
+                account_id,
+                service_lower,
+                e
+            );
+            return false;
+        }
+    };
+
+    match extract_provider_auth_token(service_lower, &parsed) {
+        Some(token) => {
+            tracing::debug!(
+                "check_track_availability: account {} for service '{}' carries a usable auth token ({} chars)",
+                account_id,
+                service_lower,
+                token.len()
+            );
+            true
+        }
+        None => {
+            tracing::warn!(
+                "check_track_availability: credentials for account {} (service '{}') carry no usable auth token",
+                account_id,
+                service_lower
+            );
+            false
+        }
+    }
+}
+
 pub async fn perform_check_track_availability(
     db: &sqlx::SqlitePool,
     track_id: i64,
@@ -3447,17 +3583,45 @@ pub async fn perform_check_track_availability(
                 ),
             )
         } else {
-            // Check account authentication for the service
-            let active_account: Option<(i64, Option<String>)> = sqlx::query_as(
-                "SELECT a.id, a.access_token FROM accounts a WHERE a.service_id = ? AND a.is_active = 1 LIMIT 1"
+            // Check account authentication for the service.
+            // BD-3 fix: `accounts` has no `access_token` column — credentials live in the
+            // encrypted `credentials_json` blob (plus the `credentials_invalid` flag). Read the
+            // real columns and validate the provider token instead of swallowing the SQL error
+            // and marking every existing account "available".
+            let active_account: Option<(i64, Option<String>, Option<i64>)> = match sqlx::query_as(
+                "SELECT a.id, a.credentials_json, a.credentials_invalid FROM accounts a WHERE a.service_id = ? AND a.is_active = 1 ORDER BY a.id DESC LIMIT 1",
             )
             .bind(src.service_id)
             .fetch_optional(db)
             .await
-            .unwrap_or(None);
+            {
+                Ok(row) => row,
+                Err(e) => {
+                    tracing::warn!(
+                        "check_track_availability: could not load active account for service_id {} ({}); treating as no active account",
+                        src.service_id,
+                        e
+                    );
+                    None
+                }
+            };
 
-            match active_account {
-                None if svc_lower == "qobuz" || svc_lower == "tidal" || svc_lower == "spotify" => {
+            let token_valid = match &active_account {
+                None => false,
+                Some((account_id, credentials_json, credentials_invalid)) => {
+                    validate_account_credentials(
+                        *account_id,
+                        &svc_lower,
+                        credentials_json.as_deref(),
+                        credentials_invalid.unwrap_or(0) != 0,
+                    )
+                }
+            };
+
+            match (active_account, token_valid) {
+                // No active account for a token-authenticated service: keep the legacy
+                // presence-based fallback so an inactive-but-connected account still reports.
+                (None, _) if svc_lower == "qobuz" || svc_lower == "tidal" || svc_lower == "spotify" => {
                     let any_account: Option<(i64,)> =
                         sqlx::query_as("SELECT id FROM accounts WHERE service_id = ? LIMIT 1")
                             .bind(src.service_id)
@@ -3478,6 +3642,20 @@ pub async fn perform_check_track_availability(
                             Some("Verified available on provider".to_string()),
                         )
                     }
+                }
+                // Active account on a token-authenticated service whose credentials do not
+                // validate: availability cannot be verified.
+                (Some(_), false)
+                    if svc_lower == "qobuz" || svc_lower == "tidal" || svc_lower == "spotify" =>
+                {
+                    (
+                        "requires_auth".to_string(),
+                        0,
+                        Some(format!(
+                            "{} account credentials missing or invalid; please reconnect in Settings > Accounts",
+                            src.service_name
+                        )),
+                    )
                 }
                 _ => (
                     "available".to_string(),
@@ -3777,6 +3955,7 @@ pub async fn perform_reconcile_library_physical_state(
         track_id: Option<i64>,
         file_path: String,
         #[allow(dead_code)]
+        // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
         service_id: Option<i64>,
         effective_service: Option<String>,
     }

@@ -2,8 +2,6 @@
 //!
 //! Handles Qobuz user auth token and importing favorites.
 
-#![allow(dead_code)]
-
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -23,11 +21,13 @@ pub const QOBUZ_APP_SECRET: &str = QOBUZ_APP_SECRET_FALLBACK;
 pub const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
 
 /// Resolve Qobuz App ID dynamically from environment or fallback placeholder.
+#[allow(dead_code)] // Cubierta por `tests/secrets_isolation_security_test.rs`.
 pub fn get_qobuz_app_id() -> String {
     std::env::var("QOBUZ_APP_ID").unwrap_or_else(|_| QOBUZ_APP_ID.to_string())
 }
 
 /// Resolve Qobuz App Secret dynamically from environment or fallback placeholder.
+#[allow(dead_code)] // Cubierta por `tests/secrets_isolation_security_test.rs`.
 pub fn get_qobuz_app_secret() -> String {
     std::env::var("QOBUZ_APP_SECRET").unwrap_or_else(|_| QOBUZ_APP_SECRET.to_string())
 }
@@ -246,13 +246,6 @@ where
     }
 }
 
-/// Qobuz credentials
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QobuzCredentials {
-    pub user_auth_token: String,
-    pub user_id: Option<String>,
-}
-
 /// Qobuz track from API
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzTrack {
@@ -265,12 +258,16 @@ pub struct QobuzTrack {
     #[serde(default)]
     pub isrc: Option<String>,
     #[serde(default, deserialize_with = "deserialize_string_or_stringify")]
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub copyright: Option<String>,
     #[serde(default, deserialize_with = "deserialize_string_or_stringify")]
     pub performers: Option<String>,
     #[serde(default, deserialize_with = "deserialize_artist")]
     pub composer: Option<QobuzArtist>,
     #[serde(default, deserialize_with = "deserialize_string_or_stringify")]
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub work: Option<String>,
     #[serde(default)]
     pub track_number: Option<i32>,
@@ -297,6 +294,8 @@ pub struct QobuzArtist {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct QobuzLabel {
     #[serde(default, deserialize_with = "deserialize_opt_id_i64")]
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub id: Option<i64>,
     #[serde(default)]
     pub name: Option<String>,
@@ -346,6 +345,8 @@ pub struct QobuzImage {
     #[serde(default)]
     pub large: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub thumbnail: Option<String>,
 }
 
@@ -415,6 +416,8 @@ pub struct QobuzPlaylistMeta {
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzPlaylistOwner {
     #[serde(default)]
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub id: Option<i64>,
     #[serde(default)]
     pub name: Option<String>,
@@ -423,7 +426,11 @@ pub struct QobuzPlaylistOwner {
 /// Qobuz playlist detail with tracks (/playlist/get?extra=tracks)
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzPlaylistDetail {
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub id: i64,
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub name: String,
     #[serde(default)]
     pub tracks: Option<QobuzTracksContainer>,
@@ -498,6 +505,7 @@ impl QobuzClient {
         }
     }
 
+    #[allow(dead_code)] // Cubierta por `tests/service_import_pagination_and_purchases_test.rs`, `tests/songlink_native_engines_test.rs`.
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.base_url = base_url;
         self
@@ -1021,6 +1029,7 @@ impl QobuzClient {
     }
 
     /// Import user's purchased albums and tracks, persisting is_purchased = 1 (TASK-108)
+    #[allow(dead_code)] // Cubierta por `tests/service_import_pagination_and_purchases_test.rs`.
     pub async fn import_purchases(
         &self,
         db: &SqlitePool,
@@ -1553,7 +1562,7 @@ impl QobuzClient {
                     if status.is_success() {
                         tracing::info!("Added track {} to Qobuz favorites", track_id);
                         return Ok(());
-                    } else if status.as_u16() == 429 || status.as_u16() >= 500 {
+                    } else if crate::services::http_retry::is_transient_status(status) {
                         // Rate limited or server error - retry
                         let text = resp.text().await.unwrap_or_default();
                         last_error =
@@ -1852,27 +1861,4 @@ impl QobuzClient {
 
         Ok(crate::services::ImportResult { imported, skipped })
     }
-}
-
-/// Inspect physical FLAC file STREAMINFO header to extract real bit depth and sample rate (F3.4).
-pub fn extract_flac_streaminfo(path: &std::path::Path) -> Option<(i32, f64)> {
-    if let Ok(tag) = metaflac::Tag::read_from_path(path) {
-        if let Some(info) = tag.get_streaminfo() {
-            return Some((info.bits_per_sample as i32, info.sample_rate as f64));
-        }
-    }
-    if let Ok(mut file) = std::fs::File::open(path) {
-        use std::io::Read;
-        let mut buf = [0u8; 64];
-        if let Ok(n) = file.read(&mut buf) {
-            if let Some(info) =
-                syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(
-                    &buf[..n],
-                )
-            {
-                return Some((info.bits_per_sample as i32, info.sample_rate as f64));
-            }
-        }
-    }
-    None
 }

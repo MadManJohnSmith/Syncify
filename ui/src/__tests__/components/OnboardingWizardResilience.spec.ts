@@ -154,7 +154,8 @@ describe('OnboardingWizard Resilience & Determinism (TASK-62)', () => {
       expect(wrapper.emitted('skip')).toBeTruthy()
       expect(wrapper.emitted('skip')!.length).toBe(1)
 
-      vm.completeSetup()
+      // completeSetup is async: it persists the onboarding choices before emitting
+      await vm.completeSetup()
       expect(wrapper.emitted('complete')).toBeTruthy()
       expect(wrapper.emitted('complete')!.length).toBe(1)
     })

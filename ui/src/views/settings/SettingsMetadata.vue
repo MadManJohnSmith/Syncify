@@ -377,6 +377,26 @@
       </div>
     </section>
 
+    <!-- S143B/S159: Retroactive Track Version Disambiguation Repair -->
+    <section class="space-y-4 pt-4 border-t border-gray-200 dark:border-border-dark">
+      <div class="flex items-center justify-between">
+        <div>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+            <span>Track Version Disambiguation Repair</span>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">Dry-Run Plan</span>
+          </h3>
+          <p class="text-xs text-text-secondary">Detect duplicate album titles saved under identical filenames, then rename audio + LRC sidecars with SHA-256 verification and automatic rollback.</p>
+        </div>
+        <button
+          @click="showDisambiguationRepairModal = true"
+          class="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shrink-0 shadow-xs"
+        >
+          <span class="material-symbols-outlined text-[16px]">drive_file_rename_outline</span>
+          Review Renames
+        </button>
+      </div>
+    </section>
+
     <!-- S173: Local BPM & TEMPO Analysis -->
     <section class="space-y-4 pt-4 border-t border-gray-200 dark:border-border-dark">
       <div class="flex items-center justify-between">
@@ -468,6 +488,9 @@
     <!-- S158: Tidal Repair Review Modal -->
     <TidalRepairReviewModal v-model="showTidalRepairModal" />
 
+    <!-- S143B/S159: Track Version Disambiguation Repair Review Modal -->
+    <DisambiguationRepairReviewModal v-model="showDisambiguationRepairModal" />
+
     <!-- S163: Applied Repairs History Modal -->
     <RepairHistoryModal v-model="showRepairHistoryModal" />
   </div>
@@ -482,9 +505,11 @@ import type { EnrichmentMode } from '@/api/types'
 import BaseToggle from '@/components/settings/BaseToggle.vue'
 import SliderInput from './SliderInput.vue'
 import TidalRepairReviewModal from '@/components/TidalRepairReviewModal.vue'
+import DisambiguationRepairReviewModal from '@/components/DisambiguationRepairReviewModal.vue'
 import RepairHistoryModal from '@/components/RepairHistoryModal.vue'
 
 const showTidalRepairModal = ref(false)
+const showDisambiguationRepairModal = ref(false)
 const showRepairHistoryModal = ref(false)
 const metadataSettings = useMetadataSettings()
 const enrichment = useIncrementalEnrichment()

@@ -35,8 +35,9 @@
           <span class="text-sm font-medium">Search</span>
         </router-link>
 
-        <router-link 
-          to="/library" 
+        <router-link
+          to="/library"
+          data-tour="library"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
           active-class="bg-[#223149] !text-white"
         >
@@ -53,8 +54,9 @@
           <span class="text-sm font-medium">Playlists</span>
         </router-link>
         
-        <router-link 
-          to="/downloads" 
+        <router-link
+          to="/downloads"
+          data-tour="downloads"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
           active-class="bg-[#223149] !text-white"
         >
@@ -71,8 +73,9 @@
           <span class="text-sm font-medium">Migrate</span>
         </router-link>
 
-        <router-link 
-          to="/accounts" 
+        <router-link
+          to="/accounts"
+          data-tour="accounts"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
           active-class="bg-[#223149] !text-white"
         >
@@ -110,8 +113,9 @@
           <span class="text-sm font-medium">Logs</span>
         </router-link>
 
-        <router-link 
-          to="/settings" 
+        <router-link
+          to="/settings"
+          data-tour="settings"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
           active-class="bg-[#223149] !text-white"
         >
@@ -134,8 +138,9 @@
         
         <div class="flex items-center gap-3">
           <!-- Search Button (Ctrl+K) -->
-          <button 
+          <button
             @click="showCommandPalette = true"
+            data-tour="search"
             class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-dark/50 border border-border-dark/50 hover:bg-surface-dark transition-colors cursor-pointer text-text-secondary hover:text-white"
           >
             <span class="material-symbols-outlined text-lg">search</span>
@@ -367,7 +372,7 @@
     <CommandPalette v-model="showCommandPalette" @close="showCommandPalette = false" />
     <KeyboardShortcuts />
     <HelpPanel v-model="showHelp" @close="showHelp = false" />
-    <QuickActionsFab 
+    <QuickActionsFab
       :currentTab="currentTab"
       @sync-all="handleSyncAll"
       @scan-folder="handleScanFolder"
@@ -377,6 +382,10 @@
       @pause-all="handlePauseAll"
       @retry-failed="handleRetryFailed"
       @clear-completed="handleClearCompleted"
+      @auto-fix="handleAutoFixMetadata"
+      @fetch-metadata="handleFetchMissingMetadata"
+      @fetch-lyrics="handleFetchMissingLyrics"
+      @upgrade-lyrics="handleUpgradeLyrics"
     />
     <OnboardingWizard
       v-if="showOnboarding"
@@ -461,6 +470,8 @@ import { TauriEvents } from './api/tauri'
 import { accountsApi } from './api/accounts'
 import { libraryApi } from './api/library'
 import { pauseDownloads, retryAllFailed, clearQueue } from './api/queue'
+import { enrichAllNeeding, enrichMetadataMusicBrainz } from './api/metadata'
+import { fetchLyrics, fetchMissingLyrics, getAllLyrics, getLyrics } from './api/lyrics'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { runHealthCheck, getDownloadSettings } from './api/settings'
 
@@ -732,6 +743,107 @@ async function handleClearCompleted(callback?: ActionCallback) {
     toast.error(`Failed to clear: ${e?.message || e}`)
     callback?.(e)
   }
+}
+
+// ==============================================
+// Metadata / Lyrics quick actions (FAB)
+// ==============================================
+
+async function handleAutoFixMetadata(callback?: ActionCallback) {
+  const operation = async () => {
+    try {
+      toast.info('Auto-fixing metadata issues via MusicBrainz...')
+      const res = await enrichMetadataMusicBrainz()
+      toast.success(`Auto-Fix finished: ${res.enriched} of ${res.total} tracks enriched, ${res.failed} failed`)
+    } catch (e: any) {
+      toast.error(`Auto-Fix failed: ${e?.message || e}`)
+      throw e
+    }
+  }
+  const promise = operation()
+  callback?.(promise)
+  return promise
+}
+
+async function handleFetchMissingMetadata(callback?: ActionCallback) {
+  const operation = async () => {
+    try {
+      toast.info('Enriching tracks that are missing metadata...')
+      const res = await enrichAllNeeding()
+      toast.success(`Metadata enrichment finished: ${res.enriched} of ${res.total} tracks updated, ${res.failed} failed`)
+    } catch (e: any) {
+      toast.error(`Metadata enrichment failed: ${e?.message || e}`)
+      throw e
+    }
+  }
+  const promise = operation()
+  callback?.(promise)
+  return promise
+}
+
+async function handleFetchMissingLyrics(callback?: ActionCallback) {
+  const operation = async () => {
+    try {
+      toast.info('Fetching lyrics for tracks that are missing them...')
+      const res = await fetchMissingLyrics()
+      toast.success(`Lyrics fetch finished: ${res.fetched} fetched, ${res.failed} failed, ${res.skipped} skipped`)
+    } catch (e: any) {
+      toast.error(`Lyrics fetch failed: ${e?.message || e}`)
+      throw e
+    }
+  }
+  const promise = operation()
+  callback?.(promise)
+  return promise
+}
+
+const LYRICS_UPGRADE_BATCH = 100
+
+async function handleUpgradeLyrics(callback?: ActionCallback) {
+  const operation = async () => {
+    try {
+      toast.info('Re-fetching unsynced lyrics looking for synced versions...')
+      const allLyrics = await getAllLyrics()
+      // Unsynced lyrics are stored as plain text; lrc/ttml carry timing.
+      const unsyncedTrackIds = [...new Set(
+        allLyrics
+          .filter(l => l.format === 'plain')
+          .map(l => l.track_id)
+      )].slice(0, LYRICS_UPGRADE_BATCH)
+
+      if (unsyncedTrackIds.length === 0) {
+        toast.info('No unsynced lyrics to upgrade')
+        return
+      }
+
+      let upgraded = 0
+      let failed = 0
+      for (const trackId of unsyncedTrackIds) {
+        try {
+          const fetched = await fetchLyrics(trackId)
+          const after = fetched ?? await getLyrics(trackId)
+          if (after && (after.format === 'lrc' || after.format === 'ttml')) {
+            upgraded++
+          }
+        } catch (e) {
+          console.warn(`Lyrics upgrade failed for track ${trackId}:`, e)
+          failed++
+        }
+      }
+
+      if (upgraded > 0) {
+        toast.success(`Upgraded ${upgraded} of ${unsyncedTrackIds.length} unsynced lyrics to synced`)
+      } else {
+        toast.info(`No unsynced lyrics upgraded (${failed} of ${unsyncedTrackIds.length} fetches failed)`)
+      }
+    } catch (e: any) {
+      toast.error(`Lyrics upgrade failed: ${e?.message || e}`)
+      throw e
+    }
+  }
+  const promise = operation()
+  callback?.(promise)
+  return promise
 }
 
 // Close dropdown on outside click

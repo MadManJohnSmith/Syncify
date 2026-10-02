@@ -124,6 +124,12 @@ pub struct TidalSingleTrackRequest {
     pub hint_disc_number: Option<i32>,
     pub hint_release_date: Option<String>,
     pub hint_track_id: Option<i64>,
+    /// Recovery-journal operation already opened by an outer layer (the download
+    /// worker journals queued items itself). When set and such an entry exists,
+    /// the pipeline checkpoints THAT row instead of opening a second one for the
+    /// same physical download.
+    #[serde(default)]
+    pub operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,6 +253,130 @@ pub fn resolve_safe_display_title(
     }
 
     Err("MetadataResolutionFailed: No valid title found to construct track filename".to_string())
+}
+
+/// Album-level compilation decision for one Tidal release.
+///
+/// `is_compilation` and `album_artist` are release-wide facts: every track of a
+/// compilation must carry `COMPILATION=1` and the same `ALBUMARTIST`, and no track
+/// of a regular album may. Deciding them from a single track makes sibling files of
+/// the same album disagree, so the decision is taken once over the whole album.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlbumCompilationContext {
+    pub is_compilation: bool,
+    pub album_artist: Option<String>,
+    /// Number of album tracks the decision was derived from (1 = track-only fallback).
+    pub evidence_tracks: usize,
+}
+
+/// Builds album-wide `FlacMetadata` stubs so the shared
+/// `unify_album_compilation_metadata` can decide compilation/album artist over the
+/// whole release instead of over one track.
+fn album_track_stub(t: &TidalTrack, album: &TidalAlbumLike) -> FlacMetadata {
+    FlacMetadata {
+        title: t.title.clone(),
+        artist: t.artist_name().unwrap_or_default(),
+        album: album.title.clone(),
+        // Seeded from the release artist, so the unification keeps the credited
+        // album artist instead of inventing one.
+        album_artist: album.artist_name.clone(),
+        // The release type travels with every stub so `FlacMetadata::is_compilation`
+        // sees the same album-level evidence for every sibling track.
+        release_type: album.album_type.clone(),
+        ..Default::default()
+    }
+}
+
+/// Minimal album facts the pipeline needs to build the stubs; keeps the helper
+/// independent of which `TidalAlbum` instance the caller holds.
+struct TidalAlbumLike {
+    title: String,
+    artist_name: Option<String>,
+    album_type: Option<String>,
+}
+
+/// Resolves the album-level compilation decision for `track`.
+///
+/// The album's own track listing is used when the payload carries one; otherwise
+/// the album is fetched once and its listing used. Both the tag writer (§6) and
+/// the SQLite album row (§9) read the result, so `albums.is_compilation`,
+/// `album_artists` and the FLAC `COMPILATION`/`ALBUMARTIST` tags cannot diverge.
+pub async fn resolve_album_compilation_context(
+    downloader: &TidalDownloader,
+    track: &TidalTrack,
+    country_code: &str,
+) -> AlbumCompilationContext {
+    let album = match track.album.as_ref() {
+        Some(a) => a.clone(),
+        None => {
+            // No album at all: mono-artist release, nothing to unify.
+            return AlbumCompilationContext {
+                is_compilation: false,
+                album_artist: track.artist_name(),
+                evidence_tracks: 1,
+            };
+        }
+    };
+
+    let album_tracks = match album.tracks.clone() {
+        Some(list) if !list.is_empty() => list,
+        _ => match album.id {
+            Some(album_id) => downloader
+                .get_album_with_country(album_id, country_code)
+                .await
+                .ok()
+                .and_then(|full| full.tracks)
+                .filter(|list| !list.is_empty())
+                .unwrap_or_else(|| vec![track.clone()]),
+            None => vec![track.clone()],
+        },
+    };
+
+    decide_album_compilation(&album, &album_tracks, track)
+}
+
+/// Pure album-level compilation decision over an already-resolved track listing.
+///
+/// Every sibling track of the release goes through the shared
+/// `unify_album_compilation_metadata`, so the answer only depends on the album as a
+/// whole — never on which track happened to be downloaded first.
+pub fn decide_album_compilation(
+    album: &syncify_core_domain::metadata::TidalAlbum,
+    album_tracks: &[TidalTrack],
+    track: &TidalTrack,
+) -> AlbumCompilationContext {
+    let album_like = TidalAlbumLike {
+        title: album.title.clone(),
+        artist_name: album.artist.as_ref().map(|a| a.name.clone()).or_else(|| {
+            album
+                .artists
+                .as_ref()
+                .and_then(|list| list.first().map(|a| a.name.clone()))
+        }),
+        album_type: album.album_type.clone(),
+    };
+
+    let mut stubs: Vec<FlacMetadata> = album_tracks
+        .iter()
+        .map(|t| album_track_stub(t, &album_like))
+        .collect();
+    let own_index = match album_tracks.iter().position(|t| t.id == track.id) {
+        Some(idx) => idx,
+        None => {
+            // The listing did not carry this track (partial payload): add it so
+            // the decision still covers the file about to be written.
+            stubs.push(album_track_stub(track, &album_like));
+            stubs.len() - 1
+        }
+    };
+
+    syncify_flac_writer::unify_album_compilation_metadata(&mut stubs, None);
+
+    AlbumCompilationContext {
+        is_compilation: syncify_flac_writer::detect_album_is_compilation(&stubs),
+        album_artist: stubs.get(own_index).and_then(|s| s.album_artist.clone()),
+        evidence_tracks: stubs.len(),
+    }
 }
 
 /// Compute a safe track filename ensuring no empty title components and no symbol-only filenames (e.g. `01 - .flac` and `01 - ★.flac` are strictly forbidden).
@@ -583,11 +713,62 @@ pub async fn resolve_and_refresh_gui_credentials_opts(
     }
 }
 
-/// Execute end-to-end single track download pipeline for Tidal
+/// Execute end-to-end single track download pipeline for Tidal.
+///
+/// BD-9: the pipeline is one of the app's longest operations (network transfer,
+/// FLAC tagging, promotion, transactional SQLite persistence), so it is wrapped
+/// in a recovery-journal entry. When an outer layer already journaled this
+/// download (the download worker passes `request.operation_id`), the SAME entry
+/// is reused — a physical download must never have two competing journal rows.
 pub async fn execute_tidal_single_track_download<F>(
     db: &DbPool,
     request: TidalSingleTrackRequest,
     on_progress: F,
+) -> Result<TidalSingleTrackResponse, String>
+where
+    F: Fn(PipelineProgressEvent) + Send + Sync + 'static,
+{
+    use crate::services::operation_recovery::{
+        begin_tidal_download_operation, classify_operation_error, JournaledOperation,
+    };
+
+    let journal: Option<JournaledOperation> = begin_tidal_download_operation(db, &request).await;
+
+    let result =
+        execute_tidal_single_track_download_inner(db, request, on_progress, journal.as_ref()).await;
+
+    match result {
+        Ok(response) => {
+            if let Some(ref j) = journal {
+                j.commit(Some(&format!(
+                    "tidal_track_id={} file={}",
+                    response.track_id, response.file_path
+                )))
+                .await;
+            }
+            Ok(response)
+        }
+        Err(error) => {
+            if let Some(ref j) = journal {
+                let taxonomy = classify_operation_error(
+                    syncify_core_domain::OperationType::DownloadTidal,
+                    "tidal",
+                    &error,
+                );
+                j.fail(&taxonomy, &error, false).await;
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Pipeline body. `journal` is `Some` whenever a recovery-journal entry is open
+/// for this download; every milestone is reported through it.
+async fn execute_tidal_single_track_download_inner<F>(
+    db: &DbPool,
+    request: TidalSingleTrackRequest,
+    on_progress: F,
+    journal: Option<&crate::services::operation_recovery::JournaledOperation>,
 ) -> Result<TidalSingleTrackResponse, String>
 where
     F: Fn(PipelineProgressEvent) + Send + Sync + 'static,
@@ -645,13 +826,15 @@ where
         PipelineStepStatus::Searching,
     ));
 
-    let country_code = active_account_region.as_deref().unwrap_or("US");
+    let country_code = active_account_region
+        .clone()
+        .unwrap_or_else(|| "US".to_string());
     let mut is_partial_metadata = false;
 
     let track_result: Result<TidalTrack, String> = if let Ok(numeric_id) = target.parse::<i64>() {
         // 1. Try real Tidal API by track ID
         match downloader
-            .get_track_with_country(numeric_id, country_code)
+            .get_track_with_country(numeric_id, &country_code)
             .await
         {
             Ok(t) => Ok(t),
@@ -761,6 +944,7 @@ where
                             copyright: None,
                             upc: None,
                             album_type: None,
+                            tracks: None,
                         }),
                         media_metadata: None,
                         bpm: None,
@@ -804,6 +988,7 @@ where
                             copyright: None,
                             upc: None,
                             album_type: None,
+                            tracks: None,
                         }),
                         media_metadata: None,
                         bpm: None,
@@ -1046,6 +1231,17 @@ where
 
     let staged_file_path = temp_staging_dir.join(format!("{}.{}", tidal_id, stream_res.extension));
 
+    // BD-9: the staging file is now the only artifact on disk. A crash from here on
+    // is repaired by promoting it (if it validates) or purging it.
+    if let Some(j) = journal {
+        j.checkpoint(
+            syncify_core_domain::OperationPhase::Transfer,
+            Some(&staged_file_path.to_string_lossy()),
+            Some("transfer started"),
+        )
+        .await;
+    }
+
     let on_prog_arc = std::sync::Arc::new(on_progress);
     let on_prog_stream = on_prog_arc.clone();
     let target_str = target.to_string();
@@ -1110,6 +1306,15 @@ where
             .with_resolved_track(resolved_info.clone()),
     );
 
+    if let Some(j) = journal {
+        j.checkpoint(
+            syncify_core_domain::OperationPhase::Validate,
+            Some(&staged_file_path.to_string_lossy()),
+            Some("validating staged payload"),
+        )
+        .await;
+    }
+
     let payload_bytes = tokio::fs::read(&staged_file_path)
         .await
         .map_err(|e| format!("Failed to read staged audio file: {}", e))?;
@@ -1160,23 +1365,37 @@ where
         .and_then(|a| a.number_of_volumes)
         .unwrap_or(1);
 
-    let is_comp_release = track
-        .album
-        .as_ref()
-        .map(|a| a.is_compilation())
-        .unwrap_or(false)
+    // Album-level compilation decision. Taken ONCE over the whole release (not per
+    // track) so sibling files of the same album can never disagree on COMPILATION
+    // or ALBUMARTIST, and so the SQLite album row written in §9 agrees with the
+    // tags written here.
+    let album_compilation =
+        resolve_album_compilation_context(&downloader, &track, &country_code).await;
+    let is_comp_release = album_compilation.is_compilation
         || syncify_core_domain::metadata::is_various_artists_variant(&artist_name);
-    let pipeline_album_artist = if is_comp_release {
-        syncify_core_domain::metadata::CANONICAL_VARIOUS_ARTISTS.to_string()
-    } else {
-        track
-            .album
-            .as_ref()
-            .and_then(|a| a.artist.as_ref())
-            .map(|ar| ar.name.clone())
-            .or_else(|| track.artist_name())
-            .unwrap_or_else(|| artist_name.clone())
-    };
+    let pipeline_album_artist = album_compilation.album_artist.clone().unwrap_or_else(|| {
+        if is_comp_release {
+            syncify_core_domain::metadata::CANONICAL_VARIOUS_ARTISTS.to_string()
+        } else {
+            track
+                .album
+                .as_ref()
+                .and_then(|a| a.artist.as_ref())
+                .map(|ar| ar.name.clone())
+                .or_else(|| track.artist_name())
+                .unwrap_or_else(|| artist_name.clone())
+        }
+    });
+    if album_compilation.evidence_tracks > 1 {
+        debug!(
+            tidal_track_id = track.id,
+            album_id = track.album.as_ref().and_then(|a| a.id),
+            evidence_tracks = album_compilation.evidence_tracks,
+            is_compilation = album_compilation.is_compilation,
+            album_artist = %pipeline_album_artist,
+            "[Pipeline] Album-level compilation decision"
+        );
+    }
 
     if stream_res.codec == "FLAC" {
         let mut flac_meta = FlacMetadata {
@@ -2203,6 +2422,19 @@ where
             .with_message(format!("Promoting audio file to {}", final_path.display())),
     );
 
+    // BD-9: destination is now known, so a crash from here on is decidable by the
+    // reconciler: the promoted file either exists (reconcile the ledger) or the
+    // staging copy survived (complete the promotion).
+    if let Some(j) = journal {
+        j.checkpoint_with_output(
+            syncify_core_domain::OperationPhase::Promotion,
+            Some(&staged_file_path.to_string_lossy()),
+            &final_path_str,
+            Some("promoting to library"),
+        )
+        .await;
+    }
+
     let move_result: Result<(), String> = async {
         // Move primary audio file
         match tokio::fs::rename(&staged_file_path, &final_path).await {
@@ -2345,6 +2577,50 @@ where
         ));
     }
 
+    // §8b. D-03: sanitize the embedded cover art of the file that just landed in the
+    // library. It runs on the promoted copy (not the staging one) so a preserved
+    // sidecar ends up in the album folder the user actually sees, and before the size
+    // probe below so the persisted size matches the sanitized file. Non-fatal: cover art
+    // is metadata, and a reported loss must not fail the download.
+    if final_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("flac"))
+        .unwrap_or(false)
+    {
+        let mut cover_ctx = crate::services::flac_cover_sanitizer::FlacCoverSanitizeContext::new(
+            "tidal_pipeline.download",
+        );
+        cover_ctx.track_id = request.hint_track_id;
+        match crate::services::flac_cover_sanitizer::sanitize_and_audit_flac_cover_art(
+            Some(db),
+            &final_path,
+            &cover_ctx,
+        )
+        .await
+        {
+            Ok(outcome) if outcome.cover_art_lost() => {
+                warn!(
+                    path = %final_path.display(),
+                    dropped = ?outcome.report.dropped_unrepairable_blocks,
+                    sidecars = ?outcome.preserved_sidecars,
+                    "[Pipeline §8b] Embedded cover art could not be recovered (D-03); loss recorded in repair history"
+                );
+            }
+            Ok(outcome) if outcome.cover_art_recovered() => {
+                info!(
+                    path = %final_path.display(),
+                    recovered = outcome.report.recovered_blocks,
+                    "[Pipeline §8b] Damaged embedded cover art recovered by re-encoding it on the host"
+                );
+            }
+            Ok(_) => {}
+            Err(sanitize_err) => {
+                warn!(error = %sanitize_err, path = %final_path.display(), "[Pipeline §8b] FLAC cover sanitization failed (non-fatal)");
+            }
+        }
+    }
+
     // Verify final file exists and get size before database persistence
     let final_file_size = tokio::fs::metadata(&final_path)
         .await
@@ -2418,6 +2694,13 @@ where
         PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Persisting)
             .with_resolved_track(resolved_info.clone()),
     );
+
+    // BD-9: the file is promoted but the ledger transaction has not committed yet.
+    // `persisting` is scanned at startup precisely for this window.
+    if let Some(j) = journal {
+        j.checkpoint_persisting(Some("promoted, committing ledger"))
+            .await;
+    }
 
     let mut tx = db
         .begin_with("BEGIN IMMEDIATE")
@@ -2563,11 +2846,9 @@ where
             1
         };
 
-        let is_compilation = track
-            .album
-            .as_ref()
-            .map(|a| a.is_compilation())
-            .unwrap_or(false)
+        // Same album-level verdict used for the tags in §6: the database row and the
+        // FLAC COMPILATION/ALBUMARTIST tags must always describe the same release.
+        let is_compilation = album_compilation.is_compilation
             || syncify_core_domain::metadata::is_various_artists_variant(&artist_name);
 
         let va_id = if is_compilation {
@@ -3031,7 +3312,8 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
+#[allow(dead_code)] // Lo construye `plan_repair_corrupt_downloads`, cubierta por
+                    // `tests/tidal_metadata_enrichment_s156_test.rs`.
 pub struct DownloadRepairPlanItem {
     pub download_id: i64,
     pub old_track_id: i64,
@@ -3322,7 +3604,8 @@ pub async fn compute_download_repair_dry_run(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
+#[allow(dead_code)] // Lo construyen `reenrich_download_file_with_baseline` y `re_enrich_download_file`,
+                    // cubiertas por `tests/repair_integrity_guardrails_test.rs` y `tests/repair_history_audit_test.rs`.
 pub struct ReEnrichResult {
     pub success: bool,
     pub dry_run: bool,
@@ -3349,7 +3632,7 @@ pub struct ReEnrichResult {
 }
 
 /// Produce a safe dry-run plan of all corrupt download rows that point to ghost tracks or placeholder paths.
-#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
+#[allow(dead_code)] // Cubierta por `tests/tidal_metadata_enrichment_s156_test.rs`.
 pub async fn plan_repair_corrupt_downloads(
     db: &DbPool,
 ) -> Result<Vec<DownloadRepairPlanItem>, String> {
@@ -3539,7 +3822,7 @@ pub async fn plan_repair_corrupt_downloads(
 
 /// Re-enrich and repair an existing downloaded audio file with rich Tidal/DB metadata, tags, cover and lyrics without redownloading audio bytes.
 /// Supports `dry_run` mode (preview only) and Apply mode (transactional SQLite + coordinated file moves with rollback).
-#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
+#[allow(dead_code)] // Cubierta por `tests/repair_history_audit_test.rs`, `tests/repair_integrity_guardrail_test.rs`.
 pub async fn reenrich_download_file(
     db: &DbPool,
     download_id_or_track_id: i64,
@@ -3549,7 +3832,7 @@ pub async fn reenrich_download_file(
 }
 
 /// Re-enrich and repair an existing downloaded audio file, strictly validating against a pre-recorded dry-run baseline.
-#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
+#[allow(dead_code)] // Cubierta por `tests/repair_integrity_guardrail_test.rs`.
 pub async fn reenrich_download_file_with_baseline(
     db: &DbPool,
     download_id_or_track_id: i64,
@@ -4330,7 +4613,7 @@ pub async fn reenrich_download_file_with_baseline(
 }
 
 /// Backwards-compatible alias for re_enrich_download_file
-#[allow(dead_code)] // Re-enrichment API exported by syncify_tauri_lib for integration tests and repair engine
+#[allow(dead_code)] // Cubierta por `tests/tidal_metadata_enrichment_s156_test.rs`.
 pub async fn re_enrich_download_file(
     db: &DbPool,
     download_id_or_track_id: i64,

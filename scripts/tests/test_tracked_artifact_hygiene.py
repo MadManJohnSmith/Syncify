@@ -48,8 +48,15 @@ REMOVED_SWEEP_ARTIFACTS = (
     "ui/tauri_dev_output.txt",
 )
 
-# The `*.txt` files the project legitimately versions.
-ALLOWED_TRACKED_TXT = ("requirements.txt", "scripts/requirements.txt")
+# The `*.txt` files the project legitimately versions. The requirements files
+# are dependency manifests; the playlist-import fixture carries `.txt` because
+# that extension IS the input format `parse_playlist_file` dispatches on, so
+# renaming it would test a format the parser never sees.
+ALLOWED_TRACKED_TXT = (
+    "requirements.txt",
+    "scripts/requirements.txt",
+    "src-tauri/tests/fixtures/playlists_import/sample.txt",
+)
 
 # Directories that are build output or dependencies, never repository content.
 IGNORED_TREES = ("target", "node_modules", "dist", ".audit_tmp", "coverage")
@@ -87,16 +94,22 @@ class SweepArtifactHygieneTests(unittest.TestCase):
                 )
 
     def test_source_trees_carry_no_txt_artefacts(self):
-        """`src-tauri/` and `ui/` hold no `.txt` at all; the two that remain in
-        the repository are the declared requirements files."""
+        """Source trees hold no undeclared `.txt` files.
+
+        This distinguishes local command output from a versioned `.txt` fixture
+        whose extension is part of the playlist-parser contract.
+        """
         leftovers = []
         for root in ("src-tauri", "ui"):
             for path in (REPO_ROOT / root).rglob("*.txt"):
                 if any(part in IGNORED_TREES for part in path.parts):
                     continue
-                leftovers.append(str(path.relative_to(REPO_ROOT)))
+                relative = str(path.relative_to(REPO_ROOT))
+                if relative in ALLOWED_TRACKED_TXT:
+                    continue
+                leftovers.append(relative)
         self.assertEqual(
-            leftovers, [], f"machine output is back in the source trees: {leftovers}"
+            leftovers, [], f"undeclared .txt output is back in the source trees: {leftovers}"
         )
 
     def test_gitignore_declares_the_sweep_families(self):
@@ -138,14 +151,45 @@ class SweepArtifactHygieneTests(unittest.TestCase):
                     f"{relative} is not ignored any more",
                 )
 
-    def test_only_the_declared_requirements_files_are_tracked_as_txt(self):
+    def test_only_declared_txt_files_are_tracked(self):
+        """The allowlist is a permission list, not an inventory.
+
+        Tracked `.txt` must be a subset of it — that is the invariant this
+        module exists for. Equality is not the invariant: a fixture may be
+        added to the tree and the allowlist before the workflow commits it, so
+        the other direction is checked against the working tree instead.
+        """
         tracked = _git("ls-files", "*.txt")
         if tracked is None:
             self.skipTest("not a git checkout; the tracked-txt gate needs git")
-        self.assertEqual(
-            sorted(line for line in tracked.splitlines() if line),
-            sorted(ALLOWED_TRACKED_TXT),
-            "a new tracked .txt appeared outside the allowlist",
+        declared = set(ALLOWED_TRACKED_TXT)
+        undeclared = sorted(
+            line for line in tracked.splitlines() if line and line not in declared
+        )
+        self.assertEqual(undeclared, [], f"tracked .txt outside the allowlist: {undeclared}")
+        missing = sorted(path for path in declared if not (REPO_ROOT / path).exists())
+        self.assertEqual(missing, [], f"allowlist entry no longer exists: {missing}")
+
+    def test_the_allowed_playlist_fixture_is_still_used_by_the_parser_test(self):
+        """The allowlist may not outlive the fixture that justifies it.
+
+        A `.txt` allowed "for the tests" that no test reads is exactly the kind
+        of leftover this module exists to catch, so the exemption is bound to
+        the Rust test that consumes the file.
+        """
+        fixture = "src-tauri/tests/fixtures/playlists_import/sample.txt"
+        self.assertIn(fixture, ALLOWED_TRACKED_TXT)
+        self.assertTrue(
+            (REPO_ROOT / fixture).is_file(), f"the allowlisted fixture is gone: {fixture}"
+        )
+        consumer = (REPO_ROOT / "src-tauri/tests/playlist_file_import_test.rs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            '"sample.txt"',
+            consumer,
+            "the allowlisted fixture is no longer read by the playlist parser test; "
+            "drop it from the allowlist instead of keeping a dead exemption",
         )
 
 

@@ -14,8 +14,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 use syncify_core_domain::{
-    canonical_album_name, is_various_artists, normalize_album_artist, sanitize_filename,
-    LibraryLayout,
+    canonical_album_name, is_various_artists, sanitize_filename, LibraryLayout,
 };
 use syncify_tauri_lib::services::operation_recovery::{
     reconcile_canonical_download_records, resolve_canonical_track_path_from_db,
@@ -47,11 +46,7 @@ fn test_canonical_album_path_calculation() {
     assert!(is_various_artists("V/A"));
     assert!(!is_various_artists("Radiohead"));
 
-    // 4. Normalized artist
-    assert_eq!(normalize_album_artist("VA"), "Various Artists");
-    assert_eq!(normalize_album_artist("Pink Floyd"), "Pink Floyd");
-
-    // 5. Layout canonical paths
+    // 4. Layout canonical paths
     let layout = LibraryLayout::new("/Music");
     let alb_dir = layout.canonical_album_dir("Pink Floyd", "The Wall", Some(1979));
     assert_eq!(

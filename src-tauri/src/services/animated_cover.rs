@@ -65,7 +65,7 @@ use std::time::{Duration, Instant};
 static CACHED_APPLE_MUSIC_TOKEN: RwLock<Option<(String, Instant)>> = RwLock::new(None);
 
 /// Clear the Apple Music token cache (useful for testing or re-authentication)
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/batch_cache_optimization_and_parity_test.rs`.
 pub fn clear_apple_music_token_cache() {
     if let Ok(mut guard) = CACHED_APPLE_MUSIC_TOKEN.write() {
         *guard = None;
@@ -73,7 +73,6 @@ pub fn clear_apple_music_token_cache() {
 }
 
 /// Set the Apple Music token in the cache directly
-#[allow(dead_code)]
 pub fn set_cached_apple_music_token(token: &str) {
     if let Ok(mut guard) = CACHED_APPLE_MUSIC_TOKEN.write() {
         *guard = Some((token.to_string(), Instant::now()));
@@ -192,7 +191,7 @@ static ANIMATED_COVER_ALBUM_CACHE: RwLock<Option<HashMap<String, CachedAlbumCove
     RwLock::new(None);
 
 /// Clear the album-level animated cover cache (useful for testing)
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/batch_cache_optimization_and_parity_test.rs`, `tests/fresh_install_adversarial_pipeline_test.rs`.
 pub fn clear_animated_cover_cache() {
     if let Ok(mut guard) = ANIMATED_COVER_ALBUM_CACHE.write() {
         *guard = Some(HashMap::new());
@@ -200,7 +199,7 @@ pub fn clear_animated_cover_cache() {
 }
 
 /// Set an animated cover in the album-level cache directly (useful for testing)
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/fresh_install_adversarial_pipeline_test.rs`.
 pub fn set_cached_animated_cover_bytes(artist: &str, album: &str, bytes: Vec<u8>) {
     let cache_key = format!(
         "{}:::{}",
@@ -351,13 +350,12 @@ pub fn validate_hls_stream_url(m3u8_url: &str) -> Result<reqwest::Url, String> {
 
 /// Helper specifically for testing or local development environments to validate
 /// stream URLs allowing loopback/localhost.
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/animated_cover_security_test.rs`.
 pub fn validate_hls_stream_url_for_test(m3u8_url: &str) -> Result<reqwest::Url, String> {
     validate_hls_stream_url_opts(m3u8_url, true)
 }
 
 /// Validate an Apple Music animated artwork HLS stream URL with configurable loopback permission.
-#[allow(dead_code)]
 pub fn validate_hls_stream_url_opts(
     m3u8_url: &str,
     allow_loopback: bool,
@@ -565,7 +563,7 @@ pub async fn associate_animated_cover_in_db(
 }
 
 /// Associate the `animated_cover.mp4` path to an album by title in SQLite if the column exists [TASK-77].
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/animated_cover_mp4_sidecar_test.rs`.
 pub async fn associate_animated_cover_by_title_in_db(
     pool: &sqlx::SqlitePool,
     album_title: &str,
@@ -694,26 +692,6 @@ pub async fn transcode_webp_to_animated_mp4(
         }
         Err(e) => Err(format!("Failed to spawn FFmpeg: {}", e)),
     }
-}
-
-/// Convenience function to transcode and generate `animated_cover.mp4` in the same directory as `cover.webp`.
-#[allow(dead_code)]
-pub async fn transcode_album_cover_to_sidecar_mp4(
-    album_dir: &Path,
-    require_static_cover: bool,
-    db_pool: Option<&sqlx::SqlitePool>,
-    album_id: Option<i64>,
-) -> Result<PathBuf, String> {
-    let webp_path = album_dir.join("cover.webp");
-    let mp4_path = album_dir.join("animated_cover.mp4");
-    transcode_webp_to_animated_mp4(
-        &webp_path,
-        &mp4_path,
-        require_static_cover,
-        db_pool,
-        album_id,
-    )
-    .await
 }
 
 /// Download animated album cover art from Apple Music with explicit status and album-level caching.

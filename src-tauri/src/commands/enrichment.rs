@@ -237,45 +237,6 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
     }
 }
 
-/// Enrich tracks before downloading (called before queue processing)
-#[tauri::command]
-pub async fn enrich_before_download(
-    state: State<'_, AppState>,
-    track_ids: Vec<i64>,
-) -> Result<String, String> {
-    tracing::info!("Enriching {} tracks before download", track_ids.len());
-
-    let mut enriched = 0;
-    for track_id in &track_ids {
-        // Just call enrich_track for each - it's idempotent
-        let track: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT t.title,
-                    (SELECT a.name FROM track_artists ta
-                     JOIN artists a ON a.id = ta.artist_id
-                     WHERE ta.track_id = t.id AND ta.role = 'primary' LIMIT 1) as artist,
-                    t.isrc,
-                    (SELECT ts.service_track_id FROM track_sources ts
-                     JOIN services s ON s.id = ts.service_id
-                     WHERE ts.track_id = t.id AND s.name = 'spotify' LIMIT 1) as spotify_id
-             FROM tracks t WHERE t.id = ?",
-        )
-        .bind(track_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-
-        if track.is_some() {
-            enriched += 1;
-        }
-    }
-
-    Ok(format!(
-        "Pre-download enrichment: {} tracks processed",
-        enriched
-    ))
-}
-
 /// Pause background enrichment worker
 #[tauri::command]
 pub fn pause_enrichment_worker(state: State<'_, AppState>) {

@@ -1,5 +1,6 @@
 import { reactive, ref } from 'vue'
 import { settingsApi, deriveStagingRoot } from '@/api/settings'
+import { trayApi, type TraySettings } from '@/api/tray'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 
 export function useGeneralSettings() {
@@ -17,6 +18,19 @@ export function useGeneralSettings() {
         download_dir: '',
         temp_dir: '',
     })
+
+    /**
+     * Push the persisted close_to_tray preference into the backend tray state
+     * (IN-5): the tray only learns this value through update_tray_settings.
+     */
+    async function syncTraySettings(closeToTray: boolean): Promise<void> {
+        try {
+            const current: TraySettings = await trayApi.getTraySettings()
+            await trayApi.updateTraySettings({ ...current, closeToTray })
+        } catch (err) {
+            console.warn('[useGeneralSettings] Failed to sync tray settings:', err)
+        }
+    }
 
     async function loadSettings() {
         isLoading.value = true
@@ -44,6 +58,9 @@ export function useGeneralSettings() {
             if (values['close_to_tray']) settings.close_to_tray = values['close_to_tray'] === 'true'
             if (values['auto_updates']) settings.auto_updates = values['auto_updates'] === 'true'
             if (values['anonymous_stats']) settings.anonymous_stats = values['anonymous_stats'] === 'true'
+
+            // Keep the tray behavior in sync with the persisted preference (IN-5).
+            void syncTraySettings(settings.close_to_tray)
 
             settings.db_location = values['db_location'] || ''
 
@@ -124,6 +141,9 @@ export function useGeneralSettings() {
             }
 
             await settingsApi.saveSettingsBatch(batch)
+
+            // Apply the close-to-tray behavior to the tray immediately (IN-5).
+            await syncTraySettings(settings.close_to_tray)
 
             // Re-read and propagate to all views
             await loadSettings()

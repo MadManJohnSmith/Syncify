@@ -432,6 +432,7 @@ fn test_domain_structures_multidisc_contracts() {
         copyright: None,
         upc: None,
         album_type: None,
+        tracks: None,
     };
     assert_eq!(tidal_album.total_discs(), Some(3));
 }

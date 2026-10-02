@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // Shared HTTP client with centralized connection pooling, exponential backoff with jitter,
 // strict Retry-After / 429 detection, and cooperative cancellation.
 
@@ -23,6 +22,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Maximum retry attempts for transient HTTP / network errors
+// Presupuesto de reintentos de `execute_with_retry`/`download_stream_to_file`, ambas
+// cubiertas por `tests/network_resilience_test.rs`; el binario no las invoca.
+#[allow(dead_code)]
 pub const MAX_RETRIES: u32 = 3;
 
 /// User agents to rotate through
@@ -100,6 +102,8 @@ pub fn create_http_client() -> Client {
 }
 
 /// Create a new HTTP client with custom timeout (retaining pooled transport settings)
+// Cubierta por `tests/http_client_resilience_test.rs`.
+#[allow(dead_code)]
 pub fn create_http_client_with_timeout(timeout: Duration) -> Client {
     if timeout == DEFAULT_TIMEOUT {
         SHARED_HTTP_CLIENT.clone()
@@ -171,17 +175,20 @@ pub fn calculate_backoff_with_jitter(
     Duration::from_secs_f64(jittered.max(0.05))
 }
 
-/// Determines if an HTTP status code is considered transient and retriable
+/// Determines if an HTTP status code is considered transient and retriable.
+///
+/// One criterion, shared with the six service clients: see
+/// [`crate::services::http_retry::is_transient_status`].
+// Cubierta por `tests/network_resilience_test.rs`.
+#[allow(dead_code)]
 pub fn is_transient_status(status: StatusCode) -> bool {
-    status == StatusCode::TOO_MANY_REQUESTS
-        || status == StatusCode::BAD_GATEWAY
-        || status == StatusCode::SERVICE_UNAVAILABLE
-        || status == StatusCode::GATEWAY_TIMEOUT
-        || status == StatusCode::REQUEST_TIMEOUT
+    crate::services::http_retry::is_transient_status(status)
 }
 
 /// Execute an HTTP request with intelligent retry, exponential backoff with jitter,
 /// 429 rate limit penalty feedback, and cooperative cancellation.
+// Cubierta por `tests/network_resilience_test.rs`.
+#[allow(dead_code)]
 pub async fn execute_with_retry<F, Fut>(
     service: &str,
     cancel_token: Option<&CancellationToken>,
@@ -321,6 +328,8 @@ where
 
 /// Download a streaming HTTP payload to a file on disk with cooperative cancellation,
 /// real-time byte telemetry with max 4 updates/sec (250ms) throttling, and atomic cleanup.
+// Cubierta por `tests/network_resilience_test.rs` y `tests/download_progress_stream_test.rs`.
+#[allow(dead_code)]
 pub async fn download_stream_to_file<F>(
     response: Response,
     target_path: &Path,
@@ -411,22 +420,13 @@ where
 }
 
 /// Rate limiter for API calls (Backward compatible wrapper delegating to GLOBAL_RATE_LIMITER)
-pub struct RateLimiter {
-    #[allow(dead_code)]
-    service_default_name: String,
-}
+pub struct RateLimiter;
 
 impl RateLimiter {
-    pub fn new(_min_delay_ms: u64, _max_per_minute: u32) -> Self {
-        Self {
-            service_default_name: String::new(),
-        }
-    }
-
-    pub fn with_service_name(name: &str) -> Self {
-        Self {
-            service_default_name: name.to_string(),
-        }
+    /// El nombre decoraba un campo que nunca se leía: el limitador efectivo es
+    /// `GLOBAL_RATE_LIMITER`, que se consulta por servicio en `wait`.
+    pub fn with_service_name(_name: &str) -> Self {
+        RateLimiter
     }
 
     /// Wait if needed to respect rate limits

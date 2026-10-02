@@ -353,8 +353,6 @@ async function setMaxConcurrent(max: number) {
         console.warn('Failed to set worker live concurrency:', err)
     }
     await settingsApi.saveSetting('dl_concurrent_downloads', clamped.toString())
-    const eventBus = useEventBus()
-    eventBus.emit('download-settings-updated', { concurrentDownloads: clamped })
 }
 
 // Update fallback action (e.g. 'try_next', 'skip', 'prompt')
@@ -367,8 +365,6 @@ async function updateFallbackAction(action: string) {
         console.error('Failed to update fallback action:', e)
         await saveFolderSettings()
     }
-    const eventBus = useEventBus()
-    eventBus.emit('download-settings-updated', { fallbackAction: action })
 }
 
 // Get quality preference for a service
@@ -404,8 +400,6 @@ async function updateQualityForService(
             qualityPreferences.value.push(updated)
         }
 
-        const eventBus = useEventBus()
-        eventBus.emit('quality-settings-updated', { serviceName, maxQuality, preferredFormat })
         return updated
     } catch (e) {
         console.error(`Failed to update quality for ${serviceName}:`, e)
@@ -459,8 +453,6 @@ async function updateGlobalQuality(maxQuality: string, preferredFormat?: string)
         }
         qualityPreferences.value = nextPreferences
 
-        const eventBus = useEventBus()
-        eventBus.emit('quality-settings-updated', { global: true, maxQuality, preferredFormat: format })
         return true
     } catch (e) {
         console.error('Failed to update global quality:', e)

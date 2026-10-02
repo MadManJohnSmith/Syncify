@@ -9,6 +9,7 @@ import {
     getMigrationHistory,
     getMigrationDetails,
     getMigrationItemsByStatus,
+    getMigrationDestinations,
     previewMigration,
     startMigration,
     cancelMigration,
@@ -19,7 +20,9 @@ import {
     deleteMigrationTemplate,
     useMigrationTemplate,
     searchDestinationTrack,
-    manualMatchItem
+    manualMatchItem,
+    runMigrationAudit,
+    type MigrationReport
 } from '../api/migration';
 import type {
     MigrationJob,
@@ -56,12 +59,19 @@ export function useMigration() {
         status: 'idle',
         completed_count: 0,
         failed_count: 0,
-        skipped_count: 0
+        skipped_count: 0,
+        percent: 0,
+        speed: 0,
+        eta: '',
+        current_action: ''
     });
 
     // Manual matching
     const isSearching = ref(false);
     const searchResults = ref<DestinationTrackMatch[]>([]);
+
+    // Destination services the backend engine supports (data-driven list)
+    const supportedDestinations = ref<string[]>([]);
 
     // Event listener cleanup
     let progressUnlisten: UnlistenFn | null = null;
@@ -95,6 +105,16 @@ export function useMigration() {
             templates.value = await getMigrationTemplates();
         } catch (e) {
             console.error('Failed to load templates:', e);
+        }
+    }
+
+    /** Load the destination services the migration engine supports. */
+    async function loadSupportedDestinations(): Promise<void> {
+        try {
+            supportedDestinations.value = await getMigrationDestinations();
+        } catch (e) {
+            console.error('Failed to load migration destinations:', e);
+            supportedDestinations.value = [];
         }
     }
 
@@ -169,9 +189,12 @@ export function useMigration() {
     }
 
     async function cancel(): Promise<boolean> {
-        if (!currentJobId.value) return false;
+        // start_migration resolves only after the whole job is processed, so while
+        // the job runs the real id comes from the migration-progress events.
+        const jobId = currentJobId.value || progress.job_id;
+        if (!jobId) return false;
         try {
-            await cancelMigration(currentJobId.value);
+            await cancelMigration(jobId);
             progress.status = 'cancelled';
             return true;
         } catch (e) {
@@ -296,6 +319,10 @@ export function useMigration() {
             progress.completed_count = p.completed_count;
             progress.failed_count = p.failed_count;
             progress.skipped_count = p.skipped_count;
+            progress.percent = p.percent;
+            progress.speed = p.speed;
+            progress.eta = p.eta;
+            progress.current_action = p.current_action;
 
             // Refresh history when completed
             if (p.status === 'completed') {
@@ -340,9 +367,26 @@ export function useMigration() {
         });
     }
 
+    // Migration schema/state audit (IN-5: exposed backend capability)
+    const migrationAudit = ref<MigrationReport | null>(null);
+    const isRunningAudit = ref(false);
+
+    /** Run the migration schema/state audit shown in MigrationView. */
+    async function runAudit(): Promise<MigrationReport | null> {
+        if (isRunningAudit.value) return null;
+        isRunningAudit.value = true;
+        try {
+            migrationAudit.value = await runMigrationAudit();
+            return migrationAudit.value;
+        } finally {
+            isRunningAudit.value = false;
+        }
+    }
+
     return {
         // State
-        isLoading,
+        migrationAudit,
+        isRunningAudit,
         isStartingMigration,
         isPreviewing,
         isSearching,
@@ -354,11 +398,14 @@ export function useMigration() {
         previewResult,
         progress,
         searchResults,
+        supportedDestinations,
         defaultOptions,
 
         // Actions
+        runAudit,
         loadHistory,
         loadTemplates,
+        loadSupportedDestinations,
         loadJobDetails,
         loadJobItemsByStatus,
         preview,

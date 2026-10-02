@@ -6,7 +6,7 @@ Usage:
     python playlist_bridge.py list <service>  # List playlists from service (spotify, qobuz, tidal, deezer, soundcloud, local)
     python playlist_bridge.py get <service> <playlist_id>  # Get playlist tracks
     python playlist_bridge.py export <service> <playlist_id> [--format json|m3u|m3u8] [--output <path>]
-    python playlist_bridge.py match <playlist_file> <target_service>  # Match tracks
+    python playlist_bridge.py match <playlist_file> <target_service>  # Classify tracks by ISRC availability
 
 Returns JSON:
     {"success": true/false, "data": {...}, "error": "..."}
@@ -15,6 +15,7 @@ Returns JSON:
 import json
 import sys
 import os
+import re
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import asyncio
@@ -295,22 +296,50 @@ def get_tidal_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
 # DEEZER SERVICE IMPLEMENTATION
 # ==============================================================================
 
+def _deezer_configuration():
+    arl = os.getenv("DEEZER_ARL")
+    if not arl:
+        raise Exception("Deezer not authenticated (DEEZER_ARL missing)")
+    return arl, os.getenv("DEEZER_BLOWFISH_KEY")
+
+
+async def _with_deezer_service(operation):
+    from services.deezer_service import DeezerService
+    from services.service_base import ServiceCredentials, ServiceType
+
+    arl, blowfish_key = _deezer_configuration()
+    extra = {"arl": arl}
+    if blowfish_key:
+        extra["blowfish_key"] = blowfish_key
+    credentials = ServiceCredentials(
+        service_type=ServiceType.DEEZER,
+        token=arl,
+        extra=extra,
+    )
+    service = DeezerService(credentials)
+    # Without authenticate() the service reports is_authenticated() == False and
+    # every playlist call silently returns [].
+    if not await service.authenticate():
+        await service.close()
+        raise Exception("Deezer authentication failed")
+    try:
+        return await operation(service)
+    finally:
+        await service.close()
+
+
 def get_deezer_playlists() -> List[Dict[str, Any]]:
     """Get playlists from Deezer."""
     try:
-        from services.deezer_service import DeezerService
-        service = DeezerService()
-        return asyncio.run(service.get_user_playlists())
+        return asyncio.run(_with_deezer_service(lambda service: service.get_user_playlists()))
     except Exception as e:
         raise Exception(f"Deezer error: {e}")
 
 
 def get_deezer_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
     """Get tracks from a Deezer playlist."""
-    try:
-        from services.deezer_service import DeezerService
-        service = DeezerService()
-        tracks_meta = asyncio.run(service.get_playlist_tracks(playlist_id))
+    async def fetch(service):
+        tracks_meta = await service.get_playlist_tracks(playlist_id)
         tracks = []
         for t in tracks_meta:
             tracks.append({
@@ -324,6 +353,9 @@ def get_deezer_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
                 "url": getattr(t, "url", None),
             })
         return tracks
+
+    try:
+        return asyncio.run(_with_deezer_service(fetch))
     except Exception as e:
         raise Exception(f"Deezer error: {e}")
 
@@ -332,26 +364,46 @@ def get_deezer_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
 # SOUNDCLOUD SERVICE IMPLEMENTATION
 # ==============================================================================
 
+def _soundcloud_configuration():
+    return os.getenv("SOUNDCLOUD_CLIENT_ID") or None, os.getenv("SOUNDCLOUD_AUTH_TOKEN") or None
+
+
+async def _with_soundcloud_service(operation):
+    from services.soundcloud_service import SoundCloudService
+    from services.service_base import ServiceCredentials, ServiceType
+
+    client_id, auth_token = _soundcloud_configuration()
+    credentials = None
+    if client_id or auth_token:
+        credentials = ServiceCredentials(
+            service_type=ServiceType.SOUNDCLOUD,
+            token=auth_token,
+            client_id=client_id,
+            extra={"client_id": client_id} if client_id else None,
+        )
+    service = SoundCloudService(credentials)
+    # authenticate() creates the aiohttp session the playlist calls rely on and
+    # resolves/refreshes the public client_id + app_version pair.
+    try:
+        if not await service.authenticate():
+            raise Exception("SoundCloud authentication failed")
+        return await operation(service)
+    finally:
+        await service.close()
+
+
 def get_soundcloud_playlists() -> List[Dict[str, Any]]:
     """Get playlists from SoundCloud."""
     try:
-        from services.soundcloud_service import SoundCloudService
-        client_id = os.getenv("SOUNDCLOUD_CLIENT_ID")
-        auth_token = os.getenv("SOUNDCLOUD_AUTH_TOKEN")
-        service = SoundCloudService(client_id=client_id, auth_token=auth_token)
-        return asyncio.run(service.get_user_playlists())
+        return asyncio.run(_with_soundcloud_service(lambda service: service.get_user_playlists()))
     except Exception as e:
         raise Exception(f"SoundCloud error: {e}")
 
 
 def get_soundcloud_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
     """Get tracks from a SoundCloud playlist."""
-    try:
-        from services.soundcloud_service import SoundCloudService
-        client_id = os.getenv("SOUNDCLOUD_CLIENT_ID")
-        auth_token = os.getenv("SOUNDCLOUD_AUTH_TOKEN")
-        service = SoundCloudService(client_id=client_id, auth_token=auth_token)
-        tracks_meta = asyncio.run(service.get_playlist_tracks(playlist_id))
+    async def fetch(service):
+        tracks_meta = await service.get_playlist_tracks(playlist_id)
         tracks = []
         for t in tracks_meta:
             tracks.append({
@@ -365,6 +417,9 @@ def get_soundcloud_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
                 "url": getattr(t, "url", None),
             })
         return tracks
+
+    try:
+        return asyncio.run(_with_soundcloud_service(fetch))
     except Exception as e:
         raise Exception(f"SoundCloud error: {e}")
 
@@ -701,44 +756,82 @@ def export_playlist(service: str, playlist_id: str, format_type: str = "json", o
         json_response(False, error=str(e))
 
 
-def match_playlist_tracks(playlist_file: str, target_service: str):
-    """Match playlist tracks to another service using ISRC or metadata."""
-    try:
-        p = Path(playlist_file)
-        if not p.exists():
-            raise FileNotFoundError(f"Playlist file not found: {playlist_file}")
+# Services whose catalogs can address a track by ISRC. SoundCloud is absent on
+# purpose: its API does not expose ISRCs, so an ISRC transfer to it is impossible.
+ISRC_TARGET_SERVICES = ("spotify", "qobuz", "tidal", "deezer")
 
-        if p.suffix.lower() in (".m3u", ".m3u8"):
-            tracks = parse_m3u_file(p)
+MATCH_NOTE = (
+    "ISRC availability is evaluated locally: the target service catalog is NOT queried. "
+    "Entries without an ISRC need title/artist matching before they can be transferred."
+)
+
+
+def normalize_isrc(value: Any) -> str:
+    """Normalize an ISRC (uppercase, separators removed) as the rest of the codebase does."""
+    if not value:
+        return ""
+    return re.sub(r"[\s\-_]", "", str(value)).upper()
+
+
+def classify_playlist_by_isrc(playlist_file: str, target_service: str) -> Dict[str, Any]:
+    """
+    Split the entries of a playlist file into those carrying an ISRC and those that do not.
+
+    The target service catalog is deliberately NOT queried: no service in the stack
+    exposes an ISRC lookup, so the only answer this bridge can give offline is whether
+    each entry carries the identifier a cross-service transfer needs. Real ISRC
+    resolution happens in Rust against the local library
+    (src-tauri/src/commands/playlists.rs::match_entry_to_track).
+    """
+    service_norm = target_service.lower()
+    if service_norm not in ISRC_TARGET_SERVICES:
+        raise ValueError(
+            f"Unsupported target service for ISRC transfer: {target_service}. "
+            f"Supported: {', '.join(ISRC_TARGET_SERVICES)}"
+        )
+
+    p = Path(playlist_file)
+    if not p.exists():
+        raise FileNotFoundError(f"Playlist file not found: {playlist_file}")
+
+    if p.suffix.lower() in (".m3u", ".m3u8"):
+        tracks = parse_m3u_file(p)
+    else:
+        with open(p, "r", encoding="utf-8") as f:
+            playlist_data = json.load(f)
+        tracks = playlist_data.get("tracks", []) if isinstance(playlist_data, dict) else playlist_data
+
+    matchable = []
+    unmatchable = []
+
+    for track in tracks:
+        isrc = normalize_isrc(track.get("isrc"))
+        entry = {
+            "title": track.get("title"),
+            "artist": track.get("artist"),
+        }
+        if isrc:
+            matchable.append({**entry, "isrc": isrc})
         else:
-            with open(p, "r", encoding="utf-8") as f:
-                playlist_data = json.load(f)
-            tracks = playlist_data.get("tracks", []) if isinstance(playlist_data, dict) else playlist_data
+            unmatchable.append(entry)
 
-        matchable = []
-        unmatchable = []
+    return {
+        "target_service": service_norm,
+        "service_queried": False,
+        "matching": "isrc-availability",
+        "total_tracks": len(tracks),
+        "matchable": len(matchable),
+        "unmatchable": len(unmatchable),
+        "matchable_tracks": matchable,
+        "unmatchable_tracks": unmatchable,
+        "note": MATCH_NOTE,
+    }
 
-        for track in tracks:
-            if track.get("isrc"):
-                matchable.append({
-                    "title": track.get("title"),
-                    "artist": track.get("artist"),
-                    "isrc": track.get("isrc"),
-                })
-            else:
-                unmatchable.append({
-                    "title": track.get("title"),
-                    "artist": track.get("artist"),
-                })
 
-        json_response(True, {
-            "target_service": target_service,
-            "total_tracks": len(tracks),
-            "matchable": len(matchable),
-            "unmatchable": len(unmatchable),
-            "matchable_tracks": matchable,
-            "unmatchable_tracks": unmatchable,
-        })
+def match_playlist_tracks(playlist_file: str, target_service: str):
+    """Classify playlist entries by ISRC availability for a transfer to `target_service`."""
+    try:
+        json_response(True, classify_playlist_by_isrc(playlist_file, target_service))
     except Exception as e:
         json_response(False, error=str(e))
 
@@ -769,9 +862,15 @@ def main():
     export_parser.add_argument("--output", "-o", default=None, help="Optional output file destination")
 
     # Match command
-    match_parser = subparsers.add_parser("match", help="Match playlist to target service")
+    match_parser = subparsers.add_parser(
+        "match",
+        help="Classify playlist entries by ISRC availability for a transfer (no service query)",
+    )
     match_parser.add_argument("playlist_file", help="Path to exported playlist file (JSON, M3U, M3U8)")
-    match_parser.add_argument("target_service", help="Target service to match against")
+    match_parser.add_argument(
+        "target_service",
+        help="Target service the playlist would be transferred to (spotify, qobuz, tidal, deezer)",
+    )
 
     args = parser.parse_args()
 

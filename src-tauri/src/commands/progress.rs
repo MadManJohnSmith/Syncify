@@ -3,18 +3,17 @@
 //! Provides a single structured emission contract for service synchronization progress.
 
 use super::types::SyncProgressEvent;
-use tauri::Emitter;
+use tauri::{Emitter, Runtime};
 
 /// Trait for emitting sync progress events to frontend or test subscribers
 pub trait SyncProgressEmitter: Send + Sync {
     fn emit_sync_progress(&self, event: &SyncProgressEvent);
 }
 
-impl SyncProgressEmitter for tauri::AppHandle {
+impl<R: Runtime> SyncProgressEmitter for tauri::AppHandle<R> {
     fn emit_sync_progress(&self, event: &SyncProgressEvent) {
         let _ = self.emit("sync-progress", event);
         let _ = self.emit("import-progress", event);
-        let _ = self.emit("syncify:sync_progress", event);
         if event.terminal {
             if event.status == "completed" {
                 let _ = self.emit("sync-complete", event);
@@ -53,11 +52,10 @@ impl SyncProgressEmitter for tauri::AppHandle {
     }
 }
 
-impl SyncProgressEmitter for tauri::Window {
+impl<R: Runtime> SyncProgressEmitter for tauri::Window<R> {
     fn emit_sync_progress(&self, event: &SyncProgressEvent) {
         let _ = self.emit("sync-progress", event);
         let _ = self.emit("import-progress", event);
-        let _ = self.emit("syncify:sync_progress", event);
         if event.terminal {
             if event.status == "completed" {
                 let _ = self.emit("sync-complete", event);
@@ -97,7 +95,7 @@ impl SyncProgressEmitter for tauri::Window {
 }
 
 /// Closure wrapper implementing `SyncProgressEmitter`
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/ipc_events_contract_test.rs` y `tests/sync_progress_events_test.rs`.
 pub struct SyncCallback<F>(pub F);
 
 impl<F> SyncProgressEmitter for SyncCallback<F>

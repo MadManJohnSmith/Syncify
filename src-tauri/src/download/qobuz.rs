@@ -1,8 +1,8 @@
 // Qobuz downloader - deterministic request signing, token resolution, and audio downloads
 
 use crate::download::http_client::{
-    calculate_backoff_with_jitter, create_http_client, get_user_agent, is_transient_status,
-    parse_retry_after, QOBUZ_LIMITER,
+    calculate_backoff_with_jitter, create_http_client, get_user_agent, parse_retry_after,
+    QOBUZ_LIMITER,
 };
 use crate::download::lyrics::{
     validate_and_embed_flac_lyrics, LyricsPipelineService, LyricsResolution, LyricsSyncType,
@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use syncify_core_domain::byte_validators::AudioByteValidator;
+use syncify_core_domain::errors::ErrorTaxonomy;
+use syncify_core_domain::quality::FormatId;
 use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 use tokio::fs::File;
@@ -30,11 +32,8 @@ use tracing::{debug, info, warn};
 
 /// Qobuz Authentication Status
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum QobuzAuthStatus {
-    Authenticated,
     RequiresAuth(String),
-    SourceUnavailable(String),
 }
 
 /// Stream URL Origin Source
@@ -141,39 +140,64 @@ pub struct QobuzTracksContainer {
 struct StreamResponse {
     url: Option<String>,
     #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     error: Option<String>,
 }
 
-/// Map quality string to Qobuz format_id (deterministic cascade)
+/// Map quality string to Qobuz format_id (deterministic cascade).
+///
+/// The tier table lives in `syncify_core_domain::quality::FormatId`, so this
+/// wrapper only supplies the default: an unrecognized token asks for 16-bit /
+/// 44.1 kHz FLAC.
 pub fn map_quality_to_format_id(quality: &str) -> &'static str {
-    match quality.to_uppercase().as_str() {
-        "24-192" | "HI_RES_LOSSLESS" | "27" => "27", // 24-bit / up to 192kHz FLAC
-        "24-96" | "HI_RES" | "HIRES" | "7" => "7",   // 24-bit / up to 96kHz FLAC
-        "16-44" | "16-44.1" | "LOSSLESS" | "6" => "6", // 16-bit / 44.1kHz FLAC
-        "320" | "HIGH" | "5" => "5",                 // 320kbps MP3
-        _ => "6",                                    // Default 16-bit / 44.1kHz FLAC
-    }
+    FormatId::from_qobuz_quality_token(quality)
+        .unwrap_or(FormatId::LosslessCd)
+        .qobuz_format_id()
 }
 
-/// Map quality string to allowed Qobuz format_ids in cascade order (identical to CLI)
+/// Map quality string to allowed Qobuz format_ids in cascade order (identical to CLI).
+///
+/// Unrecognized tokens start the cascade at the best tier the account may have,
+/// so the official endpoint can still answer with whatever it holds.
 pub fn map_quality_to_allowed_format_ids_with_lossy_fallback(
     quality: &str,
     allow_lossy_fallback: bool,
 ) -> &'static [&'static str] {
-    match (quality.to_uppercase().trim(), allow_lossy_fallback) {
-        ("27" | "HI_RES_LOSSLESS" | "24-192" | "24/192", true) => &["27", "7", "6", "5"],
-        ("27" | "HI_RES_LOSSLESS" | "24-192" | "24/192", false) => &["27", "7", "6"],
+    FormatId::from_qobuz_quality_token(quality)
+        .unwrap_or(FormatId::HiResLossless)
+        .qobuz_cascade(allow_lossy_fallback)
+}
 
-        ("7" | "HI_RES" | "HIRES" | "24-96" | "24/96", true) => &["7", "6", "5"],
-        ("7" | "HI_RES" | "HIRES" | "24-96" | "24/96", false) => &["7", "6"],
-
-        ("6" | "LOSSLESS" | "16-44" | "16/44" | "16-44.1" | "16/44.1", true) => &["6", "5"],
-        ("6" | "LOSSLESS" | "16-44" | "16/44" | "16-44.1" | "16/44.1", false) => &["6"],
-
-        ("5" | "MP3" | "320" | "320KBPS" | "HIGH", _) => &["5"],
-
-        (_, true) => &["27", "7", "6", "5"],
-        (_, false) => &["27", "7", "6"],
+/// Classifies a failed Qobuz HTTP response onto the shared error taxonomy, so the
+/// retry decision (`is_retryable`), the retry budget (`max_attempts`), the wait
+/// (`retry_delay_sec`) and the user-facing text (`ui_message`) all come from the
+/// domain instead of being decided by hand here.
+///
+/// The HTTP status is kept verbatim in every message: the download worker and the
+/// queue retry commands classify failures by scanning those messages.
+pub fn classify_qobuz_http_failure(status: reqwest::StatusCode, item_id: &str) -> ErrorTaxonomy {
+    let provider = "qobuz".to_string();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return ErrorTaxonomy::AuthInvalid {
+            message: format!("Qobuz rejected the credentials (HTTP {})", status),
+        };
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return ErrorTaxonomy::RateLimited {
+            provider,
+            retry_after_sec: None,
+        };
+    }
+    if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
+        return ErrorTaxonomy::TemporaryNetworkFailure {
+            endpoint: format!("qobuz stream (HTTP {})", status),
+            message: format!("Qobuz returned HTTP {}", status),
+        };
+    }
+    ErrorTaxonomy::UnavailableFromProvider {
+        provider,
+        item_id: item_id.to_string(),
+        reason: format!("Qobuz returned HTTP {}", status),
     }
 }
 
@@ -794,7 +818,7 @@ impl QobuzDownloader {
     }
 
     /// Download stream payload into staging file with byte progress and automatic retries
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Cubierta por `tests/network_resilience_test.rs`.
     pub async fn download_to_staging(
         &self,
         download_url: &str,
@@ -819,7 +843,9 @@ impl QobuzDownloader {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let max_retries: u32 = 3;
+        // The retry budget, the wait and the user-facing wording come from the
+        // shared error taxonomy per failure (see `classify_qobuz_http_failure`),
+        // not from a hardcoded counter decided in this loop.
         let mut attempt: u32 = 0;
         let mut current_url = initial_download_url.to_string();
         let initial_backoff = Duration::from_millis(500);
@@ -846,37 +872,45 @@ impl QobuzDownloader {
                     if status.is_success() {
                         resp
                     } else {
-                        let is_transient = is_transient_status(status);
+                        let taxonomy = classify_qobuz_http_failure(status, item_id);
                         attempt += 1;
                         let _ = tokio::fs::remove_file(staging_path).await;
+                        let max_attempts = taxonomy.max_attempts();
 
-                        if !is_transient || attempt >= max_retries {
-                            if is_transient {
-                                return Err(anyhow!(
-                                    "NetworkExhausted: HTTP {} after {} attempts",
-                                    status,
-                                    attempt
-                                ));
-                            } else {
-                                return Err(anyhow!("Download failed: HTTP {}", status));
-                            }
+                        if !taxonomy.is_retryable() {
+                            return Err(anyhow!("Download failed: {}", taxonomy.ui_message()));
+                        }
+                        if attempt >= max_attempts {
+                            return Err(anyhow!(
+                                "NetworkExhausted: {} after {} attempts",
+                                taxonomy.ui_message(),
+                                attempt
+                            ));
                         }
 
-                        let server_retry = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                            parse_retry_after(resp.headers(), std::time::SystemTime::now())
-                        } else {
-                            None
+                        // A rate limit waits exactly as long as the provider asks
+                        // (`Retry-After`, else the taxonomy default); anything else
+                        // keeps the jittered exponential backoff.
+                        let wait_dur = match taxonomy {
+                            ErrorTaxonomy::RateLimited { .. } => {
+                                parse_retry_after(resp.headers(), std::time::SystemTime::now())
+                                    .unwrap_or_else(|| {
+                                        Duration::from_secs(taxonomy.retry_delay_sec())
+                                    })
+                            }
+                            _ => calculate_backoff_with_jitter(
+                                attempt - 1,
+                                initial_backoff,
+                                max_backoff,
+                            ),
                         };
-
-                        let backoff = calculate_backoff_with_jitter(
-                            attempt - 1,
-                            initial_backoff,
-                            max_backoff,
-                        );
-                        let wait_dur = server_retry.unwrap_or(backoff);
                         warn!(
-                            "[Qobuz] Transient HTTP status {} for item {}. Retrying in {:?} (attempt {}/{})",
-                            status, item_id, wait_dur, attempt, max_retries
+                            "[Qobuz] {} for item {}. Retrying in {:?} (attempt {}/{})",
+                            taxonomy.ui_message(),
+                            item_id,
+                            wait_dur,
+                            attempt,
+                            max_attempts
                         );
                         tokio::time::sleep(wait_dur).await;
 
@@ -894,23 +928,31 @@ impl QobuzDownloader {
                     }
                 }
                 Err(e) => {
+                    let taxonomy = ErrorTaxonomy::TemporaryNetworkFailure {
+                        endpoint: "qobuz stream".to_string(),
+                        message: e.to_string(),
+                    };
                     attempt += 1;
                     let _ = tokio::fs::remove_file(staging_path).await;
-                    let err_msg = e.to_string();
+                    let max_attempts = taxonomy.max_attempts();
 
-                    if attempt >= max_retries {
+                    if attempt >= max_attempts {
                         return Err(anyhow!(
-                            "NetworkExhausted: Network error after {} attempts: {}",
-                            max_retries,
-                            err_msg
+                            "NetworkExhausted: {} after {} attempts",
+                            taxonomy.ui_message(),
+                            attempt
                         ));
                     }
 
                     let backoff =
                         calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
                     warn!(
-                        "[Qobuz] Network error for item {}: '{}'. Retrying in {:?} (attempt {}/{})",
-                        item_id, err_msg, backoff, attempt, max_retries
+                        "[Qobuz] {} for item {}. Retrying in {:?} (attempt {}/{})",
+                        taxonomy.ui_message(),
+                        item_id,
+                        backoff,
+                        attempt,
+                        max_attempts
                     );
                     tokio::time::sleep(backoff).await;
 
@@ -973,22 +1015,31 @@ impl QobuzDownloader {
             }
 
             if let Some(err_msg) = stream_failed {
+                let taxonomy = ErrorTaxonomy::TemporaryNetworkFailure {
+                    endpoint: "qobuz stream body".to_string(),
+                    message: format!("stream decoding error: {}", err_msg),
+                };
                 attempt += 1;
                 let _ = tokio::fs::remove_file(staging_path).await;
+                let max_attempts = taxonomy.max_attempts();
 
-                if attempt >= max_retries {
+                if attempt >= max_attempts {
                     return Err(anyhow!(
-                        "NetworkExhausted: Stream decoding error after {} attempts: {}",
-                        max_retries,
-                        err_msg
+                        "NetworkExhausted: {} after {} attempts",
+                        taxonomy.ui_message(),
+                        attempt
                     ));
                 }
 
                 let backoff =
                     calculate_backoff_with_jitter(attempt - 1, initial_backoff, max_backoff);
                 warn!(
-                    "[Qobuz] Stream error for item {}: '{}'. Retrying in {:?} (attempt {}/{})",
-                    item_id, err_msg, backoff, attempt, max_retries
+                    "[Qobuz] {} for item {}. Retrying in {:?} (attempt {}/{})",
+                    taxonomy.ui_message(),
+                    item_id,
+                    backoff,
+                    attempt,
+                    max_attempts
                 );
                 tokio::time::sleep(backoff).await;
 
@@ -1006,13 +1057,18 @@ impl QobuzDownloader {
             }
 
             if let Err(e) = file.flush().await {
+                let taxonomy = ErrorTaxonomy::TemporaryNetworkFailure {
+                    endpoint: "qobuz staging file".to_string(),
+                    message: format!("flush error: {}", e),
+                };
                 attempt += 1;
                 let _ = tokio::fs::remove_file(staging_path).await;
-                if attempt >= max_retries {
+                let max_attempts = taxonomy.max_attempts();
+                if attempt >= max_attempts {
                     return Err(anyhow!(
-                        "NetworkExhausted: Flush error after {} attempts: {}",
-                        max_retries,
-                        e
+                        "NetworkExhausted: {} after {} attempts",
+                        taxonomy.ui_message(),
+                        attempt
                     ));
                 }
                 let backoff =
@@ -1948,6 +2004,41 @@ impl QobuzDownloader {
 
         // Guard against 0-byte truncated sidecars: regenerate from FLAC PICTURE block if missing or empty
         if is_flac {
+            // D-03: sanitize the embedded cover art of the promoted file before the
+            // sidecar guard reads its PICTURE blocks, so a cover that had to be
+            // re-encoded is the one the sidecars are rebuilt from. Non-fatal.
+            let mut cover_ctx =
+                crate::services::flac_cover_sanitizer::FlacCoverSanitizeContext::new(
+                    "qobuz.download",
+                );
+            cover_ctx.track_id = request.canonical_track_id;
+            match crate::services::flac_cover_sanitizer::sanitize_and_audit_flac_cover_art(
+                db_opt,
+                &final_path,
+                &cover_ctx,
+            )
+            .await
+            {
+                Ok(outcome) if outcome.cover_art_lost() => {
+                    warn!(
+                        path = %final_path.display(),
+                        dropped = ?outcome.report.dropped_unrepairable_blocks,
+                        sidecars = ?outcome.preserved_sidecars,
+                        "[Qobuz] Embedded cover art could not be recovered (D-03); loss recorded in repair history"
+                    );
+                }
+                Ok(outcome) if outcome.cover_art_recovered() => {
+                    info!(
+                        path = %final_path.display(),
+                        recovered = outcome.report.recovered_blocks,
+                        "[Qobuz] Damaged embedded cover art recovered by re-encoding it on the host"
+                    );
+                }
+                Ok(_) => {}
+                Err(sanitize_err) => {
+                    warn!(error = %sanitize_err, path = %final_path.display(), "[Qobuz] FLAC cover sanitization failed (non-fatal)");
+                }
+            }
             if let Ok(repaired) =
                 crate::services::flac_picture::ensure_flac_sidecars_intact(&final_path, target_dir)
             {

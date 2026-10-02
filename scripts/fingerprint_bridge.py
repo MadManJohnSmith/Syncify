@@ -123,8 +123,17 @@ def identify_track(audio_path: str):
         return
     
     try:
-        results = matcher.identify(path)
-        
+        # Fingerprint first, then look the fingerprint up: identify_with_fingerprint()
+        # is the only lookup that returns real AcoustID ids and artist MBIDs.
+        fingerprint = matcher.get_fingerprint(path)
+
+        if fingerprint is None:
+            json_response(False, error="Failed to generate fingerprint")
+            return
+
+        duration, fingerprint_data = fingerprint
+        results = matcher.identify_with_fingerprint(duration, fingerprint_data)
+
         if results:
             matches = []
             for r in results[:5]:  # Top 5 matches
@@ -141,10 +150,11 @@ def identify_track(audio_path: str):
                     "album": r.album,
                     "duration": r.duration,
                 })
-            
+
             json_response(True, {
                 "matches": matches,
                 "file": str(path.absolute()),
+                "duration": duration,
             })
         else:
             json_response(False, error="No matches found")

@@ -182,4 +182,71 @@ mod tests {
         let deserialized: TrackManifestEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, entry);
     }
+
+    fn stub_entry(title: &str, result: &str) -> TrackManifestEntry {
+        TrackManifestEntry {
+            title: title.to_string(),
+            download_result: result.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_record_methods_accumulate_into_the_manifest() {
+        let mut summary = FavoritesBatchSummary::new(3);
+        assert_eq!(summary.requested, 3);
+        assert!(!summary.all_succeeded());
+
+        summary.record_success(stub_entry("A", "Success"));
+        summary.record_success(stub_entry("B", "Success"));
+        summary.record_skipped(stub_entry("C", "Skipped"));
+
+        assert_eq!(summary.succeeded, 2);
+        assert_eq!(summary.failed, 0);
+        assert_eq!(summary.skipped_existing, 1);
+        assert_eq!(summary.manifest.len(), 3, "every outcome is auditable");
+        assert!(
+            !summary.all_succeeded(),
+            "a skipped item is not a full success"
+        );
+
+        summary.record_failure(stub_entry("D", "Failed"));
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.manifest.len(), 4);
+    }
+
+    #[test]
+    fn test_to_batch_manifest_is_the_single_counters_mapping() {
+        let mut summary = FavoritesBatchSummary::new(4);
+        summary.record_success(stub_entry("A", "Success"));
+        summary.record_failure(stub_entry("B", "Failed"));
+        summary.record_failure(stub_entry("C", "Failed"));
+        summary.record_skipped(stub_entry("D", "Skipped"));
+        summary.received = 4;
+        summary.deduplicated = 1;
+        summary.enriched = 3;
+        summary.validated = 3;
+        summary.output_files = 1;
+
+        let manifest = summary.to_batch_manifest("2026-10-02T00:00:00Z");
+
+        assert_eq!(manifest.generated_at, "2026-10-02T00:00:00Z");
+        assert_eq!(manifest.total_requested, 4);
+        assert_eq!(manifest.total_succeeded, 1);
+        assert_eq!(manifest.total_failed, 2);
+        assert_eq!(manifest.total_skipped, 1);
+        assert_eq!(manifest.entries, summary.manifest);
+        // Fields that only exist on the summary must not leak into the manifest.
+        assert_eq!(manifest.entries.len(), 4);
+    }
+
+    #[test]
+    fn test_to_batch_manifest_on_an_empty_summary() {
+        let manifest = FavoritesBatchSummary::default().to_batch_manifest(String::new());
+        assert_eq!(manifest.total_requested, 0);
+        assert_eq!(manifest.total_succeeded, 0);
+        assert_eq!(manifest.total_failed, 0);
+        assert_eq!(manifest.total_skipped, 0);
+        assert!(manifest.entries.is_empty());
+    }
 }

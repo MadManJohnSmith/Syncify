@@ -8,6 +8,7 @@ Opens verification URL in user's browser for login.
 import asyncio
 import base64
 import json
+import os
 import time
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
@@ -15,21 +16,61 @@ from typing import Optional, Tuple, Dict, Any
 import aiohttp
 
 
+class MissingTidalCredentialsError(RuntimeError):
+    """Raised when a required Tidal OAuth credential is not configured."""
+
+
+def _resolve_credential(credentials: Any, attribute: str, env_var: str, label: str) -> str:
+    """Resolve a Tidal OAuth credential from stored credentials, then the environment."""
+    value = getattr(credentials, attribute, None) if credentials is not None else None
+    if not value:
+        value = os.getenv(env_var)
+    if not value or not str(value).strip():
+        raise MissingTidalCredentialsError(
+            f"{label} is required for Tidal authentication. Set the {env_var} environment "
+            "variable (see .env.example) or store the credential in the account configuration."
+        )
+    return str(value).strip()
+
+
+def resolve_tidal_client_id(credentials: Any = None) -> str:
+    """Resolve the Tidal OAuth client id (device code flow)."""
+    return _resolve_credential(credentials, "client_id", "TIDAL_CLIENT_ID", "Tidal client id")
+
+
+def resolve_tidal_client_secret(credentials: Any = None) -> str:
+    """Resolve the Tidal OAuth client secret (device code flow)."""
+    return _resolve_credential(credentials, "client_secret", "TIDAL_CLIENT_SECRET", "Tidal client secret")
+
+
+def resolve_tidal_pkce_client_id() -> str:
+    """Resolve the Tidal PKCE client id (public client, Hi-Res / HiFi+ flow)."""
+    return _resolve_credential(None, "client_id", "TIDAL_CLIENT_ID_PKCE", "Tidal PKCE client id")
+
+
 class TidalAuth:
     """
     Tidal authentication via OAuth device code flow.
-    
-    Uses credentials from tidal_service.py that support device authorization.
+
+    Credentials are resolved from the stored account configuration or the
+    environment (TIDAL_CLIENT_ID / TIDAL_CLIENT_SECRET); they are never embedded
+    in the source tree.
     """
-    
-    # OAuth 2.0 Credentials (Standard HiFi) - from existing tidal_service.py
-    CLIENT_ID = "fX2JxdmntZWK0ixT"
-    CLIENT_SECRET = "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8="
-    
+
     # OAuth endpoints
     AUTH_URL = "https://auth.tidal.com/v1/oauth2"
     API_BASE = "https://api.tidal.com/v1"
-    
+
+    @property
+    def client_id(self) -> str:
+        """Tidal OAuth client id resolved from the environment."""
+        return resolve_tidal_client_id()
+
+    @property
+    def client_secret(self) -> str:
+        """Tidal OAuth client secret resolved from the environment."""
+        return resolve_tidal_client_secret()
+
     def __init__(self, credentials_file: Optional[Path] = None, verbose: bool = False):
         self.credentials_file = credentials_file
         self.verbose = verbose
@@ -109,12 +150,12 @@ class TidalAuth:
         try:
             async with aiohttp.ClientSession() as session:
                 data = {
-                    "client_id": self.CLIENT_ID,
+                    "client_id": self.client_id,
                     "refresh_token": tokens["refresh_token"],
                     "grant_type": "refresh_token",
                     "scope": "r_usr+w_usr+w_sub",
                 }
-                auth = aiohttp.BasicAuth(login=self.CLIENT_ID, password=self.CLIENT_SECRET)
+                auth = aiohttp.BasicAuth(login=self.client_id, password=self.client_secret)
                 
                 async with session.post(f"{self.AUTH_URL}/token", data=data, auth=auth) as resp:
                     result = await resp.json()
@@ -144,7 +185,7 @@ class TidalAuth:
     async def _get_device_code(self) -> Tuple[str, str]:
         """Get the device code and verification URL."""
         data = {
-            "client_id": self.CLIENT_ID,
+            "client_id": self.client_id,
             "scope": "r_usr+w_usr+w_sub",
         }
         resp = await self._api_post(f"{self.AUTH_URL}/device_authorization", data)
@@ -168,13 +209,13 @@ class TidalAuth:
             status_code: 0 = success, 1 = error, 2 = pending
         """
         data = {
-            "client_id": self.CLIENT_ID,
+            "client_id": self.client_id,
             "device_code": device_code,
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
             "scope": "r_usr+w_usr+w_sub",
         }
-        
-        auth = aiohttp.BasicAuth(login=self.CLIENT_ID, password=self.CLIENT_SECRET)
+
+        auth = aiohttp.BasicAuth(login=self.client_id, password=self.client_secret)
         resp = await self._api_post(f"{self.AUTH_URL}/token", data, auth)
         
         self._log(f"Token response: {resp}")

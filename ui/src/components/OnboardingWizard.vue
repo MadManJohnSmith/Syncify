@@ -76,10 +76,16 @@
                 </div>
                 <div class="flex-1 min-w-0">
                   <p class="text-white font-medium truncate">{{ downloadPath }}</p>
-                  <p class="text-sm text-gray-400 mt-1">Available space: <span class="text-green-400">450 GB</span></p>
+                  <p v-if="availableSpaceLabel" class="text-sm text-gray-400 mt-1">
+                    Available space: <span class="text-green-400">{{ availableSpaceLabel }}</span>
+                  </p>
                 </div>
-                <button class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-sm font-medium transition-colors">
-                  Choose Different Folder
+                <button
+                  @click="chooseDifferentFolder"
+                  :disabled="isChoosingFolder"
+                  class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-60"
+                >
+                  {{ isChoosingFolder ? 'Opening...' : 'Choose Different Folder' }}
                 </button>
               </div>
             </div>
@@ -223,26 +229,7 @@
                 </div>
               </button>
             </div>
-            
-            <!-- Custom Option -->
-            <button @click="showCustomQuality = !showCustomQuality" class="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-left flex items-center justify-between hover:bg-white/10 transition-colors">
-              <span class="text-gray-400">Custom settings...</span>
-              <span class="material-symbols-outlined text-gray-400">{{ showCustomQuality ? 'expand_less' : 'expand_more' }}</span>
-            </button>
-            
-            <Transition name="slide-down">
-              <div v-if="showCustomQuality" class="mt-4 p-4 bg-white/5 border border-white/10 rounded-xl space-y-4">
-                <div>
-                  <label class="text-sm text-gray-400 mb-2 block">Max Sample Rate</label>
-                  <input type="range" min="44100" max="192000" step="44100" class="w-full">
-                </div>
-                <div>
-                  <label class="text-sm text-gray-400 mb-2 block">Max Bit Depth</label>
-                  <input type="range" min="16" max="32" step="8" class="w-full">
-                </div>
-              </div>
-            </Transition>
-            
+
             <p class="text-center text-sm text-gray-500 mt-6">You can change this anytime in Settings</p>
             
             <!-- Navigation -->
@@ -276,12 +263,11 @@
                   <input type="checkbox" v-model="option.selected" class="w-5 h-5 rounded border-gray-600 text-primary focus:ring-primary">
                   <div class="flex-1">
                     <p class="text-white font-medium">{{ option.name }}</p>
-                    <p class="text-sm text-gray-500">{{ option.count }}</p>
                   </div>
                   <span class="material-symbols-outlined text-gray-400">{{ option.icon }}</span>
                 </label>
               </div>
-              
+
               <!-- Auto-download toggle -->
               <label class="flex items-center gap-3 p-4 bg-green-500/10 border border-green-500/20 rounded-xl cursor-pointer">
                 <input type="checkbox" v-model="autoDownload" class="w-5 h-5 rounded border-gray-600 text-green-500 focus:ring-green-500">
@@ -291,24 +277,48 @@
                 </div>
               </label>
             </template>
-            
+
             <template v-else>
               <!-- No service connected options -->
               <div class="space-y-4">
                 <div class="p-6 bg-white/5 border border-white/10 rounded-2xl">
                   <p class="text-white font-medium mb-3">Scan local music folder</p>
                   <div class="flex gap-3">
-                    <input type="text" placeholder="C:\Users\username\Music" class="flex-1 px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500">
-                    <button class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium">Browse</button>
+                    <input
+                      type="text"
+                      v-model="localFolderPath"
+                      placeholder="/home/username/Music"
+                      class="flex-1 px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500"
+                    >
+                    <button
+                      @click="browseAndScanLocalFolder"
+                      :disabled="isScanning"
+                      class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium disabled:opacity-60"
+                    >
+                      {{ isScanning ? 'Scanning...' : 'Browse' }}
+                    </button>
                   </div>
+                  <p v-if="scanStatus" class="text-sm mt-2" :class="scanFailed ? 'text-red-400' : 'text-green-400'">{{ scanStatus }}</p>
                 </div>
-                
+
                 <div class="p-6 bg-white/5 border border-white/10 rounded-2xl">
                   <p class="text-white font-medium mb-3">Import from URL</p>
                   <div class="flex gap-3">
-                    <input type="text" placeholder="https://open.spotify.com/playlist/..." class="flex-1 px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500">
-                    <button class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium">Import</button>
+                    <input
+                      type="text"
+                      v-model="importUrl"
+                      placeholder="https://open.spotify.com/playlist/..."
+                      class="flex-1 px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500"
+                    >
+                    <button
+                      @click="importFromUrlInput"
+                      :disabled="isImportingUrl || !importUrl.trim()"
+                      class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium disabled:opacity-60"
+                    >
+                      {{ isImportingUrl ? 'Importing...' : 'Import' }}
+                    </button>
                   </div>
+                  <p v-if="urlImportStatus" class="text-sm mt-2" :class="urlImportFailed ? 'text-red-400' : 'text-green-400'">{{ urlImportStatus }}</p>
                 </div>
               </div>
             </template>
@@ -363,8 +373,8 @@
               <div class="p-4 bg-white/5 border border-white/10 rounded-xl flex items-center gap-3 text-left">
                 <span class="material-symbols-outlined text-blue-400">library_music</span>
                 <div>
-                  <p class="text-sm text-gray-400">Imported</p>
-                  <p class="text-white font-medium">{{ importedTracks.toLocaleString() }} tracks</p>
+                  <p class="text-sm text-gray-400">Import on first sync</p>
+                  <p class="text-white font-medium">{{ importPlanLabel }}</p>
                 </div>
               </div>
             </div>
@@ -392,39 +402,45 @@
           </div>
         </Transition>
       </div>
-      
-      <!-- App Tour Overlay -->
-      <Transition name="fade">
-        <div v-if="showTourOverlay" class="app-tour fixed inset-0 z-60">
-          <div class="absolute inset-0 bg-black/80"></div>
-          
-          <!-- Spotlight Effect -->
-          <div class="spotlight-effect" :style="spotlightStyle"></div>
-          
-          <!-- Tour Tooltip -->
-          <div class="tour-tooltip absolute bg-white dark:bg-surface-dark rounded-xl p-5 shadow-2xl max-w-sm" :style="tooltipStyle">
-            <p class="text-gray-900 dark:text-white font-medium mb-2">{{ tourSteps[tourIndex].title }}</p>
-            <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">{{ tourSteps[tourIndex].description }}</p>
-            <div class="flex items-center justify-between">
-              <span class="text-xs text-gray-400">{{ tourIndex + 1 }} of {{ tourSteps.length }}</span>
-              <div class="flex gap-2">
-                <button @click="skipTour" class="px-3 py-1.5 text-gray-500 hover:text-gray-700 text-sm">Skip Tour</button>
-                <button @click="nextTourStep" class="px-4 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium">
-                  {{ tourIndex === tourSteps.length - 1 ? 'Got it!' : 'Next' }}
-                </button>
-              </div>
+    </div>
+  </Transition>
+
+  <!-- App Tour Overlay: teleported so it can spotlight the real app UI after the wizard closes -->
+  <Teleport to="body">
+    <Transition name="fade">
+      <div v-if="showTourOverlay" class="app-tour fixed inset-0 z-[300]">
+
+        <!-- Spotlight Effect (its box-shadow dims everything outside the target) -->
+        <div class="spotlight-effect" :style="spotlightStyle"></div>
+
+        <!-- Tour Tooltip -->
+        <div class="tour-tooltip absolute bg-white dark:bg-surface-dark rounded-xl p-5 shadow-2xl max-w-sm" :style="tooltipStyle">
+          <p class="text-gray-900 dark:text-white font-medium mb-2">{{ tourSteps[tourIndex].title }}</p>
+          <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">{{ tourSteps[tourIndex].description }}</p>
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-gray-400">{{ tourIndex + 1 }} of {{ tourSteps.length }}</span>
+            <div class="flex gap-2">
+              <button @click="skipTour" class="px-3 py-1.5 text-gray-500 hover:text-gray-700 text-sm">Skip Tour</button>
+              <button @click="nextTourStep" class="px-4 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium">
+                {{ tourIndex === tourSteps.length - 1 ? 'Got it!' : 'Next' }}
+              </button>
             </div>
           </div>
         </div>
-      </Transition>
-    </div>
-  </Transition>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
+import { open } from '@tauri-apps/plugin-dialog'
 import { accountsApi } from '@/api/accounts'
-import { getDefaultDownloadPath } from '@/api/settings'
+import { getDefaultDownloadPath, validateDirectoryPath, saveSettingsBatch, getFolderSettings, updateFolderSettings, saveSetting } from '@/api/settings'
+import { useDownloadSettings } from '@/composables/useDownloadSettings'
+import { libraryApi } from '@/api/library'
+import { useToast } from '@/composables/useToast'
+import type { ImportPreferences } from '@/api/types'
 
 export interface OnboardingService {
   id: string
@@ -442,12 +458,17 @@ const emit = defineEmits<{
   (e: 'skip'): void
 }>()
 
+const toast = useToast()
+const downloadSettings = useDownloadSettings()
+
 // Wizard State
 const isVisible = ref(true)
 const currentStep = ref(0)
 
 // Step 1: Download Location
 const downloadPath = ref('C:\\Users\\username\\Music\\Syncify')
+const availableSpaceLabel = ref<string | null>(null)
+const isChoosingFolder = ref(false)
 
 // Step 2: Services
 const services = ref<OnboardingService[]>([
@@ -464,13 +485,22 @@ const connectedServiceName = computed(() => services.value.find(s => s.connected
 
 // Step 3: Quality
 const selectedQuality = ref('audiophile')
-const showCustomQuality = ref(false)
 
 const qualityPresets = ref([
   { id: 'audiophile', name: 'Maximum Quality', description: '24-bit Hi-Res FLAC when available', storage: '100 MB', icon: 'star', recommended: true },
   { id: 'balanced', name: 'High Quality', description: '16-bit CD Quality FLAC', storage: '50 MB', icon: 'star_half' },
   { id: 'saver', name: 'Good Quality', description: '320kbps MP3', storage: '10 MB', icon: 'star_outline' },
 ])
+
+/**
+ * Maps the wizard preset ids onto the canonical per-service quality vocabulary
+ * used by `update_quality_preference` (same options as Settings > Quality).
+ */
+const QUALITY_PRESET_MAP: Record<string, { maxQuality: string; preferredFormat: string }> = {
+  audiophile: { maxQuality: 'hires', preferredFormat: 'flac' },
+  balanced: { maxQuality: 'lossless', preferredFormat: 'flac' },
+  saver: { maxQuality: 'high', preferredFormat: 'mp3' },
+}
 
 const qualityLabel = computed(() => {
   const preset = qualityPresets.value.find(p => p.id === selectedQuality.value)
@@ -479,42 +509,105 @@ const qualityLabel = computed(() => {
 
 // Step 4: Import
 const importOptions = ref([
-  { id: 'favorites', name: 'My Favorites', count: '1,234 tracks', icon: 'favorite', selected: true },
-  { id: 'playlists', name: 'My Playlists', count: '23 playlists', icon: 'queue_music', selected: false },
-  { id: 'albums', name: 'Saved Albums', count: '156 albums', icon: 'album', selected: false },
-  { id: 'artists', name: 'Followed Artists', count: '89 artists', icon: 'person', selected: false },
+  { id: 'favorites', name: 'My Favorites', icon: 'favorite', selected: true },
+  { id: 'playlists', name: 'My Playlists', icon: 'queue_music', selected: false },
+  { id: 'albums', name: 'Saved Albums', icon: 'album', selected: false },
+  { id: 'artists', name: 'Followed Artists', icon: 'person', selected: false },
 ])
 const autoDownload = ref(false)
-const importedTracks = ref(1234)
+
+// No-service branch: local folder scan / URL import
+const localFolderPath = ref('')
+const isScanning = ref(false)
+const scanStatus = ref<string | null>(null)
+const scanFailed = ref(false)
+const importUrl = ref('')
+const isImportingUrl = ref(false)
+const urlImportStatus = ref<string | null>(null)
+const urlImportFailed = ref(false)
+
+const importPlanLabel = computed(() => {
+  if (!hasConnectedService.value) return 'No service connected'
+  const chosen = importOptions.value.filter(o => o.selected).map(o => o.name)
+  return chosen.length > 0 ? chosen.join(', ') : 'Nothing selected'
+})
 
 // Step 5: Completion
 const takeTour = ref(false)
 const showTips = ref(true)
 const autoUpdate = ref(true)
 
-// Tour State
+// Tour State — targets are real app elements marked with data-tour in App.vue
 const showTourOverlay = ref(false)
 const tourIndex = ref(0)
 const tourSteps = ref([
-  { title: 'Library Tab', description: 'This is your unified music collection from all connected services.', target: 'library' },
-  { title: 'Downloads Tab', description: 'Manage your download queue and see progress here.', target: 'downloads' },
-  { title: 'Connect Services', description: 'Click here to add more streaming services to Syncify.', target: 'accounts' },
-  { title: 'Quick Search', description: 'Press Ctrl+K anytime to search your entire library.', target: 'search' },
-  { title: 'Settings', description: 'Customize quality, storage, and other preferences here.', target: 'settings' },
+  { title: 'Library Tab', description: 'This is your unified music collection from all connected services.', target: '[data-tour="library"]' },
+  { title: 'Downloads Tab', description: 'Manage your download queue and see progress here.', target: '[data-tour="downloads"]' },
+  { title: 'Connect Services', description: 'Click here to add more streaming services to Syncify.', target: '[data-tour="accounts"]' },
+  { title: 'Quick Search', description: 'Press Ctrl+K anytime to search your entire library.', target: '[data-tour="search"]' },
+  { title: 'Settings', description: 'Customize quality, storage, and other preferences here.', target: '[data-tour="settings"]' },
 ])
 
-const spotlightStyle = computed(() => ({
-  // Placeholder spotlight position
-  top: '100px',
-  left: '50px',
-  width: '200px',
-  height: '50px',
-}))
+const spotlightStyle = ref<Record<string, string>>({
+  top: '0px',
+  left: '0px',
+  width: '0px',
+  height: '0px',
+})
 
-const tooltipStyle = computed(() => ({
-  top: '170px',
-  left: '50px',
-}))
+const tooltipStyle = ref<Record<string, string>>({
+  top: '0px',
+  left: '0px',
+})
+
+const TOUR_TOOLTIP_WIDTH = 384 // max-w-sm
+const TOUR_TOOLTIP_HEIGHT_ESTIMATE = 170
+const TOUR_SPOTLIGHT_PADDING = 8
+
+/**
+ * Positions the spotlight over the real DOM element for the current tour step.
+ * Steps whose target element cannot be found are skipped; when no target is
+ * found at all the tour ends instead of showing a placeholder rectangle.
+ */
+function positionTourStep(attempt = 0) {
+  if (attempt >= tourSteps.value.length) {
+    skipTour()
+    return
+  }
+
+  const step = tourSteps.value[tourIndex.value]
+  const el = document.querySelector(step.target)
+  if (!el) {
+    if (tourIndex.value < tourSteps.value.length - 1) {
+      tourIndex.value++
+      positionTourStep(attempt + 1)
+    } else {
+      skipTour()
+    }
+    return
+  }
+
+  const rect = el.getBoundingClientRect()
+  const pad = TOUR_SPOTLIGHT_PADDING
+  spotlightStyle.value = {
+    top: `${Math.max(0, rect.top - pad)}px`,
+    left: `${Math.max(0, rect.left - pad)}px`,
+    width: `${rect.width + pad * 2}px`,
+    height: `${rect.height + pad * 2}px`,
+  }
+
+  const viewportWidth = window.innerWidth
+  const left = Math.min(
+    Math.max(8, rect.left + rect.width / 2 - TOUR_TOOLTIP_WIDTH / 2),
+    Math.max(8, viewportWidth - TOUR_TOOLTIP_WIDTH - 8)
+  )
+  const belowFits = rect.bottom + TOUR_TOOLTIP_HEIGHT_ESTIMATE < window.innerHeight
+  const top = belowFits ? rect.bottom + 12 : Math.max(8, rect.top - TOUR_TOOLTIP_HEIGHT_ESTIMATE - 12)
+  tooltipStyle.value = {
+    top: `${top}px`,
+    left: `${left}px`,
+  }
+}
 
 // Methods
 function nextStep() {
@@ -535,6 +628,198 @@ function skipSetup() {
 }
 
 /**
+ * Maps wizard service ids onto the backend service names used by the
+ * settings/sync commands (the wizard grid uses 'apple' for Apple Music).
+ */
+function backendServiceNameOf(serviceId: string): string {
+  return serviceId === 'apple' ? 'apple_music' : serviceId
+}
+
+/** Formats a byte count as a human-readable disk-space label. */
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return ''
+  const gb = bytes / (1024 ** 3)
+  if (gb >= 1) return `${gb >= 100 ? Math.round(gb) : Math.round(gb * 10) / 10} GB`
+  const mb = bytes / (1024 ** 2)
+  if (mb >= 1) return `${Math.round(mb)} MB`
+  return `${Math.round(bytes)} B`
+}
+
+/**
+ * Queries the real free disk space for the chosen download location via the
+ * existing path-validation command. The metric is hidden when it cannot be
+ * determined instead of showing a hardcoded value.
+ */
+async function refreshAvailableSpace() {
+  availableSpaceLabel.value = null
+  const path = downloadPath.value.trim()
+  if (!path) return
+  try {
+    const validation = await validateDirectoryPath(path)
+    if (
+      validation &&
+      typeof validation === 'object' &&
+      typeof (validation as { available_bytes?: unknown }).available_bytes === 'number' &&
+      (validation as { available_bytes: number }).available_bytes > 0
+    ) {
+      availableSpaceLabel.value = formatBytes((validation as { available_bytes: number }).available_bytes)
+    }
+  } catch {
+    // Space unknown — keep the metric hidden rather than inventing a value
+  }
+}
+
+/** Opens the real OS folder dialog and re-checks available space on change. */
+async function chooseDifferentFolder() {
+  if (isChoosingFolder.value) return
+  isChoosingFolder.value = true
+  try {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: 'Choose Download Folder',
+      defaultPath: downloadPath.value || undefined,
+    })
+    if (selected && typeof selected === 'string') {
+      downloadPath.value = selected
+      await refreshAvailableSpace()
+    }
+  } catch (err) {
+    console.error('[OnboardingWizard] Folder dialog failed:', err)
+  } finally {
+    isChoosingFolder.value = false
+  }
+}
+
+/** Opens the folder dialog and scans the selected folder into the local library. */
+async function browseAndScanLocalFolder() {
+  if (isScanning.value) return
+  isScanning.value = true
+  scanFailed.value = false
+  scanStatus.value = null
+  try {
+    const result = await open({
+      directory: true,
+      multiple: false,
+      title: 'Select Music Folder to Scan',
+      defaultPath: localFolderPath.value || undefined,
+    })
+    const selected = typeof result === 'string' ? result : null
+    if (!selected) return
+
+    localFolderPath.value = selected
+    const res = await libraryApi.scanLocalLibraryWithProgress(selected, { recursive: true })
+    if (res.success && res.data) {
+      scanStatus.value = `Scanned ${res.data.total_files} files into your library.`
+    } else {
+      scanFailed.value = true
+      scanStatus.value = res.error || 'Scan failed.'
+    }
+  } catch (err) {
+    scanFailed.value = true
+    scanStatus.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    isScanning.value = false
+  }
+}
+
+/** Parses the entered URL through the real import endpoint. */
+async function importFromUrlInput() {
+  const url = importUrl.value.trim()
+  if (!url || isImportingUrl.value) return
+  isImportingUrl.value = true
+  urlImportFailed.value = false
+  urlImportStatus.value = null
+  try {
+    const res = await accountsApi.importFromUrl(url)
+    urlImportStatus.value = res && res.id
+      ? `Parsed ${res.service} ${res.content_type} — find it in Downloads.`
+      : 'Import started — find it in Downloads.'
+    importUrl.value = ''
+  } catch (err) {
+    urlImportFailed.value = true
+    urlImportStatus.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    isImportingUrl.value = false
+  }
+}
+
+/**
+ * Persists the onboarding choices with the existing settings APIs:
+ *  - download location (KV + folder settings, same keys as Settings > General)
+ *  - quality preset (per-service quality preferences, same as Settings > Quality)
+ *  - import options (per-service import preferences, upserted)
+ *  - auto-download favorites (dl_auto_download_favorites KV)
+ * Returns the list of failures so the user is told exactly what did not save.
+ */
+async function persistOnboardingChoices(): Promise<string[]> {
+  const failures: string[] = []
+
+  // 1. Download location
+  const path = downloadPath.value.trim()
+  if (path) {
+    try {
+      await saveSettingsBatch({ dl_download_path: path, download_dir: path })
+      const folder = await getFolderSettings()
+      if (folder && typeof folder === 'object') {
+        folder.base_folder = path
+        await updateFolderSettings(folder)
+      }
+    } catch (err) {
+      failures.push(`download location (${err instanceof Error ? err.message : String(err)})`)
+    }
+  }
+
+  // 2. Quality preset across all services (same path as Settings > Quality)
+  const quality = QUALITY_PRESET_MAP[selectedQuality.value]
+  if (quality) {
+    try {
+      await downloadSettings.updateGlobalQuality(quality.maxQuality, quality.preferredFormat)
+    } catch (err) {
+      failures.push(`quality (${err instanceof Error ? err.message : String(err)})`)
+    }
+  }
+
+  // 3. Import options + auto-download — only when the toggle was shown (a service is connected)
+  if (hasConnectedService.value) {
+    const selected = new Map(importOptions.value.map(o => [o.id, o.selected]))
+    for (const service of services.value.filter(s => s.connected)) {
+      const serviceName = backendServiceNameOf(service.id)
+      try {
+        // Read-modify-write so options the wizard does not manage are preserved
+        let current: Partial<ImportPreferences> | null = null
+        try {
+          current = await accountsApi.getServiceImportPreferences(serviceName)
+        } catch {
+          current = null
+        }
+        await accountsApi.updateServiceImportPreferences({
+          service_name: serviceName,
+          favorite_tracks: selected.get('favorites') ?? false,
+          favorite_albums: selected.get('albums') ?? false,
+          favorite_artists: selected.get('artists') ?? false,
+          playlists: selected.get('playlists') ?? false,
+          purchases: current?.purchases ?? false,
+          library_history: current?.library_history ?? false,
+          include_appearances: current?.include_appearances ?? false,
+          incremental_sync: current?.incremental_sync ?? true,
+        })
+      } catch (err) {
+        failures.push(`import options for ${service.name} (${err instanceof Error ? err.message : String(err)})`)
+      }
+    }
+
+    try {
+      await saveSetting('dl_auto_download_favorites', autoDownload.value ? 'true' : 'false')
+    } catch (err) {
+      failures.push(`auto-download (${err instanceof Error ? err.message : String(err)})`)
+    }
+  }
+
+  return failures
+}
+
+/**
  * Deterministically verifies account/connection status using real IPC commands / APIs.
  * Does not use Math.random().
  */
@@ -547,7 +832,7 @@ async function testConnection(serviceOrId: OnboardingService | string): Promise<
     ? serviceOrId
     : serviceOrId.id
 
-  const backendServiceName = serviceId === 'apple' ? 'apple_music' : serviceId
+  const backendServiceName = backendServiceNameOf(serviceId)
 
   if (service) {
     service.loading = true
@@ -612,7 +897,7 @@ async function connectService(service: OnboardingService) {
   const isAlreadyConnected = await testConnection(service)
   if (isAlreadyConnected) return
 
-  const backendServiceName = service.id === 'apple' ? 'apple_music' : service.id
+  const backendServiceName = backendServiceNameOf(service.id)
   service.loading = true
   service.error = null
   try {
@@ -635,19 +920,44 @@ async function connectService(service: OnboardingService) {
   }
 }
 
-function completeSetup() {
+/**
+ * Persists every onboarding choice, then either starts the real app tour or
+ * finishes. Persistence failures are surfaced via toast but never block
+ * leaving the wizard.
+ */
+async function completeSetup() {
+  const failures = await persistOnboardingChoices()
+  if (failures.length > 0) {
+    toast.error(`Some settings could not be saved: ${failures.join('; ')}`)
+  }
+
   if (takeTour.value) {
-    showTourOverlay.value = true
-    tourIndex.value = 0
+    await startTour()
   } else {
     isVisible.value = false
     emit('complete')
   }
 }
 
+/** Re-positions the spotlight when the window is resized mid-tour. */
+function handleTourResize() {
+  positionTourStep()
+}
+
+/** Hides the wizard and spotlights the real app elements marked with data-tour. */
+async function startTour() {
+  isVisible.value = false
+  showTourOverlay.value = true
+  tourIndex.value = 0
+  await nextTick()
+  positionTourStep()
+  window.addEventListener('resize', handleTourResize)
+}
+
 function nextTourStep() {
   if (tourIndex.value < tourSteps.value.length - 1) {
     tourIndex.value++
+    positionTourStep()
   } else {
     skipTour()
   }
@@ -655,7 +965,7 @@ function nextTourStep() {
 
 function skipTour() {
   showTourOverlay.value = false
-  isVisible.value = false
+  window.removeEventListener('resize', handleTourResize)
   emit('complete')
 }
 
@@ -670,13 +980,16 @@ onMounted(async () => {
     // Keep default fallback path
   }
 
+  // Real free-space metric for the chosen location
+  await refreshAvailableSpace()
+
   // Check initial account states
   try {
     const accounts = await accountsApi.getAccounts()
     const servicesList = await accountsApi.getServices()
     if (accounts && accounts.length > 0 && servicesList && servicesList.length > 0) {
       for (const service of services.value) {
-        const backendName = service.id === 'apple' ? 'apple_music' : service.id
+        const backendName = backendServiceNameOf(service.id)
         const matched = servicesList.find(s => s.name.toLowerCase() === backendName.toLowerCase())
         if (matched && accounts.some(a => a.service_id === matched.id && a.is_active)) {
           service.connected = true
@@ -697,6 +1010,22 @@ defineExpose({
   skipSetup,
   completeSetup,
   skipTour,
+  downloadPath,
+  availableSpaceLabel,
+  importOptions,
+  selectedQuality,
+  autoDownload,
+  localFolderPath,
+  importUrl,
+  scanStatus,
+  urlImportStatus,
+  chooseDifferentFolder,
+  refreshAvailableSpace,
+  persistOnboardingChoices,
+  showTourOverlay,
+  tourIndex,
+  spotlightStyle,
+  tooltipStyle,
 })
 </script>
 
@@ -764,24 +1093,5 @@ defineExpose({
   border-radius: 8px;
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.8);
   pointer-events: none;
-}
-
-/* Range inputs */
-input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  height: 6px;
-}
-
-input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  background: #6366f1;
-  border-radius: 50%;
-  cursor: pointer;
 }
 </style>

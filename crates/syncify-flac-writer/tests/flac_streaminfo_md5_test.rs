@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use syncify_flac_writer::{
     apply_flac_tags, compute_pcm_stream_md5, inspect_and_verify_flac_stream,
-    populate_streaminfo_md5, verify_flac_integrity_stream, write_flac_metadata, FlacMetadata,
+    populate_streaminfo_md5, verify_flac_integrity_stream, FlacMetadata,
 };
 use tempfile::TempDir;
 
@@ -125,7 +125,7 @@ fn test_flac_preserves_md5_after_applying_tags() {
 }
 
 #[test]
-fn test_flac_preserves_md5_after_write_flac_metadata_with_cover() {
+fn test_flac_preserves_md5_after_apply_flac_tags_with_cover() {
     let temp_dir = TempDir::new().unwrap();
     let flac_path = generate_test_flac(
         temp_dir.path(),
@@ -161,7 +161,7 @@ fn test_flac_preserves_md5_after_write_flac_metadata_with_cover() {
         ..Default::default()
     };
 
-    write_flac_metadata(&flac_path, &metadata).expect("write_flac_metadata failed");
+    apply_flac_tags(&flac_path, &metadata).expect("apply_flac_tags failed");
 
     let tag_after = metaflac::Tag::read_from_path(&flac_path).unwrap();
     let si_after = tag_after.get_streaminfo().unwrap();

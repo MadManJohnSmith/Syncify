@@ -5,6 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
+use syncify_core_domain::errors::ErrorTaxonomy;
+
+use crate::services::operation_recovery::classify_operation_error;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -26,10 +29,21 @@ pub fn classify_session_auth_failure(error: &str) -> bool {
         || (error.contains("401") && (error.contains("login") || error.contains("oauth")))
 }
 
+/// Journal operation type for a queue row, so the recovery ledger names the
+/// download the way it actually happened instead of assuming one provider.
+pub fn download_operation_type(service: Option<&str>) -> syncify_core_domain::OperationType {
+    match service.map(|s| s.trim().to_lowercase()).as_deref() {
+        Some("qobuz") => syncify_core_domain::OperationType::DownloadQobuz,
+        Some("tidal") => syncify_core_domain::OperationType::DownloadTidal,
+        _ => syncify_core_domain::OperationType::CrossProviderFallback,
+    }
+}
+
 /// Metadata needed to create a download request
 #[derive(Debug, FromRow)]
-#[allow(dead_code)]
 struct TrackMeta {
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     title: Option<String>,
     isrc: Option<String>,
     duration_ms: Option<i64>,
@@ -39,6 +53,8 @@ struct TrackMeta {
     album_name: Option<String>,
     release_date: Option<String>,
     spotify_id: Option<String>,
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     artist_name: Option<String>,
     album_artist: Option<String>,
     musicbrainz_id: Option<String>,
@@ -301,36 +317,6 @@ impl DownloadWorker {
                 }),
             );
         }
-    }
-
-    /// Get the next queued item
-    #[allow(dead_code)]
-    pub async fn get_next_item(&self) -> Option<(i64, i64, String, String)> {
-        let item: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
-            r#"
-            SELECT dq.id, dq.track_id,
-                   COALESCE(dq.target_title, t.title) as title,
-                   COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
-                    JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist
-            FROM download_queue dq
-            LEFT JOIN tracks t ON t.id = dq.track_id
-            WHERE dq.status = 'queued'
-            ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
-            LIMIT 1
-            "#,
-        )
-        .fetch_optional(&self.db)
-        .await
-        .ok()?;
-
-        item.map(|(qid, tid, title, artist)| {
-            (
-                qid,
-                tid,
-                title.unwrap_or_default(),
-                artist.unwrap_or_default(),
-            )
-        })
     }
 
     /// Atomically claim the next queued item to downloading state
@@ -785,16 +771,6 @@ impl DownloadWorker {
         }
     }
 
-    /// Update progress - designed for streaming progress updates from Python subprocess
-    #[allow(dead_code)]
-    async fn update_progress(&self, queue_id: i64, progress: f64) {
-        let _ = sqlx::query("UPDATE download_queue SET progress_percent = ? WHERE id = ?")
-            .bind(progress)
-            .bind(queue_id)
-            .execute(&self.db)
-            .await;
-    }
-
     /// S203: Effective download quality under the global ceiling + per-service preference.
     ///
     /// 1. Reads the `global_max_quality` settings KV (canonical 'any'|'hires'|'lossless'|
@@ -943,16 +919,6 @@ impl DownloadWorker {
             .join("Syncify")
             .to_string_lossy()
             .to_string()
-    }
-
-    /// Process a single download using the download orchestrator with strict source identity
-    #[allow(dead_code)]
-    pub async fn process_download(&self, queue_id: i64, track_id: i64, title: &str, artist: &str) {
-        self.state.increment_active();
-        let _guard = ActiveDownloadGuard(self.state.clone());
-        self.mark_downloading(queue_id).await;
-        self.process_download_internal(queue_id, track_id, title, artist)
-            .await;
     }
 
     /// Process a claimed download task where status is already marked downloading
@@ -1150,6 +1116,29 @@ impl DownloadWorker {
         let output_dir = self.resolve_download_output_dir().await;
         let operation_id = format!("op-{}", uuid::Uuid::new_v4());
 
+        // BD-9: open the persistent recovery journal for this download BEFORE any
+        // bytes move. If the process dies mid-transfer, startup reconciliation
+        // finds this entry, purges the `.part` file and re-queues the item.
+        let journal = crate::services::operation_recovery::DownloadJournal::start(
+            &self.db,
+            &crate::services::operation_recovery::DownloadJournalParams {
+                operation_id: operation_id.clone(),
+                queue_id,
+                track_id,
+                provider: s_name.clone(),
+                input_identity: s_track_id
+                    .clone()
+                    .map(|id| format!("service_track_id={}", id))
+                    .or_else(|| t_isrc.clone().map(|isrc| format!("isrc={}", isrc))),
+                output_dir: output_dir.clone(),
+                allow_fallback: is_allowed_fallback,
+            },
+        )
+        .await;
+        if let Some(ref j) = journal {
+            j.checkpoint_transfer(Some("transfer started")).await;
+        }
+
         let result: Result<crate::download::DownloadResult, String> = if let Some(meta) = track_meta
         {
             // Create download request with locked source identity
@@ -1275,6 +1264,15 @@ impl DownloadWorker {
                 )
                 .await;
 
+                // BD-9: the physical file is now at its final library path. Record it
+                // as the expected output so a crash before/inside mark_complete is
+                // repaired by reconciliation as ReconcileDbOnly, not as a lost transfer.
+                if let Some(ref j) = journal {
+                    j.checkpoint_promoted(&file_path, Some(&format!("promoted via {}", service)))
+                        .await;
+                    j.checkpoint_persist(Some("writing downloads ledger")).await;
+                }
+
                 self.mark_complete(queue_id, &download_result).await;
                 let file_size = tokio::fs::metadata(&file_path).await.map(|m| m.len()).ok();
                 let _ = crate::services::ManifestWriter::generate_and_save_manifest(
@@ -1399,12 +1397,27 @@ impl DownloadWorker {
                     title,
                     file_path
                 );
+
+                // BD-9: terminal state of the journal entry — 'committed' is outside
+                // the set `reconcile_startup_operations` scans, so this download is
+                // never reconsidered after a restart.
+                if let Some(ref j) = journal {
+                    j.commit(Some(&format!(
+                        "promoted={} service={} fallback={} shortfall={}",
+                        file_path, service, is_fallback, is_shortfall
+                    )))
+                    .await;
+                }
             }
             Err(error) => {
-                // Ensure staging artifact is cleaned up upon error
-                let staging_file = std::path::PathBuf::from(&output_dir)
-                    .join(".staging")
-                    .join(format!("{}.part", queue_id));
+                // Ensure staging artifact is cleaned up upon error. The path comes from
+                // the journal helper so the reconciler and this cleanup always agree.
+                let staging_file = std::path::PathBuf::from(
+                    crate::services::operation_recovery::download_staging_path(
+                        &output_dir,
+                        queue_id,
+                    ),
+                );
                 if staging_file.exists() {
                     let _ = tokio::fs::remove_file(staging_file).await;
                 }
@@ -1421,16 +1434,21 @@ impl DownloadWorker {
                     || error.contains("SourceIdentityMissing")
                     || error.contains("IdentityConflict");
 
-                let is_permanent = is_auth_error
+                // Retry policy comes from the shared taxonomy: `is_terminal()`
+                // already covers credentials, entitlement, identity conflicts,
+                // rejected quality and provider-unavailable. The one extra clause
+                // is `NetworkExhausted`: the underlying transport error is
+                // retryable, but this operation already spent its retry budget, so
+                // the queue row must not be re-queued.
+                let taxonomy = classify_operation_error(
+                    download_operation_type(s_name.as_deref()),
+                    s_name.as_deref().unwrap_or("unknown"),
+                    &error,
+                );
+                let is_permanent = taxonomy.is_terminal()
+                    || taxonomy.requires_user_action()
+                    || is_auth_error
                     || is_ambiguous
-                    || error.contains("RejectedQuality")
-                    || error.contains("downgrade rejected")
-                    || error.contains("TrackUnresolved")
-                    || error.contains("NotFound")
-                    || error.contains("not found on")
-                    || error.contains("404")
-                    || error.contains("StaleSource")
-                    || error.contains("track/get failed")
                     || error.contains("NetworkExhausted");
 
                 if is_permanent {
@@ -1438,6 +1456,13 @@ impl DownloadWorker {
                         .await;
                 } else {
                     self.mark_failed(queue_id, &error).await;
+                }
+
+                // BD-9: close the journal entry with the same retry/terminal verdict
+                // that was applied to the queue row, so startup reconciliation makes
+                // a consistent decision if the process dies before the next attempt.
+                if let Some(ref j) = journal {
+                    j.fail(&error, is_permanent).await;
                 }
 
                 let target_service = s_name.as_deref().map(|s| s.to_lowercase()).or_else(|| {
@@ -1523,22 +1548,18 @@ impl DownloadWorker {
                     }
                 }
 
-                let status_str = if is_auth_error {
-                    "requires_auth"
-                } else if error.contains("RejectedQuality") || error.contains("downgrade rejected")
-                {
-                    "rejected_quality"
-                } else if error.contains("TrackUnresolved")
-                    || error.contains("NotFound")
-                    || error.contains("not found on")
-                    || error.contains("404")
-                    || error.contains("StaleSource")
-                    || error.contains("track/get failed")
-                {
-                    "not_found"
-                } else {
-                    "failed"
+                // Queue status mirrors the taxonomy variant, so the UI shows the same
+                // classification the retry decision was made from.
+                let status_str = match &taxonomy {
+                    ErrorTaxonomy::AuthInvalid { .. } => "requires_auth",
+                    ErrorTaxonomy::RejectedQuality { .. } => "rejected_quality",
+                    ErrorTaxonomy::UnavailableFromProvider { .. } => "not_found",
+                    _ => "failed",
                 };
+
+                // User-facing wording comes from the taxonomy (`ui_message`), which
+                // already embeds the provider's own error as the reason.
+                let user_message = taxonomy.ui_message();
 
                 self.emit_progress(DownloadProgressEvent {
                     queue_id,
@@ -1561,7 +1582,7 @@ impl DownloadWorker {
                     let notif = crate::commands::AppNotification::new(
                         crate::commands::NotificationKind::Error,
                         "Download Failed",
-                        format!("{} - {}: {}", artist, title, error),
+                        format!("{} - {}: {}", artist, title, user_message),
                         crate::commands::NotificationCategory::Download,
                         Some(
                             serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "status": status_str, "error": error }),
@@ -1583,7 +1604,7 @@ impl DownloadWorker {
                         "download",
                         service_kind,
                         service_severity,
-                        &format!("Failed {} - {}: {}", artist, title, error),
+                        &format!("Failed {} - {}: {}", artist, title, user_message),
                     );
                     crate::services::notification::emit_service_notification(handle, service_notif);
                 }

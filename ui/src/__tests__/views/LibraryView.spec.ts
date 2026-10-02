@@ -2,9 +2,11 @@
  * LibraryView.spec.ts
  * Component tests for LibraryView.vue
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { createRouter, createMemoryHistory } from 'vue-router';
 import LibraryView from '@/views/LibraryView.vue';
+import { usePlayer } from '@/composables/usePlayer';
 import { mockInvoke, resetMocks } from '../setup';
 import type { LibraryTrack } from '@/api/types';
 
@@ -524,5 +526,225 @@ describe('LibraryView', () => {
             // menuHeight 360 + padding 8 = 232 max Y
             expect(top).toBeLessThanOrEqual(600 - 360);
         }
+    });
+});
+
+describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
+    beforeAll(() => {
+        // jsdom does not implement media playback; stub the prototype like
+        // usePlayer.spec.ts so the player composable can run.
+        Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
+            configurable: true,
+            value: vi.fn(() => Promise.resolve()),
+        });
+        Object.defineProperty(window.HTMLMediaElement.prototype, 'pause', {
+            configurable: true,
+            value: vi.fn(),
+        });
+        Object.defineProperty(window.HTMLMediaElement.prototype, 'load', {
+            configurable: true,
+            value: vi.fn(),
+        });
+    });
+
+    beforeEach(() => {
+        resetMocks();
+        vi.clearAllMocks();
+        usePlayer().stop();
+    });
+
+    async function mountWithTrack(overrides: Partial<LibraryTrack> = {}) {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        const mockTracks = [
+            createTestTrack({ id: 301, title: 'Playable Track', download_status: 'downloaded', quality: 'FLAC', ...overrides }),
+        ];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'resolve_playback_source') return { track_id: 301, file_path: '/lib/301.flac', format: 'FLAC' };
+            if (cmd === 'add_to_queue') return 1;
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        const row = wrapper.find('.track-row');
+        await row.trigger('contextmenu', { clientX: 100, clientY: 100 });
+
+        const menu = document.querySelector('.context-menu') as HTMLElement;
+        expect(menu).not.toBeNull();
+
+        return { invokeCalls, menu };
+    }
+
+    function menuButton(menu: HTMLElement, label: string): HTMLButtonElement {
+        const btn = [...menu.querySelectorAll('button')].find(b => b.textContent?.includes(label));
+        expect(btn, `context menu button "${label}"`).toBeDefined();
+        return btn as HTMLButtonElement;
+    }
+
+    it('context menu "Play Now" starts real playback of the track', async () => {
+        const { invokeCalls, menu } = await mountWithTrack();
+
+        menuButton(menu, 'Play Now').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await flushPromises();
+
+        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        expect(call).toBeDefined();
+        expect(call?.args).toEqual({ trackId: 301 });
+    });
+
+    it('context menu "Play Next" queues the track in the player', async () => {
+        const { invokeCalls, menu } = await mountWithTrack();
+
+        menuButton(menu, 'Play Next').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await flushPromises();
+
+        // Idle player: the queue action starts the track right away.
+        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        expect(call).toBeDefined();
+        expect(call?.args).toEqual({ trackId: 301 });
+    });
+
+    it('context menu "Add to Queue" enqueues the track for download', async () => {
+        const { invokeCalls, menu } = await mountWithTrack();
+
+        menuButton(menu, 'Add to Queue').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await flushPromises();
+
+        const call = invokeCalls.find(c => c.cmd === 'add_to_queue');
+        expect(call).toBeDefined();
+        expect(call?.args?.trackId).toBe(301);
+    });
+
+    it('Space with the context menu open and an idle player starts that track', async () => {
+        const { invokeCalls } = await mountWithTrack();
+
+        const evt = new KeyboardEvent('keydown', { key: ' ', cancelable: true });
+        const preventSpy = vi.spyOn(evt, 'preventDefault');
+        window.dispatchEvent(evt);
+        await flushPromises();
+
+        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        expect(call).toBeDefined();
+        expect(call?.args).toEqual({ trackId: 301 });
+        expect(preventSpy).toHaveBeenCalled();
+    });
+
+    it('Space toggles playback of the loaded track without resolving a new source', async () => {
+        const { invokeCalls } = await mountWithTrack();
+
+        const playSpy = window.HTMLMediaElement.prototype.play as unknown as ReturnType<typeof vi.fn>;
+        const firstPlayCalls = playSpy.mock.calls.length;
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', cancelable: true }));
+        await flushPromises();
+
+        // Same source resolved again? No — toggle only touches the audio element.
+        expect(invokeCalls.filter(c => c.cmd === 'resolve_playback_source').length).toBe(1);
+        expect(playSpy.mock.calls.length).toBeGreaterThan(firstPlayCalls);
+    });
+
+    it('Q adds the context-menu track to the download queue', async () => {
+        const { invokeCalls } = await mountWithTrack();
+
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'q' }));
+        await flushPromises();
+
+        const call = invokeCalls.find(c => c.cmd === 'add_to_queue');
+        expect(call).toBeDefined();
+        expect(call?.args?.trackId).toBe(301);
+    });
+
+    it('N queues the context-menu track as "Play Next"', async () => {
+        const { invokeCalls } = await mountWithTrack();
+
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
+        await flushPromises();
+
+        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        expect(call).toBeDefined();
+        expect(call?.args).toEqual({ trackId: 301 });
+    });
+});
+
+describe('LibraryView quality deep-link (FE-10)', () => {
+    beforeEach(() => {
+        resetMocks();
+        vi.clearAllMocks();
+    });
+
+    it('filters tracks by the quality bucket from route.query', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 1, title: 'Hi-Res Song', download_status: 'downloaded', quality: 'FLAC', quality_bucket: 'Hi-Res (24-bit+)' }),
+            createTestTrack({ id: 2, title: 'CD Song', download_status: 'downloaded', quality: 'FLAC', quality_bucket: 'CD Quality' }),
+            createTestTrack({ id: 3, title: 'Lossy Song', download_status: 'downloaded', quality: 'MP3', quality_bucket: 'Lossy' }),
+        ];
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const router = createRouter({
+            history: createMemoryHistory(),
+            routes: [{ path: '/library', component: LibraryView }],
+        });
+        await router.push('/library?filter=quality&quality=Hi-Res%20(24-bit%2B)');
+        await router.isReady();
+
+        const wrapper = mount(LibraryView, { global: { plugins: [router] } });
+        await flushPromises();
+
+        const text = wrapper.text();
+        expect(text).toContain('Hi-Res Song');
+        expect(text).not.toContain('CD Song');
+        expect(text).not.toContain('Lossy Song');
+    });
+
+    it('applies the CD Quality bucket for the matching deep-link', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 1, title: 'Hi-Res Song', download_status: 'downloaded', quality: 'FLAC', quality_bucket: 'Hi-Res (24-bit+)' }),
+            createTestTrack({ id: 2, title: 'CD Song', download_status: 'downloaded', quality: 'FLAC', quality_bucket: 'CD Quality' }),
+        ];
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const router = createRouter({
+            history: createMemoryHistory(),
+            routes: [{ path: '/library', component: LibraryView }],
+        });
+        await router.push('/library?filter=quality&quality=CD%20Quality');
+        await router.isReady();
+
+        const wrapper = mount(LibraryView, { global: { plugins: [router] } });
+        await flushPromises();
+
+        const text = wrapper.text();
+        expect(text).toContain('CD Song');
+        expect(text).not.toContain('Hi-Res Song');
+    });
+
+    it('ignores filter=quality without a quality parameter (no no-op filter)', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 1, title: 'Any Song', quality_bucket: 'Lossy' }),
+        ];
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const router = createRouter({
+            history: createMemoryHistory(),
+            routes: [{ path: '/library', component: LibraryView }],
+        });
+        await router.push('/library?filter=quality');
+        await router.isReady();
+
+        const wrapper = mount(LibraryView, { global: { plugins: [router] } });
+        await flushPromises();
+
+        expect(wrapper.text()).toContain('Any Song');
     });
 });

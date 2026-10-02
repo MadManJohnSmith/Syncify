@@ -16,6 +16,7 @@ import type {
     UrlParseResult,
     ImportPreferences,
     ServiceSyncResult,
+    ServiceAuthStatus,
 } from './types';
 
 /**
@@ -336,6 +337,90 @@ export async function updateServiceImportPreferences(preferences: ImportPreferen
 }
 
 // Export as namespace
+
+// ==============================================
+// SERVICE MAINTENANCE (IN-5: exposed backend capabilities)
+// ==============================================
+
+/**
+ * Enrich album metadata (label, UPC) for Spotify albums.
+ */
+export async function enrichAlbumMetadata(): Promise<ImportResult> {
+    return normalizeImportResult(await invokeCommand<unknown>('enrich_album_metadata'));
+}
+
+/**
+ * Enrich album metadata (label, UPC) for Qobuz albums.
+ */
+export async function enrichQobuzAlbumMetadata(): Promise<ImportResult> {
+    return normalizeImportResult(await invokeCommand<unknown>('enrich_qobuz_album_metadata'));
+}
+
+/**
+ * Import Qobuz purchased tracks into the library with is_purchased = 1 (TASK-108).
+ */
+export async function importQobuzPurchases(): Promise<ImportResult> {
+    return normalizeImportResult(await invokeCommand<unknown>('import_qobuz_purchases'));
+}
+
+/**
+ * Refresh the Spotify session access token via the auth bridge (SEC-022).
+ */
+export async function refreshSpotifySession(spDc: string): Promise<AuthResult> {
+    return invokeCommand<AuthResult>('refresh_spotify_session', { spDc });
+}
+
+/**
+ * Perform a real authentication check against the provider for a service.
+ */
+export async function getServiceAuthStatus(
+    service: string,
+    accountId?: number
+): Promise<ServiceAuthStatus> {
+    const raw = await invokeCommand<unknown>('get_service_auth_status', {
+        service,
+        accountId: accountId ?? null
+    });
+    const rec = asRecord(raw);
+    const VALID_STATUSES = ['connected_valid', 'requires_auth', 'expired', 'missing', 'error'] as const;
+    type AuthStatus = (typeof VALID_STATUSES)[number];
+    const rawStatus = String(rec?.status ?? 'error');
+    const status: AuthStatus = (VALID_STATUSES as readonly string[]).includes(rawStatus)
+        ? (rawStatus as AuthStatus)
+        : 'error';
+    return {
+        service: String(rec?.service ?? service),
+        account_id: rec?.account_id == null ? null : asNumber(rec.account_id),
+        status,
+        is_authenticated: rec?.is_authenticated === true,
+        credentials_valid: rec?.credentials_valid === true,
+        credentials_expired: rec?.credentials_expired === true,
+        credentials_invalid: rec?.credentials_invalid === true,
+        sync_available: rec?.sync_available === true,
+        download_entitled: rec?.download_entitled === true,
+        download_auth_failed: rec?.download_auth_failed === true,
+    };
+}
+
+/** Result of purging accounts with irrecoverable credentials. */
+export interface PurgeStaleCredentialsResult {
+    purged_count: number;
+    services: string[];
+}
+
+/**
+ * Detect and flag accounts whose credentials cannot be decrypted on this
+ * machine (OS keychain mismatch), so the UI can show them as requiring re-auth.
+ */
+export async function purgeStaleCredentials(): Promise<PurgeStaleCredentialsResult> {
+    const raw = await invokeCommand<unknown>('purge_stale_credentials');
+    // Rust returns a tuple: (purged_count, Vec<service names>)
+    const arr = Array.isArray(raw) ? raw : [];
+    const count = asNumber(arr[0]);
+    const services = Array.isArray(arr[1]) ? (arr[1] as string[]) : [];
+    return { purged_count: count, services };
+}
+
 export const accountsApi = {
     // Services
     getServices,
@@ -373,5 +458,12 @@ export const accountsApi = {
     importSoundCloudLibrary,
     importAppleMusicLibrary,
     importFromUrl,
+    // Maintenance
+    enrichAlbumMetadata,
+    enrichQobuzAlbumMetadata,
+    importQobuzPurchases,
+    refreshSpotifySession,
+    getServiceAuthStatus,
+    purgeStaleCredentials,
 };
 

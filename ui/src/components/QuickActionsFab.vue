@@ -85,9 +85,11 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { usePlayer } from '../composables/usePlayer'
 import { useEventBus } from '../composables/useEventBus'
+import { useToast } from '../composables/useToast'
 
 const { current } = usePlayer()
 const eventBus = useEventBus()
+const toast = useToast()
 
 export type ActionCallback = ((errOrPromise?: unknown) => void) & {
   resolve: () => void
@@ -102,9 +104,6 @@ export type QuickActionEvent =
   | 'scan-library'
   | 'sync-all'
   | 'new-playlist'
-  | 'download-selected'
-  | 'add-to-playlist'
-  | 'batch-edit'
   | 'pause-all'
   | 'retry-failed'
   | 'clear-completed'
@@ -115,11 +114,9 @@ export type QuickActionEvent =
 
 const props = withDefaults(defineProps<{
   currentTab?: string
-  selectedTracksCount?: number
   actionHandler?: (action: string) => Promise<unknown> | unknown
 }>(), {
   currentTab: 'library',
-  selectedTracksCount: 0,
   actionHandler: undefined
 })
 
@@ -129,9 +126,6 @@ const emit = defineEmits<{
   (e: 'scan-library', callback: ActionCallback): void
   (e: 'sync-all', callback: ActionCallback): void
   (e: 'new-playlist', callback: ActionCallback): void
-  (e: 'download-selected', callback: ActionCallback): void
-  (e: 'add-to-playlist', callback: ActionCallback): void
-  (e: 'batch-edit', callback: ActionCallback): void
   (e: 'pause-all', callback: ActionCallback): void
   (e: 'retry-failed', callback: ActionCallback): void
   (e: 'clear-completed', callback: ActionCallback): void
@@ -156,17 +150,15 @@ interface QuickAction {
   shortcut?: string
   event: string
   tabs?: string[]
-  conditional?: () => boolean
 }
 
+// Every action listed here MUST have a real handler bound in App.vue (or via the
+// actionHandler prop). executeAction fails visibly when nothing consumes the event.
 const allActions: QuickAction[] = [
   { id: 'download-url', label: 'Download from URL', icon: 'link', bgColor: 'bg-blue-500', shortcut: '1', event: 'download-url' },
   { id: 'scan-folder', label: 'Scan Local Folder', icon: 'folder_open', bgColor: 'bg-green-500', shortcut: '2', event: 'scan-folder' },
   { id: 'sync-all', label: 'Sync All Services', icon: 'sync', bgColor: 'bg-purple-500', shortcut: '3', event: 'sync-all' },
   { id: 'new-playlist', label: 'New Playlist', icon: 'playlist_add', bgColor: 'bg-orange-500', shortcut: '4', event: 'new-playlist' },
-  { id: 'download-selected', label: 'Download Selected', icon: 'download', bgColor: 'bg-teal-500', shortcut: '5', event: 'download-selected', tabs: ['library'], conditional: () => props.selectedTracksCount > 0 },
-  { id: 'add-to-playlist', label: 'Add to Playlist', icon: 'playlist_add_check', bgColor: 'bg-pink-500', event: 'add-to-playlist', tabs: ['library'], conditional: () => props.selectedTracksCount > 0 },
-  { id: 'batch-edit', label: 'Batch Edit Metadata', icon: 'edit_note', bgColor: 'bg-amber-500', event: 'batch-edit', tabs: ['library'], conditional: () => props.selectedTracksCount > 0 },
   { id: 'pause-all', label: 'Pause All Downloads', icon: 'pause', bgColor: 'bg-gray-500', event: 'pause-all', tabs: ['downloads'] },
   { id: 'retry-failed', label: 'Retry Failed', icon: 'refresh', bgColor: 'bg-red-500', event: 'retry-failed', tabs: ['downloads'] },
   { id: 'clear-completed', label: 'Clear Completed', icon: 'delete_sweep', bgColor: 'bg-gray-600', event: 'clear-completed', tabs: ['downloads'] },
@@ -181,10 +173,7 @@ const visibleActions = computed(() => {
   return allActions
     .filter(action => {
       // Show if no tab restriction or matches current tab
-      const tabMatch = !action.tabs || action.tabs.includes(props.currentTab)
-      // Check conditional
-      const conditionMet = !action.conditional || action.conditional()
-      return tabMatch && conditionMet
+      return !action.tabs || action.tabs.includes(props.currentTab)
     })
     .sort((a, b) => {
       // Prioritize tab-specific actions over global actions
@@ -281,6 +270,10 @@ async function executeAction(action: QuickAction) {
         await asyncPromise
       } else if (registeredAsync) {
         await completionPromise
+      } else {
+        // No handler consumed this action: fail visibly instead of faking success.
+        toast.error('Quick action unavailable', `"${action.label}" has no handler bound.`)
+        throw new Error(`No handler bound for quick action "${action.event}"`)
       }
     }
     
@@ -312,8 +305,8 @@ function handleKeydown(e: KeyboardEvent) {
     close()
   }
   
-  // Number keys select actions
-  if (isOpen.value && /^[1-6]$/.test(e.key)) {
+  // Number keys select actions (menu shows up to 7 actions)
+  if (isOpen.value && /^[1-7]$/.test(e.key)) {
     const index = parseInt(e.key) - 1
     if (index < visibleActions.value.length) {
       executeAction(visibleActions.value[index])

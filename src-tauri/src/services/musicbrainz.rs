@@ -224,7 +224,7 @@ static MB_QUERY_CACHE: RwLock<Option<HashMap<String, Option<MusicBrainzRecording
     RwLock::new(None);
 
 /// Clear MusicBrainz in-memory cache
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/batch_cache_optimization_and_parity_test.rs`.
 pub fn clear_musicbrainz_cache() {
     if let Ok(mut guard) = MB_QUERY_CACHE.write() {
         *guard = Some(HashMap::new());
@@ -232,7 +232,7 @@ pub fn clear_musicbrainz_cache() {
 }
 
 /// Set a cached entry in the MusicBrainz query cache
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/batch_cache_optimization_and_parity_test.rs`.
 pub fn set_cached_musicbrainz_recording(key: &str, recording: Option<MusicBrainzRecording>) {
     if let Ok(mut guard) = MB_QUERY_CACHE.write() {
         let cache = guard.get_or_insert_with(HashMap::new);
@@ -538,119 +538,6 @@ impl MusicBrainzClient {
             .map_err(|e| format!("Failed to parse MusicBrainz response: {}", e))?;
 
         Ok(data)
-    }
-
-    /// Batch enrich tracks with MusicBrainz IDs
-    #[allow(dead_code)]
-    pub async fn enrich_tracks(
-        &self,
-        db: &sqlx::SqlitePool,
-        limit: i64,
-    ) -> Result<EnrichmentResult, String> {
-        // Find tracks with ISRC but no MusicBrainz ID
-        let tracks: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT id, isrc FROM tracks WHERE isrc IS NOT NULL AND isrc != '' AND musicbrainz_id IS NULL LIMIT ?"
-        )
-        .bind(limit)
-        .fetch_all(db)
-        .await
-        .map_err(|e| format!("DB error: {}", e))?;
-
-        let total = tracks.len();
-        let mut enriched = 0;
-        let mut failed = 0;
-
-        for (track_id, isrc) in tracks {
-            match self.lookup_by_isrc(&isrc).await {
-                Ok(Some(recording)) => {
-                    if !FieldValidator::is_valid_musicbrainz_id(&recording.id) {
-                        tracing::warn!(
-                            "Rejecting invalid or synthetic MBID for track {}: {}",
-                            track_id,
-                            recording.id
-                        );
-                        failed += 1;
-                        continue;
-                    }
-
-                    // Update track with MusicBrainz ID, genre, and release year if available
-                    let mb_genre = recording
-                        .genres
-                        .as_ref()
-                        .and_then(|g| g.first().map(|g| g.name.as_str()))
-                        .or_else(|| {
-                            recording
-                                .tags
-                                .as_ref()
-                                .and_then(|t| t.first().map(|t| t.name.as_str()))
-                        })
-                        .and_then(crate::services::enrichment::clean_primary_genre);
-
-                    let mb_date = recording
-                        .releases
-                        .as_ref()
-                        .and_then(|rels| rels.first().and_then(|r| r.date.as_deref()));
-                    let mb_year =
-                        mb_date.and_then(|d| d.get(..4).and_then(|y| y.parse::<i32>().ok()));
-
-                    let result = sqlx::query(
-                        r#"
-                        UPDATE tracks SET
-                            musicbrainz_id = ?,
-                            genre = COALESCE(genre, ?),
-                            release_year = COALESCE(release_year, ?)
-                        WHERE id = ?
-                        "#,
-                    )
-                    .bind(&recording.id)
-                    .bind(mb_genre.as_deref())
-                    .bind(mb_year)
-                    .bind(track_id)
-                    .execute(db)
-                    .await;
-
-                    if let Some(d) = mb_date {
-                        let _ = sqlx::query(
-                            r#"
-                            UPDATE albums
-                            SET release_date = COALESCE(release_date, ?)
-                            WHERE id = (SELECT album_id FROM tracks WHERE id = ?)
-                              AND (release_date IS NULL OR release_date = '')
-                            "#,
-                        )
-                        .bind(d)
-                        .bind(track_id)
-                        .execute(db)
-                        .await;
-                    }
-
-                    if result.is_ok() {
-                        enriched += 1;
-                        tracing::info!("Enriched track {} with MB ID {}", track_id, recording.id);
-                    } else {
-                        failed += 1;
-                    }
-                }
-                Ok(None) => {
-                    // No match found - mark as checked to avoid re-checking
-                    let _ =
-                        sqlx::query("UPDATE tracks SET musicbrainz_id = 'NOT_FOUND' WHERE id = ?")
-                            .bind(track_id)
-                            .execute(db)
-                            .await;
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to look up ISRC {}: {}", isrc, e);
-                    failed += 1;
-                }
-            }
-        }
-
-        Ok(EnrichmentResult {
-            total,
-            enriched,
-            failed,
-        })
     }
 
     /// Search for an artist by name

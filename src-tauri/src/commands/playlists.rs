@@ -973,27 +973,6 @@ pub fn validate_safe_m3u_write_path(
     validate_safe_m3u_write_path_with_bases(target_path, &allowed_bases)
 }
 
-/// Escritura atómica-en-un-archivo del M3U con bases permitidas personalizadas.
-#[allow(dead_code)]
-pub fn write_m3u_to_disk_with_bases(
-    path: &str,
-    contents: &str,
-    allowed_bases: &[std::path::PathBuf],
-) -> Result<u64, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err(
-            "Acceso denegado: la ruta no puede estar vacía (sandbox violation)".to_string(),
-        );
-    }
-    let target = std::path::Path::new(trimmed);
-    let safe_target = validate_safe_m3u_write_path_with_bases(target, allowed_bases)?;
-
-    std::fs::write(&safe_target, contents)
-        .map_err(|e| format!("No se pudo escribir {}: {}", safe_target.display(), e))?;
-    Ok(contents.len() as u64)
-}
-
 /// Escritura de M3U en disco confinado a directorios permitidos (Música, Descargas, Documentos, App Data).
 pub fn write_m3u_to_disk(path: &str, contents: &str) -> Result<u64, String> {
     let trimmed = path.trim();
@@ -1091,6 +1070,654 @@ pub async fn export_playlist_m3u(
     file_path: Option<String>,
 ) -> Result<PlaylistM3uExportResult, String> {
     export_playlist_m3u_core(&state.db, playlist_id, file_path).await
+}
+
+// ============================================================================
+// FE-6 — IMPORT DE PLAYLISTS DESDE ARCHIVO (.m3u/.m3u8, .csv, .txt)
+// ============================================================================
+
+/// Extensiones de audio reconocidas dentro de un M3U (paridad con scripts/scanner_bridge.py AUDIO_EXTENSIONS).
+pub const AUDIO_FILE_EXTENSIONS: &[&str] =
+    &["mp3", "flac", "m4a", "wav", "ogg", "aac", "wma", "opus"];
+
+/// Entrada parseada del archivo de playlist, antes del matching con la biblioteca.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedPlaylistEntry {
+    pub title: String,
+    pub artist: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub isrc: Option<String>,
+    pub file_path: Option<String>,
+}
+
+/// Pista parseada que no pudo enlazarse a ninguna pista existente de la biblioteca.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnmatchedImportedEntry {
+    pub title: String,
+    pub artist: Option<String>,
+}
+
+/// Resultado honesto del import: playlist creada, conteos reales y faltantes.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPlaylistFromFileResult {
+    pub playlist_id: i64,
+    pub playlist_name: String,
+    /// Entradas totales parseadas del archivo.
+    pub total_entries: usize,
+    /// Entradas enlazadas a pistas existentes (tras dedupe).
+    pub matched_count: usize,
+    pub unmatched: Vec<UnmatchedImportedEntry>,
+}
+
+/// Divide "Artista - Título" en la PRIMERA ocurrencia de " - " (paridad con
+/// scripts/playlist_bridge.py parse_m3u_file). Devuelve (artista, título).
+fn split_artist_title(line: &str) -> (Option<String>, String) {
+    match line.split_once(" - ") {
+        Some((artist, title)) => {
+            let artist = artist.trim();
+            let title = title.trim();
+            if artist.is_empty() || title.is_empty() {
+                (None, line.trim().to_string())
+            } else {
+                (Some(artist.to_string()), title.to_string())
+            }
+        }
+        None => (None, line.trim().to_string()),
+    }
+}
+
+/// True si la línea parece una ruta/nombre de archivo de audio (por extensión).
+fn looks_like_audio_path(line: &str) -> bool {
+    let lowered = line.trim().to_lowercase();
+    AUDIO_FILE_EXTENSIONS
+        .iter()
+        .any(|ext| lowered.rsplit('.').next() == Some(*ext) && lowered.contains('.'))
+}
+
+/// Normaliza un ISRC para comparación (paridad con migration 0064):
+/// mayúsculas sin guiones ni espacios.
+fn normalize_isrc(isrc: &str) -> String {
+    isrc.trim().to_uppercase().replace(['-', ' '], "")
+}
+
+/// Parsea el contenido de un .m3u/.m3u8: cabecera `#EXTM3U`, directivas
+/// `#EXTINF:<segundos>,<Artista - Título>` (+ `# ISRC:` opcional, paridad CLI)
+/// seguidas de la ruta del archivo, o líneas sueltas "Artista - Título"/título.
+pub fn parse_m3u_content(content: &str) -> Vec<ParsedPlaylistEntry> {
+    let mut entries: Vec<ParsedPlaylistEntry> = Vec::new();
+    let mut current_title: Option<String> = None;
+    let mut current_artist: Option<String> = None;
+    let mut current_duration_ms: Option<i64> = None;
+    let mut current_isrc: Option<String> = None;
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(extinf) = line
+            .strip_prefix("#EXTINF:")
+            .or_else(|| line.strip_prefix("#extinf:"))
+        {
+            // Formato: #EXTINF:<segundos>,<Artista - Título>
+            let (secs_part, label) = match extinf.split_once(',') {
+                Some((s, l)) => (s.trim(), l.trim()),
+                None => (extinf.trim(), ""),
+            };
+            current_duration_ms = secs_part
+                .parse::<i64>()
+                .ok()
+                .map(|secs| (secs.max(0)) * 1000);
+            let (artist, title) = split_artist_title(label);
+            current_artist = artist;
+            current_title = if title.is_empty() { None } else { Some(title) };
+        } else if let Some(isrc) = line
+            .strip_prefix("# ISRC:")
+            .or_else(|| line.strip_prefix("#ISRC:"))
+        {
+            let norm = isrc.trim();
+            if !norm.is_empty() {
+                current_isrc = Some(norm.to_string());
+            }
+        } else if line.starts_with('#') {
+            // Otra directiva o comentario M3U: ignorar.
+            continue;
+        } else if looks_like_audio_path(line) {
+            // Línea de ruta de archivo: usa los metadatos del #EXTINF previo.
+            entries.push(ParsedPlaylistEntry {
+                title: current_title.take().unwrap_or_else(|| line.to_string()),
+                artist: current_artist.take(),
+                duration_ms: current_duration_ms.take(),
+                isrc: current_isrc.take(),
+                file_path: Some(line.to_string()),
+            });
+        } else {
+            // Línea "Artista - Título" o título suelto (M3U sin rutas).
+            // Si había un #EXTINF pendiente sin ruta, se emite como entrada propia.
+            if let Some(pending_title) = current_title.take() {
+                entries.push(ParsedPlaylistEntry {
+                    title: pending_title,
+                    artist: current_artist.take(),
+                    duration_ms: current_duration_ms.take(),
+                    isrc: current_isrc.take(),
+                    file_path: None,
+                });
+            }
+            let (artist, title) = split_artist_title(line);
+            if !title.is_empty() {
+                entries.push(ParsedPlaylistEntry {
+                    title,
+                    artist,
+                    duration_ms: None,
+                    isrc: None,
+                    file_path: None,
+                });
+            }
+            current_title = None;
+            current_artist = None;
+        }
+    }
+
+    // Flush final: un #EXTINF sin línea de ruta al final del archivo.
+    if let Some(pending_title) = current_title.take() {
+        entries.push(ParsedPlaylistEntry {
+            title: pending_title,
+            artist: current_artist.take(),
+            duration_ms: current_duration_ms.take(),
+            isrc: current_isrc.take(),
+            file_path: None,
+        });
+    }
+
+    entries
+}
+
+/// Divide una línea CSV en campos respetando comillas dobles ("a,b" es un campo).
+fn split_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    current.push('"');
+                    chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                current.push(c);
+            }
+        } else if c == '"' && current.is_empty() {
+            in_quotes = true;
+        } else if c == ',' {
+            fields.push(current.trim().to_string());
+            current = String::new();
+        } else {
+            current.push(c);
+        }
+    }
+    fields.push(current.trim().to_string());
+    fields
+}
+
+/// Normaliza una cabecera CSV para mapeo de columnas: minúsculas, cualquier
+/// secuencia de no-alfanuméricos colapsa a '_' y se recortan los extremos.
+/// "Duration (ms)" -> "duration_ms", "Artist Name" -> "artist_name".
+fn norm_header(field: &str) -> String {
+    let lowered = field.trim().to_lowercase();
+    let mut out = String::with_capacity(lowered.len());
+    let mut last_underscore = false;
+    for c in lowered.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            last_underscore = false;
+        } else if !last_underscore {
+            out.push('_');
+            last_underscore = true;
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+/// Parsea el contenido de un .csv. Si la primera fila es una cabecera
+/// (contiene title/track/song/artist/...) mapea columnas por nombre
+/// (title|track|song|name, artist|author, isrc, duration|duration_ms|duration_s,
+/// path|file|file_path|location); si no, asume `title,artist` (formato
+/// "Title,Artist" de exportaciones habituales).
+pub fn parse_csv_content(content: &str) -> Vec<ParsedPlaylistEntry> {
+    let rows: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    // Detección de cabecera: nombres conocidos en la primera fila.
+    let first_fields = split_csv_line(rows[0]);
+    let header_keys: Vec<String> = first_fields.iter().map(|f| norm_header(f)).collect();
+    let known = [
+        "title",
+        "track",
+        "track_name",
+        "song",
+        "name",
+        "artist",
+        "artist_name",
+        "author",
+        "isrc",
+        "duration",
+        "duration_ms",
+        "duration_s",
+        "path",
+        "file",
+        "file_path",
+        "location",
+    ];
+    let has_header = header_keys.iter().any(|k| known.contains(&k.as_str()));
+
+    let mut col: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    if has_header {
+        for (idx, key) in header_keys.iter().enumerate() {
+            // Primera ocurrencia gana (no sobrescribir duplicados).
+            col.entry(key.clone()).or_insert(idx);
+        }
+    }
+    // Con cabecera la primera fila son los nombres; sin cabecera, todas son datos.
+    let data_rows: &[&str] = if has_header { &rows[1..] } else { &rows[..] };
+
+    let get = |fields: &[String], names: &[&str]| -> Option<String> {
+        for n in names {
+            if let Some(&idx) = col.get(*n) {
+                let v = fields.get(idx).map(|s| s.trim().to_string());
+                if let Some(v) = v {
+                    if !v.is_empty() {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+        None
+    };
+
+    let mut entries = Vec::new();
+    for row in data_rows {
+        let fields = split_csv_line(row);
+        if fields.iter().all(|f| f.is_empty()) {
+            continue;
+        }
+
+        if has_header {
+            let title =
+                get(&fields, &["title", "track", "track_name", "song", "name"]).unwrap_or_default();
+            if title.is_empty() {
+                continue;
+            }
+            let duration_ms = get(&fields, &["duration_ms"])
+                .and_then(|v| v.parse::<i64>().ok())
+                .or_else(|| {
+                    get(&fields, &["duration", "duration_s"])
+                        .and_then(|v| v.parse::<f64>().ok().map(|s| (s.max(0.0) * 1000.0) as i64))
+                });
+            entries.push(ParsedPlaylistEntry {
+                title,
+                artist: get(&fields, &["artist", "artist_name", "author"]),
+                duration_ms,
+                isrc: get(&fields, &["isrc"]),
+                file_path: get(&fields, &["path", "file", "file_path", "location"]),
+            });
+        } else {
+            // Sin cabecera: title,artist (formato habitual de exportación).
+            let title = fields[0].trim().to_string();
+            if title.is_empty() {
+                continue;
+            }
+            entries.push(ParsedPlaylistEntry {
+                title,
+                artist: fields
+                    .get(1)
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+                duration_ms: None,
+                isrc: None,
+                file_path: None,
+            });
+        }
+    }
+
+    entries
+}
+
+/// Parsea el contenido de un .txt: una pista por línea, en formato
+/// "Artista - Título", título suelto, o ruta de archivo de audio.
+pub fn parse_txt_content(content: &str) -> Vec<ParsedPlaylistEntry> {
+    let mut entries = Vec::new();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if looks_like_audio_path(line) {
+            // Ruta de archivo: título = stem del archivo (sin extensión) o
+            // "Artista - Título" si el nombre tiene ese formato.
+            let base = line
+                .rsplit('/')
+                .next()
+                .unwrap_or(line)
+                .rsplit('\\')
+                .next()
+                .unwrap_or(line);
+            let stem = std::path::Path::new(base)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(base);
+            let (artist, title) = split_artist_title(stem);
+            entries.push(ParsedPlaylistEntry {
+                title: if title.is_empty() {
+                    base.to_string()
+                } else {
+                    title
+                },
+                artist,
+                duration_ms: None,
+                isrc: None,
+                file_path: Some(line.to_string()),
+            });
+        } else {
+            let (artist, title) = split_artist_title(line);
+            if !title.is_empty() {
+                entries.push(ParsedPlaylistEntry {
+                    title,
+                    artist,
+                    duration_ms: None,
+                    isrc: None,
+                    file_path: None,
+                });
+            }
+        }
+    }
+    entries
+}
+
+/// Despacha el parseo según la extensión de `file_name`.
+/// Soporta .m3u/.m3u8, .csv y .txt (case-insensitive).
+pub fn parse_playlist_file(
+    file_name: &str,
+    content: &str,
+) -> Result<Vec<ParsedPlaylistEntry>, String> {
+    let ext = std::path::Path::new(file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .ok_or_else(|| {
+            "Archivo sin extensión: no se puede determinar el formato (m3u, m3u8, csv o txt)"
+                .to_string()
+        })?;
+
+    let entries = match ext.as_str() {
+        "m3u" | "m3u8" => parse_m3u_content(content),
+        "csv" => parse_csv_content(content),
+        "txt" => parse_txt_content(content),
+        other => {
+            return Err(format!(
+                "Formato de playlist no soportado: '.{}'. Solo .m3u, .m3u8, .csv y .txt",
+                other
+            ))
+        }
+    };
+
+    if entries.is_empty() {
+        return Err(
+            "No se encontraron pistas en el archivo: revisa el formato (m3u, m3u8, csv o txt)"
+                .to_string(),
+        );
+    }
+
+    Ok(entries)
+}
+
+/// Nombre de playlist por defecto: stem del archivo ("Mi Lista.m3u8" -> "Mi Lista").
+fn default_playlist_name(file_name: &str) -> String {
+    std::path::Path::new(file_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Imported Playlist".to_string())
+}
+
+/// Matching con el mecanismo existente de la biblioteca local, por orden de
+/// especificidad: (1) ISRC exacto (normalizado, paridad migration 0064),
+/// (2) file_path de downloads (misma relación que el export M3U),
+/// (3) título + artista primario exactos case-insensitive,
+/// (4) título exacto case-insensitive. Devuelve el track_id si hubo match.
+async fn match_entry_to_track(
+    db: &sqlx::SqlitePool,
+    entry: &ParsedPlaylistEntry,
+) -> Result<Option<i64>, String> {
+    // 1. ISRC exacto (normalizado: mayúsculas sin guiones).
+    if let Some(isrc) = &entry.isrc {
+        let norm = normalize_isrc(isrc);
+        if !norm.is_empty() {
+            let id: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM tracks WHERE UPPER(REPLACE(TRIM(isrc), '-', '')) = ? LIMIT 1",
+            )
+            .bind(&norm)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("Database error matching ISRC: {}", e))?;
+            if let Some((track_id,)) = id {
+                return Ok(Some(track_id));
+            }
+        }
+    }
+
+    // 2. Ruta de archivo local (tabla downloads, misma que usa el export M3U).
+    if let Some(path) = &entry.file_path {
+        let id: Option<(i64,)> =
+            sqlx::query_as("SELECT track_id FROM downloads WHERE file_path = ? LIMIT 1")
+                .bind(path)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| format!("Database error matching file path: {}", e))?;
+        if let Some((track_id,)) = id {
+            return Ok(Some(track_id));
+        }
+    }
+
+    let title_norm = entry.title.trim().to_lowercase();
+    if title_norm.is_empty() {
+        return Ok(None);
+    }
+
+    // 3. Título + artista primario exactos (case-insensitive).
+    if let Some(artist) = &entry.artist {
+        let artist_norm = artist.trim().to_lowercase();
+        if !artist_norm.is_empty() {
+            let id: Option<(i64,)> = sqlx::query_as(
+                r#"
+                SELECT t.id FROM tracks t
+                WHERE LOWER(TRIM(t.title)) = ?
+                AND EXISTS (
+                    SELECT 1 FROM track_artists ta
+                    JOIN artists a ON a.id = ta.artist_id
+                    WHERE ta.track_id = t.id AND LOWER(TRIM(a.name)) = ?
+                )
+                ORDER BY t.id ASC
+                LIMIT 1
+                "#,
+            )
+            .bind(&title_norm)
+            .bind(&artist_norm)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("Database error matching title+artist: {}", e))?;
+            if let Some((track_id,)) = id {
+                return Ok(Some(track_id));
+            }
+        }
+    }
+
+    // 4. Título exacto (case-insensitive).
+    let id: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM tracks WHERE LOWER(TRIM(title)) = ? ORDER BY id ASC LIMIT 1",
+    )
+    .bind(&title_norm)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Database error matching title: {}", e))?;
+
+    Ok(id.map(|(track_id,)| track_id))
+}
+
+/// Núcleo testeable del import FE-6: parsea `content` según la extensión de
+/// `file_name`, hace matching contra la biblioteca local y crea la playlist
+/// con las pistas enlazadas (posiciones 1..N). NO inventa pistas: las entradas
+/// sin match se reportan en `unmatched`.
+pub async fn import_playlist_from_file_core(
+    pool: &sqlx::SqlitePool,
+    file_name: &str,
+    content: &str,
+    name: Option<String>,
+    account_id: Option<i64>,
+) -> Result<ImportPlaylistFromFileResult, String> {
+    let entries = parse_playlist_file(file_name, content)?;
+
+    let playlist_name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| default_playlist_name(file_name));
+
+    // Resolver cuenta destino: la dada (validada), la primera activa, o la primera.
+    // playlists.account_id es NOT NULL REFERENCES accounts(id), así que sin
+    // cuentas no hay import (error explícito en lugar de FK críptico).
+    let resolved_account: Option<(i64,)> = if let Some(aid) = account_id {
+        sqlx::query_as("SELECT id FROM accounts WHERE id = ?")
+            .bind(aid)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Database error resolving account: {}", e))?
+    } else {
+        let active: Option<(i64,)> =
+            sqlx::query_as("SELECT id FROM accounts WHERE is_active = 1 ORDER BY id LIMIT 1")
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| format!("Database error resolving account: {}", e))?;
+        match active {
+            Some(a) => Some(a),
+            None => sqlx::query_as("SELECT id FROM accounts ORDER BY id LIMIT 1")
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| format!("Database error resolving account: {}", e))?,
+        }
+    };
+    let target_account_id = resolved_account.map(|(id,)| id).ok_or_else(|| {
+        "No hay ninguna cuenta configurada: conecta un servicio antes de importar una playlist"
+            .to_string()
+    })?;
+
+    // Matching de cada entrada contra la biblioteca local.
+    let mut matched_track_ids: Vec<i64> = Vec::new();
+    let mut unmatched: Vec<UnmatchedImportedEntry> = Vec::new();
+    for entry in &entries {
+        let track_id = match_entry_to_track(pool, entry).await?;
+        match track_id {
+            Some(id) => {
+                // Dedupe intra-import: playlist_tracks ya no tiene
+                // UNIQUE(playlist_id, track_id) (migration 0064), y la misma
+                // pista puede aparecer dos veces en el archivo.
+                if !matched_track_ids.contains(&id) {
+                    matched_track_ids.push(id);
+                }
+            }
+            None => unmatched.push(UnmatchedImportedEntry {
+                title: entry.title.clone(),
+                artist: entry.artist.clone(),
+            }),
+        }
+    }
+
+    // Crear playlist + pistas enlazadas en una transacción.
+    let service_playlist_id = format!("file_{}", uuid::Uuid::new_v4());
+    let track_count = matched_track_ids.len() as i64;
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to start transaction: {}", e))?;
+
+    let playlist_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO playlists (
+            account_id, service_playlist_id, name, description, is_public, track_count, created_at
+        )
+        VALUES (?, ?, ?, NULL, 0, ?, CURRENT_TIMESTAMP)
+        RETURNING id
+        "#,
+    )
+    .bind(target_account_id)
+    .bind(&service_playlist_id)
+    .bind(&playlist_name)
+    .bind(track_count)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to insert imported playlist: {}", e))?;
+
+    for (idx, track_id) in matched_track_ids.iter().enumerate() {
+        sqlx::query(
+            r#"
+            INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            "#,
+        )
+        .bind(playlist_id)
+        .bind(track_id)
+        .bind((idx + 1) as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to add imported track to playlist: {}", e))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit imported playlist: {}", e))?;
+
+    tracing::info!(
+        "import_playlist_from_file: '{}' -> playlist {} ({} entradas, {} matched, {} unmatched)",
+        file_name,
+        playlist_id,
+        entries.len(),
+        matched_track_ids.len(),
+        unmatched.len()
+    );
+
+    Ok(ImportPlaylistFromFileResult {
+        playlist_id,
+        playlist_name,
+        total_entries: entries.len(),
+        matched_count: matched_track_ids.len(),
+        unmatched,
+    })
+}
+
+/// FE-6: importa una playlist desde el contenido de un archivo (.m3u/.m3u8,
+/// .csv o .txt). El frontend lee el archivo (File API) y envía nombre+contenido;
+/// las entradas se enlazan a pistas existentes por ISRC, ruta local o
+/// título+artista; las que no se enlacen se reportan (no se inventan).
+#[tauri::command]
+pub async fn import_playlist_from_file(
+    state: State<'_, AppState>,
+    file_name: String,
+    content: String,
+    name: Option<String>,
+    account_id: Option<i64>,
+) -> Result<ImportPlaylistFromFileResult, String> {
+    import_playlist_from_file_core(&state.db, &file_name, &content, name, account_id).await
 }
 
 // ============================================================================
@@ -1471,4 +2098,182 @@ pub async fn create_smart_playlist(
     account_id: Option<i64>,
 ) -> Result<Playlist, String> {
     create_smart_playlist_core(&state.db, &name, &rules_json, account_id).await
+}
+
+#[cfg(test)]
+mod playlist_import_parser_tests {
+    use super::*;
+
+    #[test]
+    fn test_split_artist_title() {
+        assert_eq!(
+            split_artist_title("Daft Punk - One More Time"),
+            (Some("Daft Punk".to_string()), "One More Time".to_string())
+        );
+        // Solo el primer " - " separa (paridad CLI).
+        assert_eq!(
+            split_artist_title("AC/DC - TNT - Live"),
+            (Some("AC/DC".to_string()), "TNT - Live".to_string())
+        );
+        // Sin separador: todo es título.
+        assert_eq!(
+            split_artist_title("Only Title"),
+            (None, "Only Title".to_string())
+        );
+        // Artista vacío: no se separa.
+        assert_eq!(
+            split_artist_title(" - Title"),
+            (None, "- Title".to_string())
+        );
+    }
+
+    #[test]
+    fn test_looks_like_audio_path() {
+        assert!(looks_like_audio_path("/music/song.mp3"));
+        assert!(looks_like_audio_path("C:\\Music\\Song.FLAC"));
+        assert!(looks_like_audio_path("relative/track 01.ogg"));
+        assert!(!looks_like_audio_path("Artist - Title"));
+        assert!(!looks_like_audio_path("mp3"));
+        assert!(!looks_like_audio_path("plain text"));
+    }
+
+    #[test]
+    fn test_normalize_isrc() {
+        assert_eq!(normalize_isrc("us-um7-11-00999"), "USUM71100999");
+        assert_eq!(normalize_isrc(" GBAAA1200456 "), "GBAAA1200456");
+    }
+
+    #[test]
+    fn test_parse_m3u_full() {
+        let content = "#EXTM3U\n\
+                      #EXTINF:304,Daft Punk - One More Time\n\
+                      # ISRC: USUM71100999\n\
+                      /music/daft_punk/one_more_time.flac\n\
+                      #EXTINF:-12,Bad Duration Artist - Song B\n\
+                      /music/song_b.mp3\n\
+                      #EXTM3U\n";
+        let entries = parse_m3u_content(content);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "One More Time");
+        assert_eq!(entries[0].artist.as_deref(), Some("Daft Punk"));
+        assert_eq!(entries[0].duration_ms, Some(304_000));
+        assert_eq!(entries[0].isrc.as_deref(), Some("USUM71100999"));
+        assert_eq!(
+            entries[0].file_path.as_deref(),
+            Some("/music/daft_punk/one_more_time.flac")
+        );
+        // Duración negativa se satura a 0*1000.
+        assert_eq!(entries[1].duration_ms, Some(0));
+        assert_eq!(entries[1].title, "Song B");
+    }
+
+    #[test]
+    fn test_parse_m3u_artist_title_lines_only() {
+        // M3U sin rutas: EXTINF suelto + líneas "Artista - Título".
+        let content = "#EXTM3U\n\
+                      Artist A - Song A\n\
+                      Artist B - Song B\n\
+                      Plain Song\n";
+        let entries = parse_m3u_content(content);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries[0].artist.as_deref(),
+            Some("Artist A"),
+            "la primera línea no debe heredar el título del siguiente EXTINF"
+        );
+        assert_eq!(entries[1].title, "Song B");
+        assert!(entries[2].artist.is_none());
+        assert_eq!(entries[2].title, "Plain Song");
+    }
+
+    #[test]
+    fn test_parse_m3u_extinf_without_path_is_flushed() {
+        // EXTINF seguido de una línea suelta: el EXTINF pendiente se emite
+        // como entrada propia antes de la línea.
+        let content = "#EXTM3U\n\
+                      #EXTINF:100,Pending Artist - Pending Song\n\
+                      Loose Artist - Loose Song\n";
+        let entries = parse_m3u_content(content);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "Pending Song");
+        assert_eq!(entries[0].duration_ms, Some(100_000));
+        assert!(entries[0].file_path.is_none());
+        assert_eq!(entries[1].title, "Loose Song");
+    }
+
+    #[test]
+    fn test_parse_csv_with_header_and_quotes() {
+        let content = "Title,Artist,ISRC,Duration (ms),Path\n\
+                       \"Song, With Comma\",Daft Punk,USUM71100999,304000,/music/a.flac\n\
+                       Second Song,Other Artist,,,\n";
+        let entries = parse_csv_content(content);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "Song, With Comma");
+        assert_eq!(entries[0].artist.as_deref(), Some("Daft Punk"));
+        assert_eq!(entries[0].isrc.as_deref(), Some("USUM71100999"));
+        assert_eq!(entries[0].duration_ms, Some(304_000));
+        assert_eq!(entries[0].file_path.as_deref(), Some("/music/a.flac"));
+        assert_eq!(entries[1].title, "Second Song");
+        assert_eq!(entries[1].duration_ms, None, "duracion no numérica -> None");
+        assert!(entries[1].file_path.is_none());
+    }
+
+    #[test]
+    fn test_parse_csv_headerless_assumes_title_artist() {
+        let content = "Song One,Artist One\nSong Two,Artist Two\n,Empty\n";
+        let entries = parse_csv_content(content);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "Song One");
+        assert_eq!(entries[0].artist.as_deref(), Some("Artist One"));
+        assert_eq!(entries[1].title, "Song Two");
+    }
+
+    #[test]
+    fn test_parse_csv_title_first_column_wins() {
+        // Cabecera con título y artista intercambiados: el mapeo es por nombre.
+        let content = "Artist,Title\nDaft Punk,One More Time\n";
+        let entries = parse_csv_content(content);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].title, "One More Time");
+        assert_eq!(entries[0].artist.as_deref(), Some("Daft Punk"));
+    }
+
+    #[test]
+    fn test_parse_txt_one_per_line() {
+        let content = "# comentario\n\
+                      Artist A - Song A\n\
+                      Song B\n\
+                      /music/song_c.mp3\n\
+                      \n";
+        let entries = parse_txt_content(content);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries[0].artist.as_deref(),
+            Some("Artist A"),
+            "la primera línea no debe heredar el título de la siguiente"
+        );
+        assert_eq!(entries[1].title, "Song B");
+        assert_eq!(entries[2].file_path.as_deref(), Some("/music/song_c.mp3"));
+        assert_eq!(entries[2].title, "song_c");
+    }
+
+    #[test]
+    fn test_parse_playlist_file_dispatch_and_errors() {
+        assert!(parse_playlist_file("list.m3u", "#EXTM3U\nA - B\n").is_ok());
+        assert!(parse_playlist_file("list.M3U8", "A - B\n").is_ok());
+        assert!(parse_playlist_file("list.csv", "Title,Artist\nA,B\n").is_ok());
+        assert!(parse_playlist_file("list.txt", "A - B\n").is_ok());
+        // Formato no soportado / vacío / sin pistas.
+        assert!(parse_playlist_file("list.json", "[]").is_err());
+        assert!(parse_playlist_file("list.txt", "   \n# solo comentarios\n").is_err());
+        assert!(parse_playlist_file("noext", "A - B").is_err());
+    }
+
+    #[test]
+    fn test_default_playlist_name() {
+        assert_eq!(default_playlist_name("Mi Lista.m3u8"), "Mi Lista");
+        assert_eq!(default_playlist_name("noext"), "noext");
+        // Nombre vacío/espacios: fallback.
+        assert_eq!(default_playlist_name("   "), "Imported Playlist");
+    }
 }

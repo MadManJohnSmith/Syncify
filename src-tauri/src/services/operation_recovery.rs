@@ -9,15 +9,13 @@
 
 use sqlx::{Row, SqlitePool};
 use std::path::{Path, PathBuf};
-#[allow(unused_imports)]
 use syncify_core_domain::{
     AudioByteValidator, ErrorTaxonomy, LibraryLayout, OperationJournalEntry, OperationPhase,
     OperationRecoveryDetail, OperationStatus, OperationType, RecoveryAction, RecoveryAuditSummary,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 /// Record a new operation in the persistent journal.
-#[allow(dead_code)] // journal de recuperación: cubierto parcialmente por fault_injection_test; API completa intencional
 pub async fn create_operation_journal(
     db: &SqlitePool,
     entry: &OperationJournalEntry,
@@ -60,7 +58,6 @@ pub async fn create_operation_journal(
 }
 
 /// Update progress checkpoint of an ongoing operation.
-#[allow(dead_code)] // journal de recuperación: cubierto parcialmente por fault_injection_test; API completa intencional
 pub async fn checkpoint_operation(
     db: &SqlitePool,
     operation_id: &str,
@@ -93,7 +90,6 @@ pub async fn checkpoint_operation(
 }
 
 /// Mark an operation as committed/completed successfully.
-#[allow(dead_code)] // journal de recuperación: cubierto parcialmente por fault_injection_test; API completa intencional
 pub async fn commit_operation(
     db: &SqlitePool,
     operation_id: &str,
@@ -119,7 +115,6 @@ pub async fn commit_operation(
 }
 
 /// Mark an operation as failed or interrupted.
-#[allow(dead_code)] // journal de recuperación: cubierto parcialmente por fault_injection_test; API completa intencional
 pub async fn fail_operation(
     db: &SqlitePool,
     operation_id: &str,
@@ -154,6 +149,558 @@ pub async fn fail_operation(
     .map_err(|e| format!("Failed to mark operation {} as failed: {}", operation_id, e))?;
 
     Ok(())
+}
+
+/// Live handle over one in-flight journaled operation.
+///
+/// Long-running production operations (download pipeline, service sync) hold one of
+/// these for the whole duration and report milestones through it. Every method is
+/// fail-soft on purpose: the journal is recovery metadata, so a journal write must
+/// never abort or fail the operation it is describing. Errors are logged and the
+/// operation keeps running.
+#[derive(Clone)]
+pub struct JournaledOperation {
+    db: SqlitePool,
+    operation_id: String,
+}
+
+impl JournaledOperation {
+    /// Record a milestone. `Checkpointed` keeps the entry scannable by
+    /// `reconcile_startup_operations`, which is exactly what a live operation needs.
+    pub async fn checkpoint(
+        &self,
+        phase: OperationPhase,
+        staging_path: Option<&str>,
+        details: Option<&str>,
+    ) {
+        self.op_checkpoint(phase, staging_path, details).await;
+    }
+
+    /// Record a milestone that is being persisted right now. `reconcile_startup_operations`
+    /// scans `persisting` too: a crash here means the physical file may already be in
+    /// place while the SQLite transaction never committed.
+    pub async fn checkpoint_persisting(&self, details: Option<&str>) {
+        if let Err(e) = checkpoint_operation(
+            &self.db,
+            &self.operation_id,
+            OperationPhase::Persist,
+            OperationStatus::Persisting,
+            None,
+            details,
+        )
+        .await
+        {
+            warn!(op_id = %self.operation_id, error = %e, "[Recovery Engine] Persist checkpoint write failed");
+        }
+    }
+
+    /// Record a milestone that also declares where the finished artifact will live.
+    ///
+    /// `expected_output_path` is what makes reconciliation decidable: once it is
+    /// set, a crash is repaired by inspecting that path (`ReconcileDbOnly` when the
+    /// audio is already promoted, `CompletePromotion` when only the staging file
+    /// survived) instead of being written off as a lost transfer.
+    pub async fn checkpoint_with_output(
+        &self,
+        phase: OperationPhase,
+        staging_path: Option<&str>,
+        expected_output_path: &str,
+        details: Option<&str>,
+    ) {
+        self.op_checkpoint(phase, staging_path, details).await;
+        if let Err(e) = sqlx::query(
+            "UPDATE operation_journal SET expected_output_path = ? WHERE operation_id = ?",
+        )
+        .bind(expected_output_path)
+        .bind(&self.operation_id)
+        .execute(&self.db)
+        .await
+        {
+            warn!(op_id = %self.operation_id, error = %e, "[Recovery Engine] Could not record expected output path");
+        }
+    }
+
+    async fn op_checkpoint(
+        &self,
+        phase: OperationPhase,
+        staging_path: Option<&str>,
+        details: Option<&str>,
+    ) {
+        if let Err(e) = checkpoint_operation(
+            &self.db,
+            &self.operation_id,
+            phase,
+            OperationStatus::Checkpointed,
+            staging_path,
+            details,
+        )
+        .await
+        {
+            warn!(op_id = %self.operation_id, error = %e, "[Recovery Engine] Checkpoint write failed");
+        }
+    }
+
+    /// Mark the operation as finished successfully.
+    pub async fn commit(&self, result_summary: Option<&str>) {
+        if let Err(e) = commit_operation(&self.db, &self.operation_id, result_summary).await {
+            warn!(op_id = %self.operation_id, error = %e, "[Recovery Engine] Commit write failed");
+        }
+    }
+
+    /// Mark the operation as failed, classifying the error so that startup
+    /// reconciliation knows whether a retry is worth scheduling.
+    pub async fn fail(&self, error_taxonomy: &ErrorTaxonomy, reason: &str, is_terminal: bool) {
+        if let Err(e) = fail_operation(
+            &self.db,
+            &self.operation_id,
+            error_taxonomy,
+            reason,
+            is_terminal,
+        )
+        .await
+        {
+            warn!(op_id = %self.operation_id, error = %e, "[Recovery Engine] Failure write failed");
+        }
+    }
+}
+
+/// Open a journal entry and return the live handle used to checkpoint it.
+pub async fn begin_operation(
+    db: &SqlitePool,
+    entry: &OperationJournalEntry,
+) -> Result<JournaledOperation, String> {
+    create_operation_journal(db, entry).await?;
+    Ok(JournaledOperation {
+        db: db.clone(),
+        operation_id: entry.operation_id.clone(),
+    })
+}
+
+/// Re-attach to a journal entry that is already open, instead of creating a
+/// second one for the same download.
+///
+/// Used when an inner pipeline runs inside an operation that already journaled
+/// itself (the download worker calls the Tidal pipeline for a queued item): both
+/// layers must report on the SAME row, otherwise startup reconciliation would see
+/// two competing entries for one physical download. Returns `Err` when no such
+/// entry exists, which tells the caller to open a new one.
+pub async fn attach_operation(
+    db: &SqlitePool,
+    operation_id: &str,
+) -> Result<JournaledOperation, String> {
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM operation_journal WHERE operation_id = ?")
+            .bind(operation_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to probe operation journal entry {}: {}",
+                    operation_id, e
+                )
+            })?;
+
+    if exists.is_none() {
+        return Err(format!(
+            "No open operation journal entry for {}",
+            operation_id
+        ));
+    }
+
+    Ok(JournaledOperation {
+        db: db.clone(),
+        operation_id: operation_id.to_string(),
+    })
+}
+
+/// Open the journal entry for a Tidal single-track pipeline run.
+///
+/// `request.operation_id` is the operation an outer layer already journaled (the
+/// download worker, for a queued item). When that entry exists it is reused so a
+/// single physical download is never described by two competing journal rows;
+/// otherwise a fresh entry is opened for this run.
+pub async fn begin_tidal_download_operation(
+    db: &SqlitePool,
+    request: &crate::services::tidal_pipeline::TidalSingleTrackRequest,
+) -> Option<JournaledOperation> {
+    if let Some(op_id) = request.operation_id.as_deref() {
+        match attach_operation(db, op_id).await {
+            Ok(existing) => {
+                info!(op_id = %op_id, "[Recovery Engine] Reusing the journal entry opened by the caller");
+                return Some(existing);
+            }
+            Err(e) => {
+                info!(op_id = %op_id, error = %e, "[Recovery Engine] No reusable journal entry; opening a new one");
+            }
+        }
+    }
+
+    let query = request.track_id_or_query.trim().to_string();
+    let entry = OperationJournalEntry {
+        operation_id: format!("op-{}", uuid::Uuid::new_v4()),
+        operation_type: OperationType::DownloadTidal,
+        entity_id: request
+            .hint_track_id
+            .map(|id| id.to_string())
+            .or_else(|| Some(query.clone())),
+        account_id: None,
+        track_id: request.hint_track_id,
+        download_id: None,
+        provider: Some("tidal".to_string()),
+        phase: OperationPhase::Init,
+        attempt: 1,
+        started_at: String::new(),
+        checkpoint_at: String::new(),
+        status: OperationStatus::Started,
+        input_identity: request
+            .hint_isrc
+            .clone()
+            .map(|isrc| format!("isrc={}", isrc))
+            .or_else(|| Some(format!("tidal={}", query))),
+        expected_output_path: request.output_dir.clone(),
+        staging_path: None,
+        file_baseline: None,
+        db_transaction_state: None,
+        rollback_state: None,
+        error_taxonomy: None,
+        retry_policy: None,
+        result_summary: None,
+    };
+
+    match begin_operation(db, &entry).await {
+        Ok(op) => Some(op),
+        Err(e) => {
+            warn!(error = %e, "[Recovery Engine] Could not open Tidal pipeline journal entry; continuing unjournaled");
+            None
+        }
+    }
+}
+
+/// Open the journal entry for a service sync.
+pub async fn begin_service_sync_operation(
+    db: &SqlitePool,
+    service_name: &str,
+    account_id: Option<i64>,
+) -> Option<JournaledOperation> {
+    let service_normalized = service_name.to_lowercase();
+    let entry = OperationJournalEntry {
+        operation_id: format!("op-sync-{}-{}", service_normalized, uuid::Uuid::new_v4()),
+        operation_type: OperationType::ServiceSync,
+        entity_id: Some(service_normalized.clone()),
+        account_id,
+        track_id: None,
+        download_id: None,
+        provider: Some(service_normalized.clone()),
+        phase: OperationPhase::Init,
+        attempt: 1,
+        started_at: String::new(),
+        checkpoint_at: String::new(),
+        status: OperationStatus::Started,
+        input_identity: Some(format!("service={}", service_normalized)),
+        expected_output_path: None,
+        staging_path: None,
+        file_baseline: None,
+        db_transaction_state: None,
+        rollback_state: None,
+        error_taxonomy: None,
+        retry_policy: None,
+        result_summary: None,
+    };
+
+    match begin_operation(db, &entry).await {
+        Ok(op) => Some(op),
+        Err(e) => {
+            warn!(
+                service = %service_normalized,
+                error = %e,
+                "[Recovery Engine] Could not open service sync journal entry; continuing unjournaled"
+            );
+            None
+        }
+    }
+}
+
+/// Deterministic `.staging/<queue_id>.part` path used by the download pipeline.
+///
+/// Single source of truth shared by the download worker (journal + error cleanup)
+/// and the reconciliation engine, so a crash always leaves a path the reconciler
+/// can find.
+pub fn download_staging_path(output_dir: &str, queue_id: i64) -> String {
+    Path::new(output_dir)
+        .join(".staging")
+        .join(format!("{}.part", queue_id))
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Inputs the download worker knows when a queued item starts processing.
+#[derive(Debug, Clone)]
+pub struct DownloadJournalParams {
+    pub operation_id: String,
+    pub queue_id: i64,
+    pub track_id: i64,
+    pub provider: Option<String>,
+    /// Locked source identity (`service_track_id`) or ISRC fallback.
+    pub input_identity: Option<String>,
+    /// `output_dir` from the resolved download configuration.
+    pub output_dir: String,
+    /// True when the item may fall back across providers, which makes the
+    /// operation a cross-provider recovery candidate rather than a plain download.
+    pub allow_fallback: bool,
+}
+
+/// Journal lifecycle for one queued download, as driven by the worker.
+pub struct DownloadJournal {
+    op: JournaledOperation,
+    staging_path: String,
+    operation_type: OperationType,
+    provider: String,
+}
+
+impl DownloadJournal {
+    /// Open the journal entry for a queued download. Returns `None` (after
+    /// logging) when the entry cannot be written; the download then runs
+    /// unjournaled rather than failing.
+    pub async fn start(db: &SqlitePool, params: &DownloadJournalParams) -> Option<Self> {
+        let provider_name = params
+            .provider
+            .as_deref()
+            .map(|p| p.to_lowercase())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let operation_type = match provider_name.as_str() {
+            "qobuz" => {
+                if params.allow_fallback {
+                    OperationType::CrossProviderFallback
+                } else {
+                    OperationType::DownloadQobuz
+                }
+            }
+            _ => {
+                if params.allow_fallback {
+                    OperationType::CrossProviderFallback
+                } else {
+                    OperationType::DownloadTidal
+                }
+            }
+        };
+
+        let staging_path = download_staging_path(&params.output_dir, params.queue_id);
+
+        let entry = OperationJournalEntry {
+            operation_id: params.operation_id.clone(),
+            operation_type,
+            entity_id: Some(params.queue_id.to_string()),
+            account_id: None,
+            track_id: Some(params.track_id),
+            download_id: None,
+            provider: Some(provider_name.clone()),
+            phase: OperationPhase::Init,
+            attempt: 1,
+            started_at: String::new(),
+            checkpoint_at: String::new(),
+            status: OperationStatus::Started,
+            input_identity: params.input_identity.clone(),
+            expected_output_path: None,
+            staging_path: Some(staging_path.clone()),
+            file_baseline: None,
+            db_transaction_state: None,
+            rollback_state: None,
+            error_taxonomy: None,
+            retry_policy: None,
+            result_summary: None,
+        };
+
+        match begin_operation(db, &entry).await {
+            Ok(op) => Some(DownloadJournal {
+                op,
+                staging_path,
+                operation_type,
+                provider: provider_name,
+            }),
+            Err(e) => {
+                warn!(
+                    op_id = %params.operation_id,
+                    queue_id = params.queue_id,
+                    error = %e,
+                    "[Recovery Engine] Could not open download journal entry; continuing unjournaled"
+                );
+                None
+            }
+        }
+    }
+
+    /// Transfer started: the `.part` file now exists (or is about to).
+    pub async fn checkpoint_transfer(&self, details: Option<&str>) {
+        self.op
+            .checkpoint(OperationPhase::Transfer, Some(&self.staging_path), details)
+            .await;
+    }
+
+    /// The physical file is now at its final library path. This is the milestone
+    /// that makes reconciliation decidable: with `expected_output_path` set, a
+    /// crash after this point is repaired as `ReconcileDbOnly` instead of being
+    /// treated as a lost transfer.
+    pub async fn checkpoint_promoted(&self, final_path: &str, details: Option<&str>) {
+        self.op
+            .checkpoint_with_output(
+                OperationPhase::Promotion,
+                Some(&self.staging_path),
+                final_path,
+                details,
+            )
+            .await;
+    }
+
+    /// SQLite ledger is being written for the promoted file.
+    pub async fn checkpoint_persist(&self, details: Option<&str>) {
+        self.op.checkpoint_persisting(details).await;
+    }
+
+    pub async fn commit(&self, result_summary: Option<&str>) {
+        self.op.commit(result_summary).await;
+    }
+
+    pub async fn fail(&self, error: &str, is_terminal: bool) {
+        let taxonomy = classify_operation_error(self.operation_type, &self.provider, error);
+        self.op.fail(&taxonomy, error, is_terminal).await;
+    }
+}
+
+/// Map an operational error message onto the shared error taxonomy so that
+/// `fail_operation` and startup reconciliation agree on retryability.
+///
+/// Mirrors the classification the download worker already applies to queue rows:
+/// credential rejections, identity problems, rejected quality, unavailability and
+/// exhausted retries are terminal; rate limiting, timeouts, transport failures,
+/// server errors and cancellations stay retryable.
+pub fn classify_operation_error(
+    operation_type: OperationType,
+    provider: &str,
+    error: &str,
+) -> ErrorTaxonomy {
+    let provider = if provider.trim().is_empty() {
+        match operation_type {
+            OperationType::DownloadQobuz => "qobuz".to_string(),
+            OperationType::DownloadTidal => "tidal".to_string(),
+            OperationType::CrossProviderFallback => "multi".to_string(),
+            _ => "unknown".to_string(),
+        }
+    } else {
+        provider.to_lowercase()
+    };
+
+    if error.contains("401")
+        || error.contains("403")
+        || error.contains("RequiresAuth")
+        || error.contains("authentication failed")
+        || error.contains("invalid_grant")
+        || error.contains("OAuth token refresh failed")
+    {
+        return ErrorTaxonomy::AuthInvalid {
+            message: error.to_string(),
+        };
+    }
+    if error.contains("EntitlementDenied") || error.contains("PlaybackUnauthorized") {
+        return ErrorTaxonomy::EntitlementDenied {
+            provider,
+            reason: error.to_string(),
+        };
+    }
+    if error.contains("RejectedQuality") || error.contains("downgrade rejected") {
+        return ErrorTaxonomy::RejectedQuality {
+            requested: "requested".to_string(),
+            obtained: "obtained".to_string(),
+            reason: error.to_string(),
+        };
+    }
+    if error.contains("RegionRestricted")
+        || (error.contains("region") && error.contains("restricted"))
+    {
+        return ErrorTaxonomy::RegionRestricted {
+            provider,
+            country: "unknown".to_string(),
+        };
+    }
+    if error.contains("AmbiguousSource")
+        || error.contains("SourceIdentityMissing")
+        || error.contains("IdentityConflict")
+    {
+        return ErrorTaxonomy::IdentityConflict {
+            field: "source_identity".to_string(),
+            existing_value: "locked".to_string(),
+            conflicting_value: error.to_string(),
+        };
+    }
+    if error.contains("TrackUnresolved")
+        || error.contains("NotFound")
+        || error.contains("not found on")
+        || error.contains("404")
+        || error.contains("StaleSource")
+        || error.contains("track/get failed")
+    {
+        return ErrorTaxonomy::UnavailableFromProvider {
+            provider,
+            item_id: "unknown".to_string(),
+            reason: error.to_string(),
+        };
+    }
+    if error.contains("429") || error.contains("RateLimit") || error.contains("TooManyRequests") {
+        return ErrorTaxonomy::RateLimited {
+            provider,
+            retry_after_sec: None,
+        };
+    }
+    if error.contains("NetworkExhausted")
+        || error.contains("connection")
+        || error.contains("connect")
+    {
+        return ErrorTaxonomy::TemporaryNetworkFailure {
+            endpoint: provider,
+            message: error.to_string(),
+        };
+    }
+    if error.contains("timeout") || error.contains("timed out") || error.contains("Timeout") {
+        return ErrorTaxonomy::Timeout {
+            endpoint: provider,
+            elapsed_ms: 0,
+        };
+    }
+    if error.contains("cancel") || error.contains("Cancel") {
+        return ErrorTaxonomy::Cancelled {
+            reason: error.to_string(),
+        };
+    }
+    if error.contains("Invalid") && error.contains("audio") {
+        return ErrorTaxonomy::AudioValidationFailed {
+            format: "unknown".to_string(),
+            reason: error.to_string(),
+        };
+    }
+    if error.contains("Tag") {
+        return ErrorTaxonomy::TaggingFailed {
+            stage: "tagging".to_string(),
+            reason: error.to_string(),
+        };
+    }
+    if error.contains("Filesystem") || error.contains("rename") || error.contains("directory") {
+        return ErrorTaxonomy::FilesystemFailed {
+            path: "unknown".to_string(),
+            reason: error.to_string(),
+        };
+    }
+    if error.contains("SQLITE") || error.contains("database") || error.contains("Database") {
+        return ErrorTaxonomy::DatabaseFailed {
+            operation: "journal".to_string(),
+            reason: error.to_string(),
+        };
+    }
+
+    ErrorTaxonomy::MalformedProviderPayload {
+        provider,
+        field: "unknown".to_string(),
+        reason: error.to_string(),
+    }
 }
 
 /// Perform comprehensive startup reconciliation across journal, SQLite state, and filesystem.
@@ -637,7 +1184,6 @@ fn uuid_or_timestamp(op_id: &str) -> String {
 }
 
 /// Summary report of staging cleanup and stuck queue recovery (TASK-148)
-#[allow(dead_code)]
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct StagingRecoverySummary {
     pub purged_staging_files: usize,
@@ -651,7 +1197,6 @@ pub struct StagingRecoverySummary {
 /// them to 'failed' with an explanatory message (TASK-148).
 ///
 /// Ensures items in 'complete'/'completed' or 'queued' are preserved untouched.
-#[allow(dead_code)]
 pub async fn cleanup_staging_and_recover_stuck_queue(
     db: &SqlitePool,
     staging_dir: Option<&Path>,
@@ -665,7 +1210,6 @@ pub async fn cleanup_staging_and_recover_stuck_queue(
 }
 
 /// Overload allowing custom error reason/message for recovered stuck queue items.
-#[allow(dead_code)]
 pub async fn cleanup_staging_and_recover_stuck_queue_with_message(
     db: &SqlitePool,
     staging_dir: Option<&Path>,
@@ -887,8 +1431,9 @@ pub async fn sanitize_timed_out_downloads(
 }
 
 /// Summary of canonical disk layout and downloads ledger reconciliation (TASK-110).
-#[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[allow(dead_code)] // Lo devuelve `resolve_canonical_track_path_from_db`, cubierta por
+                    // `tests/disk_layout_normalization_test.rs`.
 pub struct CanonicalPathNormalizationReport {
     pub scanned_downloads: usize,
     pub updated_records: usize,
@@ -897,7 +1442,7 @@ pub struct CanonicalPathNormalizationReport {
 }
 
 /// Resolves the canonical track destination path for a given `track_id` based on library settings and track/album metadata.
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/disk_layout_normalization_test.rs`.
 pub async fn resolve_canonical_track_path_from_db(
     db: &SqlitePool,
     track_id: i64,
@@ -974,7 +1519,7 @@ pub async fn resolve_canonical_track_path_from_db(
 
 /// Normalizes and reconciles physical audio paths and the SQLite `downloads` ledger
 /// to conform to the canonical `[{Year}] {Album}` and `Various Artists` layout (TASK-110).
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/disk_layout_normalization_test.rs`.
 pub async fn reconcile_canonical_download_records(
     db: &SqlitePool,
     dry_run: bool,

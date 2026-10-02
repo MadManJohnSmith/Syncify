@@ -1,6 +1,7 @@
 import { ref, reactive } from 'vue'
 import { settingsApi } from '@/api/settings'
-import type { AdvancedSettings, CacheStats, DiagnosticResult } from '@/api/types'
+import { dashboardApi } from '@/api/dashboard'
+import type { AdvancedSettings, DiagnosticResult } from '@/api/types'
 
 /**
  * Composable for managing advanced application settings
@@ -40,9 +41,6 @@ export function useAdvancedSettings() {
         debug_mode: false,
         verbose_api_logging: false,
     })
-
-    // Cache stats
-    const cacheStats = ref<CacheStats[]>([])
 
     // Diagnostic results
     const diagnostics = ref<DiagnosticResult[]>([])
@@ -87,25 +85,6 @@ export function useAdvancedSettings() {
         await saveSettings()
     }
 
-    // Load cache statistics
-    async function loadCacheStats() {
-        try {
-            cacheStats.value = await settingsApi.getCacheStats()
-        } catch (e) {
-            console.error('Failed to load cache stats:', e)
-        }
-    }
-
-    // Clear cache
-    async function clearCache(cacheType?: string) {
-        try {
-            await settingsApi.clearCache(cacheType)
-            await loadCacheStats()
-        } catch (e) {
-            error.value = e instanceof Error ? e.message : 'Failed to clear cache'
-        }
-    }
-
     // Vacuum database
     async function vacuumDatabase() {
         try {
@@ -124,6 +103,20 @@ export function useAdvancedSettings() {
             error.value = e instanceof Error ? e.message : 'Failed to run diagnostics'
         } finally {
             isRunningDiagnostics.value = false
+        }
+    }
+
+    // Batch health check (IN-5: exposed diagnostic capability)
+    const batchHealthReport = ref<Record<string, unknown> | null>(null)
+    const isRunningBatchHealthCheck = ref(false)
+    async function runBatchHealthCheck() {
+        isRunningBatchHealthCheck.value = true
+        try {
+            batchHealthReport.value = await dashboardApi.runBatchHealthCheck()
+        } catch (e) {
+            error.value = e instanceof Error ? e.message : 'Failed to run batch health check'
+        } finally {
+            isRunningBatchHealthCheck.value = false
         }
     }
 
@@ -152,17 +145,17 @@ export function useAdvancedSettings() {
         isSaving,
         error,
         settings,
-        cacheStats,
         diagnostics,
         isRunningDiagnostics,
+        batchHealthReport,
+        isRunningBatchHealthCheck,
         // Actions
         loadSettings,
         saveSettings,
         updateField,
-        loadCacheStats,
-        clearCache,
         vacuumDatabase,
         runDiagnostics,
+        runBatchHealthCheck,
         resetToDefaults,
         // Options
         logLevelOptions,

@@ -71,6 +71,16 @@ pub async fn get_logging_status() -> Result<crate::services::logging::LoggingSta
     Ok(crate::services::logging::get_logging_status())
 }
 
+/// Persist a user-submitted report (bug report / feedback / help article
+/// rating) as a JSON file under the app log directory (FE-8). Returns the
+/// written file path so the UI can show a visible confirmation.
+#[tauri::command]
+pub async fn save_user_report(
+    report: crate::services::user_reports::UserReportInput,
+) -> Result<crate::services::user_reports::UserReportSaved, String> {
+    crate::services::user_reports::save_user_report(report)
+}
+
 #[cfg(test)]
 mod logging_commands_tests {
     use super::*;

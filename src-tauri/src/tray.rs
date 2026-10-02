@@ -9,6 +9,13 @@ use tauri::{
     AppHandle, Emitter, Manager, Runtime,
 };
 
+// Real commands executed by the tray menu (IN-4) and the sync engine shared
+// with the `sync_service` Tauri command, plus the canonical notification
+// payload published on `syncify:notification`.
+use crate::commands::{
+    perform_sync_service_with_emitter, AppNotification, NotificationCategory, NotificationKind,
+};
+
 pub const SYNCIFY_TRAY_ID: &str = "syncify-tray";
 
 static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);
@@ -163,14 +170,8 @@ pub fn build_tray_menu<R: Runtime>(
     let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     menu.append(&settings_item)?;
 
-    let updates_item = MenuItem::with_id(
-        app,
-        "check_updates",
-        "Check for Updates",
-        true,
-        None::<&str>,
-    )?;
-    menu.append(&updates_item)?;
+    // IN-4: the former 'Check for Updates' item was removed — it depended on
+    // a dead 'tray-action' emit and no update-check command exists in Rust.
 
     let sep4 = PredefinedMenuItem::separator(app)?;
     menu.append(&sep4)?;
@@ -261,12 +262,10 @@ pub fn toggle_main_window<R: Runtime>(app: &AppHandle<R>) {
         let is_visible = window.is_visible().unwrap_or(false);
         if is_visible {
             let _ = window.hide();
-            let _ = app.emit("tray-action", "hide");
         } else {
             let _ = window.show();
             let _ = window.unminimize();
             let _ = window.set_focus();
-            let _ = app.emit("tray-action", "show");
         }
     }
 }
@@ -277,7 +276,6 @@ pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
-        let _ = app.emit("tray-action", "show");
     }
 }
 
@@ -285,11 +283,14 @@ pub fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
 pub fn hide_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
-        let _ = app.emit("tray-action", "hide");
     }
 }
 
 /// Handle context menu clicks
+///
+/// Every action executes its real implementation directly in Rust (IN-4):
+/// the former `tray-action` events had no listener in the UI, which left
+/// pause/resume/sync inoperative and has since been removed.
 pub fn handle_menu_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
     match id {
         "toggle" => {
@@ -302,27 +303,94 @@ pub fn handle_menu_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
             hide_main_window(app);
         }
         "pause_downloads" => {
-            let _ = app.emit("tray-action", "pause-downloads");
+            crate::commands::pause_downloads(app.state::<crate::AppState>());
         }
         "resume_downloads" => {
-            let _ = app.emit("tray-action", "resume-downloads");
+            crate::commands::resume_downloads(app.state::<crate::AppState>());
         }
         "sync_all" => {
-            let _ = app.emit("tray-action", "sync-all");
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = sync_all_services(&app).await {
+                    tracing::error!("Tray 'Sync All Services' failed: {}", e);
+                }
+            });
         }
         "settings" => {
             show_main_window(app);
-            let _ = app.emit("tray-action", "settings");
-        }
-        "check_updates" => {
-            let _ = app.emit("tray-action", "check-updates");
         }
         "quit" => {
-            let _ = app.emit("tray-action", "quit");
             app.exit(0);
         }
         _ => {}
     }
+}
+
+/// Run a full sync across every active service (tray 'Sync All Services').
+///
+/// Uses the same engine as the `sync_service` Tauri command
+/// (`perform_sync_service_with_emitter`), so progress events reach the UI
+/// through the canonical channels. A summary notification is published on
+/// the canonical `syncify:notification` channel consumed by the UI toasts.
+pub async fn sync_all_services<R: Runtime>(app: &AppHandle<R>) -> Result<usize, String> {
+    let db = app.state::<crate::AppState>().db.clone();
+
+    let services: Vec<String> = sqlx::query_scalar(
+        r#"SELECT DISTINCT LOWER(s.name)
+           FROM accounts a
+           JOIN services s ON s.id = a.service_id
+           WHERE a.is_active = 1
+           ORDER BY 1"#,
+    )
+    .fetch_all(&db)
+    .await
+    .map_err(|e| format!("Failed to list active services: {}", e))?;
+
+    if services.is_empty() {
+        tracing::info!("Tray 'Sync All Services': no active services configured");
+        return Ok(0);
+    }
+
+    let mut synced = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+    for service in &services {
+        match perform_sync_service_with_emitter(&db, service, None, None, Some(app)).await {
+            Ok(_) => synced += 1,
+            Err(e) => {
+                tracing::warn!("Tray sync of '{}' failed: {}", service, e);
+                failed.push(format!("{}: {}", service, e));
+            }
+        }
+    }
+
+    let (kind, title, message) = if failed.is_empty() {
+        (
+            NotificationKind::Success,
+            "Sync complete".to_string(),
+            format!("{} service(s) synchronized.", synced),
+        )
+    } else if synced == 0 {
+        (
+            NotificationKind::Error,
+            "Sync failed".to_string(),
+            failed.join(", "),
+        )
+    } else {
+        (
+            NotificationKind::Warning,
+            "Sync completed with errors".to_string(),
+            format!(
+                "{} service(s) synchronized; failed: {}",
+                synced,
+                failed.join(", ")
+            ),
+        )
+    };
+
+    let notification = AppNotification::new(kind, title, message, NotificationCategory::Sync, None);
+    let _ = app.emit("syncify:notification", &notification);
+
+    Ok(synced)
 }
 
 /// Update tray icon based on state
@@ -374,15 +442,6 @@ pub async fn update_tray_icon<R: Runtime>(
 ) -> Result<(), String> {
     update_tray_icon_state(&app, state);
     Ok(())
-}
-
-/// Alias for backward compatibility if invoked as update_tray_icon_command
-#[tauri::command]
-pub async fn update_tray_icon_command<R: Runtime>(
-    app: AppHandle<R>,
-    state: TrayState,
-) -> Result<(), String> {
-    update_tray_icon(app, state).await
 }
 
 /// Tauri command to update tray status (menu & notifications)

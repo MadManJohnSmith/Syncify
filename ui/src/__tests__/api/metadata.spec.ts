@@ -12,6 +12,7 @@ import {
     enrichAllNeeding,
     autoMatchMusicBrainz,
     findAudioDuplicates,
+    identifyAudio,
 } from '@/api/metadata';
 import { mockInvoke, resetMocks } from '../setup';
 
@@ -132,5 +133,104 @@ describe('metadata_handles_missing_fields_test', () => {
         expect(bridgeRes.enriched).toBe(3);
         expect(bridgeRes.failed).toBe(2);
         expect(bridgeRes.skipped).toBe(0);
+    });
+});
+
+/**
+ * identifyAudio must read the contract that scripts/fingerprint_bridge.py emits:
+ * `{ success, data: { matches: [...] } }`. It used to return the whole envelope
+ * through asArray(), so every caller saw [] and AcoustID identification never
+ * matched a track.
+ */
+describe('identifyAudio reads the fingerprint bridge matches contract', () => {
+    beforeEach(() => {
+        resetMocks();
+        vi.clearAllMocks();
+    });
+
+    const bridgePayload = {
+        success: true,
+        data: {
+            file: '/music/track.flac',
+            duration: 180,
+            matches: [
+                {
+                    acoustid: 'acoustid-id-1',
+                    acoustid_id: 'acoustid-id-1',
+                    score: 0.98,
+                    recording_id: 'recording-mbid-1',
+                    title: 'Test Track',
+                    artist: 'Test Artist',
+                    album: null,
+                    duration: 180,
+                    musicbrainz_artistid: 'artist-mbid-1',
+                },
+            ],
+        },
+    };
+
+    it('maps data.matches[] into ranked AcoustID matches', async () => {
+        mockInvoke((cmd) => (cmd === 'identify_audio' ? bridgePayload : null));
+
+        const matches = await identifyAudio('/music/track.flac');
+
+        expect(matches).toHaveLength(1);
+        expect(matches[0].recording_id).toBe('recording-mbid-1');
+        expect(matches[0].acoustid_id).toBe('acoustid-id-1');
+        expect(matches[0].musicbrainz_artistid).toBe('artist-mbid-1');
+        expect(matches[0].title).toBe('Test Track');
+        expect(matches[0].artist).toBe('Test Artist');
+        expect(matches[0].score).toBe(0.98);
+        expect(matches[0].album).toBeNull();
+        expect(matches[0].duration).toBe(180);
+    });
+
+    it('forwards the file path as filePath', async () => {
+        const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+        mockInvoke((cmd, args) => {
+            calls.push({ cmd, args: args as Record<string, unknown> });
+            return cmd === 'identify_audio' ? bridgePayload : null;
+        });
+
+        await identifyAudio('/music/track.flac');
+
+        expect(calls).toContainEqual({ cmd: 'identify_audio', args: { filePath: '/music/track.flac' } });
+    });
+
+    it('returns [] for failures and malformed payloads instead of throwing', async () => {
+        mockInvoke((cmd) => (cmd === 'identify_audio'
+            ? { success: false, error: 'No matches found' }
+            : null));
+        expect(await identifyAudio('/music/track.flac')).toEqual([]);
+
+        // Old envelope shape (data.recordings) and empty responses stay safe.
+        mockInvoke((cmd) => (cmd === 'identify_audio'
+            ? { success: true, data: { recordings: [{ id: 'recording-mbid-1' }] } }
+            : null));
+        expect(await identifyAudio('/music/track.flac')).toEqual([]);
+
+        mockInvoke(() => null);
+        expect(await identifyAudio('/music/track.flac')).toEqual([]);
+
+        mockInvoke((cmd) => (cmd === 'identify_audio' ? { success: true, data: { matches: null } } : null));
+        expect(await identifyAudio('/music/track.flac')).toEqual([]);
+    });
+
+    it('fills missing match fields with nulls so the UI never crashes', async () => {
+        mockInvoke((cmd) => (cmd === 'identify_audio'
+            ? { success: true, data: { matches: [{ recording_id: 'recording-mbid-2' }] } }
+            : null));
+
+        const [match] = await identifyAudio('/music/track.flac');
+
+        expect(match.recording_id).toBe('recording-mbid-2');
+        expect(match.acoustid).toBe('');
+        expect(match.acoustid_id).toBeNull();
+        expect(match.title).toBeNull();
+        expect(match.artist).toBeNull();
+        expect(match.album).toBeNull();
+        expect(match.duration).toBeNull();
+        expect(match.musicbrainz_artistid).toBeNull();
+        expect(match.score).toBe(0);
     });
 });

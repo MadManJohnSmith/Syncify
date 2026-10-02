@@ -248,13 +248,6 @@ export interface SyncPlaylistsResult {
 }
 
 /**
- * Sync playlist with source service
- */
-export async function syncPlaylist(playlistId: number): Promise<ImportResult> {
-    return normalizeImportResult(await invokeCommand<unknown>('sync_playlist', { playlistId }));
-}
-
-/**
  * Sync playlists across connected services into SQLite
  */
 export async function syncPlaylists(service?: string): Promise<SyncPlaylistsResult> {
@@ -343,6 +336,133 @@ export async function createSmartPlaylist(params: {
     });
 }
 
+// ==============================================
+// REMOTE PLAYLIST BRIDGE (IN-5: exposed backend capabilities)
+// ==============================================
+
+/** Generic bridge envelope returned by playlist_bridge.py commands. */
+export interface PlaylistBridgeResult {
+    success: boolean;
+    data?: Record<string, unknown> | null;
+    error?: string | null;
+}
+
+/**
+ * Fetch the tracks of a remote service playlist (playlist_bridge.py `get`).
+ * Exposes `fetch_remote_playlist_tracks`, the only way to inspect a remote
+ * playlist's contents before importing it.
+ */
+export async function fetchRemotePlaylistTracks(
+    service: string,
+    playlistId: string
+): Promise<PlaylistBridgeResult> {
+    const raw = await invokeCommand<unknown>('fetch_remote_playlist_tracks', { service, playlistId });
+    const rec = asRecord(raw);
+    return {
+        success: rec?.success === true,
+        data: asRecord(rec?.data ?? null),
+        error: typeof rec?.error === 'string' ? rec.error : undefined,
+    };
+}
+
+/**
+ * Classify the entries of a playlist file by ISRC availability for a transfer to
+ * `targetService` (playlist_bridge.py `match`).
+ *
+ * The target service catalog is NOT queried: the bridge reports which entries carry
+ * an ISRC. Real ISRC matching happens against the local library in Rust
+ * (commands::playlists::match_entry_to_track).
+ */
+export async function matchPlaylistToService(
+    playlistFile: string,
+    targetService: string
+): Promise<PlaylistBridgeResult> {
+    const raw = await invokeCommand<unknown>('match_playlist_to_service', {
+        playlistFile,
+        targetService
+    });
+    const rec = asRecord(raw);
+    return {
+        success: rec?.success === true,
+        data: asRecord(rec?.data ?? null),
+        error: typeof rec?.error === 'string' ? rec.error : undefined,
+    };
+}
+
+/** TASK-107 sanitization statistics (camelCase, matches Rust PlaylistSanitizationStats). */
+export interface PlaylistSanitizationStats {
+    duplicate_tracks_purged: number;
+    playlists_recompacted: number;
+    track_counts_updated: number;
+    playlist_names_disambiguated: number;
+}
+
+/**
+ * Sanitize all playlists in the library (purge intra-playlist duplicates,
+ * recompact positions, sync track counts, disambiguate names).
+ */
+export async function sanitizePlaylists(): Promise<PlaylistSanitizationStats> {
+    const raw = await invokeCommand<unknown>('sanitize_playlists');
+    const rec = asRecord(raw);
+    return {
+        duplicate_tracks_purged: asNumber(rec?.duplicate_tracks_purged),
+        playlists_recompacted: asNumber(rec?.playlists_recompacted),
+        track_counts_updated: asNumber(rec?.track_counts_updated),
+        playlist_names_disambiguated: asNumber(rec?.playlist_names_disambiguated),
+    };
+}
+
+// ==============================================
+// FE-6: IMPORT DE PLAYLISTS DESDE ARCHIVO
+// ==============================================
+
+/** Pista del archivo que no se pudo enlazar (camelCase, matches Rust UnmatchedImportedEntry). */
+export interface UnmatchedImportedEntry {
+    title: string;
+    artist: string | null;
+}
+
+/** Resultado del import desde archivo (camelCase, matches Rust ImportPlaylistFromFileResult). */
+export interface ImportPlaylistFromFileResult {
+    playlistId: number;
+    playlistName: string;
+    /** Entradas totales parseadas del archivo. */
+    totalEntries: number;
+    /** Entradas enlazadas a pistas existentes. */
+    matchedCount: number;
+    unmatched: UnmatchedImportedEntry[];
+}
+
+/**
+ * FE-6: import a playlist from a file's content (.m3u/.m3u8/.csv/.txt).
+ *
+ * The frontend reads the file via the File API (no backend filesystem scope
+ * needed) and sends name + content; the backend parses it, matches each entry
+ * against the local library (ISRC, local file path, title+artist, title),
+ * creates the playlist and reports unmatched entries honestly.
+ */
+export async function importPlaylistFromFile(params: {
+    fileName: string;
+    content: string;
+    name?: string;
+    accountId?: number;
+}): Promise<ImportPlaylistFromFileResult> {
+    const raw = await invokeCommand<unknown>('import_playlist_from_file', {
+        fileName: params.fileName,
+        content: params.content,
+        name: params.name ?? null,
+        accountId: params.accountId ?? null,
+    });
+    const rec = asRecord(raw);
+    return {
+        playlistId: asNumber(rec?.playlistId),
+        playlistName: asString(rec?.playlistName),
+        totalEntries: asNumber(rec?.totalEntries),
+        matchedCount: asNumber(rec?.matchedCount),
+        unmatched: asArray<UnmatchedImportedEntry>(rec?.unmatched),
+    };
+}
+
 // Export as namespace
 export const playlistsApi = {
     getPlaylists,
@@ -358,9 +478,12 @@ export const playlistsApi = {
     importPlaylists,
     exportPlaylist,
     exportPlaylistM3u,
-    syncPlaylist,
     syncPlaylists,
     previewSmartPlaylistCount,
     createSmartPlaylist,
+    fetchRemotePlaylistTracks,
+    matchPlaylistToService,
+    sanitizePlaylists,
+    importPlaylistFromFile,
 };
 

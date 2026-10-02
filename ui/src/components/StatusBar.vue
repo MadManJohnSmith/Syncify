@@ -51,7 +51,7 @@
           <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
             <div class="h-full bg-blue-500 rounded-full transition-all" :style="{ width: syncProgress + '%' }"></div>
           </div>
-          <div class="text-xs text-gray-500">ETA: ~{{ syncETA }}</div>
+          <div v-if="syncETA" class="text-xs text-gray-500">ETA: ~{{ syncETA }}</div>
           <button @click="cancelSync" class="w-full mt-2 py-1.5 text-red-400 hover:bg-red-500/10 rounded-lg text-sm">
             Cancel Sync
           </button>
@@ -68,6 +68,16 @@
           <p class="text-red-400 mb-2">{{ syncErrorMessage }}</p>
           <button @click="retrySync" class="w-full py-1.5 bg-primary/20 text-primary hover:bg-primary/30 rounded-lg text-sm">
             Retry Sync
+          </button>
+        </div>
+
+        <div v-else-if="syncState === 'paused'" class="text-sm">
+          <p class="text-amber-400 mb-2 flex items-center gap-2">
+            <span class="material-symbols-outlined">pause_circle</span>
+            Sync paused
+          </p>
+          <button @click="goToDownloads" class="w-full py-1.5 bg-primary/20 text-primary hover:bg-primary/30 rounded-lg text-sm">
+            Manage in Downloads
           </button>
         </div>
       </div>
@@ -104,10 +114,6 @@
         </div>
         
         <div class="space-y-3 text-sm">
-          <div class="flex items-center justify-between">
-            <span class="text-gray-400">Connection</span>
-            <span class="text-gray-200">{{ connectionType }}</span>
-          </div>
           <div class="flex items-center justify-between">
             <span class="text-gray-400">Download Speed</span>
             <span class="text-gray-200">{{ downloadSpeed }}</span>
@@ -221,15 +227,26 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGlobalTasks } from '../composables/useGlobalTasks'
+import { useEventBus, TauriEvents } from '../composables/useEventBus'
 import { useToast } from '../composables/useToast'
 import { usePlayer } from '../composables/usePlayer'
 import { getStorageStats, type StorageStats } from '../api/storage'
 import { getServiceStatuses } from '../api/accounts'
 import { saveSetting } from '../api/settings'
 import { open } from '@tauri-apps/plugin-dialog'
+import {
+  deriveSyncState,
+  deriveSyncErrorMessage,
+  estimateRemainingMs,
+  formatDownloadSpeed,
+  formatRelativeTime,
+  formatRemainingDuration,
+  isTerminalDownloadStatus,
+  parseSqliteUtc,
+} from '../utils/statusTelemetry'
 
 // State
 const isCollapsed = ref(false)
@@ -238,21 +255,21 @@ const showNetworkPopover = ref(false)
 const showStoragePopover = ref(false)
 
 // Global Tasks Integration
-const { activeTasks, overallProgress, hasActiveTasks, addTask } = useGlobalTasks()
+const { activeTasks, allTasks, overallProgress } = useGlobalTasks()
+const eventBus = useEventBus()
 const router = useRouter()
 const toast = useToast()
 const { current } = usePlayer()
 
 let storageInterval: ReturnType<typeof setInterval> | undefined
+let etaInterval: ReturnType<typeof setInterval> | undefined
+let unlistenDownloadProgress: (() => void) | undefined
 const isRefreshing = ref(false)
 
-// Sync Status (Computed from global tasks)
+// Sync Status (Derived from real global task events — sync progress, failures
+// and pauses are reported by the sync/import event listeners in useGlobalTasks)
 type SyncState = 'syncing' | 'idle' | 'error' | 'paused'
-const syncState = computed((): SyncState => {
-  if (activeTasks.value.some(t => t.type === 'sync' && t.status === 'running')) return 'syncing'
-  if (hasActiveTasks.value) return 'syncing'
-  return 'idle' 
-})
+const syncState = computed((): SyncState => deriveSyncState(allTasks.value))
 
 const syncService = computed(() => {
   const syncTask = activeTasks.value.find(t => t.type === 'sync') || activeTasks.value[0]
@@ -267,9 +284,28 @@ const syncCurrent = computed(() => {
 const syncTotal = computed(() => {
    return activeTasks.value.reduce((acc, t) => acc + (t.total || 0), 0)
 })
-const syncETA = ref('Calculating...')
-const syncErrorMessage = ref('Connection timeout')
-const lastSyncTime = ref('Just now')
+
+// Real ETA estimate: extrapolate the elapsed time of the primary running sync
+// task. Hidden (null) while there is no basis to estimate from.
+const runningSyncTask = computed(() => activeTasks.value.find(t => t.type === 'sync' && t.status === 'running'))
+const nowMs = ref(Date.now())
+const syncETA = computed<string | null>(() => {
+  const task = runningSyncTask.value
+  if (!task) return null
+  const remaining = estimateRemainingMs(task.startedAt, task.progress ?? 0, nowMs.value)
+  return remaining === null ? null : formatRemainingDuration(remaining)
+})
+watch(() => syncState.value === 'syncing', (syncing) => {
+  if (syncing && etaInterval === undefined) {
+    etaInterval = setInterval(() => { nowMs.value = Date.now() }, 1000)
+  } else if (!syncing && etaInterval !== undefined) {
+    clearInterval(etaInterval)
+    etaInterval = undefined
+  }
+}, { immediate: true })
+
+// Real error message from the most recent failed sync task (no invented text)
+const syncErrorMessage = computed(() => deriveSyncErrorMessage(allTasks.value) ?? 'Sync failed')
 
 const syncTooltip = computed(() => {
   switch (syncState.value) {
@@ -283,13 +319,23 @@ const syncTooltip = computed(() => {
 
 // Network
 const isOnline = ref(true)
-const connectionType = ref('Wi-Fi')
-const downloadSpeed = ref('12.3 MB/s')
-const services = ref([
-  { name: 'Spotify', online: true },
-  { name: 'Qobuz', online: true },
-  { name: 'Tidal', online: false },
-])
+// Real download speed from `syncify:download_progress` events (KB/s); null
+// while no download is running so the popover shows an em dash instead of a
+// made-up number.
+const downloadSpeedKBps = ref<number | null>(null)
+const downloadSpeed = computed(() => formatDownloadSpeed(downloadSpeedKBps.value))
+const services = ref<Array<{ name: string; online: boolean; lastSynced: string | null }>>([])
+
+// Last sync time from the real `last_synced` of the connected accounts
+// (refreshed with the service statuses).
+const lastSyncTime = computed(() => {
+  const dates = services.value
+    .map(s => (s.lastSynced ? parseSqliteUtc(s.lastSynced) : null))
+    .filter((d): d is Date => d !== null)
+  if (dates.length === 0) return 'Never'
+  const latest = Math.max(...dates.map(d => d.getTime()))
+  return formatRelativeTime(new Date(latest))
+})
 
 // Active Operations
 const activeOperations = computed(() => activeTasks.value.map(t => t.name))
@@ -323,6 +369,10 @@ function toggleSyncPopover() {
   showSyncPopover.value = !showSyncPopover.value
   showNetworkPopover.value = false
   showStoragePopover.value = false
+  if (showSyncPopover.value) {
+    // Refresh so "Last synced" reflects the real accounts state
+    fetchServices()
+  }
 }
 
 function toggleNetworkPopover() {
@@ -376,15 +426,23 @@ async function fetchServices() {
     const statuses = await getServiceStatuses()
     services.value = statuses.map(s => ({
       name: s.name,
-      online: s.connected
+      online: s.connected,
+      lastSynced: s.last_synced ?? null,
     }))
-    
+
     // Simple global online check: if at least one service is configured/online
     isOnline.value = services.value.some(s => s.online)
   } catch (e) {
     console.error('Failed to fetch service statuses:', e)
   }
 }
+
+// Refresh the services (and therefore "Last synced") when a sync run finishes
+watch(syncState, (state, prev) => {
+  if (prev === 'syncing' && state !== 'syncing') {
+    fetchServices()
+  }
+})
 
 function cancelSync() {
   showSyncPopover.value = false
@@ -401,6 +459,24 @@ function syncAll() {
 function retrySync() {
   showSyncPopover.value = false
   router.push('/downloads')
+}
+
+function goToDownloads() {
+  showSyncPopover.value = false
+  router.push('/downloads')
+}
+
+// Track the real download throughput reported by the backend
+function handleDownloadProgress(payload: any) {
+  if (!payload) return
+  const status = typeof payload.status === 'string' ? payload.status : ''
+  if (payload.terminal === true || isTerminalDownloadStatus(status)) {
+    downloadSpeedKBps.value = null
+    return
+  }
+  const instant = Number(payload.instant_kbps)
+  const average = Number(payload.average_kbps)
+  downloadSpeedKBps.value = instant > 0 ? instant : (average > 0 ? average : null)
 }
 
 async function changeLocation() {
@@ -457,7 +533,11 @@ onMounted(async () => {
   document.addEventListener('click', handleOutsideClick)
   window.addEventListener('online', checkOnline)
   window.addEventListener('offline', checkOnline)
-  
+
+  eventBus.on(TauriEvents.DOWNLOAD_PROGRESS, handleDownloadProgress).then(unlisten => {
+    if (unlisten) unlistenDownloadProgress = unlisten
+  })
+
   const savedCollapsed = typeof localStorage !== 'undefined' && localStorage && typeof localStorage.getItem === 'function'
     ? localStorage.getItem('syncify_statusbar_collapsed')
     : null
@@ -477,27 +557,22 @@ onUnmounted(() => {
   document.removeEventListener('click', handleOutsideClick)
   window.removeEventListener('online', checkOnline)
   window.removeEventListener('offline', checkOnline)
-  
+
+  if (unlistenDownloadProgress) {
+    unlistenDownloadProgress()
+    unlistenDownloadProgress = undefined
+  }
+  if (etaInterval) {
+    clearInterval(etaInterval)
+    etaInterval = undefined
+  }
+
   if (storageInterval) {
     clearInterval(storageInterval)
   }
 })
 
-// Demo: toggle sync state
-function demoSync() {
-  // Use global tasks for demo
-  addTask({
-      id: 'demo-' + Date.now(),
-      type: 'sync',
-      name: 'Demo Sync Task',
-      status: 'running',
-      progress: 0,
-      total: 100,
-      current: 0
-  })
-}
-
-defineExpose({ demoSync, syncState, isCollapsed })
+defineExpose({ syncState, isCollapsed })
 </script>
 
 <style scoped>

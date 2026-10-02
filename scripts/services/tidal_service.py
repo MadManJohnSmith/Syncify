@@ -22,12 +22,17 @@ from services.service_base import (
     MusicService,
     ServiceCredentials,
     ServiceType,
-    SearchResult,
     TrackMetadata,
+    SearchResult,
     AlbumMetadata,
     PlaylistMetadata,
     DownloadResult,
     DownloadQuality
+)
+from services.tidal_auth import (
+    resolve_tidal_client_id,
+    resolve_tidal_client_secret,
+    resolve_tidal_pkce_client_id,
 )
 
 
@@ -47,18 +52,25 @@ class TidalService(MusicService):
     - SHA256 file hashing
     """
     
-    # OAuth 2.0 Credentials (Standard HiFi)
-    CLIENT_ID = "fX2JxdmntZWK0ixT"
-    CLIENT_SECRET = "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8="
-    
-    # PKCE Credentials (Hi-Res / HiFi+)
-    CLIENT_ID_PKCE = "6BDSRdpK9hqEBTgU"
-    CLIENT_SECRET_PKCE = "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8="
-    
     # API Endpoints
     API_BASE = "https://api.tidal.com/v1"
     AUTH_BASE = "https://auth.tidal.com/v1/oauth2"
     PKCE_AUTH_BASE = "https://login.tidal.com/authorize"
+
+    @property
+    def client_id(self) -> str:
+        """OAuth client id for the device flow (TIDAL_CLIENT_ID or stored credentials)."""
+        return resolve_tidal_client_id(self.credentials)
+
+    @property
+    def client_secret(self) -> str:
+        """OAuth client secret for the device flow (TIDAL_CLIENT_SECRET or stored credentials)."""
+        return resolve_tidal_client_secret(self.credentials)
+
+    @property
+    def pkce_client_id(self) -> str:
+        """Client id of the public PKCE client used for Hi-Res / HiFi+ (TIDAL_CLIENT_ID_PKCE)."""
+        return resolve_tidal_pkce_client_id()
     
     # Quality mapping
     QUALITY_MAP = {
@@ -207,7 +219,7 @@ class TidalService(MusicService):
         # Step 1: Request device authorization
         device_auth_url = f"{self.AUTH_BASE}/device_authorization"
         params = {
-            "client_id": self.CLIENT_ID,
+            "client_id": self.client_id,
             "scope": "r_usr w_usr w_sub"
         }
         
@@ -238,8 +250,8 @@ class TidalService(MusicService):
         # Step 3: Poll for token
         token_url = f"{self.AUTH_BASE}/token"
         token_params = {
-            "client_id": self.CLIENT_ID,
-            "client_secret": self.CLIENT_SECRET,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
             "device_code": device_code,
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
             "scope": "r_usr w_usr w_sub"
@@ -294,7 +306,7 @@ class TidalService(MusicService):
         auth_params = {
             "response_type": "code",
             "redirect_uri": "https://tidal.com/android/login/auth",
-            "client_id": self.CLIENT_ID_PKCE,
+            "client_id": self.pkce_client_id,
             "lang": "EN",
             "appMode": "android",
             "client_unique_key": self.client_unique_key,
@@ -336,7 +348,7 @@ class TidalService(MusicService):
         token_url = f"{self.AUTH_BASE}/token"
         token_data = {
             "code": auth_code,
-            "client_id": self.CLIENT_ID_PKCE,
+            "client_id": self.pkce_client_id,
             "grant_type": "authorization_code",
             "redirect_uri": "https://tidal.com/android/login/auth",
             "scope": "r_usr+w_usr+w_sub",

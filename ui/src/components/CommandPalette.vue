@@ -69,8 +69,8 @@
               <div class="px-5 py-2">
                 <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Tracks</span>
               </div>
-              <div 
-                v-for="(track, index) in filteredTracks.slice(0, 5)" 
+              <div
+                v-for="(track, index) in visibleTracks"
                 :key="'track-' + track.id"
                 @click="selectTrack(track)"
                 :class="[
@@ -92,8 +92,8 @@
                   <span v-if="track.quality" class="px-1.5 py-0.5 bg-purple-500/10 text-purple-500 text-[10px] font-medium rounded">{{ track.quality }}</span>
                 </div>
               </div>
-              <button v-if="filteredTracks.length > 5" class="w-full px-5 py-2 text-xs text-primary hover:underline text-left">
-                Show {{ filteredTracks.length - 5 }} more tracks...
+              <button @click="showMoreTracks" v-if="filteredTracks.length > visibleTrackCount" class="w-full px-5 py-2 text-xs text-primary hover:underline text-left">
+                Show {{ Math.min(TRACKS_PAGE_SIZE, filteredTracks.length - visibleTrackCount) }} more tracks...
               </button>
             </div>
             
@@ -249,6 +249,12 @@ const isSearching = ref(false)
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let latestSearchId = 0
 
+// FE-12: real pagination for the track results. The palette renders one page
+// and "Show N more tracks..." reveals the next page on click (also expanded
+// automatically when keyboard navigation moves past the last visible track).
+const TRACKS_PAGE_SIZE = 5
+const visibleTrackCount = ref(TRACKS_PAGE_SIZE)
+
 // Placeholder with context hint
 const placeholder = computed(() => {
   if (query.value.startsWith('/')) return 'Search actions...'
@@ -386,26 +392,36 @@ const filteredNav = computed(() => {
   return navigation.value.filter(n => fuzzyMatch(n.name, query.value))
 })
 
+const visibleTracks = computed(() => filteredTracks.value.slice(0, visibleTrackCount.value))
+
+// Number of track entries that participate in the global selection indices.
+const visibleTrackTotal = computed(() => Math.min(filteredTracks.value.length, visibleTrackCount.value))
+
 const hasResults = computed(() => {
-  return filteredTracks.value.length > 0 || 
-         filteredActions.value.length > 0 || 
+  return filteredTracks.value.length > 0 ||
+         filteredActions.value.length > 0 ||
          filteredSettings.value.length > 0 ||
          filteredNav.value.length > 0
 })
 
 const totalResults = computed(() => {
   if (!query.value) return recentSearches.value.length
-  return Math.min(filteredTracks.value.length, 5) + 
-         filteredActions.value.length + 
+  return visibleTrackTotal.value +
+         filteredActions.value.length +
          filteredSettings.value.length +
          filteredNav.value.length
 })
+
+// FE-12: reveal the next page of track results.
+function showMoreTracks() {
+  visibleTrackCount.value += TRACKS_PAGE_SIZE
+}
 
 // Get global index for keyboard navigation
 function getGlobalIndex(category: string, localIndex: number): number {
   let offset = 0
   if (category === 'tracks') return offset + localIndex
-  offset += Math.min(filteredTracks.value.length, 5)
+  offset += visibleTrackTotal.value
   if (category === 'actions') return offset + localIndex
   offset += filteredActions.value.length
   if (category === 'settings') return offset + localIndex
@@ -430,10 +446,21 @@ function handleKeydown(event: KeyboardEvent) {
     case 'ArrowDown':
     case 'Tab':
       event.preventDefault()
-      if (selectedIndex.value < totalResults.value - 1) {
-        selectedIndex.value++
-      } else {
-        selectedIndex.value = 0
+      {
+        const prev = selectedIndex.value
+        if (prev < totalResults.value - 1) {
+          selectedIndex.value++
+        } else {
+          selectedIndex.value = 0
+        }
+        // FE-12: moving down from the last visible track reveals the next
+        // page, so keyboard navigation can reach every result.
+        if (
+          filteredTracks.value.length > visibleTrackCount.value &&
+          prev === visibleTrackTotal.value - 1
+        ) {
+          visibleTrackCount.value += TRACKS_PAGE_SIZE
+        }
       }
       break
     case 'ArrowUp':
@@ -459,9 +486,9 @@ function executeSelected() {
   }
   
   let idx = selectedIndex.value
-  
+
   // Tracks
-  const trackCount = Math.min(filteredTracks.value.length, 5)
+  const trackCount = visibleTrackTotal.value
   if (idx < trackCount) {
     selectTrack(filteredTracks.value[idx])
     return
@@ -536,6 +563,7 @@ function open() {
   isOpen.value = true
   query.value = ''
   selectedIndex.value = 0
+  visibleTrackCount.value = TRACKS_PAGE_SIZE
   nextTick(() => {
     searchInput.value?.focus()
   })
@@ -556,6 +584,7 @@ watch(isOpen, (newVal) => {
   if (newVal) {
     query.value = ''
     selectedIndex.value = 0
+    visibleTrackCount.value = TRACKS_PAGE_SIZE
     nextTick(() => {
       searchInput.value?.focus()
     })
@@ -567,6 +596,7 @@ watch(isOpen, (newVal) => {
 // Reset selection on query change and perform search
 watch(query, (newQuery) => {
   selectedIndex.value = 0
+  visibleTrackCount.value = TRACKS_PAGE_SIZE
   const searchId = ++latestSearchId
 
   // Debounce database search

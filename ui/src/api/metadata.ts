@@ -5,7 +5,7 @@
  */
 
 import { invokeCommand } from './tauri';
-import { asArray, asNumber, asString, asRecord, pick, pickArray, pickNumber } from './normalize';
+import { asArray, asNumber, asString, asRecord, pick, pickArray, pickNumber, optionalNumber, optionalString } from './normalize';
 import type {
     LibraryTrack,
     MetadataMatch,
@@ -18,6 +18,10 @@ import type {
     CatalogRepairPlan,
     CatalogRepairPlanItem,
     CatalogRepairExecutionReport,
+    DisambiguationRepairBaseline,
+    DisambiguationRepairItem,
+    DisambiguationRepairOutputHashes,
+    DisambiguationRepairReport,
     OperationRecoveryDetail,
     RecoveryAuditSummary,
     ConcurrencyStatsSummary,
@@ -393,11 +397,50 @@ export async function checkFingerprintAvailable(): Promise<boolean> {
 }
 
 /**
- * Identify audio by fingerprint (AcoustID)
+ * A single AcoustID fingerprint match.
+ *
+ * Contract owner: `scripts/fingerprint_bridge.py` (`identify` command) emits
+ * `{"success": true, "data": {"matches": [ ... ]}}`; these keys mirror the
+ * per-match dict built there. Do not read `data.recordings` — that key does not
+ * exist in the bridge payload.
  */
-export async function identifyAudio(filePath: string): Promise<MetadataMatch[]> {
+export interface AcoustIDMatch {
+    acoustid: string;
+    acoustid_id: string | null;
+    score: number;
+    recording_id: string | null;
+    title: string | null;
+    artist: string | null;
+    album: string | null;
+    duration: number | null;
+    musicbrainz_artistid: string | null;
+}
+
+function normalizeAcoustIDMatch(raw: unknown): AcoustIDMatch {
+    return {
+        acoustid: asString(pick(raw, ['acoustid'])),
+        acoustid_id: optionalString(pick(raw, ['acoustid_id', 'acoustidId'])),
+        score: pickNumber(raw, ['score']),
+        recording_id: optionalString(pick(raw, ['recording_id', 'recordingId'])),
+        title: optionalString(pick(raw, ['title'])),
+        artist: optionalString(pick(raw, ['artist'])),
+        album: optionalString(pick(raw, ['album'])),
+        duration: optionalNumber(pick(raw, ['duration'])) ?? null,
+        musicbrainz_artistid: optionalString(
+            pick(raw, ['musicbrainz_artistid', 'musicbrainzArtistId', 'musicbrainz_artist_id'])
+        ),
+    };
+}
+
+/**
+ * Identify audio by fingerprint (AcoustID).
+ *
+ * Returns the ranked matches from `data.matches`; a failed or malformed
+ * response yields an empty array instead of throwing.
+ */
+export async function identifyAudio(filePath: string): Promise<AcoustIDMatch[]> {
     const raw = await invokeCommand<unknown>('identify_audio', { filePath });
-    return asArray<MetadataMatch>(raw);
+    return pickArray<unknown>(pick(raw, ['data']), ['matches']).map(normalizeAcoustIDMatch);
 }
 
 /**
@@ -710,6 +753,109 @@ export async function applyCatalogIdentityRepair(
 }
 
 /**
+ * Normalizes a repair baseline snapshot (file, audio payload, and sidecar LRC hashes)
+ */
+export function normalizeDisambiguationRepairBaseline(raw: unknown): DisambiguationRepairBaseline | null {
+    const rec = asRecord(raw);
+    if (!rec) return null;
+    return {
+        file_path: asString(pick(rec, ['file_path', 'filePath']), ''),
+        input_sha256: asString(pick(rec, ['input_sha256', 'inputSha256']), ''),
+        input_size: pickNumber(rec, ['input_size', 'inputSize']),
+        input_modified_at: pickNumber(rec, ['input_modified_at', 'inputModifiedAt']),
+        audio_content_hash: pick(rec, ['audio_content_hash', 'audioContentHash']) ? asString(pick(rec, ['audio_content_hash', 'audioContentHash'])) : null,
+        lrc_path: pick(rec, ['lrc_path', 'lrcPath']) ? asString(pick(rec, ['lrc_path', 'lrcPath'])) : null,
+        lrc_sha256: pick(rec, ['lrc_sha256', 'lrcSha256']) ? asString(pick(rec, ['lrc_sha256', 'lrcSha256'])) : null,
+        lrc_size: pick(rec, ['lrc_size', 'lrcSize']) ? pickNumber(rec, ['lrc_size', 'lrcSize']) : null,
+        lrc_modified_at: pick(rec, ['lrc_modified_at', 'lrcModifiedAt']) ? pickNumber(rec, ['lrc_modified_at', 'lrcModifiedAt']) : null,
+    };
+}
+
+/**
+ * Normalizes the before/after hash audit captured around an applied rename
+ */
+export function normalizeDisambiguationRepairOutputHashes(raw: unknown): DisambiguationRepairOutputHashes | null {
+    const rec = asRecord(raw);
+    if (!rec) return null;
+    return {
+        file_hash_before: asString(pick(rec, ['file_hash_before', 'fileHashBefore']), ''),
+        file_hash_after: pick(rec, ['file_hash_after', 'fileHashAfter']) ? asString(pick(rec, ['file_hash_after', 'fileHashAfter'])) : null,
+        audio_content_hash_before: pick(rec, ['audio_content_hash_before', 'audioContentHashBefore']) ? asString(pick(rec, ['audio_content_hash_before', 'audioContentHashBefore'])) : null,
+        audio_content_hash_after: pick(rec, ['audio_content_hash_after', 'audioContentHashAfter']) ? asString(pick(rec, ['audio_content_hash_after', 'audioContentHashAfter'])) : null,
+        lrc_hash_before: pick(rec, ['lrc_hash_before', 'lrcHashBefore']) ? asString(pick(rec, ['lrc_hash_before', 'lrcHashBefore'])) : null,
+        lrc_hash_after: pick(rec, ['lrc_hash_after', 'lrcHashAfter']) ? asString(pick(rec, ['lrc_hash_after', 'lrcHashAfter'])) : null,
+    };
+}
+
+/**
+ * Normalizes a single disambiguation repair candidate
+ */
+export function normalizeDisambiguationRepairItem(raw: unknown): DisambiguationRepairItem {
+    const rec = asRecord(raw);
+    return {
+        track_id: pickNumber(rec, ['track_id', 'trackId']),
+        isrc: pick(rec, ['isrc']) ? asString(pick(rec, ['isrc'])) : null,
+        current_audio_path: asString(pick(rec, ['current_audio_path', 'currentAudioPath']), ''),
+        target_audio_path: asString(pick(rec, ['target_audio_path', 'targetAudioPath']), ''),
+        current_lrc_path: pick(rec, ['current_lrc_path', 'currentLrcPath']) ? asString(pick(rec, ['current_lrc_path', 'currentLrcPath'])) : null,
+        target_lrc_path: pick(rec, ['target_lrc_path', 'targetLrcPath']) ? asString(pick(rec, ['target_lrc_path', 'targetLrcPath'])) : null,
+        source_title: asString(pick(rec, ['source_title', 'sourceTitle']), ''),
+        display_title: asString(pick(rec, ['display_title', 'displayTitle']), ''),
+        file_disambiguator: asString(pick(rec, ['file_disambiguator', 'fileDisambiguator']), ''),
+        sha256_before: asString(pick(rec, ['sha256_before', 'sha256Before']), ''),
+        status: asString(pick(rec, ['status']), 'unknown'),
+        baseline: normalizeDisambiguationRepairBaseline(pick(rec, ['baseline'])),
+        output_hashes: normalizeDisambiguationRepairOutputHashes(pick(rec, ['output_hashes', 'outputHashes'])),
+        applied_actions: pickArray<string>(rec, ['applied_actions', 'appliedActions']),
+        rollback_state: pick(rec, ['rollback_state', 'rollbackState']) ? asString(pick(rec, ['rollback_state', 'rollbackState'])) : null,
+    };
+}
+
+/**
+ * Normalizes a disambiguation repair plan (dry-run) or execution report
+ */
+export function normalizeDisambiguationRepairReport(raw: unknown): DisambiguationRepairReport {
+    const rec = asRecord(raw);
+    return {
+        dry_run: pick(rec, ['dry_run', 'dryRun']) !== false,
+        items: pickArray<unknown>(rec, ['items']).map(normalizeDisambiguationRepairItem),
+        total_candidates: pickNumber(rec, ['total_candidates', 'totalCandidates']),
+        total_renamed: pickNumber(rec, ['total_renamed', 'totalRenamed']),
+        total_skipped: pickNumber(rec, ['total_skipped', 'totalSkipped']),
+        errors: pickArray<string>(rec, ['errors']),
+        applied_actions: pickArray<string>(rec, ['applied_actions', 'appliedActions']),
+        rollback_state: pick(rec, ['rollback_state', 'rollbackState']) ? asString(pick(rec, ['rollback_state', 'rollbackState'])) : null,
+    };
+}
+
+/**
+ * S143B/S159: Generate a non-mutating dry-run plan for retroactive track version disambiguation repair
+ */
+export async function planDisambiguationRepair(): Promise<DisambiguationRepairReport> {
+    const raw = await invokeCommand<unknown>('plan_disambiguation_repair');
+    return normalizeDisambiguationRepairReport(raw);
+}
+
+/**
+ * S143B/S159: Execute the disambiguation repair plan (SHA-256 verified renames + LRC sidecars,
+ * SQLite transaction with filesystem rollback on failure)
+ */
+export async function executeDisambiguationRepair(
+    plan: DisambiguationRepairReport,
+    confirmed: boolean
+): Promise<DisambiguationRepairReport> {
+    if (confirmed !== true) {
+        throw new Error('executeDisambiguationRepair: execution requires explicit confirmation (confirmed: true)');
+    }
+    if (!plan || typeof plan !== 'object' || !Array.isArray(plan.items) || plan.items.length === 0) {
+        throw new Error('executeDisambiguationRepair: a non-empty disambiguation repair plan is required');
+    }
+
+    const raw = await invokeCommand<unknown>('execute_disambiguation_repair', { plan, confirmed });
+    return normalizeDisambiguationRepairReport(raw);
+}
+
+/**
  * Normalizes a single operation recovery detail item
  */
 export function normalizeRecoveryDetail(raw: unknown): OperationRecoveryDetail {
@@ -817,6 +963,22 @@ export {
     type OperationRecoveryState,
 };
 
+/** MusicBrainz tag reconciliation report (matches Rust MusicBrainzTagReconciliationReport). */
+export interface MusicBrainzTagReconciliationReport {
+    [key: string]: unknown;
+}
+
+/**
+ * Reconcile physical FLAC Vorbis comments (MUSICBRAINZ_TRACKID) with the
+ * SQLite tracks.musicbrainz_id column (TASK-84).
+ */
+export async function reconcileMusicbrainzTags(pathOverride?: string): Promise<MusicBrainzTagReconciliationReport> {
+    const raw = await invokeCommand<unknown>('reconcile_musicbrainz_tags', {
+        pathOverride: pathOverride ?? null
+    });
+    return asRecord(raw) ?? {};
+}
+
 // Export as namespace
 export const metadataApi = {
     enrichMetadata,
@@ -848,6 +1010,7 @@ export const metadataApi = {
     applyCatalogIdentityRepair,
     getRecoveryAuditSummary,
     triggerStartupReconciliation,
+    reconcileMusicbrainzTags,
     getConcurrencyStatsSummary,
     getActiveConcurrencyLocks,
     createConcurrencyGuard,

@@ -2,14 +2,28 @@
 //!
 //! Handles Deezer API access using ARL cookie.
 
-#![allow(dead_code)]
-
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 const DEEZER_API_BASE: &str = "https://www.deezer.com/ajax/gw-light.php";
 const DEEZER_PUBLIC_API: &str = "https://api.deezer.com";
+
+/// Environment variables that redirect a [`DeezerClient`] at a local mock
+/// server. Test seams only (same pattern as `SYNCIFY_S197_TIDAL_BASE_URL`):
+/// unset in production, where both endpoints keep talking to Deezer.
+pub const DEEZER_API_BASE_ENV: &str = "SYNCIFY_DEEZER_API_BASE";
+pub const DEEZER_PUBLIC_API_BASE_ENV: &str = "SYNCIFY_DEEZER_PUBLIC_API_BASE";
+
+/// Read a test-seam base URL, ignoring blank values so an exported-but-empty
+/// variable cannot point the client at nothing.
+fn base_from_env(var: &str, default: &str) -> String {
+    std::env::var(var)
+        .ok()
+        .map(|base| base.trim().trim_end_matches('/').to_string())
+        .filter(|base| !base.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
 
 /// Deezer track from API
 #[derive(Debug, Clone, Deserialize)]
@@ -31,12 +45,18 @@ pub struct DeezerTrack {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeezerApiResponse {
     pub results: Option<DeezerResults>,
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub error: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeezerResults {
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub data: Option<Vec<DeezerTrack>>,
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub total: Option<i32>,
     #[serde(rename = "checkForm")]
     pub check_form: Option<String>,
@@ -55,7 +75,11 @@ pub struct DeezerUser {
 pub struct DeezerAlbumSummary {
     pub id: String,
     pub title: String,
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub nb_tracks: Option<i32>,
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub cover: Option<String>,
     pub artist_name: Option<String>,
 }
@@ -104,19 +128,21 @@ impl DeezerClient {
             arl,
             api_token: None,
             user_id: None,
-            api_base: DEEZER_API_BASE.to_string(),
-            public_api_base: DEEZER_PUBLIC_API.to_string(),
+            api_base: base_from_env(DEEZER_API_BASE_ENV, DEEZER_API_BASE),
+            public_api_base: base_from_env(DEEZER_PUBLIC_API_BASE_ENV, DEEZER_PUBLIC_API),
         }
     }
 
     /// S189 test seam: redirect the gw-light endpoint (init/auth).
     /// Production never calls this; mirrors the S187 Tidal injectable base URL.
+    #[allow(dead_code)] // Cubierta por `tests/s189_deezer_unified_engine_test.rs`.
     pub fn with_api_base(mut self, base: String) -> Self {
         self.api_base = base;
         self
     }
 
     /// S189 test seam: redirect the public API endpoint.
+    #[allow(dead_code)] // Cubierta por `tests/s189_deezer_unified_engine_test.rs`.
     pub fn with_public_api_base(mut self, base: String) -> Self {
         self.public_api_base = base;
         self
@@ -185,65 +211,6 @@ impl DeezerClient {
         Ok(())
     }
 
-    /// Get user's favorite tracks
-    pub async fn get_favorites(&self, start: i32, count: i32) -> Result<Vec<DeezerTrack>, String> {
-        let api_token = self.api_token.as_ref().ok_or("Not initialized")?;
-        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
-
-        // Parse user_id as integer for the API call
-        let user_id_int: i64 = user_id.parse().unwrap_or(0);
-
-        tracing::debug!(
-            "Deezer get_favorites: user_id={}, start={}, count={}",
-            user_id,
-            start,
-            count
-        );
-
-        let response = self
-            .client
-            .post(DEEZER_API_BASE)
-            .query(&[
-                ("method", "song.getListByFavorite"),
-                ("api_version", "1.0"),
-                ("api_token", api_token),
-            ])
-            .header("Cookie", format!("arl={}", self.arl))
-            .json(&serde_json::json!({
-                "user_id": user_id_int,
-                "start": start,
-                "nb": count
-            }))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read: {}", e))?;
-
-        tracing::debug!(
-            "Deezer favorites response ({}): {}",
-            status,
-            &text[..text.len().min(500)]
-        );
-
-        let data: DeezerApiResponse = serde_json::from_str(&text).map_err(|e| {
-            format!(
-                "Failed to parse: {} (raw: {})",
-                e,
-                &text[..text.len().min(200)]
-            )
-        })?;
-
-        let tracks = data.results.and_then(|r| r.data).unwrap_or_default();
-        tracing::info!("Deezer gw-light favorites returned {} tracks", tracks.len());
-
-        Ok(tracks)
-    }
-
     /// Get user's favorite tracks via public API (more reliable)
     pub async fn get_favorites_public(
         &self,
@@ -252,7 +219,7 @@ impl DeezerClient {
         limit: i32,
     ) -> Result<(Vec<DeezerTrack>, i32), String> {
         // Use public API: https://api.deezer.com/user/{user_id}/tracks
-        let url = format!("{}/user/{}/tracks", DEEZER_PUBLIC_API, user_id);
+        let url = format!("{}/user/{}/tracks", self.public_api_base, user_id);
 
         tracing::debug!(
             "Deezer public API: {} (offset={}, limit={})",
@@ -260,6 +227,10 @@ impl DeezerClient {
             offset,
             limit
         );
+
+        crate::services::rate_limiter::GLOBAL_RATE_LIMITER
+            .acquire("deezer")
+            .await;
 
         let response = self
             .client
@@ -271,6 +242,8 @@ impl DeezerClient {
             .map_err(|e| format!("Request failed: {}", e))?;
 
         let status = response.status();
+        crate::services::rate_limiter::penalize_on_rate_limit("deezer", status, response.headers())
+            .await;
         let text = response
             .text()
             .await
@@ -281,6 +254,14 @@ impl DeezerClient {
             status,
             &text[..text.len().min(500)]
         );
+
+        if !status.is_success() {
+            return Err(format!(
+                "Deezer API error ({}): {}",
+                status,
+                &text[..text.len().min(200)]
+            ));
+        }
 
         // Parse public API response format
         #[derive(Deserialize)]
@@ -415,6 +396,8 @@ impl DeezerClient {
         }
         #[derive(Deserialize)]
         struct PublicArtist {
+            // Campo del contrato de la API pública de Deezer: lo puebla la
+            // deserialización de la respuesta, no el código Rust.
             #[allow(dead_code)]
             id: i64,
             name: String,
@@ -974,17 +957,33 @@ impl DeezerClient {
     /// Add a track to user's favorites
     /// Note: Deezer requires OAuth token, not just ARL cookie for write operations
     pub async fn add_to_favorites(&self, track_id: &str) -> Result<(), String> {
+        self.favorite_song("favorite_song.add", track_id).await
+    }
+
+    /// Remove a track from user's favorites (mirror of [`Self::add_to_favorites`])
+    pub async fn remove_from_favorites(&self, track_id: &str) -> Result<(), String> {
+        self.favorite_song("favorite_song.remove", track_id).await
+    }
+
+    /// Shared write path for the gw-light `favorite_song.*` endpoints: the same
+    /// token/cookie handshake, the shared rate-limit profile and the shared
+    /// transient-error criterion, whatever the direction of the change.
+    async fn favorite_song(&self, method: &str, track_id: &str) -> Result<(), String> {
         let api_token = self.api_token.as_ref().ok_or("Not initialized")?;
 
         let max_retries = 3;
         let mut last_error = String::new();
 
         for attempt in 0..max_retries {
+            crate::services::rate_limiter::GLOBAL_RATE_LIMITER
+                .acquire("deezer")
+                .await;
+
             let response = self
                 .client
-                .post(DEEZER_API_BASE)
+                .post(&self.api_base)
                 .query(&[
-                    ("method", "favorite_song.add"),
+                    ("method", method),
                     ("api_version", "1.0"),
                     ("api_token", api_token.as_str()),
                 ])
@@ -999,21 +998,29 @@ impl DeezerClient {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.is_success() {
-                        tracing::info!("Added track {} to Deezer favorites", track_id);
+                        tracing::info!("Deezer {} applied to track {}", method, track_id);
                         return Ok(());
-                    } else if status.as_u16() == 429 || status.as_u16() >= 500 {
+                    } else if crate::services::http_retry::is_transient_status(status) {
+                        crate::services::rate_limiter::penalize_on_rate_limit(
+                            "deezer",
+                            status,
+                            resp.headers(),
+                        )
+                        .await;
                         let text = resp.text().await.unwrap_or_default();
                         last_error =
                             format!("API error ({}): {}", status, &text[..text.len().min(100)]);
                         tracing::warn!(
-                            "Deezer add_to_favorites attempt {} failed ({}), retrying...",
+                            "Deezer {} attempt {} failed ({}), retrying...",
+                            method,
                             attempt + 1,
                             status
                         );
                     } else {
                         let text = resp.text().await.unwrap_or_default();
                         return Err(format!(
-                            "Add to favorites failed ({}): {}",
+                            "Deezer {} failed ({}): {}",
+                            method,
                             status,
                             &text[..text.len().min(200)]
                         ));
@@ -1022,7 +1029,8 @@ impl DeezerClient {
                 Err(e) => {
                     last_error = format!("Request failed: {}", e);
                     tracing::warn!(
-                        "Deezer add_to_favorites attempt {} failed: {}, retrying...",
+                        "Deezer {} attempt {} failed: {}, retrying...",
+                        method,
                         attempt + 1,
                         e
                     );
@@ -1036,8 +1044,8 @@ impl DeezerClient {
         }
 
         Err(format!(
-            "Add to favorites failed after {} retries: {}",
-            max_retries, last_error
+            "Deezer {} failed after {} retries: {}",
+            method, max_retries, last_error
         ))
     }
 }

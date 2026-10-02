@@ -28,7 +28,7 @@ pub fn create_tokio_command<S: AsRef<OsStr>>(program: S) -> tokio::process::Comm
 }
 
 /// Creates a `tokio::process::Command` configured with `PYTHONUNBUFFERED=1` and `PYTHONIOENCODING=utf-8`
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/cmd_utils_test.rs`.
 pub fn create_python_tokio_command<S: AsRef<OsStr>>(
     program: S,
     scripts_dir: Option<&Path>,
@@ -44,7 +44,7 @@ pub fn create_python_tokio_command<S: AsRef<OsStr>>(
 }
 
 /// Creates a `std::process::Command` configured with Python unbuffered environment
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/cmd_utils_test.rs`.
 pub fn create_python_std_command<S: AsRef<OsStr>>(
     program: S,
     scripts_dir: Option<&Path>,
@@ -60,11 +60,10 @@ pub fn create_python_std_command<S: AsRef<OsStr>>(
 }
 
 /// Default timeout for asynchronous bridge operations (45 seconds)
-#[allow(dead_code)]
 pub const DEFAULT_BRIDGE_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Runs an asynchronous tokio process command with a timeout guard
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/cmd_utils_test.rs`.
 pub async fn run_command_with_timeout(
     mut cmd: tokio::process::Command,
     timeout_duration: Duration,

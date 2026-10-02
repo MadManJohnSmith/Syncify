@@ -1,7 +1,7 @@
 // Download orchestrator - coordinates multiple download services with resilience and cooperative cancellation
 
 use crate::download::amazon::AmazonDownloader;
-use crate::download::lyrics::{LyricsClient, LyricsResponse};
+use crate::download::lyrics::LyricsClient;
 use crate::download::progress::{
     DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
@@ -37,13 +37,18 @@ pub enum SongLinkEngineTarget {
 }
 
 /// Download orchestrator that manages multiple services
-#[allow(dead_code)]
 pub struct DownloadOrchestrator {
     qobuz: Arc<QobuzDownloader>,
     tidal: Arc<TidalDownloader>,
     amazon: Arc<AmazonDownloader>,
     songlink: Arc<SongLinkClient>,
+    // Cliente de letras: lo consume `enrich_staging_audio`, cubierta por el test
+    // unitario de este módulo.
+    #[allow(dead_code)]
     lyrics: Arc<LyricsClient>,
+    // Motor de enriquecimiento: lo consume `enrich_staging_audio`, cubierta por el
+    // test unitario de este módulo.
+    #[allow(dead_code)]
     enrichment: Arc<EnrichmentEngine>,
     /// Service priority order
     service_priority: Vec<String>,
@@ -52,6 +57,36 @@ pub struct DownloadOrchestrator {
 }
 
 impl DownloadOrchestrator {
+    // Cubierto por el test unitario de este módulo (`analyze_staging_audio_and_enrichment_on_undecodable_file`).
+    #[allow(dead_code)]
+    pub async fn analyze_staging_audio(
+        &self,
+        file_path: &std::path::Path,
+    ) -> Result<AudioAnalysisMetrics, String> {
+        AudioAnalyzer::analyze_file(file_path).await
+    }
+
+    // Cubierto por el test unitario de este módulo (`analyze_staging_audio_and_enrichment_on_undecodable_file`).
+    #[allow(dead_code)]
+    pub async fn enrich_staging_audio(
+        &self,
+        file_path: &std::path::Path,
+        request: &DownloadRequest,
+        origin_meta: Option<&OriginTrackMetadata>,
+    ) -> Result<EnrichedMetadata> {
+        let enriched = self
+            .enrichment
+            .resolve_and_enrich_staging_audio(
+                file_path,
+                &request.artist_name,
+                &request.album_name,
+                &request.track_name,
+                request.isrc.as_deref(),
+                origin_meta,
+            )
+            .await;
+        Ok(enriched)
+    }
     pub fn new() -> Self {
         Self {
             qobuz: Arc::new(QobuzDownloader::new()),
@@ -74,6 +109,8 @@ impl DownloadOrchestrator {
         self
     }
 
+    // Consumido por los tests de este módulo (`#[cfg(test)] mod tests`) y por
+    // `tests/songlink_native_engines_test.rs`.
     #[allow(dead_code)]
     pub fn with_songlink(mut self, songlink: Arc<SongLinkClient>) -> Self {
         self.songlink = songlink;
@@ -85,6 +122,7 @@ impl DownloadOrchestrator {
     }
 
     /// Set custom service priority
+    // Cubierto por los tests de este módulo (`test_custom_priority`).
     #[allow(dead_code)]
     pub fn with_priority(mut self, priority: Vec<String>) -> Self {
         self.service_priority = priority;
@@ -93,15 +131,6 @@ impl DownloadOrchestrator {
 
     pub fn service_priority(&self) -> &[String] {
         &self.service_priority
-    }
-
-    /// Analyze an audio file (e.g. in staging) extracting ReplayGain, Acoustic Features, and Fingerprinting.
-    #[allow(dead_code)]
-    pub async fn analyze_staging_audio(
-        &self,
-        file_path: &std::path::Path,
-    ) -> Result<AudioAnalysisMetrics, String> {
-        AudioAnalyzer::analyze_file(file_path).await
     }
 
     /// TASK-76: Post-download dead-silence hygiene — detects lead-in / lead-out dead
@@ -150,28 +179,6 @@ impl DownloadOrchestrator {
                 None
             }
         }
-    }
-
-    /// Enrich staging audio file: queries MusicBrainz, computes missing ReplayGain, Acoustic Features, and AcoustID.
-    #[allow(dead_code)]
-    pub async fn enrich_staging_audio(
-        &self,
-        file_path: &std::path::Path,
-        request: &DownloadRequest,
-        origin_meta: Option<&OriginTrackMetadata>,
-    ) -> Result<EnrichedMetadata> {
-        let enriched = self
-            .enrichment
-            .resolve_and_enrich_staging_audio(
-                file_path,
-                &request.artist_name,
-                &request.album_name,
-                &request.track_name,
-                request.isrc.as_deref(),
-                origin_meta,
-            )
-            .await;
-        Ok(enriched)
     }
 
     /// Download a track, trying services in priority order (backwards-compatible)
@@ -256,7 +263,7 @@ impl DownloadOrchestrator {
     /// Post-download quality gate: derives verified physical audio quality tier ("hires", "lossless", "lossy")
     /// directly from physical audio inspection.
     /// Rejects assigning the "hires" label if the stream is 16-bit/44.1kHz or <= 16-bit and <= 48kHz.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Cubierta por `tests/hires_quality_reconciliation_test.rs`.
     pub fn verify_post_download_quality_gate(res: &DownloadResult) -> &'static str {
         let path = std::path::Path::new(&res.file_path);
         if let Some(phys) = crate::download::audio_inspector::inspect_physical_audio_file(path) {
@@ -917,82 +924,8 @@ impl DownloadOrchestrator {
         Ok((candidates, avail))
     }
 
-    /// Query SongLink cross-platform availability for a URL directly
-    #[allow(dead_code)]
-    pub async fn query_songlink_url(
-        &self,
-        url: &str,
-    ) -> Result<crate::download::songlink::SongLinkAvailability> {
-        self.songlink.check_from_url(url).await
-    }
-
-    /// Resolve candidate engines from SongLink for a direct URL
-    #[allow(dead_code)]
-    pub async fn resolve_songlink_url_candidates(
-        &self,
-        url: &str,
-    ) -> Result<(
-        Vec<SongLinkEngineTarget>,
-        crate::download::songlink::SongLinkAvailability,
-    )> {
-        let avail = self.query_songlink_url(url).await?;
-        let mut candidates = Vec::new();
-        let mut handled = std::collections::HashSet::new();
-
-        for service in &self.service_priority {
-            let s = service.to_lowercase();
-            match s.as_str() {
-                "tidal" => {
-                    handled.insert("tidal".to_string());
-                    if let Some(ref tid) = avail.tidal_id {
-                        if self.is_service_available("tidal").await {
-                            candidates.push(SongLinkEngineTarget::Tidal(tid.clone()));
-                        }
-                    }
-                }
-                "qobuz" => {
-                    handled.insert("qobuz".to_string());
-                    if let Some(ref qid) = avail.qobuz_id {
-                        if self.is_service_available("qobuz").await {
-                            candidates.push(SongLinkEngineTarget::Qobuz(qid.clone()));
-                        }
-                    }
-                }
-                "amazon" => {
-                    handled.insert("amazon".to_string());
-                    if let Some(ref aurl) = avail.amazon_url {
-                        candidates.push(SongLinkEngineTarget::Amazon(aurl.clone()));
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if !handled.contains("tidal") {
-            if let Some(ref tid) = avail.tidal_id {
-                if self.is_service_available("tidal").await {
-                    candidates.push(SongLinkEngineTarget::Tidal(tid.clone()));
-                }
-            }
-        }
-        if !handled.contains("qobuz") {
-            if let Some(ref qid) = avail.qobuz_id {
-                if self.is_service_available("qobuz").await {
-                    candidates.push(SongLinkEngineTarget::Qobuz(qid.clone()));
-                }
-            }
-        }
-        if !handled.contains("amazon") {
-            if let Some(ref aurl) = avail.amazon_url {
-                candidates.push(SongLinkEngineTarget::Amazon(aurl.clone()));
-            }
-        }
-
-        Ok((candidates, avail))
-    }
-
     /// Parse, resolve metadata via SongLink/native services, and enqueue track into download_queue
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Cubierta por `tests/url_import_queue_test.rs` (`test_orchestrator_enqueue_from_url_integration`).
     pub async fn enqueue_from_url(
         &self,
         db: &sqlx::SqlitePool,
@@ -1069,28 +1002,6 @@ impl DownloadOrchestrator {
         Self::reconcile_physical_audio_quality(&mut qobuz_res, request);
         PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
         Ok(qobuz_res)
-    }
-
-    /// Fetch lyrics for a track
-    #[allow(dead_code)]
-    pub async fn fetch_lyrics(
-        &self,
-        artist: &str,
-        track: &str,
-        duration_sec: f64,
-    ) -> Result<LyricsResponse> {
-        self.lyrics
-            .fetch_all_sources(artist, track, duration_sec)
-            .await
-    }
-
-    /// Check track availability across platforms
-    #[allow(dead_code)]
-    pub async fn check_availability(
-        &self,
-        spotify_id: &str,
-    ) -> Result<crate::download::songlink::TrackAvailability> {
-        self.songlink.check_availability(spotify_id, None).await
     }
 }
 

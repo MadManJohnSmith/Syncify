@@ -188,7 +188,7 @@ describe('QuickActionsFab.vue (TASK-20)', () => {
 
   it('filters actions contextually based on currentTab', () => {
     const libraryWrapper = mount(QuickActionsFab, {
-      props: { currentTab: 'library', selectedTracksCount: 0 }
+      props: { currentTab: 'library' }
     })
     const libraryActionIds = libraryWrapper.vm.visibleActions.map((a: any) => a.id)
     expect(libraryActionIds).toContain('download-url')
@@ -204,16 +204,52 @@ describe('QuickActionsFab.vue (TASK-20)', () => {
     expect(downloadsActionIds).toContain('clear-completed')
   })
 
-  it('shows selection-dependent actions only when selectedTracksCount > 0', () => {
-    const zeroSelected = mount(QuickActionsFab, {
-      props: { currentTab: 'library', selectedTracksCount: 0 }
+  it('shows metadata/lyrics tab actions that have real handlers bound in App.vue', () => {
+    const metadataWrapper = mount(QuickActionsFab, {
+      props: { currentTab: 'metadata' }
     })
-    expect(zeroSelected.vm.visibleActions.some((a: any) => a.id === 'download-selected')).toBe(false)
+    const metadataIds = metadataWrapper.vm.visibleActions.map((a: any) => a.id)
+    expect(metadataIds).toContain('auto-fix')
+    expect(metadataIds).toContain('fetch-metadata')
 
-    const withSelected = mount(QuickActionsFab, {
-      props: { currentTab: 'library', selectedTracksCount: 5 }
+    const lyricsWrapper = mount(QuickActionsFab, {
+      props: { currentTab: 'lyrics' }
     })
-    expect(withSelected.vm.visibleActions.some((a: any) => a.id === 'download-selected')).toBe(true)
+    const lyricsIds = lyricsWrapper.vm.visibleActions.map((a: any) => a.id)
+    expect(lyricsIds).toContain('fetch-lyrics')
+    expect(lyricsIds).toContain('upgrade-lyrics')
+  })
+
+  it('no longer offers selection-scoped actions that had no reachable handler (IN-3)', () => {
+    const libraryWrapper = mount(QuickActionsFab, {
+      props: { currentTab: 'library' }
+    })
+    const libraryActionIds = libraryWrapper.vm.visibleActions.map((a: any) => a.id)
+    expect(libraryActionIds).not.toContain('download-selected')
+    expect(libraryActionIds).not.toContain('add-to-playlist')
+    expect(libraryActionIds).not.toContain('batch-edit')
+  })
+
+  it('fails visibly instead of faking success when an action has no bound handler (IN-3)', async () => {
+    const wrapper = mount(QuickActionsFab, {
+      props: { currentTab: 'lyrics' }
+    })
+
+    await wrapper.find('button.quick-actions-fab').trigger('click')
+    await wrapper.find('button[title="Fetch Missing Lyrics"]').trigger('click')
+
+    await vi.advanceTimersByTimeAsync(0)
+    await nextTick()
+
+    // CRITICAL CHECK: with no handler bound the FAB must report an error,
+    // never the old fake 'success'.
+    expect(wrapper.vm.feedbackState).toBe('error')
+    expect(wrapper.find('button.quick-actions-fab').classes()).toContain('bg-red-500')
+
+    // Resets to idle after the error duration
+    await vi.advanceTimersByTimeAsync(2000)
+    await nextTick()
+    expect(wrapper.vm.feedbackState).toBe('idle')
   })
 })
 
@@ -347,6 +383,56 @@ describe('App.vue + QuickActionsFab Event Wiring (TASK-20)', () => {
 
     expect(registeredPromise).toBeDefined()
     expect(registeredPromise).toBeInstanceOf(Promise)
+  })
+
+  it('connects @auto-fix, @fetch-metadata, @fetch-lyrics and @upgrade-lyrics to real async handlers (IN-3)', async () => {
+    const { default: App } = await import('@/App.vue')
+
+    const wrapper = mount(App, {
+      global: {
+        stubs: {
+          RouterView: true,
+          RouterLink: true,
+          SplashScreen: true,
+          StatusBar: true,
+          NowPlayingBar: true,
+          ToastNotifications: true,
+          CommandPalette: true,
+          KeyboardShortcuts: true,
+          HelpPanel: true,
+          OnboardingWizard: true
+        }
+      }
+    })
+
+    const fab = wrapper.findComponent(QuickActionsFab)
+    expect(fab.exists()).toBe(true)
+
+    for (const event of ['auto-fix', 'fetch-metadata', 'fetch-lyrics', 'upgrade-lyrics']) {
+      let registeredPromise: Promise<unknown> | null = null
+      const cb: ActionCallback = Object.assign(
+        (errOrPromise?: unknown) => {
+          if (errOrPromise instanceof Promise) {
+            registeredPromise = errOrPromise
+          }
+        },
+        {
+          resolve: () => {},
+          reject: () => {},
+          waitUntil: (p: Promise<unknown>) => { registeredPromise = p },
+          defer: () => {}
+        }
+      )
+
+      fab.vm.$emit(event, cb)
+      await nextTick()
+
+      // Each handler must register a real promise so the FAB feedback waits
+      // for the backend operation instead of faking success.
+      expect(registeredPromise).toBeInstanceOf(Promise)
+      const p = registeredPromise as unknown as Promise<unknown>
+      await p.catch(() => {})
+    }
   })
 })
 

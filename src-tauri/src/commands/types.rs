@@ -141,7 +141,7 @@ pub struct SyncProgressEvent {
 }
 
 impl SyncProgressEvent {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Cubierta por `tests/account_credentials_ipc_hygiene_test.rs`, `tests/accounts_auth_status_test.rs`.
     pub fn new(
         service: impl Into<String>,
         account_id: Option<i64>,
@@ -295,10 +295,15 @@ pub struct LibraryTrack {
     pub available_services: Option<String>, // Services verified available
     pub availability_summary: Option<String>, // JSON or summary of source statuses
     pub quality: Option<String>,  // e.g. "24/96", "16/44.1", "320kbps"
+    // FE-10: dashboard-compatible quality bucket ('Hi-Res (24-bit+)' |
+    // 'CD Quality' | 'Lossy'), only computed by get_library for the
+    // /library?filter=quality deep-link.
+    #[sqlx(default)]
+    pub quality_bucket: Option<String>,
     pub download_status: Option<String>, // "downloaded", "queued", "not_downloaded"
-    pub metadata_score: Option<i32>, // 0-100 based on field completeness
-    pub lyrics_type: Option<String>, // "synced", "timed", "plain", "none"
-    pub cover_art_url: Option<String>, // Album artwork URL
+    pub metadata_score: Option<i32>,     // 0-100 based on field completeness
+    pub lyrics_type: Option<String>,     // "synced", "timed", "plain", "none"
+    pub cover_art_url: Option<String>,   // Album artwork URL
     pub spotify_track_id: Option<String>, // External Spotify ID
     // Extended metadata fields
     pub track_number: Option<i32>,
@@ -664,9 +669,6 @@ pub struct ParsedUrl {
     pub status: Option<String>,
 }
 
-#[allow(dead_code)]
-pub type UrlImportResult = ParsedUrl;
-
 impl ParsedUrl {
     pub fn new(
         service: impl Into<String>,
@@ -718,7 +720,7 @@ pub enum DownloadPreflightStatus {
 }
 
 impl DownloadPreflightStatus {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Cubierta por `tests/batch_100_pilot_test.rs`, `tests/download_settings_canonical_test.rs`.
     pub fn is_eligible(&self) -> bool {
         matches!(
             self,
@@ -727,7 +729,6 @@ impl DownloadPreflightStatus {
         )
     }
 
-    #[allow(dead_code)]
     pub fn code(&self) -> &'static str {
         match self {
             DownloadPreflightStatus::ReadyExactSource => "ReadyExactSource",

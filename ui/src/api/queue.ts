@@ -376,6 +376,17 @@ export async function clearQueue(status?: string): Promise<number> {
 }
 
 /**
+ * Clear download history records (finished queue entries: complete/failed/cancelled),
+ * optionally scoped to specific tracks. Preserves the downloads ledger.
+ */
+export async function clearDownloadHistory(trackIds?: number[]): Promise<number> {
+    const cleared = await invokeCommand<unknown>('clear_download_history', {
+        trackIds: trackIds ?? null
+    });
+    return typeof cleared === 'number' ? cleared : 0;
+}
+
+/**
  * Remove specific item from queue
  */
 export async function removeFromQueue(id: number): Promise<void> {
@@ -766,6 +777,7 @@ export const queueApi = {
     retryAllFailed,
     clearAllFailed,
     clearQueue,
+    clearDownloadHistory,
     removeFromQueue,
     restoreInterrupted,
     getWorkerStatus,

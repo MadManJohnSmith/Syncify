@@ -1,254 +1,11 @@
 //! Database models matching the production schema
 //!
-//! All structs correspond to tables in migrations 0001-0004.
-//! Many structs are for future use as the application expands.
-
-#![allow(dead_code)]
+//! Every struct here mirrors a table or view of the production schema and has at
+//! least one consumer (a command, a service or an integration test); structs
+//! without consumers were removed instead of being parked behind `dead_code`.
 
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-
-// ==============================================
-// CORE ENTITIES
-// ==============================================
-
-/// Streaming service (spotify, qobuz, tidal, etc.)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Service {
-    pub id: i64,
-    pub name: String,
-    pub supports_download: bool,
-    pub max_quality: Option<String>,
-    pub created_at: Option<String>,
-}
-
-/// User account for a service
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Account {
-    pub id: i64,
-    pub service_id: i64,
-    pub display_name: Option<String>,
-    pub email: Option<String>,
-    pub is_active: bool,
-    pub credentials_json: Option<String>,
-    pub last_synced: Option<String>,
-    pub created_at: Option<String>,
-}
-
-/// Canonical artist (deduplicated)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Artist {
-    pub id: i64,
-    pub name: String,
-    pub musicbrainz_id: Option<String>,
-    pub spotify_id: Option<String>,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
-}
-
-/// Canonical album (deduplicated)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Album {
-    pub id: i64,
-    pub title: String,
-    pub release_date: Option<String>,
-    pub musicbrainz_id: Option<String>,
-    pub upc: Option<String>,
-    pub total_tracks: Option<i32>,
-    pub total_discs: Option<i32>,
-    pub cover_art_url: Option<String>,
-    pub created_at: Option<String>,
-}
-
-/// Canonical track (deduplicated by ISRC)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Track {
-    pub id: i64,
-    pub title: String,
-    pub album_id: Option<i64>,
-    pub duration_ms: Option<i64>,
-    pub track_number: Option<i32>,
-    pub disc_number: Option<i32>,
-    pub isrc: Option<String>,
-    pub musicbrainz_id: Option<String>,
-    pub acoustid_fingerprint: Option<String>,
-    pub explicit: bool,
-    pub loudness: Option<f64>,
-    pub replaygain_track_gain: Option<String>,
-    pub replaygain_track_peak: Option<String>,
-    pub replaygain_album_gain: Option<String>,
-    pub replaygain_album_peak: Option<String>,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
-}
-
-// ==============================================
-// MAPPING TABLES
-// ==============================================
-
-/// Track-Artist relationship with role
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct TrackArtist {
-    pub track_id: i64,
-    pub artist_id: i64,
-    pub role: String,
-}
-
-/// Track quality per service
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct TrackSource {
-    pub id: i64,
-    pub track_id: i64,
-    pub service_id: i64,
-    pub service_track_id: String,
-    pub format: Option<String>,
-    pub bit_depth: Option<i32>,
-    pub sample_rate: Option<i32>,
-    pub bitrate: Option<i32>,
-    pub quality_score: Option<i32>,
-    pub available: bool,
-    pub last_checked: Option<String>,
-}
-
-// ==============================================
-// USER DATA
-// ==============================================
-
-/// User's library entry (liked track)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct LibraryEntry {
-    pub id: i64,
-    pub account_id: i64,
-    pub track_id: i64,
-    pub added_at: Option<String>,
-    pub is_liked: bool,
-    pub play_count: i32,
-    pub auto_download: bool,
-}
-
-/// Playlist
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Playlist {
-    pub id: i64,
-    pub account_id: i64,
-    pub service_playlist_id: Option<String>,
-    pub name: String,
-    pub description: Option<String>,
-    pub is_public: bool,
-    pub track_count: i32,
-    pub last_synced: Option<String>,
-    pub created_at: Option<String>,
-    #[sqlx(default)]
-    #[serde(default)]
-    pub is_smart: bool,
-    #[sqlx(default)]
-    #[serde(default)]
-    pub rules_json: Option<String>,
-}
-
-// ==============================================
-// DOWNLOADS
-// ==============================================
-
-/// Download queue item
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct DownloadQueueItem {
-    pub id: i64,
-    pub track_id: i64,
-    pub status: String,
-    pub priority: i32,
-    pub quality_preference: Option<String>,
-    pub progress_percent: f64,
-    pub bytes_downloaded: Option<i64>,
-    pub total_bytes: Option<i64>,
-    pub error_message: Option<String>,
-    pub retry_count: i32,
-    pub created_at: Option<String>,
-    pub started_at: Option<String>,
-    pub completed_at: Option<String>,
-}
-
-/// Downloaded file
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Download {
-    pub id: i64,
-    pub track_id: Option<i64>,
-    pub source_service_id: Option<i64>,
-    pub file_path: String,
-    pub file_format: Option<String>,
-    pub file_size_bytes: Option<i64>,
-    pub file_hash: Option<String>,
-    pub bit_depth: Option<i32>,
-    pub sample_rate: Option<i32>,
-    pub metadata_completeness: i32,
-    pub downloaded_at: Option<String>,
-    pub only_available_on: Option<String>,
-    pub not_streaming: bool,
-    pub musicbrainz_release_id: Option<String>,
-    pub updated_at: Option<String>,
-}
-
-// ==============================================
-// OTHER
-// ==============================================
-
-/// Lyrics
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Lyrics {
-    pub id: i64,
-    pub track_id: Option<i64>,
-    pub format: String,
-    pub sync_level: Option<String>,
-    pub source: Option<String>,
-    pub content: String,
-    pub language: Option<String>,
-    pub embedded_in_file: bool,
-    pub created_at: Option<String>,
-}
-
-/// Library stats view
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct LibraryStats {
-    pub total_tracks: i64,
-    pub total_artists: i64,
-    pub total_albums: i64,
-    pub total_downloads: i64,
-    pub queued_downloads: i64,
-    pub active_downloads: i64,
-    pub library_entries: i64,
-    pub playlists: i64,
-    pub services_with_data: i64,
-}
-
-// ==============================================
-// API RESPONSE TYPES
-// ==============================================
-
-/// Track with artist info for UI display
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackWithArtist {
-    pub id: i64,
-    pub title: String,
-    pub artist_name: String,
-    pub album_title: Option<String>,
-    pub duration_ms: Option<i64>,
-    pub isrc: Option<String>,
-    pub is_downloaded: bool,
-    pub best_quality: Option<String>,
-}
-
-/// Service connection status
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceStatus {
-    pub name: String,
-    pub connected: bool,
-    pub account_email: Option<String>,
-    pub last_synced: Option<String>,
-    pub track_count: i64,
-    pub credentials_invalid: bool,
-    pub invalid_reason: Option<String>,
-    pub last_auth_error: Option<String>,
-}
 
 // ==============================================
 // SPRINT 1: SERVICE PREFERENCES & SYNC SETTINGS
@@ -397,9 +154,6 @@ pub struct LibrarySnapshot {
     pub tracks_with_lyrics: i64,
     pub tracks_lossless: i64,
     pub tracks_hires: i64,
-    pub metadata_excellent: i64,
-    pub metadata_good: i64,
-    pub metadata_needs_work: i64,
     pub downloaded_tracks: i64,
 }
 
@@ -419,6 +173,7 @@ pub struct ServiceHealthInfo {
 
 /// Extended album info for detail view
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)] // Cubierta por `tests/tracks_query_schema_alignment_test.rs`.
 pub struct AlbumDetail {
     pub id: i64,
     pub title: String,
@@ -431,17 +186,6 @@ pub struct AlbumDetail {
     pub artwork_url: Option<String>,
     pub quality: Option<String>,
     pub source_service: Option<String>,
-}
-
-/// Extended artist info for detail view
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ArtistDetail {
-    pub id: i64,
-    pub name: String,
-    pub album_count: i64,
-    pub track_count: i64,
-    pub genres: Vec<String>,
-    pub artwork_url: Option<String>,
 }
 
 // ==============================================
@@ -510,18 +254,6 @@ pub struct MetadataPreferences {
     pub weight_cover: i64,
     pub weight_year: i64,
     pub weight_genre: i64,
-}
-
-/// Cache statistics for monitoring
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct CacheStats {
-    pub id: i64,
-    pub cache_type: String,
-    pub size_bytes: i64,
-    pub item_count: i64,
-    pub hit_count: i64,
-    pub miss_count: i64,
-    pub last_updated: String,
 }
 
 /// Diagnostic result for system health check
@@ -639,6 +371,14 @@ pub struct MigrationProgress {
     pub completed_count: i64,
     pub failed_count: i64,
     pub skipped_count: i64,
+    /// Completion percentage: current_item / total_items * 100.
+    pub percent: f64,
+    /// Estimated throughput in items per minute.
+    pub speed: f64,
+    /// Estimated time remaining, derived from the observed throughput.
+    pub eta: String,
+    /// Human readable description of the operation being performed.
+    pub current_action: String,
 }
 
 /// Migration schema audit report

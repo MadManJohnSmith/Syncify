@@ -25,6 +25,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import playlist_bridge
+from bridge_python import python_executable
 
 
 class TestPlaylistBridgeHygiene(unittest.TestCase):
@@ -259,7 +260,7 @@ class TestPlaylistBridgeHygiene(unittest.TestCase):
 
             # Execute CLI command
             cmd = [
-                sys.executable,
+                python_executable(),
                 str(self.scripts_dir / "playlist_bridge.py"),
                 "export",
                 "local",
@@ -316,6 +317,178 @@ class TestPlaylistBridgeHygiene(unittest.TestCase):
         self.assertEqual(playlists, [{"id": "p1", "name": "Playlist"}])
         fake_service.get_user_playlists.assert_awaited_once_with()
         fake_service.close.assert_awaited_once_with()
+
+    def test_soundcloud_bridge_uses_service_credentials_contract(self):
+        """SoundCloud bridge must call SoundCloudService(credentials) and authenticate it.
+
+        Regression for PY-1: the bridge used to pass client_id=/auth_token= kwargs,
+        which SoundCloudService.__init__ does not accept (TypeError on every call).
+        """
+        from types import ModuleType
+        from unittest.mock import AsyncMock, patch
+
+        from services.service_base import ServiceType, TrackMetadata
+
+        track = TrackMetadata(
+            service_id="9001",
+            service_type=ServiceType.SOUNDCLOUD,
+            title="Bridge Song",
+            artists=["Bridge Artist"],
+            album="Bridge Album",
+            duration_ms=210000,
+            isrc="USBRIDGE1",
+        )
+
+        instances = []
+
+        class FakeSoundCloudService:
+            """Mirrors the real signature: __init__(credentials, verbose)."""
+
+            def __init__(self, credentials=None, verbose: bool = False):
+                self.credentials = credentials
+                self.verbose = verbose
+                self.authenticate = AsyncMock(return_value=True)
+                self.get_user_playlists = AsyncMock(return_value=[{"id": "pl-1", "name": "Likes"}])
+                self.get_playlist_tracks = AsyncMock(return_value=[track])
+                self.close = AsyncMock()
+                instances.append(self)
+
+        soundcloud_module = ModuleType("services.soundcloud_service")
+        soundcloud_module.SoundCloudService = FakeSoundCloudService
+
+        with patch.dict(os.environ, {
+            "SOUNDCLOUD_CLIENT_ID": "sc-client-id",
+            "SOUNDCLOUD_AUTH_TOKEN": "sc-auth-token",
+        }, clear=False), patch.dict(sys.modules, {
+            "services.soundcloud_service": soundcloud_module,
+        }):
+            playlists = playlist_bridge.get_soundcloud_playlists()
+            tracks = playlist_bridge.get_soundcloud_playlist_tracks("pl-1")
+
+        self.assertEqual(playlists, [{"id": "pl-1", "name": "Likes"}])
+        self.assertEqual(len(instances), 2)
+
+        credentials = instances[0].credentials
+        self.assertEqual(credentials.service_type, ServiceType.SOUNDCLOUD)
+        self.assertEqual(credentials.token, "sc-auth-token")
+        self.assertEqual(credentials.client_id, "sc-client-id")
+        self.assertEqual(credentials.extra["client_id"], "sc-client-id")
+
+        instances[1].get_playlist_tracks.assert_awaited_once_with("pl-1")
+        self.assertEqual(tracks[0]["id"], "9001")
+        self.assertEqual(tracks[0]["title"], "Bridge Song")
+        self.assertEqual(tracks[0]["artist"], "Bridge Artist")
+        self.assertEqual(tracks[0]["isrc"], "USBRIDGE1")
+
+        for service in instances:
+            service.authenticate.assert_awaited_once_with()
+            service.close.assert_awaited_once_with()
+
+    def test_deezer_bridge_authenticates_with_arl_credentials(self):
+        """Deezer bridge must inject DEEZER_ARL and authenticate before listing playlists."""
+        from types import ModuleType
+        from unittest.mock import AsyncMock, patch
+
+        from services.service_base import ServiceType, TrackMetadata
+
+        track = TrackMetadata(
+            service_id="4242",
+            service_type=ServiceType.DEEZER,
+            title="Deezer Song",
+            artists=["Deezer Artist"],
+            album="Deezer Album",
+            duration_ms=180000,
+            isrc="FRDEEZER1",
+        )
+
+        instances = []
+
+        class FakeDeezerService:
+            """Mirrors the real signature: __init__(credentials, verbose)."""
+
+            def __init__(self, credentials=None, verbose: bool = False):
+                self.credentials = credentials
+                self.verbose = verbose
+                self.authenticate = AsyncMock(return_value=True)
+                self.get_user_playlists = AsyncMock(return_value=[{"id": "77", "name": "Favs"}])
+                self.get_playlist_tracks = AsyncMock(return_value=[track])
+                self.close = AsyncMock()
+                instances.append(self)
+
+        deezer_module = ModuleType("services.deezer_service")
+        deezer_module.DeezerService = FakeDeezerService
+
+        with patch.dict(os.environ, {
+            "DEEZER_ARL": "deezer-arl",
+            "DEEZER_BLOWFISH_KEY": "0123456789abcdef",
+        }, clear=False), patch.dict(sys.modules, {
+            "services.deezer_service": deezer_module,
+        }):
+            playlists = playlist_bridge.get_deezer_playlists()
+            tracks = playlist_bridge.get_deezer_playlist_tracks("77")
+
+        self.assertEqual(playlists, [{"id": "77", "name": "Favs"}])
+        self.assertEqual(len(instances), 2)
+
+        credentials = instances[0].credentials
+        self.assertEqual(credentials.service_type, ServiceType.DEEZER)
+        self.assertEqual(credentials.token, "deezer-arl")
+        self.assertEqual(credentials.extra["arl"], "deezer-arl")
+        self.assertEqual(credentials.extra["blowfish_key"], "0123456789abcdef")
+
+        instances[1].get_playlist_tracks.assert_awaited_once_with("77")
+        self.assertEqual(tracks[0]["id"], "4242")
+        self.assertEqual(tracks[0]["artist"], "Deezer Artist")
+
+        for service in instances:
+            service.authenticate.assert_awaited_once_with()
+            service.close.assert_awaited_once_with()
+
+    def test_deezer_bridge_raises_when_authentication_fails(self):
+        """Regression for PY-2: an unauthenticated Deezer service silently returned []."""
+        from types import ModuleType
+        from unittest.mock import AsyncMock, patch
+
+        instances = []
+
+        class FakeDeezerService:
+            def __init__(self, credentials=None, verbose: bool = False):
+                self.credentials = credentials
+                self.authenticate = AsyncMock(return_value=False)
+                self.get_user_playlists = AsyncMock(return_value=[])
+                self.close = AsyncMock()
+                instances.append(self)
+
+        deezer_module = ModuleType("services.deezer_service")
+        deezer_module.DeezerService = FakeDeezerService
+
+        with patch.dict(os.environ, {"DEEZER_ARL": "stale-arl"}, clear=False), patch.dict(
+            sys.modules, {"services.deezer_service": deezer_module}
+        ):
+            with self.assertRaises(Exception) as ctx:
+                playlist_bridge.get_deezer_playlists()
+
+        self.assertIn("Deezer authentication failed", str(ctx.exception))
+        self.assertEqual(len(instances), 1)
+        instances[0].get_user_playlists.assert_not_awaited()
+        instances[0].close.assert_awaited_once_with()
+
+    def test_deezer_bridge_requires_arl_environment_variable(self):
+        """Without DEEZER_ARL the bridge must fail loudly instead of returning no playlists."""
+        from types import ModuleType
+        from unittest.mock import MagicMock, patch
+
+        deezer_module = ModuleType("services.deezer_service")
+        deezer_module.DeezerService = MagicMock()
+
+        with patch.dict(os.environ, {}, clear=True), patch.dict(
+            sys.modules, {"services.deezer_service": deezer_module}
+        ):
+            with self.assertRaises(Exception) as ctx:
+                playlist_bridge.get_deezer_playlists()
+
+        self.assertIn("DEEZER_ARL", str(ctx.exception))
+        deezer_module.DeezerService.assert_not_called()
 
 
 if __name__ == "__main__":

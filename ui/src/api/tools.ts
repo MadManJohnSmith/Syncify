@@ -35,5 +35,41 @@ export const toolsApi = {
     writeTextFile: async (path: string, contents: string): Promise<number> => {
         const written = await invoke<unknown>('write_text_file', { path, contents })
         return typeof written === 'number' ? written : 0
+    },
+
+    /**
+     * Persist a user-submitted report (bug report / feedback / help article
+     * rating) as a JSON file in the app log directory (FE-8). Returns the
+     * written file path so the UI can confirm the save to the user.
+     */
+    saveUserReport: async (report: UserReportInput): Promise<UserReportSaved> => {
+        const raw = await invoke<unknown>('save_user_report', { report })
+        const rec = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+        return {
+            filePath: typeof rec.file_path === 'string' ? rec.file_path : '',
+            createdAt: typeof rec.created_at === 'string' ? rec.created_at : '',
+        }
     }
+}
+
+export interface UserReportInput {
+    /** 'bug_report' | 'feedback' | 'article_feedback' */
+    kind: string
+    /** Main free text (bug description / feedback message) */
+    message: string
+    /** Bug reports only: reproduction steps */
+    steps_to_reproduce?: string
+    /** Feedback only: 'Bug Report' | 'Feature Request' | 'General Feedback' */
+    feedback_type?: string
+    /** Article feedback only: title of the rated article */
+    article_title?: string
+    /** Article feedback only: thumbs up / thumbs down */
+    helpful?: boolean | null
+    /** Bug reports only: attach the sanitized system log dump */
+    attach_logs?: boolean
+}
+
+export interface UserReportSaved {
+    filePath: string
+    createdAt: string
 }

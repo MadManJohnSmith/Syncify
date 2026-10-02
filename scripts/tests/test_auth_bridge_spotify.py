@@ -22,6 +22,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from auth_bridge import handle_spotify  # noqa: E402
+from bridge_python import python_executable  # noqa: E402
 
 
 class TestAuthBridgeSpotify(unittest.TestCase):
@@ -49,7 +50,7 @@ class TestAuthBridgeSpotify(unittest.TestCase):
         """Verify CLI execution: python3 scripts/auth_bridge.py spotify status."""
         script_path = SCRIPTS_DIR / "auth_bridge.py"
         res = subprocess.run(
-            [sys.executable, str(script_path), "spotify", "status"],
+            [python_executable(), str(script_path), "spotify", "status"],
             capture_output=True,
             text=True,
         )
@@ -68,7 +69,7 @@ class TestAuthBridgeSpotify(unittest.TestCase):
         """Verify CLI execution: python3 scripts/auth_bridge.py spotify login."""
         script_path = SCRIPTS_DIR / "auth_bridge.py"
         res = subprocess.run(
-            [sys.executable, str(script_path), "spotify", "login"],
+            [python_executable(), str(script_path), "spotify", "login"],
             capture_output=True,
             text=True,
         )
@@ -85,7 +86,7 @@ class TestAuthBridgeSpotify(unittest.TestCase):
         """Verify CLI execution: python3 scripts/auth_bridge.py --service spotify."""
         script_path = SCRIPTS_DIR / "auth_bridge.py"
         res = subprocess.run(
-            [sys.executable, str(script_path), "--service", "spotify"],
+            [python_executable(), str(script_path), "--service", "spotify"],
             capture_output=True,
             text=True,
         )
@@ -102,7 +103,7 @@ class TestAuthBridgeSpotify(unittest.TestCase):
         """Verify CLI execution: python3 scripts/auth_bridge.py --service spotify --action login."""
         script_path = SCRIPTS_DIR / "auth_bridge.py"
         res = subprocess.run(
-            [sys.executable, str(script_path), "--service", "spotify", "--action", "login"],
+            [python_executable(), str(script_path), "--service", "spotify", "--action", "login"],
             capture_output=True,
             text=True,
         )

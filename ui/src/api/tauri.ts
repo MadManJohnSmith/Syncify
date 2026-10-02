@@ -222,14 +222,9 @@ export const TauriEvents = {
     DOWNLOAD_PROGRESS: 'syncify:download_progress',
     DOWNLOAD_COMPLETE: 'syncify:download_progress',
     DOWNLOAD_FAILED: 'syncify:download_progress',
-    PIPELINE_PROGRESS: 'pipeline:progress',
 
-    // Progress events (scans, organizer, tools)
+    // Canonical progress channel (scans, organizer, tools, single-track pipeline)
     PROGRESS: 'syncify:progress',
-    SCAN_PROGRESS: 'scan-progress',
-    SCAN_COMPLETE: 'scan-complete',
-    ORGANIZE_PROGRESS: 'organize-progress',
-    ORGANIZE_COMPLETE: 'organize-complete',
 
     // Import / Sync events
     IMPORT_PROGRESS: 'import-progress',
@@ -263,17 +258,13 @@ export const TauriEvents = {
     MIGRATION_PROGRESS: 'migration-progress',
     CREDENTIAL_MIGRATION_PARTIAL: 'credential_migration_partial',
     STALE_CREDENTIALS_PURGED: 'stale_credentials_purged',
-    DATABASE_MIGRATION_PROGRESS: 'database-migration-progress',
-    DATABASE_MIGRATION_COMPLETE: 'database-migration-complete',
     NOTIFICATION: 'syncify:notification',
     SERVICE_NOTIFICATION: 'service-notification',
     LOG_EVENT: 'syncify:log_event',
-    TRAY_ACTION: 'tray-action',
     TRAY_NOTIFICATION: 'tray-notification',
     PYTHON_DEPS_MISSING: 'python_deps_missing',
     BPM_ANALYSIS_PROGRESS: 'syncify:bpm_analysis_progress',
     FAVORITES_SYNC_COMPLETED: 'syncify:favorites_sync_completed',
-    SYNCIFY_SYNC_PROGRESS: 'syncify:sync_progress',
     WORKER_FATAL: 'worker_fatal',
     WORKER_RESTARTED: 'worker_restarted',
 } as const;

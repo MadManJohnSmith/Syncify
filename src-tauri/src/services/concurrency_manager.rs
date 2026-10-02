@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{debug, warn};
 
 use syncify_core_domain::{
@@ -77,12 +77,6 @@ pub fn get_global_concurrency_manager() -> Arc<ConcurrencyManager> {
 pub struct ConcurrencyManager {
     /// Mutex registry keyed by normalized string representation
     registry: Mutex<HashMap<String, KeyEntry>>,
-    /// Global catalog write coordinator (reader-writer)
-    #[allow(dead_code)]
-    catalog_rwlock: RwLock<()>,
-    /// Global settings coordinator (reader-writer)
-    #[allow(dead_code)]
-    settings_rwlock: RwLock<()>,
     /// Telemetry & Statistics
     total_acquisitions: AtomicU64,
     contended_acquisitions: AtomicU64,
@@ -102,8 +96,6 @@ impl ConcurrencyManager {
     pub fn new() -> Self {
         Self {
             registry: Mutex::new(HashMap::new()),
-            catalog_rwlock: RwLock::new(()),
-            settings_rwlock: RwLock::new(()),
             total_acquisitions: AtomicU64::new(0),
             contended_acquisitions: AtomicU64::new(0),
             timeouts: AtomicU64::new(0),

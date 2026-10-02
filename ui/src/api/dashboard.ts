@@ -142,6 +142,20 @@ export async function autoResolveDuplicates(): Promise<AutoResolveDuplicatesResu
     };
 }
 
+/** Batch processing health report (matches Rust BatchHealthReport). */
+export interface BatchHealthReport {
+    [key: string]: unknown;
+}
+
+/**
+ * Audit batch processing health, database integrity, queue state and the
+ * staging directory (IN-5: exposed diagnostic capability).
+ */
+export async function runBatchHealthCheck(): Promise<BatchHealthReport> {
+    const raw = await invokeCommand<unknown>('run_batch_health_check');
+    return asRecord(raw) ?? {};
+}
+
 // Export as namespace
 export const dashboardApi = {
     getServiceHealth,
@@ -151,5 +165,6 @@ export const dashboardApi = {
     getDashboardStats,
     getHealthChecks,
     autoResolveDuplicates,
+    runBatchHealthCheck,
 };
 

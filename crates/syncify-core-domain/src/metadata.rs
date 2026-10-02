@@ -4,34 +4,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-/// Canonical status for track identity resolution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum IdentityResolutionStatus {
-    Canonical,
-    Partial,
-    Ambiguous,
-    Deferred,
-    Unavailable,
-    InvalidProviderPayload,
-    Conflict,
-    RepairRequired,
-}
-
-impl std::fmt::Display for IdentityResolutionStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IdentityResolutionStatus::Canonical => write!(f, "Canonical"),
-            IdentityResolutionStatus::Partial => write!(f, "Partial"),
-            IdentityResolutionStatus::Ambiguous => write!(f, "Ambiguous"),
-            IdentityResolutionStatus::Deferred => write!(f, "Deferred"),
-            IdentityResolutionStatus::Unavailable => write!(f, "Unavailable"),
-            IdentityResolutionStatus::InvalidProviderPayload => write!(f, "InvalidProviderPayload"),
-            IdentityResolutionStatus::Conflict => write!(f, "Conflict"),
-            IdentityResolutionStatus::RepairRequired => write!(f, "RepairRequired"),
-        }
-    }
-}
-
 /// Provider-specific track identity payload.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ProviderTrackIdentity {
@@ -394,6 +366,11 @@ pub struct TidalAlbum {
     pub upc: Option<String>,
     #[serde(rename = "type", default)]
     pub album_type: Option<String>,
+    /// Track listing shipped with the album payload. Needed for album-level
+    /// decisions (compilation detection) that must not depend on which single
+    /// track happens to be downloaded first.
+    #[serde(rename = "tracks", default)]
+    pub tracks: Option<Vec<TidalTrack>>,
 }
 
 impl TidalAlbum {

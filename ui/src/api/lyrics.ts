@@ -323,6 +323,105 @@ export async function cancelAnimatedCoverSweep(): Promise<boolean> {
     return invokeCommand<boolean>('cancel_animated_cover_sweep', {});
 }
 
+// ==============================================
+// SIDECAR MATERIALIZATION & DOMAIN RESOLUTION (IN-5: exposed capabilities)
+// ==============================================
+
+/** Result of materializing missing .lrc sidecars (TASK-111). */
+export interface LrcMaterializationResult {
+    scanned: number;
+    materialized: number;
+    already_present: number;
+    missing_audio_file: number;
+    failed: number;
+}
+
+/**
+ * Materialize missing .lrc sidecar files for downloaded tracks that have
+ * lyrics stored in the database.
+ */
+export async function materializeMissingLrcSidecars(limit?: number): Promise<LrcMaterializationResult> {
+    const raw = await invokeCommand<unknown>('materialize_missing_lrc_sidecars', { limit: limit ?? null });
+    const rec = asRecord(raw);
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    return {
+        scanned: num(rec?.scanned),
+        materialized: num(rec?.materialized),
+        already_present: num(rec?.already_present),
+        missing_audio_file: num(rec?.missing_audio_file),
+        failed: num(rec?.failed),
+    };
+}
+
+/** Result of materializing missing album covers (TASK-111). */
+export interface CoverMaterializationResult {
+    scanned_albums: number;
+    already_present: number;
+    materialized_from_embedded: number;
+    materialized_from_url: number;
+    missing_cover_url: number;
+    failed: number;
+}
+
+/**
+ * Materialize missing album cover sidecars from embedded FLAC pictures or
+ * the stored cover_art_url.
+ */
+export async function materializeMissingCovers(limit?: number): Promise<CoverMaterializationResult> {
+    const raw = await invokeCommand<unknown>('materialize_missing_covers', { limit: limit ?? null });
+    const rec = asRecord(raw);
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    return {
+        scanned_albums: num(rec?.scanned_albums),
+        already_present: num(rec?.already_present),
+        materialized_from_embedded: num(rec?.materialized_from_embedded),
+        materialized_from_url: num(rec?.materialized_from_url),
+        missing_cover_url: num(rec?.missing_cover_url),
+        failed: num(rec?.failed),
+    };
+}
+
+/** Parameters for the domain lyric resolver. */
+export interface ResolveTrackLyricsParams {
+    artist: string;
+    title: string;
+    album?: string | null;
+    durationSec?: number | null;
+    filePath?: string | null;
+    trackId?: number | null;
+}
+
+/** Payload returned by the domain lyrics resolution orchestrator. */
+export interface LyricsResolutionPayload {
+    status: string;
+    provider: string;
+    strategy: string;
+    [key: string]: unknown;
+}
+
+/**
+ * Resolve lyrics via the domain contract orchestrator: with file_path it
+ * verifies & embeds tags with mandatory re-read; with track_id it persists
+ * the resolved lyrics into SQLite.
+ */
+export async function resolveTrackLyrics(params: ResolveTrackLyricsParams): Promise<LyricsResolutionPayload> {
+    const raw = await invokeCommand<unknown>('resolve_track_lyrics', {
+        artist: params.artist,
+        title: params.title,
+        album: params.album ?? null,
+        durationSec: params.durationSec ?? null,
+        filePath: params.filePath ?? null,
+        trackId: params.trackId ?? null
+    });
+    const rec = asRecord(raw);
+    return {
+        status: asString(rec?.status),
+        provider: asString(rec?.provider),
+        strategy: asString(rec?.strategy),
+        ...rec,
+    };
+}
+
 // Export as namespace
 export const lyricsApi = {
     getLyrics,
@@ -344,4 +443,7 @@ export const lyricsApi = {
     cancelKaraokeRefetch,
     sweepAnimatedCovers,
     cancelAnimatedCoverSweep,
+    materializeMissingLrcSidecars,
+    materializeMissingCovers,
+    resolveTrackLyrics,
 };

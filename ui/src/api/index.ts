@@ -20,6 +20,7 @@ export * from './migration';
 export * from './notifications';
 export * from './logs';
 export * from './tempo';
+export * from './tray';
 
 // Playlists has collisions with library: getPlaylists, createPlaylist
 // We export everything else from playlists, and the colliding ones with aliases
@@ -35,7 +36,6 @@ export {
     reorderPlaylistTracks,
     importPlaylists,
     exportPlaylist,
-    syncPlaylist,
     getPlaylists as getPlaylistsFull,
     createPlaylist as createPlaylistFull
 } from './playlists';
@@ -52,4 +52,5 @@ export { migrationApi } from './migration';
 export { notificationsApi } from './notifications';
 export { logsApi } from './logs';
 export { toolsApi } from './tools';
+export { trayApi } from './tray';
 

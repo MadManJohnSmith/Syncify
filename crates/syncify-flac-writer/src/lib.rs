@@ -951,18 +951,6 @@ pub fn apply_flac_tags(
     Ok(())
 }
 
-/// Write FLAC metadata and embed/preserve cover art with accurate dimensions (TASK-131).
-///
-/// Ensures all VorbisComments are applied according to Symfonium standards,
-/// embedded PICTURE blocks contain real physical dimensions (width > 0, height > 0),
-/// and existing animated WebP CoverFront blocks are preserved per the Symfonium invariant.
-pub fn write_flac_metadata(
-    file_path: &Path,
-    metadata: &FlacMetadata,
-) -> std::result::Result<(), String> {
-    apply_flac_tags(file_path, metadata)
-}
-
 /// Convert or extract a static frame to JPEG format using ffmpeg.
 ///
 /// Ensures the resulting image has valid dimensions and fits within the target constraint.
@@ -1022,6 +1010,155 @@ pub fn convert_or_extract_to_jpeg(
     }
 
     Ok(output.stdout)
+}
+
+/// D-03 recovery route (1/2 — re-encode on the host): salvage a static JPEG out of a
+/// cover payload that the strict [`prepare_flac_picture`] path rejects.
+///
+/// `convert_or_extract_to_jpeg` feeds the payload to ffmpeg over a pipe, so ffmpeg has
+/// to probe the container from the bytes alone and aborts on a damaged one. This route
+/// is deliberately more tolerant:
+///
+/// 1. the payload is staged on disk under the extension that matches its magic bytes,
+///    so the demuxer is selected from the container instead of guessed from content;
+/// 2. `-err_detect ignore_err -fflags +discardcorrupt` tells ffmpeg to emit whatever
+///    frame it can decode instead of failing the whole file on a damaged packet;
+/// 3. the result is bounded to the embedding contract, re-compressing if needed.
+///
+/// Returns the JPEG bytes, which the caller still has to run through
+/// [`prepare_flac_picture`] to obtain a contract-compliant `Picture` block. Returns
+/// `Err` when even the tolerant decode produces nothing usable.
+pub fn salvage_cover_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    if bytes.is_empty() {
+        return Err("salvage rejected an empty payload".to_string());
+    }
+
+    let extension = cover_payload_extension(bytes).ok_or_else(|| {
+        "salvage rejected a payload with no recognized image container".to_string()
+    })?;
+
+    let temp_path = std::env::temp_dir().join(format!(
+        "syncify-cover-salvage-{}-{}.{}",
+        std::process::id(),
+        unique_salvage_token(),
+        extension
+    ));
+    let mut staged = std::fs::File::create(&temp_path)
+        .map_err(|e| format!("salvage could not stage the payload: {}", e))?;
+    if let Err(e) = staged.write_all(bytes) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!("salvage could not stage the payload: {}", e));
+    }
+    if let Err(e) = staged.sync_all() {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!("salvage could not flush the staged payload: {}", e));
+    }
+    drop(staged);
+
+    let scale_filter = "scale='min(1200,iw)':-1";
+    let child = match Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-err_detect",
+            "ignore_err",
+            "-fflags",
+            "+discardcorrupt",
+            "-i",
+            temp_path.to_str().unwrap_or_default(),
+            "-vframes",
+            "1",
+            "-vf",
+            scale_filter,
+            "-q:v",
+            "6",
+            "-f",
+            "image2",
+            "-c:v",
+            "mjpeg",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(format!("salvage could not spawn ffmpeg: {}", e));
+        }
+    };
+
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(format!("salvage could not wait on ffmpeg: {}", e));
+        }
+    };
+    let _ = std::fs::remove_file(&temp_path);
+
+    if !output.status.success() || output.stdout.is_empty() {
+        let err_msg = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "ffmpeg salvage decode produced no frame: {}",
+            err_msg.lines().next().unwrap_or("unknown error")
+        ));
+    }
+
+    let mut jpeg = output.stdout;
+    for (max_dim, quality) in [(1000u32, 4u32), (800, 2)] {
+        if jpeg.len() <= MAX_EMBEDDED_PICTURE_BYTES {
+            break;
+        }
+        match convert_or_extract_to_jpeg(&jpeg, Some(max_dim), quality) {
+            Ok(recompressed) => jpeg = recompressed,
+            Err(_) => break,
+        }
+    }
+    if jpeg.len() > MAX_EMBEDDED_PICTURE_BYTES {
+        return Err(format!(
+            "salvaged image is still {} bytes, above the {} byte embedding limit",
+            jpeg.len(),
+            MAX_EMBEDDED_PICTURE_BYTES
+        ));
+    }
+    let dims = ImageByteValidator::parse_dimensions(&jpeg)
+        .ok_or_else(|| "salvaged image has no readable header".to_string())?;
+    if dims.width == 0 || dims.height == 0 {
+        return Err("salvaged image has invalid dimensions (0x0)".to_string());
+    }
+    Ok(jpeg)
+}
+
+/// Monotonic-ish token so two salvage runs in the same process never share a temp path.
+fn unique_salvage_token() -> u128 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    nanos.wrapping_mul(1_000_003).wrapping_add(seq as u128)
+}
+
+/// File extension that matches the container of an image payload, used so the salvage
+/// route hands ffmpeg a path whose demuxer matches the bytes.
+fn cover_payload_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("webp");
+    }
+    if bytes.starts_with(b"\xFF\xD8\xFF") {
+        return Some("jpg");
+    }
+    if bytes.len() >= 8 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("png");
+    }
+    None
 }
 
 /// Validate, sanitize, and construct a FLAC `metaflac::block::Picture` block.
@@ -1279,54 +1416,6 @@ pub fn extract_image_dimensions(data: &[u8]) -> (u32, u32) {
     (0, 0)
 }
 
-/// Construct a new FLAC `metaflac::block::Picture` populated with real extracted dimensions (TASK-131).
-pub fn create_flac_picture(
-    data: Vec<u8>,
-    picture_type: metaflac::block::PictureType,
-    mime_type: Option<&str>,
-    description: Option<&str>,
-) -> metaflac::block::Picture {
-    let (width, height) = extract_image_dimensions(&data);
-    let mime = mime_type
-        .map(|s| s.to_string())
-        .or_else(|| ImageByteValidator::parse_dimensions(&data).map(|d| d.mime_type.to_string()))
-        .unwrap_or_else(|| "image/jpeg".to_string());
-
-    let mut pic = metaflac::block::Picture::new();
-    pic.picture_type = picture_type;
-    pic.mime_type = mime;
-    pic.description = description.unwrap_or("Front Cover").to_string();
-    pic.width = width;
-    pic.height = height;
-    pic.depth = 24;
-    pic.num_colors = 0;
-    pic.data = data;
-    pic
-}
-
-/// Extension trait for `metaflac::Tag` providing dimension-aware picture methods (TASK-131).
-pub trait FlacTagExt {
-    /// Add a picture block to the FLAC tag with automatically extracted physical dimensions.
-    fn add_picture_with_dimensions(
-        &mut self,
-        mime_type: &str,
-        picture_type: metaflac::block::PictureType,
-        data: Vec<u8>,
-    );
-}
-
-impl FlacTagExt for metaflac::Tag {
-    fn add_picture_with_dimensions(
-        &mut self,
-        mime_type: &str,
-        picture_type: metaflac::block::PictureType,
-        data: Vec<u8>,
-    ) {
-        let pic = create_flac_picture(data, picture_type, Some(mime_type), None);
-        self.push_block(metaflac::Block::Picture(pic));
-    }
-}
-
 /// Outcome of a [`sanitize_flac_pictures`] run.
 ///
 /// `dropped_unrepairable_blocks` is what used to be invisible: a PICTURE block
@@ -1339,6 +1428,10 @@ pub struct FlacPictureSanitizeReport {
     pub modified: bool,
     /// Blocks replaced by a repaired copy.
     pub repaired_blocks: usize,
+    /// Blocks restored by the caller-supplied recovery route instead of being
+    /// removed (D-03). Counted separately from `repaired_blocks` because the
+    /// payload only left the file if the recovery route itself failed.
+    pub recovered_blocks: usize,
     /// One entry per block removed without a replacement (block kind, size, cause).
     pub dropped_unrepairable_blocks: Vec<String>,
 }
@@ -1350,6 +1443,17 @@ impl FlacPictureSanitizeReport {
     }
 }
 
+/// Recovery route consulted for a PICTURE block that violates the compatibility
+/// contract and that [`prepare_flac_picture`] cannot repair (D-03).
+///
+/// The callback receives the raw bytes of the offending block and the block
+/// itself, and returns a replacement block that already satisfies the embedding
+/// contract (`width`/`height` > 0, `<= MAX_EMBEDDED_PICTURE_BYTES`, non-WebP
+/// payload). Returning `Err` means "no replacement was produced": the block is
+/// then dropped exactly as before, with the returned cause in the report.
+pub type FlacPictureRecovery<'a> =
+    &'a mut dyn FnMut(&[u8], &metaflac::block::Picture) -> Result<metaflac::block::Picture, String>;
+
 /// Inspect a FLAC file and sanitize any embedded PICTURE blocks that violate
 /// the compatibility contract (dimensions 0x0, size > 800 KB, or oversized/corrupt WebP).
 ///
@@ -1358,6 +1462,20 @@ impl FlacPictureSanitizeReport {
 /// which ones had to be discarded because no valid replacement exists. Callers
 /// must surface the drops: the block is gone from the file either way (SYNC-AUD-066).
 pub fn sanitize_flac_pictures(file_path: &Path) -> Result<FlacPictureSanitizeReport, String> {
+    sanitize_flac_pictures_with_recovery(file_path, None)
+}
+
+/// Same as [`sanitize_flac_pictures`], but consults `recovery` before dropping a
+/// block that [`prepare_flac_picture`] cannot repair (D-03).
+///
+/// A block the recovery route returns is written back with its original
+/// `picture_type` and counted in `recovered_blocks`; a block the route also
+/// rejects lands in `dropped_unrepairable_blocks` with the recovery cause, so the
+/// caller never loses the evidence of what happened to the cover art.
+pub fn sanitize_flac_pictures_with_recovery(
+    file_path: &Path,
+    mut recovery: Option<FlacPictureRecovery<'_>>,
+) -> Result<FlacPictureSanitizeReport, String> {
     let mut tag = metaflac::Tag::read_from_path(file_path)
         .map_err(|e| format!("Failed to read FLAC file: {}", e))?;
 
@@ -1382,24 +1500,47 @@ pub fn sanitize_flac_pictures(file_path: &Path) -> Result<FlacPictureSanitizeRep
                     report.repaired_blocks += 1;
                     report.modified = true;
                 }
-                Err(e) => {
-                    // The block is removed, but the loss is now an explicit part
-                    // of the result instead of a log line nobody reads.
-                    tracing::error!(
-                        "Removing unrepairable picture block ({:?}, {} bytes) from {:?}: {}",
-                        pic.picture_type,
-                        pic.data.len(),
-                        file_path,
-                        e
-                    );
-                    report.dropped_unrepairable_blocks.push(format!(
-                        "{:?} ({} bytes, {}): {}",
-                        pic.picture_type,
-                        pic.data.len(),
-                        pic.mime_type,
-                        e
-                    ));
-                    report.modified = true;
+                Err(prepare_err) => {
+                    // D-03: the normal repair path gave up. Give the caller its
+                    // recovery route a turn before the block leaves the file.
+                    let mut recovery_cause = None;
+                    let recovered = match recovery.as_deref_mut() {
+                        Some(route) => match route(&pic.data, &pic) {
+                            Ok(mut salvaged) => {
+                                salvaged.picture_type = pic.picture_type;
+                                Some(salvaged)
+                            }
+                            Err(route_err) => {
+                                recovery_cause = Some(route_err);
+                                None
+                            }
+                        },
+                        None => None,
+                    };
+                    if let Some(salvaged) = recovered {
+                        sanitized_blocks.push(salvaged);
+                        report.recovered_blocks += 1;
+                        report.modified = true;
+                    } else {
+                        // The block is removed, but the loss is now an explicit part
+                        // of the result instead of a log line nobody reads.
+                        let cause = recovery_cause.unwrap_or(prepare_err);
+                        tracing::error!(
+                            "Removing unrepairable picture block ({:?}, {} bytes) from {:?}: {}",
+                            pic.picture_type,
+                            pic.data.len(),
+                            file_path,
+                            cause
+                        );
+                        report.dropped_unrepairable_blocks.push(format!(
+                            "{:?} ({} bytes, {}): {}",
+                            pic.picture_type,
+                            pic.data.len(),
+                            pic.mime_type,
+                            cause
+                        ));
+                        report.modified = true;
+                    }
                 }
             }
         } else {

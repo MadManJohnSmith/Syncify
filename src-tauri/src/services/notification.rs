@@ -66,7 +66,7 @@ pub fn should_emit_notification(notification: &ServiceNotification) -> bool {
 }
 
 /// Reset notification cache (useful for testing)
-#[allow(dead_code)] // Exported for integration tests (e.g. notification_auth_state_test.rs)
+#[allow(dead_code)] // Cubierta por `tests/dead_commands_hygiene_test.rs`, `tests/notification_auth_state_test.rs`.
 pub fn clear_notification_cache() {
     if let Ok(mut cache) = NOTIFICATION_CACHE.lock() {
         cache.clear();

@@ -8,15 +8,18 @@ Verifies:
 3. Clean JSON serialization without AttributeError or serialization crashes.
 4. AcoustIDMatcher operates without core_logic dependency and gracefully handles missing API keys.
 5. End-to-end enrich_track pipeline behavior with mocked enrichment service.
+6. The album context reaches the enrichment service (PY-5) and selects the
+   matching MusicBrainz release instead of an arbitrary edition.
 """
 
+import asyncio
 import io
 import json
 import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch, AsyncMock
+from unittest.mock import MagicMock, patch, AsyncMock
 
 # Add repo root and scripts to sys.path, and discover venv site-packages
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -28,8 +31,21 @@ for sp in REPO_ROOT.glob(".venv/lib/python*/site-packages"):
     if sp.is_dir() and str(sp) not in sys.path:
         sys.path.insert(0, str(sp))
 
+# Same convention as tests/test_tidal_deezer_album_contract.py: the enrichment
+# service only needs aiohttp for its network calls, so an offline run of this
+# module must not depend on aiohttp being installed.
+try:
+    import aiohttp  # noqa: F401
+except ModuleNotFoundError:
+    sys.modules["aiohttp"] = MagicMock()
+
 from metadata_bridge import extract_enriched_metadata, enrich_track, json_response
-from services.metadata_enrichment import EnrichedMetadata
+from services.metadata_enrichment import (
+    EnrichedMetadata,
+    enrich_metadata,
+    normalize_album_title,
+    select_release_for_album,
+)
 from services.acoustid_matcher import AcoustIDMatcher, AcoustIDResult
 
 
@@ -158,6 +174,96 @@ class TestMetadataBridgeRobustness(unittest.TestCase):
                 self.assertEqual(parsed["data"]["language"], "jpn")
                 self.assertEqual(parsed["data"]["country"], "JP")
                 self.assertEqual(parsed["data"]["bpm"], 135.0)
+
+
+class TestAlbumContextEnrichment(unittest.TestCase):
+    """PY-5: the album argument is forwarded and used to pick the MusicBrainz release."""
+
+    def test_enrich_track_forwards_album_to_enrichment_service(self):
+        """The --album value must reach enrich_metadata (it used to be dropped)."""
+        meta = EnrichedMetadata(language="eng", country="GB")
+
+        with patch("services.metadata_enrichment.enrich_metadata", new=AsyncMock(return_value=meta)) as mock_enrich:
+            with patch("sys.stdout", new_callable=io.StringIO):
+                with self.assertRaises(SystemExit) as cm:
+                    enrich_track("Song", "Artist", isrc="GBAYE0000123", album="Parachutes")
+
+        self.assertEqual(cm.exception.code, 0)
+        self.assertEqual(mock_enrich.await_args.kwargs["album"], "Parachutes")
+        self.assertEqual(mock_enrich.await_args.kwargs["isrc"], "GBAYE0000123")
+
+    def test_enrich_metadata_selects_release_matching_the_album(self):
+        """Without album context an arbitrary edition was taken; now the album decides."""
+        releases = [
+            {"id": "release-other", "title": "Live at Wembley", "country": "GB", "language": "eng"},
+            {"id": "release-album", "title": "Parachutes", "country": "GB", "language": "eng"},
+        ]
+
+        mb_data = {"recording_id": "rec-1", "releases": releases}
+
+        class FakeEnricher:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def query_by_isrc(self, isrc):
+                return mb_data
+
+        with patch("services.metadata_enrichment.MusicBrainzEnricher", FakeEnricher):
+            enriched = asyncio.run(enrich_metadata("GBAYE0000123", "Coldplay", "Yellow", album="Parachutes"))
+
+        self.assertEqual(enriched.musicbrainz_release_id, "release-album")
+
+    def test_enrich_metadata_without_album_keeps_first_release(self):
+        """No album context: behavior is unchanged (first release)."""
+        releases = [
+            {"id": "release-first", "title": "Any Album", "country": "FR", "language": "fra"},
+            {"id": "release-second", "title": "Other", "country": "GB", "language": "eng"},
+        ]
+
+        class FakeEnricher:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def query_by_isrc(self, isrc):
+                return {"recording_id": "rec-1", "releases": releases}
+
+        with patch("services.metadata_enrichment.MusicBrainzEnricher", FakeEnricher):
+            enriched = asyncio.run(enrich_metadata("FRABC0000123", "Artist", "Titre"))
+
+        self.assertEqual(enriched.musicbrainz_release_id, "release-first")
+        self.assertEqual(enriched.country, "FR")
+
+    def test_select_release_for_album_variants(self):
+        """Case, accents, whitespace and edition suffixes resolve to the same release."""
+        releases = [
+            {"id": "rel-1", "title": "Abbey Road (Remastered)"},
+            {"id": "rel-2", "title": "Rumours"},
+        ]
+
+        self.assertEqual(select_release_for_album(releases, "rumours")["id"], "rel-2")
+        self.assertEqual(select_release_for_album(releases, "  RUMOURS ")["id"], "rel-2")
+        self.assertEqual(select_release_for_album(releases, "Abbey Road (Remastered)")["id"], "rel-1")
+        self.assertEqual(select_release_for_album(releases, "Abbey Road")["id"], "rel-1")
+        # Unknown album falls back to the first release instead of dropping the data.
+        self.assertEqual(select_release_for_album(releases, "Nonexistent")["id"], "rel-1")
+        self.assertIsNone(select_release_for_album([], "Rumours"))
+
+    def test_normalize_album_title(self):
+        self.assertEqual(normalize_album_title("  Álbum  remix "), "album remix")
+        self.assertEqual(normalize_album_title(None), "")
+        self.assertEqual(normalize_album_title(""), "")
 
 
 class TestAcoustIDMatcherRobustness(unittest.TestCase):

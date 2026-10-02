@@ -67,6 +67,10 @@ impl TidalOrchestratorExt for TidalDownloader {
                 },
                 hint_release_date: request.release_date.clone(),
                 hint_track_id: request.canonical_track_id,
+                // BD-9: the worker already opened a journal entry for this queued
+                // download; hand its id over so the pipeline checkpoints the SAME row
+                // instead of opening a competing second entry.
+                operation_id: request.operation_id.clone(),
             };
 
             let item_id_clone = item_id.clone();
@@ -287,6 +291,24 @@ impl TidalOrchestratorExt for TidalDownloader {
                 ..Default::default()
             };
             let _ = apply_and_verify_flac_tags(&output_path, &flac_meta);
+            // D-03: this no-DB fallback is a FLAC write path too, so the cover art is
+            // sanitized here as well. There is no ledger to record into on this branch,
+            // which the service reports as an error log instead of swallowing the loss.
+            let cover_ctx = crate::services::flac_cover_sanitizer::FlacCoverSanitizeContext {
+                provenance: "tidal.downloader_fallback".to_string(),
+                download_id: None,
+                track_id: Some(track_id),
+            };
+            if let Err(sanitize_err) =
+                crate::services::flac_cover_sanitizer::sanitize_and_audit_flac_cover_art(
+                    None,
+                    &output_path,
+                    &cover_ctx,
+                )
+                .await
+            {
+                tracing::warn!(error = %sanitize_err, path = %output_path.display(), "[Tidal] FLAC cover sanitization failed (non-fatal)");
+            }
         } else {
             PROGRESS_TRACKER.update(DownloadProgress::finalizing(item_id));
             let acoustid_fingerprint = request

@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { createRouter, createMemoryHistory } from 'vue-router'
 import DownloadsView from '../../views/DownloadsView.vue'
 import { mockInvoke, resetMocks, emitMockEvent } from '../setup'
 import { invoke } from '@tauri-apps/api/core'
@@ -740,4 +741,55 @@ describe('DownloadsView.vue', () => {
   })
 })
 
+describe('DownloadsView deep-link (FE-10)', () => {
+  beforeEach(() => {
+    resetMocks()
+  })
 
+  it('selects the failed view filter from /downloads?filter=failed', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/downloads', component: DownloadsView }],
+    })
+    await router.push('/downloads?filter=failed')
+    await router.isReady()
+
+    const wrapper = mount(DownloadsView, { global: { plugins: [router] } })
+    await flushPromises()
+
+    // The "Failed" tab carries its active styling and the failed section renders.
+    const failedTab = wrapper.findAll('button').find(b => b.text().includes('Failed'))
+    expect(failedTab).toBeDefined()
+    expect(failedTab!.classes()).toContain('bg-error/15')
+    expect(wrapper.find('.failed-section').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Corrupted Source')
+  })
+
+  it('defaults to the "all" view filter without a filter query', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/downloads', component: DownloadsView }],
+    })
+    await router.push('/downloads')
+    await router.isReady()
+
+    const wrapper = mount(DownloadsView, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const failedTab = wrapper.findAll('button').find(b => b.text().includes('Failed'))
+    expect(failedTab).toBeDefined()
+    expect(failedTab!.classes()).not.toContain('bg-error/15')
+  })
+})

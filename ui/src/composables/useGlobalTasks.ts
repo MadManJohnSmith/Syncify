@@ -7,6 +7,7 @@
 
 import { ref, computed, readonly } from 'vue'
 import { useEventBus, TauriEvents } from './useEventBus'
+import { trayApi } from '@/api/tray'
 
 // Types
 export interface GlobalTask {
@@ -142,6 +143,17 @@ export function useGlobalTasks() {
         activeTasks.value.filter(t => t.type === 'download' && t.status === 'running').length
     )
 
+    // Mirror the download activity into the tray menu/tooltip (IN-5): the tray
+    // only reflects app state through update_tray_status / update_tray_icon.
+    let lastTrayDownloadCount = -1
+    function syncTrayDownloadState(): void {
+        const count = downloadingCount.value
+        if (count === lastTrayDownloadCount) return
+        lastTrayDownloadCount = count
+        trayApi.updateTrayStatus(count > 0, count).catch(() => { /* tray IPC unavailable */ })
+        trayApi.updateTrayIcon(count > 0 ? 'downloading' : 'default').catch(() => { /* tray IPC unavailable */ })
+    }
+
     // Actions
     function addTask(task: Omit<GlobalTask, 'startedAt'>): string {
         const fullTask: GlobalTask = {
@@ -151,6 +163,7 @@ export function useGlobalTasks() {
         const next = new Map(tasks.value)
         next.set(task.id, fullTask)
         tasks.value = next
+        syncTrayDownloadState()
         return task.id
     }
 
@@ -160,6 +173,7 @@ export function useGlobalTasks() {
             const next = new Map(tasks.value)
             next.set(id, { ...task, ...updates })
             tasks.value = next
+            syncTrayDownloadState()
         }
     }
 
@@ -233,12 +247,14 @@ export function useGlobalTasks() {
                 }, 3000)
             }
         }
+        syncTrayDownloadState()
     }
 
     function removeTask(id: string): void {
         const next = new Map(tasks.value)
         next.delete(id)
         tasks.value = next
+        syncTrayDownloadState()
     }
 
     function pauseTask(id: string): void {

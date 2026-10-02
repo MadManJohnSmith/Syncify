@@ -3,12 +3,12 @@
 //! Implements a token bucket algorithm with dynamic 429 penalty backoff,
 //! cooperative cancellation via `CancellationToken`, and per-service isolation.
 
-#![allow(dead_code)]
-
 use anyhow::{anyhow, Result};
+use reqwest::header::HeaderMap;
+use reqwest::StatusCode;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -350,9 +350,128 @@ lazy_static::lazy_static! {
     pub static ref GLOBAL_RATE_LIMITER: RateLimiter = RateLimiter::new();
 }
 
+/// Delay registered for `429 Too Many Requests` when the response carries no
+/// usable `Retry-After`.
+pub const DEFAULT_429_PENALTY: Duration = Duration::from_secs(5);
+
+/// Ceiling for a server-directed `Retry-After`, so a hostile or buggy header
+/// cannot suspend a service for hours.
+pub const MAX_429_PENALTY: Duration = Duration::from_secs(300);
+
+/// Suspend `service` after a `429`, so every other caller of the shared limiter
+/// slows down with it — not just the request that happened to be rejected.
+///
+/// The delay is the server's `Retry-After` when it sent a usable one (seconds
+/// or HTTP-date), clamped to [`MAX_429_PENALTY`]; otherwise
+/// [`DEFAULT_429_PENALTY`]. Returns the applied delay, or `None` when the
+/// response was not a 429 and there is nothing to punish.
+pub async fn penalize_on_rate_limit(
+    service: &str,
+    status: StatusCode,
+    headers: &HeaderMap,
+) -> Option<Duration> {
+    if status != StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
+
+    let server_delay = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|val| {
+            crate::services::http_retry::HttpRetryPolicy::parse_retry_after_header(
+                val,
+                SystemTime::now(),
+            )
+        });
+
+    let delay = server_delay
+        .unwrap_or(DEFAULT_429_PENALTY)
+        .min(MAX_429_PENALTY);
+
+    GLOBAL_RATE_LIMITER.penalize_service(service, delay).await;
+    Some(delay)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Own service key per test: `GLOBAL_RATE_LIMITER` is process-wide and a
+    /// penalty applied here must not slow any other test down.
+    const NO_PENALTY_SERVICE: &str = "rate-limiter-unit-test";
+
+    #[tokio::test]
+    async fn test_penalize_on_rate_limit_only_fires_on_429() {
+        let headers = HeaderMap::new();
+
+        // 5xx is transient but carries no "slow down" instruction.
+        assert!(penalize_on_rate_limit(
+            NO_PENALTY_SERVICE,
+            StatusCode::SERVICE_UNAVAILABLE,
+            &headers
+        )
+        .await
+        .is_none());
+        assert!(
+            penalize_on_rate_limit(NO_PENALTY_SERVICE, StatusCode::UNAUTHORIZED, &headers)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_penalize_on_rate_limit_falls_back_to_the_default_delay() {
+        let headers = HeaderMap::new();
+
+        let applied =
+            penalize_on_rate_limit(NO_PENALTY_SERVICE, StatusCode::TOO_MANY_REQUESTS, &headers)
+                .await
+                .expect("a 429 always registers a penalty");
+        assert_eq!(applied, DEFAULT_429_PENALTY);
+    }
+
+    #[tokio::test]
+    async fn test_penalize_on_rate_limit_honours_and_clamps_retry_after() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("42"),
+        );
+        let applied =
+            penalize_on_rate_limit(NO_PENALTY_SERVICE, StatusCode::TOO_MANY_REQUESTS, &headers)
+                .await
+                .expect("a 429 always registers a penalty");
+        assert_eq!(applied, Duration::from_secs(42));
+
+        // A hostile header must not suspend a service for hours.
+        let mut absurd = HeaderMap::new();
+        absurd.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("86400"),
+        );
+        let applied =
+            penalize_on_rate_limit(NO_PENALTY_SERVICE, StatusCode::TOO_MANY_REQUESTS, &absurd)
+                .await
+                .expect("a 429 always registers a penalty");
+        assert_eq!(applied, MAX_429_PENALTY);
+    }
+
+    #[tokio::test]
+    async fn test_penalize_on_rate_limit_suspends_the_shared_limiter() {
+        // A service with a real profile, so `acquire` has to honour the penalty.
+        let limiter = RateLimiter::with_configs(default_rate_limits());
+        limiter
+            .penalize_service("qobuz", Duration::from_millis(300))
+            .await;
+
+        let started = Instant::now();
+        limiter.acquire("qobuz").await;
+        assert!(
+            started.elapsed() >= Duration::from_millis(300),
+            "acquire must wait out the penalty, waited {:?}",
+            started.elapsed()
+        );
+    }
 
     #[tokio::test]
     async fn test_rate_limiter_allows_burst() {

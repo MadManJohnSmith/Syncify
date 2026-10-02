@@ -6,7 +6,8 @@ use syncify_core_domain::byte_validators::AudioByteValidator;
 use syncify_tauri_lib::download::orchestrator::DownloadOrchestrator;
 use syncify_tauri_lib::download::progress::DownloadRequest;
 use syncify_tauri_lib::download::qobuz::{
-    build_request_signature, map_quality_to_format_id, QobuzDownloader,
+    build_request_signature, map_quality_to_allowed_format_ids_with_lossy_fallback,
+    map_quality_to_format_id, QobuzDownloader,
 };
 
 async fn create_test_db() -> SqlitePool {
@@ -66,6 +67,56 @@ fn test_qobuz_signature_and_quality_mapping() {
     assert_eq!(map_quality_to_format_id("HI_RES_LOSSLESS"), "27");
     assert_eq!(map_quality_to_format_id("320"), "5");
     assert_eq!(map_quality_to_format_id("HIGH"), "5");
+
+    // 1b. Unknown tokens fall back to CD quality (proxy default, unchanged).
+    assert_eq!(map_quality_to_format_id("something-else"), "6");
+    assert_eq!(map_quality_to_format_id(""), "6");
+
+    // 1c. Both entry points now read the SAME domain token table, so a token that
+    //     the official cascade already resolved to a tier resolves identically for
+    //     the single-format proxy request.
+    for token in ["24/192", "24/96", "16/44", "16/44.1", "MP3", "320KBPS"] {
+        let single = map_quality_to_format_id(token);
+        let cascade = map_quality_to_allowed_format_ids_with_lossy_fallback(token, false);
+        assert_eq!(
+            single, cascade[0],
+            "token {:?} must resolve to the same tier in both entry points",
+            token
+        );
+    }
+
+    // 1d. Cascade order: requested tier first, then the lower tiers, with MP3 only
+    //     when the lossy fallback is allowed.
+    assert_eq!(
+        map_quality_to_allowed_format_ids_with_lossy_fallback("24-192", false),
+        &["27", "7", "6"]
+    );
+    assert_eq!(
+        map_quality_to_allowed_format_ids_with_lossy_fallback("24-192", true),
+        &["27", "7", "6", "5"]
+    );
+    assert_eq!(
+        map_quality_to_allowed_format_ids_with_lossy_fallback("16-44", false),
+        &["6"]
+    );
+    assert_eq!(
+        map_quality_to_allowed_format_ids_with_lossy_fallback("16-44", true),
+        &["6", "5"]
+    );
+    // A lossy request never falls back to a lossless tier.
+    assert_eq!(
+        map_quality_to_allowed_format_ids_with_lossy_fallback("320", true),
+        &["5"]
+    );
+    // Unknown tokens start the cascade at the best tier the account may hold.
+    assert_eq!(
+        map_quality_to_allowed_format_ids_with_lossy_fallback("nonsense", false),
+        &["27", "7", "6"]
+    );
+    assert_eq!(
+        map_quality_to_allowed_format_ids_with_lossy_fallback("nonsense", true),
+        &["27", "7", "6", "5"]
+    );
 
     // 2. Pure MD5 signature computation
     let sig = build_request_signature(

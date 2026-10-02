@@ -64,24 +64,6 @@ impl RepairValidationStatus {
     }
 }
 
-/// Complete auditable report produced for every repair execution.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct RepairReport {
-    pub success: bool,
-    pub dry_run: bool,
-    pub download_id: Option<i64>,
-    pub track_id: Option<i64>,
-    pub source_path: String,
-    pub target_path: String,
-    pub baseline: Option<RepairFileBaseline>,
-    pub validation_result: RepairValidationStatus,
-    pub applied_actions: Vec<String>,
-    pub rollback_state: Option<String>,
-    pub output_hashes: Option<RepairOutputHashes>,
-    pub error: Option<String>,
-}
-
 /// Persistent, append-only historical audit record of an applied repair.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]

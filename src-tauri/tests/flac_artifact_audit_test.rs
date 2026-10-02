@@ -121,7 +121,8 @@ fn test_album_sidecars_presence() {
 #[test]
 fn test_flac_country_and_region_tag_separation() {
     use syncify_metadata_domain::country::{
-        normalize_country_code, plan_country_repair, resolve_country, CountryResolution,
+        normalize_country_code, plan_country_repair, resolve_country, wire_country_value,
+        CountryResolution,
     };
 
     // 1. PL, US, GB, ES must be valid ISO sovereign countries
@@ -192,14 +193,20 @@ fn test_flac_country_and_region_tag_separation() {
 
             let plan = plan_country_repair(country_tag.as_deref(), region_tag.as_deref());
 
-            // If country was XE or XW, repair plan must identify that it should be moved to RELEASEREGION
+            // The repair targets exactly what the writers write (directiva 2026-08-24):
+            // canonical English names, regions completing the RELEASEREGION pair.
             if let Some(ref c) = country_tag {
+                assert_eq!(
+                    plan.target_country.as_deref(),
+                    Some(wire_country_value(c).as_str()),
+                    "repair target must match the wire value written for {c}"
+                );
                 if c == "XE" || c == "XW" {
-                    assert!(plan.needs_repair, "XE/XW must be flagged for repair");
-                    assert_eq!(plan.target_country, None);
+                    assert!(plan.needs_repair, "XE/XW must complete RELEASEREGION");
                     assert_eq!(plan.target_region.as_deref(), Some(c.as_str()));
                 } else if c == "PL" {
-                    assert_eq!(plan.target_country.as_deref(), Some("PL"));
+                    assert_eq!(plan.target_country.as_deref(), Some("Poland"));
+                    assert!(plan.needs_repair, "legacy alpha-2 must be upgraded");
                 }
             }
         }

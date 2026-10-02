@@ -128,15 +128,16 @@ def extract_enriched_metadata(result: Any) -> Dict[str, Any]:
 def enrich_track(track: str, artist: str, isrc: Optional[str] = None, album: Optional[str] = None):
     """Enrich track metadata using MusicBrainz and Last.fm."""
     from services.metadata_enrichment import enrich_metadata
-    
+
     lastfm_key = os.getenv("LASTFM_API_KEY")
-    
+
     async def _enrich():
         return await enrich_metadata(
             isrc=isrc,
             artist=artist,
             title=track,
-            lastfm_api_key=lastfm_key
+            lastfm_api_key=lastfm_key,
+            album=album
         )
     
     try:

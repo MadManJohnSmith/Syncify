@@ -13,7 +13,7 @@ use super::*;
 // SPRINT 4: DASHBOARD + LIBRARY DETAIL VIEWS
 // ==============================================
 
-use crate::models::{AlbumDetail, ArtistDetail, LibrarySnapshot, ServiceHealthInfo};
+use crate::models::{LibrarySnapshot, ServiceHealthInfo};
 
 /// Get service health status for all connected services
 #[tauri::command]
@@ -69,18 +69,50 @@ pub async fn create_library_snapshot(
         .await
         .map_err(|e| format!("Query error: {}", e))?;
 
+    // BD-11: every remaining snapshot column gets a real value now.
+    let (total_size_bytes,): (i64,) =
+        sqlx::query_as("SELECT COALESCE(SUM(file_size_bytes), 0) FROM downloads")
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| format!("Query error: {}", e))?;
+
+    let (tracks_with_lyrics,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE content IS NOT NULL AND content != ''",
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| format!("Query error: {}", e))?;
+
+    let (tracks_lossless,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE audio_quality = 'lossless'")
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| format!("Query error: {}", e))?;
+
+    let (tracks_hires,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE audio_quality = 'hires'")
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| format!("Query error: {}", e))?;
+
     // Insert or update today's snapshot
     sqlx::query(
-        "INSERT INTO library_snapshots (snapshot_date, total_tracks, total_albums, total_artists, downloaded_tracks)
-         VALUES (date('now'), ?, ?, ?, ?)
+        "INSERT INTO library_snapshots (snapshot_date, total_tracks, total_albums, total_artists, downloaded_tracks, total_size_bytes, tracks_with_lyrics, tracks_lossless, tracks_hires)
+         VALUES (date('now'), ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(snapshot_date) DO UPDATE SET
          total_tracks = excluded.total_tracks, total_albums = excluded.total_albums,
-         total_artists = excluded.total_artists, downloaded_tracks = excluded.downloaded_tracks",
+         total_artists = excluded.total_artists, downloaded_tracks = excluded.downloaded_tracks,
+         total_size_bytes = excluded.total_size_bytes, tracks_with_lyrics = excluded.tracks_with_lyrics,
+         tracks_lossless = excluded.tracks_lossless, tracks_hires = excluded.tracks_hires",
     )
     .bind(total_tracks)
     .bind(total_albums)
     .bind(total_artists)
     .bind(downloaded_tracks)
+    .bind(total_size_bytes)
+    .bind(tracks_with_lyrics)
+    .bind(tracks_lossless)
+    .bind(tracks_hires)
     .execute(&state.db)
     .await
     .map_err(|e| format!("Insert error: {}", e))?;
@@ -113,324 +145,11 @@ pub async fn get_library_snapshots(
     .map_err(|e| format!("Database error: {}", e))
 }
 
-/// Get album detail with extended information
-#[tauri::command]
-#[allow(dead_code)] // Inert detail endpoint; canonical path is get_album
-pub async fn get_album_detail(
-    state: State<'_, AppState>,
-    album_name: String,
-    artist_name: String,
-) -> Result<AlbumDetail, String> {
-    tracing::info!("get_album_detail: {} by {}", album_name, artist_name);
-
-    // Build album detail from albums, tracks, and artists tables
-    let row: (
-        i64,
-        String,
-        String,
-        Option<i32>,
-        Option<String>,
-        Option<String>,
-        i64,
-        i64,
-        Option<String>,
-    ) = sqlx::query_as(
-        r#"
-        SELECT
-            alb.id,
-            alb.title,
-            COALESCE(
-                (SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = alb.id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1),
-                (SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id JOIN tracks tr ON tr.id = ta.track_id WHERE tr.album_id = alb.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
-                ?
-            ) as artist_name,
-            COALESCE(CAST(SUBSTR(alb.release_date, 1, 4) AS INTEGER), MIN(t.release_year)) as release_year,
-            MIN(t.genre) as genre,
-            alb.label,
-            COUNT(t.id) as track_count,
-            COALESCE(SUM(t.duration_ms), 0) as total_duration_ms,
-            alb.cover_art_url
-        FROM albums alb
-        LEFT JOIN tracks t ON t.album_id = alb.id
-        WHERE alb.title = ?
-          AND (
-              EXISTS (
-                  SELECT 1 FROM album_artists aa
-                  JOIN artists a ON a.id = aa.artist_id
-                  WHERE aa.album_id = alb.id AND a.name = ?
-              )
-              OR EXISTS (
-                  SELECT 1 FROM track_artists ta
-                  JOIN artists a ON a.id = ta.artist_id
-                  JOIN tracks tr ON tr.id = ta.track_id
-                  WHERE tr.album_id = alb.id AND a.name = ?
-              )
-              OR ? = ''
-          )
-        GROUP BY alb.id, alb.title, alb.release_date, alb.label, alb.cover_art_url
-        "#,
-    )
-    .bind(&artist_name)
-    .bind(&album_name)
-    .bind(&artist_name)
-    .bind(&artist_name)
-    .bind(&artist_name)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("Album not found: {}", e))?;
-
-    Ok(AlbumDetail {
-        id: row.0,
-        title: row.1,
-        artist_name: row.2,
-        release_year: row.3,
-        genre: row.4,
-        label: row.5,
-        track_count: row.6,
-        total_duration_ms: row.7,
-        artwork_url: row.8,
-        quality: None,
-        source_service: None,
-    })
-}
-
-/// Get tracks for a specific album
-#[tauri::command]
-#[allow(dead_code)] // Inert detail endpoint; canonical path is get_album
-pub async fn get_album_tracks(
-    state: State<'_, AppState>,
-    album_name: String,
-    artist_name: String,
-) -> Result<Vec<LibraryTrack>, String> {
-    tracing::info!("get_album_tracks: {} by {}", album_name, artist_name);
-
-    sqlx::query_as::<_, LibraryTrack>(
-        r#"
-        SELECT
-            t.id,
-            t.title,
-            COALESCE(
-                (SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1),
-                (SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = alb.id ORDER BY aa.is_primary DESC, aa.artist_id ASC LIMIT 1)
-            ) as artist_name,
-            (SELECT ta.artist_id FROM track_artists ta WHERE ta.track_id = t.id ORDER BY CASE ta.role WHEN 'primary' THEN 1 WHEN 'main' THEN 2 ELSE 3 END, ta.artist_id ASC LIMIT 1) as artist_id,
-            alb.title as album_name,
-            alb.id as album_id,
-            t.duration_ms,
-            t.isrc,
-            d.file_format as quality,
-            CASE WHEN d.file_path IS NOT NULL THEN 'downloaded' ELSE 'not_downloaded' END as download_status,
-            t.track_number,
-            t.disc_number,
-            t.genre,
-            t.bpm,
-            t.musical_key,
-            t.release_year,
-            t.explicit,
-            t.is_favorite,
-            t.favorite_at,
-            d.file_path,
-            alb.cover_art_url
-        FROM tracks t
-        JOIN albums alb ON t.album_id = alb.id
-        LEFT JOIN downloads d ON d.track_id = t.id
-        WHERE alb.title = ?
-          AND (
-              EXISTS (
-                  SELECT 1 FROM track_artists ta
-                  JOIN artists a ON a.id = ta.artist_id
-                  WHERE ta.track_id = t.id AND a.name = ?
-              )
-              OR EXISTS (
-                  SELECT 1 FROM album_artists aa
-                  JOIN artists a ON a.id = aa.artist_id
-                  WHERE aa.album_id = alb.id AND a.name = ?
-              )
-              OR ? = ''
-          )
-        ORDER BY t.disc_number ASC NULLS LAST, t.track_number ASC NULLS LAST, t.title ASC
-        "#
-    )
-    .bind(&album_name)
-    .bind(&artist_name)
-    .bind(&artist_name)
-    .bind(&artist_name)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))
-}
-
-/// Get artist detail with extended information
-#[tauri::command]
-#[allow(dead_code)] // Inert detail endpoint; canonical path is get_artist
-pub async fn get_artist_detail(
-    state: State<'_, AppState>,
-    artist_id: i64,
-) -> Result<ArtistDetail, String> {
-    tracing::info!("get_artist_detail: {}", artist_id);
-
-    let (id, name): (i64, String) = sqlx::query_as("SELECT id, name FROM artists WHERE id = ?")
-        .bind(artist_id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| format!("Artist not found: {}", e))?;
-
-    let (album_count,): (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(DISTINCT alb_id) FROM (
-            SELECT album_id AS alb_id FROM album_artists WHERE artist_id = ?
-            UNION
-            SELECT t.album_id AS alb_id FROM tracks t
-            JOIN track_artists ta ON ta.track_id = t.id
-            WHERE ta.artist_id = ? AND t.album_id IS NOT NULL
-        )
-        "#,
-    )
-    .bind(artist_id)
-    .bind(artist_id)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("Query error: {}", e))?;
-
-    let (track_count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(DISTINCT track_id) FROM track_artists WHERE artist_id = ?")
-            .bind(artist_id)
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| format!("Query error: {}", e))?;
-
-    Ok(ArtistDetail {
-        id,
-        name,
-        album_count,
-        track_count,
-        genres: vec![], // Would need additional logic
-        artwork_url: None,
-    })
-}
-
-/// Get albums by a specific artist
-#[tauri::command]
-#[allow(dead_code)] // Inert detail endpoint; canonical path is get_artist
-pub async fn get_artist_albums(
-    state: State<'_, AppState>,
-    artist_id: i64,
-) -> Result<Vec<AlbumDetail>, String> {
-    tracing::info!("get_artist_albums: {}", artist_id);
-
-    let rows: Vec<(
-        i64,
-        String,
-        String,
-        Option<i32>,
-        Option<String>,
-        Option<String>,
-        i64,
-        i64,
-        Option<String>,
-    )> = sqlx::query_as(
-        r#"
-        SELECT
-            alb.id,
-            alb.title,
-            COALESCE(art.name, 'Unknown Artist') as artist_name,
-            COALESCE(CAST(SUBSTR(alb.release_date, 1, 4) AS INTEGER), MIN(t.release_year)) as release_year,
-            MIN(t.genre) as genre,
-            alb.label,
-            COUNT(t.id) as track_count,
-            COALESCE(SUM(t.duration_ms), 0) as total_duration_ms,
-            alb.cover_art_url
-        FROM albums alb
-        JOIN artists art ON art.id = ?
-        LEFT JOIN tracks t ON t.album_id = alb.id
-        WHERE alb.id IN (
-            SELECT album_id FROM album_artists WHERE artist_id = ?
-            UNION
-            SELECT t2.album_id FROM tracks t2
-            JOIN track_artists ta ON ta.track_id = t2.id
-            WHERE ta.artist_id = ? AND t2.album_id IS NOT NULL
-        )
-        GROUP BY alb.id, alb.title, art.name, alb.release_date, alb.label, alb.cover_art_url
-        ORDER BY release_year DESC NULLS LAST, alb.title ASC
-        "#,
-    )
-    .bind(artist_id)
-    .bind(artist_id)
-    .bind(artist_id)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
-
-    Ok(rows
-        .into_iter()
-        .map(|row| AlbumDetail {
-            id: row.0,
-            title: row.1,
-            artist_name: row.2,
-            release_year: row.3,
-            genre: row.4,
-            label: row.5,
-            track_count: row.6,
-            total_duration_ms: row.7,
-            artwork_url: row.8,
-            quality: None,
-            source_service: None,
-        })
-        .collect())
-}
-
-/// Get all tracks by a specific artist
-#[tauri::command]
-#[allow(dead_code)] // Inert detail endpoint; canonical path is get_artist
-pub async fn get_artist_tracks(
-    state: State<'_, AppState>,
-    artist_id: i64,
-) -> Result<Vec<LibraryTrack>, String> {
-    tracing::info!("get_artist_tracks: {}", artist_id);
-
-    sqlx::query_as::<_, LibraryTrack>(
-        r#"
-        SELECT
-            t.id,
-            t.title,
-            a.name as artist_name,
-            a.id as artist_id,
-            alb.title as album_name,
-            alb.id as album_id,
-            t.duration_ms,
-            t.isrc,
-            d.file_format as quality,
-            CASE WHEN d.file_path IS NOT NULL THEN 'downloaded' ELSE 'not_downloaded' END as download_status,
-            t.track_number,
-            t.disc_number,
-            t.genre,
-            t.bpm,
-            t.musical_key,
-            t.release_year,
-            t.explicit,
-            t.is_favorite,
-            t.favorite_at,
-            d.file_path,
-            alb.cover_art_url
-        FROM tracks t
-        JOIN track_artists ta ON ta.track_id = t.id AND ta.artist_id = ?
-        JOIN artists a ON a.id = ta.artist_id
-        LEFT JOIN albums alb ON alb.id = t.album_id
-        LEFT JOIN downloads d ON d.track_id = t.id
-        ORDER BY alb.title NULLS LAST, t.disc_number ASC NULLS LAST, t.track_number ASC NULLS LAST, t.title ASC
-        "#,
-    )
-    .bind(artist_id)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))
-}
-
 // ==============================================
 // SPRINT 5: ADVANCED SETTINGS & POLISH
 // ==============================================
 
-use crate::models::{AdvancedSettings, CacheStats, DiagnosticResult};
+use crate::models::{AdvancedSettings, DiagnosticResult};
 
 /// Get advanced application settings
 #[tauri::command]
@@ -500,48 +219,6 @@ pub async fn vacuum_database(state: State<'_, AppState>) -> Result<String, Strin
         .map_err(|e| format!("Vacuum error: {}", e))?;
 
     Ok("Database vacuumed successfully".to_string())
-}
-
-/// Get cache statistics
-#[tauri::command]
-pub async fn get_cache_stats(state: State<'_, AppState>) -> Result<Vec<CacheStats>, String> {
-    tracing::info!("get_cache_stats");
-
-    sqlx::query_as::<_, CacheStats>("SELECT * FROM cache_stats ORDER BY cache_type")
-        .fetch_all(&state.db)
-        .await
-        .map_err(|e| format!("Database error: {}", e))
-}
-
-/// Clear cache by type or all
-#[tauri::command]
-pub async fn clear_cache(
-    state: State<'_, AppState>,
-    cache_type: Option<String>,
-) -> Result<String, String> {
-    tracing::info!("clear_cache: {:?}", cache_type);
-
-    if let Some(ct) = cache_type {
-        sqlx::query(
-            "UPDATE cache_stats SET size_bytes = 0, item_count = 0, last_updated = datetime('now')
-             WHERE cache_type = ?",
-        )
-        .bind(&ct)
-        .execute(&state.db)
-        .await
-        .map_err(|e| format!("Clear error: {}", e))?;
-
-        Ok(format!("Cache '{}' cleared", ct))
-    } else {
-        sqlx::query(
-            "UPDATE cache_stats SET size_bytes = 0, item_count = 0, last_updated = datetime('now')",
-        )
-        .execute(&state.db)
-        .await
-        .map_err(|e| format!("Clear error: {}", e))?;
-
-        Ok("All caches cleared".to_string())
-    }
 }
 
 /// Run system diagnostics

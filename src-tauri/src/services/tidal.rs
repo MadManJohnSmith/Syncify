@@ -2,8 +2,6 @@
 //!
 //! Handles Tidal API access and importing favorites.
 
-#![allow(dead_code)]
-
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -126,6 +124,7 @@ impl TidalAlbum {
 
 /// Helper to construct a high-resolution Tidal cover image URL from an image ID or direct URL.
 /// Defaults to standard 1280x1280 resolution.
+#[allow(dead_code)] // Cubierta por `tests/cover_art_resolution_upgrade_test.rs`.
 pub fn get_tidal_cover_url(cover_id_or_url: &str, width: u32, height: u32) -> String {
     if cover_id_or_url.starts_with("http") {
         cover_id_or_url.to_string()
@@ -250,13 +249,6 @@ pub fn classify_album_expansion_error(
     }
 }
 
-/// S187: Decide whether a page-fetch error is worth retrying during library
-/// pagination. Authentication/authorization failures are terminal (the caller
-/// must surface them); rate limits and server/network hiccups are transient.
-pub fn is_transient_page_error(err: &str) -> bool {
-    !(err.contains("RequiresAuth") || err.contains("401") || err.contains("403"))
-}
-
 /// S187: Decide whether another page must be fetched after ingesting a page of
 /// a Tidal collection.
 ///
@@ -342,6 +334,8 @@ pub struct TidalPlaylist {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TidalPlaylistCreator {
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub id: i64,
     pub name: Option<String>,
 }
@@ -364,6 +358,8 @@ pub struct TidalPlaylistTracksResponse {
 pub struct TidalPlaylistTrackItem {
     pub item: TidalTrack,
     #[serde(rename = "type")]
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub item_type: String,
 }
 
@@ -377,6 +373,8 @@ pub struct TidalSearchResponse {
 pub struct TidalSearchTracks {
     pub items: Vec<TidalTrack>,
     #[serde(rename = "totalNumberOfItems")]
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     pub total: i32,
 }
 
@@ -393,6 +391,9 @@ pub struct TidalSearchResult {
 }
 
 /// Detailed report for single playlist scoped import (S164)
+// Tipo de retorno de `TidalClient::import_single_playlist_scoped`, cubierta por
+// `tests/s164_fresh_import_test.rs`.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TidalSinglePlaylistImportReport {
     pub account_id: i64,
@@ -494,7 +495,9 @@ impl TidalClient {
             match fetch().await {
                 Ok(page) => return Ok(page),
                 Err(e) => {
-                    if !is_transient_page_error(&e) || attempt >= MAX_ATTEMPTS {
+                    if !crate::services::http_retry::is_transient_error_message(&e)
+                        || attempt >= MAX_ATTEMPTS
+                    {
                         return Err(e);
                     }
                     tracing::warn!(
@@ -893,6 +896,7 @@ impl TidalClient {
     }
 
     /// Get tracks in an album (paginated)
+    #[allow(dead_code)] // Cubierta por `tests/dead_commands_hygiene_test.rs`, `tests/queries_consistency_test.rs`.
     pub async fn get_album_tracks(
         &self,
         album_id: i64,
@@ -1026,7 +1030,7 @@ impl TidalClient {
             let page = match self.get_favorites_with_retry(offset, limit).await {
                 Ok(p) => p,
                 Err(e) => {
-                    if !is_transient_page_error(&e) {
+                    if !crate::services::http_retry::is_transient_error_message(&e) {
                         return Err(e);
                     }
                     tracing::warn!(
@@ -1337,7 +1341,7 @@ impl TidalClient {
             let page = match self.get_favorite_albums_with_retry(offset, limit).await {
                 Ok(p) => p,
                 Err(e) => {
-                    if !is_transient_page_error(&e) {
+                    if !crate::services::http_retry::is_transient_error_message(&e) {
                         return Err(e);
                     }
                     tracing::warn!(
@@ -1508,7 +1512,7 @@ impl TidalClient {
             let page = match self.get_favorite_artists_with_retry(offset, limit).await {
                 Ok(p) => p,
                 Err(e) => {
-                    if !is_transient_page_error(&e) {
+                    if !crate::services::http_retry::is_transient_error_message(&e) {
                         return Err(e);
                     }
                     tracing::warn!(
@@ -1605,7 +1609,7 @@ impl TidalClient {
             let page = match self.get_playlists_with_retry(offset, limit).await {
                 Ok(p) => p,
                 Err(e) => {
-                    if !is_transient_page_error(&e) {
+                    if !crate::services::http_retry::is_transient_error_message(&e) {
                         return Err(e);
                     }
                     tracing::warn!(
@@ -1678,7 +1682,7 @@ impl TidalClient {
                     {
                         Ok(p) => p,
                         Err(e) => {
-                            if !is_transient_page_error(&e) {
+                            if !crate::services::http_retry::is_transient_error_message(&e) {
                                 return Err(e);
                             }
                             tracing::warn!(
@@ -1926,6 +1930,7 @@ impl TidalClient {
     }
 
     /// Import a single Tidal playlist scoped up to `max_tracks` (S164)
+    #[allow(dead_code)] // Cubierta por `tests/s164_fresh_import_test.rs`.
     pub async fn import_single_playlist_scoped(
         &self,
         db: &SqlitePool,
@@ -2391,142 +2396,6 @@ impl TidalClient {
         Ok(id)
     }
 
-    pub async fn get_or_create_album(
-        &self,
-        db: &SqlitePool,
-        album: &TidalAlbum,
-        primary_artist_id: i64,
-    ) -> Result<i64, String> {
-        let is_comp = album.is_compilation();
-        let effective_artist_id = if is_comp {
-            crate::import_cache::get_or_create_canonical_various_artists(db).await?
-        } else {
-            primary_artist_id
-        };
-        let is_comp_val: i64 = if is_comp { 1 } else { 0 };
-
-        let tid_str = album.tidal_id.to_string();
-        let clean_title = syncify_core_domain::metadata::sanitize_album_title(&album.title);
-
-        if is_comp {
-            let existing: Option<(i64,)> = sqlx::query_as(
-                "SELECT a.id FROM albums a
-                 JOIN album_artists aa ON aa.album_id = a.id
-                 WHERE LOWER(a.title) = LOWER(?) AND (aa.artist_id = ? OR a.is_compilation = 1)
-                 ORDER BY a.is_compilation DESC, a.total_tracks DESC, a.id ASC LIMIT 1",
-            )
-            .bind(&clean_title)
-            .bind(effective_artist_id)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?;
-
-            if let Some((existing_id,)) = existing {
-                let _ = sqlx::query(
-                    "UPDATE albums SET
-                        is_compilation = 1,
-                        tidal_id = COALESCE(tidal_id, ?),
-                        cover_art_url = COALESCE(cover_art_url, ?),
-                        total_tracks = COALESCE(total_tracks, ?),
-                        label = COALESCE(label, ?),
-                        upc = COALESCE(upc, ?)
-                     WHERE id = ?",
-                )
-                .bind(&tid_str)
-                .bind(album.cover_url())
-                .bind(album.total_tracks)
-                .bind(&album.label)
-                .bind(&album.upc)
-                .bind(existing_id)
-                .execute(db)
-                .await;
-
-                let _ = sqlx::query(
-                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)",
-                )
-                .bind(existing_id)
-                .bind(effective_artist_id)
-                .execute(db)
-                .await;
-
-                return Ok(existing_id);
-            }
-        }
-
-        let album_id: i64 = sqlx::query_scalar(
-            "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, is_compilation)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET
-                title = excluded.title,
-                is_compilation = CASE WHEN excluded.is_compilation = 1 THEN 1 ELSE albums.is_compilation END,
-                id = id
-             RETURNING id"
-        )
-        .bind(&clean_title)
-        .bind(&album.release_date)
-        .bind(album.total_tracks)
-        .bind(album.cover_url())
-        .bind(&tid_str)
-        .bind(is_comp_val)
-        .fetch_one(db)
-        .await
-        .map_err(|e| format!("Album upsert (tidal_id) failed: {}", e))?;
-
-        // Link album to artist
-        let _ = sqlx::query(
-            "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
-        )
-        .bind(album_id)
-        .bind(effective_artist_id)
-        .execute(db)
-        .await;
-
-        Ok(album_id)
-    }
-
-    pub async fn get_or_create_track(
-        &self,
-        db: &SqlitePool,
-        track: &TidalTrack,
-        album_id: Option<i64>,
-    ) -> Result<i64, String> {
-        let clean_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
-        // Try to find by ISRC first if available
-        if let Some(ref isrc) = track.isrc {
-            let id: i64 = sqlx::query_scalar(
-                r#"INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?)
-                   ON CONFLICT(isrc) DO UPDATE SET
-                     title = excluded.title,
-                     album_id = COALESCE(tracks.album_id, excluded.album_id),
-                     id = id
-                   RETURNING id"#,
-            )
-            .bind(&clean_title)
-            .bind(album_id)
-            .bind(track.duration * 1000)
-            .bind(isrc)
-            .fetch_one(db)
-            .await
-            .map_err(|e| format!("Track upsert failed: {}", e))?;
-
-            return Ok(id);
-        }
-
-        // Fallback for tracks without ISRC (create new every time for now as per soundcloud.rs logic)
-        let id: i64 = sqlx::query_scalar(
-            "INSERT INTO tracks (title, album_id, duration_ms, isrc) VALUES (?, ?, ?, ?) RETURNING id",
-        )
-        .bind(&clean_title)
-        .bind(album_id)
-        .bind(track.duration * 1000) // Tidal returns seconds
-        .bind(&track.isrc)
-        .fetch_one(db)
-        .await
-        .map_err(|e| format!("Insert failed: {}", e))?;
-
-        Ok(id)
-    }
-
     /// Search for tracks by query string
     pub async fn search_track(
         &self,
@@ -2624,7 +2493,7 @@ impl TidalClient {
                     if status.is_success() {
                         tracing::debug!("Added track {} to Tidal favorites", track_id);
                         return Ok(());
-                    } else if status.as_u16() == 429 || status.as_u16() >= 500 {
+                    } else if crate::services::http_retry::is_transient_status(status) {
                         // Rate limited or server error - retry
                         let text = resp.text().await.unwrap_or_default();
                         last_error =
@@ -2796,29 +2665,6 @@ pub async fn clear_album_availability(
     Ok(())
 }
 
-/// Inspect physical FLAC file STREAMINFO header to extract real bit depth and sample rate (F3.4).
-pub fn extract_flac_streaminfo(path: &std::path::Path) -> Option<(i32, f64)> {
-    if let Ok(tag) = metaflac::Tag::read_from_path(path) {
-        if let Some(info) = tag.get_streaminfo() {
-            return Some((info.bits_per_sample as i32, info.sample_rate as f64));
-        }
-    }
-    if let Ok(mut file) = std::fs::File::open(path) {
-        use std::io::Read;
-        let mut buf = [0u8; 64];
-        if let Ok(n) = file.read(&mut buf) {
-            if let Some(info) =
-                syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(
-                    &buf[..n],
-                )
-            {
-                return Some((info.bits_per_sample as i32, info.sample_rate as f64));
-            }
-        }
-    }
-    None
-}
-
 // ==============================================
 // S187 regression tests: Tidal import truncation
 // ==============================================
@@ -2866,14 +2712,19 @@ pub mod s187_tests {
     }
 
     #[test]
-    fn test_s187_is_transient_page_error_classification() {
-        assert!(is_transient_page_error("Tidal API error 503: busy"));
-        assert!(is_transient_page_error("Tidal API error 429: slow down"));
-        assert!(is_transient_page_error("Request failed: connection reset"));
-        assert!(!is_transient_page_error(
+    fn test_s187_transient_error_classification_uses_the_shared_criterion() {
+        use crate::services::http_retry::is_transient_error_message;
+        assert!(is_transient_error_message("Tidal API error 503: busy"));
+        assert!(is_transient_error_message("Tidal API error 429: slow down"));
+        assert!(is_transient_error_message(
+            "Request failed: connection reset"
+        ));
+        assert!(!is_transient_error_message(
             "RequiresAuth: Tidal API authentication failed (HTTP 401)"
         ));
-        assert!(!is_transient_page_error("Tidal API error 403: forbidden"));
+        assert!(!is_transient_error_message(
+            "Tidal API error 403: forbidden"
+        ));
     }
 
     // ---------- mock Tidal HTTP server ----------
