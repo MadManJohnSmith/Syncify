@@ -441,6 +441,43 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
     expect(wrapper.text()).not.toContain('1,234')
   })
 
+  it('names the destination the preview really covers instead of the whole selection (FE-2/FE-4)', async () => {
+    // preview_migration takes one destination: with two selected the review
+    // step must not claim it previewed both.
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    backend(
+      {
+        preview_migration: { total_tracks: 100, matched_tracks: 90, unmatched_tracks: 10, playlists: [] },
+      },
+      calls,
+    )
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+
+    // Source spotify (0) → destinations qobuz (1) and tidal (2)
+    await wrapper.findAll('.service-card')[0].trigger('click')
+    await flushPromises()
+    await clickNext(wrapper) // -> content
+    await clickNext(wrapper) // -> destination
+    const cards = wrapper.findAll('.service-card')
+    await cards[1].trigger('click')
+    await flushPromises()
+    await cards[2].trigger('click')
+    await flushPromises()
+    await clickNext(wrapper) // -> preview
+    await flushPromises()
+
+    // Only the first destination is previewed, once.
+    const previewCalls = calls.filter(c => c.cmd === 'preview_migration')
+    expect(previewCalls.length).toBe(1)
+    expect(previewCalls[0].args?.destinationService).toBe('qobuz')
+
+    const description = wrapper.find('[data-testid="preview-description"]').text()
+    expect(description).toContain('against Qobuz')
+    expect(description).not.toContain('against Qobuz, Tidal')
+    expect(description).toContain('each additional destination is matched when its own migration runs')
+  })
+
   it('Search Manually opens a real modal wired to search_destination_track and manual_match_item (FE-2)', async () => {
     const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
     backend(

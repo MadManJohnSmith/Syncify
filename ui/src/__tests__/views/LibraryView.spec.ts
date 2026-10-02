@@ -584,6 +584,37 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         return btn as HTMLButtonElement;
     }
 
+    it('grid tile play button starts playback of the album instead of navigating', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        const mockTracks = [
+            createTestTrack({ id: 401, title: 'Album Opener', album_name: 'Nightcall', album_id: 77, download_status: 'downloaded', quality: 'FLAC' }),
+        ];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'resolve_playback_source') return { track_id: 401, file_path: '/lib/401.flac', format: 'FLAC' };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        const gridBtn = wrapper.findAll('.view-toggle button')[1];
+        expect(gridBtn).toBeDefined();
+        await gridBtn.trigger('click');
+        await flushPromises();
+
+        const playBtn = wrapper.findAll('.tile-overlay button').find(b => b.text().includes('play_arrow'));
+        expect(playBtn).toBeDefined();
+
+        await playBtn!.trigger('click');
+        await flushPromises();
+
+        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        expect(call).toBeDefined();
+        expect(call?.args).toEqual({ trackId: 401 });
+    });
+
     it('context menu "Play Now" starts real playback of the track', async () => {
         const { invokeCalls, menu } = await mountWithTrack();
 
@@ -724,6 +755,71 @@ describe('LibraryView quality deep-link (FE-10)', () => {
         const text = wrapper.text();
         expect(text).toContain('CD Song');
         expect(text).not.toContain('Hi-Res Song');
+    });
+
+    it('surfaces the deep-linked bucket as a removable active filter', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 1, title: 'Hi-Res Song', download_status: 'downloaded', quality: 'FLAC', quality_bucket: 'Hi-Res (24-bit+)' }),
+            createTestTrack({ id: 2, title: 'Lossy Song', download_status: 'downloaded', quality: 'MP3', quality_bucket: 'Lossy' }),
+        ];
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const router = createRouter({
+            history: createMemoryHistory(),
+            routes: [{ path: '/library', component: LibraryView }],
+        });
+        await router.push('/library?filter=quality&quality=Hi-Res%20(24-bit%2B)');
+        await router.isReady();
+
+        const wrapper = mount(LibraryView, { global: { plugins: [router] } });
+        await flushPromises();
+
+        // 'quality' is not a pill, so the pills row gives no feedback: the
+        // active-filters bar must show the bucket and offer the way out.
+        const bar = wrapper.find('.active-filters');
+        expect(bar.exists()).toBe(true);
+        expect(bar.text()).toContain('Quality: Hi-Res (24-bit+)');
+
+        const clear = bar.find('button');
+        await clear.trigger('click');
+        await flushPromises();
+
+        expect(wrapper.find('.active-filters').exists()).toBe(false);
+        expect(wrapper.text()).toContain('Hi-Res Song');
+        expect(wrapper.text()).toContain('Lossy Song');
+    });
+
+    it('re-applies the deep-link when the query changes on the same route', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 1, title: 'Hi-Res Song', download_status: 'downloaded', quality: 'FLAC', quality_bucket: 'Hi-Res (24-bit+)' }),
+            createTestTrack({ id: 2, title: 'Lossy Song', download_status: 'downloaded', quality: 'MP3', quality_bucket: 'Lossy' }),
+        ];
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
+            return null;
+        });
+
+        const router = createRouter({
+            history: createMemoryHistory(),
+            routes: [{ path: '/library', component: LibraryView }],
+        });
+        await router.push('/library?filter=quality&quality=Hi-Res%20(24-bit%2B)');
+        await router.isReady();
+
+        const wrapper = mount(LibraryView, { global: { plugins: [router] } });
+        await flushPromises();
+        expect(wrapper.text()).not.toContain('Lossy Song');
+
+        // Same route, different bucket: without a query watcher the mount-time
+        // filter would stick.
+        await router.push('/library?filter=quality&quality=Lossy');
+        await flushPromises();
+
+        expect(wrapper.text()).toContain('Lossy Song');
+        expect(wrapper.text()).not.toContain('Hi-Res Song');
     });
 
     it('ignores filter=quality without a quality parameter (no no-op filter)', async () => {
