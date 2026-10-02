@@ -23,7 +23,7 @@ Funciona sobre tu propia biblioteca local (`~/Music/Syncify`), con carpetas por 
 
 ## Qué puedes hacer con Syncify
 
-- **Importa tu catálogo completo** de Qobuz, Tidal, Spotify y Deezer: favoritos, playlists, compras, historial y apariciones. Apple Music y SoundCloud están disponibles como integraciones parciales y no prometen todavía sincronización completa.
+- **Importa tu catálogo completo** de Qobuz, Tidal, Spotify y Deezer: favoritos, playlists, compras e historial. Apple Music y SoundCloud están disponibles como integraciones parciales y no prometen todavía sincronización completa.
 - **Descarga en la calidad máxima disponible**, hasta FLAC Hi-Res de 24-bit/192kHz, con verificación de que lo descargado coincide con lo prometido.
 - **Letras sincronizadas automáticas**: búsqueda en cascada entre 10 proveedores, guardadas como archivos `.lrc` junto a cada pista.
 - **Metadatos de nivel profesional**: artistas múltiples, colaboraciones, compilaciones, códigos de país, BPM y más, extraídos de MusicBrainz, AcoustID y Last.fm.
@@ -56,7 +56,7 @@ cargo tauri dev
 
 ## Para desarrolladores
 
-- **Arquitectura**: escritorio Tauri v2 con núcleo en Rust multihilo (workers, primitivas atómicas y Tokio Notify) sobre SQLite en modo WAL con 84 migraciones sqlx; UI en Vue 3 + TailwindCSS v4 comunicada por IPC tipado.
+- **Arquitectura**: escritorio Tauri v2 con núcleo en Rust multihilo (workers, primitivas atómicas y Tokio Notify) sobre SQLite en modo WAL con 82 archivos de migración sqlx (la numeración salta de `0025` a `0030`; la última es `0086_library_items_continuous_sync.sql`); UI en Vue 3 + TailwindCSS v4 comunicada por IPC tipado.
 - **Estructura del Cargo Workspace**: Workspace virtual puro (`Cargo.toml` raíz) que agrupa `src-tauri` (aplicación de escritorio) y los crates miembros en `crates/`. El binario stub `syncify-core` (`src/main.rs`) ha sido retirado y el prototipo experimental `legacy/syncify-cli` ya no está en el árbol: quedó archivado solo en la máquina local del autor, bajo `workspace/audit_archive/legacy/syncify-cli`, ruta que `.gitignore` excluye y que por tanto **no existe en ningún checkout ni en CI**.
 - **Crates de dominio**: `syncify-core-domain` (calidad, identidad), `syncify-flac-writer` (escritura Vorbis/FLAC validada), `syncify-lyrics-domain` (contrato compartido de la cascada de letras), `syncify-metadata-domain` y `syncify-tidal-downloader`.
 - **Puentes Python**: Playwright (OAuth y captura de sesión), Mutagen (etiquetado), AcoustID/fpcalc (huellas acústicas).

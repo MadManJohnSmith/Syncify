@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::disambiguation_repair::{
-    compute_disambiguated_target_path, compute_file_sha256, execute_disambiguation_repair,
-    plan_disambiguation_repair, resolve_disambiguated_target_path,
+    compute_file_sha256, execute_disambiguation_repair, plan_disambiguation_repair,
+    resolve_disambiguated_target_path,
 };
 use tempfile::TempDir;
 
@@ -355,11 +355,6 @@ fn test_resolve_target_path_atypical_paths_no_panic() {
         "Error should describe InvalidPath: {}",
         err_str
     );
-
-    // Also test through compute_disambiguated_target_path alias
-    let res_root_alias =
-        compute_disambiguated_target_path(&root_path, "Soulchild Remix", 17, "19-2000");
-    assert!(res_root_alias.is_err());
 
     // 2. Empty path ""
     let empty_path = PathBuf::from("");

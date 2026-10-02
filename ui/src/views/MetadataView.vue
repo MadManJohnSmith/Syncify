@@ -67,6 +67,10 @@
                   <span :class="['material-symbols-outlined text-[14px]', isFetchingArt && 'animate-spin']">{{ isFetchingArt ? 'progress_activity' : 'image' }}</span>
                   Fetch Art
                 </button>
+                <button @click="reconcileMbTags()" :disabled="isReconcilingMbTags" class="flex items-center gap-1.5 px-3 py-1.5 bg-teal-500/20 text-teal-400 hover:bg-teal-500/30 rounded-lg text-xs font-medium transition-colors disabled:opacity-50" title="TASK-84: reconcilia los comentarios Vorbis MUSICBRAINZ_TRACKID de los FLAC físicos con tracks.musicbrainz_id en la base de datos">
+                  <span :class="['material-symbols-outlined text-[14px]', isReconcilingMbTags && 'animate-spin']">{{ isReconcilingMbTags ? 'progress_activity' : 'sync' }}</span>
+                  Reconcile MB
+                </button>
                 <button @click="exportSelectedMetadata" :disabled="isExportingMetadata" class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded-lg text-xs font-medium transition-colors disabled:opacity-50">
                   <span :class="['material-symbols-outlined text-[14px]', isExportingMetadata && 'animate-spin']">{{ isExportingMetadata ? 'progress_activity' : 'download' }}</span>
                   Export
@@ -1792,16 +1796,14 @@ async function batchIdentifyAcoustID() {
   batchIdentifyProgress.value = { done: 0, total: targets.length }
   let identified = 0
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
     for (const track of targets) {
       try {
-        const result = await invoke<{ success: boolean; data?: { recordings?: Array<{ id: string; title?: string; artist?: string }> } }>('identify_audio', {
-          filePath: track.filePath,
-        })
-        const match = result?.data?.recordings?.[0]
-        if (result.success && match?.id) {
+        // Bridge contract: identify_audio -> data.matches[] (see scripts/fingerprint_bridge.py).
+        const matches = await metadataApi.identifyAudio(track.filePath as string)
+        const match = matches[0]
+        if (match?.recording_id) {
           await metadataApi.updateTrackMetadata(track.id, {
-            mbTrackId: match.id,
+            mbTrackId: match.recording_id,
             ...(match.title ? { title: match.title } : {}),
           })
           identified++
@@ -1878,6 +1880,25 @@ async function fetchMissingArtwork() {
     showToast(error instanceof Error ? error.message : String(error), 'error')
   } finally {
     isFetchingArt.value = false
+  }
+}
+
+/** TASK-84: reconcile physical FLAC MUSICBRAINZ_TRACKID comments with tracks.musicbrainz_id. */
+const isReconcilingMbTags = ref(false)
+async function reconcileMbTags() {
+  if (isReconcilingMbTags.value) return
+  isReconcilingMbTags.value = true
+  try {
+    const res = await metadataApi.reconcileMusicbrainzTags()
+    const rec = res as Record<string, unknown>
+    const summary = typeof rec.summary === 'string' ? rec.summary : 'Reconciliación de tags MusicBrainz completada'
+    showToast(summary, 'success')
+    await loadTracks()
+  } catch (error) {
+    console.error('MusicBrainz tag reconciliation failed:', error)
+    showToast(error instanceof Error ? error.message : String(error), 'error')
+  } finally {
+    isReconcilingMbTags.value = false
   }
 }
 
@@ -2382,14 +2403,12 @@ async function identifyWithAcoustID() {
   
   isIdentifying.value = true
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const result = await invoke<{ success: boolean; data?: { recordings?: Array<{ id: string; title: string; artist: string }> }; error?: string }>('identify_audio', { 
-      filePath: currentTrack.value.filePath 
-    })
-    
-    if (result.success && result.data?.recordings && result.data.recordings.length > 0) {
-      const match = result.data.recordings[0]
-      editForm.mbTrackId = match.id
+    // Bridge contract: identify_audio -> data.matches[] (see scripts/fingerprint_bridge.py).
+    const matches = await metadataApi.identifyAudio(currentTrack.value.filePath)
+    const match = matches[0]
+
+    if (match?.recording_id) {
+      editForm.mbTrackId = match.recording_id
       if (match.title) editForm.title = match.title
       if (match.artist) editForm.artist = match.artist
       showToast('Track identified via AcoustID!', 'success')

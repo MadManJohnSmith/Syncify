@@ -234,9 +234,6 @@ impl From<TagEditPayload> for syncify_flac_writer::FlacMetadata {
     }
 }
 
-#[allow(dead_code)]
-pub type TrackTags = TagEditPayload;
-
 /// Write edited facets through the roundtrip-verified writer and return the
 /// verification report (`tags_match` == true means the file was re-read and
 /// every written facet matched expectations).
@@ -251,15 +248,237 @@ pub async fn write_track_tags(
     let payload = tags
         .or(metadata)
         .ok_or_else(|| "Missing required tags or metadata payload".to_string())?;
-    let (file_path, _format) = resolve_track_audio_path(&state, track_id).await?;
+    let (file_path, file_format) = resolve_track_audio_path(&state, track_id).await?;
 
     let flac_metadata: syncify_flac_writer::FlacMetadata = payload.into();
-    tauri::async_runtime::spawn_blocking(move || {
+    let tagged_path = file_path.clone();
+    let verification = tauri::async_runtime::spawn_blocking(move || {
         syncify_flac_writer::apply_and_verify_flac_tags(
-            std::path::Path::new(&file_path),
+            std::path::Path::new(&tagged_path),
             &flac_metadata,
         )
     })
     .await
+    .map_err(|e| format!("join error: {}", e))??;
+
+    // D-03: a manual tag write is also a FLAC write, so the embedded cover art is
+    // sanitized (and recovered where possible) right after it lands on disk. Non-fatal:
+    // the tag verification result is what this command returns, and a cover loss is
+    // reported through repair_history instead of failing the edit.
+    if file_format.eq_ignore_ascii_case("flac") {
+        let cover_ctx = crate::services::flac_cover_sanitizer::FlacCoverSanitizeContext {
+            provenance: "commands.write_track_tags".to_string(),
+            download_id: None,
+            track_id: Some(track_id),
+        };
+        if let Err(e) = crate::services::flac_cover_sanitizer::sanitize_and_audit_flac_cover_art(
+            Some(&state.db),
+            std::path::Path::new(&file_path),
+            &cover_ctx,
+        )
+        .await
+        {
+            tracing::warn!(error = %e, path = %file_path, "[Tags] FLAC cover sanitization failed (non-fatal)");
+        }
+    }
+
+    Ok(verification)
+}
+
+// ---------------------------------------------------------------------------
+// S202 / TASK-7.1 CR-5 — country & region tag repair (dry-run + apply)
+// ---------------------------------------------------------------------------
+//
+// The plan comes from `syncify_metadata_domain::plan_country_repair`, the same
+// domain helper the tag writers use to decide what `RELEASECOUNTRY` /
+// `RELEASEREGION` must contain. Applying the plan therefore reproduces exactly
+// what the next write would have produced, instead of a second opinion.
+
+/// Vorbis tags that carry release country/region and must stay consistent.
+const COUNTRY_TAGS: [&str; 3] = ["RELEASECOUNTRY", "COUNTRY", "RELEASEREGION"];
+
+/// Result of a country/region repair (or of its dry run).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CountryTagRepairReport {
+    pub track_id: i64,
+    pub file_path: String,
+    /// `false` for the dry run.
+    pub applied: bool,
+    pub needs_repair: bool,
+    pub plan: syncify_metadata_domain::country::TagRepairPlan,
+    /// Tag values read back from the file after the repair (empty when dry run).
+    pub applied_tags: BTreeMap<String, Vec<String>>,
+    /// Values present on disk at planning time.
+    pub current_tags: BTreeMap<String, Vec<String>>,
+}
+
+fn first_tag(tags: &BTreeMap<String, Vec<String>>, key: &str) -> Option<String> {
+    tags.get(key).and_then(|v| v.first()).map(|s| s.to_string())
+}
+
+/// Reads the country/region tags of a FLAC file.
+fn read_country_tags(path: &std::path::Path) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let tag = metaflac::Tag::read_from_path(path)
+        .map_err(|e| format!("No se pudo leer el archivo FLAC: {}", e))?;
+
+    let mut country_tags = BTreeMap::new();
+    if let Some(comments) = tag.vorbis_comments() {
+        for key in COUNTRY_TAGS {
+            if let Some(values) = comments.comments.get(key) {
+                if !values.is_empty() {
+                    country_tags.insert(key.to_string(), values.clone());
+                }
+            }
+        }
+    }
+    Ok(country_tags)
+}
+
+/// Writes only the country/region tags of a FLAC file, leaving every other tag,
+/// picture and metadata block untouched.
+fn write_country_tags(
+    path: &std::path::Path,
+    plan: &syncify_metadata_domain::country::TagRepairPlan,
+) -> Result<(), String> {
+    let mut tag = metaflac::Tag::read_from_path(path)
+        .map_err(|e| format!("No se pudo leer el archivo FLAC: {}", e))?;
+
+    for key in COUNTRY_TAGS {
+        let value = match key {
+            "RELEASECOUNTRY" | "COUNTRY" => plan.target_country.clone(),
+            _ => plan.target_region.clone(),
+        };
+        match value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            Some(v) => tag.set_vorbis(key, vec![v.to_string()]),
+            None => tag.remove_vorbis(key),
+        }
+    }
+
+    tag.write_to_path(path)
+        .map_err(|e| format!("No se pudo escribir el archivo FLAC: {}", e))
+}
+
+/// Shared body of the dry-run and apply variants, on a resolved FLAC path.
+///
+/// Blocking (metaflac file IO); the commands run it inside `spawn_blocking`.
+pub fn run_country_tag_repair_on_path(
+    track_id: i64,
+    file_path: &str,
+    apply: bool,
+) -> Result<CountryTagRepairReport, String> {
+    let path = std::path::Path::new(file_path);
+    let current_tags = read_country_tags(path)?;
+    let plan = syncify_metadata_domain::plan_country_repair(
+        first_tag(&current_tags, "RELEASECOUNTRY").as_deref(),
+        first_tag(&current_tags, "RELEASEREGION").as_deref(),
+    );
+
+    if !apply {
+        return Ok(CountryTagRepairReport {
+            track_id,
+            file_path: file_path.to_string(),
+            applied: false,
+            needs_repair: plan.needs_repair,
+            plan,
+            applied_tags: BTreeMap::new(),
+            current_tags,
+        });
+    }
+
+    if !plan.needs_repair {
+        return Ok(CountryTagRepairReport {
+            track_id,
+            file_path: file_path.to_string(),
+            applied: false,
+            needs_repair: false,
+            plan,
+            applied_tags: current_tags.clone(),
+            current_tags,
+        });
+    }
+
+    write_country_tags(path, &plan)?;
+
+    // Re-read from disk: the report states what the file actually contains.
+    let applied_tags = read_country_tags(path)?;
+    for key in COUNTRY_TAGS {
+        let expected = match key {
+            "RELEASECOUNTRY" | "COUNTRY" => plan.target_country.as_deref(),
+            _ => plan.target_region.as_deref(),
+        };
+        match (expected, first_tag(&applied_tags, key)) {
+            (None, None) => {}
+            (Some(_), None) => {
+                return Err(format!(
+                    "La reparación no pudo escribir {} en {}",
+                    key, file_path
+                ))
+            }
+            (None, Some(_)) => {
+                return Err(format!(
+                    "La reparación no pudo eliminar {} de {}",
+                    key, file_path
+                ))
+            }
+            (Some(expected), Some(actual)) if expected.trim() != actual.trim() => {
+                return Err(format!(
+                    "La reparación de {} no coincide: se esperaba {:?} y se leyó {:?}",
+                    key, expected, actual
+                ))
+            }
+            _ => {}
+        }
+    }
+
+    Ok(CountryTagRepairReport {
+        track_id,
+        file_path: file_path.to_string(),
+        applied: true,
+        needs_repair: true,
+        plan,
+        applied_tags,
+        current_tags,
+    })
+}
+
+/// Resolves the track's audio file and runs the repair off the async runtime.
+async fn run_country_tag_repair(
+    state: &State<'_, crate::AppState>,
+    track_id: i64,
+    apply: bool,
+) -> Result<CountryTagRepairReport, String> {
+    let (file_path, file_format) = resolve_track_audio_path(state, track_id).await?;
+    if !file_path.to_lowercase().ends_with(".flac") {
+        return Err(format!(
+            "La reparación de país/región solo admite FLAC (archivo: {})",
+            file_format
+        ));
+    }
+
+    let owned = file_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        run_country_tag_repair_on_path(track_id, &owned, apply)
+    })
+    .await
     .map_err(|e| format!("join error: {}", e))?
+}
+
+/// S202 / TASK-7.1 CR-5 — dry run: report what the country/region repair would do.
+#[tauri::command]
+pub async fn plan_country_tag_repair(
+    state: State<'_, crate::AppState>,
+    track_id: i64,
+) -> Result<CountryTagRepairReport, String> {
+    tracing::info!("plan_country_tag_repair: track_id={}", track_id);
+    run_country_tag_repair(&state, track_id, false).await
+}
+
+/// S202 / TASK-7.1 CR-5 — apply the country/region repair to the file on disk.
+#[tauri::command]
+pub async fn apply_country_tag_repair(
+    state: State<'_, crate::AppState>,
+    track_id: i64,
+) -> Result<CountryTagRepairReport, String> {
+    tracing::info!("apply_country_tag_repair: track_id={}", track_id);
+    run_country_tag_repair(&state, track_id, true).await
 }

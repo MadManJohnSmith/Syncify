@@ -133,29 +133,6 @@ impl ImportCache {
         Ok(id)
     }
 
-    /// Get or create album with caching - delegates to get_or_create_album_with_compilation
-    #[allow(dead_code)]
-    pub async fn get_or_create_album(
-        &mut self,
-        db: &SqlitePool,
-        album_key: &str, // Use "artist_id:album_name" as key
-        album_name: &str,
-        primary_artist_id: i64,
-        release_date: Option<&str>,
-        image_url: Option<&str>,
-    ) -> Result<i64, String> {
-        self.get_or_create_album_with_compilation(
-            db,
-            album_key,
-            album_name,
-            primary_artist_id,
-            release_date,
-            image_url,
-            false,
-        )
-        .await
-    }
-
     /// Get or create album with compilation detection and caching - fully lock-free.
     /// If `is_compilation` is true (or artist is Various Artists), assigns album_artist to
     /// canonical Various Artists (id 30698), marks `albums.is_compilation = 1`, and deduplicates
@@ -346,16 +323,10 @@ impl ImportCache {
     pub fn stats(&self) -> (usize, usize) {
         (self.artists.len(), self.albums.len())
     }
-
-    /// Sanitizes and strips redundant remaster suffixes from track title if album declares remaster
-    #[allow(dead_code)]
-    pub fn clean_track_title(&self, track_title: &str, album_title: Option<&str>) -> String {
-        process_track_title(track_title, album_title)
-    }
 }
 
 /// Helper to sanitize track title and purge redundant remaster suffixes when the album title declares a remaster edition.
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/redundant_remaster_strip_test.rs`.
 pub fn process_track_title(track_title: &str, album_title: Option<&str>) -> String {
     let clean_title = syncify_core_domain::metadata::sanitize_track_title(track_title);
     if let Some(album) = album_title {

@@ -42,6 +42,16 @@ export async function deleteMigration(jobId: string): Promise<string> {
 // MIGRATION EXECUTION
 // ==============================================
 
+/**
+ * Services the backend engine can migrate TO (data-driven destination list).
+ * A new destination only needs backend support; the wizard renders whatever
+ * this returns (intersected with the user's connected accounts).
+ */
+export async function getMigrationDestinations(): Promise<string[]> {
+    const raw = await invoke<unknown>('get_migration_destinations');
+    return asArray<string>(raw).map(service => String(service).toLowerCase());
+}
+
 export async function previewMigration(
     sourceService: string,
     destinationService: string,
@@ -153,12 +163,37 @@ export async function manualMatchItem(
     return invoke('manual_match_item', { itemId, destinationTrackId });
 }
 
+/** Migration schema/state audit report (matches Rust MigrationReport). */
+export interface MigrationReport {
+    schema_version: number;
+    schema_ok: boolean;
+    missing_tables: string[];
+    legacy_services_detected: string[];
+    summary: string;
+}
+
+/**
+ * Run the migration schema/state audit shown in MigrationView (IN-5).
+ */
+export async function runMigrationAudit(): Promise<MigrationReport> {
+    const raw = await invoke<unknown>('run_migration_audit');
+    const rec = asRecord(raw);
+    return {
+        schema_version: asNumber(rec?.schema_version),
+        schema_ok: rec?.schema_ok === true,
+        missing_tables: asArray<string>(rec?.missing_tables),
+        legacy_services_detected: asArray<string>(rec?.legacy_services_detected),
+        summary: typeof rec?.summary === 'string' ? rec.summary : '',
+    };
+}
+
 // Export as namespace
 export const migrationApi = {
     getMigrationHistory,
     getMigrationDetails,
     getMigrationItemsByStatus,
     deleteMigration,
+    getMigrationDestinations,
     previewMigration,
     startMigration,
     cancelMigration,
@@ -169,4 +204,5 @@ export const migrationApi = {
     useMigrationTemplate,
     searchDestinationTrack,
     manualMatchItem,
+    runMigrationAudit,
 };

@@ -6,7 +6,8 @@ Usage:
     python auth_bridge.py <service> <action>
 
 Services: spotify, tidal, qobuz, deezer, soundcloud
-Actions: login, status, logout
+Actions: login, status, logout, refresh (refresh only for spotify and tidal; the other
+services answer with an explicit {"success": false, "error": ...})
 
 Returns JSON:
     {"success": true/false, "data": {...}, "error": "..."}
@@ -431,7 +432,10 @@ def handle_apple_music(action: str):
             json_response(True, {
                 "message": "Connected to Apple Music",
                 "music_user_token": music_user_token,
-                "developer_token": dev_token
+                "developer_token": dev_token,
+                # Catalog storefront of the account: the Rust client stores it with
+                # the credentials and uses it for every /catalog/{storefront}/ call.
+                "storefront": auth.storefront
             })
         else:
             json_response(False, error=str(result))
@@ -453,6 +457,12 @@ HANDLERS = {
     "soundcloud": handle_soundcloud,
     "apple_music": handle_apple_music,
 }
+
+# Services whose provider actually issues renewable tokens. The rest (Qobuz,
+# Deezer, SoundCloud, Apple Music) authenticate with long-lived credentials
+# (session token / ARL cookie / OAuth token / music user token) that this bridge
+# cannot renew, so `refresh` fails explicitly instead of silently doing nothing.
+REFRESH_CAPABLE_SERVICES = ("spotify", "tidal")
 
 
 def main():
@@ -502,11 +512,27 @@ def main():
     if action not in ("login", "status", "logout", "refresh"):
         json_response(False, error=f"Unknown action: {action}. Valid: login, status, logout, refresh")
 
+    if action == "refresh" and service not in REFRESH_CAPABLE_SERVICES:
+        json_response(
+            False,
+            error=(
+                f"Token refresh is not supported for '{service}': the provider does not issue "
+                f"renewable tokens for this integration. Supported: {', '.join(REFRESH_CAPABLE_SERVICES)}. "
+                f"Reconnect the service with '{service} login' instead."
+            ),
+        )
+
     try:
         res = HANDLERS[service](action)
         if isinstance(res, dict):
             print(json.dumps(res))
             sys.exit(0)
+        # A handler that produced no payload must still answer: silence with exit 0
+        # is indistinguishable from success for every caller of this bridge.
+        json_response(
+            False,
+            error=f"No result produced by the '{service}' handler for action '{action}'",
+        )
     except Exception as e:
         json_response(False, error=str(e))
 

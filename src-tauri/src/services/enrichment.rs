@@ -13,6 +13,7 @@ pub use syncify_metadata_domain::{
 
 /// Origin streaming track metadata passed into the enrichment engine
 #[derive(Debug, Clone, Default)]
+// Cubierto por `tests/compilation_various_artists_test.rs`.
 #[allow(dead_code)]
 pub struct OriginTrackMetadata {
     pub title: Option<String>,
@@ -84,6 +85,7 @@ pub fn clean_primary_genre(genre_raw: &str) -> Option<String> {
 
 /// Checks if an iterator of artist names represents a multi-artist compilation release
 /// (more than 1 distinct non-empty artist).
+// Cubierta por `tests/compilation_various_artists_test.rs`.
 #[allow(dead_code)]
 pub fn is_multi_artist_compilation<S: AsRef<str>, I: IntoIterator<Item = S>>(artists: I) -> bool {
     let mut set = std::collections::HashSet::new();
@@ -100,6 +102,7 @@ pub fn is_multi_artist_compilation<S: AsRef<str>, I: IntoIterator<Item = S>>(art
 }
 
 /// Detects if a slice of origin track metadata represents a compilation release.
+// Cubierta por `tests/compilation_various_artists_test.rs`.
 #[allow(dead_code)]
 pub fn detect_compilation_from_origin_tracks(tracks: &[OriginTrackMetadata]) -> bool {
     if tracks.is_empty() {
@@ -139,6 +142,7 @@ pub fn detect_compilation_from_origin_tracks(tracks: &[OriginTrackMetadata]) -> 
 }
 
 /// Unifies album artist and compilation flags across origin tracks belonging to the same album.
+// Cubierta por `tests/compilation_various_artists_test.rs`.
 #[allow(dead_code)]
 pub fn unify_origin_album_tracks(
     tracks: &mut [OriginTrackMetadata],
@@ -229,7 +233,9 @@ impl EnrichmentEngine {
     /// - Fuses `COMPOSER` and `PERFORMER`.
     /// - Sets `BPM` only if provided by origin or audio analysis without fabricating placeholders.
     /// - Follows strict precedence: Manual > StreamingMetadata (Qobuz/Tidal) > MusicBrainz > SpotifyMetadata > LocalAudioAnalysis.
-    #[allow(dead_code)] // usado por exhaustive_enrichment_*_test; fase WIP S181
+    // Cubierta por `tests/exhaustive_enrichment_{country,genre,language}_test.rs`,
+    // `tests/enrichment_no_early_exit_test.rs` y `tests/mbid_validation_gate_test.rs`.
+    #[allow(dead_code)]
     pub async fn resolve_exhaustive_track_metadata(
         &self,
         artist: &str,
@@ -1517,6 +1523,9 @@ impl EnrichmentEngine {
     /// 1. Runs audio analysis (ReplayGain, Acoustic Features, AcoustID Fingerprint).
     /// 2. Resolves metadata with MusicBrainz (trying ISRC first, then AcoustID, then text search).
     /// 3. Merges all fields with strict precedence rules into `EnrichedMetadata`.
+    // Cubierta por los tests unitarios de este módulo (`#[cfg(test)] mod tests`) y por
+    // `DownloadOrchestrator::enrich_staging_audio`, que la exercise desde su propio
+    // test unitario (`orchestrator.rs`, fixture FLAC no decodificable).
     #[allow(dead_code)]
     pub async fn resolve_and_enrich_staging_audio(
         &self,
@@ -1545,6 +1554,7 @@ impl EnrichmentEngine {
     }
 
     /// Safely persist resolved metadata to SQLite adhering to all relational safety invariants.
+    // Cubierta por `tests/metadata_parity_test.rs` y `tests/musicbrainz_artist_credit_test.rs`.
     #[allow(dead_code)]
     pub async fn apply_to_database(
         &self,
@@ -1675,6 +1685,43 @@ impl EnrichmentEngine {
 
             crate::services::tag_writer::verify_flac_tags(flac_path, &flac_meta)
                 .map_err(|e| format!("FLAC re-read verification failed: {}", e))?;
+
+            // D-03: a re-tag pass is where a legacy damaged PICTURE block finally gets
+            // normalized, so the cover-art sanitizer runs right after the FLAC write.
+            // Non-fatal: the loss is reported through repair_history, not by failing
+            // the enrichment that produced it.
+            let cover_ctx = crate::services::flac_cover_sanitizer::FlacCoverSanitizeContext {
+                provenance: "enrichment.apply_metadata".to_string(),
+                download_id: None,
+                track_id: Some(track_id),
+            };
+            match crate::services::flac_cover_sanitizer::sanitize_and_audit_flac_cover_art(
+                Some(db),
+                flac_path,
+                &cover_ctx,
+            )
+            .await
+            {
+                Ok(outcome) if outcome.cover_art_lost() => {
+                    tracing::warn!(
+                        path = %flac_path.display(),
+                        dropped = ?outcome.report.dropped_unrepairable_blocks,
+                        sidecars = ?outcome.preserved_sidecars,
+                        "[Enrichment] Embedded cover art could not be recovered (D-03); loss recorded in repair history"
+                    );
+                }
+                Ok(outcome) if outcome.cover_art_recovered() => {
+                    tracing::info!(
+                        path = %flac_path.display(),
+                        recovered = outcome.report.recovered_blocks,
+                        "[Enrichment] Damaged embedded cover art recovered by re-encoding it on the host"
+                    );
+                }
+                Ok(_) => {}
+                Err(sanitize_err) => {
+                    tracing::warn!(error = %sanitize_err, path = %flac_path.display(), "[Enrichment] FLAC cover sanitization failed (non-fatal)");
+                }
+            }
         }
 
         // 2. Start SQLite transaction
@@ -3375,6 +3422,7 @@ impl EnrichmentEngine {
 
 /// Determines the appropriate enrichment_status ('enriched', 'partial', or 'error')
 /// based on key metadata and acoustic fields.
+// Cubierta por `tests/enrichment_status_gate_test.rs`.
 #[allow(dead_code)]
 pub fn evaluate_enrichment_status(
     has_bpm: bool,
@@ -3394,6 +3442,7 @@ pub fn evaluate_enrichment_status(
 
 /// Input payload for sync-time pre-enrichment and persistence
 #[derive(Debug, Clone, Default)]
+// Cubierto por `tests/sync_pre_enrichment_test.rs` y `tests/tidal_sync_persistence_test.rs`.
 #[allow(dead_code)]
 pub struct SyncTrackInput {
     pub origin_meta: OriginTrackMetadata,
@@ -3414,17 +3463,21 @@ pub struct SyncTrackInput {
     /// S198: the ALBUM this track belongs to is a provider favorite
     /// (favorite-albums phase). Marks `albums.is_favorite` on the album row
     /// resolved/created by this track — never touches per-track favorites.
+    // Los cubren `tests/sync_pre_enrichment_test.rs` y `tests/tidal_sync_persistence_test.rs`.
     #[allow(dead_code)]
     pub album_is_favorite: bool,
     /// S198: provider-side album id (e.g. Qobuz album id as string) to persist
     /// into the matching provider column (`albums.qobuz_id`) with a guarded,
     /// idempotent update. Empty/None = skip.
+    // Los cubren los tests de sincronía de álbum (`tests/tidal_sync_persistence_test.rs`).
     #[allow(dead_code)]
     pub album_provider_track_id: Option<String>,
 }
 
 /// Result returned from sync-time pre-enrichment
 #[derive(Debug, Clone)]
+// Lo construye `EnrichmentEngine::apply_to_database`, cubierta por
+// `tests/metadata_parity_test.rs`; además es tipo de retorno de comandos vivos.
 #[allow(dead_code)]
 pub struct SyncTrackResult {
     pub track_id: i64,
@@ -3441,6 +3494,8 @@ pub struct SyncTrackResult {
 
 /// Result of ReplayGain / EBU R128 calculation
 #[derive(Debug, Clone, Default, PartialEq)]
+// Cubierto por `tests/batch_50_audit_test.rs` y `tests/metadata_enrichment_parity_test.rs`
+// (vía `AudioAnalyzer::analyze_file`).
 #[allow(dead_code)]
 pub struct ReplayGainAnalysis {
     pub track_gain: Option<String>,
@@ -3453,6 +3508,8 @@ pub struct ReplayGainAnalysis {
 
 /// Result of acoustic feature extraction
 #[derive(Debug, Clone, Default, PartialEq)]
+// Cubierto por `tests/batch_50_audit_test.rs` y `tests/metadata_enrichment_parity_test.rs`
+// (vía `AudioAnalyzer::extract_acoustic_features`).
 #[allow(dead_code)]
 pub struct AcousticAnalysis {
     pub bpm: Option<u32>,
@@ -3463,6 +3520,8 @@ pub struct AcousticAnalysis {
 
 /// Result of audio fingerprinting
 #[derive(Debug, Clone, Default, PartialEq)]
+// Cubierto por `tests/batch_50_audit_test.rs` y `tests/metadata_enrichment_parity_test.rs`
+// (vía `AudioAnalyzer::calculate_fingerprint`).
 #[allow(dead_code)]
 pub struct FingerprintAnalysis {
     pub duration_sec: f64,
@@ -3475,6 +3534,8 @@ pub struct FingerprintAnalysis {
 #[allow(dead_code)]
 pub struct AudioAnalyzer;
 
+// Análisis (ReplayGain/EBU R128, BPM/Key y fingerprint): cubierto por
+// `tests/batch_50_audit_test.rs` y `tests/metadata_enrichment_parity_test.rs`.
 #[allow(dead_code)]
 impl AudioAnalyzer {
     /// Analyze an audio file (e.g. in .staging) and return extracted metrics.
@@ -3649,6 +3710,8 @@ impl AudioAnalyzer {
 
 /// Diagnostic report generated by `backfill_social_metadata` (TASK-113).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+// Tipo de retorno de `backfill_social_metadata`, cubierta por
+// `tests/social_metadata_backfill_test.rs`.
 #[allow(dead_code)]
 pub struct SocialMetadataBackfillReport {
     pub total_tracks_scanned: usize,
@@ -3664,6 +3727,7 @@ pub struct SocialMetadataBackfillReport {
 /// 1. Infers missing album `release_date` from `MIN(tracks.release_year)`, track ISRCs, or populated counterpart albums.
 /// 2. Canonically derives `tracks.release_year` from parent `albums.release_date`, reconciling divergent track years.
 /// 3. Backfills `tracks.genre` prioritizing album siblings and artist dominant genre.
+// Cubierta por `tests/social_metadata_backfill_test.rs`.
 #[allow(dead_code)]
 pub async fn backfill_social_metadata(
     db: &sqlx::SqlitePool,
@@ -3931,57 +3995,6 @@ pub async fn sync_album_total_tracks_tx(
     .bind(album_id)
     .execute(&mut **tx)
     .await?;
-    Ok(())
-}
-
-/// Installs recurrence-prevention SQLite triggers that automatically keep `albums.total_tracks`
-/// synchronized whenever tracks are inserted, deleted, or reassigned.
-#[allow(dead_code)]
-pub async fn install_album_total_tracks_triggers(
-    pool: &sqlx::SqlitePool,
-) -> Result<(), sqlx::Error> {
-    let triggers = [
-        r#"
-        CREATE TRIGGER IF NOT EXISTS trg_tracks_sync_album_total_tracks_ins
-        AFTER INSERT ON tracks
-        FOR EACH ROW
-        WHEN NEW.album_id IS NOT NULL
-        BEGIN
-            UPDATE albums
-            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = NEW.album_id)
-            WHERE id = NEW.album_id AND (is_stub != 1 OR is_stub IS NULL);
-        END;
-        "#,
-        r#"
-        CREATE TRIGGER IF NOT EXISTS trg_tracks_sync_album_total_tracks_del
-        AFTER DELETE ON tracks
-        FOR EACH ROW
-        WHEN OLD.album_id IS NOT NULL
-        BEGIN
-            UPDATE albums
-            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = OLD.album_id)
-            WHERE id = OLD.album_id AND (is_stub != 1 OR is_stub IS NULL);
-        END;
-        "#,
-        r#"
-        CREATE TRIGGER IF NOT EXISTS trg_tracks_sync_album_total_tracks_upd
-        AFTER UPDATE OF album_id ON tracks
-        FOR EACH ROW
-        BEGIN
-            UPDATE albums
-            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = NEW.album_id)
-            WHERE NEW.album_id IS NOT NULL AND id = NEW.album_id AND (is_stub != 1 OR is_stub IS NULL);
-
-            UPDATE albums
-            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = OLD.album_id)
-            WHERE OLD.album_id IS NOT NULL AND id = OLD.album_id AND (is_stub != 1 OR is_stub IS NULL);
-        END;
-        "#,
-    ];
-
-    for trg in &triggers {
-        sqlx::query(trg).execute(pool).await?;
-    }
     Ok(())
 }
 

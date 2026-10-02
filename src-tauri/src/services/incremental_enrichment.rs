@@ -110,11 +110,19 @@ pub struct EnrichmentJobSummary {
 
 /// In-memory cache for incremental enrichment sessions
 #[derive(Default)]
-#[allow(dead_code)] // caché escrita durante sesiones incrementales; lectura diferida a fases posteriores
 pub struct EnrichmentMemoryCache {
     pub isrc_cache: HashMap<String, Option<MusicBrainzRecording>>,
+    // Caché en memoria que esta sesión escribe pero todavía no consulta (lectura
+    // diferida); cubierta por los tests del worker de enriquecimiento.
+    #[allow(dead_code)]
     pub mbid_cache: HashMap<String, Option<MusicBrainzRecording>>,
+    // Caché en memoria que esta sesión escribe pero todavía no consulta (lectura
+    // diferida); cubierta por los tests del worker de enriquecimiento.
+    #[allow(dead_code)]
     pub album_cache: HashMap<String, Option<Release>>,
+    // Caché en memoria que esta sesión escribe pero todavía no consulta (lectura
+    // diferida); cubierta por los tests del worker de enriquecimiento.
+    #[allow(dead_code)]
     pub artist_mbid_cache: HashMap<String, Option<String>>,
 }
 
@@ -143,7 +151,7 @@ impl IncrementalEnrichmentService {
     }
 
     /// Clear all in-memory caches
-    #[allow(dead_code)] // mantenimiento de caché invocado por enrichment_worker_test
+    #[allow(dead_code)] // Cubierta por `tests/enrichment_incremental_test.rs`.
     pub fn clear_cache(&self) {
         if let Ok(mut c) = self.cache.write() {
             *c = EnrichmentMemoryCache::default();
@@ -169,7 +177,7 @@ impl IncrementalEnrichmentService {
     }
 
     /// Reset cancellation state
-    #[allow(dead_code)] // control de cancelación invocado por tests del worker
+    #[allow(dead_code)] // Cubierta por `tests/pilot_25_tracks_test.rs`.
     pub fn reset_cancellation(&self) {
         self.cancellation_token.store(false, Ordering::SeqCst);
     }
@@ -592,13 +600,28 @@ impl IncrementalEnrichmentService {
         let mut new_energy: Option<f64> = None;
 
         if needs_acoustic {
-            let file_opt: Option<(String,)> = sqlx::query_as(
-                "SELECT file_path FROM downloads WHERE track_id = ? AND file_path IS NOT NULL AND status IN ('completed', 'downloaded') ORDER BY id DESC LIMIT 1"
+            // BD-2 fix: `downloads` is a completed-download ledger (worker.rs only inserts a row
+            // after a successful download) and has no `status` column — the previous
+            // `status IN ('completed', 'downloaded')` predicate failed on every run and the
+            // swallowed error disabled acoustic analysis entirely. The file-existence check
+            // below is the real guard against stale ledger rows.
+            let file_opt: Option<(String,)> = match sqlx::query_as(
+                "SELECT file_path FROM downloads WHERE track_id = ? AND file_path IS NOT NULL AND TRIM(file_path) != '' ORDER BY id DESC LIMIT 1",
             )
             .bind(track.id)
             .fetch_optional(db)
             .await
-            .unwrap_or(None);
+            {
+                Ok(row) => row,
+                Err(e) => {
+                    tracing::warn!(
+                        "incremental_enrichment: could not locate downloaded file for track {} ({}); skipping acoustic analysis",
+                        track.id,
+                        e
+                    );
+                    None
+                }
+            };
 
             let audio_path = file_opt
                 .map(|(p,)| std::path::PathBuf::from(p))
@@ -991,7 +1014,7 @@ impl IncrementalEnrichmentService {
 
 /// Internal database row structure for candidate tracks
 #[derive(Debug, sqlx::FromRow)]
-#[allow(dead_code)] // proyección completa del SELECT de candidatos; campos solo mapeados por FromRow
+#[allow(dead_code)] // Fila completa del SELECT de candidatos; sqlx la puebla por nombre de columna.
 pub struct CandidateTrackRow {
     pub id: i64,
     pub title: String,

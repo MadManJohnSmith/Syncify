@@ -84,15 +84,6 @@ pub fn is_various_artists(artist: &str) -> bool {
     crate::metadata::is_various_artists_variant(artist)
 }
 
-/// Normalizes an album artist name: canonicalizing compilation variants to "Various Artists".
-pub fn normalize_album_artist(artist: &str) -> String {
-    if is_various_artists(artist) {
-        "Various Artists".to_string()
-    } else {
-        sanitize_filename(artist)
-    }
-}
-
 /// Calculates the canonical album folder name: `[{Year}] {Album}` when year is valid (1900..=2100).
 pub fn canonical_album_name(album: &str, year: Option<i32>) -> String {
     let safe_album = sanitize_filename(album);
@@ -802,9 +793,6 @@ mod tests {
         assert!(is_various_artists("Various"));
         assert!(is_various_artists("v.a."));
         assert!(!is_various_artists("Vampire Weekend"));
-
-        assert_eq!(normalize_album_artist("VA"), "Various Artists");
-        assert_eq!(normalize_album_artist("Pink Floyd"), "Pink Floyd");
 
         let layout = LibraryLayout::new("/Music");
         let alb_dir = layout.canonical_album_dir("VA", "Top Hits 2020", Some(2020));

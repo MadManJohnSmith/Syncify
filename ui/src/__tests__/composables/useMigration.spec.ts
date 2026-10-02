@@ -156,4 +156,63 @@ describe('useMigration Composable (TASK-57)', () => {
         expect(migration.progress.status).toBe('completed');
         expect(getHistorySpy).toHaveBeenCalledTimes(1);
     });
+
+    it('maps derived payload fields (percent, speed, eta, current_action) into progress state', async () => {
+        // Regression for FE-1: the migration-progress payload carries the
+        // derived metrics the MigrationView progress screen consumes.
+        let listenerHandler!: (event: { payload: any }) => void;
+        vi.spyOn(tauriEvent, 'listen').mockImplementation(async (_name, handler) => {
+            listenerHandler = handler as any;
+            return () => {};
+        });
+
+        const migration = useMigration();
+        await migration.setupProgressListener();
+        expect(listenerHandler).toBeDefined();
+
+        listenerHandler({
+            payload: {
+                job_id: 'job-456',
+                current_item: 25,
+                total_items: 100,
+                current_track: 'Queen - Bohemian Rhapsody',
+                status: 'running',
+                completed_count: 20,
+                failed_count: 3,
+                skipped_count: 2,
+                percent: 25.0,
+                speed: 25.0,
+                eta: '3 min 0 s',
+                current_action: 'Transferring Bohemian Rhapsody',
+            },
+        });
+
+        expect(migration.progress.percent).toBe(25.0);
+        expect(migration.progress.speed).toBe(25.0);
+        expect(migration.progress.eta).toBe('3 min 0 s');
+        expect(migration.progress.current_action).toBe('Transferring Bohemian Rhapsody');
+
+        // Values are replaced on every event, not merged
+        listenerHandler({
+            payload: {
+                job_id: 'job-456',
+                current_item: 100,
+                total_items: 100,
+                current_track: 'Migration complete',
+                status: 'completed',
+                completed_count: 97,
+                failed_count: 2,
+                skipped_count: 1,
+                percent: 100,
+                speed: 50.0,
+                eta: '0 s',
+                current_action: 'Migration complete',
+            },
+        });
+
+        expect(migration.progress.percent).toBe(100);
+        expect(migration.progress.speed).toBe(50.0);
+        expect(migration.progress.eta).toBe('0 s');
+        expect(migration.progress.current_action).toBe('Migration complete');
+    });
 });

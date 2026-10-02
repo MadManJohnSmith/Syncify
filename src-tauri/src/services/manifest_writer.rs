@@ -3,7 +3,7 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
 use std::path::Path;
-use syncify_core_domain::{BatchDownloadManifest, TrackManifestEntry};
+use syncify_core_domain::{BatchDownloadManifest, FavoritesBatchSummary, TrackManifestEntry};
 use tracing::{error, info, warn};
 
 static MANIFEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -281,14 +281,35 @@ impl ManifestWriter {
         }
 
         let total_requested = manifest_entries.len();
-        let batch_manifest = BatchDownloadManifest {
-            generated_at: chrono::Utc::now().to_rfc3339(),
-            total_requested,
-            total_succeeded: succeeded,
-            total_failed: failed,
-            total_skipped: skipped,
-            entries: manifest_entries,
+        // The domain summary is the single place that knows how a batch folds into
+        // a `BatchDownloadManifest`, so the counters and the entry list are carried
+        // through it instead of being assembled by hand here. The counters keep the
+        // queue-status semantics computed above (`succeeded`/`failed`/`skipped`);
+        // the remaining summary fields are derived from the entries themselves.
+        let summary = FavoritesBatchSummary {
+            requested: total_requested,
+            // Every reconciled queue row produced an entry.
+            received: total_requested,
+            // This writer reconciles an existing queue; it never deduplicates it.
+            deduplicated: 0,
+            skipped_existing: skipped,
+            succeeded,
+            failed,
+            enriched: manifest_entries
+                .iter()
+                .filter(|e| e.enrichment_result == "Success")
+                .count(),
+            validated: manifest_entries
+                .iter()
+                .filter(|e| e.audio_validation == "Valid")
+                .count(),
+            output_files: manifest_entries
+                .iter()
+                .filter(|e| e.final_path.is_some())
+                .count(),
+            manifest: manifest_entries,
         };
+        let batch_manifest = summary.to_batch_manifest(chrono::Utc::now().to_rfc3339());
 
         tokio::fs::create_dir_all(output_dir).await?;
         let manifest_path = output_dir.join("manifest.json");

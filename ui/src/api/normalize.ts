@@ -44,6 +44,13 @@ export function asBoolean(value: unknown, fallback: boolean = false): boolean {
 }
 
 /**
+ * Like asString but preserves "field absent" (null) for optional contracts.
+ */
+export function optionalString(value: unknown): string | null {
+    return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
  * Like asBoolean but preserves "field absent" (undefined) for optional contracts.
  */
 export function optionalBoolean(value: unknown): boolean | undefined {

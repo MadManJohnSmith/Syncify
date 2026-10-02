@@ -292,6 +292,7 @@ async fn test_s161_live_network_single_track_creation() {
         hint_track_number: Some(1),
         hint_disc_number: Some(1),
         hint_isrc: Some(isrc_before.clone()),
+        operation_id: None,
     };
 
     println!(

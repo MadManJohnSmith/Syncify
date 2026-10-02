@@ -19,10 +19,10 @@
             </div>
             
             <!-- Search -->
-            <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark shrink-0">
+            <div class="print-hidden px-6 py-4 border-b border-gray-200 dark:border-border-dark shrink-0">
               <div class="relative">
                 <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[20px]">search</span>
-                <input 
+                <input
                   v-model="searchQuery"
                   type="text"
                   placeholder="Search shortcuts..."
@@ -31,9 +31,9 @@
                 >
               </div>
             </div>
-            
+
             <!-- Shortcuts List -->
-            <div class="flex-1 overflow-y-auto custom-scrollbar px-6 py-4">
+            <div class="shortcuts-list flex-1 overflow-y-auto custom-scrollbar px-6 py-4">
               <div v-for="section in filteredSections" :key="section.name" class="shortcut-section mb-6 last:mb-0">
                 <!-- Section Header -->
                 <button 
@@ -74,14 +74,13 @@
             </div>
             
             <!-- Footer -->
-            <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-between shrink-0">
-              <button class="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors">
+            <div class="print-hidden px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-end shrink-0">
+              <!-- FE-12: real print support for the cheat sheet. The
+                   "Customize Shortcuts" button was removed: the shortcut
+                   registry has no rebinding support, so the button was dead. -->
+              <button @click="printCheatSheet" class="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors">
                 <span class="material-symbols-outlined text-[18px]">print</span>
                 Print Cheat Sheet
-              </button>
-              <button class="flex items-center gap-2 text-sm text-primary hover:underline">
-                <span class="material-symbols-outlined text-[18px]">settings</span>
-                Customize Shortcuts
               </button>
             </div>
           </div>
@@ -246,6 +245,12 @@ function toggleSection(name: string) {
 
 function highlightMatch(text: string): string {
   return safeHighlightMatch(text, searchQuery.value)
+}
+
+// FE-12: print only the cheat sheet. The @media print rules below hide
+// everything else and force a light, ink-friendly palette.
+function printCheatSheet() {
+  window.print()
 }
 
 function dismissHint() {
@@ -444,5 +449,58 @@ button:focus-visible,
 input:focus-visible {
   outline: 2px solid #6366f1;
   outline-offset: 2px;
+}
+</style>
+
+<!-- FE-12: print stylesheet for the cheat sheet. Not scoped on purpose: the
+     modal is teleported to <body> and the rules must reach the whole page. -->
+<style>
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+
+  .shortcuts-modal,
+  .shortcuts-modal * {
+    visibility: visible !important;
+  }
+
+  .shortcuts-modal {
+    position: static !important;
+    inset: auto !important;
+    background: #fff !important;
+    padding: 0 !important;
+    color: #111 !important;
+  }
+
+  .shortcuts-modal > div {
+    max-height: none !important;
+    max-width: none !important;
+    box-shadow: none !important;
+    background: #fff !important;
+  }
+
+  .shortcuts-modal .print-hidden {
+    display: none !important;
+  }
+
+  /* Show every section, not just what fits the on-screen scroll area. */
+  .shortcuts-modal .shortcuts-list {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+
+  .shortcuts-modal .keyboard-key {
+    background: #fff !important;
+    border-color: #999 !important;
+    box-shadow: none !important;
+    color: #000 !important;
+  }
+
+  .shortcuts-modal h2,
+  .shortcuts-modal h3,
+  .shortcuts-modal span {
+    color: #111 !important;
+  }
 }
 </style>

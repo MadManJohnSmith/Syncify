@@ -5,8 +5,6 @@
 //!
 //! Sprint 01: Replaced deterministic SHA256-derived key with OS Keychain-backed random key.
 
-#![allow(dead_code)]
-
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,

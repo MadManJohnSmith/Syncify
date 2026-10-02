@@ -80,7 +80,6 @@ EXPECTED_ABSENT = {
     "resources/qbdlx-mod/": "vendor bundle removed together with the module",
     "scripts/services/spotify_auth.py": "Spotify auth moved to the Rust core; cited as removed",
     "useQueue.ts": "composable purged as dead code in 417a0eb; cited as removed",
-    "legacy/syncify-cli/src/download/lyrics.rs": "archived prototype kept outside the tree (SYNC-AUD-065)",
 }
 
 
@@ -351,11 +350,19 @@ class AcceptedQobuzAppIdRiskTests(unittest.TestCase):
 class ConditionedScopeDeclarationTests(unittest.TestCase):
     """SYNC-AUD-077: the conditioned scope must be declared, not left implicit.
 
-    D-01 to D-04 are registered with their closing condition and none of them
+    The open entries are registered with their closing condition and none of them
     depends on work the team can do on its own: they are scope conditioned by an
     external input, not defects. A closure that lists them as pending work
     promises something the project cannot deliver, so the declaration is gated.
+
+    The set of entries is read from the register's own "Deuda abierta" section
+    instead of being spelled out here: closing an entry (D-03, in this revision)
+    must not require editing this gate, and an entry added to the register must
+    not be able to skip the declaration.
     """
+
+    #: A row of the conditioned-scope table: its first column is the debt id.
+    _CONDITIONED_ROW = re.compile(r"^\|\s*(D-\d+)\s*\|", re.MULTILINE)
 
     def setUp(self):
         self.register = _doc_text("docs/Deuda_Tecnica_y_UX.md")
@@ -378,9 +385,36 @@ class ConditionedScopeDeclarationTests(unittest.TestCase):
             "the section heading must state what the register does not declare",
         )
 
+    def _open_entries(self):
+        """The debt ids the register currently lists as open."""
+        open_section = self.register.split("## Deuda abierta", 1)[1].split(
+            "## Alcance condicionado", 1
+        )[0]
+        return sorted(set(re.findall(r"^### (D-\d+)\b", open_section, re.MULTILINE)))
+
+    def _conditioned_section(self):
+        return self.register.split("Alcance condicionado", 1)[1].split("## Cerrado", 1)[0]
+
+    def _conditioned_rows(self):
+        """The debt ids the conditioned-scope table actually declares.
+
+        Read from the table rows rather than from the whole section: the prose
+        above the table enumerates the same ids, so searching the raw section
+        would keep passing after a row is dropped from the table.
+        """
+        return sorted(set(self._CONDITIONED_ROW.findall(self._conditioned_section())))
+
     def test_every_conditioned_entry_is_named_with_its_condition(self):
-        section = self.register.split("Alcance condicionado", 1)[1].split("## Cerrado", 1)[0]
-        for entry in ("D-01", "D-02", "D-03", "D-04"):
+        entries = self._open_entries()
+        self.assertNotEqual(
+            entries, [], "the register no longer declares open debt; this gate needs updating"
+        )
+        section = self._conditioned_section()
+        rows = self._conditioned_rows()
+        self.assertEqual(
+            rows, entries, "the conditioned-scope table must declare exactly the open entries"
+        )
+        for entry in entries:
             with self.subTest(entry=entry):
                 self.assertIn(
                     entry,

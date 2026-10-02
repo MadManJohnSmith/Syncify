@@ -29,6 +29,16 @@ class AppleMusicAuth:
         self.verbose = verbose
         self._cached_token: Optional[str] = None
         self._access_token: Optional[str] = None
+        self._storefront: Optional[str] = None
+
+    @property
+    def storefront(self) -> Optional[str]:
+        """Storefront of the connected account, as reported by `me/storefront`.
+
+        The Rust client uses it for every `/catalog/{storefront}/` request, so it
+        must be part of the credentials saved at login.
+        """
+        return self._storefront
     
     def _log(self, message: str):
         if self.verbose:
@@ -170,6 +180,8 @@ class AppleMusicAuth:
             if response.status_code == 200:
                 data = response.json()
                 storefront = data.get("data", [{}])[0].get("id", "unknown")
+                if storefront != "unknown":
+                    self._storefront = storefront
                 self._log(f"Token valid (storefront: {storefront})")
                 return True, storefront
             else:

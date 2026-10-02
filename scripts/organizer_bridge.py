@@ -4,7 +4,6 @@ Organizer Bridge - Organize audio files into proper folder structure.
 
 Usage:
     python organizer_bridge.py organize <source_dir> <target_dir> [--pattern <pattern>]
-    python organizer_bridge.py rename <audio_file> [--pattern <pattern>]
     python organizer_bridge.py preview <source_dir> [--pattern <pattern>]
 
 Patterns:

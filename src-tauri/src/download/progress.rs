@@ -48,7 +48,6 @@ pub struct DownloadProgress {
     pub terminal: bool,
 }
 
-#[allow(dead_code)]
 impl DownloadProgress {
     pub fn new(item_id: &str) -> Self {
         Self {
@@ -208,6 +207,7 @@ impl DownloadProgress {
         }
     }
 
+    #[allow(dead_code)] // Cubierta por `tests/download_progress_event_contract_test.rs`.
     pub fn phase_update(
         item_id: &str,
         service: Option<&str>,
@@ -501,7 +501,7 @@ impl DownloadPhaseTracker {
         }
     }
 
-    #[allow(dead_code)] // telemetría de progreso global: cubierta por queue_global_progress_test; consumo UI pendiente
+    #[allow(dead_code)] // Cubierta por `tests/batch_100_pilot_test.rs`.
     pub fn with_queue_wait(queue_wait_ms: u64) -> Self {
         let mut tracker = Self::new();
         tracker.queue_wait_ms = queue_wait_ms;
@@ -642,7 +642,7 @@ impl DownloadPhaseTracker {
         }
     }
 
-    #[allow(dead_code)] // telemetría de fases: cubierta por download_phase_telemetry_test
+    #[allow(dead_code)] // Cubierta por `tests/download_phase_telemetry_test.rs`.
     pub fn finish_failed(&mut self) -> DownloadPhaseTimings {
         self.start_phase(DownloadPhase::Failed);
         self.end_current_phase();
@@ -670,7 +670,7 @@ impl DownloadPhaseTracker {
         }
     }
 
-    #[allow(dead_code)] // telemetría de fases: cubierta por download_phase_telemetry_test
+    #[allow(dead_code)] // Cubierta por `tests/download_phase_telemetry_test.rs`.
     pub fn finish_cancelled(&mut self) -> DownloadPhaseTimings {
         self.start_phase(DownloadPhase::Cancelled);
         self.end_current_phase();
@@ -701,7 +701,7 @@ impl DownloadPhaseTracker {
 
 /// Global progress calculation state with stable denominator
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[allow(dead_code)] // telemetría de progreso global: cubierta por queue_global_progress_test; consumo UI pendiente
+#[allow(dead_code)] // Cubierta por `tests/queue_global_progress_test.rs`.
 pub struct QueueGlobalProgress {
     pub total_selected: usize,
     pub preflight_excluded: usize,
@@ -719,7 +719,7 @@ pub struct QueueGlobalProgress {
 }
 
 impl QueueGlobalProgress {
-    #[allow(dead_code)] // telemetría de progreso global: cubierta por queue_global_progress_test; consumo UI pendiente
+    #[allow(dead_code)] // Cubierta por `tests/live_network_pilot_10_audit.rs`, `tests/live_network_pilot_20_audit.rs`.
     pub fn compute(
         total_selected: usize,
         preflight_excluded: usize,
@@ -885,7 +885,6 @@ pub struct ProgressTracker {
     emitter: RwLock<Option<ProgressEmitterFn>>,
 }
 
-#[allow(dead_code)]
 impl ProgressTracker {
     pub fn new() -> Self {
         Self {
@@ -905,6 +904,7 @@ impl ProgressTracker {
         *guard = Some(Arc::new(emitter));
     }
 
+    #[allow(dead_code)] // Cubierta por `tests/download_progress_stream_test.rs`.
     pub fn clear_emitter(&self) {
         let mut guard = match self.emitter.write() {
             Ok(g) => g,
@@ -954,6 +954,7 @@ impl ProgressTracker {
         }
     }
 
+    #[allow(dead_code)] // Cubierta por `tests/animated_cover_security_test.rs`, `tests/artists_tags_roundtrip_test.rs`.
     pub fn get(&self, item_id: &str) -> Option<DownloadProgress> {
         let items = match self.items.read() {
             Ok(guard) => guard,
@@ -965,17 +966,7 @@ impl ProgressTracker {
         items.get(item_id).map(|(p, _)| p.clone())
     }
 
-    pub fn get_all(&self) -> Vec<DownloadProgress> {
-        let items = match self.items.read() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                tracing::warn!("ProgressTracker items lock poisoned, recovering");
-                poisoned.into_inner()
-            }
-        };
-        items.values().map(|(p, _)| p.clone()).collect()
-    }
-
+    #[allow(dead_code)] // Cubierta por `tests/animated_cover_mp4_sidecar_test.rs`, `tests/batch_50_audit_test.rs`.
     pub fn remove(&self, item_id: &str) {
         let mut items = match self.items.write() {
             Ok(guard) => guard,
@@ -987,6 +978,7 @@ impl ProgressTracker {
         items.remove(item_id);
     }
 
+    #[allow(dead_code)] // Cubierta por `tests/dead_commands_hygiene_test.rs`.
     pub fn clear_completed(&self) {
         let mut items = match self.items.write() {
             Ok(guard) => guard,

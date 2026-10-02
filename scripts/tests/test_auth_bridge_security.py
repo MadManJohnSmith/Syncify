@@ -13,9 +13,10 @@ Verifies:
 import json
 import os
 import subprocess
-import sys
 import unittest
 from pathlib import Path
+
+from bridge_python import python_executable
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = SCRIPTS_DIR / "auth_bridge.py"
@@ -32,7 +33,7 @@ class TestAuthBridgeSecurity(unittest.TestCase):
     def test_refresh_without_stdin_fails_controlled(self):
         """Executing spotify refresh without stdin or env var fails controlledly."""
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT_PATH), "spotify", "refresh"],
+            [python_executable(), str(SCRIPT_PATH), "spotify", "refresh"],
             input="",
             capture_output=True,
             text=True,
@@ -51,7 +52,7 @@ class TestAuthBridgeSecurity(unittest.TestCase):
         """Attempting to pass sp_dc as sys.argv[3] must be blocked and rejected."""
         leaked_secret = "AQB_SUPER_SECRET_COOKIE_LEAKED_IN_ARGV_9999"
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT_PATH), "spotify", "refresh", leaked_secret],
+            [python_executable(), str(SCRIPT_PATH), "spotify", "refresh", leaked_secret],
             capture_output=True,
             text=True,
             env=self.clean_env,
@@ -72,7 +73,7 @@ class TestAuthBridgeSecurity(unittest.TestCase):
         """Attempting to pass sp_dc via flags like --sp-dc must be blocked."""
         leaked_secret = "AQB_FLAG_SECRET_COOKIE_4321"
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT_PATH), "--service", "spotify", "--action", "refresh", f"--sp-dc={leaked_secret}"],
+            [python_executable(), str(SCRIPT_PATH), "--service", "spotify", "--action", "refresh", f"--sp-dc={leaked_secret}"],
             capture_output=True,
             text=True,
             env=self.clean_env,
@@ -91,7 +92,7 @@ class TestAuthBridgeSecurity(unittest.TestCase):
         payload = json.dumps({"sp_dc": secret_cookie})
 
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT_PATH), "spotify", "refresh"],
+            [python_executable(), str(SCRIPT_PATH), "spotify", "refresh"],
             input=payload,
             capture_output=True,
             text=True,
@@ -114,7 +115,7 @@ class TestAuthBridgeSecurity(unittest.TestCase):
         secret_cookie = "mock_secret_sp_dc_raw_cookie_456"
 
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT_PATH), "spotify", "refresh"],
+            [python_executable(), str(SCRIPT_PATH), "spotify", "refresh"],
             input=f"  {secret_cookie}  \n",
             capture_output=True,
             text=True,
@@ -135,7 +136,7 @@ class TestAuthBridgeSecurity(unittest.TestCase):
         env_with_secret["SYNCIFY_SP_DC"] = secret_cookie
 
         proc = subprocess.run(
-            [sys.executable, str(SCRIPT_PATH), "spotify", "refresh"],
+            [python_executable(), str(SCRIPT_PATH), "spotify", "refresh"],
             input="",
             capture_output=True,
             text=True,
@@ -156,7 +157,7 @@ class TestAuthBridgeSecurity(unittest.TestCase):
 
         # Start child process with piped stdin
         p = subprocess.Popen(
-            [sys.executable, str(SCRIPT_PATH), "spotify", "refresh"],
+            [python_executable(), str(SCRIPT_PATH), "spotify", "refresh"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

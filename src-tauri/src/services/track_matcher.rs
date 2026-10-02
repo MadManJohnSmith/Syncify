@@ -3,13 +3,14 @@
 //! Provides shared logic for finding or creating tracks using ISRC as primary key.
 //! These utilities are designed to be used by service importers for consistent track handling.
 
-#![allow(dead_code)] // Public API for service importers - will be used when importers are refactored
-
 use sqlx::SqlitePool;
-use syncify_core_domain::metadata::{is_placeholder_title, is_valid_isrc, ProviderTrackIdentity};
+use syncify_core_domain::metadata::{is_placeholder_title, ProviderTrackIdentity};
 
 /// Result of a track lookup or creation
 #[derive(Debug, Clone)]
+// Construido por `find_or_create_track_with_identity`, que solo la exercise
+// `tests/catalog_identity_and_import_prevention_test.rs`.
+#[allow(dead_code)]
 pub struct TrackMatch {
     pub track_id: i64,
     pub is_new: bool,
@@ -18,6 +19,8 @@ pub struct TrackMatch {
 /// Check if an explicit requirement is compatible with an existing track's explicit flag.
 /// Explicit is a hard discrimination criterion: an explicit track must not collapse onto a clean track,
 /// and a clean track must not collapse onto an explicit track.
+// Cubierta por `tests/duplicates_level2_3_merge_test.rs`.
+#[allow(dead_code)]
 pub fn is_explicit_compatible(req_explicit: Option<bool>, db_explicit: Option<i32>) -> bool {
     match (req_explicit, db_explicit) {
         (Some(true), Some(0)) => false,
@@ -27,6 +30,8 @@ pub fn is_explicit_compatible(req_explicit: Option<bool>, db_explicit: Option<i3
 }
 
 /// Check if two tracks match by normalized title (via clean_title) and duration tolerance ± 2000 ms.
+// Cubierta por `tests/duplicates_level2_3_merge_test.rs`.
+#[allow(dead_code)]
 pub fn is_fuzzy_track_match(
     title_a: &str,
     dur_a: Option<i64>,
@@ -46,6 +51,8 @@ pub fn is_fuzzy_track_match(
 
 /// Find an existing track by (service_id, service_track_id) first, then valid ISRC with explicit check,
 /// then normalized fuzzy matching within album/artist, or create a new one.
+// Cubierta por `tests/catalog_identity_and_import_prevention_test.rs`.
+#[allow(dead_code)]
 pub async fn find_or_create_track_with_identity(
     db: &SqlitePool,
     identity: &ProviderTrackIdentity,
@@ -248,175 +255,6 @@ pub async fn find_or_create_track_with_identity(
         track_id,
         is_new: true,
     })
-}
-
-/// Legacy wrapper for find_or_create_track preserving backward compatibility while enforcing identity rules
-pub async fn find_or_create_track(
-    db: &SqlitePool,
-    title: &str,
-    isrc: Option<&str>,
-    album_id: Option<i64>,
-    duration_ms: Option<i64>,
-    explicit: Option<bool>,
-) -> Result<TrackMatch, String> {
-    let sanitized_isrc = isrc.and_then(|c| {
-        if is_valid_isrc(c) {
-            Some(c.to_string())
-        } else {
-            None
-        }
-    });
-    if let Some(ref valid_isrc) = sanitized_isrc {
-        if let Ok(Some((existing_id, existing_explicit))) = sqlx::query_as::<_, (i64, Option<i32>)>(
-            "SELECT id, explicit FROM tracks WHERE isrc = ? LIMIT 1",
-        )
-        .bind(valid_isrc)
-        .fetch_optional(db)
-        .await
-        {
-            if is_explicit_compatible(explicit, existing_explicit) {
-                if let Some(alb_id) = album_id {
-                    let _ = sqlx::query(
-                        "UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?",
-                    )
-                    .bind(alb_id)
-                    .bind(existing_id)
-                    .execute(db)
-                    .await;
-                }
-                return Ok(TrackMatch {
-                    track_id: existing_id,
-                    is_new: false,
-                });
-            }
-        }
-    }
-
-    if let Some(alb_id) = album_id {
-        if !is_placeholder_title(title) {
-            if let Ok(candidates) =
-                sqlx::query_as::<_, (i64, String, Option<i64>, Option<i32>, Option<String>)>(
-                    "SELECT id, title, duration_ms, explicit, isrc FROM tracks WHERE album_id = ?",
-                )
-                .bind(alb_id)
-                .fetch_all(db)
-                .await
-            {
-                for (cand_id, cand_title, cand_dur, cand_exp, cand_isrc) in candidates {
-                    if !is_explicit_compatible(explicit, cand_exp) {
-                        continue;
-                    }
-                    if let (Some(ref req_isrc), Some(ref db_isrc)) = (&sanitized_isrc, cand_isrc) {
-                        if !db_isrc.trim().is_empty() && req_isrc != db_isrc {
-                            continue;
-                        }
-                    }
-                    if is_fuzzy_track_match(title, duration_ms, &cand_title, cand_dur) {
-                        if let Some(ref valid_isrc) = sanitized_isrc {
-                            let _ = sqlx::query(
-                                "UPDATE tracks SET isrc = COALESCE(isrc, ?) WHERE id = ?",
-                            )
-                            .bind(valid_isrc)
-                            .bind(cand_id)
-                            .execute(db)
-                            .await;
-                        }
-                        return Ok(TrackMatch {
-                            track_id: cand_id,
-                            is_new: false,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    let track_id: i64 = sqlx::query_scalar(
-        "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit) VALUES (?, ?, ?, ?, ?) RETURNING id",
-    )
-    .bind(title)
-    .bind(album_id)
-    .bind(duration_ms)
-    .bind(sanitized_isrc)
-    .bind(explicit)
-    .fetch_one(db)
-    .await
-    .map_err(|e| format!("Failed to insert track: {}", e))?;
-
-    Ok(TrackMatch {
-        track_id,
-        is_new: true,
-    })
-}
-
-/// Link an artist to a track
-pub async fn link_track_artist(
-    db: &SqlitePool,
-    track_id: i64,
-    artist_id: i64,
-    role: &str,
-) -> Result<(), String> {
-    sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, ?)")
-        .bind(track_id)
-        .bind(artist_id)
-        .bind(role)
-        .execute(db)
-        .await
-        .map_err(|e| format!("Failed to link artist: {}", e))?;
-
-    Ok(())
-}
-
-/// Add a library entry for a track (favorite/liked)
-pub async fn add_library_entry(
-    db: &SqlitePool,
-    account_id: i64,
-    track_id: i64,
-    is_liked: bool,
-) -> Result<bool, String> {
-    let result = sqlx::query(
-        "INSERT OR IGNORE INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, ?)",
-    )
-    .bind(account_id)
-    .bind(track_id)
-    .bind(is_liked)
-    .execute(db)
-    .await
-    .map_err(|e| format!("Failed to add library entry: {}", e))?;
-
-    Ok(result.rows_affected() > 0)
-}
-
-/// Add a track source (service-specific availability info)
-pub async fn add_track_source(
-    db: &SqlitePool,
-    track_id: i64,
-    service_id: i64,
-    service_track_id: &str,
-    format: Option<&str>,
-    bit_depth: Option<i32>,
-    sample_rate: Option<i32>,
-    quality_score: i32,
-) -> Result<(), String> {
-    sqlx::query(
-        r#"
-        INSERT OR REPLACE INTO track_sources
-        (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-        "#
-    )
-    .bind(track_id)
-    .bind(service_id)
-    .bind(service_track_id)
-    .bind(format)
-    .bind(bit_depth)
-    .bind(sample_rate)
-    .bind(quality_score)
-    .execute(db)
-    .await
-    .map_err(|e| format!("Failed to add track source: {}", e))?;
-
-    Ok(())
 }
 
 #[cfg(test)]

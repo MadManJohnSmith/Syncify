@@ -3,7 +3,7 @@
 Scanner Bridge - Scan local music library and extract metadata.
 
 Usage:
-    python scanner_bridge.py scan <directory> [--recursive] [--limit N]
+    python scanner_bridge.py scan <directory> [--recursive] [--limit N] [--min-size-bytes N]
     python scanner_bridge.py metadata <audio_file>
 
 Returns JSON:
@@ -317,34 +317,50 @@ def extract_metadata(file_path: Path) -> Optional[TrackInfo]:
         return None
 
 
-def scan_directory(directory: str, recursive: bool = True, limit: Optional[int] = None):
+def scan_directory(directory: str, recursive: bool = True, limit: Optional[int] = None,
+                   min_size_bytes: int = 0):
     """Scan a directory for audio files."""
     dir_path = Path(directory)
     if not dir_path.exists():
         json_response(False, error=f"Directory not found: {directory}")
         return
-    
+
     if not dir_path.is_dir():
         json_response(False, error=f"Not a directory: {directory}")
         return
-    
+
     # Find audio files
     if recursive:
         audio_files = []
         for ext in AUDIO_EXTENSIONS:
             audio_files.extend(dir_path.rglob(f"*{ext}"))
     else:
-        audio_files = [f for f in dir_path.iterdir() 
+        audio_files = [f for f in dir_path.iterdir()
                        if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS]
-    
+
+    # Skip files below the size threshold (e.g. samples under 1 MB).
+    # Files whose size cannot be read are kept rather than silently dropped.
+    skipped_small_files = 0
+    if min_size_bytes and min_size_bytes > 0:
+        kept = []
+        for f in audio_files:
+            try:
+                if f.stat().st_size < min_size_bytes:
+                    skipped_small_files += 1
+                    continue
+            except OSError:
+                pass
+            kept.append(f)
+        audio_files = kept
+
     # Apply limit
     if limit:
         audio_files = audio_files[:limit]
-    
+
     # Extract metadata
     tracks = []
     errors = []
-    
+
     for file in audio_files:
         try:
             info = extract_metadata(file)
@@ -352,10 +368,11 @@ def scan_directory(directory: str, recursive: bool = True, limit: Optional[int] 
                 tracks.append(asdict(info))
         except Exception as e:
             errors.append({"file": str(file), "error": str(e)})
-    
+
     json_response(True, {
         "directory": str(dir_path.absolute()),
         "total_files": len(audio_files),
+        "skipped_small_files": skipped_small_files,
         "tracks": tracks,
         "errors": errors if errors else None,
     })
@@ -393,15 +410,18 @@ def main():
     scan_parser.add_argument("--no-recursive", dest="recursive", action="store_false",
                              help="Don't scan subdirectories")
     scan_parser.add_argument("--limit", "-l", type=int, help="Limit number of files")
-    
+    scan_parser.add_argument("--min-size-bytes", type=int, default=0,
+                             help="Skip audio files smaller than this many bytes "
+                                  "(e.g. 1048576 = 1 MB)")
+
     # Metadata command
     meta_parser = subparsers.add_parser("metadata", help="Get file metadata")
     meta_parser.add_argument("audio_file", help="Path to audio file")
-    
+
     args = parser.parse_args()
-    
+
     if args.command == "scan":
-        scan_directory(args.directory, args.recursive, args.limit)
+        scan_directory(args.directory, args.recursive, args.limit, args.min_size_bytes)
     elif args.command == "metadata":
         get_file_metadata(args.audio_file)
 

@@ -1,6 +1,8 @@
 #[allow(unused_imports)]
 use super::*;
 
+use crate::services::operation_recovery::classify_operation_error;
+
 // Queue Commands - submodule of crate::commands
 //
 // Persistent download queue, worker control
@@ -454,7 +456,6 @@ pub async fn perform_add_to_queue(
     } else {
         // Query candidate sources from track_sources for this track
         #[derive(sqlx::FromRow)]
-        #[allow(dead_code)]
         struct CandidateSourceRow {
             service_id: i64,
             service_name: String,
@@ -887,8 +888,10 @@ async fn evaluate_track_preflight_inner(
         isrc: Option<String>,
         musicbrainz_id: Option<String>,
         #[allow(dead_code)]
+        // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
         album_id: Option<i64>,
         #[allow(dead_code)]
+        // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
         duration_ms: Option<i64>,
     }
 
@@ -1021,12 +1024,12 @@ async fn evaluate_track_preflight_inner(
         service_track_id: Option<String>,
         format: Option<String>,
         bit_depth: Option<i64>,
-        #[allow(dead_code)]
         sample_rate: Option<i64>,
         quality_score: Option<i64>,
         available: i64,
         availability_status: Option<String>,
         #[allow(dead_code)]
+        // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
         availability_reason: Option<String>,
         active_accounts: i64,
         supports_download: i64,
@@ -2257,27 +2260,35 @@ pub async fn cancel_queue_item(queue_id: i64, state: State<'_, AppState>) -> Res
 /// Retry a failed download
 #[tauri::command]
 pub async fn retry_queue_item(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    // S168: Prevent re-enqueuing terminal non-retryable items
-    let item_meta: Option<(Option<String>, i64)> =
-        sqlx::query_as("SELECT error_message, retry_count FROM download_queue WHERE id = ?")
-            .bind(queue_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| e.to_string())?;
+    perform_retry_queue_item(&state.db, queue_id).await
+}
 
-    if let Some((err_opt, rc)) = item_meta {
+/// S168: prevent re-enqueuing terminal non-retryable items.
+///
+/// The verdict comes from the shared error taxonomy, the same one the download
+/// worker applied when it marked the row failed.
+pub async fn perform_retry_queue_item(db: &crate::DbPool, queue_id: i64) -> Result<(), String> {
+    let item_meta: Option<(Option<String>, Option<String>, i64)> = sqlx::query_as(
+        "SELECT error_message, service_name, retry_count FROM download_queue WHERE id = ?",
+    )
+    .bind(queue_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some((err_opt, service, rc)) = item_meta {
         let err_str = err_opt.unwrap_or_default();
-        let is_terminal = rc >= 99
-            || err_str.contains("AuthInvalid")
-            || err_str.contains("RequiresAuth")
-            || err_str.contains("RejectedQuality")
-            || err_str.contains("AmbiguousSource")
-            || err_str.contains("SourceIdentityMissing")
-            || err_str.contains("IdentityConflict")
-            || err_str.contains("UnavailableFromProvider");
+        let taxonomy = classify_operation_error(
+            crate::worker::download_operation_type(service.as_deref()),
+            service.as_deref().unwrap_or("unknown"),
+            &err_str,
+        );
 
-        if is_terminal {
-            return Err("Cannot auto-retry terminal failure: re-authentication or explicit user action required".to_string());
+        if rc >= 99 || taxonomy.is_terminal() || taxonomy.requires_user_action() {
+            return Err(format!(
+                "Cannot auto-retry terminal failure: {}",
+                taxonomy.ui_message()
+            ));
         }
     }
 
@@ -2285,7 +2296,7 @@ pub async fn retry_queue_item(queue_id: i64, state: State<'_, AppState>) -> Resu
         "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL WHERE id = ? AND retry_count < 99"
     )
     .bind(queue_id)
-    .execute(&state.db)
+    .execute(db)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -2299,32 +2310,50 @@ pub async fn retry_failed(
     state: State<'_, AppState>,
 ) -> Result<i64, String> {
     if let Some(id) = queue_id {
-        retry_queue_item(id, state).await.map(|_| 1)
+        perform_retry_queue_item(&state.db, id).await.map(|_| 1)
     } else {
-        retry_all_failed(state).await
+        perform_retry_all_failed(&state.db).await
     }
 }
 
-/// Retry transient failed downloads (excluding permanent requires_auth / rejected_quality / ambiguous_source items)
+/// Retry transient failed downloads (excluding permanent requires_auth / rejected_quality /
+/// ambiguous_source items).
 #[tauri::command]
 pub async fn retry_all_failed(state: State<'_, AppState>) -> Result<i64, String> {
-    let result = sqlx::query(
-        r#"UPDATE download_queue
-           SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1
-           WHERE status = 'failed' AND retry_count < 5
-             AND COALESCE(error_message, '') NOT LIKE '%AuthInvalid%'
-             AND COALESCE(error_message, '') NOT LIKE '%RequiresAuth%'
-             AND COALESCE(error_message, '') NOT LIKE '%RejectedQuality%'
-             AND COALESCE(error_message, '') NOT LIKE '%AmbiguousSource%'
-             AND COALESCE(error_message, '') NOT LIKE '%SourceIdentityMissing%'
-             AND COALESCE(error_message, '') NOT LIKE '%IdentityConflict%'
-             AND COALESCE(error_message, '') NOT LIKE '%UnavailableFromProvider%'"#
+    perform_retry_all_failed(&state.db).await
+}
+
+/// The exclusion list is the same taxonomy verdict `perform_retry_queue_item`
+/// applies to a single row; a SQL `NOT LIKE` chain could not stay in sync with it.
+pub async fn perform_retry_all_failed(db: &crate::DbPool) -> Result<i64, String> {
+    let candidates: Vec<(i64, Option<String>, Option<String>, i64)> = sqlx::query_as(
+        "SELECT id, error_message, service_name, retry_count FROM download_queue WHERE status = 'failed' AND retry_count < 5",
     )
-    .execute(&state.db)
+    .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(result.rows_affected() as i64)
+    let mut retried = 0i64;
+    for (id, err_opt, service, _retry_count) in candidates {
+        let taxonomy = classify_operation_error(
+            crate::worker::download_operation_type(service.as_deref()),
+            service.as_deref().unwrap_or("unknown"),
+            err_opt.as_deref().unwrap_or_default(),
+        );
+        if taxonomy.is_terminal() || taxonomy.requires_user_action() {
+            continue;
+        }
+        let updated = sqlx::query(
+            "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1 WHERE id = ?",
+        )
+        .bind(id)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+        retried += updated.rows_affected() as i64;
+    }
+
+    Ok(retried)
 }
 
 /// Clear completed/cancelled downloads (canonical command)
@@ -2478,19 +2507,50 @@ pub async fn perform_force_redownload_tracks(
     let mut re_queued = 0;
 
     for tid in &track_ids {
-        // Query previous download or queue record to preserve service and service_track_id if available
-        let prev_source: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        // Query previous download or queue record to preserve service and service_track_id if
+        // available. BD-1 fix: `downloads` has no `service`/`service_track_id` columns — the
+        // ledger stores the identity in `effective_service`/`effective_service_track_id`
+        // (falling back to `origin_service`/`origin_service_track_id` and the `services` name
+        // behind `source_service_id`). The queue arm prefers the most recent attempt that still
+        // carries a usable (service_name, service_track_id) pair. A failing lookup is logged and
+        // degrades to "no locked identity" instead of being swallowed.
+        let prev_source: Option<(Option<String>, Option<String>)> = match sqlx::query_as(
             r#"SELECT service_name, service_track_id FROM (
-                SELECT service_name, service_track_id, 1 as ord FROM download_queue WHERE track_id = ?
+                SELECT service_name, service_track_id, 1 as ord FROM (
+                    SELECT service_name, service_track_id
+                    FROM download_queue
+                    WHERE track_id = ?
+                      AND service_name IS NOT NULL AND TRIM(service_name) != ''
+                      AND service_track_id IS NOT NULL AND TRIM(service_track_id) != ''
+                    ORDER BY id DESC LIMIT 1
+                )
                 UNION ALL
-                SELECT service, service_track_id, 2 as ord FROM downloads WHERE track_id = ?
+                SELECT COALESCE(
+                           d.effective_service,
+                           d.origin_service,
+                           (SELECT s.name FROM services s WHERE s.id = d.source_service_id)
+                       ) as service_name,
+                       COALESCE(d.effective_service_track_id, d.origin_service_track_id) as service_track_id,
+                       2 as ord
+                FROM downloads d
+                WHERE d.track_id = ?
             ) ORDER BY ord ASC LIMIT 1"#,
         )
         .bind(tid)
         .bind(tid)
         .fetch_optional(&state.db)
         .await
-        .unwrap_or(None);
+        {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::warn!(
+                    "force_redownload_tracks: could not read previous service identity for track {} ({}); re-queuing without a locked source",
+                    tid,
+                    e
+                );
+                None
+            }
+        };
 
         let (prev_service, prev_service_track_id) = match prev_source {
             Some((s, stid)) => (s, stid),
@@ -2589,6 +2649,7 @@ pub async fn clear_download_history(
 }
 
 /// Perform reset download history and finished queue entries (preserves downloads ledger)
+#[allow(dead_code)] // Cubierta por `tests/download_settings_commands_test.rs` y `tests/fresh_install_adversarial_pipeline_test.rs`.
 pub async fn perform_reset_download_history(db: &crate::DbPool) -> Result<String, String> {
     tracing::info!("reset_download_history called");
     sqlx::query("DELETE FROM download_queue WHERE status IN ('complete', 'failed', 'cancelled')")
@@ -2596,12 +2657,6 @@ pub async fn perform_reset_download_history(db: &crate::DbPool) -> Result<String
         .await
         .map_err(|e| format!("Database error: {}", e))?;
     Ok("Download history and finished queue items reset successfully".to_string())
-}
-
-/// Reset download history and finished queue entries
-#[tauri::command]
-pub async fn reset_download_history(state: State<'_, AppState>) -> Result<String, String> {
-    perform_reset_download_history(&state.db).await
 }
 
 // ==============================================

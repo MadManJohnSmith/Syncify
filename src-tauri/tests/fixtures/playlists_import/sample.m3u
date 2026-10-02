@@ -1,0 +1,10 @@
+#EXTM3U
+#EXTINF:304,Daft Punk - One More Time
+# ISRC: USUM71100999
+/music/library/one_more_time.flac
+#EXTINF:221,Real Path Artist - Real Path Song
+/music/library/real_path_song.mp3
+#EXTINF:187,Collab Artist - Title Artist Match
+/Library/Title Artist Match.ogg
+Loose Artist - Loose Song
+#EXTINF:201,Only Title Song

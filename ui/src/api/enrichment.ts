@@ -102,9 +102,20 @@ export async function getLibraryEnrichmentStatus(): Promise<EnrichmentJobSummary
     return normalizeEnrichmentJobSummary(raw);
 }
 
+/**
+ * On-demand single-track enrichment (MusicBrainz by ISRC + Last.fm genre).
+ * Returns the backend's summary message, e.g. "Enriched: Genre" or
+ * "Track already enriched".
+ */
+export async function enrichTrack(trackId: number): Promise<string> {
+    const message = await invokeCommand<unknown>('enrich_track', { trackId });
+    return typeof message === 'string' ? message : '';
+}
+
 export const enrichmentApi = {
     previewLibraryEnrichment,
     startLibraryEnrichment,
     cancelLibraryEnrichment,
     getLibraryEnrichmentStatus,
+    enrichTrack,
 };

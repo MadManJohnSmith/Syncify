@@ -204,16 +204,24 @@ export async function scanLocalLibrary(
 
 /**
  * Scan a directory for audio files with progress events
+ *
+ * FE-6: `watchForChanges` launches a backend auto-rescan watcher for the
+ * directory; `skipSmallFiles` makes the scanner skip files under 1 MB.
+ * Both mirror the checkboxes of the "Add Local Library Path" dialog.
  */
 export async function scanLocalLibraryWithProgress(
     directory: string,
     options?: {
         recursive?: boolean;
+        watchForChanges?: boolean;
+        skipSmallFiles?: boolean;
     }
 ): Promise<ScanResult> {
     return invokeCommand<ScanResult>('scan_local_library_with_progress', {
         directory,
         recursive: options?.recursive ?? true,
+        watchForChanges: options?.watchForChanges ?? false,
+        skipSmallFiles: options?.skipSmallFiles ?? false,
     });
 }
 
@@ -222,6 +230,14 @@ export async function scanLocalLibraryWithProgress(
  */
 export async function removeTrack(trackId: number): Promise<void> {
     return invokeCommand<void>('remove_track', { trackId });
+}
+
+/**
+ * FE-6: stop the auto-rescan watcher of a library path (if any).
+ * @returns true when a watcher existed and was stopped.
+ */
+export async function stopLibraryWatcher(directory: string): Promise<boolean> {
+    return invokeCommand<boolean>('stop_library_watcher_command', { directory });
 }
 
 /**
@@ -1078,6 +1094,191 @@ export async function reconcileQueue(
     };
 }
 
+// ==============================================
+// LIBRARY MAINTENANCE (IN-5: exposed backend capabilities)
+// ==============================================
+
+/** Track metadata incl. import sources (matches Rust TrackMetadata of get_track_metadata). */
+export interface TrackMetadataWithSources {
+    track_id: number;
+    title: string;
+    artist_name: string | null;
+    artist_id: number | null;
+    album_name: string | null;
+    album_id: number | null;
+    duration_ms: number | null;
+    track_number: number | null;
+    disc_number: number | null;
+    isrc: string | null;
+    explicit: boolean | null;
+    genre: string | null;
+    bpm: number | null;
+    musical_key: string | null;
+    release_year: number | null;
+    musicbrainz_id: string | null;
+    cover_art_url: string | null;
+    file_path: string | null;
+    sources?: TrackSourceAvailability[] | null;
+}
+
+function normalizeTrackMetadata(raw: unknown): TrackMetadataWithSources {
+    const rec = asRecord(raw);
+    const optStr = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+    const optNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    return {
+        track_id: asNumber(rec?.track_id),
+        title: asString(rec?.title),
+        artist_name: optStr(rec?.artist_name),
+        artist_id: optNum(rec?.artist_id),
+        album_name: optStr(rec?.album_name),
+        album_id: optNum(rec?.album_id),
+        duration_ms: optNum(rec?.duration_ms),
+        track_number: optNum(rec?.track_number),
+        disc_number: optNum(rec?.disc_number),
+        isrc: optStr(rec?.isrc),
+        explicit: typeof rec?.explicit === 'boolean' ? rec.explicit : null,
+        genre: optStr(rec?.genre),
+        bpm: optNum(rec?.bpm),
+        musical_key: optStr(rec?.musical_key),
+        release_year: optNum(rec?.release_year),
+        musicbrainz_id: optStr(rec?.musicbrainz_id),
+        cover_art_url: optStr(rec?.cover_art_url),
+        file_path: optStr(rec?.file_path),
+        sources: Array.isArray(rec?.sources) ? (rec.sources as TrackSourceAvailability[]) : null,
+    };
+}
+
+/**
+ * Fetch the stored metadata of a single track including its import sources.
+ */
+export async function getTrackMetadata(trackId: number): Promise<TrackMetadataWithSources> {
+    const raw = await invokeCommand<unknown>('get_track_metadata', { trackId });
+    return normalizeTrackMetadata(raw);
+}
+
+/**
+ * Repair tracks missing their artist links (creates Unknown Artist entries
+ * for orphan tracks). Returns the backend JSON report.
+ */
+export async function repairArtistLinks(): Promise<Record<string, unknown>> {
+    const raw = await invokeCommand<unknown>('repair_artist_links');
+    return asRecord(raw) ?? {};
+}
+
+/** Ghost-artists resolution report (matches Rust GhostArtistReport). */
+export interface GhostArtistReport {
+    duplicates_merged: number;
+    musicbrainz_resolved: number;
+    external_ids_linked: number;
+    total_processed: number;
+}
+
+function countRecord(raw: unknown, keys: string[]): Record<string, number> {
+    const rec = asRecord(raw) ?? {};
+    const out: Record<string, number> = {};
+    for (const k of keys) {
+        const v = rec[k];
+        out[k] = typeof v === 'number' && Number.isFinite(v) ? v : 0;
+    }
+    return out;
+}
+
+/**
+ * Resolve ghost favorite artists (merge duplicates, link MusicBrainz/external ids).
+ */
+export async function resolveGhostArtists(): Promise<GhostArtistReport> {
+    const raw = await invokeCommand<unknown>('resolve_ghost_artists');
+    return countRecord(raw, ['duplicates_merged', 'musicbrainz_resolved', 'external_ids_linked', 'total_processed']) as unknown as GhostArtistReport;
+}
+
+/** Stub-album hydration report (matches Rust StubAlbumHydrationReport). */
+export interface StubAlbumHydrationReport {
+    duplicate_stubs_merged: number;
+    albums_hydrated: number;
+    tracks_inserted: number;
+    total_processed: number;
+}
+
+/**
+ * Hydrate stub favorite albums with tracklists from MusicBrainz or the library.
+ */
+export async function hydrateStubAlbums(): Promise<StubAlbumHydrationReport> {
+    const raw = await invokeCommand<unknown>('hydrate_stub_albums');
+    return countRecord(raw, ['duplicate_stubs_merged', 'albums_hydrated', 'tracks_inserted', 'total_processed']) as unknown as StubAlbumHydrationReport;
+}
+
+/** Album total_tracks recalculation report (TASK-138). */
+export interface AlbumTotalTracksReconcileReport {
+    updated_albums: number;
+    divergent_before: number;
+    divergent_after: number;
+}
+
+/**
+ * Recalculate and reconcile albums.total_tracks against actual track counts.
+ */
+export async function recalculateAlbumTotalTracks(albumIds?: number[]): Promise<AlbumTotalTracksReconcileReport> {
+    const raw = await invokeCommand<unknown>('recalculate_album_total_tracks', {
+        albumIds: albumIds ?? null
+    });
+    const rec = asRecord(raw);
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    return {
+        updated_albums: num(rec?.updated_albums),
+        divergent_before: num(rec?.divergent_before),
+        divergent_after: num(rec?.divergent_after),
+    };
+}
+
+/** Orphan empty albums purge report (TASK-70). */
+export interface PurgeOrphanEmptyAlbumsReport {
+    purged_albums_count: number;
+    purged_album_artists_count: number;
+    preserved_stubs_count: number;
+}
+
+/**
+ * Purge empty orphan albums (0 tracks) and clean up orphan album_artists rows.
+ */
+export async function purgeOrphanEmptyAlbums(): Promise<PurgeOrphanEmptyAlbumsReport> {
+    const raw = await invokeCommand<unknown>('purge_orphan_empty_albums');
+    const rec = asRecord(raw);
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    return {
+        purged_albums_count: num(rec?.purged_albums_count),
+        purged_album_artists_count: num(rec?.purged_album_artists_count),
+        preserved_stubs_count: num(rec?.preserved_stubs_count),
+    };
+}
+
+/** Storage reconciliation result (matches Rust StorageReconciliationResult). */
+export interface StorageReconciliationResult {
+    scanned_audio_files: number;
+    relinked_downloads: number;
+    purged_staging_files: number;
+    ambiguous_files: string[];
+    message: string;
+}
+
+/**
+ * Reconcile orphan audio files on disk into `downloads` and purge .staging/*.part
+ * residuals.
+ */
+export async function reconcileDownloadsFromStorage(musicDirOverride?: string): Promise<StorageReconciliationResult> {
+    const raw = await invokeCommand<unknown>('reconcile_downloads_from_storage', {
+        musicDirOverride: musicDirOverride ?? null
+    });
+    const rec = asRecord(raw);
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    return {
+        scanned_audio_files: num(rec?.scanned_audio_files),
+        relinked_downloads: num(rec?.relinked_downloads),
+        purged_staging_files: num(rec?.purged_staging_files),
+        ambiguous_files: asArray<string>(rec?.ambiguous_files).filter((f): f is string => typeof f === 'string'),
+        message: asString(rec?.message),
+    };
+}
+
 // Export as namespace
 export const libraryApi = {
     getLibrary,
@@ -1111,6 +1312,7 @@ export const libraryApi = {
     scanLocalLibraryWithProgress,
     getLocalTrackMetadata,
     removeTrack,
+    stopLibraryWatcher,
     bulkRemoveTracks,
     toggleFavorite,
     toggleTrackFavorite,
@@ -1124,6 +1326,13 @@ export const libraryApi = {
     getTrackSourcesAvailability,
     checkTrackAvailability,
     checkTracksAvailability,
+    getTrackMetadata,
+    repairArtistLinks,
+    resolveGhostArtists,
+    hydrateStubAlbums,
+    recalculateAlbumTotalTracks,
+    purgeOrphanEmptyAlbums,
+    reconcileDownloadsFromStorage,
 };
 
 

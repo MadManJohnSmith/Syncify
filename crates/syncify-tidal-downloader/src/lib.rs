@@ -58,30 +58,6 @@ impl TidalAuthStatus {
     }
 }
 
-/// Resolution state of GUI account credentials loaded from SQLite
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TidalAuthResolution {
-    StoredGuiAccessToken(String),
-    RefreshedGuiToken(String),
-    ExplicitOverrideToken(String),
-    RequiresAuth,
-    SourceUnavailable(String),
-}
-
-impl std::fmt::Display for TidalAuthResolution {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TidalAuthResolution::StoredGuiAccessToken(_) => write!(f, "Stored GUI Access Token"),
-            TidalAuthResolution::RefreshedGuiToken(_) => write!(f, "Refreshed GUI Token"),
-            TidalAuthResolution::ExplicitOverrideToken(_) => write!(f, "Explicit Override Token"),
-            TidalAuthResolution::RequiresAuth => write!(f, "Requires Authentication"),
-            TidalAuthResolution::SourceUnavailable(reason) => {
-                write!(f, "Source Unavailable ({})", reason)
-            }
-        }
-    }
-}
-
 /// Decrypted structure stored in `accounts.credentials_json` by Syncify GUI
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalGuiCredentials {

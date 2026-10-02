@@ -108,16 +108,28 @@
                 <!-- Feedback -->
                 <div class="p-4 border-t border-gray-200 dark:border-border-dark">
                   <p class="text-sm text-gray-500 mb-3">Was this helpful?</p>
-                  <div class="flex gap-2">
-                    <button class="flex items-center gap-2 px-4 py-2 bg-green-500/10 text-green-600 hover:bg-green-500/20 rounded-lg text-sm transition-colors">
+                  <div v-if="articleFeedbackSent === null" class="flex gap-2">
+                    <button
+                      @click="submitArticleFeedback(true)"
+                      :disabled="articleFeedbackSubmitting"
+                      class="flex items-center gap-2 px-4 py-2 bg-green-500/10 text-green-600 hover:bg-green-500/20 rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
                       <span class="material-symbols-outlined text-lg">thumb_up</span>
                       Yes
                     </button>
-                    <button class="flex items-center gap-2 px-4 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-sm transition-colors">
+                    <button
+                      @click="submitArticleFeedback(false)"
+                      :disabled="articleFeedbackSubmitting"
+                      class="flex items-center gap-2 px-4 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
                       <span class="material-symbols-outlined text-lg">thumb_down</span>
                       No
                     </button>
                   </div>
+                  <p v-else class="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                    <span class="material-symbols-outlined text-lg">check_circle</span>
+                    Thanks for your feedback!
+                  </p>
                 </div>
               </div>
               
@@ -182,13 +194,13 @@
               <div v-if="activeTab === 'contact'" class="help-contact p-4 space-y-4">
                 <!-- Support Options -->
                 <div class="grid grid-cols-2 gap-3">
-                  <button @click="showBugReport = true" class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left">
+                  <button @click="openBugReport" class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left">
                     <span class="material-symbols-outlined text-red-500 text-2xl mb-2 block">bug_report</span>
                     <p class="text-sm font-medium text-gray-900 dark:text-white">Report a Bug</p>
                     <p class="text-xs text-gray-500 mt-1">Found an issue?</p>
                   </button>
-                  
-                  <button @click="showFeedback = true" class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left">
+
+                  <button @click="openFeedback" class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left">
                     <span class="material-symbols-outlined text-blue-500 text-2xl mb-2 block">chat</span>
                     <p class="text-sm font-medium text-gray-900 dark:text-white">Send Feedback</p>
                     <p class="text-xs text-gray-500 mt-1">Share your thoughts</p>
@@ -236,9 +248,9 @@
                           <span class="text-gray-700 dark:text-gray-300">{{ systemInfo.connectedServices }}</span>
                         </div>
                       </div>
-                      <button class="mt-3 text-xs text-primary hover:underline flex items-center gap-1">
-                        <span class="material-symbols-outlined text-[14px]">content_copy</span>
-                        Copy info
+                      <button @click="copySystemInfo" class="mt-3 text-xs text-primary hover:underline flex items-center gap-1">
+                        <span class="material-symbols-outlined text-[14px]">{{ systemInfoCopied ? 'check' : 'content_copy' }}</span>
+                        {{ systemInfoCopied ? 'Copied!' : 'Copy info' }}
                       </button>
                     </div>
                   </Transition>
@@ -272,23 +284,40 @@
                 <span class="material-symbols-outlined text-gray-400">close</span>
               </button>
             </div>
-            <div class="p-5 space-y-4">
+            <div v-if="bugSavedPath" class="p-5">
+              <div class="flex items-start gap-3 p-4 bg-green-500/10 border border-green-500/30 rounded-xl">
+                <span class="material-symbols-outlined text-green-500">check_circle</span>
+                <div class="min-w-0">
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">Bug report saved</p>
+                  <p class="text-xs text-gray-500 mt-1 break-all">{{ bugSavedPath }}</p>
+                </div>
+              </div>
+            </div>
+            <div v-else class="p-5 space-y-4">
               <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Description</label>
-                <textarea rows="4" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="Describe the bug..."></textarea>
+                <textarea v-model="bugDescription" rows="4" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="Describe the bug..."></textarea>
               </div>
               <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Steps to Reproduce</label>
-                <textarea rows="3" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="1. Go to..."></textarea>
+                <textarea v-model="bugSteps" rows="3" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="1. Go to..."></textarea>
               </div>
               <label class="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
+                <input v-model="bugAttachLogs" type="checkbox" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
                 <span class="text-sm text-gray-600 dark:text-gray-400">Attach system logs</span>
               </label>
+              <p v-if="bugError" class="text-sm text-red-500">{{ bugError }}</p>
             </div>
             <div class="px-5 py-4 border-t border-gray-200 dark:border-border-dark flex justify-end gap-3">
               <button @click="showBugReport = false" class="px-4 py-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg">Cancel</button>
-              <button class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium">Submit Report</button>
+              <button
+                v-if="!bugSavedPath"
+                @click="submitBugReport"
+                :disabled="bugSubmitting"
+                class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {{ bugSubmitting ? 'Saving...' : 'Submit Report' }}
+              </button>
             </div>
           </div>
         </div>
@@ -306,10 +335,19 @@
                 <span class="material-symbols-outlined text-gray-400">close</span>
               </button>
             </div>
-            <div class="p-5 space-y-4">
+            <div v-if="feedbackSavedPath" class="p-5">
+              <div class="flex items-start gap-3 p-4 bg-green-500/10 border border-green-500/30 rounded-xl">
+                <span class="material-symbols-outlined text-green-500">check_circle</span>
+                <div class="min-w-0">
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">Feedback saved</p>
+                  <p class="text-xs text-gray-500 mt-1 break-all">{{ feedbackSavedPath }}</p>
+                </div>
+              </div>
+            </div>
+            <div v-else class="p-5 space-y-4">
               <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Type</label>
-                <select class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50">
+                <select v-model="feedbackType" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50">
                   <option>Bug Report</option>
                   <option>Feature Request</option>
                   <option>General Feedback</option>
@@ -317,12 +355,20 @@
               </div>
               <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Message</label>
-                <textarea rows="4" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="Your feedback..."></textarea>
+                <textarea v-model="feedbackMessage" rows="4" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="Your feedback..."></textarea>
               </div>
+              <p v-if="feedbackError" class="text-sm text-red-500">{{ feedbackError }}</p>
             </div>
             <div class="px-5 py-4 border-t border-gray-200 dark:border-border-dark flex justify-end gap-3">
               <button @click="showFeedback = false" class="px-4 py-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg">Cancel</button>
-              <button class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium">Send Feedback</button>
+              <button
+                v-if="!feedbackSavedPath"
+                @click="submitFeedback"
+                :disabled="feedbackSubmitting"
+                class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {{ feedbackSubmitting ? 'Sending...' : 'Send Feedback' }}
+              </button>
             </div>
           </div>
         </div>
@@ -412,7 +458,11 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { getVersion } from '@tauri-apps/api/app'
 import { escapeHtml, escapeRegex, sanitizeHtml, highlightMatch as safeHighlightMatch } from '@/utils/sanitize'
+import { toolsApi } from '@/api/tools'
+import { getServiceStatuses } from '@/api/accounts'
+import { useToast } from '../composables/useToast'
 
 const props = withDefaults(
   defineProps<{
@@ -538,9 +588,163 @@ const filteredFaqs = computed(() => {
 
 // System info
 const systemInfo = ref({
-  appVersion: '2.1.0',
-  os: 'Windows 11',
-  connectedServices: '3 (Spotify, Qobuz, Tidal)'
+  appVersion: 'unknown',
+  os: detectOsLabel(),
+  connectedServices: '…'
+})
+
+// Report / feedback form state (FE-8)
+const toast = useToast()
+const bugDescription = ref('')
+const bugSteps = ref('')
+const bugAttachLogs = ref(true)
+const bugSubmitting = ref(false)
+const bugError = ref('')
+const bugSavedPath = ref('')
+
+const feedbackType = ref('General Feedback')
+const feedbackMessage = ref('')
+const feedbackSubmitting = ref(false)
+const feedbackError = ref('')
+const feedbackSavedPath = ref('')
+
+const articleFeedbackSent = ref<null | boolean>(null)
+const articleFeedbackSubmitting = ref(false)
+
+const systemInfoCopied = ref(false)
+let copiedTimer: ReturnType<typeof setTimeout> | undefined
+
+function detectOsLabel(): string {
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  if (/Windows/i.test(ua)) return 'Windows'
+  if (/Android/i.test(ua)) return 'Android'
+  if (/iPhone|iPad|iPod/i.test(ua)) return 'iOS'
+  if (/Mac OS X|Macintosh/i.test(ua)) return 'macOS'
+  if (/Linux/i.test(ua)) return 'Linux'
+  return 'Unknown'
+}
+
+/** Load real app version and connected services for the System Info block */
+async function loadSystemInfo() {
+  try {
+    const version = await getVersion()
+    if (version) systemInfo.value.appVersion = version
+  } catch {
+    // Non-Tauri environment: keep the placeholder
+  }
+  try {
+    const statuses = await getServiceStatuses()
+    const connected = statuses.filter(s => s.connected)
+    systemInfo.value.connectedServices = connected.length > 0
+      ? `${connected.length} (${connected.map(s => s.name).join(', ')})`
+      : 'None connected'
+  } catch {
+    // Backend unavailable: keep the placeholder
+  }
+}
+
+function openBugReport() {
+  bugDescription.value = ''
+  bugSteps.value = ''
+  bugAttachLogs.value = true
+  bugError.value = ''
+  bugSavedPath.value = ''
+  showBugReport.value = true
+}
+
+function openFeedback() {
+  feedbackType.value = 'General Feedback'
+  feedbackMessage.value = ''
+  feedbackError.value = ''
+  feedbackSavedPath.value = ''
+  showFeedback.value = true
+}
+
+async function submitBugReport() {
+  bugError.value = ''
+  if (!bugDescription.value.trim()) {
+    bugError.value = 'Please describe the bug before submitting.'
+    return
+  }
+  bugSubmitting.value = true
+  try {
+    const saved = await toolsApi.saveUserReport({
+      kind: 'bug_report',
+      message: bugDescription.value.trim(),
+      steps_to_reproduce: bugSteps.value.trim(),
+      attach_logs: bugAttachLogs.value,
+    })
+    bugSavedPath.value = saved.filePath
+    toast.success('Bug report saved locally')
+  } catch (e) {
+    bugError.value = e instanceof Error ? e.message : String(e)
+    toast.error('Failed to save bug report')
+  } finally {
+    bugSubmitting.value = false
+  }
+}
+
+async function submitFeedback() {
+  feedbackError.value = ''
+  if (!feedbackMessage.value.trim()) {
+    feedbackError.value = 'Please write your feedback before sending.'
+    return
+  }
+  feedbackSubmitting.value = true
+  try {
+    const saved = await toolsApi.saveUserReport({
+      kind: 'feedback',
+      message: feedbackMessage.value.trim(),
+      feedback_type: feedbackType.value,
+    })
+    feedbackSavedPath.value = saved.filePath
+    toast.success('Feedback saved locally')
+  } catch (e) {
+    feedbackError.value = e instanceof Error ? e.message : String(e)
+    toast.error('Failed to save feedback')
+  } finally {
+    feedbackSubmitting.value = false
+  }
+}
+
+async function submitArticleFeedback(helpful: boolean) {
+  if (articleFeedbackSubmitting.value || articleFeedbackSent.value !== null) return
+  articleFeedbackSubmitting.value = true
+  try {
+    await toolsApi.saveUserReport({
+      kind: 'article_feedback',
+      message: '',
+      article_title: selectedArticle.value?.title ?? '',
+      helpful,
+    })
+    articleFeedbackSent.value = helpful
+  } catch {
+    toast.error('Failed to save your feedback')
+  } finally {
+    articleFeedbackSubmitting.value = false
+  }
+}
+
+async function copySystemInfo() {
+  const lines = [
+    `App Version: ${systemInfo.value.appVersion}`,
+    `OS: ${systemInfo.value.os}`,
+    `Connected Services: ${systemInfo.value.connectedServices}`,
+  ].join('\n')
+  try {
+    await navigator.clipboard.writeText(lines)
+    systemInfoCopied.value = true
+    if (copiedTimer) clearTimeout(copiedTimer)
+    copiedTimer = setTimeout(() => { systemInfoCopied.value = false }, 2000)
+  } catch {
+    toast.error('Could not copy to clipboard')
+  }
+}
+
+// A fresh article gets a fresh "Was this helpful?" state
+watch(selectedArticle, () => {
+  articleFeedbackSent.value = null
+  articleFeedbackSubmitting.value = false
 })
 
 // Methods
@@ -598,10 +802,15 @@ function handleKeydown(event: KeyboardEvent) {
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
+  loadSystemInfo()
 })
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
+  if (copiedTimer) {
+    clearTimeout(copiedTimer)
+    copiedTimer = undefined
+  }
 })
 
 defineExpose({ open, close, isOpen })

@@ -60,14 +60,6 @@
            </button>
          </div>
          
-         <div v-if="advancedSettings.cacheStats.value && advancedSettings.cacheStats.value.length > 0" class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2">
-           <div v-for="stat in advancedSettings.cacheStats.value" :key="stat.cache_type" class="p-3 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg flex justify-between items-center text-sm">
-             <span class="text-gray-500 capitalize">{{ stat.cache_type }}</span>
-             <span class="text-white font-medium">{{ (stat.size_bytes / (1024 * 1024)).toFixed(1) }} MB</span>
-           </div>
-         </div>
-         
-         <button @click="confirmClearCache" class="px-4 py-2 border border-warning/50 bg-warning/5 text-warning hover:bg-warning/10 rounded-lg text-sm font-medium transition-colors">Clear All Cache</button>
        </section>
 
       <!-- Network Section -->
@@ -127,6 +119,7 @@
 
          <div class="flex gap-3 mt-4">
            <button @click="advancedSettings.runDiagnostics()" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">Run Diagnostics</button>
+           <button @click="runBatchHealthCheck" :disabled="advancedSettings.isRunningBatchHealthCheck.value" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-200 dark:hover:bg-surface-highlight/80 transition-colors disabled:opacity-50">Batch Health Check</button>
            <button @click="confirmVacuum" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-200 dark:hover:bg-surface-highlight/80 transition-colors">Vacuum Database</button>
            <button @click="confirmResetAdvanced" class="px-4 py-2 border border-error/50 bg-error/5 text-error rounded-lg text-sm font-medium hover:bg-error/10 transition-colors">Reset Defaults</button>
          </div>
@@ -155,13 +148,12 @@ function updateClamped(field: string, raw: string, min: number, max: number) {
   advancedSettings.updateField(field as any, clamped)
 }
 
-async function confirmClearCache() {
-  const confirmed = await confirm('This will delete all cached images and metadata. Continue?', {
-    title: 'Clear Cache',
-    kind: 'warning'
-  })
-  if (confirmed !== true) return
-  await advancedSettings.clearCache()
+async function runBatchHealthCheck() {
+  try {
+    await advancedSettings.runBatchHealthCheck()
+  } catch (e) {
+    console.error('Batch health check failed:', e)
+  }
 }
 
 async function confirmVacuum() {
@@ -186,6 +178,5 @@ onMounted(async () => {
   if (!advancedSettings.settings.log_level) {
     await advancedSettings.loadSettings()
   }
-  await advancedSettings.loadCacheStats()
 })
 </script>

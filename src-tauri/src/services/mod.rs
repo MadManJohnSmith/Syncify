@@ -10,6 +10,7 @@ pub mod concurrency_manager;
 pub mod deezer;
 pub mod disambiguation_repair;
 pub mod enrichment;
+pub mod flac_cover_sanitizer;
 pub mod flac_picture;
 pub mod http_retry;
 pub mod import_pagination;
@@ -33,6 +34,7 @@ pub mod tempo_analyzer;
 pub mod tidal;
 pub mod tidal_pipeline;
 pub mod track_matcher;
+pub mod user_reports;
 
 pub use apple_music::AppleMusicClient;
 #[allow(unused_imports)]

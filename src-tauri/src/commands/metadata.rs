@@ -568,6 +568,34 @@ pub async fn apply_catalog_identity_repair(
     .await
 }
 
+/// S143B/S159: Generate a non-mutating dry-run plan for retroactive track version
+/// disambiguation repair (audio + sidecar LRC renames with SHA-256 baselines).
+#[tauri::command]
+pub async fn plan_disambiguation_repair(
+    state: State<'_, AppState>,
+) -> Result<crate::services::disambiguation_repair::DisambiguationRepairReport, String> {
+    crate::services::disambiguation_repair::plan_disambiguation_repair(&state.db).await
+}
+
+/// S143B/S159: Execute the disambiguation repair plan produced by
+/// `plan_disambiguation_repair`: coordinated audio/LRC renames verified bit-for-bit
+/// by SHA-256, atomically committed to SQLite with filesystem rollback on failure.
+/// Requires explicit confirmation, mirroring `apply_catalog_identity_repair`.
+#[tauri::command]
+pub async fn execute_disambiguation_repair(
+    state: State<'_, AppState>,
+    plan: crate::services::disambiguation_repair::DisambiguationRepairReport,
+    confirmed: bool,
+) -> Result<crate::services::disambiguation_repair::DisambiguationRepairReport, String> {
+    if !confirmed {
+        return Err(
+            "execute_disambiguation_repair: execution requires explicit confirmation (confirmed: true)"
+                .to_string(),
+        );
+    }
+    crate::services::disambiguation_repair::execute_disambiguation_repair(&state.db, plan).await
+}
+
 /// S167: Query aggregate post-crash recovery audit summary and details.
 #[tauri::command]
 pub async fn get_recovery_audit_summary(

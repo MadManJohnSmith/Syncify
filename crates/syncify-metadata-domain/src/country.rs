@@ -693,6 +693,18 @@ pub struct TagRepairPlan {
 }
 
 /// Computes tag repair plan for country/region fields without modifying anything (dry-run pure computation).
+///
+/// The plan is the exact inverse of what the tag writers put on disk: it targets
+/// `wire_country_value` / `wire_region_value`, the SAME helpers `apply_flac_tags`
+/// and the verifiers use. A repair therefore never produces a file the app would
+/// flag as mismatched, and values the contract echoes verbatim (unrecognized
+/// input) are left alone rather than deleted.
+///
+/// Typical cases:
+/// - `RELEASECOUNTRY = "US"` (pre-2026-08-24 alpha-2 contract) → `"United States"`.
+/// - `RELEASECOUNTRY = "Europe"` with no `RELEASEREGION` → adds `RELEASEREGION = "XE"`
+///   (regions are written to BOTH tags by the writer, so neither one is dropped).
+/// - `RELEASECOUNTRY = "United States"` → nothing to repair.
 pub fn plan_country_repair(
     current_country: Option<&str>,
     current_region: Option<&str>,
@@ -706,41 +718,60 @@ pub fn plan_country_repair(
         reason: None,
     };
 
-    if let Some(c_str) = current_country {
-        let trimmed = c_str.trim();
-        if !trimmed.is_empty() {
-            match resolve_country(trimmed) {
-                CountryResolution::Country { iso_alpha2, .. } => {
-                    if trimmed != iso_alpha2 {
-                        plan.target_country = Some(iso_alpha2);
-                        plan.needs_repair = true;
-                        plan.reason =
-                            Some("Normalized to standard ISO 3166-1 alpha-2 uppercase".to_string());
-                    }
-                }
-                CountryResolution::Region {
-                    region_name,
-                    region_code,
-                } => {
-                    // Moving from country tag to region tag
-                    plan.target_country = None;
-                    let target_reg = region_code.unwrap_or(region_name);
-                    if plan.target_region.is_none() {
-                        plan.target_region = Some(target_reg);
-                    }
-                    plan.needs_repair = true;
-                    plan.reason = Some(format!(
-                        "Moved non-country regional entity '{}' to RELEASEREGION",
-                        trimmed
-                    ));
-                }
-                CountryResolution::Unknown(_) => {
-                    // Unknown value in country field: remove invalid country
-                    plan.target_country = None;
-                    plan.needs_repair = true;
-                    plan.reason = Some(format!("Removed invalid country value '{}'", trimmed));
-                }
+    let raw_country = match current_country {
+        Some(c) => c,
+        None => return plan,
+    };
+    let trimmed = raw_country.trim();
+
+    if trimmed.is_empty() {
+        // The writers never emit an empty RELEASECOUNTRY, so an empty one is drift.
+        plan.target_country = None;
+        plan.needs_repair = true;
+        plan.reason = Some("Removed empty country value".to_string());
+        return plan;
+    }
+
+    match resolve_country(trimmed) {
+        CountryResolution::Country { canonical_name, .. } => {
+            if trimmed != canonical_name {
+                plan.target_country = Some(canonical_name.clone());
+                plan.needs_repair = true;
+                plan.reason = Some(format!(
+                    "Normalized country '{}' to canonical name '{}'",
+                    trimmed, canonical_name
+                ));
             }
+        }
+        CountryResolution::Region {
+            region_name,
+            region_code,
+        } => {
+            // Regions are written to RELEASECOUNTRY *and* RELEASEREGION, so the
+            // repair completes the pair instead of moving the value across tags.
+            plan.target_country = Some(region_name.clone());
+            let wire_region = region_code.unwrap_or_else(|| region_name.clone());
+            let region_already_correct = current_region
+                .map(|r| r.trim().eq_ignore_ascii_case(wire_region.trim()))
+                .unwrap_or(false);
+            if !region_already_correct {
+                plan.target_region = Some(wire_region.clone());
+                plan.needs_repair = true;
+            }
+            if trimmed != region_name {
+                plan.needs_repair = true;
+            }
+            if plan.reason.is_none() {
+                plan.reason = Some(format!(
+                    "Normalized regional entity '{}' to '{}' + RELEASEREGION '{}'",
+                    trimmed, region_name, wire_region
+                ));
+            }
+        }
+        CountryResolution::Unknown(_) => {
+            // Contrato del propietario 2026-08-24: unrecognized input is echoed
+            // back verbatim and never invented, so there is nothing to repair.
+            plan.target_country = Some(raw_country.to_string());
         }
     }
 
@@ -953,38 +984,112 @@ mod tests {
     }
 
     #[test]
-    fn test_tag_repair_plan() {
-        // XE in country -> moved to region, country cleared
-        let plan_xe = plan_country_repair(Some("XE"), None);
-        assert!(plan_xe.needs_repair);
-        assert_eq!(plan_xe.target_country, None);
-        assert_eq!(plan_xe.target_region, Some("XE".to_string()));
+    fn test_tag_repair_plan_targets_the_wire_contract() {
+        // The repair must land exactly where the tag writers land: every target
+        // equals wire_country_value / wire_region_value of the original value.
+        for raw in [
+            "US",
+            "USA",
+            "us",
+            "GB",
+            "DE",
+            "Deutschland",
+            "Spain",
+            "México",
+            "XE",
+            "Europe",
+            "XW",
+            "Worldwide",
+            "United States",
+            "UnknownCountry123",
+        ] {
+            let plan = plan_country_repair(Some(raw), None);
+            assert_eq!(
+                plan.target_country.as_deref(),
+                Some(wire_country_value(raw).as_str()),
+                "target country for {:?} must match the wire value",
+                raw
+            );
+        }
+    }
 
-        // XW in country -> moved to region, country cleared
-        let plan_xw = plan_country_repair(Some("XW"), None);
-        assert!(plan_xw.needs_repair);
-        assert_eq!(plan_xw.target_country, None);
-        assert_eq!(plan_xw.target_region, Some("XW".to_string()));
+    #[test]
+    fn test_tag_repair_plan_upgrades_legacy_alpha2_country() {
+        // Pre-2026-08-24 files carry ISO alpha-2; the wire contract is the name.
+        let plan_us = plan_country_repair(Some("US"), None);
+        assert!(plan_us.needs_repair);
+        assert_eq!(plan_us.original_country.as_deref(), Some("US"));
+        assert_eq!(plan_us.target_country.as_deref(), Some("United States"));
+        assert!(plan_us.reason.is_some());
 
-        // Europe in country -> moved to region
+        let plan_spain = plan_country_repair(Some("ES"), None);
+        assert!(plan_spain.needs_repair);
+        assert_eq!(plan_spain.target_country.as_deref(), Some("Spain"));
+
+        // Already canonical on the wire -> nothing to do.
+        let plan_canonical = plan_country_repair(Some("United States"), None);
+        assert!(!plan_canonical.needs_repair);
+        assert_eq!(
+            plan_canonical.target_country.as_deref(),
+            Some("United States")
+        );
+        assert!(plan_canonical.reason.is_none());
+    }
+
+    #[test]
+    fn test_tag_repair_plan_completes_the_region_pair() {
+        // A region in the country slot lives in BOTH tags on the wire, so the
+        // repair adds RELEASEREGION instead of moving the value across tags.
         let plan_europe = plan_country_repair(Some("Europe"), None);
         assert!(plan_europe.needs_repair);
-        assert_eq!(plan_europe.target_country, None);
-        assert_eq!(plan_europe.target_region, Some("XE".to_string()));
+        assert_eq!(plan_europe.target_country.as_deref(), Some("Europe"));
+        assert_eq!(plan_europe.target_region.as_deref(), Some("XE"));
 
-        // Spain in country -> normalized to ES
-        let plan_spain = plan_country_repair(Some("Spain"), None);
-        assert!(plan_spain.needs_repair);
-        assert_eq!(plan_spain.target_country, Some("ES".to_string()));
+        let plan_xw = plan_country_repair(Some("XW"), None);
+        assert_eq!(plan_xw.target_country.as_deref(), Some("Worldwide"));
+        assert_eq!(plan_xw.target_region.as_deref(), Some("XW"));
 
-        // US in country -> already canonical, no repair
-        let plan_us = plan_country_repair(Some("US"), None);
-        assert!(!plan_us.needs_repair);
-        assert_eq!(plan_us.target_country, Some("US".to_string()));
+        // Already complete pair -> no repair.
+        let plan_complete = plan_country_repair(Some("Europe"), Some("XE"));
+        assert!(!plan_complete.needs_repair);
+        assert_eq!(plan_complete.target_country.as_deref(), Some("Europe"));
+        assert_eq!(plan_complete.target_region.as_deref(), Some("XE"));
 
-        // Unknown in country -> removed
+        // An existing RELEASEREGION that differs is still repaired.
+        let plan_wrong_region = plan_country_repair(Some("Europe"), Some("Worldwide"));
+        assert!(plan_wrong_region.needs_repair);
+        assert_eq!(plan_wrong_region.target_region.as_deref(), Some("XE"));
+
+        // A sovereign country never carries RELEASEREGION from this repair.
+        let plan_country = plan_country_repair(Some("US"), Some("XE"));
+        assert!(plan_country.needs_repair);
+        assert_eq!(
+            plan_country.target_country.as_deref(),
+            Some("United States")
+        );
+        assert_eq!(plan_country.target_region.as_deref(), Some("XE"));
+    }
+
+    #[test]
+    fn test_tag_repair_plan_leaves_unrecognized_and_empty_input_alone() {
+        // The contract echoes unrecognized input verbatim: deleting it would make
+        // the next write put the value back.
         let plan_unknown = plan_country_repair(Some("NonExistentCountry99"), None);
-        assert!(plan_unknown.needs_repair);
-        assert_eq!(plan_unknown.target_country, None);
+        assert!(!plan_unknown.needs_repair);
+        assert_eq!(
+            plan_unknown.target_country.as_deref(),
+            Some("NonExistentCountry99")
+        );
+
+        // An empty country tag carries no value at all -> removed.
+        let plan_empty = plan_country_repair(Some("   "), None);
+        assert!(plan_empty.needs_repair);
+        assert_eq!(plan_empty.target_country, None);
+
+        // No country tag -> untouched plan.
+        let plan_absent = plan_country_repair(None, Some("XE"));
+        assert!(!plan_absent.needs_repair);
+        assert_eq!(plan_absent.target_country, None);
+        assert_eq!(plan_absent.target_region.as_deref(), Some("XE"));
     }
 }

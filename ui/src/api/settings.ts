@@ -272,7 +272,31 @@ export async function updateAudioProcessingSettings(
     return invokeCommand<AudioProcessingSettings>('update_audio_processing_settings', { settings });
 }
 
+/** Library loudness normalization statistics (matches Rust LoudnessStats). */
+export interface LoudnessStats {
+    total_tracks: number;
+    normalized_tracks: number;
+    pending_normalization: number;
+    average_loudness_lufs: number | null;
+}
+
+/**
+ * Get library loudness normalization statistics (IN-5: exposed capability).
+ */
+export async function getLoudnessStats(): Promise<LoudnessStats> {
+    const raw = await invokeCommand<unknown>('get_loudness_stats');
+    const rec = asRecord(raw);
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    return {
+        total_tracks: num(rec?.total_tracks),
+        normalized_tracks: num(rec?.normalized_tracks),
+        pending_normalization: num(rec?.pending_normalization),
+        average_loudness_lufs: typeof rec?.average_loudness_lufs === 'number' ? rec.average_loudness_lufs : null,
+    };
+}
+
 export interface DownloadSettings {
+
     download_path: string;
     temporary_root?: string;
     concurrent_downloads: number;
@@ -613,6 +637,7 @@ export async function testLyricsProvider(providerId: string): Promise<boolean> {
 export const settingsApi = {
     getSettings,
     getDefaultDownloadPath,
+    getLoudnessStats,
     saveSettings,
     getSettingsByKeys,
     saveSetting,
@@ -664,8 +689,6 @@ export const settingsApi = {
     getAdvancedSettings,
     updateAdvancedSettings,
     vacuumDatabase,
-    getCacheStats,
-    clearCache,
     runDiagnostics,
     resetToDefaults,
     getLastfmApiKeyStatus,
@@ -681,7 +704,6 @@ export const settingsApi = {
 
 import type {
     AdvancedSettings,
-    CacheStats,
     DiagnosticResult,
 } from './types';
 
@@ -704,21 +726,6 @@ export async function updateAdvancedSettings(settings: AdvancedSettings): Promis
  */
 export async function vacuumDatabase(): Promise<string> {
     return invokeCommand<string>('vacuum_database');
-}
-
-/**
- * Get cache statistics
- */
-export async function getCacheStats(): Promise<CacheStats[]> {
-    const raw = await invokeCommand<unknown>('get_cache_stats');
-    return asArray<CacheStats>(raw);
-}
-
-/**
- * Clear cache by type or all
- */
-export async function clearCache(cacheType?: string): Promise<string> {
-    return invokeCommand<string>('clear_cache', { cacheType });
 }
 
 /**

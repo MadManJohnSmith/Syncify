@@ -173,7 +173,7 @@ pub async fn get_favorites_tracks(
     perform_get_favorites_tracks(&state.db, service, offset, limit).await
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/album_stubs_and_placeholders_test.rs` y `tests/favorites_service_filtering_test.rs`.
 pub async fn perform_get_favorites_albums(
     db: &sqlx::Pool<sqlx::Sqlite>,
     service: Option<String>,
@@ -583,7 +583,8 @@ pub struct PushFavoriteResponse {
     pub message: String,
 }
 
-/// Push a favorite modification (add or remove) to a streaming service (Tidal, Qobuz, Spotify)
+/// Push a favorite modification (add or remove) to a streaming service (Tidal,
+/// Qobuz, Spotify, Deezer, SoundCloud, Apple Music)
 #[tauri::command]
 pub async fn push_favorite_to_service(
     state: State<'_, AppState>,
@@ -592,8 +593,31 @@ pub async fn push_favorite_to_service(
     service_item_id: String,
     is_favorite: bool,
 ) -> Result<PushFavoriteResponse, String> {
+    perform_push_favorite_to_service(
+        &state.db,
+        &service,
+        &item_type,
+        &service_item_id,
+        is_favorite,
+    )
+    .await
+}
+
+/// Provider half of [`push_favorite_to_service`]: propagate the change to the
+/// remote service, then mirror it into the local `favorites` table.
+///
+/// Split from the command so each per-service arm is reachable without a Tauri
+/// `State`; `db` is all the state these arms need.
+pub async fn perform_push_favorite_to_service(
+    db: &sqlx::Pool<sqlx::Sqlite>,
+    service: &str,
+    item_type: &str,
+    service_item_id: &str,
+    is_favorite: bool,
+) -> Result<PushFavoriteResponse, String> {
     let service_lower = service.to_lowercase();
     let item_type_lower = item_type.to_lowercase();
+    let service_item_id = service_item_id.to_string();
 
     tracing::info!(
         "push_favorite_to_service: service={}, type={}, id={}, is_fav={}",
@@ -603,10 +627,10 @@ pub async fn push_favorite_to_service(
         is_favorite
     );
 
-    let (account_id, creds) = load_service_credentials(&state.db, &service_lower).await?;
+    let (account_id, creds) = load_service_credentials(db, &service_lower).await?;
     let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
         .bind(&service_lower)
-        .fetch_one(&state.db)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Service {} not registered: {}", service_lower, e))?;
 
@@ -705,7 +729,7 @@ pub async fn push_favorite_to_service(
             }
         }
         "spotify" => {
-            let access_token = get_or_refresh_spotify_token(&state.db, account_id, &creds).await?;
+            let access_token = get_or_refresh_spotify_token(db, account_id, &creds).await?;
             let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
             let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
             let client =
@@ -736,11 +760,115 @@ pub async fn push_favorite_to_service(
                 _ => return Err(format!("Unsupported item_type: {}", item_type)),
             }
         }
+        "deezer" => {
+            // Reject what Deezer cannot express before opening a session.
+            if item_type_lower != "track" {
+                return Err(format!(
+                    "Deezer only propagates track favorites (got '{}')",
+                    item_type_lower
+                ));
+            }
+
+            let arl = creds["arl"]
+                .as_str()
+                .or_else(|| creds["access_token"].as_str())
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .ok_or("Missing Deezer ARL in stored credentials")?;
+
+            let mut client = crate::services::DeezerClient::new(arl.to_string());
+            // The gw-light write endpoints need the api_token that `init()`
+            // negotiates; without it there is nothing to send.
+            client.init().await.map_err(|e| {
+                format!(
+                    "RequiresAuth: Deezer session could not be initialised: {}",
+                    e
+                )
+            })?;
+
+            if is_favorite {
+                client.add_to_favorites(&service_item_id).await?;
+            } else {
+                client.remove_from_favorites(&service_item_id).await?;
+            }
+        }
+        "soundcloud" => {
+            let oauth_token = creds["oauth_token"]
+                .as_str()
+                .or_else(|| creds["access_token"].as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .ok_or("Missing SoundCloud OAuth token in stored credentials")?;
+            let user_id = creds["user_id"]
+                .as_i64()
+                .or_else(|| creds["user"]["id"].as_i64())
+                .ok_or("Missing SoundCloud user_id in stored credentials")?;
+
+            let client = crate::services::SoundCloudClient::new(oauth_token.to_string())
+                .with_user_id(user_id);
+
+            match item_type_lower.as_str() {
+                "track" => {
+                    if is_favorite {
+                        client.add_to_favorites(&service_item_id).await?;
+                    } else {
+                        client.remove_from_favorites(&service_item_id).await?;
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "SoundCloud only exposes track likes (got '{}')",
+                        other
+                    ))
+                }
+            }
+        }
+        "apple_music" => {
+            let developer_token = creds["developer_token"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .ok_or("Missing Apple Music developer_token in stored credentials")?;
+            let music_user_token = creds["music_user_token"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .ok_or("Missing Apple Music music_user_token in stored credentials")?;
+
+            let client = crate::services::AppleMusicClient::from_credentials(
+                developer_token.to_string(),
+                music_user_token.to_string(),
+                &creds,
+            );
+
+            match item_type_lower.as_str() {
+                "track" => {
+                    if is_favorite {
+                        client.add_to_favorites(&service_item_id).await?;
+                    } else {
+                        client.remove_from_favorites(&service_item_id).await?;
+                    }
+                }
+                "album" => {
+                    if is_favorite {
+                        client.add_album_to_library(&service_item_id).await?;
+                    } else {
+                        client.remove_album_from_library(&service_item_id).await?;
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "Apple Music library holds no artist favorites (got '{}')",
+                        other
+                    ))
+                }
+            }
+        }
         _ => return Err(format!("Unsupported service for push: {}", service)),
     }
 
     perform_push_favorite_sync(
-        &state.db,
+        db,
         account_id,
         service_id,
         &service_lower,
@@ -1290,7 +1418,12 @@ pub async fn upsert_canonical_favorite_artist(
     Ok(artist_id)
 }
 
-/// Synchronize favorites from a streaming service (Tidal, Qobuz, Spotify) into SQLite
+/// Page size used by the Apple Music favorites sync (its library endpoints cap
+/// a page at 100 items).
+const APPLE_MUSIC_FAV_PAGE: i32 = 100;
+
+/// Synchronize favorites from a streaming service (Tidal, Qobuz, Spotify,
+/// Deezer, SoundCloud, Apple Music) into SQLite
 #[tauri::command]
 pub async fn sync_favorites(
     state: State<'_, AppState>,
@@ -1298,8 +1431,33 @@ pub async fn sync_favorites(
     service: String,
     fav_type: Option<String>,
 ) -> Result<FavoritesSyncResult, String> {
+    let result = perform_sync_favorites(&state.db, &service, fav_type.as_deref()).await?;
+
+    let _ = window.emit(
+        "syncify:favorites_sync_completed",
+        serde_json::json!({
+            "service": result.service,
+            "item_type": result.item_type,
+            "total": result.total_found,
+            "imported": result.imported
+        }),
+    );
+
+    Ok(result)
+}
+
+/// Provider half of [`sync_favorites`]: resolve the active account, walk the
+/// liked collections the service actually exposes and persist them.
+///
+/// Split from the command so each per-service arm is reachable without a Tauri
+/// window; `db` is all the state these arms need.
+pub async fn perform_sync_favorites(
+    db: &sqlx::Pool<sqlx::Sqlite>,
+    service: &str,
+    fav_type: Option<&str>,
+) -> Result<FavoritesSyncResult, String> {
     let service_lower = service.to_lowercase();
-    let type_filter = fav_type.unwrap_or_else(|| "all".to_string()).to_lowercase();
+    let type_filter = fav_type.unwrap_or("all").to_lowercase();
 
     tracing::info!(
         "sync_favorites called for service '{}', type '{}'",
@@ -1307,10 +1465,10 @@ pub async fn sync_favorites(
         type_filter
     );
 
-    let (account_id, creds) = load_service_credentials(&state.db, &service_lower).await?;
+    let (account_id, creds) = load_service_credentials(db, &service_lower).await?;
     let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
         .bind(&service_lower)
-        .fetch_one(&state.db)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Service {} not registered: {}", service_lower, e))?;
 
@@ -1388,7 +1546,7 @@ pub async fn sync_favorites(
                     .bind(&album_name)
                     .bind(&isrc)
                     .bind(&favorited_at)
-                    .execute(&state.db)
+                    .execute(db)
                     .await;
 
                         if let Ok(r) = res {
@@ -1399,7 +1557,7 @@ pub async fn sync_favorites(
 
                         // F2-4: identidad canónica vía EnrichmentEngine
                         let _ = persist_favorite_track_via_engine(
-                            &state.db,
+                            db,
                             &enrichment_engine,
                             "tidal",
                             service_id,
@@ -1462,7 +1620,7 @@ pub async fn sync_favorites(
                     .bind(&upc)
                     .bind(&image_url)
                     .bind(&favorited_at)
-                    .execute(&state.db)
+                    .execute(db)
                     .await;
 
                     if let Ok(r) = res {
@@ -1473,7 +1631,7 @@ pub async fn sync_favorites(
 
                     // Canonical library album synchronization with UPC deduplication
                     let _ = upsert_canonical_favorite_album(
-                        &state.db,
+                        db,
                         service_id,
                         &album_id_str,
                         &title,
@@ -1513,7 +1671,7 @@ pub async fn sync_favorites(
                     .bind(&name)
                     .bind(&image_url)
                     .bind(&favorited_at)
-                    .execute(&state.db)
+                    .execute(db)
                     .await;
 
                     if let Ok(r) = res {
@@ -1523,13 +1681,8 @@ pub async fn sync_favorites(
                     }
 
                     // Canonical library artist synchronization
-                    let _ = upsert_canonical_favorite_artist(
-                        &state.db,
-                        service_id,
-                        &artist_id_str,
-                        &name,
-                    )
-                    .await;
+                    let _ = upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                        .await;
                 }
             }
         }
@@ -1604,7 +1757,7 @@ pub async fn sync_favorites(
                     .bind(&album_name)
                     .bind(&isrc)
                     .bind(&image_url)
-                    .execute(&state.db)
+                    .execute(db)
                     .await;
 
                         if let Ok(r) = res {
@@ -1615,7 +1768,7 @@ pub async fn sync_favorites(
 
                         // F2-4: identidad canónica vía EnrichmentEngine
                         let _ = persist_favorite_track_via_engine(
-                            &state.db,
+                            db,
                             &enrichment_engine,
                             "qobuz",
                             service_id,
@@ -1677,7 +1830,7 @@ pub async fn sync_favorites(
                     .bind(&title)
                     .bind(&upc)
                     .bind(&image_url)
-                    .execute(&state.db)
+                    .execute(db)
                     .await;
 
                     if let Ok(r) = res {
@@ -1688,7 +1841,7 @@ pub async fn sync_favorites(
 
                     // Canonical library album synchronization with UPC deduplication
                     let _ = upsert_canonical_favorite_album(
-                        &state.db,
+                        db,
                         service_id,
                         &album_id_str,
                         &title,
@@ -1721,7 +1874,7 @@ pub async fn sync_favorites(
                     .bind(&artist_id_str)
                     .bind(&name)
                     .bind(&name)
-                    .execute(&state.db)
+                    .execute(db)
                     .await;
 
                     if let Ok(r) = res {
@@ -1731,18 +1884,13 @@ pub async fn sync_favorites(
                     }
 
                     // Canonical library artist synchronization
-                    let _ = upsert_canonical_favorite_artist(
-                        &state.db,
-                        service_id,
-                        &artist_id_str,
-                        &name,
-                    )
-                    .await;
+                    let _ = upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                        .await;
                 }
             }
         }
         "spotify" => {
-            let access_token = get_or_refresh_spotify_token(&state.db, account_id, &creds).await?;
+            let access_token = get_or_refresh_spotify_token(db, account_id, &creds).await?;
             let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
             let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
             let client =
@@ -1805,7 +1953,7 @@ pub async fn sync_favorites(
                     .bind(&isrc)
                     .bind(&image_url)
                     .bind(&favorited_at)
-                    .execute(&state.db)
+                    .execute(db)
                     .await;
 
                         if let Ok(r) = res {
@@ -1816,7 +1964,7 @@ pub async fn sync_favorites(
 
                         // F2-4: identidad canónica vía EnrichmentEngine
                         let _ = persist_favorite_track_via_engine(
-                            &state.db,
+                            db,
                             &enrichment_engine,
                             "spotify",
                             service_id,
@@ -1875,7 +2023,7 @@ pub async fn sync_favorites(
                     .bind(&upc)
                     .bind(&image_url)
                     .bind(&favorited_at)
-                    .execute(&state.db)
+                    .execute(db)
                     .await;
 
                     if let Ok(r) = res {
@@ -1886,7 +2034,7 @@ pub async fn sync_favorites(
 
                     // Canonical library album synchronization with UPC deduplication
                     let _ = upsert_canonical_favorite_album(
-                        &state.db,
+                        db,
                         service_id,
                         &album_id_str,
                         &title,
@@ -1920,7 +2068,7 @@ pub async fn sync_favorites(
                     .bind(&artist_id_str)
                     .bind(&name)
                     .bind(&name)
-                    .execute(&state.db)
+                    .execute(db)
                     .await;
 
                     if let Ok(r) = res {
@@ -1930,13 +2078,547 @@ pub async fn sync_favorites(
                     }
 
                     // Canonical library artist synchronization
-                    let _ = upsert_canonical_favorite_artist(
-                        &state.db,
-                        service_id,
-                        &artist_id_str,
-                        &name,
-                    )
-                    .await;
+                    let _ = upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                        .await;
+                }
+            }
+        }
+        "deezer" => {
+            let arl = creds["arl"]
+                .as_str()
+                .or_else(|| creds["access_token"].as_str())
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .ok_or("Missing Deezer ARL in stored credentials")?;
+
+            let mut client = crate::services::DeezerClient::new(arl.to_string());
+            // `init()` resolves the user id and the api_token the write
+            // endpoints need; the read path still works with a stored user_id
+            // if the ARL has gone stale, so a failure here is not fatal.
+            if let Err(e) = client.init().await {
+                tracing::warn!("Deezer init failed during favorites sync: {}", e);
+            }
+            let user_id = client
+                .user_id()
+                .or_else(|| creds["user_id"].as_str().map(|s| s.to_string()))
+                .ok_or("Deezer User ID not found. Please re-login.")?;
+
+            const DEEZER_PAGE: i32 = 100;
+
+            if type_filter == "all" || type_filter == "tracks" {
+                let mut offset: i32 = 0;
+                loop {
+                    let (page, total) = client
+                        .get_favorites_public(&user_id, offset, DEEZER_PAGE)
+                        .await?;
+                    // Deezer repeats the library total on every page: assign it
+                    // rather than accumulating, so `total_found` stays the
+                    // count the provider reports.
+                    total_found = total as i64;
+                    let items_len = page.len() as i32;
+
+                    for track in page {
+                        let track_id_str = track.id.clone();
+                        let title = track.title.clone();
+                        let artist_name = track
+                            .artist_name
+                            .clone()
+                            .filter(|a| !a.trim().is_empty())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        let album_name = track.album_title.clone();
+                        let isrc = track.isrc.clone();
+                        let duration_ms = track.duration.parse::<i64>().ok().filter(|d| *d > 0);
+
+                        let favorited_at: Option<String> = None;
+
+                        let res = sqlx::query(
+                            r#"
+                            INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, isrc, favorited_at)
+                            VALUES (?, ?, 'track', ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(account_id, item_type, service_item_id) DO UPDATE SET
+                                title = excluded.title,
+                                artist_name = excluded.artist_name,
+                                album_name = excluded.album_name,
+                                isrc = COALESCE(excluded.isrc, favorites.isrc),
+                                favorited_at = COALESCE(excluded.favorited_at, favorites.favorited_at)
+                            "#,
+                        )
+                        .bind(account_id)
+                        .bind(service_id)
+                        .bind(&track_id_str)
+                        .bind(&title)
+                        .bind(&artist_name)
+                        .bind(&album_name)
+                        .bind(&isrc)
+                        .bind(&favorited_at)
+                        .execute(db)
+                        .await;
+
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
+                        }
+
+                        let _ = persist_favorite_track_via_engine(
+                            db,
+                            &enrichment_engine,
+                            "deezer",
+                            service_id,
+                            account_id,
+                            &track_id_str,
+                            &title,
+                            &artist_name,
+                            album_name,
+                            isrc,
+                            duration_ms.map(|s| s * 1000),
+                        )
+                        .await;
+                    }
+
+                    match crate::services::import_pagination::next_offset(
+                        offset,
+                        items_len,
+                        DEEZER_PAGE,
+                        Some(total as i64),
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
+                }
+            }
+
+            if type_filter == "all" || type_filter == "albums" {
+                let mut index: i32 = 0;
+                loop {
+                    let (page, total) = client
+                        .get_user_albums_public(&user_id, index, DEEZER_PAGE)
+                        .await?;
+                    total_found += total;
+                    let items_len = page.len() as i32;
+                    for album in page {
+                        let album_id_str = album.id.clone();
+                        let title = album.title.clone();
+                        let artist_name = album
+                            .artist_name
+                            .clone()
+                            .filter(|a| !a.trim().is_empty())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        let image_url = album.cover.clone();
+                        let favorited_at: Option<String> = None;
+
+                        let res = sqlx::query(
+                            r#"
+                            INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, image_url, favorited_at)
+                            VALUES (?, ?, 'album', ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(account_id, item_type, service_item_id) DO UPDATE SET
+                                title = excluded.title,
+                                artist_name = excluded.artist_name,
+                                image_url = COALESCE(excluded.image_url, favorites.image_url),
+                                favorited_at = COALESCE(excluded.favorited_at, favorites.favorited_at)
+                            "#,
+                        )
+                        .bind(account_id)
+                        .bind(service_id)
+                        .bind(&album_id_str)
+                        .bind(&title)
+                        .bind(&artist_name)
+                        .bind(&title)
+                        .bind(&image_url)
+                        .bind(&favorited_at)
+                        .execute(db)
+                        .await;
+
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
+                        }
+
+                        let _ = upsert_canonical_favorite_album(
+                            db,
+                            service_id,
+                            &album_id_str,
+                            &title,
+                            &artist_name,
+                            None,
+                            image_url.as_deref(),
+                        )
+                        .await;
+                    }
+
+                    match crate::services::import_pagination::next_offset(
+                        index,
+                        items_len,
+                        DEEZER_PAGE,
+                        Some(total),
+                    ) {
+                        Some(next) => index = next,
+                        None => break,
+                    }
+                }
+            }
+
+            if type_filter == "all" || type_filter == "artists" {
+                let mut index: i32 = 0;
+                loop {
+                    let (page, total) = client
+                        .get_user_artists_public(&user_id, index, DEEZER_PAGE)
+                        .await?;
+                    total_found += total;
+                    let items_len = page.len() as i32;
+                    for (artist_id_str, name) in page {
+                        let image_url: Option<String> = None;
+                        let favorited_at: Option<String> = None;
+
+                        let res = sqlx::query(
+                            r#"
+                            INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, image_url, favorited_at)
+                            VALUES (?, ?, 'artist', ?, ?, ?, ?, ?)
+                            ON CONFLICT(account_id, item_type, service_item_id) DO UPDATE SET
+                                title = excluded.title,
+                                artist_name = excluded.artist_name,
+                                image_url = COALESCE(excluded.image_url, favorites.image_url),
+                                favorited_at = COALESCE(excluded.favorited_at, favorites.favorited_at)
+                            "#,
+                        )
+                        .bind(account_id)
+                        .bind(service_id)
+                        .bind(&artist_id_str)
+                        .bind(&name)
+                        .bind(&name)
+                        .bind(&image_url)
+                        .bind(&favorited_at)
+                        .execute(db)
+                        .await;
+
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
+                        }
+
+                        let _ =
+                            upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                                .await;
+                    }
+
+                    match crate::services::import_pagination::next_offset(
+                        index,
+                        items_len,
+                        DEEZER_PAGE,
+                        Some(total),
+                    ) {
+                        Some(next) => index = next,
+                        None => break,
+                    }
+                }
+            }
+        }
+        "soundcloud" => {
+            let oauth_token = creds["oauth_token"]
+                .as_str()
+                .or_else(|| creds["access_token"].as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .ok_or("Missing SoundCloud OAuth token in stored credentials")?;
+            let user_id = creds["user_id"]
+                .as_i64()
+                .or_else(|| creds["user"]["id"].as_i64())
+                .ok_or("Missing SoundCloud user_id in stored credentials")?;
+
+            let client = crate::services::SoundCloudClient::new(oauth_token.to_string())
+                .with_user_id(user_id);
+
+            if type_filter == "all" || type_filter == "tracks" {
+                // SoundCloud exposes exactly one liked collection (tracks), so
+                // there is nothing to fetch for the albums/artists filters.
+                let mut next: Option<String> = None;
+                loop {
+                    let page = client.get_likes(next.as_deref()).await?;
+                    let items_len = page.collection.len() as i32;
+                    total_found += items_len as i64;
+                    let has_next = page.next_href.is_some();
+
+                    for like in page.collection {
+                        let track_id_str = match like.track.as_ref() {
+                            Some(t) => t.id.to_string(),
+                            None => continue,
+                        };
+                        let track = like.track.expect("checked above");
+                        let title = track.title.clone();
+                        let duration_ms = (track.duration > 0).then_some(track.duration);
+                        if track.duration <= 0
+                            && crate::services::import_pagination::is_placeholder_title(&title)
+                        {
+                            tracing::warn!(
+                                "Skipping ghost/placeholder SoundCloud track '{}' ({})",
+                                title,
+                                track_id_str
+                            );
+                            continue;
+                        }
+                        // Mismo criterio de atribución que el import: el sello
+                        // cuando existe, la cuenta que subió el audio si no.
+                        let artist_name = track
+                            .attributed_artist()
+                            .map(str::trim)
+                            .filter(|a| !a.is_empty())
+                            .unwrap_or("Unknown Artist")
+                            .to_string();
+                        let album_name = track.album_title().map(|a| a.to_string());
+                        let isrc = track.isrc().map(|i| i.to_string());
+                        let image_url = track.cover_art_url();
+                        let favorited_at = like.created_at.clone();
+
+                        let res = sqlx::query(
+                            r#"
+                            INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, isrc, image_url, favorited_at)
+                            VALUES (?, ?, 'track', ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(account_id, item_type, service_item_id) DO UPDATE SET
+                                title = excluded.title,
+                                artist_name = excluded.artist_name,
+                                album_name = excluded.album_name,
+                                isrc = COALESCE(excluded.isrc, favorites.isrc),
+                                image_url = COALESCE(excluded.image_url, favorites.image_url),
+                                favorited_at = excluded.favorited_at
+                            "#,
+                        )
+                        .bind(account_id)
+                        .bind(service_id)
+                        .bind(&track_id_str)
+                        .bind(&title)
+                        .bind(&artist_name)
+                        .bind(&album_name)
+                        .bind(&isrc)
+                        .bind(&image_url)
+                        .bind(&favorited_at)
+                        .execute(db)
+                        .await;
+
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
+                        }
+
+                        let _ = persist_favorite_track_via_engine(
+                            db,
+                            &enrichment_engine,
+                            "soundcloud",
+                            service_id,
+                            account_id,
+                            &track_id_str,
+                            &title,
+                            &artist_name,
+                            album_name,
+                            isrc,
+                            duration_ms,
+                        )
+                        .await;
+                    }
+
+                    if !has_next {
+                        break;
+                    }
+                    next = page.next_href;
+                }
+            } else {
+                tracing::warn!(
+                    "SoundCloud only exposes liked tracks: ignoring fav_type '{}'",
+                    type_filter
+                );
+            }
+        }
+        "apple_music" => {
+            let developer_token = creds["developer_token"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .ok_or("Missing Apple Music developer_token in stored credentials")?;
+            let music_user_token = creds["music_user_token"]
+                .as_str()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .ok_or("Missing Apple Music music_user_token in stored credentials")?;
+
+            let client = crate::services::AppleMusicClient::from_credentials(
+                developer_token.to_string(),
+                music_user_token.to_string(),
+                &creds,
+            );
+
+            if type_filter == "all" || type_filter == "tracks" {
+                let mut offset: i32 = 0;
+                loop {
+                    let page = client
+                        .get_library_songs(offset, APPLE_MUSIC_FAV_PAGE)
+                        .await?;
+                    let items = page.data.clone().unwrap_or_default();
+                    let items_len = items.len() as i32;
+                    if let Some(meta) = &page.meta {
+                        if let Some(total) = meta.total {
+                            total_found = total;
+                        }
+                    }
+                    let next_url = page.next.clone();
+
+                    for track in items {
+                        let attrs = track.attributes.clone().unwrap_or_default();
+                        let track_id_str = track.id.clone();
+                        let title = attrs.name.clone();
+                        let duration_ms = attrs.duration_in_millis.filter(|d| *d > 0);
+                        if attrs.duration_in_millis.unwrap_or(0) <= 0
+                            && crate::services::import_pagination::is_placeholder_title(&title)
+                        {
+                            tracing::warn!(
+                                "Skipping ghost/placeholder Apple Music track '{}' ({})",
+                                title,
+                                track_id_str
+                            );
+                            continue;
+                        }
+                        let artist_name = if attrs.artist_name.trim().is_empty() {
+                            "Unknown Artist".to_string()
+                        } else {
+                            attrs.artist_name.clone()
+                        };
+                        let album_name = attrs.album_name.clone();
+                        let isrc = attrs.isrc.clone();
+                        let favorited_at = attrs.date_added.clone();
+
+                        let res = sqlx::query(
+                            r#"
+                            INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, isrc, favorited_at)
+                            VALUES (?, ?, 'track', ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(account_id, item_type, service_item_id) DO UPDATE SET
+                                title = excluded.title,
+                                artist_name = excluded.artist_name,
+                                album_name = excluded.album_name,
+                                isrc = COALESCE(excluded.isrc, favorites.isrc),
+                                favorited_at = excluded.favorited_at
+                            "#,
+                        )
+                        .bind(account_id)
+                        .bind(service_id)
+                        .bind(&track_id_str)
+                        .bind(&title)
+                        .bind(&artist_name)
+                        .bind(&album_name)
+                        .bind(&isrc)
+                        .bind(&favorited_at)
+                        .execute(db)
+                        .await;
+
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
+                        }
+
+                        let _ = persist_favorite_track_via_engine(
+                            db,
+                            &enrichment_engine,
+                            "apple_music",
+                            service_id,
+                            account_id,
+                            &track_id_str,
+                            &title,
+                            &artist_name,
+                            album_name,
+                            isrc,
+                            duration_ms,
+                        )
+                        .await;
+                    }
+
+                    let total = page.meta.as_ref().and_then(|m| m.total);
+                    match crate::services::import_pagination::next_apple_music_offset(
+                        offset,
+                        items_len,
+                        APPLE_MUSIC_FAV_PAGE,
+                        next_url.as_deref(),
+                        total,
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
+                }
+            }
+
+            if type_filter == "all" || type_filter == "albums" {
+                let mut offset: i32 = 0;
+                loop {
+                    let page = client
+                        .get_library_albums(offset, APPLE_MUSIC_FAV_PAGE)
+                        .await?;
+                    let albums = page.data.clone().unwrap_or_default();
+                    let items_len = albums.len() as i32;
+                    let total = page.meta.as_ref().and_then(|m| m.total);
+                    let next_url = page.next.clone();
+
+                    for album in albums {
+                        let attrs = album.attributes.clone().unwrap_or_default();
+                        let album_id_str = album.id.clone();
+                        let title = attrs.name.clone();
+                        let artist_name = if attrs.artist_name.trim().is_empty() {
+                            "Unknown Artist".to_string()
+                        } else {
+                            attrs.artist_name.clone()
+                        };
+                        let upc = attrs.upc.clone();
+                        let favorited_at = attrs.date_added.clone();
+
+                        let res = sqlx::query(
+                            r#"
+                            INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, upc, favorited_at)
+                            VALUES (?, ?, 'album', ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(account_id, item_type, service_item_id) DO UPDATE SET
+                                title = excluded.title,
+                                artist_name = excluded.artist_name,
+                                upc = COALESCE(excluded.upc, favorites.upc),
+                                favorited_at = COALESCE(excluded.favorited_at, favorites.favorited_at)
+                            "#,
+                        )
+                        .bind(account_id)
+                        .bind(service_id)
+                        .bind(&album_id_str)
+                        .bind(&title)
+                        .bind(&artist_name)
+                        .bind(&title)
+                        .bind(&upc)
+                        .bind(&favorited_at)
+                        .execute(db)
+                        .await;
+
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
+                        }
+
+                        let _ = upsert_canonical_favorite_album(
+                            db,
+                            service_id,
+                            &album_id_str,
+                            &title,
+                            &artist_name,
+                            upc.as_deref(),
+                            None,
+                        )
+                        .await;
+                    }
+
+                    match crate::services::import_pagination::next_apple_music_offset(
+                        offset,
+                        items_len,
+                        APPLE_MUSIC_FAV_PAGE,
+                        next_url.as_deref(),
+                        total,
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
                 }
             }
         }
@@ -1961,18 +2643,8 @@ pub async fn sync_favorites(
     .bind(&service_lower)
     .bind(&type_filter)
     .bind(total_found)
-    .execute(&state.db)
+    .execute(db)
     .await;
-
-    let _ = window.emit(
-        "syncify:favorites_sync_completed",
-        serde_json::json!({
-            "service": service_lower,
-            "item_type": type_filter,
-            "total": total_found,
-            "imported": imported
-        }),
-    );
 
     Ok(FavoritesSyncResult {
         service: service_lower,

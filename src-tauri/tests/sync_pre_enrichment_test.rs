@@ -149,7 +149,11 @@ async fn test_sync_pre_enrichment_persists_track_album_artist_credits_metadata()
     assert_eq!(album_title, "Heroes (2017 Remaster)");
     assert_eq!(album_label.as_deref(), Some("Parlophone UK"));
     assert_eq!(album_upc.as_deref(), Some("0035629007421"));
-    assert_eq!(total_tracks, Some(10));
+    // The declared track_total (10) is written at album upsert, but the 0085
+    // trigger trg_tracks_sync_album_total_tracks_ins (BD-12) immediately
+    // recounts non-stub albums to their real local track count — a single-track
+    // import of a 10-track album holds exactly 1 local row.
+    assert_eq!(total_tracks, Some(1));
 
     // 5. Verify Tracks Table
     let (title, isrc, year, audio_quality, enrichment_status): (String, Option<String>, Option<i32>, Option<String>, String) =

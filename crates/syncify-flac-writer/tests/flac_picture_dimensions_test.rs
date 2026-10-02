@@ -10,9 +10,7 @@
 use metaflac::block::PictureType;
 use metaflac::Tag;
 use std::path::Path;
-use syncify_flac_writer::{
-    apply_flac_tags, extract_image_dimensions, write_flac_metadata, FlacMetadata, FlacTagExt,
-};
+use syncify_flac_writer::{apply_flac_tags, extract_image_dimensions, FlacMetadata};
 
 fn create_synthetic_png(width: u32, height: u32) -> Vec<u8> {
     let mut data = Vec::new();
@@ -223,7 +221,7 @@ fn test_extract_dimensions_fallbacks() {
 }
 
 #[test]
-fn test_write_flac_metadata_populates_picture_dimensions() {
+fn test_apply_flac_tags_populates_picture_dimensions() {
     let dir = tempfile::tempdir().expect("tempdir");
     let flac_path = dir.path().join("flac_dims_test.flac");
     create_synthetic_flac(&flac_path);
@@ -238,7 +236,7 @@ fn test_write_flac_metadata_populates_picture_dimensions() {
         ..Default::default()
     };
 
-    write_flac_metadata(&flac_path, &meta).expect("write_flac_metadata must succeed");
+    apply_flac_tags(&flac_path, &meta).expect("apply_flac_tags must succeed");
 
     let read_tag = Tag::read_from_path(&flac_path).expect("read FLAC tags");
     let pictures: Vec<_> = read_tag.pictures().collect();
@@ -369,29 +367,11 @@ fn test_heal_preexisting_flac_picture_dimensions_without_incoming_cover() {
         cover_data: None,
         ..Default::default()
     };
-    write_flac_metadata(&flac_path, &meta).expect("write_flac_metadata");
+    apply_flac_tags(&flac_path, &meta).expect("apply_flac_tags");
 
     // Verify healed
     let read_tag = Tag::read_from_path(&flac_path).expect("read flac");
     let pic = read_tag.pictures().next().expect("picture block");
     assert_eq!(pic.width, 640);
     assert_eq!(pic.height, 480);
-}
-
-#[test]
-fn test_flac_tag_ext_add_picture_with_dimensions() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let flac_path = dir.path().join("ext_tag_test.flac");
-    create_synthetic_flac(&flac_path);
-
-    let jpeg_bytes = create_synthetic_jpeg_sof0(1200, 800);
-
-    let mut tag = Tag::read_from_path(&flac_path).expect("read flac");
-    tag.add_picture_with_dimensions("image/jpeg", PictureType::CoverFront, jpeg_bytes);
-    tag.write_to_path(&flac_path).expect("write flac");
-
-    let read_tag = Tag::read_from_path(&flac_path).expect("read flac");
-    let pic = read_tag.pictures().next().expect("picture block");
-    assert_eq!(pic.width, 1200);
-    assert_eq!(pic.height, 800);
 }

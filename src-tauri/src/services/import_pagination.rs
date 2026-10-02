@@ -223,14 +223,14 @@ mod cursor_tests {
 pub const PREVIEW_DURATION_THRESHOLD_MS: i64 = 30_000;
 
 /// Return whether the given duration in milliseconds represents a preview track (< 30s and > 0s).
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierto por el test unitario `preview_stub_tests` de este módulo.
 pub fn is_preview_duration(duration_ms: i64) -> bool {
     duration_ms > 0 && duration_ms < PREVIEW_DURATION_THRESHOLD_MS
 }
 
 /// Evaluation outcome for track duration during catalog ingestion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierto por el test unitario `preview_stub_tests` de este módulo.
 pub enum TrackDurationClassification {
     /// Valid full track (>= 30 seconds)
     FullTrack,
@@ -241,7 +241,7 @@ pub enum TrackDurationClassification {
 }
 
 /// Classify track duration for ingestion decisions.
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierto por el test unitario `preview_stub_tests` de este módulo.
 pub fn classify_track_duration(duration_ms: Option<i64>) -> TrackDurationClassification {
     match duration_ms {
         Some(d) if d >= PREVIEW_DURATION_THRESHOLD_MS => TrackDurationClassification::FullTrack,
@@ -251,7 +251,6 @@ pub fn classify_track_duration(duration_ms: Option<i64>) -> TrackDurationClassif
 }
 
 /// Check if a title matches known junk or placeholder patterns.
-#[allow(dead_code)]
 pub fn is_placeholder_title(title: &str) -> bool {
     let t = title.trim().to_lowercase();
     if t.is_empty() {
@@ -294,7 +293,7 @@ pub fn is_placeholder_title(title: &str) -> bool {
 /// * `reject_previews` — if true, preview tracks will return an `Err`.
 ///
 /// Returns `Ok(is_preview)` where `is_preview` is true if duration < 30s.
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierto por el test unitario `preview_stub_tests` de este módulo.
 pub fn evaluate_track_ingest_preview(
     duration_ms: Option<i64>,
     reject_previews: bool,

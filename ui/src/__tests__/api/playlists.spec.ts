@@ -7,7 +7,6 @@ import {
     getPlaylists,
     getPlaylistTracks,
     syncPlaylists,
-    syncPlaylist,
     searchPlaylists,
     createPlaylist,
     addTracksToPlaylist,
@@ -44,15 +43,6 @@ describe('playlists_handles_missing_fields_test', () => {
         expect(partial.playlists_synced).toBe(2);
         expect(partial.tracks_linked).toBe(0);
         expect(partial.message).toBe('');
-    });
-
-    it('normalizes sync_playlist ImportResult on partial payload', async () => {
-        mockInvoke((cmd) => (cmd === 'sync_playlist' ? null : null));
-
-        const res = await syncPlaylist(9);
-        expect(res.imported).toBe(0);
-        expect(res.skipped).toBe(0);
-        expect(res.errors).toEqual([]);
     });
 
     it('searchPlaylists filters playlists by query matching name or description', async () => {

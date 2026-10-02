@@ -314,6 +314,14 @@
                 <span class="material-symbols-outlined text-[16px]">delete</span>
                 Clear Failed
               </button>
+              <button
+                @click="clearHistory"
+                :disabled="isProcessing"
+                class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors disabled:opacity-50"
+              >
+                <span class="material-symbols-outlined text-[16px] text-gray-400">history</span>
+                Clear History
+              </button>
               <div class="h-px bg-gray-200 dark:bg-border-dark my-1"></div>
               <button 
                 @click="showSettingsPanel = true" 
@@ -1118,7 +1126,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { queueApi, classifyFailureReason, type FailureInfo, type FailureReason } from '@/api/queue'
@@ -1245,6 +1253,7 @@ export interface DownloadProgressPayload {
 export type DownloadProgressEventPayload = DownloadProgressPayload & Partial<ProgressEvent>
 
 const router = useRouter()
+const route = useRoute()
 
 // Phase timings & details expansion state
 const expandedItemDetails = ref<Set<number>>(new Set())
@@ -2108,6 +2117,24 @@ async function clearFailed() {
   }
 }
 
+async function clearHistory() {
+  const confirmed = await confirm('Clear all finished downloads (completed, failed and cancelled)?', {
+    title: 'Clear Download History',
+    kind: 'warning'
+  })
+  if (confirmed !== true) return
+
+  isProcessing.value = true
+  try {
+    const cleared = await queueApi.clearDownloadHistory()
+    lastProgressTimestamps.clear()
+    await fetchData()
+    toast.success(`Cleared ${cleared} history entries`)
+  } finally {
+    isProcessing.value = false
+  }
+}
+
 async function cancelItem(id: number) {
   const confirmed = await confirm('Cancel this download?', {
     title: 'Cancel Download',
@@ -2216,6 +2243,13 @@ let unlistenProgress: (() => void) | null = null
 
 // Initialize
 onMounted(async () => {
+  // FE-10: consume the /downloads?filter=failed deep-link (DashboardView
+  // "Go to failed downloads") by selecting the matching view filter.
+  // Optional chaining: the view can render without a router context (tests).
+  if (route?.query?.filter === 'failed') {
+    viewFilter.value = 'failed'
+  }
+
   await loadDownloadSettings()
   await fetchData()
   unlistenProgress = await on<DownloadProgressEventPayload>(TauriEvents.DOWNLOAD_PROGRESS, handleProgressEvent)

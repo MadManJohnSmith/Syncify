@@ -253,16 +253,17 @@
           @click.stop
         >
           <!-- Play actions -->
-          <button class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button @click="handlePlayNow(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
             <span class="material-symbols-outlined text-[16px]">play_arrow</span>
             <span class="flex-1 text-left">Play Now</span>
             <span class="text-[10px] text-gray-500">Space</span>
           </button>
-          <button class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button @click="handlePlayNext(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
             <span class="material-symbols-outlined text-[16px]">queue_play_next</span>
             <span class="flex-1 text-left">Play Next</span>
+            <span class="text-[10px] text-gray-500">N</span>
           </button>
-          <button class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button @click="handleAddToQueue(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
             <span class="material-symbols-outlined text-[16px]">playlist_add</span>
             <span class="flex-1 text-left">Add to Queue</span>
             <span class="text-[10px] text-gray-500">Q</span>
@@ -1049,6 +1050,12 @@ const filterPills = [
 
 const activeFilters = ref(['all'])
 
+// FE-10: dashboard deep-link /library?filter=quality&quality=<bucket label>.
+// The bucket label comes from get_audio_quality_distribution ('Hi-Res
+// (24-bit+)', 'CD Quality', 'Lossy') and is matched against the
+// quality_bucket the backend computes per track.
+const qualityFilter = ref('')
+
 const sortOptions = [
   { value: 'title', label: 'Title' },
   { value: 'artist', label: 'Artist' },
@@ -1210,6 +1217,7 @@ interface Track {
   availableServices: string[]
   availabilitySummary: string | null
   quality: string
+  qualityBucket?: string | null
   downloadStatus: 'downloaded' | 'queued' | 'not_downloaded'
   metadataScore?: number
   lyricsType: LyricsType
@@ -1276,6 +1284,7 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     availableServices: availableList,
     availabilitySummary: item.availability_summary || null,
     quality: item.quality || '—',
+    qualityBucket: item.quality_bucket ?? null,
     downloadStatus: (item.download_status ?? 'not_downloaded') as Track['downloadStatus'],
     metadataScore: item.metadata_score ?? 0,
     lyricsType: (item.lyrics_type ?? 'none') as Track['lyricsType'],
@@ -1478,7 +1487,7 @@ function handleTrackClick(track: Track) {
   selectedCount.value = tracks.value.filter(t => t.isSelected).length;
 }
 
-const { play } = usePlayer();
+const { play, playNext, toggle: togglePlayback, current: playerCurrent } = usePlayer();
 
 // S194 residual: double-click plays the LOCAL downloaded file through the
 // syncify-media protocol. Tracks without a local file surface the backend's
@@ -1495,6 +1504,39 @@ async function handleTrackPlay(track: Track) {
   } catch {
     // player.error already carries the message for the NowPlayingBar
   }
+}
+
+// FE-9: context-menu playback actions wired to the real player.
+function handlePlayNow(track: Track) {
+  closeContextMenu();
+  void handleTrackPlay(track);
+}
+
+async function handlePlayNext(track: Track) {
+  closeContextMenu();
+  try {
+    const outcome = await playNext({
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album ?? null,
+      coverUrl: track.coverUrl ?? null,
+    });
+    if (outcome === 'started') {
+      toast.success(`Now playing "${track.title}"`);
+    } else {
+      toast.success('Playing Next', `"${track.title}" will play next`);
+    }
+  } catch {
+    // player.error already carries the message for the NowPlayingBar
+  }
+}
+
+// "Add to Queue" enqueues the track into the download queue, the app-wide
+// meaning of the queue (QueueView / DownloadsView), same as the D shortcut.
+async function handleAddToQueue(track: Track) {
+  closeContextMenu();
+  await handleDownload(track);
 }
 
 async function handleDownload(track: Track) {
@@ -1895,6 +1937,15 @@ const filteredTracks = computed(() => {
   if (activeFilters.value.includes('favorites')) {
     trackList = trackList.filter(t => t.isFavorite)
   }
+  if (activeFilters.value.includes('quality')) {
+    // FE-10: deep-link quality filter. Tracks carry the backend-computed
+    // bucket; tracks without one fall back to an exact quality-string match.
+    trackList = trackList.filter(t => {
+      if (!qualityFilter.value) return true
+      if (t.qualityBucket) return t.qualityBucket === qualityFilter.value
+      return !!t.quality && t.quality !== '—' && t.quality.toUpperCase() === qualityFilter.value.toUpperCase()
+    })
+  }
   
   // Sorting
   trackList = [...trackList].sort((a, b) => {
@@ -2113,14 +2164,27 @@ function removeFilter(filterId: string) {
 }
 
 function getFilterLabel(filterId: string) {
+  if (filterId === 'quality') {
+    return qualityFilter.value ? `Quality: ${qualityFilter.value}` : 'Quality'
+  }
   return filterPills.find(f => f.id === filterId)?.label || filterId
 }
 
 function clearAllFilters() {
   activeFilters.value = ['all']
+  qualityFilter.value = ''
   searchQuery.value = ''
   loadLibrary()
 }
+
+// Keep the deep-link value in sync with the chip: whenever the 'quality'
+// filter leaves activeFilters (chip removed, clear all, switch to All), the
+// bucket value is dropped too.
+watch(() => activeFilters.value.includes('quality'), (hasQuality) => {
+  if (!hasQuality) {
+    qualityFilter.value = ''
+  }
+})
 
 function handleKeydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement
@@ -2134,12 +2198,33 @@ function handleKeydown(event: KeyboardEvent) {
     } else if (contextMenu.value.track) {
       handleDownload(contextMenu.value.track)
     }
+  } else if (event.key === 'q' || event.key === 'Q') {
+    // FE-9: "Add to Queue" — same enqueue path as D (download queue).
+    if (selectedCount.value > 0) {
+      downloadSelectedTracks()
+    } else if (contextMenu.value.track) {
+      void handleAddToQueue(contextMenu.value.track)
+    }
+  } else if (event.key === 'n' || event.key === 'N') {
+    // FE-9: "Play Next" on the context track or the first selected track.
+    const nextTarget = contextMenu.value.track ?? tracks.value.find(t => t.isSelected)
+    if (nextTarget) void handlePlayNext(nextTarget)
   } else if (event.key === 'f' || event.key === 'F') {
     if (contextMenu.value.track) {
       handleToggleFavorite(contextMenu.value.track)
     } else {
       const selected = tracks.value.find(t => t.isSelected)
       if (selected) handleToggleFavorite(selected)
+    }
+  } else if (event.key === ' ' || event.code === 'Space') {
+    // FE-9: Space = Play/Pause as announced by the context menu and the
+    // shortcuts modal. With the menu open on an idle player it starts that
+    // track ("Play Now"); otherwise it toggles the current playback.
+    event.preventDefault()
+    if (contextMenu.value.visible && contextMenu.value.track && !playerCurrent.value) {
+      void handleTrackPlay(contextMenu.value.track)
+    } else {
+      togglePlayback()
     }
   } else if (event.key === 'Escape') {
     clearSelection()
@@ -2157,7 +2242,15 @@ onMounted(async () => {
   window.addEventListener('keydown', handleKeydown)
   
   const filterParam = route?.query?.filter as string
-  if (filterParam === 'duplicates') {
+  if (filterParam === 'quality') {
+    // FE-10: consume the quality deep-link (DashboardView quality cards):
+    // /library?filter=quality&quality=Hi-Res%20(24-bit%2B)
+    const qualityParam = route?.query?.quality
+    qualityFilter.value = typeof qualityParam === 'string' && qualityParam ? qualityParam : ''
+    if (qualityFilter.value) {
+      activeFilters.value = ['quality']
+    }
+  } else if (filterParam === 'duplicates') {
     activeFilters.value = ['duplicates']
   } else if (filterParam) {
     activeFilters.value = [filterParam]

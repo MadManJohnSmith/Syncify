@@ -56,6 +56,52 @@ impl FormatId {
             FormatId::HiResLossless => 27,
         }
     }
+
+    /// Qobuz `format_id` request parameter for this tier, as it goes on the wire.
+    ///
+    /// Single source of truth for the numeric mapping: `qobuz_id` and this method
+    /// are asserted to agree for every variant (see `test_format_id_qobuz_wire_forms_agree`).
+    pub fn qobuz_format_id(&self) -> &'static str {
+        match self {
+            FormatId::Mp3_320 => "5",
+            FormatId::LosslessCd => "6",
+            FormatId::HiRes96 => "7",
+            FormatId::HiResLossless => "27",
+        }
+    }
+
+    /// Parses a canonical Qobuz quality token into a format tier.
+    ///
+    /// Accepts both the human tokens the queue/pipeline carry (`"24-192"`,
+    /// `"HI_RES_LOSSLESS"`, `"16-44.1"`, `"320KBPS"`, …) and the numeric Qobuz
+    /// `format_id` values themselves. Returns `None` for anything else, so each
+    /// caller keeps applying its own default instead of silently getting a tier.
+    pub fn from_qobuz_quality_token(token: &str) -> Option<Self> {
+        match token.trim().to_uppercase().as_str() {
+            "27" | "HI_RES_LOSSLESS" | "24-192" | "24/192" => Some(FormatId::HiResLossless),
+            "7" | "HI_RES" | "HIRES" | "24-96" | "24/96" => Some(FormatId::HiRes96),
+            "6" | "LOSSLESS" | "16-44" | "16/44" | "16-44.1" | "16/44.1" => {
+                Some(FormatId::LosslessCd)
+            }
+            "5" | "MP3" | "320" | "320KBPS" | "HIGH" => Some(FormatId::Mp3_320),
+            _ => None,
+        }
+    }
+
+    /// Downgrade cascade for this tier as Qobuz `format_id` request parameters,
+    /// best quality first. Lossless tiers never include `Mp3_320` unless
+    /// `allow_lossy_fallback` is set; `Mp3_320` is always the last resort.
+    pub fn qobuz_cascade(&self, allow_lossy_fallback: bool) -> &'static [&'static str] {
+        match (self, allow_lossy_fallback) {
+            (FormatId::HiResLossless, true) => &["27", "7", "6", "5"],
+            (FormatId::HiResLossless, false) => &["27", "7", "6"],
+            (FormatId::HiRes96, true) => &["7", "6", "5"],
+            (FormatId::HiRes96, false) => &["7", "6"],
+            (FormatId::LosslessCd, true) => &["6", "5"],
+            (FormatId::LosslessCd, false) => &["6"],
+            (FormatId::Mp3_320, _) => &["5"],
+        }
+    }
 }
 
 /// Canonical audio tier classification.
@@ -813,10 +859,19 @@ impl AudioLoudnessMetrics {
         standard.target_lufs() - self.integrated_lufs
     }
 
+    /// Format the gain delta toward an explicit reference loudness in standard
+    /// ReplayGain format ("-X.XX dB").
+    ///
+    /// This is the primitive both `format_replaygain_track_gain` and callers with
+    /// a caller-chosen reference loudness go through, so the tag string is produced
+    /// in exactly one place.
+    pub fn format_replaygain_gain_for_target(&self, target_lufs: f64) -> String {
+        format!("{:+.2} dB", target_lufs - self.integrated_lufs)
+    }
+
     /// Format gain in standard ReplayGain format ("-X.XX dB")
     pub fn format_replaygain_track_gain(&self) -> String {
-        let gain = self.calculate_gain_delta(LoudnessStandard::ReplayGain2);
-        format!("{:+.2} dB", gain)
+        self.format_replaygain_gain_for_target(LoudnessStandard::ReplayGain2.target_lufs())
     }
 
     /// Format gain in EBU R128 format ("-X.XX LU")
@@ -825,10 +880,21 @@ impl AudioLoudnessMetrics {
         format!("{:+.2} LU", gain)
     }
 
+    /// True peak as a linear ratio clamped to `[0, 1]`.
+    ///
+    /// `-inf` (digital silence) maps to `0.0` and a `NaN` reading — which carries
+    /// no measurement at all — also maps to `0.0` rather than propagating into the
+    /// tag as `NaN`.
+    pub fn replaygain_peak_ratio(&self) -> f64 {
+        if self.true_peak_dbfs.is_nan() {
+            return 0.0;
+        }
+        10.0_f64.powf(self.true_peak_dbfs / 20.0).clamp(0.0, 1.0)
+    }
+
     /// Format true peak as standard ReplayGain ratio string ("0.XXXXXX")
     pub fn format_replaygain_track_peak(&self) -> String {
-        let peak_linear = 10.0_f64.powf(self.true_peak_dbfs / 20.0);
-        format!("{:.6}", peak_linear.clamp(0.0, 1.0))
+        format!("{:.6}", self.replaygain_peak_ratio())
     }
 }
 
@@ -919,6 +985,164 @@ mod tests {
         // Peak linear ratio
         let peak_str = metrics.format_replaygain_track_peak();
         assert!(!peak_str.is_empty());
+    }
+
+    #[test]
+    fn test_replaygain_gain_for_custom_target() {
+        let metrics = AudioLoudnessMetrics {
+            integrated_lufs: -11.5,
+            true_peak_dbfs: -0.1,
+            loudness_range_lu: 6.2,
+        };
+
+        // The ReplayGain 2.0 reference loudness is the default target.
+        assert_eq!(
+            metrics.format_replaygain_gain_for_target(LoudnessStandard::ReplayGain2.target_lufs()),
+            metrics.format_replaygain_track_gain()
+        );
+        // A caller-chosen reference loudness is honoured instead of forced to -18.
+        assert_eq!(metrics.format_replaygain_gain_for_target(-14.0), "-2.50 dB");
+        assert_eq!(
+            metrics.format_replaygain_gain_for_target(-23.0),
+            "-11.50 dB"
+        );
+    }
+
+    #[test]
+    fn test_replaygain_peak_ratio_edge_cases() {
+        let silence = AudioLoudnessMetrics {
+            integrated_lufs: f64::NEG_INFINITY,
+            true_peak_dbfs: f64::NEG_INFINITY,
+            loudness_range_lu: 0.0,
+        };
+        // Digital silence must serialize as a valid ratio, never "-inf" or "NaN".
+        assert_eq!(silence.replaygain_peak_ratio(), 0.0);
+        assert_eq!(silence.format_replaygain_track_peak(), "0.000000");
+
+        let unmeasured = AudioLoudnessMetrics {
+            integrated_lufs: -14.0,
+            true_peak_dbfs: f64::NAN,
+            loudness_range_lu: 0.0,
+        };
+        assert_eq!(unmeasured.replaygain_peak_ratio(), 0.0);
+        assert_eq!(unmeasured.format_replaygain_track_peak(), "0.000000");
+
+        // Full scale (0 dBFS) stays clamped at the 1.0 ratio.
+        let full_scale = AudioLoudnessMetrics {
+            integrated_lufs: -7.0,
+            true_peak_dbfs: 0.0,
+            loudness_range_lu: 1.0,
+        };
+        assert_eq!(full_scale.replaygain_peak_ratio(), 1.0);
+        assert_eq!(full_scale.format_replaygain_track_peak(), "1.000000");
+
+        // -0.1 dBFS is the ffmpeg ebur128 default floor reported by the inspector.
+        let typical = AudioLoudnessMetrics {
+            integrated_lufs: -9.0,
+            true_peak_dbfs: -0.1,
+            loudness_range_lu: 4.0,
+        };
+        assert_eq!(typical.format_replaygain_track_peak(), "0.988553");
+    }
+
+    #[test]
+    fn test_format_id_qobuz_wire_forms_agree() {
+        for format in [
+            FormatId::Mp3_320,
+            FormatId::LosslessCd,
+            FormatId::HiRes96,
+            FormatId::HiResLossless,
+        ] {
+            let wire = format.qobuz_format_id();
+            assert_eq!(
+                format.qobuz_id().to_string(),
+                wire,
+                "{}: numeric and wire format_id must agree",
+                wire
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_id_from_qobuz_quality_token() {
+        assert_eq!(
+            FormatId::from_qobuz_quality_token("24-192"),
+            Some(FormatId::HiResLossless)
+        );
+        assert_eq!(
+            FormatId::from_qobuz_quality_token("hi_res_lossless"),
+            Some(FormatId::HiResLossless)
+        );
+        assert_eq!(
+            FormatId::from_qobuz_quality_token("27"),
+            Some(FormatId::HiResLossless)
+        );
+        assert_eq!(
+            FormatId::from_qobuz_quality_token("24-96"),
+            Some(FormatId::HiRes96)
+        );
+        assert_eq!(
+            FormatId::from_qobuz_quality_token("HiRes"),
+            Some(FormatId::HiRes96)
+        );
+        assert_eq!(
+            FormatId::from_qobuz_quality_token("16-44.1"),
+            Some(FormatId::LosslessCd)
+        );
+        assert_eq!(
+            FormatId::from_qobuz_quality_token("LOSSLESS"),
+            Some(FormatId::LosslessCd)
+        );
+        assert_eq!(
+            FormatId::from_qobuz_quality_token("320KBPS"),
+            Some(FormatId::Mp3_320)
+        );
+        assert_eq!(
+            FormatId::from_qobuz_quality_token("HIGH"),
+            Some(FormatId::Mp3_320)
+        );
+        // Unknown tokens stay unknown so each caller keeps its own default.
+        assert_eq!(FormatId::from_qobuz_quality_token(""), None);
+        assert_eq!(FormatId::from_qobuz_quality_token("24-192-ULTRA"), None);
+    }
+
+    #[test]
+    fn test_format_id_qobuz_cascade() {
+        assert_eq!(
+            FormatId::HiResLossless.qobuz_cascade(true),
+            &["27", "7", "6", "5"]
+        );
+        assert_eq!(
+            FormatId::HiResLossless.qobuz_cascade(false),
+            &["27", "7", "6"]
+        );
+        assert_eq!(FormatId::HiRes96.qobuz_cascade(true), &["7", "6", "5"]);
+        assert_eq!(FormatId::HiRes96.qobuz_cascade(false), &["7", "6"]);
+        assert_eq!(FormatId::LosslessCd.qobuz_cascade(true), &["6", "5"]);
+        assert_eq!(FormatId::LosslessCd.qobuz_cascade(false), &["6"]);
+        assert_eq!(FormatId::Mp3_320.qobuz_cascade(true), &["5"]);
+        assert_eq!(FormatId::Mp3_320.qobuz_cascade(false), &["5"]);
+
+        // Every cascade starts at its own tier and never offers a better one.
+        for start in [
+            FormatId::Mp3_320,
+            FormatId::LosslessCd,
+            FormatId::HiRes96,
+            FormatId::HiResLossless,
+        ] {
+            let cascade = start.qobuz_cascade(true);
+            assert_eq!(cascade[0], start.qobuz_format_id());
+            let start_id = start.qobuz_id();
+            for wire in cascade {
+                let id: i32 = wire.parse().expect("cascade entries are numeric");
+                assert!(
+                    id <= start_id,
+                    "cascade {} must not exceed {}",
+                    wire,
+                    start_id
+                );
+            }
+        }
     }
 
     #[test]

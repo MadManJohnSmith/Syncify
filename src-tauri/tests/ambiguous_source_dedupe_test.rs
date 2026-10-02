@@ -104,23 +104,10 @@ async fn test_ambiguous_source_permanent_classification_and_retry_exclusion() {
     .await
     .unwrap();
 
-    // Execute retry_all_failed query logic
-    let retried = sqlx::query(
-        r#"UPDATE download_queue
-           SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1
-           WHERE status = 'failed' AND retry_count < 5
-             AND COALESCE(error_message, '') NOT LIKE '%AuthInvalid%'
-             AND COALESCE(error_message, '') NOT LIKE '%RequiresAuth%'
-             AND COALESCE(error_message, '') NOT LIKE '%RejectedQuality%'
-             AND COALESCE(error_message, '') NOT LIKE '%AmbiguousSource%'
-             AND COALESCE(error_message, '') NOT LIKE '%SourceIdentityMissing%'
-             AND COALESCE(error_message, '') NOT LIKE '%IdentityConflict%'
-             AND COALESCE(error_message, '') NOT LIKE '%UnavailableFromProvider%'"#
-    )
-    .execute(&db)
-    .await
-    .unwrap()
-    .rows_affected();
+    // Execute the production retry-all logic (S168: skip terminal failures)
+    let retried = syncify_tauri_lib::commands::queue::perform_retry_all_failed(&db)
+        .await
+        .unwrap();
 
     // Assert only transient item was retried
     assert_eq!(

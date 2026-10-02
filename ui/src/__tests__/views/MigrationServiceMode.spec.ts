@@ -1,0 +1,384 @@
+/**
+ * MigrationServiceMode.spec.ts
+ * Post-audit 4.2 regression suite: the migration assistant's service →
+ * service mode. Pins that the mode drives the real engine end to end with a
+ * selection independent of the transfer wizard, a data-driven destination
+ * list, a real preview, reviewable matches with manual match, and real
+ * progress through the migration-progress channel. It must fail if any of
+ * that ever regresses to fixed data or shared wizard state.
+ */
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import MigrationView from '@/views/MigrationView.vue'
+import { mockInvoke, resetMocks, emitMockEvent } from '../setup'
+import type { MigrationJob } from '@/api/types'
+
+const stubs = { transition: true, teleport: true }
+
+type Handler = (cmd: string, args?: Record<string, unknown>) => unknown
+
+/** Backend statuses: spotify/qobuz/tidal connected, deezer not connected. */
+const connectedStatuses = [
+  { name: 'spotify', connected: true, account_email: 'user@example.com', library_count: 10, favorites_count: 8, playlists_count: 2, last_synced: null, credentials_invalid: false },
+  { name: 'qobuz', connected: true, account_email: 'user@example.com', library_count: 0, favorites_count: 0, playlists_count: 0, last_synced: null, credentials_invalid: false },
+  { name: 'tidal', connected: true, account_email: 'user@example.com', library_count: 0, favorites_count: 0, playlists_count: 0, last_synced: null, credentials_invalid: false },
+  { name: 'deezer', connected: false, account_email: null, library_count: 0, favorites_count: 0, playlists_count: 0, last_synced: null, credentials_invalid: false },
+]
+
+/** The engine supports one destination the user has NOT connected (soundcloud),
+ *  and one connected service is NOT a supported destination (deezer). */
+const engineDestinations = ['qobuz', 'tidal', 'soundcloud', 'spotify']
+
+const reviewJob: MigrationJob = {
+  id: 'svc-job-1',
+  source_service: 'spotify',
+  destination_service: 'qobuz',
+  source_playlist_ids: null,
+  options: '{}',
+  status: 'completed',
+  total_items: 1,
+  completed_items: 0,
+  failed_items: 0,
+  skipped_items: 1,
+  started_at: '2026-03-30T10:00:00Z',
+  completed_at: '2026-03-30T10:05:00Z',
+  error_message: null,
+  created_at: '2026-03-30T10:00:00Z',
+}
+
+const reviewItem = {
+  id: 7,
+  job_id: 'svc-job-1',
+  source_track_id: 'src-1',
+  source_track_title: 'Unknown Track',
+  source_track_artist: 'Unknown Artist',
+  source_track_album: null,
+  source_playlist_id: null,
+  source_playlist_name: null,
+  destination_track_id: null,
+  match_confidence: null,
+  match_method: null,
+  status: 'skipped',
+  error_message: null,
+  processed_at: null,
+  created_at: '2026-03-30T10:00:00Z',
+}
+
+function backend(
+  overrides: Record<string, unknown>,
+  calls?: Array<{ cmd: string; args?: Record<string, unknown> }>,
+  destinationList: string[] = engineDestinations,
+): void {
+  mockInvoke((cmd, args) => {
+    calls?.push({ cmd, args })
+    if (cmd in overrides) return overrides[cmd]
+    if (cmd === 'get_service_statuses') return connectedStatuses
+    if (cmd === 'get_migration_destinations') return destinationList
+    if (cmd === 'get_migration_history') return []
+    if (cmd === 'get_migration_templates') return []
+    return []
+  })
+}
+
+async function clickButtonByText(wrapper: VueWrapper, text: string): Promise<void> {
+  const button = wrapper.findAll('button').find(b => b.text().trim() === text)
+  expect(button, `button "${text}" should exist`).toBeTruthy()
+  await button!.trigger('click')
+  await flushPromises()
+}
+
+async function clickNext(wrapper: VueWrapper): Promise<void> {
+  const button = wrapper.findAll('button').find(b => b.text().includes('Next'))
+  expect(button, 'button "Next" should exist').toBeTruthy()
+  await button!.trigger('click')
+  await flushPromises()
+}
+
+async function enterServiceMode(wrapper: VueWrapper): Promise<void> {
+  await wrapper.find('[data-testid="mode-service-to-service"]').trigger('click')
+  await flushPromises()
+}
+
+/** Source = spotify card, then Next. */
+async function selectServiceSource(wrapper: VueWrapper, serviceId: string): Promise<void> {
+  const card = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === serviceId)
+  expect(card, `source card "${serviceId}" should exist`).toBeTruthy()
+  await card!.trigger('click')
+  await flushPromises()
+  await clickNext(wrapper)
+}
+
+describe('MigrationView service → service mode (post-audit 4.2)', () => {
+  beforeEach(() => {
+    resetMocks()
+    vi.clearAllMocks()
+  })
+
+  it('exposes the service → service mode next to the transfer wizard and keeps their selections independent', async () => {
+    backend({})
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+
+    // Transfer wizard is the default mode; the service mode is hidden.
+    expect(wrapper.find('[data-testid="mode-service-to-service"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="svc-source-step"]').exists()).toBe(false)
+
+    await enterServiceMode(wrapper)
+    expect(wrapper.find('[data-testid="svc-source-step"]').exists()).toBe(true)
+
+    // Selecting a source in the service mode must NOT touch the transfer wizard.
+    await selectServiceSource(wrapper, 'spotify')
+    await wrapper.find('[data-testid="mode-transfer"]').trigger('click')
+    await flushPromises()
+
+    // Back in the transfer wizard the source step has no selected card.
+    const selectedCards = wrapper.findAll('.service-card .top-3.right-3')
+    expect(selectedCards.length).toBe(0)
+    // ...and the transfer wizard's Next stays disabled (nothing selected there).
+    const next = wrapper.findAll('button').find(b => b.text().includes('Next'))
+    expect(next!.attributes('disabled')).toBeDefined()
+  })
+
+  it('offers only the engine-supported destinations that are actually connected (data-driven list)', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    backend({}, calls)
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await selectServiceSource(wrapper, 'spotify')
+
+    const step = wrapper.find('[data-testid="svc-destination-step"]')
+    expect(step.exists()).toBe(true)
+    // deezer: connected but not engine-supported → absent.
+    // soundcloud: engine-supported but not connected → absent.
+    // spotify: supported but it is the source → disabled card.
+    const ids = step.findAll('.service-card').map(c => c.attributes('data-service-id'))
+    expect(ids).toEqual(['spotify', 'qobuz', 'tidal'])
+
+    const tidalCard = step.findAll('.service-card').find(c => c.attributes('data-service-id') === 'tidal')!
+    await tidalCard.trigger('click')
+    await flushPromises()
+
+    // The mode drives the engine with its own selection.
+    await clickNext(wrapper)
+    const previewCall = calls.find(c => c.cmd === 'preview_migration')
+    expect(previewCall).toBeTruthy()
+    expect(previewCall!.args?.sourceService).toBe('spotify')
+    expect(previewCall!.args?.destinationService).toBe('tidal')
+  })
+
+  it('shows the honest empty state when the engine supports no connected destination', async () => {
+    backend({}, undefined, ['soundcloud'])
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await selectServiceSource(wrapper, 'spotify')
+
+    const step = wrapper.find('[data-testid="svc-destination-step"]')
+    expect(step.text()).toContain('No supported destination services available')
+    const next = wrapper.findAll('button').find(b => b.text().includes('Next'))
+    expect(next!.attributes('disabled')).toBeDefined()
+  })
+
+  it('previews with real match counts from preview_migration', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    backend(
+      { preview_migration: { total_tracks: 100, matched_tracks: 90, unmatched_tracks: 10, playlists: [] } },
+      calls,
+    )
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await selectServiceSource(wrapper, 'spotify')
+    const qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper)
+
+    expect(wrapper.find('[data-testid="svc-review-step"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="svc-preview-total"]').text()).toBe('100')
+    expect(wrapper.find('[data-testid="svc-preview-matched"]').text()).toContain('90')
+    expect(wrapper.find('[data-testid="svc-preview-matched"]').text()).toContain('(90%)')
+    expect(wrapper.find('[data-testid="svc-preview-unmatched"]').text()).toContain('10')
+    // The skip toggle carries the real unmatched count.
+    expect(wrapper.text()).toContain('Skip all tracks with no match found (10 tracks)')
+    expect(wrapper.text()).not.toContain('1,234')
+  })
+
+  it('surfaces a preview error with retry instead of fabricated counts when the backend refuses', async () => {
+    // The backend rejects preview_migration when no destination account is
+    // available to match against (real preview_migration behavior).
+    mockInvoke((cmd) => {
+      if (cmd === 'preview_migration') throw new Error('No connected qobuz account is available to preview matches')
+      if (cmd === 'get_service_statuses') return connectedStatuses
+      if (cmd === 'get_migration_destinations') return engineDestinations
+      if (cmd === 'get_migration_history') return []
+      if (cmd === 'get_migration_templates') return []
+      return []
+    })
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await selectServiceSource(wrapper, 'spotify')
+    const qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper)
+
+    expect(wrapper.find('[data-testid="svc-preview-error"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Could not load the match preview')
+    expect(wrapper.text()).not.toContain('(85%)')
+  })
+
+  it('lists reviewable matches and wires manual match to the engine', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    backend(
+      {
+        get_migration_history: [reviewJob],
+        get_migration_items_by_status: [reviewItem],
+        preview_migration: { total_tracks: 1, matched_tracks: 0, unmatched_tracks: 1, playlists: [] },
+        search_destination_track: [
+          { track_id: 'dest-1', title: 'Unknown Track (Deluxe)', artist: 'Unknown Artist', album: 'Deluxe Edition', duration_ms: 200000, quality: 'FLAC', confidence: 0.9 },
+        ],
+        manual_match_item: 'Item matched',
+      },
+      calls,
+    )
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await selectServiceSource(wrapper, 'spotify')
+    const qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper)
+
+    // Real review row from the last migration on this exact route.
+    const row = wrapper.find('[data-testid="svc-review-item-row"]')
+    expect(row.exists()).toBe(true)
+    expect(row.text()).toContain('Unknown Track')
+
+    await clickButtonByText(wrapper, 'Search Manually')
+    const modal = wrapper.find('[data-testid="manual-match-modal"]')
+    expect(modal.exists()).toBe(true)
+
+    await wrapper.find('[data-testid="manual-match-search-input"]').setValue('Unknown Track Unknown Artist')
+    await wrapper.find('[data-testid="manual-match-search-btn"]').trigger('click')
+    await flushPromises()
+
+    const searchCall = calls.find(c => c.cmd === 'search_destination_track')
+    expect(searchCall).toBeTruthy()
+    expect(searchCall!.args?.service).toBe('qobuz')
+    expect(searchCall!.args?.query).toBe('Unknown Track Unknown Artist')
+
+    const result = wrapper.find('[data-testid="manual-match-result"]')
+    expect(result.exists()).toBe(true)
+
+    await wrapper.find('[data-testid="manual-match-apply"]').trigger('click')
+    await flushPromises()
+
+    const matchCall = calls.find(c => c.cmd === 'manual_match_item')
+    expect(matchCall).toBeTruthy()
+    expect(matchCall!.args?.itemId).toBe(7)
+    expect(matchCall!.args?.destinationTrackId).toBe('dest-1')
+
+    // The review list reloads so the new match shows up.
+    const itemCalls = calls.filter(c => c.cmd === 'get_migration_items_by_status')
+    expect(itemCalls.length).toBeGreaterThanOrEqual(2)
+    expect(wrapper.find('[data-testid="manual-match-modal"]').exists()).toBe(false)
+  })
+
+  it('starts one real migration with the mode selection and renders progress from migration-progress events', async () => {
+    let resolveStart!: (value: unknown) => void
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    mockInvoke((cmd, args) => {
+      calls.push({ cmd, args })
+      if (cmd === 'start_migration') return new Promise((resolve) => { resolveStart = resolve })
+      if (cmd === 'get_service_statuses') return connectedStatuses
+      if (cmd === 'get_migration_destinations') return engineDestinations
+      if (cmd === 'preview_migration') return { total_tracks: 100, matched_tracks: 90, unmatched_tracks: 10, playlists: [] }
+      return []
+    })
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await selectServiceSource(wrapper, 'spotify')
+    const qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper) // review (preview)
+    // Skip unmatched off→on passes the real selection through.
+    await wrapper.find('[data-testid="svc-skip-not-found-toggle"]').trigger('click')
+    await clickNext(wrapper) // migrate
+
+    await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
+    await flushPromises()
+
+    const startCall = calls.find(c => c.cmd === 'start_migration')
+    expect(startCall).toBeTruthy()
+    expect(startCall!.args?.sourceService).toBe('spotify')
+    expect(startCall!.args?.destinationService).toBe('qobuz')
+    const options = startCall!.args?.options as Record<string, unknown>
+    expect(options.skip_unmatched).toBe(true)
+    expect(options.create_playlists).toBe(false)
+    expect(wrapper.find('[data-testid="transfer-progress"]').exists()).toBe(true)
+
+    emitMockEvent('migration-progress', {
+      job_id: 'job-42',
+      current_item: 37,
+      total_items: 100,
+      current_track: 'Real Song',
+      status: 'running',
+      completed_count: 34,
+      failed_count: 2,
+      skipped_count: 1,
+      percent: 37,
+      speed: 12.5,
+      eta: '5 min 20 s',
+      current_action: "Adding 'Real Song' to Qobuz favorites...",
+    })
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('37 / 100')
+    expect(text).toContain('37%')
+    expect(text).toContain("Adding 'Real Song' to Qobuz favorites...")
+
+    // Cancel uses the job id carried by the progress events.
+    await clickButtonByText(wrapper, 'Cancel Transfer')
+    await flushPromises()
+    const cancelCall = calls.find(c => c.cmd === 'cancel_migration')
+    expect(cancelCall).toBeTruthy()
+    expect(cancelCall!.args?.jobId).toBe('job-42')
+
+    resolveStart('job-42')
+    await flushPromises()
+    // Cancelled: no completed screen, the ready screen is back.
+    expect(wrapper.find('[data-testid="transfer-complete"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="start-transfer-btn"]').exists()).toBe(true)
+  })
+
+  it('returns to the ready screen with the real error when the backend refuses to start', async () => {
+    backend({
+      preview_migration: { total_tracks: 100, matched_tracks: 90, unmatched_tracks: 10, playlists: [] },
+      start_migration: null,
+    })
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await selectServiceSource(wrapper, 'spotify')
+    const qobuzCard = wrapper.findAll('.service-card').find(c => c.attributes('data-service-id') === 'qobuz')!
+    await qobuzCard.trigger('click')
+    await flushPromises()
+    await clickNext(wrapper)
+    await clickNext(wrapper)
+
+    await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="transfer-error"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Could not start the migration')
+    expect(wrapper.text()).not.toContain('Transferring...')
+    expect(wrapper.find('[data-testid="start-transfer-btn"]').exists()).toBe(true)
+  })
+})

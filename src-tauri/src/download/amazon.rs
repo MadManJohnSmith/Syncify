@@ -15,7 +15,6 @@ use tracing::{debug, info, warn};
 
 /// DoubleDouble submit response
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Fields used by serde
 struct SubmitResponse {
     success: bool,
     id: Option<String>,
@@ -23,19 +22,23 @@ struct SubmitResponse {
 
 /// DoubleDouble status response
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Fields used by serde
 struct StatusResponse {
     status: String,
     #[serde(rename = "friendlyStatus")]
     friendly_status: Option<String>,
     url: Option<String>,
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     current: Option<CurrentTrack>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Fields used by serde
 struct CurrentTrack {
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     name: Option<String>,
+    #[allow(dead_code)]
+    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     artist: Option<String>,
 }
 

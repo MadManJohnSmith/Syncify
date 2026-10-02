@@ -3,6 +3,8 @@ Metadata enrichment services for gathering additional metadata from external sou
 """
 import aiohttp
 import asyncio
+import re
+import unicodedata
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 import logging
@@ -465,26 +467,71 @@ class SpotifyEnricher:
             return None
 
 
+def normalize_album_title(value: Optional[str]) -> str:
+    """Normalize an album title for comparison (case/diacritics-free, collapsed whitespace)."""
+    if not value:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", str(value))
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", stripped.strip().casefold())
+
+
+def select_release_for_album(
+    releases: List[Dict[str, Any]],
+    album: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Pick the MusicBrainz release that corresponds to `album`.
+
+    A recording usually maps to several releases (different editions, remasters,
+    regional pressings). Taking `releases[0]` blindly picks an arbitrary edition,
+    so the album title is used to disambiguate. Falls back to the first release
+    when there is no album context or no title matches.
+    """
+    if not releases:
+        return None
+
+    target = normalize_album_title(album)
+    if not target:
+        return releases[0]
+
+    for release in releases:
+        if normalize_album_title(release.get('title')) == target:
+            return release
+
+    # Relaxed pass: tolerate "Album (Deluxe Edition)" / "Album - Remastered" variants.
+    for release in releases:
+        title = normalize_album_title(release.get('title'))
+        if title and (title in target or target in title):
+            return release
+
+    return releases[0]
+
+
 async def enrich_metadata(
     isrc: Optional[str],
     artist: str,
     title: str,
-    lastfm_api_key: Optional[str] = None
+    lastfm_api_key: Optional[str] = None,
+    album: Optional[str] = None
 ) -> EnrichedMetadata:
     """
     Enrich metadata using MusicBrainz and Last.fm.
-    
+
     Args:
         isrc: ISRC code for the track
         artist: Artist name
         title: Track title
         lastfm_api_key: Last.fm API key (optional)
-    
+        album: Album name (optional); selects the MusicBrainz release whose title
+            matches it instead of blindly taking the first one returned by the
+            ISRC search.
+
     Returns:
         EnrichedMetadata object with additional metadata
     """
     enriched = EnrichedMetadata()
-    
+
     # Query MusicBrainz by ISRC
     if isrc:
         try:
@@ -492,14 +539,14 @@ async def enrich_metadata(
                 mb_data = await mb.query_by_isrc(isrc)
                 if mb_data:
                     enriched.musicbrainz_recording_id = mb_data.get('recording_id')
-                    
-                    # Get language and country from first release
-                    releases = mb_data.get('releases', [])
-                    if releases:
-                        first_release = releases[0]
-                        enriched.country = first_release.get('country')
-                        enriched.language = first_release.get('language')
-                        enriched.musicbrainz_release_id = first_release.get('id')
+
+                    # Language and country come from the release that matches the
+                    # album the user actually has (not an arbitrary edition).
+                    release = select_release_for_album(mb_data.get('releases', []), album)
+                    if release:
+                        enriched.country = release.get('country')
+                        enriched.language = release.get('language')
+                        enriched.musicbrainz_release_id = release.get('id')
         except Exception as e:
             logging.error(f"MusicBrainz enrichment failed: {e}")
     

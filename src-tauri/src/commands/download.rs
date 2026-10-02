@@ -173,7 +173,7 @@ pub async fn download_tidal_single_track(
 
     let app_clone = app_handle.clone();
     let on_progress = move |event: syncify_core_domain::events::PipelineProgressEvent| {
-        let _ = app_clone.emit("pipeline:progress", &event);
+        // Single canonical progress channel (IN-4): the UI listens on 'syncify:progress'.
         let _ = app_clone.emit("syncify:progress", &event);
     };
 

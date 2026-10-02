@@ -1644,141 +1644,193 @@ pub async fn import_deezer_library(
     Ok(ImportResult { imported, skipped })
 }
 
-/// Import SoundCloud library
-/// S190-interín: núcleo del import de likes de SoundCloud, COMPARTIDO por el
-/// comando legacy y el brazo "soundcloud" del motor unificado. Ruta CRUD
-/// directa (dedup título+duración, sin identidad canónica ISRC) hasta la
-/// integración real de Fase 3 — documentado en `docs/Deuda_Tecnica_y_UX.md` (D-01).
-async fn run_soundcloud_likes_import(
+/// Totales del núcleo de likes de SoundCloud. Los comparten el comando legacy
+/// `import_soundcloud_library` y el brazo "soundcloud" del motor unificado, de
+/// modo que ambos caminos usan exactamente la misma persistencia.
+// Cubierto por `tests/soundcloud_unified_engine_test.rs`.
+#[derive(Debug, Clone, Default)]
+pub struct SoundCloudLikesSyncTotals {
+    /// Likes leídos del proveedor, incluidos los que fallan al persistir.
+    pub seen: u64,
+    /// Tracks que entraron en la biblioteca de la cuenta.
+    pub imported: u64,
+    /// Tracks ya presentes en el catálogo (idempotencia).
+    pub skipped: u64,
+    /// Milisegundos gastados hablando con la API de SoundCloud.
+    pub api_fetch_ms: u64,
+    /// Milisegundos gastados en enriquecimiento + persistencia.
+    pub enrichment_ms: u64,
+    /// Fallos de persistencia por track: se acumulan y no abortan el lote.
+    pub errors: Vec<String>,
+}
+
+/// Núcleo de sincronización de likes de SoundCloud (F3-1/F3-3 del plan de
+/// unificación, `docs/PLAN_UNIFICACION_IMPORTACION.md`): cada like entra por
+/// `EnrichmentEngine`, con la misma identidad canónica que el resto del motor
+/// —A) `track_sources(service_id, service_track_id)` → B) ISRC → C) columna
+/// dedicada— y los mismos metadatos que los otros servicios: artista del sello
+/// cuando `publisher_metadata` lo aporta, álbum y portada cuando hay dato.
+/// Sustituye a la ruta CRUD directa que insertaba `tracks` crudo y deduplicaba
+/// por título+duración.
+///
+/// Limitación de capacidad del servicio, no una integración pendiente:
+/// SoundCloud solo expone `publisher_metadata` —y con él el ISRC— en los tracks
+/// publicados por un sello o distribuidora. Los que se suben directamente
+/// (remixes, bootlegs, sets de DJ) llegan sin ese bloque y sin ISRC, así que su
+/// identidad se resuelve por Check A, el id de SoundCloud en `track_sources`.
+// Cubierto por `tests/soundcloud_unified_engine_test.rs`.
+pub async fn sync_soundcloud_likes_with_engine<F>(
     db: &DbPool,
-    mut on_progress: impl FnMut(u64),
-) -> Result<(i64, i64), String> {
-    // Use shared helper for credential loading
+    account_id: i64,
+    soundcloud_service_id: i64,
+    client: &crate::services::SoundCloudClient,
+    mut on_track: F,
+) -> Result<SoundCloudLikesSyncTotals, String>
+where
+    F: FnMut(&crate::services::enrichment::SyncTrackResult, u64, bool),
+{
+    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::new();
+    let mut totals = SoundCloudLikesSyncTotals::default();
+    let mut next_url: Option<String> = None;
+
+    loop {
+        let t_api = std::time::Instant::now();
+        let page = client.get_likes(next_url.as_deref()).await?;
+        totals.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+        if page.collection.is_empty() {
+            break;
+        }
+        let last_index = page
+            .collection
+            .iter()
+            .rposition(|like| like.track.is_some());
+        for (index, like) in page.collection.iter().enumerate() {
+            let Some(track) = like.track.as_ref() else {
+                continue;
+            };
+            totals.seen += 1;
+            let sync_input = crate::services::enrichment::SyncTrackInput {
+                origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                    title: Some(track.title.clone()),
+                    artist: Some(track.attributed_artist().unwrap_or("Unknown").to_string()),
+                    // `album_artist` solo cuando lo declara el sello: el nombre de
+                    // la cuenta que subió el audio no es el artista del álbum.
+                    album_artist: track.publisher_artist().map(str::to_string),
+                    album: track.album_title().map(str::to_string),
+                    isrc: track.isrc().map(str::to_string),
+                    label: track.label().map(str::to_string),
+                    release_year: track.release_year().map(|y| y.to_string()),
+                    genre: track.genre.clone(),
+                    source_name: "soundcloud".to_string(),
+                    // Instante del like: es el `added_at` que se persiste.
+                    added_at: like.created_at.clone(),
+                    ..Default::default()
+                },
+                service_track_id: track.id.to_string(),
+                service_name: "soundcloud".to_string(),
+                service_id: soundcloud_service_id,
+                account_id,
+                is_favorite: true,
+                format: Some("MP3".to_string()),
+                // SoundCloud solo reparte audio con pérdida (la migración 0064 fija
+                // `max_quality = lossy` y formato `mp3` para el servicio). Sin
+                // `quality_score`: es una escala "más alto = mejor" que el motor
+                // usa para elegir fuente, y el proveedor no expone bitrate por
+                // pista — el legacy tampoco lo fijaba.
+                audio_quality: Some(
+                    classify_audio_tier(None, None, None, Some("MP3"))
+                        .as_str()
+                        .to_string(),
+                ),
+                cover_art_url: track.cover_art_url(),
+                // SoundCloud ya entrega la duración en milisegundos.
+                duration_ms: Some(track.duration),
+                query_musicbrainz: false,
+                ..Default::default()
+            };
+            let t_enrich = std::time::Instant::now();
+            match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
+                Ok(res) => {
+                    totals.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                    if res.is_new_import {
+                        totals.imported += 1;
+                    } else {
+                        totals.skipped += 1;
+                    }
+                    on_track(
+                        &res,
+                        totals.imported + totals.skipped,
+                        Some(index) == last_index,
+                    );
+                }
+                Err(e) => {
+                    totals.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                    totals
+                        .errors
+                        .push(format!("SoundCloud track {}: {}", track.id, e));
+                }
+            }
+        }
+        next_url = page.next_href;
+        if next_url.is_none() {
+            break;
+        }
+    }
+
+    Ok(totals)
+}
+
+/// Resuelve credenciales, cliente y `service_id` de SoundCloud desde la cuenta
+/// activa. Compartido por el comando legacy y el brazo del motor unificado para
+/// que ambos hablen con el mismo cliente y el mismo criterio de credenciales.
+async fn build_soundcloud_client(
+    db: &DbPool,
+) -> Result<(i64, crate::services::SoundCloudClient, i64), String> {
     let (account_id, creds) = load_service_credentials(db, "soundcloud").await?;
 
     let oauth_token = creds["oauth_token"]
         .as_str()
         .or_else(|| creds["access_token"].as_str())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
         .ok_or("Missing OAuth token in stored credentials")?;
 
     let user_id = creds["user_id"]
         .as_i64()
         .ok_or("Missing user_id in stored credentials")?;
 
-    // Initialize client
     let client =
         crate::services::SoundCloudClient::new(oauth_token.to_string()).with_user_id(user_id);
-
-    // Use shared helper for progress events
-
-    let mut imported = 0;
-    let mut skipped = 0;
-    let mut next_url: Option<String> = None;
-
     let soundcloud_service_id = client.get_service_id(db, "soundcloud").await?;
 
-    loop {
-        let page = client.get_likes(next_url.as_deref()).await?;
+    Ok((account_id, client, soundcloud_service_id))
+}
 
-        if page.collection.is_empty() {
-            break;
-        }
+/// Import SoundCloud library
+///
+/// Envoltorio legacy del comando `import_soundcloud_library`: delega en el
+/// mismo núcleo que el brazo "soundcloud" del motor unificado
+/// (`sync_soundcloud_likes_with_engine`), de modo que la deduplicación es la
+/// canónica del motor y no una segunda regla título+duración conviviendo con
+/// ella. Solo conserva los eventos `import-progress`/`import-complete` que la UI
+/// escucha en este comando.
+async fn run_soundcloud_likes_import(
+    db: &DbPool,
+    mut on_progress: impl FnMut(u64),
+) -> Result<(i64, i64), String> {
+    let (account_id, client, soundcloud_service_id) = build_soundcloud_client(db).await?;
 
-        for like in &page.collection {
-            if let Some(ref track) = like.track {
-                // Get or create artist
-                let artist_name = track
-                    .user
-                    .as_ref()
-                    .map(|u| u.username.clone())
-                    .unwrap_or_else(|| "Unknown".to_string());
-                let artist_id = client.get_or_create_artist(db, &artist_name).await?;
+    let totals = sync_soundcloud_likes_with_engine(
+        db,
+        account_id,
+        soundcloud_service_id,
+        &client,
+        |_res, processed, _page_finished| on_progress(processed),
+    )
+    .await?;
 
-                // Create/update track
-                let track_id: i64 = if let Some(row) = sqlx::query_as::<_, (i64,)>(
-                    "INSERT OR IGNORE INTO tracks (title, duration_ms) VALUES (?, ?) RETURNING id",
-                )
-                .bind(&track.title)
-                .bind(track.duration) // SoundCloud uses milliseconds
-                .fetch_optional(db)
-                .await
-                .map_err(|e| format!("DB error: {}", e))?
-                {
-                    row.0
-                } else {
-                    // Duplicate — fetch existing ID
-                    sqlx::query_as::<_, (i64,)>(
-                        "SELECT id FROM tracks WHERE title = ? AND duration_ms = ?",
-                    )
-                    .bind(&track.title)
-                    .bind(track.duration)
-                    .fetch_one(db)
-                    .await
-                    .map(|r| r.0)
-                    .unwrap_or(0)
-                };
-
-                if track_id == 0 {
-                    skipped += 1;
-                    continue;
-                }
-
-                // Add track-artist relation
-                let _ = sqlx::query(
-                    "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
-                )
-                .bind(track_id)
-                .bind(artist_id)
-                .execute(db)
-                .await;
-
-                // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
-                let safe_added_at = crate::services::import_pagination::normalize_added_at(None);
-                let result = sqlx::query(
-                    r#"
-                    INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
-                    VALUES (?, ?, 1, 0, ?)
-                    ON CONFLICT(account_id, track_id) DO UPDATE SET
-                        is_liked = 1,
-                        added_at = CASE
-                            WHEN library_entries.added_at IS NULL OR library_entries.added_at LIKE '1970-01-01%' THEN excluded.added_at
-                            ELSE library_entries.added_at
-                        END
-                    "#
-                )
-                .bind(account_id)
-                .bind(track_id)
-                .bind(&safe_added_at)
-                .execute(db)
-                .await
-                .map_err(|e| format!("DB error: {}", e))?;
-
-                if result.rows_affected() > 0 {
-                    imported += 1;
-                } else {
-                    skipped += 1;
-                }
-
-                // Add track source
-                let _ = sqlx::query(
-                    "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bitrate, quality_score, available) VALUES (?, ?, ?, 'MP3', 128, NULL, 1)"
-                )
-                .bind(track_id)
-                .bind(soundcloud_service_id)
-                .bind(track.id.to_string())
-                .execute(db)
-                .await;
-            }
-        }
-
-        // Update progress using helper
-        on_progress((imported + skipped) as u64);
-
-        // Continue pagination
-        next_url = page.next_href;
-        if next_url.is_none() {
-            break;
-        }
+    if let Some(first_error) = totals.errors.first() {
+        return Err(first_error.clone());
     }
 
     // Update last_synced
@@ -1788,12 +1840,13 @@ async fn run_soundcloud_likes_import(
         .await;
 
     tracing::info!(
-        "SoundCloud import complete: {} imported, {} skipped",
-        imported,
-        skipped
+        "SoundCloud import complete: {} imported, {} skipped ({} likes seen)",
+        totals.imported,
+        totals.skipped,
+        totals.seen
     );
 
-    Ok((imported, skipped))
+    Ok((totals.imported as i64, totals.skipped as i64))
 }
 
 #[tauri::command]
@@ -1833,14 +1886,26 @@ pub async fn import_soundcloud_library(
     })
 }
 
+/// Result of an Apple Music library import: track counters plus the entity
+/// counts and the non-fatal problems collected along the way (an album or
+/// playlist expansion that failed is reported, never swallowed).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct AppleMusicImportSummary {
+    pub imported: i64,
+    pub skipped: i64,
+    pub albums_imported: i32,
+    pub playlists_imported: i32,
+    pub warnings: Vec<String>,
+}
+
 /// Import Apple Music library
-/// S190-interín: núcleo del import de biblioteca de Apple Music, COMPARTIDO
-/// por el comando legacy y el brazo "apple_music" del motor unificado.
-/// Requiere music_user_token + developer_token en credenciales guardadas.
+/// COMPARTIDO por el comando legacy y el brazo "apple_music" del motor unificado.
+/// Requiere music_user_token + developer_token en credenciales guardadas; el
+/// storefront se lee de las mismas credenciales (o de `APPLE_MUSIC_STOREFRONT`).
 async fn run_apple_music_library_import(
     db: &DbPool,
     mut on_progress: impl FnMut(u64),
-) -> Result<(i64, i64), String> {
+) -> Result<AppleMusicImportSummary, String> {
     let (account_id, creds) = load_service_credentials(db, "apple_music").await?;
 
     let music_user_token = creds["music_user_token"]
@@ -1853,16 +1918,20 @@ async fn run_apple_music_library_import(
     )?;
     tracing::info!("developer_token length: {}", developer_token.len());
 
-    // Initialize client
-    let client = crate::services::AppleMusicClient::new(
+    // Initialize client (storefront comes from the credentials, then the env).
+    let client = crate::services::AppleMusicClient::from_credentials(
         developer_token.to_string(),
         music_user_token.to_string(),
+        &creds,
     );
+    tracing::info!("Apple Music storefront: {}", client.storefront());
+
+    let mut summary = AppleMusicImportSummary::default();
+    let mut imported = 0i64;
+    let mut skipped = 0i64;
 
     let mut offset = 0;
     let limit = 100;
-    let mut imported = 0;
-    let mut skipped = 0;
 
     let apple_service_id = client.get_service_id(db, "apple_music").await?;
     tracing::info!("Apple Music service_id={}", apple_service_id);
@@ -1908,6 +1977,19 @@ async fn run_apple_music_library_import(
                 // Get or create artist
                 let artist_id = client.get_or_create_artist(db, &attrs.artist_name).await?;
                 tracing::debug!("Artist ID for {}: {}", &attrs.artist_name, artist_id);
+
+                // Get or create album so the song keeps its album identity even
+                // before the album expansion pass runs.
+                if let Some(album_name) = attrs
+                    .album_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                {
+                    let _ = client
+                        .get_or_create_album(db, album_name, artist_id)
+                        .await?;
+                }
 
                 // Create/update track
                 let duration_ms = attrs.duration_in_millis.unwrap_or(0);
@@ -2028,18 +2110,38 @@ async fn run_apple_music_library_import(
         }
     }
 
-    // Also import user's library albums (TASK-108)
-    if let Ok(albums_res) = client.import_albums(db, account_id).await {
-        imported += albums_res.imported as i64;
-        skipped += albums_res.skipped as i64;
-        on_progress((imported + skipped) as u64);
+    // Also import user's library albums (TASK-108). A failure here is reported,
+    // never dropped: the songs are already in, the albums simply did not land.
+    match client.import_albums(db, account_id).await {
+        Ok(albums_res) => {
+            imported += albums_res.imported as i64;
+            skipped += albums_res.skipped as i64;
+            summary.albums_imported = albums_res.entities;
+            on_progress((imported + skipped) as u64);
+        }
+        Err(album_err) => {
+            tracing::error!("Apple Music album import failed: {}", album_err);
+            summary
+                .warnings
+                .push(format!("Apple Music albums not imported: {}", album_err));
+        }
     }
 
     // Also import user's library playlists (TASK-108)
-    if let Ok(playlists_res) = client.import_playlists(db, account_id).await {
-        imported += playlists_res.imported as i64;
-        skipped += playlists_res.skipped as i64;
-        on_progress((imported + skipped) as u64);
+    match client.import_playlists(db, account_id).await {
+        Ok(playlists_res) => {
+            imported += playlists_res.imported as i64;
+            skipped += playlists_res.skipped as i64;
+            summary.playlists_imported = playlists_res.entities;
+            on_progress((imported + skipped) as u64);
+        }
+        Err(playlists_err) => {
+            tracing::error!("Apple Music playlist import failed: {}", playlists_err);
+            summary.warnings.push(format!(
+                "Apple Music playlists not imported: {}",
+                playlists_err
+            ));
+        }
     }
 
     // Update last_synced
@@ -2054,7 +2156,9 @@ async fn run_apple_music_library_import(
         skipped
     );
 
-    Ok((imported, skipped))
+    summary.imported = imported;
+    summary.skipped = skipped;
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -2071,7 +2175,7 @@ pub async fn import_apple_music_library(
         0,
         "Starting Apple Music import...",
     );
-    let (imported, skipped) = run_apple_music_library_import(&state.db, |done| {
+    let summary = run_apple_music_library_import(&state.db, |done| {
         emit_import_progress(
             &window,
             "apple_music",
@@ -2084,13 +2188,21 @@ pub async fn import_apple_music_library(
     .await?;
     tracing::info!(
         "Apple Music import complete: {} imported, {} skipped",
-        imported,
-        skipped
+        summary.imported,
+        summary.skipped
     );
-    emit_import_complete(&window, "apple_music", imported as u64, skipped as u64);
+    for warning in &summary.warnings {
+        tracing::warn!("{}", warning);
+    }
+    emit_import_complete(
+        &window,
+        "apple_music",
+        summary.imported as u64,
+        summary.skipped as u64,
+    );
     Ok(ImportResult {
-        imported: imported as i32,
-        skipped: skipped as i32,
+        imported: summary.imported as i32,
+        skipped: summary.skipped as i32,
     })
 }
 
@@ -2333,10 +2445,13 @@ pub async fn import_service(
             load_service_credentials(&state.db, "apple_music")
                 .await
                 .map_err(|e| format!("RequiresAuth: {}", e))?;
-            let (imported, skipped) = run_apple_music_library_import(&state.db, |_| {}).await?;
+            let summary = run_apple_music_library_import(&state.db, |_| {}).await?;
             Ok(format!(
-                "Apple Music: {} imported, {} skipped",
-                imported, skipped
+                "Apple Music: {} imported, {} skipped ({} albums, {} playlists)",
+                summary.imported,
+                summary.skipped,
+                summary.albums_imported,
+                summary.playlists_imported
             ))
         }
         _ => Err(format!("Unknown service: {}", service_name)),
@@ -2344,7 +2459,7 @@ pub async fn import_service(
 }
 
 /// Perform unified synchronization for a service using real auth checks and granular preferences (delegates to perform_sync_service_with_emitter)
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/import_preferences_sync_test.rs` y `tests/sync_progress_events_test.rs`.
 pub async fn perform_sync_service(
     db: &sqlx::SqlitePool,
     service_name: &str,
@@ -2428,13 +2543,91 @@ fn is_spotify_scope_forbidden_error(err: &str) -> bool {
     err.contains("403") && err.to_lowercase().contains("insufficient client scope")
 }
 
+/// True when `err` is SoundCloud's answer to a rejected/expired OAuth token.
+/// `SoundCloudClient::get_likes` formats non-success responses as
+/// `"SoundCloud API error {status}: {body}"`, so a 401 always carries this
+/// prefix; the engine turns it into RequiresAuth + credential invalidation
+/// instead of a generic sync error.
+fn is_soundcloud_auth_error(err: &str) -> bool {
+    err.contains("SoundCloud API error 401")
+}
+
 /// Perform unified synchronization for a service with explicit progress emitter (S128B)
+///
+/// BD-9: a service sync is the longest non-download operation in the app (remote
+/// fetch, entity expansion, enrichment, thousands of catalog upserts). It is
+/// journaled so a crash mid-sync is visible at startup instead of silently
+/// leaving a half-imported library. The journal is best-effort: it never turns a
+/// successful sync into a failure, and a failure to open it only costs the
+/// recovery trail.
 pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     db: &sqlx::SqlitePool,
     service_name: &str,
     account_id_opt: Option<i64>,
     preferences_opt: Option<ImportPreferences>,
     emitter: Option<&E>,
+) -> Result<ServiceSyncResult, String> {
+    use crate::services::operation_recovery::{
+        begin_service_sync_operation, classify_operation_error, JournaledOperation,
+    };
+    use syncify_core_domain::OperationType;
+
+    let service_normalized = service_name.to_lowercase();
+    let journal: Option<JournaledOperation> =
+        begin_service_sync_operation(db, service_name, account_id_opt).await;
+
+    let result = perform_sync_service_with_emitter_inner(
+        db,
+        service_name,
+        account_id_opt,
+        preferences_opt,
+        emitter,
+        journal.as_ref(),
+    )
+    .await;
+
+    match result {
+        Ok(sync_result) => {
+            if let Some(ref j) = journal {
+                j.commit(Some(&format!(
+                    "service={} success={} imported_tracks={} imported_albums={} total_ms={}",
+                    service_normalized,
+                    sync_result.success,
+                    sync_result.imported_tracks_total,
+                    sync_result.albums_total,
+                    sync_result
+                        .phase_timings
+                        .as_ref()
+                        .map(|t| t.total_elapsed_ms)
+                        .unwrap_or(0)
+                )))
+                .await;
+            }
+            Ok(sync_result)
+        }
+        Err(error) => {
+            if let Some(ref j) = journal {
+                let taxonomy = classify_operation_error(
+                    OperationType::ServiceSync,
+                    &service_normalized,
+                    &error,
+                );
+                j.fail(&taxonomy, &error, false).await;
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Sync body. `journal` is `Some` whenever a recovery-journal entry is open for
+/// this sync; milestones are reported through it as the sync advances.
+pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitter>(
+    db: &sqlx::SqlitePool,
+    service_name: &str,
+    account_id_opt: Option<i64>,
+    preferences_opt: Option<ImportPreferences>,
+    emitter: Option<&E>,
+    journal: Option<&crate::services::operation_recovery::JournaledOperation>,
 ) -> Result<ServiceSyncResult, String> {
     let service_normalized = service_name.to_lowercase();
 
@@ -2669,6 +2862,21 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     let mut tracks_expansion_failed: u64 = 0;
 
     // 4. Dispatch sync by service
+    // BD-9: auth resolved and preferences loaded — the sync is about to pull the
+    // remote library. Recorded so a crash during the (long) fetch is attributable
+    // to this run instead of looking like "no sync ever started".
+    if let Some(j) = journal {
+        j.checkpoint(
+            syncify_core_domain::OperationPhase::Transfer,
+            None,
+            Some(&format!(
+                "authenticated; fetching remote library for account {}",
+                account_id
+            )),
+        )
+        .await;
+    }
+
     match service_normalized.as_str() {
         "qobuz" => {
             let app_id = std::env::var("QOBUZ_APP_ID")
@@ -6266,19 +6474,22 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             }
         }
         "apple_music" => {
-            // S190-interín (Fase 3 completa pendiente): delega al importador de
-            // biblioteca que SÍ captura ISRC (identidad canónica) y escribe
-            // track_sources AAC. Requiere ambos tokens en credenciales.
+            // F3-2: brazo propio del motor unificado. Delega en el importador de
+            // biblioteca, que persiste canciones, álbumes y playlists con ISRC
+            // (identidad canónica) y `track_sources` AAC. Requiere ambos tokens
+            // en credenciales; el storefront sale de las mismas credenciales.
             load_service_credentials(db, "apple_music")
                 .await
                 .map_err(|e| format!("RequiresAuth: {}", e))?;
             match run_apple_music_library_import(db, |_| {}).await {
-                Ok((am_imported, am_skipped)) => {
-                    imported_tracks_total = am_imported.max(0) as u64;
-                    skipped_tracks_total = am_skipped.max(0) as u64;
-                    tracks_processed = (am_imported + am_skipped).max(0) as u64;
-                    favorite_tracks_total = (am_imported + am_skipped).max(0) as u64;
-                    warnings.push("Apple Music: ruta interína de biblioteca — solo canciones, sin playlists/álbumes ni enriquecimiento rico (Fase 3 pendiente)".to_string());
+                Ok(summary) => {
+                    imported_tracks_total = summary.imported.max(0) as u64;
+                    skipped_tracks_total = summary.skipped.max(0) as u64;
+                    tracks_processed = (summary.imported + summary.skipped).max(0) as u64;
+                    favorite_tracks_total = (summary.imported + summary.skipped).max(0) as u64;
+                    favorite_albums_total += summary.albums_imported.max(0) as u64;
+                    playlists_total += summary.playlists_imported.max(0) as u64;
+                    warnings.extend(summary.warnings);
                 }
                 Err(am_err) => {
                     errors.push(format!("Apple Music library: {}", am_err));
@@ -6286,24 +6497,150 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
             }
         }
         "soundcloud" => {
-            // S190-interín (Fase 3 real pendiente): SoundCloud no tiene brazo de
-            // enriquecimiento propio; delega al importador legacy de likes
-            // compartido con el comando import_soundcloud_library. Sin ISRC ni
-            // metadatos ricos — contrato honesto mientras llega la integración.
-            load_service_credentials(db, "soundcloud")
-                .await
-                .map_err(|e| format!("RequiresAuth: {}", e))?;
-            match run_soundcloud_likes_import(db, |_| {}).await {
-                Ok((sc_imported, sc_skipped)) => {
-                    imported_tracks_total = sc_imported.max(0) as u64;
-                    skipped_tracks_total = sc_skipped.max(0) as u64;
-                    tracks_processed = (sc_imported + sc_skipped).max(0) as u64;
-                    favorite_tracks_total = (sc_imported + sc_skipped).max(0) as u64;
-                    warnings.push("SoundCloud: ruta interína de likes — dedup por título+duración, sin ISRC (integración completa en Fase 3)".to_string());
+            // F3-1/F3-3: brazo propio del motor unificado. Antes delegaba en el
+            // importador legacy de likes —CRUD crudo, dedup por título+duración y
+            // el username del uploader como artista—. Ahora cada like entra por
+            // `EnrichmentEngine` con la identidad canónica y los metadatos que
+            // persisten qobuz/tidal/spotify/deezer. La ausencia de ISRC en los
+            // tracks sin `publisher_metadata` es una limitación de capacidad del
+            // servicio, documentada en `sync_soundcloud_likes_with_engine`.
+            let oauth_token = creds["oauth_token"]
+                .as_str()
+                .or_else(|| creds["access_token"].as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
+            let Some(oauth_token) = oauth_token else {
+                let err_msg = "RequiresAuth: SoundCloud OAuth token missing".to_string();
+                emit(SyncProgressEvent::requires_auth(
+                    &service_normalized,
+                    Some(account_id),
+                    &err_msg,
+                ));
+                return Err(err_msg);
+            };
+            let Some(user_id) = creds["user_id"].as_i64() else {
+                let err_msg =
+                    "RequiresAuth: SoundCloud user_id missing from stored credentials".to_string();
+                emit(SyncProgressEvent::requires_auth(
+                    &service_normalized,
+                    Some(account_id),
+                    &err_msg,
+                ));
+                return Err(err_msg);
+            };
+            let client = crate::services::SoundCloudClient::new(oauth_token.to_string())
+                .with_user_id(user_id);
+            let soundcloud_service_id = client.get_service_id(db, "soundcloud").await?;
+
+            // Phase 1: Favorite Tracks — los likes son toda la biblioteca que
+            // SoundCloud expone para una cuenta de usuario.
+            if prefs.favorite_tracks {
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "fetching_favorite_tracks",
+                    0,
+                    None,
+                    "Importing SoundCloud likes...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
+                let outcome = sync_soundcloud_likes_with_engine(
+                    db,
+                    account_id,
+                    soundcloud_service_id,
+                    &client,
+                    |res, processed, page_finished| {
+                        tracks_processed += 1;
+                        if res.is_new_global_track {
+                            tracks_new_global += 1;
+                        }
+                        if res.is_new_source_for_service {
+                            sources_new_for_service += 1;
+                        }
+                        if res.is_new_library_entry_for_account {
+                            library_entries_new_for_account += 1;
+                        }
+                        if res.is_already_present {
+                            tracks_already_present += 1;
+                        }
+                        if res.is_new_import {
+                            tracks_changed_unique += 1;
+                            imported_tracks_total += 1;
+                        } else {
+                            skipped_tracks_total += 1;
+                        }
+                        favorite_tracks_total += 1;
+                        favorites_seen += 1;
+                        match res.completeness {
+                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                                metadata_enriched += 1
+                            }
+                            _ => metadata_partial += 1,
+                        }
+                        if page_finished {
+                            emit(SyncProgressEvent::running(
+                                &service_normalized,
+                                Some(account_id),
+                                "fetching_favorite_tracks",
+                                processed,
+                                None,
+                                &format!(
+                                    "Processed {} SoundCloud likes ({} new)",
+                                    processed, imported_tracks_total
+                                ),
+                                imported_tracks_total,
+                                favorite_tracks_total,
+                            ));
+                        }
+                    },
+                )
+                .await;
+                match outcome {
+                    Ok(totals) => {
+                        api_fetch_ms += totals.api_fetch_ms;
+                        enrichment_ms += totals.enrichment_ms;
+                        errors.extend(totals.errors);
+                    }
+                    Err(sc_err) if is_soundcloud_auth_error(&sc_err) => {
+                        tracing::warn!("[perform_sync_service/soundcloud] 401 on likes — marking credentials invalid");
+                        let _ = mark_account_credentials_invalid(
+                            db,
+                            "soundcloud",
+                            "HTTP 401: SoundCloud OAuth token rejected or expired",
+                        )
+                        .await;
+                        let err_msg = format!(
+                            "RequiresAuth: SoundCloud session rejected (401) while fetching likes: {}",
+                            sc_err
+                        );
+                        emit(SyncProgressEvent::requires_auth(
+                            &service_normalized,
+                            Some(account_id),
+                            &err_msg,
+                        ));
+                        return Err(err_msg);
+                    }
+                    Err(sc_err) => {
+                        errors.push(format!("SoundCloud likes: {}", sc_err));
+                    }
                 }
-                Err(sc_err) => {
-                    errors.push(format!("SoundCloud likes: {}", sc_err));
-                }
+            }
+
+            // Fases sin endpoint propio: la API pública de SoundCloud solo expone
+            // los likes de la cuenta. Los rows de álbum y artista nacen igual de
+            // cada like cuando su `publisher_metadata` los aporta, pero no hay
+            // nada adicional que leer — capacidad del servicio, no un hueco del
+            // motor.
+            if prefs.favorite_albums
+                || prefs.favorite_artists
+                || prefs.playlists
+                || prefs.purchases
+                || prefs.library_history
+            {
+                warnings.push(
+                    "SoundCloud: the public API exposes only a user's likes — favorite albums/artists, playlists, purchases and listen history have no user endpoint; album and artist rows come from each like's own publisher_metadata".to_string(),
+                );
             }
         }
         _ => {
@@ -6331,6 +6668,19 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
         imported_tracks_total,
         favorite_tracks_total,
     ));
+
+    // BD-9: every track/album/playlist is already in the catalog; what remains is
+    // the bookkeeping write. `persisting` is scanned at startup so a crash here is
+    // reported as an interrupted sync rather than an unknown one.
+    if let Some(j) = journal {
+        j.checkpoint_persisting(Some(&format!(
+            "imported_tracks={} albums={} playlists={}",
+            imported_tracks_total,
+            favorite_albums_total + purchases_total,
+            playlists_total
+        )))
+        .await;
+    }
 
     let t_pers = std::time::Instant::now();
     let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")

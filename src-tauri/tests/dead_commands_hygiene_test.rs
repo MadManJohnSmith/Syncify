@@ -1,63 +1,208 @@
 //! dead_commands_hygiene_test.rs
 //!
-//! Regression test for [TASK-119]: "Cablear o Purgar Comandos Backend Muertos (detail endpoints y utilitarios)".
+//! Regression test for [TASK-119] (unregister dead commands) and the post-audit
+//! triage items [BE-3]/[IN-5] (purge dead command source and prune registered
+//! commands without any caller).
 //!
-//! Asserts that:
-//! 1. Dead/inert commands have been removed from `generate_handler!`:
-//!    - `get_album_detail`, `get_artist_detail`, `get_album_tracks`, `get_artist_albums`, `get_artist_tracks`
-//!    - `list_playlists`, `toggle_track_favorite`, `organize_files`, `preview_organization`, `convert_audio`, `get_audio_info`
-//! 2. No duplicate queue or handler registrations exist in `generate_handler!`.
-//! 3. Canonical commands remain registered and intact:
+//! Freezes the NEW state:
+//! 1. Zero dead commands: no `#[tauri::command]` may carry `#[allow(dead_code)]`
+//!    (the 11 commands of BE-3 — get_album_detail, get_artist_detail,
+//!    get_album_tracks, get_artist_albums, get_artist_tracks, list_playlists,
+//!    toggle_track_favorite, organize_files, preview_organization, convert_audio,
+//!    get_audio_info — were removed from the source, not just unregistered).
+//! 2. The commands removed by the IN-5 triage (aliases, duplicates and inert
+//!    wrappers) are gone from both the source and `generate_handler!`:
+//!    download_track, batch_download_tracks, fetch_lyrics, get_artist_appearances,
+//!    merge_level2_3_duplicates, get_effective_download_paths, get_sidecar_settings,
+//!    update_sidecar_settings, reset_download_history, enrich_before_download,
+//!    update_tray_icon_command.
+//! 3. No duplicate queue or handler registrations exist in `generate_handler!`
+//!    and every registered command resolves to a declared function.
+//! 4. Canonical commands remain registered and intact:
 //!    - `get_album`, `get_artist`, `toggle_favorite`, `retry_failed`, `retry_all_failed`, `clear_completed`.
-//! 4. Notification pipeline types and deduplication logic are active and functional.
+//! 5. The `sync_playlist` phantom command (invoked by the removed
+//!    `syncPlaylist` UI wrapper) does not exist anywhere in the backend.
+//! 6. Notification pipeline types and deduplication logic are active and functional.
 
-#[test]
-fn test_generate_handler_does_not_contain_dead_commands() {
-    let main_rs = include_str!("../src/main.rs");
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
 
-    // Extract the generate_handler! invocation block
-    let handler_start = main_rs
-        .find("tauri::generate_handler![")
-        .expect("tauri::generate_handler! must exist in main.rs");
-    let handler_end = main_rs[handler_start..]
-        .find("])")
-        .expect("Closing delimiter for generate_handler! must exist");
-    let handler_block = &main_rs[handler_start..handler_start + handler_end];
+/// Matches `pub fn name(`, `pub async fn name(` and generic variants `pub async fn name<R: Runtime>(`.
+fn declares_function(backend: &str, fn_name: &str) -> bool {
+    backend.lines().any(|l| {
+        let t = l.trim();
+        if !(t.starts_with("pub async fn ") || t.starts_with("pub fn ")) {
+            return false;
+        }
+        let rest = &t[t.find("fn ").unwrap() + 3..];
+        rest.starts_with(&format!("{}(", fn_name)) || rest.starts_with(&format!("{}<", fn_name))
+    })
+}
 
-    let dead_commands = [
-        "commands::get_album_detail",
-        "commands::get_artist_detail",
-        "commands::get_album_tracks",
-        "commands::get_artist_albums",
-        "commands::get_artist_tracks",
-        "commands::list_playlists",
-        "commands::toggle_track_favorite",
-        "commands::organize_files",
-        "commands::preview_organization",
-        "commands::convert_audio",
-        "commands::get_audio_info",
-    ];
+/// Reads a single file relative to the crate root.
+fn read_crate_source(rel: &str) -> String {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let path = Path::new(manifest_dir).join(rel);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e))
+}
 
-    for cmd in &dead_commands {
-        assert!(
-            !handler_block.contains(cmd),
-            "generate_handler! must not contain dead command: {}",
-            cmd
-        );
+/// Concatenates every `.rs` file under a directory tree (relative to the crate root).
+fn read_crate_source_tree(rel: &str) -> String {
+    let mut buffer = String::new();
+    collect_source_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join(rel),
+        &mut buffer,
+    );
+    buffer
+}
+
+fn collect_source_tree(root: &Path, buffer: &mut String) {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_source_tree(&path, buffer);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            if let Ok(source) = fs::read_to_string(&path) {
+                buffer.push_str(&source);
+                buffer.push('\n');
+            }
+        }
+    }
+}
+
+/// Scans every `.rs` file under a directory for `#[tauri::command]` functions
+/// annotated with `#[allow(dead_code)]`.
+fn find_dead_tauri_commands(root: &Path, found: &mut Vec<String>) {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            find_dead_tauri_commands(&path, found);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            let source = match fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let mut remaining = source.as_str();
+            while let Some(idx) = remaining.find("#[tauri::command]") {
+                let after = &remaining[idx + "#[tauri::command]".len()..];
+                let trimmed = after.trim_start();
+                if trimmed.starts_with("#[allow(dead_code") {
+                    let fn_name = trimmed
+                        .split("fn ")
+                        .nth(1)
+                        .and_then(|rest| {
+                            rest.chars()
+                                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                                .collect::<String>()
+                                .split_whitespace()
+                                .next()
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    found.push(format!("{}: {}", path.display(), fn_name));
+                }
+                remaining = after;
+            }
+        }
     }
 }
 
 #[test]
-fn test_generate_handler_retains_canonical_commands() {
-    let main_rs = include_str!("../src/main.rs");
+fn test_no_tauri_command_is_marked_dead_code() {
+    let commands_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
+    let mut dead = Vec::new();
+    find_dead_tauri_commands(&commands_dir, &mut dead);
+    // tray.rs and any other src/*.rs module are covered too.
+    find_dead_tauri_commands(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut dead,
+    );
 
+    assert!(
+        dead.is_empty(),
+        "zero dead commands expected, found #[tauri::command] + #[allow(dead_code)] at: {:?}",
+        dead
+    );
+}
+
+#[test]
+fn test_purged_in5_commands_are_gone_from_source_and_handler() {
+    // Commands removed by the IN-5 triage: alias/duplicate/inert wrappers.
+    let purged = [
+        "download_track",
+        "batch_download_tracks",
+        "fetch_lyrics",
+        "get_artist_appearances",
+        "merge_level2_3_duplicates",
+        "get_effective_download_paths",
+        "get_sidecar_settings",
+        "update_sidecar_settings",
+        "reset_download_history",
+        "enrich_before_download",
+        "update_tray_icon_command",
+    ];
+
+    let handler_block = extract_handler_block();
+    let commands_src = read_crate_source_tree("src/commands");
+    let tray_src = read_crate_source("src/tray.rs");
+    let backend = format!("{}{}", commands_src, tray_src);
+
+    for cmd in &purged {
+        assert!(
+            !handler_block.contains(&format!("::{}", cmd)),
+            "generate_handler! must not register purged command: {}",
+            cmd
+        );
+        // The command definition must be gone too: a `#[tauri::command]` fn with
+        // that exact name must no longer exist in the backend source.
+        for backend_chunk in [commands_src.as_str(), tray_src.as_str()] {
+            if declares_function(backend_chunk, cmd) {
+                panic!("purged command {} still defined in backend source", cmd);
+            }
+        }
+    }
+    // Silence unused warning for `backend` when assertions above already used chunks.
+    let _ = backend;
+}
+
+#[test]
+fn test_sync_playlist_phantom_command_does_not_exist() {
+    // FE-11: the UI wrapper invoking `sync_playlist` was removed; the backend
+    // must not define such a command either.
+    let backend = format!(
+        "{}{}",
+        read_crate_source_tree("src/commands"),
+        read_crate_source("src/main.rs")
+    );
+    assert!(
+        !declares_function(&backend, "sync_playlist"),
+        "phantom command sync_playlist must not exist in the backend"
+    );
+}
+
+fn extract_handler_block() -> String {
+    let main_rs = read_crate_source("src/main.rs");
     let handler_start = main_rs
         .find("tauri::generate_handler![")
         .expect("tauri::generate_handler! must exist in main.rs");
     let handler_end = main_rs[handler_start..]
         .find("])")
         .expect("Closing delimiter for generate_handler! must exist");
-    let handler_block = &main_rs[handler_start..handler_start + handler_end];
+    main_rs[handler_start..handler_start + handler_end].to_string()
+}
+
+#[test]
+fn test_generate_handler_retains_canonical_commands() {
+    let handler_block = extract_handler_block();
 
     let canonical_commands = [
         "commands::get_album",
@@ -80,17 +225,9 @@ fn test_generate_handler_retains_canonical_commands() {
 
 #[test]
 fn test_generate_handler_has_no_duplicate_registrations() {
-    let main_rs = include_str!("../src/main.rs");
+    let handler_block = extract_handler_block();
 
-    let handler_start = main_rs
-        .find("tauri::generate_handler![")
-        .expect("tauri::generate_handler! must exist in main.rs");
-    let handler_end = main_rs[handler_start..]
-        .find("])")
-        .expect("Closing delimiter for generate_handler! must exist");
-    let handler_block = &main_rs[handler_start..handler_start + handler_end];
-
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut duplicates = Vec::new();
 
     for line in handler_block.lines() {
@@ -106,6 +243,39 @@ fn test_generate_handler_has_no_duplicate_registrations() {
         duplicates.is_empty(),
         "generate_handler! contains duplicate command registrations: {:?}",
         duplicates
+    );
+}
+
+#[test]
+fn test_every_registered_command_is_declared_in_backend_source() {
+    // Freeze: no registered command may point to a function that no longer
+    // exists (the BE-3/TASK-119 half-registration failure mode).
+    let handler_block = extract_handler_block();
+    let backend = format!(
+        "{}{}",
+        read_crate_source_tree("src/commands"),
+        read_crate_source("src/tray.rs")
+    );
+
+    let mut missing = Vec::new();
+    for line in handler_block.lines() {
+        let trimmed = line.trim().trim_end_matches(',');
+        if !(trimmed.starts_with("commands::") || trimmed.starts_with("tray::")) {
+            continue;
+        }
+        let fn_name = trimmed.rsplit("::").next().unwrap_or_default();
+        if fn_name.is_empty() {
+            continue;
+        }
+        if !declares_function(&backend, fn_name) {
+            missing.push(trimmed.to_string());
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "generate_handler! registers commands that are not declared in the backend: {:?}",
+        missing
     );
 }
 

@@ -29,8 +29,8 @@ pub use cover_rules::{CoverPreservationPolicy, CoverType, CoverUpdateDecision};
 pub use errors::{ErrorTaxonomy, PipelineError, RequiresAuthReason};
 pub use events::{PipelineProgressEvent, PipelineStepStatus};
 pub use layout::{
-    canonical_album_name, is_various_artists, normalize_album_artist, sanitize_filename,
-    FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext,
+    canonical_album_name, is_various_artists, sanitize_filename, FolderFileTemplateConfig,
+    LibraryLayout, TrackLayoutContext,
 };
 pub use manifest::{BatchDownloadManifest, FavoritesBatchSummary, TrackManifestEntry};
 pub use metadata::{
@@ -41,10 +41,9 @@ pub use metadata::{
     is_various_artists_variant, normalize_compilation_artist, normalize_compilation_artist_name,
     parse_credit_role_and_name, parse_credits_string, sanitize_album_title, sanitize_artist_name,
     sanitize_track_title, score_tidal_candidate, score_tidal_release,
-    split_technical_role_and_name, strip_redundant_remaster, title_matches,
-    IdentityResolutionStatus, MetadataClassification, ProviderTrackIdentity, TidalAlbum,
-    TidalArtist, TidalMediaMetadata, TidalSearchResponse, TidalSearchTracks, TidalTrack,
-    CANONICAL_VARIOUS_ARTISTS,
+    split_technical_role_and_name, strip_redundant_remaster, title_matches, MetadataClassification,
+    ProviderTrackIdentity, TidalAlbum, TidalArtist, TidalMediaMetadata, TidalSearchResponse,
+    TidalSearchTracks, TidalTrack, CANONICAL_VARIOUS_ARTISTS,
 };
 pub use operation_recovery::{
     OperationJournalEntry, OperationPhase, OperationRecoveryDetail, OperationStatus, OperationType,
@@ -60,8 +59,7 @@ pub use quality::{
     QualityDecision, QualityDecisionKind, QualityPolicy, StreamResolution, StreamSourceType,
 };
 pub use repair::{
-    RepairFileBaseline, RepairHistoryRecord, RepairOutputHashes, RepairReport,
-    RepairValidationStatus,
+    RepairFileBaseline, RepairHistoryRecord, RepairOutputHashes, RepairValidationStatus,
 };
 pub use version_derivation::{
     derive_track_version, DerivedVersionInfo, VersionConfidence, VersionDerivationInput,

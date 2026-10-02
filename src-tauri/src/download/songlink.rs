@@ -129,7 +129,7 @@ impl TrackAvailability {
     }
 
     /// Parse SongLink JSON response or serialized TrackAvailability
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Cubierta por `tests/songlink_native_engines_test.rs`.
     pub fn parse_from_json(json_str: &str) -> Result<Self> {
         // 1. Try parsing directly as TrackAvailability (roundtrip check)
         if let Ok(avail) = serde_json::from_str::<TrackAvailability>(json_str) {
@@ -151,7 +151,6 @@ pub struct SongLinkClient {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl SongLinkClient {
     pub fn new() -> Self {
         Self {
@@ -160,11 +159,13 @@ impl SongLinkClient {
         }
     }
 
+    #[allow(dead_code)] // Cubierta por `tests/service_import_pagination_and_purchases_test.rs`, `tests/songlink_native_engines_test.rs`.
     pub fn with_base_url(mut self, base_url: String) -> Self {
         self.base_url = base_url;
         self
     }
 
+    #[allow(dead_code)] // Cubierta por `tests/s197_live_isrc_resolution_test.rs`, `tests/songlink_native_engines_test.rs`.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -300,24 +301,6 @@ impl SongLinkClient {
         Err(anyhow!(
             "No valid identifier or URL found in request to query SongLink"
         ))
-    }
-
-    /// Get Qobuz track ID from Spotify ID
-    pub async fn get_qobuz_id(&self, spotify_id: &str) -> Result<Option<String>> {
-        let availability = self.check_availability(spotify_id, None).await?;
-        Ok(availability.qobuz_id)
-    }
-
-    /// Get Tidal track ID from Spotify ID
-    pub async fn get_tidal_id(&self, spotify_id: &str) -> Result<Option<String>> {
-        let availability = self.check_availability(spotify_id, None).await?;
-        Ok(availability.tidal_id)
-    }
-
-    /// Get Amazon Music URL from Spotify ID
-    pub async fn get_amazon_url(&self, spotify_id: &str) -> Result<Option<String>> {
-        let availability = self.check_availability(spotify_id, None).await?;
-        Ok(availability.amazon_url)
     }
 }
 

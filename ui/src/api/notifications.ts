@@ -32,6 +32,15 @@ export async function emitTestNotification(
     });
 }
 
+/**
+ * Ask the backend to dispatch a desktop notification on the canonical
+ * `tray-notification` channel (consumed by useNotificationListener).
+ */
+export async function showNotification(title: string, body: string): Promise<void> {
+    return invokeCommand<void>('show_notification', { title, body });
+}
+
 export const notificationsApi = {
     emitTestNotification,
+    showNotification,
 };

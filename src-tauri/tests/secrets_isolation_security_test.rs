@@ -363,3 +363,80 @@ fn test_deezer_service_source_free_of_hardcoded_blowfish_secret() {
         "deezer_service.py must implement dynamic resolve_blowfish_key method"
     );
 }
+
+#[test]
+fn test_tidal_python_modules_free_of_hardcoded_client_credentials() {
+    let repo_root = get_repo_root();
+    let tidal_modules = [
+        repo_root
+            .join("scripts")
+            .join("services")
+            .join("tidal_auth.py"),
+        repo_root
+            .join("scripts")
+            .join("services")
+            .join("tidal_service.py"),
+    ];
+
+    for module in &tidal_modules {
+        assert!(
+            module.is_file(),
+            "Tidal Python module must exist: {:?}",
+            module
+        );
+        let content = fs::read_to_string(module).expect("Read Tidal Python module");
+
+        assert!(
+            !content.contains(FORBIDDEN_TIDAL_CLIENT_ID),
+            "{:?} must NOT contain the hardcoded Tidal client id",
+            module
+        );
+        assert!(
+            !content.contains(FORBIDDEN_TIDAL_SECRET),
+            "{:?} must NOT contain the hardcoded Tidal client secret",
+            module
+        );
+        assert!(
+            !content.contains(FORBIDDEN_TIDAL_B64_CLIENT_ID),
+            "{:?} must NOT contain the base64-obfuscated Tidal client id",
+            module
+        );
+        assert!(
+            !content.contains(FORBIDDEN_TIDAL_B64_SECRET),
+            "{:?} must NOT contain the base64-obfuscated Tidal client secret",
+            module
+        );
+        // Credentials must be resolved from the environment, exactly like the crate.
+        assert!(
+            content.contains("TIDAL_CLIENT_ID"),
+            "{:?} must read the TIDAL_CLIENT_ID env var",
+            module
+        );
+        assert!(
+            content.contains("TIDAL_CLIENT_SECRET"),
+            "{:?} must read the TIDAL_CLIENT_SECRET env var",
+            module
+        );
+    }
+
+    // The PKCE flow is a public client (no secret) and reads its own client id.
+    let tidal_auth = fs::read_to_string(&tidal_modules[0]).expect("Read tidal_auth.py");
+    assert!(
+        tidal_auth.contains("TIDAL_CLIENT_ID_PKCE"),
+        "tidal_auth.py must read the TIDAL_CLIENT_ID_PKCE env var"
+    );
+
+    let env_example =
+        fs::read_to_string(repo_root.join(".env.example")).expect("Read .env.example");
+    for variable in [
+        "TIDAL_CLIENT_ID",
+        "TIDAL_CLIENT_SECRET",
+        "TIDAL_CLIENT_ID_PKCE",
+    ] {
+        assert!(
+            env_example.contains(variable),
+            ".env.example must document {}",
+            variable
+        );
+    }
+}

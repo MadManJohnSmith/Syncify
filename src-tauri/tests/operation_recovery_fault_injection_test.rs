@@ -30,8 +30,11 @@ use std::io::Write;
 use std::path::Path;
 use syncify_core_domain::{OperationJournalEntry, OperationPhase, OperationStatus, OperationType};
 use syncify_tauri_lib::services::operation_recovery::{
-    create_operation_journal, get_recovery_audit_summary, reconcile_startup_operations,
+    begin_service_sync_operation, begin_tidal_download_operation, classify_operation_error,
+    create_operation_journal, download_staging_path, get_recovery_audit_summary,
+    reconcile_startup_operations, DownloadJournal, DownloadJournalParams, JournaledOperation,
 };
+use syncify_tauri_lib::services::tidal_pipeline::TidalSingleTrackRequest;
 use tempfile::TempDir;
 
 /// Helper to generate a minimal valid FLAC file (fLaC magic header + minimal streaminfo block)
@@ -502,4 +505,496 @@ async fn test_fault_injection_boundary_k_l_m_import_and_enrichment_crash() {
             .await
             .unwrap();
     assert_eq!(journal_status, "interrupted");
+}
+
+// ============================================================================
+// PRODUCTION PATH (BD-9)
+//
+// The boundary tests above inject journal rows by hand. The tests below drive
+// the SAME journal API the shipping code uses — `DownloadJournal` (download
+// worker), `begin_tidal_download_operation` (Tidal pipeline) and
+// `begin_service_sync_operation` (service sync) — and then let
+// `reconcile_startup_operations` consume whatever they wrote. They fail if the
+// production code stops writing scannable rows, or writes rows the reconciler
+// cannot act on.
+// ============================================================================
+
+/// Open a migrated, migrated-only database (no operation_journal content).
+async fn migrated_pool(name: &str) -> (TempDir, sqlx::SqlitePool) {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join(name);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&format!("sqlite:{}?mode=rwc", db_path.display()))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    (temp, pool)
+}
+
+/// Seed a track + a `downloading` queue row, the state the worker starts from.
+async fn seed_downloading_queue_row(pool: &sqlx::SqlitePool) -> (i64, i64) {
+    let tid: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, duration_ms) VALUES ('Journaled Track', 200000) RETURNING id",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+
+    let qid: i64 = sqlx::query_scalar(
+        "INSERT INTO download_queue (track_id, status, priority, position) VALUES (?, 'downloading', 0, 1) RETURNING id",
+    )
+    .bind(tid)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+
+    (tid, qid)
+}
+
+#[tokio::test]
+async fn production_worker_journal_is_consumed_by_startup_reconciliation() {
+    let (temp, pool) = migrated_pool("production_worker.db").await;
+    let output_dir = temp.path().join("library").to_string_lossy().to_string();
+    let (tid, qid) = seed_downloading_queue_row(&pool).await;
+
+    // The worker opens the entry and checkpoints the transfer, exactly as
+    // `DownloadWorker::process_download_internal` does.
+    let journal = DownloadJournal::start(
+        &pool,
+        &DownloadJournalParams {
+            operation_id: "op-production-download-01".to_string(),
+            queue_id: qid,
+            track_id: tid,
+            provider: Some("qobuz".to_string()),
+            input_identity: Some("service_track_id=42".to_string()),
+            output_dir: output_dir.clone(),
+            allow_fallback: false,
+        },
+    )
+    .await
+    .expect("production journal entry must open");
+
+    journal.checkpoint_transfer(Some("transfer started")).await;
+
+    // The production row must be scannable by the reconciler and must point at
+    // the real `.part` path the download writes into.
+    let (status, phase, staging_path, entity_id, operation_type): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+    ) = sqlx::query_as(
+        "SELECT status, phase, staging_path, entity_id, operation_type FROM operation_journal WHERE operation_id = ?",
+    )
+    .bind("op-production-download-01")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(status, "checkpointed");
+    assert_eq!(phase, "transfer");
+    assert_eq!(operation_type, "download_qobuz");
+    assert_eq!(entity_id.as_deref(), Some(qid.to_string().as_str()));
+    assert_eq!(
+        staging_path.as_deref(),
+        Some(download_staging_path(&output_dir, qid).as_str())
+    );
+
+    // Crash mid-transfer: a truncated `.part` sits at the journaled path.
+    let part = temp
+        .path()
+        .join("library")
+        .join(".staging")
+        .join(format!("{}.part", qid));
+    create_corrupt_part_file(&part);
+    assert!(part.exists());
+
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
+    assert_eq!(summary.active_operations_found, 1);
+    assert_eq!(summary.interrupted_retryable_count, 1);
+    assert_eq!(summary.cleaned_staging_files, 1);
+
+    // Staging purged, queue item re-armed for retry, journal closed as interrupted.
+    assert!(!part.exists(), "incomplete .part must be purged");
+    let queue_status: String = sqlx::query_scalar("SELECT status FROM download_queue WHERE id = ?")
+        .bind(qid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(queue_status, "queued");
+
+    let journal_status: String =
+        sqlx::query_scalar("SELECT status FROM operation_journal WHERE operation_id = ?")
+            .bind("op-production-download-01")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(journal_status, "interrupted");
+
+    // Append-only audit trail for the recovered operation.
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM operation_recovery_audit WHERE operation_id = 'op-production-download-01' AND action_taken = 'ScheduleRetry'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_count, 1);
+}
+
+#[tokio::test]
+async fn production_worker_committed_download_is_not_reconciled_again() {
+    let (temp, pool) = migrated_pool("production_commit.db").await;
+    let output_dir = temp.path().join("library").to_string_lossy().to_string();
+    let (tid, qid) = seed_downloading_queue_row(&pool).await;
+
+    let final_path = temp
+        .path()
+        .join("library")
+        .join("Artist")
+        .join("Track.flac");
+    create_valid_flac_file(&final_path);
+
+    let journal = DownloadJournal::start(
+        &pool,
+        &DownloadJournalParams {
+            operation_id: "op-production-download-02".to_string(),
+            queue_id: qid,
+            track_id: tid,
+            provider: Some("qobuz".to_string()),
+            input_identity: Some("service_track_id=42".to_string()),
+            output_dir: output_dir.clone(),
+            allow_fallback: false,
+        },
+    )
+    .await
+    .expect("production journal entry must open");
+
+    journal.checkpoint_transfer(Some("transfer started")).await;
+    journal
+        .checkpoint_promoted(&final_path.to_string_lossy(), Some("promoted via qobuz"))
+        .await;
+    journal
+        .checkpoint_persist(Some("writing downloads ledger"))
+        .await;
+    journal.commit(Some("promoted=true service=qobuz")).await;
+
+    // 'committed' is outside the set startup reconciliation scans, so a healthy
+    // download is never re-queued or double-reconciled.
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
+    assert_eq!(
+        summary.active_operations_found, 0,
+        "a committed download must not be reconciled again"
+    );
+
+    let (status, expected_output_path): (String, Option<String>) = sqlx::query_as(
+        "SELECT status, expected_output_path FROM operation_journal WHERE operation_id = ?",
+    )
+    .bind("op-production-download-02")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "committed");
+    assert_eq!(
+        expected_output_path.as_deref(),
+        Some(final_path.to_string_lossy().as_ref())
+    );
+    assert!(
+        final_path.exists(),
+        "committed audio must be left untouched"
+    );
+}
+
+#[tokio::test]
+async fn production_worker_terminal_failure_marks_queue_failed_on_recovery() {
+    let (temp, pool) = migrated_pool("production_terminal.db").await;
+    let output_dir = temp.path().join("library").to_string_lossy().to_string();
+    let (tid, qid) = seed_downloading_queue_row(&pool).await;
+
+    let journal = DownloadJournal::start(
+        &pool,
+        &DownloadJournalParams {
+            operation_id: "op-production-download-03".to_string(),
+            queue_id: qid,
+            track_id: tid,
+            provider: Some("qobuz".to_string()),
+            input_identity: Some("service_track_id=42".to_string()),
+            output_dir,
+            allow_fallback: false,
+        },
+    )
+    .await
+    .expect("production journal entry must open");
+
+    journal.checkpoint_transfer(Some("transfer started")).await;
+
+    // A credential rejection is what the worker treats as permanent.
+    let permanent_error = "RequiresAuth: Qobuz user authentication required (token expired)";
+    assert!(
+        !classify_operation_error(OperationType::DownloadQobuz, "qobuz", permanent_error)
+            .is_retryable(),
+        "credential rejection must not be classified as retryable"
+    );
+    journal.fail(permanent_error, true).await;
+
+    // The worker also records the verdict on the queue row.
+    sqlx::query("UPDATE download_queue SET status = 'failed', error_message = ? WHERE id = ?")
+        .bind(permanent_error)
+        .bind(qid)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let journal_status: String =
+        sqlx::query_scalar("SELECT status FROM operation_journal WHERE operation_id = ?")
+            .bind("op-production-download-03")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(journal_status, "failed_terminal");
+
+    let tax: String =
+        sqlx::query_scalar("SELECT error_taxonomy FROM operation_journal WHERE operation_id = ?")
+            .bind("op-production-download-03")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        tax.contains("AuthInvalid"),
+        "journal must record the taxonomy the reconciler classifies on, got {}",
+        tax
+    );
+
+    // `failed_terminal` is outside the scannable set, so recovery leaves the
+    // failed item alone: the orphan sweep only re-arms rows still 'downloading'.
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
+    assert_eq!(summary.active_operations_found, 0);
+    assert_eq!(summary.failed_terminal_count, 0);
+
+    let queue_status: String = sqlx::query_scalar("SELECT status FROM download_queue WHERE id = ?")
+        .bind(qid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        queue_status, "failed",
+        "a permanently failed download must not be re-queued by recovery"
+    );
+}
+
+#[tokio::test]
+async fn production_tidal_pipeline_reuses_the_worker_journal_entry() {
+    let (temp, pool) = migrated_pool("production_tidal.db").await;
+    let output_dir = temp.path().join("library").to_string_lossy().to_string();
+    let (tid, qid) = seed_downloading_queue_row(&pool).await;
+
+    // The worker journals the queued item...
+    let _worker_journal = DownloadJournal::start(
+        &pool,
+        &DownloadJournalParams {
+            operation_id: "op-production-download-04".to_string(),
+            queue_id: qid,
+            track_id: tid,
+            provider: Some("tidal".to_string()),
+            input_identity: Some("service_track_id=4242".to_string()),
+            output_dir: output_dir.clone(),
+            allow_fallback: false,
+        },
+    )
+    .await
+    .expect("production journal entry must open");
+
+    // ...and the pipeline it calls reuses that same row instead of forking a
+    // second entry for one physical download.
+    let request = TidalSingleTrackRequest {
+        track_id_or_query: "4242".to_string(),
+        requested_quality: Some("24-192".to_string()),
+        output_dir: Some(output_dir.clone()),
+        allow_lossy_fallback: Some(false),
+        hint_title: Some("Journaled Track".to_string()),
+        hint_artist: Some("Some Artist".to_string()),
+        hint_album: Some("Some Album".to_string()),
+        hint_isrc: Some("USQX92000875".to_string()),
+        hint_track_number: Some(1),
+        hint_disc_number: Some(1),
+        hint_release_date: Some("2020-03-27".to_string()),
+        hint_track_id: Some(tid),
+        operation_id: Some("op-production-download-04".to_string()),
+    };
+
+    let pipeline_journal: JournaledOperation = begin_tidal_download_operation(&pool, &request)
+        .await
+        .expect("pipeline must attach to the worker entry");
+
+    pipeline_journal
+        .checkpoint(
+            OperationPhase::Transfer,
+            Some("/tmp/syncify_staging_abc/4242.flac"),
+            Some("transfer started"),
+        )
+        .await;
+
+    let entries: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM operation_journal WHERE entity_id = ?")
+            .bind(qid.to_string())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        entries, 1,
+        "one physical download must never have two journal entries"
+    );
+
+    // Without a caller-provided operation id the pipeline opens its own entry.
+    let standalone = TidalSingleTrackRequest {
+        track_id_or_query: "777".to_string(),
+        hint_track_id: None,
+        operation_id: None,
+        ..request.clone()
+    };
+    let standalone_journal = begin_tidal_download_operation(&pool, &standalone)
+        .await
+        .expect("standalone pipeline must open its own entry");
+    standalone_journal
+        .checkpoint(
+            OperationPhase::Validate,
+            Some("/tmp/syncify_staging_def/777.flac"),
+            None,
+        )
+        .await;
+
+    let standalone_type: String = sqlx::query_scalar(
+        "SELECT operation_type FROM operation_journal WHERE operation_type = 'download_tidal' AND entity_id = ?",
+    )
+    .bind("777")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(standalone_type, "download_tidal");
+
+    // Both entries are live, so startup reconciliation must pick them up.
+    let summary = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
+    assert_eq!(summary.active_operations_found, 2);
+}
+
+#[tokio::test]
+async fn production_service_sync_journal_is_scannable_and_closeable() {
+    let (temp, pool) = migrated_pool("production_sync.db").await;
+
+    let journal: JournaledOperation = begin_service_sync_operation(&pool, "Spotify", Some(7))
+        .await
+        .expect("service sync journal entry must open");
+
+    let (operation_type, status, entity_id, account_id): (
+        String,
+        String,
+        Option<String>,
+        Option<i64>,
+    ) = sqlx::query_as(
+        "SELECT operation_type, status, entity_id, account_id FROM operation_journal WHERE operation_id LIKE 'op-sync-spotify-%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(operation_type, "service_sync");
+    assert_eq!(status, "started");
+    assert_eq!(entity_id.as_deref(), Some("spotify"));
+    assert_eq!(account_id, Some(7));
+
+    journal
+        .checkpoint(
+            OperationPhase::Transfer,
+            None,
+            Some("authenticated; fetching remote library"),
+        )
+        .await;
+
+    // A crash between milestones leaves the sync scannable and retryable: the
+    // catalog upserts it already performed are idempotent, so re-running is safe.
+    let interrupted = reconcile_startup_operations(&pool, Some(temp.path()))
+        .await
+        .unwrap();
+    assert_eq!(interrupted.active_operations_found, 1);
+    assert_eq!(interrupted.interrupted_retryable_count, 1);
+
+    let audit = get_recovery_audit_summary(&pool).await.unwrap();
+    assert_eq!(audit.failed_terminal_count, 0);
+    assert_eq!(audit.interrupted_retryable_count, 1);
+    assert!(audit
+        .details
+        .iter()
+        .any(|d| matches!(d.operation_type, OperationType::ServiceSync)));
+}
+
+#[tokio::test]
+async fn production_service_sync_commit_is_not_reconciled() {
+    let (_temp, pool) = migrated_pool("production_sync_commit.db").await;
+
+    let journal = begin_service_sync_operation(&pool, "tidal", Some(3))
+        .await
+        .expect("service sync journal entry must open");
+    journal
+        .checkpoint(OperationPhase::Transfer, None, Some("fetching"))
+        .await;
+    journal
+        .checkpoint_persisting(Some("imported_tracks=120"))
+        .await;
+    journal
+        .commit(Some("service=tidal success=true imported_tracks=120"))
+        .await;
+
+    let summary = reconcile_startup_operations(&pool, None).await.unwrap();
+    assert_eq!(
+        summary.active_operations_found, 0,
+        "a completed sync must not be reconciled again"
+    );
+}
+
+#[tokio::test]
+async fn production_error_classification_matches_retry_semantics() {
+    // Retryable: the worker leaves these on the queue for another attempt and the
+    // journal must record them as `interrupted`, not `failed_terminal`.
+    for (error, label) in [
+        ("NetworkExhausted: all retries failed", "network"),
+        ("request timed out after 30s", "timeout"),
+        ("429 TooManyRequests from provider", "rate limit"),
+    ] {
+        let taxonomy = classify_operation_error(OperationType::DownloadQobuz, "qobuz", error);
+        assert!(
+            taxonomy.is_retryable(),
+            "'{}' ({}) must classify as retryable, got {:?}",
+            error,
+            label,
+            taxonomy
+        );
+    }
+
+    // Terminal: these need user action, so recovery must not silently re-queue.
+    for (error, label) in [
+        ("RequiresAuth: Qobuz user authentication required", "auth"),
+        (
+            "SourceIdentityMissing: no locked service_track_id",
+            "identity",
+        ),
+        ("TrackUnresolved: not found on provider", "unavailable"),
+        ("RejectedQuality: downgrade rejected", "quality"),
+    ] {
+        let taxonomy = classify_operation_error(OperationType::DownloadQobuz, "qobuz", error);
+        assert!(
+            !taxonomy.is_retryable(),
+            "'{}' ({}) must classify as terminal, got {:?}",
+            error,
+            label,
+            taxonomy
+        );
+    }
 }

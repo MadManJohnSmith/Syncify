@@ -25,12 +25,13 @@ import io
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
+
+from bridge_python import python_executable
 
 # Add scripts directory to sys.path
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent
@@ -501,10 +502,10 @@ class TestDownloadBridgeContract(unittest.TestCase):
         ):
             env[key] = ""  # blank out; dotenv (override=False) will not restore them
 
-        # Resolve the interpreter exactly like Rust's get_python_executable():
-        # via PATH. (sys.executable can point to an AppImage wrapper that would
-        # launch a GUI process instead of running the script.)
-        python_exe = shutil.which("python3") or shutil.which("python") or sys.executable
+        # Resolve the interpreter the way the CLI contract tests do: verified,
+        # because sys.executable can point at an AppImage wrapper that would
+        # launch a GUI process instead of running the script.
+        python_exe = python_executable()
         proc = subprocess.run(
             [
                 python_exe,

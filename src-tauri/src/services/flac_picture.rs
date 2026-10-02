@@ -21,9 +21,10 @@ pub fn is_valid_sidecar<P: AsRef<Path>>(path: P) -> bool {
 
 /// Extracted picture information from a FLAC file.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FlacPictureInfo {
     pub mime_type: String,
+    // Verificado por `tests/sidecar_zero_byte_guard_test.rs`.
+    #[allow(dead_code)]
     pub picture_type: PictureType,
     pub data: Vec<u8>,
     pub cover_type: CoverType,
@@ -179,7 +180,7 @@ pub fn ensure_flac_sidecars_intact<P: AsRef<Path>, Q: AsRef<Path>>(
 /// `PICTURE` block from the first FLAC track found.
 ///
 /// Returns the list of repaired sidecar paths.
-#[allow(dead_code)]
+#[allow(dead_code)] // Cubierta por `tests/sidecar_zero_byte_guard_test.rs`.
 pub fn scan_and_repair_album_sidecars<P: AsRef<Path>>(
     album_dir: P,
 ) -> Result<Vec<PathBuf>, String> {

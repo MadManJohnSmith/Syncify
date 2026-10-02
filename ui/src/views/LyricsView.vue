@@ -74,6 +74,26 @@
             <span :class="['material-symbols-outlined text-[12px]', isCoverSweepRunning && 'animate-spin']">{{ isCoverSweepRunning ? 'progress_activity' : 'animation' }}</span>
             Portadas animadas
           </button>
+          <!-- TASK-111: materialize missing .lrc sidecars for downloaded tracks with lyrics in DB -->
+          <button
+            @click="materializeLrcSidecars"
+            :disabled="isMaterializingSidecars"
+            class="ml-2 flex items-center gap-1 px-2 py-0.5 rounded border border-gray-300 dark:border-border-dark hover:border-primary/50 transition-colors disabled:opacity-50"
+            title="Escribir los sidecars .lrc que falten junto al audio para las pistas descargadas que ya tienen letra en la base de datos"
+          >
+            <span :class="['material-symbols-outlined text-[12px]', isMaterializingSidecars && 'animate-spin']">{{ isMaterializingSidecars ? 'progress_activity' : 'subtitles' }}</span>
+            Sidecars .lrc
+          </button>
+          <!-- TASK-111: materialize missing album cover sidecars from embedded art or cover_art_url -->
+          <button
+            @click="materializeCoverSidecars"
+            :disabled="isMaterializingCovers"
+            class="ml-2 flex items-center gap-1 px-2 py-0.5 rounded border border-gray-300 dark:border-border-dark hover:border-primary/50 transition-colors disabled:opacity-50"
+            title="Escribir cover.jpg junto al audio para los álbumes descargados sin sidecar de portada, usando el arte embebido en el FLAC o la cover_art_url guardada"
+          >
+            <span :class="['material-symbols-outlined text-[12px]', isMaterializingCovers && 'animate-spin']">{{ isMaterializingCovers ? 'progress_activity' : 'image' }}</span>
+            Portadas sidecar
+          </button>
         </div>
         
         <!-- Enhanced Batch Toolbar -->
@@ -1539,6 +1559,50 @@ async function scanDiskForLyrics() {
     notify(err instanceof Error ? err.message : String(err), 'error')
   } finally {
     isHarvestingLyrics.value = false
+  }
+}
+
+/** TASK-111: write missing .lrc sidecars for downloaded tracks with lyrics in DB. */
+const isMaterializingSidecars = ref(false)
+async function materializeLrcSidecars() {
+  if (isMaterializingSidecars.value) return
+  isMaterializingSidecars.value = true
+  try {
+    const r = await lyricsApi.materializeMissingLrcSidecars()
+    notify(
+      r.materialized > 0
+        ? `Sidecars .lrc: ${r.materialized} escritos, ${r.already_present} ya existían, ${r.failed} fallos`
+        : `Sidecars .lrc: nada que escribir (${r.scanned} pistas revisadas, ${r.failed} fallos)`,
+      r.materialized > 0 ? 'success' : 'info'
+    )
+    await loadLyricsStats()
+  } catch (err) {
+    console.error('LRC sidecar materialization failed:', err)
+    notify(err instanceof Error ? err.message : String(err), 'error')
+  } finally {
+    isMaterializingSidecars.value = false
+  }
+}
+
+/** TASK-111: write missing album cover sidecars from embedded art or stored URLs. */
+const isMaterializingCovers = ref(false)
+async function materializeCoverSidecars() {
+  if (isMaterializingCovers.value) return
+  isMaterializingCovers.value = true
+  try {
+    const r = await lyricsApi.materializeMissingCovers()
+    const written = r.materialized_from_embedded + r.materialized_from_url
+    notify(
+      written > 0
+        ? `Portadas sidecar: ${written} escritas (${r.materialized_from_embedded} del FLAC, ${r.materialized_from_url} de URL), ${r.already_present} ya existían, ${r.failed} fallos`
+        : `Portadas sidecar: nada que escribir (${r.scanned_albums} álbumes revisados, ${r.missing_cover_url} sin fuente)`,
+      written > 0 ? 'success' : 'info'
+    )
+  } catch (err) {
+    console.error('Cover sidecar materialization failed:', err)
+    notify(err instanceof Error ? err.message : String(err), 'error')
+  } finally {
+    isMaterializingCovers.value = false
   }
 }
 

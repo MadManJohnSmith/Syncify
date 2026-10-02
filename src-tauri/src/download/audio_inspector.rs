@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use syncify_core_domain::byte_validators::AudioByteValidator;
-use syncify_core_domain::quality::{classify_audio_tier, AudioTier};
+use syncify_core_domain::quality::{classify_audio_tier, AudioLoudnessMetrics, AudioTier};
 
 /// Loudness and ReplayGain 2.0 / EBU R128 metrics for audio normalization
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -39,6 +39,10 @@ pub struct PhysicalAudioMetadata {
     pub loudness: Option<LoudnessAnalysis>,
 }
 
+// Métodos de diagnóstico (classify_tier, canonical_quality, is_hires,
+// quality_string, has_valid_streaminfo_md5, verify_physical_integrity): los
+// ejercitan `tests/audio_quality_reconciliation_test.rs` y
+// `tests/hires_quality_reconciliation_test.rs`.
 #[allow(dead_code)]
 impl PhysicalAudioMetadata {
     /// Classifies the physical audio metadata into canonical AudioTier
@@ -99,28 +103,6 @@ impl PhysicalAudioMetadata {
             Ok(true)
         }
     }
-
-    /// Measures EBU R128 loudness and calculates ReplayGain metrics on the physical audio file.
-    pub fn measure_loudness(
-        &mut self,
-        path: &Path,
-        target_lufs: Option<f64>,
-    ) -> Result<&LoudnessAnalysis, String> {
-        let analysis = calculate_loudness_ebur128(path, target_lufs)?;
-        self.loudness = Some(analysis);
-        Ok(self.loudness.as_ref().unwrap())
-    }
-
-    /// Measures EBU R128 loudness asynchronously.
-    pub async fn measure_loudness_async(
-        &mut self,
-        path: &Path,
-        target_lufs: Option<f64>,
-    ) -> Result<&LoudnessAnalysis, String> {
-        let analysis = calculate_loudness_ebur128_async(path, target_lufs).await?;
-        self.loudness = Some(analysis);
-        Ok(self.loudness.as_ref().unwrap())
-    }
 }
 
 /// Classify physical audio metrics into a canonical audio_quality string:
@@ -150,6 +132,7 @@ pub fn classify_physical_audio_quality(
 /// Verifies claimed/requested quality against physical audio on disk.
 /// Specifically prevents labeling a stream as "hires" if the physical audio is 16-bit/44.1kHz
 /// or <=16-bit and <=48kHz.
+// Cubierta por `tests/hires_quality_reconciliation_test.rs`.
 #[allow(dead_code)]
 pub fn enforce_post_download_quality_gate(
     claimed_quality: Option<&str>,
@@ -370,6 +353,8 @@ pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata>
 }
 
 /// Inspects and verifies physical FLAC stream integrity (STREAMINFO MD5 bit-exact check or decode-check mode) (TASK-132).
+// Re-exportada por `download/mod.rs`; el contrato FLAC lo cubre el crate
+// `syncify-flac-writer` (crates/syncify-flac-writer/tests/flac_streaminfo_md5_test.rs).
 #[allow(dead_code)]
 pub fn verify_flac_stream_integrity(
     path: &Path,
@@ -378,20 +363,11 @@ pub fn verify_flac_stream_integrity(
 }
 
 /// Populates or restores the MD5 signature in the FLAC STREAMINFO metadata block (TASK-132).
+// Re-exportada por `download/mod.rs`; el contrato FLAC lo cubre el crate
+// `syncify-flac-writer` (crates/syncify-flac-writer/tests/flac_streaminfo_md5_test.rs).
 #[allow(dead_code)]
 pub fn populate_flac_streaminfo_md5(path: &Path) -> Result<[u8; 16], String> {
     syncify_flac_writer::populate_streaminfo_md5(path)
-}
-
-/// Inspects physical audio file and measures loudness in one operation.
-#[allow(dead_code)]
-pub fn inspect_physical_audio_file_with_loudness(
-    path: &Path,
-    target_lufs: Option<f64>,
-) -> Option<PhysicalAudioMetadata> {
-    let mut meta = inspect_physical_audio_file(path)?;
-    let _ = meta.measure_loudness(path, target_lufs);
-    Some(meta)
 }
 
 /// Parses stderr from `ffmpeg -af ebur128=peak=true` into `LoudnessAnalysis`.
@@ -473,13 +449,17 @@ pub fn parse_ebur128_output(stderr: &str, target_lufs: f64) -> Result<LoudnessAn
 
     if let Some(i_lufs) = integrated_lufs {
         let peak_db = true_peak_db.unwrap_or(-0.1);
-        let peak_linear = if peak_db.is_infinite() && peak_db.is_sign_negative() {
-            0.0
-        } else {
-            10.0_f64.powf(peak_db / 20.0).min(1.0).max(0.0)
+        // The tag strings come from the shared loudness domain
+        // (`AudioLoudnessMetrics` / `LoudnessStandard`), which is also where the
+        // ReplayGain reference loudness (-18 LUFS) and the EBU R128 target
+        // (-23 LUFS) are defined, instead of re-deriving them here.
+        let metrics = AudioLoudnessMetrics {
+            integrated_lufs: i_lufs,
+            true_peak_dbfs: peak_db,
+            loudness_range_lu: loudness_range_lu.unwrap_or(0.0),
         };
+        let peak_linear = metrics.replaygain_peak_ratio();
         let track_gain_db = target_lufs - i_lufs;
-        let r128_gain_lu = -23.0 - i_lufs;
 
         Ok(LoudnessAnalysis {
             integrated_lufs: i_lufs,
@@ -489,11 +469,13 @@ pub fn parse_ebur128_output(stderr: &str, target_lufs: f64) -> Result<LoudnessAn
             track_peak: peak_linear,
             album_gain_db: None,
             album_peak: None,
-            replaygain_track_gain: format!("{:+.2} dB", track_gain_db),
-            replaygain_track_peak: format!("{:.6}", peak_linear),
+            // `target_lufs` is the caller's reference loudness (ReplayGain 2.0 by
+            // default); the string form still comes from the domain formatter.
+            replaygain_track_gain: metrics.format_replaygain_gain_for_target(target_lufs),
+            replaygain_track_peak: metrics.format_replaygain_track_peak(),
             replaygain_album_gain: None,
             replaygain_album_peak: None,
-            r128_track_gain: format!("{:+.2} LU", r128_gain_lu),
+            r128_track_gain: metrics.format_r128_track_gain(),
         })
     } else {
         Err("Could not parse EBU R128 loudness metrics from ffmpeg output".to_string())
@@ -501,6 +483,9 @@ pub fn parse_ebur128_output(stderr: &str, target_lufs: f64) -> Result<LoudnessAn
 }
 
 /// Runs synchronous `ffmpeg` EBU R128 analysis on physical audio file.
+// Usada por `AudioAnalyzer::run_ffmpeg_ebur128`, cubierto por los tests de
+// `tests/batch_50_audit_test.rs` y `tests/metadata_enrichment_parity_test.rs`.
+#[allow(dead_code)]
 pub fn calculate_loudness_ebur128(
     path: &Path,
     target_lufs: Option<f64>,
@@ -556,6 +541,7 @@ pub async fn calculate_loudness_ebur128_async(
 /// Computes album-level ReplayGain metrics across multiple tracks by summing acoustic energy.
 /// Energy average: 10 * log10(mean(10^(LUFS / 10))).
 /// Peak is the max of track peaks.
+// Cubierta por `tests/loudness_replaygain_test.rs` y `tests/loudness_domain_tag_contract_test.rs`.
 #[allow(dead_code)]
 pub fn calculate_album_replaygain(
     tracks: &[LoudnessAnalysis],

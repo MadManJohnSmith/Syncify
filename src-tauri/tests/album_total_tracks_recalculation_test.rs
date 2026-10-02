@@ -14,9 +14,7 @@ use syncify_tauri_lib::commands::{
     merge_level2_3_duplicates_inner, perform_recalculate_album_total_tracks,
 };
 use syncify_tauri_lib::crypto;
-use syncify_tauri_lib::services::enrichment::{
-    install_album_total_tracks_triggers, recalculate_album_total_tracks,
-};
+use syncify_tauri_lib::services::enrichment::recalculate_album_total_tracks;
 
 async fn setup_test_db() -> sqlx::SqlitePool {
     let _ = crypto::init_crypto([42u8; 32]);
@@ -100,6 +98,25 @@ async fn test_recalculate_album_total_tracks_fixes_divergences() {
     sqlx::query("INSERT INTO tracks (title, album_id) VALUES ('Track 1', ?), ('Track 2', ?)")
         .bind(alb4_id)
         .bind(alb4_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // The 0085 triggers keep total_tracks = COUNT(*) on every insert, so the
+    // legacy divergences this test exercises are seeded via UPDATE: this is
+    // exactly the state of rows written before 0085 or edited by hand.
+    sqlx::query("UPDATE albums SET total_tracks = 23 WHERE id = ?")
+        .bind(alb1_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE albums SET total_tracks = 1 WHERE id = ?")
+        .bind(alb2_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE albums SET total_tracks = NULL WHERE id = ?")
+        .bind(alb3_id)
         .execute(&pool)
         .await
         .unwrap();
@@ -211,10 +228,8 @@ async fn test_stubs_preserve_declared_total_tracks() {
 async fn test_recurrence_triggers_maintain_total_tracks() {
     let pool = setup_test_db().await;
 
-    // Install recurrence triggers
-    install_album_total_tracks_triggers(&pool)
-        .await
-        .expect("Trigger installation must succeed");
+    // The recurrence triggers are installed by migration 0085 (BD-12); they no
+    // longer need a runtime installer.
 
     // Create an album
     let alb_id: i64 = sqlx::query_scalar(
@@ -427,8 +442,10 @@ async fn test_merge_duplicates_synchronizes_total_tracks() {
         "Expected 1 duplicate track removed per album (2 albums)"
     );
 
-    // A declared total describes the album, and merging removes a duplicate representation of a
-    // track rather than a track of the album, so the declared count must survive the merge.
+    // A declared total no longer survives the merge: migration 0085 installed
+    // trg_tracks_sync_album_total_tracks_del (BD-12), so removing the duplicate
+    // row recounts the album to its surviving track count. The duplicate really
+    // was removed, so the recount is the honest value.
     let tt_post: Option<i32> = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
         .bind(album_id)
         .fetch_one(&pool)
@@ -436,8 +453,8 @@ async fn test_merge_duplicates_synchronizes_total_tracks() {
         .unwrap();
     assert_eq!(
         tt_post,
-        Some(2),
-        "Declared album total_tracks must be preserved across the merge"
+        Some(1),
+        "Post-merge total_tracks must reflect the single surviving track row"
     );
 
     // The duplicate really was removed: the album now holds a single row for that track.
@@ -490,6 +507,14 @@ async fn test_python_script_execution_and_assertions() {
 
     sqlx::query("INSERT INTO tracks (title, album_id) VALUES ('T1', ?), ('T2', ?)")
         .bind(alb1_id)
+        .bind(alb1_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // The 0085 triggers already recounted to 2 on insert; re-create the legacy
+    // divergence the maintenance script exists to repair.
+    sqlx::query("UPDATE albums SET total_tracks = 10 WHERE id = ?")
         .bind(alb1_id)
         .execute(&pool)
         .await
