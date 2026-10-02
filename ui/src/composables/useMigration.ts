@@ -162,6 +162,26 @@ export function useMigration() {
         }
     }
 
+    /**
+     * Clear the counters of the previous job. A new migration starts from zero
+     * real numbers instead of showing the previous job's totals until the engine
+     * reports its first item.
+     */
+    function resetProgress(): void {
+        progress.job_id = '';
+        progress.current_item = 0;
+        progress.total_items = 0;
+        progress.current_track = '';
+        progress.current_action = '';
+        progress.completed_count = 0;
+        progress.failed_count = 0;
+        progress.skipped_count = 0;
+        progress.percent = 0;
+        progress.speed = 0;
+        progress.eta = '';
+        progress.status = 'running';
+    }
+
     async function start(
         sourceService: string,
         destinationService: string,
@@ -169,6 +189,7 @@ export function useMigration() {
         options: MigrationOptions = defaultOptions
     ): Promise<string | null> {
         isStartingMigration.value = true;
+        resetProgress();
         try {
             const jobId = await startMigration(
                 sourceService,
@@ -177,8 +198,13 @@ export function useMigration() {
                 options
             );
             currentJobId.value = jobId;
-            progress.job_id = jobId;
-            progress.status = 'running';
+            // start_migration resolves only when the job is over: from here on
+            // every number and status comes from the migration-progress events,
+            // so the resolved id must not overwrite the terminal status they
+            // already reported.
+            if (!progress.job_id) {
+                progress.job_id = jobId;
+            }
             return jobId;
         } catch (e) {
             console.error('Failed to start migration:', e);
@@ -190,8 +216,12 @@ export function useMigration() {
 
     async function cancel(): Promise<boolean> {
         // start_migration resolves only after the whole job is processed, so while
-        // the job runs the real id comes from the migration-progress events.
-        const jobId = currentJobId.value || progress.job_id;
+        // the job runs the real id is the one its migration-progress events
+        // carry. currentJobId still points at the PREVIOUS job until this one
+        // resolves, so cancelling must never fall back to it: cancel_migration
+        // only touches rows whose status is 'running' and would silently leave
+        // the running job untouched.
+        const jobId = progress.job_id;
         if (!jobId) return false;
         try {
             await cancelMigration(jobId);
@@ -324,8 +354,8 @@ export function useMigration() {
             progress.eta = p.eta;
             progress.current_action = p.current_action;
 
-            // Refresh history when completed
-            if (p.status === 'completed') {
+            // Refresh history when the job reaches a terminal state
+            if (p.status === 'completed' || p.status === 'cancelled') {
                 loadHistory();
             }
         });

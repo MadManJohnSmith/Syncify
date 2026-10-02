@@ -167,6 +167,28 @@ async fn test_library_items_continuous_sync_triggers_installed() {
     }
 }
 
+/// 0087 extends the continuous sync to the second write point of a track's
+/// metadata: the artist link (`track_artists`).
+#[tokio::test]
+async fn test_artist_link_sync_triggers_installed() {
+    let pool = setup_test_db().await;
+
+    for trigger in &[
+        "trg_track_artists_sync_library_items_ins",
+        "trg_track_artists_sync_library_items_upd",
+        "trg_track_artists_sync_library_items_del",
+    ] {
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        )
+        .bind(trigger)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "trigger {} must be installed by 0087", trigger);
+    }
+}
+
 // ============================================================================
 // INSERT writes (sync/import/favorites) populate the mirror
 // ============================================================================
@@ -483,4 +505,149 @@ async fn test_reset_style_bulk_source_delete_empties_the_mirror() {
         .expect("mirror repopulates after the reset");
     assert_eq!(row.2, "sp-reset2");
     assert_eq!(row.3, "Reset Song");
+}
+
+// ============================================================================
+// Artist-link writes: the second half of a track's metadata also feeds the
+// mirror (migration 0087)
+// ============================================================================
+
+/// A track can reach `track_sources` before it has any `track_artists` row:
+/// the Spotify favorites importer links artists with a bounded retry and
+/// writes the identity anyway when the retries are exhausted
+/// (services/spotify.rs:1238-1278). From then on the re-syncs that would heal
+/// the track are `INSERT OR IGNORE` writes (commands/favorites.rs:979) — a
+/// no-op that fires no track_sources trigger — so the track never reaches
+/// library_items and the migration feature cannot see it.
+#[tokio::test]
+async fn test_artist_link_after_the_identity_write_still_reaches_library_items() {
+    let pool = setup_test_db().await;
+    seed_services(&pool).await;
+
+    let track_id: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Late Artist Song') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    // Identity first, exactly as the retry-exhausted importer leaves it.
+    sqlx::query(
+        "INSERT OR IGNORE INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp-late')",
+    )
+    .bind(track_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        mirror_row(&pool, track_id).await.is_none(),
+        "without an artist the row cannot be mirrored (artist is NOT NULL)"
+    );
+
+    // The next favorites sync repeats the same INSERT OR IGNORE: nothing fires.
+    sqlx::query(
+        "INSERT OR IGNORE INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp-late')",
+    )
+    .bind(track_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        mirror_row(&pool, track_id).await.is_none(),
+        "a no-op identity write cannot heal the row"
+    );
+
+    // The artist link finally lands: the track must become migratable right
+    // away, without waiting for another identity write that may never come.
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Late Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let row = mirror_row(&pool, track_id)
+        .await
+        .expect("linking the artist must mirror the track right away");
+    assert_eq!(row.2, "sp-late");
+    assert_eq!(row.3, "Late Artist Song");
+    assert_eq!(row.4, "Late Artist");
+}
+
+/// The enrichment flows rewrite the artist link of an already-mirrored track
+/// (commands/metadata.rs:202-208 deletes and re-inserts `track_artists`): the
+/// mirror must follow the new attribution instead of keeping the old name.
+#[tokio::test]
+async fn test_artist_relink_refreshes_the_mirrored_artist() {
+    let pool = setup_test_db().await;
+    seed_services(&pool).await;
+
+    let (track_id, old_artist) =
+        seed_complete_track(&pool, "Relink Song", "Relink Album", 150_000, None).await;
+    sqlx::query(
+        "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp-relink')",
+    )
+    .bind(track_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(mirror_row(&pool, track_id).await.unwrap().4, old_artist);
+
+    let new_artist: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Corrected Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("DELETE FROM track_artists WHERE track_id = ?")
+        .bind(track_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'main')")
+        .bind(track_id)
+        .bind(new_artist)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        mirror_row(&pool, track_id).await.unwrap().4,
+        "Corrected Artist",
+        "the mirror must carry the current artist attribution"
+    );
+}
+
+/// Removing the last artist link leaves the track unmigratable (the artist is
+/// a NOT NULL column of library_items), so its mirror row must go away instead
+/// of advertising a stale artist.
+#[tokio::test]
+async fn test_removing_the_last_artist_link_drops_the_mirror_row() {
+    let pool = setup_test_db().await;
+    seed_services(&pool).await;
+
+    let (track_id, _) = seed_complete_track(&pool, "Orphan Song", "Orphan Album", 60_000, None).await;
+    sqlx::query(
+        "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp-orphan')",
+    )
+    .bind(track_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(mirror_row(&pool, track_id).await.is_some());
+
+    sqlx::query("DELETE FROM track_artists WHERE track_id = ?")
+        .bind(track_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        mirror_count(&pool).await,
+        0,
+        "a track without any artist must not keep a mirror row"
+    );
 }

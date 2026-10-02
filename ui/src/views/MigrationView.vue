@@ -1498,12 +1498,21 @@ function prevStep() {
     if (svcStep.value > 0) {
       stepDirection.value = 'slide-right'
       svcStep.value--
+      // Coming back from the migration: the matches to review are the ones of
+      // the job that just ran, which the refreshed history now reports. The
+      // preview counts are left as loaded (re-matching costs real API calls).
+      if (svcStep.value === 2) {
+        loadReviewItems(svcSource.value, svcDestination.value)
+      }
     }
     return
   }
   if (currentStep.value > 0) {
     stepDirection.value = 'slide-right'
     currentStep.value--
+    if (currentStep.value === 3) {
+      loadReviewItems(sourceService.value, destinationServices.value[0] || '')
+    }
   }
 }
 
