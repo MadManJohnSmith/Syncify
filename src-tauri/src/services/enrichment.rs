@@ -3531,6 +3531,10 @@ pub struct FingerprintAnalysis {
 
 /// Audio analyzer for ReplayGain (EBU R128), Acoustic Features (BPM, Key, Energy, Danceability),
 /// and Audio Fingerprinting (Chromaprint / fpcalc).
+// Unit-struct que nunca se construye: solo se usan sus funciones asociadas
+// (`analyze_file`, `extract_acoustic_features`, `calculate_fingerprint`), consumidas por
+// `download/orchestrator.rs` y `services/incremental_enrichment.rs`, y cubiertas por
+// `tests/batch_50_audit_test.rs` y `tests/metadata_enrichment_parity_test.rs`.
 #[allow(dead_code)]
 pub struct AudioAnalyzer;
 
@@ -3976,26 +3980,6 @@ pub async fn recalculate_album_total_tracks(
         res.rows_affected()
     };
     Ok(affected)
-}
-
-/// Synchronizes `total_tracks` for a specific album within an active transaction,
-/// ensuring non-stub albums reflect the actual count of tracks in DB.
-#[allow(dead_code)]
-pub async fn sync_album_total_tracks_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    album_id: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        r#"
-        UPDATE albums
-        SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
-        WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)
-        "#,
-    )
-    .bind(album_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
 }
 
 #[cfg(test)]
