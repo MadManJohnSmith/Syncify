@@ -126,7 +126,12 @@ pub fn anonymize_identifier(val: &str) -> String {
     } else if s.len() <= 6 {
         "***".to_string()
     } else {
-        format!("{}...{}", &s[..3], &s[s.len().saturating_sub(3)..])
+        // Recorte por CARACTERES: `&s[..3]` panicaría con identificadores
+        // multi-byte y esta función corre dentro de rutas de logging.
+        let total = s.chars().count();
+        let head: String = s.chars().take(3).collect();
+        let tail: String = s.chars().skip(total.saturating_sub(3)).collect();
+        format!("{}...{}", head, tail)
     }
 }
 
@@ -2034,6 +2039,16 @@ impl Default for TidalDownloader {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn test_anonymize_identifier_is_utf8_safe() {
+        assert_eq!(anonymize_identifier("abcdef123"), "abc...123");
+        // Identificador multi-byte: el corte por bytes panicaba.
+        assert_eq!(anonymize_identifier("токен1234"), "ток...234");
+        assert_eq!(anonymize_identifier("キラキラネーム"), "キラキ...ネーム");
+        assert_eq!(anonymize_identifier("abc"), "***");
+        assert_eq!(anonymize_identifier("  "), "none");
+    }
 
     #[test]
     fn test_tidal_auth_status_hierarchy() {

@@ -10,6 +10,7 @@
 use reqwest::Client;
 use std::path::{Path, PathBuf};
 use syncify_core_domain::byte_validators::ImageByteValidator;
+use syncify_core_domain::metadata::find_ascii_case_insensitive;
 use tracing::{debug, info, warn};
 
 /// Explicit Animated Cover Resolution Status
@@ -231,12 +232,36 @@ pub fn strip_album_edition_suffixes(title: &str) -> String {
         "The Complete Edition",
     ];
     for suf in &suffixes {
-        if let Some(pos) = cleaned.to_lowercase().find(&suf.to_lowercase()) {
+        // Buscar sobre `cleaned` (no sobre un to_lowercase()): ese lowercase
+        // puede cambiar la longitud en bytes (U+212A, U+0130) y el índice de
+        // la copia panicaría al cortar el original.
+        if let Some(pos) = find_ascii_case_insensitive(&cleaned, suf) {
             cleaned = cleaned[..pos].trim().to_string();
             break;
         }
     }
     cleaned
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_album_edition_suffixes_is_utf8_safe() {
+        // Regresión: el índice venía de to_lowercase() (cambia longitud con
+        // U+212A) y se aplicaba sobre el original → "not a char boundary".
+        assert_eq!(
+            strip_album_edition_suffixes("\u{212A} Deluxe Edition"),
+            "\u{212A}"
+        );
+        assert_eq!(
+            strip_album_edition_suffixes("Album (Deluxe Edition)"),
+            "Album"
+        );
+        assert_eq!(strip_album_edition_suffixes("Album [Deluxe]"), "Album");
+        assert_eq!(strip_album_edition_suffixes("Album"), "Album");
+    }
 }
 
 /// Strip leading and trailing punctuation/ellipses (e.g. "...Like Clockwork" -> "Like Clockwork")
