@@ -27,20 +27,27 @@ fn test_keychain_success_does_not_create_crypto_key_file() {
 
     assert!(!fallback_key_path.exists());
 
-    let mut stored_key: Option<[u8; 32]> = None;
+    let stored_key = std::cell::RefCell::new(None::<[u8; 32]>);
 
-    // Simulate: Keychain has no key stored initially (load fails), but storing new key in Keychain succeeds
-    let resolved_key = resolve_or_create_key(
-        || Err("Keychain is empty".to_string()),
-        |key| {
-            stored_key = Some(*key);
-            Ok(())
-        },
-        Some(&fallback_key_path),
-    )
-    .expect("resolve_or_create_key failed");
+    // Simulate a functional Keychain: load is empty at first, store persists
+    // and the read-back returns it. (A store that reports Ok but never
+    // persists is covered by crypto.rs::tests::test_keychain_write_that_
+    // does_not_persist_is_not_trusted — it now fails the read-back.)
+    let load = || {
+        stored_key
+            .borrow()
+            .as_ref()
+            .copied()
+            .ok_or_else(|| "Keychain is empty".to_string())
+    };
+    let store = |k: &[u8; 32]| {
+        *stored_key.borrow_mut() = Some(*k);
+        Ok(())
+    };
+    let resolved_key = resolve_or_create_key(load, store, Some(&fallback_key_path))
+        .expect("resolve_or_create_key failed");
 
-    assert_eq!(stored_key, Some(resolved_key));
+    assert_eq!(stored_key.borrow().as_ref().copied(), Some(resolved_key));
     // SEC-009 Core Invariant: Master key MUST NOT be written to disk when Keychain is functional
     assert!(
         !fallback_key_path.exists(),
@@ -85,20 +92,24 @@ fn test_keychain_store_success_removes_preexisting_fallback_file() {
     fs::write(&fallback_key_path, b"obsolete_key_file").expect("Failed to write obsolete file");
     assert!(fallback_key_path.exists());
 
-    let mut stored_key: Option<[u8; 32]> = None;
+    let stored_key = std::cell::RefCell::new(None::<[u8; 32]>);
 
-    // Simulate: Keychain load fails (empty/new), but store succeeds
-    let resolved_key = resolve_or_create_key(
-        || Err("Keychain empty".to_string()),
-        |k| {
-            stored_key = Some(*k);
-            Ok(())
-        },
-        Some(&fallback_key_path),
-    )
-    .expect("resolve_or_create_key failed");
+    // Simulate a functional Keychain: empty at first, store persists, read-back works
+    let load = || {
+        stored_key
+            .borrow()
+            .as_ref()
+            .copied()
+            .ok_or_else(|| "Keychain empty".to_string())
+    };
+    let store = |k: &[u8; 32]| {
+        *stored_key.borrow_mut() = Some(*k);
+        Ok(())
+    };
+    let resolved_key = resolve_or_create_key(load, store, Some(&fallback_key_path))
+        .expect("resolve_or_create_key failed");
 
-    assert_eq!(stored_key, Some(resolved_key));
+    assert_eq!(stored_key.borrow().as_ref().copied(), Some(resolved_key));
     assert!(
         !fallback_key_path.exists(),
         "Existing .crypto_key file must be purged when a new key is successfully stored in Keychain"
