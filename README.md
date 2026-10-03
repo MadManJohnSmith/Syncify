@@ -23,6 +23,19 @@ Symfonium, Plexamp, or any player you love.
 
 ---
 
+## See it in action
+
+![Syncify dashboard — library overview, per-service sources and download statistics](docs/screenshots/dashboard.png)
+
+| | |
+|---|---|
+| ![Library — your entire catalog in one table](docs/screenshots/library.png) | ![Word-synced lyrics with the built-in player](docs/screenshots/lyrics.png) |
+| *Your whole catalog, unified* | *Synced lyrics, saved as .lrc sidecars* |
+| ![Downloads — queue with threads and retries](docs/screenshots/downloads.png) | ![Six services connected during onboarding](docs/screenshots/services.png) |
+| *A download engine you control* | *One login per service, everything stays in sync* |
+
+---
+
 ## Why Syncify?
 
 Streaming services rent you your music. If you leave — or a service loses a
