@@ -18,6 +18,11 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+  # Verificación bajo demanda de un commit concreto. Necesaria porque
+  # paths-ignore deja sin pipeline a los commits que solo tocan .md o docs/
+  # (p.ej. una actualización de portada), y el orden de publicación exige
+  # CI verde ANTES de crear tag o release.
+  workflow_dispatch:
 
 # Una corrida activa por rama/ref; un push nuevo cancela la corrida anterior de la misma ref.
 concurrency:
