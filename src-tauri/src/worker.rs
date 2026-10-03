@@ -24,9 +24,70 @@ use tokio::sync::Notify;
 /// accounts invalid on that basis poisoned valid logins whenever the machine was
 /// temporarily offline; the download itself already fails safely either way.
 pub fn classify_session_auth_failure(error: &str) -> bool {
-    error.contains("OAuth token refresh failed")
-        || error.contains("invalid_grant")
-        || (error.contains("401") && (error.contains("login") || error.contains("oauth")))
+    // Un fallo de TRANSPORTE nunca prueba que la sesión esté muerta: el token
+    // sigue siendo válido, simplemente no se pudo comprobar. Sin esta guarda,
+    // un corte de wifi de cinco segundos marcaba la cuenta como caducada para
+    // siempre y obligaba a re-autenticarse (el síntoma reportado por el usuario).
+    // El mismo razonamiento aplica al clasificador espejo de
+    // operation_recovery::classify_operation_error.
+    if is_transport_failure(error) {
+        return false;
+    }
+    // Un 401/403 del proveedor ES un rechazo de credenciales: el mensaje real
+    // de Qobuz es "Qobuz rejected the credentials (HTTP 401)", que antes NO se
+    // clasificaría aquí (exigía "login"/"oauth" junto al 401) y por tanto
+    // dejaba la cuenta sin marcar pese a estar realmente revocada.
+    // El guard de transporte corre ANTES para que un 503/429 no se confunda.
+    // Se compara en minúsculas: los mensajes reales mezclan mayúsculas
+    // ("Authentication failed for user token").
+    let e = error.to_lowercase();
+    e.contains("oauth token refresh failed")
+        || e.contains("invalid_grant")
+        || e.contains("401")
+        || e.contains("403")
+        || e.contains("authentication failed")
+        || e.contains("unauthorized")
+        || e.contains("forbidden")
+}
+
+/// S185: True when the error describes a transport/availability problem rather
+/// than a rejection by the provider.
+///
+/// Covers the failure modes that produce these messages: DNS failure, connection
+/// refused/reset, TLS errors, connect/send timeouts and every 5xx (including 429,
+/// which is throttling and not a credential verdict).
+pub fn is_transport_failure(error: &str) -> bool {
+    let e = error.to_lowercase();
+    const TRANSPORT_MARKERS: &[&str] = &[
+        "networkerror",
+        "network error",
+        // Mensajes reales de reqwest cuando no se pudo enviar la petición.
+        "error sending request",
+        "error trying to connect",
+        "request failed",
+        "timeout",
+        "timed out",
+        "dns",
+        "connection refused",
+        "connection reset",
+        "connection closed",
+        "connect error",
+        "temporarily unavailable",
+        "service unavailable",
+        "sourceunavailable",
+        "temporarynetworkfailure",
+        "networkexhausted",
+    ];
+    if TRANSPORT_MARKERS.iter().any(|m| e.contains(m)) {
+        return true;
+    }
+    // HTTP >= 500 del proveedor (y 429) nunca es un veredicto de credenciales.
+    for code in ["500", "502", "503", "504", "429"] {
+        if e.contains(&format!("http {}", code)) || e.contains(&format!("http{}", code)) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Journal operation type for a queue row, so the recovery ledger names the
@@ -1777,6 +1838,91 @@ impl DownloadWorkerState {
             max_concurrent: self.max_concurrent(),
             is_running: running,
             is_paused: paused,
+        }
+    }
+}
+
+#[cfg(test)]
+mod session_auth_tests {
+    use super::*;
+
+    /// Regresión del bug reportado: un corte de red dejaba la cuenta marcada
+    /// como "expirada para siempre" y obligaba a re-autenticarse aunque el
+    /// token siguiera siendo válido. Estos tests FALLAN sin el guard de
+    /// transporte en classify_session_auth_failure.
+    #[test]
+    fn transport_failure_never_marks_session_dead() {
+        let transport_errors = [
+            "OAuth token refresh failed: error sending request for url (https://api.spotify.com/token)",
+            "OAuth token refresh failed: timeout",
+            "OAuth token refresh failed: dns error",
+            "NetworkError: connection refused",
+            "Pipeline error: NetworkExhausted",
+            "SourceUnavailable: qobuz",
+            "Qobuz returned HTTP 503",
+            "Qobuz returned HTTP 429",
+            "Qobuz returned HTTP 500",
+            "TemporaryNetworkFailure: connection reset",
+            "request timed out after 30s",
+        ];
+        for err in transport_errors {
+            assert!(
+                !classify_session_auth_failure(err),
+                "un fallo de TRANSPORTE no puede invalidar la cuenta: {:?}",
+                err
+            );
+        }
+    }
+
+    /// La otra mitad del contrato: un rechazo REAL del proveedor SIGUE
+    /// invalidando. Si esto pasara, el usuario no podría recuperar la cuenta.
+    #[test]
+    fn real_credential_rejection_still_marks_session_dead() {
+        let auth_errors = [
+            "OAuth token refresh failed: invalid_grant",
+            "invalid_grant",
+            "401 login required",
+            "401 oauth token rejected",
+            "Qobuz rejected the credentials (HTTP 401)",
+            "Authentication failed for user token",
+        ];
+        for err in auth_errors {
+            assert!(
+                classify_session_auth_failure(err),
+                "un rechazo REAL de credenciales debe seguir invalidando: {:?}",
+                err
+            );
+        }
+    }
+
+    /// El matiz importante: "invalid_grant" ES un veredicto del proveedor
+    /// aunque la cadena "OAuth token refresh failed" lo acompañe. El guard de
+    /// transporte no debe tragarse esta señal.
+    #[test]
+    fn invalid_grant_survives_transport_guard() {
+        let err = "OAuth token refresh failed: the refresh token was rejected (invalid_grant)";
+        assert!(classify_session_auth_failure(err));
+    }
+
+    #[test]
+    fn transport_markers_are_detected() {
+        for e in [
+            "NetworkError",
+            "connection refused",
+            "request timed out",
+            "dns failure",
+            "HTTP 502",
+            "HTTP 429",
+            "temporarily unavailable",
+        ] {
+            assert!(is_transport_failure(e), "debería ser transporte: {}", e);
+        }
+        for e in [
+            "401 login required",
+            "invalid_grant",
+            "Qobuz rejected the credentials (HTTP 403)",
+        ] {
+            assert!(!is_transport_failure(e), "no es transporte: {}", e);
         }
     }
 }
