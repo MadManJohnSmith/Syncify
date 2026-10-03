@@ -331,7 +331,10 @@ where
     let project_root = get_project_root();
     let python_cmd = get_python_executable();
 
-    let script_path = project_root.join("scripts").join(script);
+    // Los puentes viven en layouts empaquetados que get_project_root no ve
+    // (Tauri coloca `../scripts` en `_up_/scripts`); resolutor central.
+    let scripts_dir = crate::cmd_utils::find_scripts_dir(&project_root);
+    let script_path = scripts_dir.join(script);
 
     tracing::debug!(
         "Running bridge: {} {:?} (cwd: {:?})",

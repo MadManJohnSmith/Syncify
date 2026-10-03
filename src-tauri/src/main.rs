@@ -287,14 +287,18 @@ fn main() {
                             let stderr = String::from_utf8_lossy(&output.stderr);
                             tracing::warn!("Python dependencies missing: {}. Trying auto-install...", stderr);
 
-                            // Attempt automatic background installation if pip is available
-                            let req_file = if project_root.join("requirements.txt").exists() {
-                                project_root.join("requirements.txt")
-                            } else {
-                                project_root.join("scripts").join("requirements.txt")
-                            };
+                            // requirements.txt en el árbol dev o en los resources
+                            // empaquetados (find_scripts_dir cubre `_up_/scripts`).
+                            let req_file = [
+                                project_root.join("requirements.txt"),
+                                project_root.join("scripts").join("requirements.txt"),
+                                crate::cmd_utils::find_scripts_dir(&project_root)
+                                    .join("requirements.txt"),
+                            ]
+                            .into_iter()
+                            .find(|p| p.exists());
                             let mut auto_fixed = false;
-                            if req_file.exists() {
+                            if let Some(req_file) = req_file {
                                 // Intento 1: pip normal (solo funciona tal cual en un venv).
                                 let mut install_result = crate::cmd_utils::create_tokio_command(&python_cmd)
                                     .arg("-m")

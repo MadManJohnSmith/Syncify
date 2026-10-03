@@ -82,6 +82,74 @@ pub fn resolve_tool(name: &str) -> Option<PathBuf> {
         .find(|p| is_executable_file(p))
 }
 
+/// Marker file that identifies the app's Python `scripts/` directory.
+const SCRIPTS_DIR_MARKER: &str = "dependency_manager.py";
+
+/// Directory name Tauri derives for the resource glob `../scripts/**/*.py`
+/// relative to the binary directory (`../scripts` -> `<exe_dir>/_up_/scripts`).
+const TAURI_UP_DIR: &str = "_up_";
+
+/// Resolves the directory that holds the Python bridges (`*_bridge.py`,
+/// `dependency_manager.py`, `requirements.txt`), or `None` if no packaged or
+/// dev location can be validated.
+///
+/// Packaged layouts diverge from the dev tree: Tauri maps the resource glob
+/// `../scripts/**/*.py` to `<exe_dir>/_up_/scripts` (Windows NSIS/portable)
+/// or `<exe_dir>/../lib/<product>/_up_/scripts` (AppImage/DEB: binary in
+/// `usr/bin`, resources in `usr/lib/<product>`), while the dev tree keeps
+/// them at `<project_root>/scripts`. `get_project_root()` only walks UP the
+/// tree, so it can never reach either packaged location — and its cwd
+/// fallback (the AppRun sets cwd to `$APPDIR/usr`) yielded `usr/scripts`,
+/// which does not exist. Every candidate is validated by the presence of the
+/// marker bridge, so a hit cannot be a coincidence.
+pub fn scripts_dir_from(exe_dir: Option<&Path>, env_override: Option<&str>) -> Option<PathBuf> {
+    if let Some(dir) = env_override
+        .map(PathBuf::from)
+        .filter(|p| p.join(SCRIPTS_DIR_MARKER).is_file())
+    {
+        return Some(dir);
+    }
+    let exe_dir = exe_dir?;
+    // Tauri resource layout: beside the executable (Windows NSIS/portable,
+    // tarball raw binary).
+    let mut candidates = vec![
+        exe_dir.join(TAURI_UP_DIR).join("scripts"),
+        exe_dir.join("scripts"),
+    ];
+    // AppImage/DEB: binary in `usr/bin`, resources in `usr/lib/<product>/_up_`.
+    if let Some(lib_root) = exe_dir.parent().map(|p| p.join("lib")) {
+        push_packaged_script_dirs(&lib_root, &mut candidates);
+    }
+    // AppRun.wrapped-at-root variant: `<appdir>/usr/lib/<product>/_up_`.
+    let usr_lib = exe_dir.join("usr").join("lib");
+    if usr_lib.is_dir() {
+        push_packaged_script_dirs(&usr_lib, &mut candidates);
+    }
+    candidates
+        .into_iter()
+        .find(|dir| dir.join(SCRIPTS_DIR_MARKER).is_file())
+}
+
+fn push_packaged_script_dirs(lib_root: &Path, candidates: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(lib_root) {
+        for entry in entries.flatten() {
+            candidates.push(entry.path().join(TAURI_UP_DIR).join("scripts"));
+        }
+    }
+}
+
+/// Absolute path of the app's Python `scripts/` directory: packaged layouts
+/// first (see [`scripts_dir_from`]), falling back to the dev tree's
+/// `<project_root>/scripts` (the historical behavior).
+pub fn find_scripts_dir(project_root: &Path) -> PathBuf {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let env_override = std::env::var("SYNCIFY_SCRIPTS_DIR").ok();
+    scripts_dir_from(exe_dir.as_deref(), env_override.as_deref())
+        .unwrap_or_else(|| project_root.join("scripts"))
+}
+
 /// Resolves the program name when it is one of the external tools; anything
 /// else (absolute paths, `python`, shell builtins) passes through untouched.
 fn resolve_known_program<S: AsRef<OsStr>>(program: S) -> OsString {
