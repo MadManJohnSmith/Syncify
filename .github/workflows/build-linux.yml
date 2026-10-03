@@ -102,10 +102,13 @@ jobs:
       # que copiar (primera iteración empaquetó 13 plugins y ninguno de sink).
       - name: Instalar plugins de GStreamer (gst-plugins-good/base)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gstreamer1.0-plugins-good gstreamer1.0-plugins-base || true
-          echo "--- plugins de sink disponibles tras instalar ---"
-          ls /usr/lib/x86_64-linux-gnu/gstreamer-1.0/ 2>/dev/null | grep -E 'autoaudio|autovideo' || echo "NINGUNO"
+          sudo apt-get update
+          sudo apt-get install -y gstreamer1.0-plugins-good gstreamer1.0-plugins-base
+          # Sin este paso el runner no trae autoaudiosink/autovideosink y el
+          # AppImage se publica sin salida de audio. Sin `|| true`: si la
+          # instalación falla hay que verlo, no seguir en silencio.
+          echo "--- sinks tras instalar ---"
+          ls /usr/lib/x86_64-linux-gnu/gstreamer-1.0/ | grep -E 'autoaudio|autovideo'
 
       - name: Inyectar plugins de GStreamer en el AppImage
         run: |
