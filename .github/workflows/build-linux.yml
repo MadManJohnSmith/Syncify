@@ -95,16 +95,16 @@ jobs:
         run: |
           mkdir -p dist/linux
           # Copiar paquetes DEB
-          if ls src-tauri/target/release/bundle/deb/*.deb 1> /dev/null 2>&1; then
-            cp src-tauri/target/release/bundle/deb/*.deb dist/linux/
+          if ls target/release/bundle/deb/*.deb 1> /dev/null 2>&1; then
+            cp target/release/bundle/deb/*.deb dist/linux/
             echo "Paquete DEB copiado con éxito."
           else
             echo "Aviso: No se encontraron paquetes DEB generados."
           fi
 
           # Copiar paquetes AppImage
-          if ls src-tauri/target/release/bundle/appimage/*.AppImage 1> /dev/null 2>&1; then
-            cp src-tauri/target/release/bundle/appimage/*.AppImage dist/linux/
+          if ls target/release/bundle/appimage/*.AppImage 1> /dev/null 2>&1; then
+            cp target/release/bundle/appimage/*.AppImage dist/linux/
             echo "Paquete AppImage copiado con éxito."
           else
             echo "Aviso: No se encontraron paquetes AppImage generados."
@@ -112,7 +112,7 @@ jobs:
 
           # Copiar binario crudo y scripts con exclusión de secretos
           mkdir -p dist/linux/Syncify-Linux-Raw
-          cp src-tauri/target/release/syncify-tauri dist/linux/Syncify-Linux-Raw/syncify
+          cp target/release/syncify-tauri dist/linux/Syncify-Linux-Raw/syncify
           chmod +x dist/linux/Syncify-Linux-Raw/syncify
 
           # Incluir los binarios externos junto al binario crudo (resolución en runtime)
@@ -120,6 +120,7 @@ jobs:
           cp src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu  dist/linux/Syncify-Linux-Raw/bin/ffmpeg
           cp src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu dist/linux/Syncify-Linux-Raw/bin/ffprobe
           cp src-tauri/binaries/fpcalc-x86_64-unknown-linux-gnu  dist/linux/Syncify-Linux-Raw/bin/fpcalc
+          chmod +x dist/linux/Syncify-Linux-Raw/bin/ffmpeg dist/linux/Syncify-Linux-Raw/bin/ffprobe dist/linux/Syncify-Linux-Raw/bin/fpcalc
 
           # Copiar scripts excluyendo secretos y cachés temporales
           mkdir -p dist/linux/Syncify-Linux-Raw/scripts
