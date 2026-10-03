@@ -150,11 +150,22 @@ impl DownloadWorkerState {
     }
 
     pub fn decrement_active(&self) {
-        let _ = self
-            .active_count
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
-                Some(val.saturating_sub(1))
-            });
+        // Saturating decrement via CAS: `fetch_update` is deprecated on the
+        // newest stable (renamed `try_update`, absent on 1.98), so keep the
+        // portable form that compiles across the toolchains CI and local use.
+        let mut current = self.active_count.load(Ordering::SeqCst);
+        loop {
+            let next = current.saturating_sub(1);
+            match self.active_count.compare_exchange(
+                current,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
         self.slot_available_notify.notify_waiters();
     }
 }
