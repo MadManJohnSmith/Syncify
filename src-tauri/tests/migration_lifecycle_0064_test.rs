@@ -112,7 +112,7 @@ async fn test_migration_0064_clean_run_and_integrity_constraints() {
 
 #[tokio::test]
 async fn test_migration_0064_on_real_user_db_copy() {
-    let user_db_path = std::path::Path::new("/home/alan/.local/share/com.syncify.app/syncify.db");
+    let user_db_path = std::path::Path::new("/home/user/.local/share/com.syncify.app/syncify.db");
     if !user_db_path.exists() {
         return;
     }

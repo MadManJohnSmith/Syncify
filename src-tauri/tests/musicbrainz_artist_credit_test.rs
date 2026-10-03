@@ -377,7 +377,7 @@ async fn test_database_persistence_rejects_synthetic_apocryphal_mbid() {
     sqlx::query("CREATE TABLE albums (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, release_date TEXT, upc TEXT, total_tracks INTEGER, label TEXT, musicbrainz_id TEXT);")
         .execute(&pool).await.unwrap();
 
-    sqlx::query("INSERT INTO artists (name) VALUES ('Alan Mearns');")
+    sqlx::query("INSERT INTO artists (name) VALUES ('Test Ghost Artist');")
         .execute(&pool)
         .await
         .unwrap();
@@ -391,10 +391,10 @@ async fn test_database_persistence_rejects_synthetic_apocryphal_mbid() {
     let now = chrono_now_iso();
 
     meta.artist
-        .merge_candidate(Some("Alan Mearns".to_string()), "stream", 1.0, &now);
+        .merge_candidate(Some("Test Ghost Artist".to_string()), "stream", 1.0, &now);
     // Synthetic apocryphal ID from TASK-127
     meta.musicbrainz_artist_id.merge_candidate(
-        Some("e774d650-ebf2-5345-acff-8a5ad5cb0ce9".to_string()),
+        Some("ad4d923c-fe1c-5e96-82d5-6e2225f92344".to_string()),
         "musicbrainz",
         0.95,
         &now,
@@ -409,7 +409,7 @@ async fn test_database_persistence_rejects_synthetic_apocryphal_mbid() {
             .await
             .unwrap();
 
-    assert_eq!(name, "Alan Mearns");
+    assert_eq!(name, "Test Ghost Artist");
     assert_eq!(
         mbid, None,
         "Synthetic apocryphal MBID must NOT be saved to artists table"

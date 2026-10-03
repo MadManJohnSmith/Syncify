@@ -263,10 +263,10 @@ mod tests {
     // leading `/`, so every request 404'd and audio never started.
     #[test]
     fn s200_unix_absolute_path_is_preserved() {
-        let uri = "syncify-media://localhost/%2Fhome%2Falan%2FM%C3%BAsica%2Fsong.flac";
+        let uri = "syncify-media://localhost/%2Fhome%2Fuser%2FM%C3%BAsica%2Fsong.flac";
         assert_eq!(
             extract_file_path(uri).unwrap(),
-            "/home/alan/Música/song.flac"
+            "/home/user/Música/song.flac"
         );
     }
 
