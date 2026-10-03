@@ -336,14 +336,6 @@ impl FieldValidator {
         genre::is_valid_genre_with_context(val, context)
     }
 
-    /// Validate language code (ISO 639-1 / 639-2)
-    pub fn is_valid_language(val: &str) -> bool {
-        let t = val.trim();
-        !t.is_empty()
-            && (t.len() == 2 || t.len() == 3)
-            && t.chars().all(|c| c.is_ascii_alphabetic())
-    }
-
     /// Validate ISO 3166-1 country code
     pub fn is_valid_country(val: &str) -> bool {
         let t = val.trim();
@@ -545,10 +537,6 @@ impl FieldResolution {
             FieldResolution::Resolved { confidence, .. } => *confidence,
             _ => 0.0,
         }
-    }
-
-    pub fn is_resolved(&self) -> bool {
-        matches!(self, FieldResolution::Resolved { .. })
     }
 
     /// Merge candidate applying the strict Precedence Policy:
@@ -1158,11 +1146,6 @@ mod tests {
         assert!(FieldValidator::is_valid_key("C#m"));
         assert!(!FieldValidator::is_valid_key("Unknown"));
         assert!(!FieldValidator::is_valid_key(""));
-
-        assert!(FieldValidator::is_valid_language("eng"));
-        assert!(FieldValidator::is_valid_language("pl"));
-        assert!(!FieldValidator::is_valid_language("english"));
-        assert!(!FieldValidator::is_valid_language(""));
 
         assert!(FieldValidator::is_valid_country("GB"));
         assert!(FieldValidator::is_valid_country("USA"));

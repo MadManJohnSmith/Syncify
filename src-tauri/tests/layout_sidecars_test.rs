@@ -164,6 +164,9 @@ fn test_max_path_length_truncation() {
 
 #[test]
 fn test_sidecar_paths_derivation() {
+    // Sidecar filenames are fixed by the pipeline (qobuz.rs, mp4_writer.rs,
+    // tidal_pipeline.rs write exactly these names); they always live in the
+    // album dir / artist dir produced by the layout.
     let base_dir = Path::new("C:/Music");
     let layout = LibraryLayout::new(base_dir);
     let track_path = Path::new("C:/Music/David Bowie/[1977] Heroes/03 - Heroes.flac");
@@ -174,59 +177,37 @@ fn test_sidecar_paths_derivation() {
         "C:/Music/David Bowie/[1977] Heroes/03 - Heroes.lrc"
     );
 
-    let cover_jpg = layout.cover_image_path("David Bowie", "Heroes", Some(1977));
+    let album_dir = layout.album_dir("David Bowie", "Heroes", Some(1977));
     assert_eq!(
-        cover_jpg.to_string_lossy().replace('\\', "/"),
-        "C:/Music/David Bowie/[1977] Heroes/cover.jpg"
+        album_dir.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie/[1977] Heroes"
     );
+    for name in [
+        "cover.jpg",
+        "cover.webp",
+        "folder.webp",
+        "animated.webp",
+        "booklet.pdf",
+    ] {
+        let sidecar = album_dir.join(name);
+        assert_eq!(
+            sidecar.to_string_lossy().replace('\\', "/"),
+            format!("C:/Music/David Bowie/[1977] Heroes/{}", name)
+        );
+    }
 
-    let cover_webp = layout.cover_webp_path("David Bowie", "Heroes", Some(1977));
+    let artist_dir = layout.artist_dir("David Bowie");
     assert_eq!(
-        cover_webp.to_string_lossy().replace('\\', "/"),
-        "C:/Music/David Bowie/[1977] Heroes/cover.webp"
+        artist_dir.to_string_lossy().replace('\\', "/"),
+        "C:/Music/David Bowie"
     );
-
-    let folder_webp = layout.folder_webp_path("David Bowie", "Heroes", Some(1977));
-    assert_eq!(
-        folder_webp.to_string_lossy().replace('\\', "/"),
-        "C:/Music/David Bowie/[1977] Heroes/folder.webp"
-    );
-
-    let anim_webp = layout.animated_webp_path("David Bowie", "Heroes", Some(1977));
-    assert_eq!(
-        anim_webp.to_string_lossy().replace('\\', "/"),
-        "C:/Music/David Bowie/[1977] Heroes/animated.webp"
-    );
-
-    let booklet = layout.booklet_path("David Bowie", "Heroes", Some(1977));
-    assert_eq!(
-        booklet.to_string_lossy().replace('\\', "/"),
-        "C:/Music/David Bowie/[1977] Heroes/booklet.pdf"
-    );
-
-    let art_jpg = layout.artist_image_path("David Bowie");
-    assert_eq!(
-        art_jpg.to_string_lossy().replace('\\', "/"),
-        "C:/Music/David Bowie/artist.jpg"
-    );
-
-    let fanart = layout.artist_fanart_path("David Bowie");
-    assert_eq!(
-        fanart.to_string_lossy().replace('\\', "/"),
-        "C:/Music/David Bowie/fanart.jpg"
-    );
-
-    let nfo = layout.artist_nfo_path("David Bowie");
-    assert_eq!(
-        nfo.to_string_lossy().replace('\\', "/"),
-        "C:/Music/David Bowie/artist.nfo"
-    );
-
-    let bio = layout.artist_biography_path("David Bowie");
-    assert_eq!(
-        bio.to_string_lossy().replace('\\', "/"),
-        "C:/Music/David Bowie/biography.txt"
-    );
+    for name in ["artist.jpg", "fanart.jpg", "artist.nfo", "biography.txt"] {
+        let sidecar = artist_dir.join(name);
+        assert_eq!(
+            sidecar.to_string_lossy().replace('\\', "/"),
+            format!("C:/Music/David Bowie/{}", name)
+        );
+    }
 }
 
 #[test]

@@ -140,15 +140,6 @@ impl AudioTier {
     pub fn is_lossy(&self) -> bool {
         matches!(self, AudioTier::Lossy)
     }
-
-    /// Canonical baseline score corresponding to this tier (for sorting/scoring).
-    pub fn canonical_score(&self) -> i32 {
-        match self {
-            AudioTier::Lossy => 40,
-            AudioTier::Lossless => 80,
-            AudioTier::HiRes => 120,
-        }
-    }
 }
 
 impl std::fmt::Display for AudioTier {
@@ -317,17 +308,6 @@ impl QualityDecisionKind {
         )
     }
 
-    pub fn is_terminal_failure(&self) -> bool {
-        matches!(
-            self,
-            QualityDecisionKind::RejectedQuality
-                | QualityDecisionKind::NoDownloadProvider
-                | QualityDecisionKind::UnavailableFromProvider
-                | QualityDecisionKind::EntitlementDenied
-                | QualityDecisionKind::AuthInvalid
-        )
-    }
-
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -353,31 +333,6 @@ impl QualityDecisionKind {
             QualityDecisionKind::AuthInvalid => "AuthInvalid",
             QualityDecisionKind::RateLimited => "RateLimited",
             QualityDecisionKind::TemporaryFailure => "TemporaryFailure",
-        }
-    }
-
-    pub fn as_snake_case(&self) -> &'static str {
-        match self {
-            QualityDecisionKind::ReadyExactQuality => "ready_exact_quality",
-            QualityDecisionKind::ReadyProviderFallbackExactQuality => {
-                "ready_provider_fallback_exact_quality"
-            }
-            QualityDecisionKind::ReadyQualityFallback => "ready_quality_fallback",
-            QualityDecisionKind::CompletedExactQuality => "completed_exact_quality",
-            QualityDecisionKind::CompletedWithProviderFallback => {
-                "completed_with_provider_fallback"
-            }
-            QualityDecisionKind::CompletedWithQualityFallback => "completed_with_quality_fallback",
-            QualityDecisionKind::CompletedWithQualityShortfall => {
-                "completed_with_quality_shortfall"
-            }
-            QualityDecisionKind::RejectedQuality => "rejected_quality",
-            QualityDecisionKind::NoDownloadProvider => "no_download_provider",
-            QualityDecisionKind::UnavailableFromProvider => "unavailable_from_provider",
-            QualityDecisionKind::EntitlementDenied => "entitlement_denied",
-            QualityDecisionKind::AuthInvalid => "auth_invalid",
-            QualityDecisionKind::RateLimited => "rate_limited",
-            QualityDecisionKind::TemporaryFailure => "temporary_failure",
         }
     }
 }

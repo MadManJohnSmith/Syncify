@@ -52,32 +52,6 @@ impl PipelineError {
             PipelineError::NetworkError { .. } | PipelineError::SourceUnavailable { .. }
         )
     }
-
-    /// Whether this error requires user authentication / re-login intervention.
-    pub fn is_auth_failure(&self) -> bool {
-        matches!(
-            self,
-            PipelineError::RequiresAuth(_) | PipelineError::PlaybackUnauthorized { .. }
-        )
-    }
-
-    /// Machine-readable classification code.
-    pub fn error_code(&self) -> &'static str {
-        match self {
-            PipelineError::TrackUnresolved { .. } | PipelineError::NotFound { .. } => {
-                "TrackUnresolved"
-            }
-            PipelineError::RequiresAuth(_) => "RequiresAuth",
-            PipelineError::PlaybackUnauthorized { .. } => "PlaybackUnauthorized",
-            PipelineError::SourceUnavailable { .. } => "SourceUnavailable",
-            PipelineError::RejectedQuality { .. } => "RejectedQuality",
-            PipelineError::NetworkError { .. } => "NetworkError",
-            PipelineError::InvalidAudioPayload { .. } => "InvalidAudioPayload",
-            PipelineError::CoverError { .. } => "CoverError",
-            PipelineError::RepairInputChanged { .. } => "RepairInputChanged",
-            PipelineError::InternalError(_) => "InternalError",
-        }
-    }
 }
 
 impl std::fmt::Display for PipelineError {
@@ -261,10 +235,6 @@ impl ErrorTaxonomy {
         }
     }
 
-    pub fn invalidates_credentials(&self) -> bool {
-        matches!(self, ErrorTaxonomy::AuthInvalid { .. })
-    }
-
     pub fn requires_user_action(&self) -> bool {
         matches!(
             self,
@@ -355,29 +325,6 @@ impl ErrorTaxonomy {
             ErrorTaxonomy::Cancelled { reason } => format!("Operation cancelled: {}", reason),
         }
     }
-
-    pub fn log_severity(&self) -> &'static str {
-        match self {
-            ErrorTaxonomy::DatabaseFailed { .. }
-            | ErrorTaxonomy::FilesystemFailed { .. }
-            | ErrorTaxonomy::AudioValidationFailed { .. } => "ERROR",
-            ErrorTaxonomy::AuthInvalid { .. }
-            | ErrorTaxonomy::EntitlementDenied { .. }
-            | ErrorTaxonomy::RejectedQuality { .. }
-            | ErrorTaxonomy::IdentityConflict { .. }
-            | ErrorTaxonomy::MalformedProviderPayload { .. } => "WARN",
-            ErrorTaxonomy::TemporaryNetworkFailure { .. }
-            | ErrorTaxonomy::Timeout { .. }
-            | ErrorTaxonomy::RateLimited { .. }
-            | ErrorTaxonomy::AuthRefreshable { .. }
-            | ErrorTaxonomy::RegionRestricted { .. }
-            | ErrorTaxonomy::UnavailableFromProvider { .. }
-            | ErrorTaxonomy::MetadataResolutionFailed { .. }
-            | ErrorTaxonomy::TaggingFailed { .. }
-            | ErrorTaxonomy::RepairInputChanged { .. }
-            | ErrorTaxonomy::Cancelled { .. } => "INFO",
-        }
-    }
 }
 
 /// Detailed reasons for authentication requirements.
@@ -433,8 +380,10 @@ mod tests {
     fn test_error_taxonomy_and_retryability() {
         let auth_err = PipelineError::RequiresAuth(RequiresAuthReason::TokenExpired);
         assert!(!auth_err.is_retryable());
-        assert!(auth_err.is_auth_failure());
-        assert_eq!(auth_err.error_code(), "RequiresAuth");
+        assert!(matches!(
+            auth_err,
+            PipelineError::RequiresAuth(_) | PipelineError::PlaybackUnauthorized { .. }
+        ));
 
         let playback_err = PipelineError::PlaybackUnauthorized {
             provider: "tidal".to_string(),
@@ -443,8 +392,10 @@ mod tests {
             message: "Token has invalid payload".to_string(),
         };
         assert!(!playback_err.is_retryable());
-        assert!(playback_err.is_auth_failure());
-        assert_eq!(playback_err.error_code(), "PlaybackUnauthorized");
+        assert!(matches!(
+            playback_err,
+            PipelineError::RequiresAuth(_) | PipelineError::PlaybackUnauthorized { .. }
+        ));
 
         let quality_err = PipelineError::RejectedQuality {
             requested: "24-192".to_string(),
@@ -452,16 +403,20 @@ mod tests {
             reason: "Lossy downgrade rejected".to_string(),
         };
         assert!(!quality_err.is_retryable());
-        assert!(!quality_err.is_auth_failure());
-        assert_eq!(quality_err.error_code(), "RejectedQuality");
+        assert!(!matches!(
+            quality_err,
+            PipelineError::RequiresAuth(_) | PipelineError::PlaybackUnauthorized { .. }
+        ));
 
         let unresolved_err = PipelineError::TrackUnresolved {
             provider: "tidal".to_string(),
             query: "Unknown Track".to_string(),
         };
         assert!(!unresolved_err.is_retryable());
-        assert!(!unresolved_err.is_auth_failure());
-        assert_eq!(unresolved_err.error_code(), "TrackUnresolved");
+        assert!(!matches!(
+            unresolved_err,
+            PipelineError::RequiresAuth(_) | PipelineError::PlaybackUnauthorized { .. }
+        ));
 
         let net_err = PipelineError::NetworkError {
             provider: "tidal".to_string(),
@@ -469,8 +424,10 @@ mod tests {
             message: "Connection timed out".to_string(),
         };
         assert!(net_err.is_retryable());
-        assert!(!net_err.is_auth_failure());
-        assert_eq!(net_err.error_code(), "NetworkError");
+        assert!(!matches!(
+            net_err,
+            PipelineError::RequiresAuth(_) | PipelineError::PlaybackUnauthorized { .. }
+        ));
     }
 
     #[test]
@@ -479,9 +436,9 @@ mod tests {
             message: "Token revoked".to_string(),
         };
         assert!(!auth_inv.is_retryable());
-        assert!(auth_inv.invalidates_credentials());
+        // Only AuthInvalid invalidates stored credentials.
+        assert!(matches!(auth_inv, ErrorTaxonomy::AuthInvalid { .. }));
         assert!(auth_inv.requires_user_action());
-        assert_eq!(auth_inv.log_severity(), "WARN");
 
         let rate_lim = ErrorTaxonomy::RateLimited {
             provider: "spotify".to_string(),
@@ -490,7 +447,7 @@ mod tests {
         assert!(rate_lim.is_retryable());
         assert_eq!(rate_lim.retry_delay_sec(), 45);
         assert_eq!(rate_lim.max_attempts(), 3);
-        assert!(!rate_lim.invalidates_credentials());
+        assert!(!matches!(rate_lim, ErrorTaxonomy::AuthInvalid { .. }));
 
         let timeout = ErrorTaxonomy::Timeout {
             endpoint: "api.tidal.com".to_string(),

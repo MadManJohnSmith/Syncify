@@ -393,7 +393,10 @@ pub fn build_parity_report(
         .filter(|r| r.classification == ParityClassification::UnsupportedButExplicit)
         .count();
 
-    let all_passed = regression_count == 0 && total_cases == 20;
+    // The report only passes when EVERY case in the canonical registry was executed.
+    // Tying the gate to `all_cases()` (instead of a magic number) keeps the enum and
+    // the parity contract from drifting apart.
+    let all_passed = regression_count == 0 && total_cases == ParityCaseId::all_cases().len();
 
     ParityReport {
         total_cases,

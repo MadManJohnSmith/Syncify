@@ -563,12 +563,14 @@ async fn test_artist_link_after_the_identity_write_still_reaches_library_items()
             .fetch_one(&pool)
             .await
             .unwrap();
-    sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-        .bind(track_id)
-        .bind(artist_id)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+    )
+    .bind(track_id)
+    .bind(artist_id)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let row = mirror_row(&pool, track_id)
         .await
@@ -629,7 +631,8 @@ async fn test_removing_the_last_artist_link_drops_the_mirror_row() {
     let pool = setup_test_db().await;
     seed_services(&pool).await;
 
-    let (track_id, _) = seed_complete_track(&pool, "Orphan Song", "Orphan Album", 60_000, None).await;
+    let (track_id, _) =
+        seed_complete_track(&pool, "Orphan Song", "Orphan Album", 60_000, None).await;
     sqlx::query(
         "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp-orphan')",
     )

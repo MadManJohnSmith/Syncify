@@ -24,14 +24,6 @@ pub enum CountryResolution {
 }
 
 impl CountryResolution {
-    pub fn is_country(&self) -> bool {
-        matches!(self, CountryResolution::Country { .. })
-    }
-
-    pub fn is_region(&self) -> bool {
-        matches!(self, CountryResolution::Region { .. })
-    }
-
     pub fn country_code(&self) -> Option<&str> {
         match self {
             CountryResolution::Country { iso_alpha2, .. } => Some(iso_alpha2.as_str()),
@@ -585,37 +577,6 @@ fn region(code: Option<&str>, name: &str) -> CountryResolution {
     }
 }
 
-/// Normalizes any recognized country input to ISO 3166-1 alpha-2 uppercase.
-/// Returns `None` if the input is a region or unrecognized.
-pub fn normalize_country_code(input: &str) -> Option<String> {
-    match resolve_country(input) {
-        CountryResolution::Country { iso_alpha2, .. } => Some(iso_alpha2),
-        _ => None,
-    }
-}
-
-/// Normalizes any recognized regional or supranational entity to its canonical name (e.g. "Europe", "Worldwide").
-/// Returns `None` if the input is a sovereign country or unrecognized.
-pub fn normalize_region_name(input: &str) -> Option<String> {
-    match resolve_country(input) {
-        CountryResolution::Region { region_name, .. } => Some(region_name),
-        _ => None,
-    }
-}
-
-/// Normalizes any recognized regional entity preserving its regional code (e.g. "XE", "XW") or name.
-/// Returns `None` if the input is a sovereign country or unrecognized.
-pub fn normalize_region_code_or_name(input: &str) -> Option<String> {
-    match resolve_country(input) {
-        CountryResolution::Region {
-            region_code: Some(code),
-            ..
-        } => Some(code),
-        CountryResolution::Region { region_name, .. } => Some(region_name),
-        _ => None,
-    }
-}
-
 /// Wire-format value for the `COUNTRY` / `RELEASECOUNTRY` tags.
 ///
 /// directiva del propietario 2026-08-24: nombres en el cable; anula contrato alpha-2 de S183.
@@ -642,42 +603,6 @@ pub fn wire_region_value(input: &str) -> Option<String> {
             region_name,
         } => Some(region_code.unwrap_or(region_name)),
         _ => None,
-    }
-}
-
-/// Normalizes country or region to canonical output string.
-/// For countries, returns ISO 3166-1 alpha-2 uppercase (e.g. "ES", "GB", "US").
-/// For regions, returns the region code or name (e.g. "XE", "XW").
-pub fn normalize_country_or_region(input: &str) -> Option<String> {
-    match resolve_country(input) {
-        CountryResolution::Country { iso_alpha2, .. } => Some(iso_alpha2),
-        CountryResolution::Region {
-            region_code: Some(code),
-            ..
-        } => Some(code),
-        CountryResolution::Region { region_name, .. } => Some(region_name),
-        CountryResolution::Unknown(_) => None,
-    }
-}
-
-/// Returns the canonical display name in English if recognized
-pub fn normalize_country_name(input: &str) -> Option<String> {
-    match resolve_country(input) {
-        CountryResolution::Country { canonical_name, .. } => Some(canonical_name),
-        CountryResolution::Region { region_name, .. } => Some(region_name),
-        CountryResolution::Unknown(_) => None,
-    }
-}
-
-/// Resolves input into separate (Country, Region) tuple
-pub fn resolve_country_and_region(input: &str) -> (Option<String>, Option<String>) {
-    match resolve_country(input) {
-        CountryResolution::Country { iso_alpha2, .. } => (Some(iso_alpha2), None),
-        CountryResolution::Region {
-            region_code,
-            region_name,
-        } => (None, Some(region_code.unwrap_or(region_name))),
-        CountryResolution::Unknown(_) => (None, None),
     }
 }
 
@@ -784,107 +709,107 @@ mod tests {
 
     #[test]
     fn test_iso_alpha2_exact_matches() {
-        assert_eq!(normalize_country_code("ES").as_deref(), Some("ES"));
-        assert_eq!(normalize_country_code("es").as_deref(), Some("ES"));
-        assert_eq!(normalize_country_code("GB").as_deref(), Some("GB"));
-        assert_eq!(normalize_country_code("US").as_deref(), Some("US"));
-        assert_eq!(normalize_country_code("FR").as_deref(), Some("FR"));
-        assert_eq!(normalize_country_code("DE").as_deref(), Some("DE"));
-        assert_eq!(normalize_country_code("MX").as_deref(), Some("MX"));
-        assert_eq!(normalize_country_code("NL").as_deref(), Some("NL"));
-        assert_eq!(normalize_country_code("PL").as_deref(), Some("PL"));
-        assert_eq!(normalize_country_code("AT").as_deref(), Some("AT"));
-        assert_eq!(normalize_country_code("AF").as_deref(), Some("AF"));
+        assert_eq!(resolve_country("ES").country_code(), Some("ES"));
+        assert_eq!(resolve_country("es").country_code(), Some("ES"));
+        assert_eq!(resolve_country("GB").country_code(), Some("GB"));
+        assert_eq!(resolve_country("US").country_code(), Some("US"));
+        assert_eq!(resolve_country("FR").country_code(), Some("FR"));
+        assert_eq!(resolve_country("DE").country_code(), Some("DE"));
+        assert_eq!(resolve_country("MX").country_code(), Some("MX"));
+        assert_eq!(resolve_country("NL").country_code(), Some("NL"));
+        assert_eq!(resolve_country("PL").country_code(), Some("PL"));
+        assert_eq!(resolve_country("AT").country_code(), Some("AT"));
+        assert_eq!(resolve_country("AF").country_code(), Some("AF"));
     }
 
     #[test]
     fn test_iso_alpha3_matches() {
-        assert_eq!(normalize_country_code("ESP").as_deref(), Some("ES"));
-        assert_eq!(normalize_country_code("esp").as_deref(), Some("ES"));
-        assert_eq!(normalize_country_code("GBR").as_deref(), Some("GB"));
-        assert_eq!(normalize_country_code("USA").as_deref(), Some("US"));
-        assert_eq!(normalize_country_code("DEU").as_deref(), Some("DE"));
-        assert_eq!(normalize_country_code("FRA").as_deref(), Some("FR"));
-        assert_eq!(normalize_country_code("JPN").as_deref(), Some("JP"));
-        assert_eq!(normalize_country_code("MEX").as_deref(), Some("MX"));
-        assert_eq!(normalize_country_code("NLD").as_deref(), Some("NL"));
-        assert_eq!(normalize_country_code("POL").as_deref(), Some("PL"));
-        assert_eq!(normalize_country_code("AUT").as_deref(), Some("AT"));
-        assert_eq!(normalize_country_code("AFG").as_deref(), Some("AF"));
+        assert_eq!(resolve_country("ESP").country_code(), Some("ES"));
+        assert_eq!(resolve_country("esp").country_code(), Some("ES"));
+        assert_eq!(resolve_country("GBR").country_code(), Some("GB"));
+        assert_eq!(resolve_country("USA").country_code(), Some("US"));
+        assert_eq!(resolve_country("DEU").country_code(), Some("DE"));
+        assert_eq!(resolve_country("FRA").country_code(), Some("FR"));
+        assert_eq!(resolve_country("JPN").country_code(), Some("JP"));
+        assert_eq!(resolve_country("MEX").country_code(), Some("MX"));
+        assert_eq!(resolve_country("NLD").country_code(), Some("NL"));
+        assert_eq!(resolve_country("POL").country_code(), Some("PL"));
+        assert_eq!(resolve_country("AUT").country_code(), Some("AT"));
+        assert_eq!(resolve_country("AFG").country_code(), Some("AF"));
     }
 
     #[test]
     fn test_localized_names_english_and_spanish() {
-        assert_eq!(normalize_country_code("Spain").as_deref(), Some("ES"));
-        assert_eq!(normalize_country_code("España").as_deref(), Some("ES"));
-        assert_eq!(normalize_country_code("Espana").as_deref(), Some("ES"));
+        assert_eq!(resolve_country("Spain").country_code(), Some("ES"));
+        assert_eq!(resolve_country("España").country_code(), Some("ES"));
+        assert_eq!(resolve_country("Espana").country_code(), Some("ES"));
 
         assert_eq!(
-            normalize_country_code("United States").as_deref(),
+            resolve_country("United States").country_code(),
             Some("US")
         );
         assert_eq!(
-            normalize_country_code("Estados Unidos").as_deref(),
+            resolve_country("Estados Unidos").country_code(),
             Some("US")
         );
-        assert_eq!(normalize_country_code("EE.UU.").as_deref(), Some("US"));
-        assert_eq!(normalize_country_code("EEUU").as_deref(), Some("US"));
+        assert_eq!(resolve_country("EE.UU.").country_code(), Some("US"));
+        assert_eq!(resolve_country("EEUU").country_code(), Some("US"));
 
         assert_eq!(
-            normalize_country_code("United Kingdom").as_deref(),
+            resolve_country("United Kingdom").country_code(),
             Some("GB")
         );
-        assert_eq!(normalize_country_code("Reino Unido").as_deref(), Some("GB"));
+        assert_eq!(resolve_country("Reino Unido").country_code(), Some("GB"));
         assert_eq!(
-            normalize_country_code("Great Britain").as_deref(),
+            resolve_country("Great Britain").country_code(),
             Some("GB")
         );
         assert_eq!(
-            normalize_country_code("Gran Bretaña").as_deref(),
+            resolve_country("Gran Bretaña").country_code(),
             Some("GB")
         );
-        assert_eq!(normalize_country_code("UK").as_deref(), Some("GB"));
-        assert_eq!(normalize_country_code("uk").as_deref(), Some("GB"));
+        assert_eq!(resolve_country("UK").country_code(), Some("GB"));
+        assert_eq!(resolve_country("uk").country_code(), Some("GB"));
 
-        assert_eq!(normalize_country_code("Germany").as_deref(), Some("DE"));
-        assert_eq!(normalize_country_code("Alemania").as_deref(), Some("DE"));
-        assert_eq!(normalize_country_code("Deutschland").as_deref(), Some("DE"));
+        assert_eq!(resolve_country("Germany").country_code(), Some("DE"));
+        assert_eq!(resolve_country("Alemania").country_code(), Some("DE"));
+        assert_eq!(resolve_country("Deutschland").country_code(), Some("DE"));
 
-        assert_eq!(normalize_country_code("France").as_deref(), Some("FR"));
-        assert_eq!(normalize_country_code("Francia").as_deref(), Some("FR"));
+        assert_eq!(resolve_country("France").country_code(), Some("FR"));
+        assert_eq!(resolve_country("Francia").country_code(), Some("FR"));
 
-        assert_eq!(normalize_country_code("Japan").as_deref(), Some("JP"));
-        assert_eq!(normalize_country_code("Japón").as_deref(), Some("JP"));
-        assert_eq!(normalize_country_code("Japon").as_deref(), Some("JP"));
+        assert_eq!(resolve_country("Japan").country_code(), Some("JP"));
+        assert_eq!(resolve_country("Japón").country_code(), Some("JP"));
+        assert_eq!(resolve_country("Japon").country_code(), Some("JP"));
 
-        assert_eq!(normalize_country_code("Canada").as_deref(), Some("CA"));
-        assert_eq!(normalize_country_code("Canadá").as_deref(), Some("CA"));
+        assert_eq!(resolve_country("Canada").country_code(), Some("CA"));
+        assert_eq!(resolve_country("Canadá").country_code(), Some("CA"));
 
-        assert_eq!(normalize_country_code("Mexico").as_deref(), Some("MX"));
-        assert_eq!(normalize_country_code("México").as_deref(), Some("MX"));
+        assert_eq!(resolve_country("Mexico").country_code(), Some("MX"));
+        assert_eq!(resolve_country("México").country_code(), Some("MX"));
 
-        assert_eq!(normalize_country_code("Netherlands").as_deref(), Some("NL"));
+        assert_eq!(resolve_country("Netherlands").country_code(), Some("NL"));
         assert_eq!(
-            normalize_country_code("Países Bajos").as_deref(),
+            resolve_country("Países Bajos").country_code(),
             Some("NL")
         );
-        assert_eq!(normalize_country_code("Holanda").as_deref(), Some("NL"));
+        assert_eq!(resolve_country("Holanda").country_code(), Some("NL"));
 
-        assert_eq!(normalize_country_code("Poland").as_deref(), Some("PL"));
-        assert_eq!(normalize_country_code("Polonia").as_deref(), Some("PL"));
+        assert_eq!(resolve_country("Poland").country_code(), Some("PL"));
+        assert_eq!(resolve_country("Polonia").country_code(), Some("PL"));
 
-        assert_eq!(normalize_country_code("Austria").as_deref(), Some("AT"));
-        assert_eq!(normalize_country_code("Afghanistan").as_deref(), Some("AF"));
-        assert_eq!(normalize_country_code("Afganistán").as_deref(), Some("AF"));
+        assert_eq!(resolve_country("Austria").country_code(), Some("AT"));
+        assert_eq!(resolve_country("Afghanistan").country_code(), Some("AF"));
+        assert_eq!(resolve_country("Afganistán").country_code(), Some("AF"));
     }
 
     #[test]
     fn test_regional_and_supranational_entities_not_converted_to_country() {
-        assert_eq!(normalize_country_code("Europe"), None);
-        assert_eq!(normalize_country_code("XE"), None);
-        assert_eq!(normalize_country_code("Worldwide"), None);
-        assert_eq!(normalize_country_code("XW"), None);
-        assert_eq!(normalize_country_code("[Worldwide]"), None);
+        assert_eq!(resolve_country("Europe").country_code(), None);
+        assert_eq!(resolve_country("XE").country_code(), None);
+        assert_eq!(resolve_country("Worldwide").country_code(), None);
+        assert_eq!(resolve_country("XW").country_code(), None);
+        assert_eq!(resolve_country("[Worldwide]").country_code(), None);
 
         // Structured resolution preserves regional entity
         assert_eq!(
@@ -909,36 +834,31 @@ mod tests {
             }
         );
 
-        assert_eq!(normalize_region_name("Europe").as_deref(), Some("Europe"));
-        assert_eq!(normalize_region_name("XE").as_deref(), Some("Europe"));
-        assert_eq!(normalize_region_code_or_name("XE").as_deref(), Some("XE"));
+        assert_eq!(resolve_country("Europe").region_name(), Some("Europe"));
+        assert_eq!(resolve_country("XE").region_name(), Some("Europe"));
+        assert_eq!(resolve_country("XE").region_code(), Some("XE"));
         assert_eq!(
-            normalize_region_name("Worldwide").as_deref(),
+            resolve_country("Worldwide").region_name(),
             Some("Worldwide")
         );
-        assert_eq!(normalize_region_code_or_name("XW").as_deref(), Some("XW"));
+        assert_eq!(resolve_country("XW").region_code(), Some("XW"));
 
-        let (c, r) = resolve_country_and_region("XE");
-        assert_eq!(c, None);
-        assert_eq!(r, Some("XE".to_string()));
-
-        let (c, r) = resolve_country_and_region("Spain");
-        assert_eq!(c, Some("ES".to_string()));
-        assert_eq!(r, None);
+        // Country input resolves to a code and no region; region input the reverse.
+        assert_eq!(resolve_country("XE").country_code(), None);
+        assert_eq!(resolve_country("Spain").country_code(), Some("ES"));
+        assert_eq!(resolve_country("Spain").region_code(), None);
     }
 
     #[test]
     fn test_unknown_inputs_not_invented() {
-        assert_eq!(normalize_country_code(""), None);
-        assert_eq!(normalize_country_code("   "), None);
-        assert_eq!(normalize_country_code("UnknownCountry123"), None);
+        assert_eq!(resolve_country("").country_code(), None);
+        assert_eq!(resolve_country("   ").country_code(), None);
+        assert_eq!(resolve_country("UnknownCountry123").country_code(), None);
         assert_eq!(
             resolve_country("UnknownCountry123"),
             CountryResolution::Unknown("UnknownCountry123".to_string())
         );
-        let (c, r) = resolve_country_and_region("UnknownCountry123");
-        assert_eq!(c, None);
-        assert_eq!(r, None);
+        assert_eq!(resolve_country("UnknownCountry123").region_name(), None);
     }
 
     #[test]

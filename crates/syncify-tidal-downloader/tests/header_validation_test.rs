@@ -1,9 +1,19 @@
 use std::io::Write;
-use syncify_tidal_downloader::{
-    read_audio_header_bounded, validate_audio_file_header, validate_audio_header_magic,
-    AUDIO_HEADER_PROBE_SIZE,
-};
+use syncify_tidal_downloader::{read_audio_header_bounded, validate_audio_header_magic, AUDIO_HEADER_PROBE_SIZE};
 use tempfile::NamedTempFile;
+
+/// Composes the same two primitives the download pipeline uses inline
+/// (`read_audio_header_bounded` + `validate_audio_header_magic`) to validate
+/// an on-disk file with bounded O(1) memory inspection.
+async fn validate_file_header(
+    path: &std::path::Path,
+    ext_str: &str,
+) -> anyhow::Result<()> {
+    let (header, n) = read_audio_header_bounded(path)
+        .await
+        .map_err(|e| anyhow::anyhow!("ValidationFailed: Cannot read downloaded file header: {}", e))?;
+    validate_audio_header_magic(&header[..n], ext_str)
+}
 
 #[tokio::test]
 async fn test_bounded_header_read_on_large_file_prevents_oom() {
@@ -34,7 +44,7 @@ async fn test_bounded_header_read_on_large_file_prevents_oom() {
     assert_eq!(&buf[..4], b"fLaC");
 
     // Full validation should succeed instantaneously with O(1) memory
-    let validation_result = validate_audio_file_header(path, "flac").await;
+    let validation_result = validate_file_header(path, "flac").await;
     assert!(
         validation_result.is_ok(),
         "Validation of 256 MB sparse FLAC file must succeed without OOM: {:?}",
@@ -50,7 +60,7 @@ async fn test_valid_audio_magic_headers() {
         .write_all(b"fLaC\x00\x00\x00\x22\x00\x00\x00\x00")
         .expect("Write FLAC header");
     flac_temp.flush().expect("Flush");
-    assert!(validate_audio_file_header(flac_temp.path(), "flac")
+    assert!(validate_file_header(flac_temp.path(), "flac")
         .await
         .is_ok());
 
@@ -60,7 +70,7 @@ async fn test_valid_audio_magic_headers() {
         .write_all(b"\x00\x00\x00\x18ftypdash\x00\x00\x00\x00")
         .expect("Write ISOBMFF header");
     dash_temp.flush().expect("Flush");
-    assert!(validate_audio_file_header(dash_temp.path(), "flac")
+    assert!(validate_file_header(dash_temp.path(), "flac")
         .await
         .is_ok());
 
@@ -70,7 +80,7 @@ async fn test_valid_audio_magic_headers() {
         .write_all(b"ID3\x03\x00\x00\x00\x00\x00\x00")
         .expect("Write ID3 header");
     mp3_id3_temp.flush().expect("Flush");
-    assert!(validate_audio_file_header(mp3_id3_temp.path(), "mp3")
+    assert!(validate_file_header(mp3_id3_temp.path(), "mp3")
         .await
         .is_ok());
 
@@ -80,7 +90,7 @@ async fn test_valid_audio_magic_headers() {
         .write_all(&[0xFF, 0xFB, 0x90, 0x64, 0x00, 0x00, 0x00, 0x00])
         .expect("Write MP3 sync header");
     mp3_frame_temp.flush().expect("Flush");
-    assert!(validate_audio_file_header(mp3_frame_temp.path(), "mp3")
+    assert!(validate_file_header(mp3_frame_temp.path(), "mp3")
         .await
         .is_ok());
 
@@ -90,10 +100,10 @@ async fn test_valid_audio_magic_headers() {
         .write_all(b"\x00\x00\x00\x20ftypM4A \x00\x00\x00\x00")
         .expect("Write M4A header");
     m4a_temp.flush().expect("Flush");
-    assert!(validate_audio_file_header(m4a_temp.path(), "m4a")
+    assert!(validate_file_header(m4a_temp.path(), "m4a")
         .await
         .is_ok());
-    assert!(validate_audio_file_header(m4a_temp.path(), "mp4")
+    assert!(validate_file_header(m4a_temp.path(), "mp4")
         .await
         .is_ok());
 }
@@ -106,7 +116,7 @@ async fn test_corrupt_headers_rejection() {
         .write_all(b"RIFF\x24\x00\x00\x00WAVEfmt ")
         .expect("Write non-flac header");
     bad_flac.flush().expect("Flush");
-    let res = validate_audio_file_header(bad_flac.path(), "flac").await;
+    let res = validate_file_header(bad_flac.path(), "flac").await;
     assert!(res.is_err());
     let err_msg = res.unwrap_err().to_string();
     assert!(
@@ -121,7 +131,7 @@ async fn test_corrupt_headers_rejection() {
         .write_all(b"OggS\x00\x02\x00\x00\x00\x00\x00\x00")
         .expect("Write non-mp3 header");
     bad_mp3.flush().expect("Flush");
-    let res = validate_audio_file_header(bad_mp3.path(), "mp3").await;
+    let res = validate_file_header(bad_mp3.path(), "mp3").await;
     assert!(res.is_err());
     let err_msg = res.unwrap_err().to_string();
     assert!(
@@ -136,7 +146,7 @@ async fn test_corrupt_headers_rejection() {
         .write_all(b"fLaC\x00\x00\x00\x22\x00\x00\x00\x00")
         .expect("Write non-m4a header");
     bad_m4a.flush().expect("Flush");
-    let res = validate_audio_file_header(bad_m4a.path(), "m4a").await;
+    let res = validate_file_header(bad_m4a.path(), "m4a").await;
     assert!(res.is_err());
     let err_msg = res.unwrap_err().to_string();
     assert!(
@@ -150,7 +160,7 @@ async fn test_corrupt_headers_rejection() {
 async fn test_empty_and_truncated_files_rejection() {
     // 1. Empty file (0 bytes)
     let empty_file = NamedTempFile::new().expect("Create tempfile");
-    let res = validate_audio_file_header(empty_file.path(), "flac").await;
+    let res = validate_file_header(empty_file.path(), "flac").await;
     assert!(res.is_err());
     let err_msg = res.unwrap_err().to_string();
     assert!(
@@ -163,7 +173,7 @@ async fn test_empty_and_truncated_files_rejection() {
     let mut truncated = NamedTempFile::new().expect("Create tempfile");
     truncated.write_all(b"fL").expect("Write 2 bytes");
     truncated.flush().expect("Flush");
-    let res = validate_audio_file_header(truncated.path(), "flac").await;
+    let res = validate_file_header(truncated.path(), "flac").await;
     assert!(res.is_err());
     let err_msg = res.unwrap_err().to_string();
     assert!(
@@ -176,7 +186,7 @@ async fn test_empty_and_truncated_files_rejection() {
 #[tokio::test]
 async fn test_nonexistent_file_rejection() {
     let non_existent = std::path::Path::new("/tmp/non_existent_audio_file_12345.flac");
-    let res = validate_audio_file_header(non_existent, "flac").await;
+    let res = validate_file_header(non_existent, "flac").await;
     assert!(res.is_err());
     let err_msg = res.unwrap_err().to_string();
     assert!(

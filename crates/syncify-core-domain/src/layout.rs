@@ -193,57 +193,6 @@ impl LibraryLayout {
         self.canonical_album_dir(artist, album, year)
     }
 
-    /// Path to Album Directory dynamically resolved from template configuration (`folder_template`)
-    pub fn format_album_dir(&self, album_artist: &str, album: &str, year: Option<i32>) -> PathBuf {
-        let safe_album_artist = if is_various_artists(album_artist) {
-            "Various Artists".to_string()
-        } else {
-            let s = sanitize_filename(album_artist);
-            self.apply_space_replacement(&s)
-        };
-
-        let safe_album = sanitize_filename(album);
-        let safe_album = self.apply_space_replacement(&safe_album);
-
-        let year_str = match year {
-            Some(y) if (1900..=2100).contains(&y) => y.to_string(),
-            _ => String::new(),
-        };
-
-        let mut folder_rel = self.config.folder_template.clone();
-        if year_str.is_empty() {
-            folder_rel = folder_rel
-                .replace("[{Year}] ", "")
-                .replace("[{Year}]", "")
-                .replace("{Year} - ", "")
-                .replace("{Year} ", "");
-        }
-        folder_rel = folder_rel
-            .replace("{AlbumArtist}", &safe_album_artist)
-            .replace("{Artist}", &safe_album_artist)
-            .replace("{Album}", &safe_album)
-            .replace("{Year}", &year_str)
-            .replace("{OriginalDate}", &year_str)
-            .replace("{Title}", "")
-            .replace("{DiscNumber:pad2}", "")
-            .replace("{DiscNumber}", "");
-
-        let folder_parts: Vec<String> = folder_rel
-            .split('/')
-            .map(|p| {
-                let s = sanitize_filename(p);
-                self.apply_space_replacement(&s)
-            })
-            .filter(|p| !p.is_empty())
-            .collect();
-
-        let mut target_dir = self.base_dir.clone();
-        for part in folder_parts {
-            target_dir.push(part);
-        }
-        target_dir
-    }
-
     /// Path to Disc Directory (if multi-disc): `{AlbumDir}/Disc {DiscNumber}`
     pub fn disc_dir(
         &self,
@@ -471,51 +420,6 @@ impl LibraryLayout {
         track_path.with_extension("lrc")
     }
 
-    /// Path to Cover Image (`cover.jpg`) inside Album Directory
-    pub fn cover_image_path(&self, artist: &str, album: &str, year: Option<i32>) -> PathBuf {
-        self.album_dir(artist, album, year).join("cover.jpg")
-    }
-
-    /// Path to Animated Cover (`cover.webp`) inside Album Directory
-    pub fn cover_webp_path(&self, artist: &str, album: &str, year: Option<i32>) -> PathBuf {
-        self.album_dir(artist, album, year).join("cover.webp")
-    }
-
-    /// Path to Animated Folder Cover (`folder.webp`) inside Album Directory
-    pub fn folder_webp_path(&self, artist: &str, album: &str, year: Option<i32>) -> PathBuf {
-        self.album_dir(artist, album, year).join("folder.webp")
-    }
-
-    /// Path to Animated Cover Alias (`animated.webp`) inside Album Directory
-    pub fn animated_webp_path(&self, artist: &str, album: &str, year: Option<i32>) -> PathBuf {
-        self.album_dir(artist, album, year).join("animated.webp")
-    }
-
-    /// Path to Digital Booklet (`booklet.pdf`) inside Album Directory
-    pub fn booklet_path(&self, artist: &str, album: &str, year: Option<i32>) -> PathBuf {
-        self.album_dir(artist, album, year).join("booklet.pdf")
-    }
-
-    /// Path to Artist Profile Image (`artist.jpg`) inside Artist Directory
-    pub fn artist_image_path(&self, artist: &str) -> PathBuf {
-        self.artist_dir(artist).join("artist.jpg")
-    }
-
-    /// Path to Artist Fanart (`fanart.jpg`) inside Artist Directory
-    pub fn artist_fanart_path(&self, artist: &str) -> PathBuf {
-        self.artist_dir(artist).join("fanart.jpg")
-    }
-
-    /// Path to Artist Info XML (`artist.nfo`) inside Artist Directory
-    pub fn artist_nfo_path(&self, artist: &str) -> PathBuf {
-        self.artist_dir(artist).join("artist.nfo")
-    }
-
-    /// Path to Artist Biography text (`biography.txt`) inside Artist Directory
-    pub fn artist_biography_path(&self, artist: &str) -> PathBuf {
-        self.artist_dir(artist).join("biography.txt")
-    }
-
     /// Helper to resolve collisions if destination file already exists
     pub fn resolve_unique_path(&self, target_path: &Path) -> PathBuf {
         if !target_path.exists() {
@@ -726,25 +630,22 @@ mod tests {
 
     #[test]
     fn test_sidecar_paths() {
+        // Sidecars always live in the album directory under their fixed names
+        // (the contract the tag writers and sidecar pipelines rely on).
         let layout = LibraryLayout::new("/Music");
         let album_dir = layout.album_dir("Linkin Park", "From Zero", Some(2024));
 
+        assert_eq!(album_dir, PathBuf::from("/Music").join("Linkin Park").join("[2024] From Zero"));
         assert_eq!(
-            layout.cover_image_path("Linkin Park", "From Zero", Some(2024)),
-            album_dir.join("cover.jpg")
-        );
-        assert_eq!(
-            layout.cover_webp_path("Linkin Park", "From Zero", Some(2024)),
-            album_dir.join("cover.webp")
-        );
-        assert_eq!(
-            layout.booklet_path("Linkin Park", "From Zero", Some(2024)),
-            album_dir.join("booklet.pdf")
+            album_dir.join("cover.jpg"),
+            PathBuf::from("/Music").join("Linkin Park").join("[2024] From Zero").join("cover.jpg")
         );
     }
 
     #[test]
-    fn test_format_album_dir() {
+    fn test_folder_template_resolves_the_album_directory() {
+        // The folder_template contract is honored by `resolve_track_path`: the track
+        // must land inside `{AlbumArtist}/{Album}` when that template is configured.
         let config = FolderFileTemplateConfig {
             folder_template: "{AlbumArtist}/{Album}".to_string(),
             file_template: "{TrackNumber:pad2} - {Title}".to_string(),
@@ -753,7 +654,26 @@ mod tests {
             max_path_length: 255,
         };
         let layout = LibraryLayout::with_config("/Music", config);
-        let dir = layout.format_album_dir("Daft Punk", "Discovery", Some(2001));
+        let ctx = TrackLayoutContext {
+            artist: "Daft Punk",
+            album_artist: Some("Daft Punk"),
+            album: "Discovery",
+            title: "One More Time",
+            year: Some(2001),
+            original_date: None,
+            track_number: 1,
+            track_total: Some(14),
+            disc_number: 1,
+            total_discs: 1,
+            format: "flac",
+            bit_depth: Some(16),
+            sample_rate: Some(44100.0),
+        };
+        let track_path = layout.resolve_track_path(&ctx);
+        let dir = track_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
         assert_eq!(
             dir,
             PathBuf::from("/Music").join("Daft Punk").join("Discovery")

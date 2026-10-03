@@ -79,12 +79,6 @@ impl TrackManifestEntry {
     pub fn is_success(&self) -> bool {
         self.download_result == "Success"
     }
-
-    pub fn add_artifact(&mut self, path: String) {
-        if !self.created_artifacts.contains(&path) {
-            self.created_artifacts.push(path);
-        }
-    }
 }
 
 impl FavoritesBatchSummary {
@@ -93,25 +87,6 @@ impl FavoritesBatchSummary {
             requested,
             ..Default::default()
         }
-    }
-
-    pub fn all_succeeded(&self) -> bool {
-        self.failed == 0 && self.succeeded > 0 && self.succeeded == self.requested
-    }
-
-    pub fn record_success(&mut self, entry: TrackManifestEntry) {
-        self.succeeded += 1;
-        self.manifest.push(entry);
-    }
-
-    pub fn record_failure(&mut self, entry: TrackManifestEntry) {
-        self.failed += 1;
-        self.manifest.push(entry);
-    }
-
-    pub fn record_skipped(&mut self, entry: TrackManifestEntry) {
-        self.skipped_existing += 1;
-        self.manifest.push(entry);
     }
 
     pub fn to_batch_manifest(&self, generated_at: impl Into<String>) -> BatchDownloadManifest {
@@ -192,36 +167,40 @@ mod tests {
     }
 
     #[test]
-    fn test_record_methods_accumulate_into_the_manifest() {
+    fn test_counters_accumulate_into_the_manifest() {
         let mut summary = FavoritesBatchSummary::new(3);
         assert_eq!(summary.requested, 3);
-        assert!(!summary.all_succeeded());
 
-        summary.record_success(stub_entry("A", "Success"));
-        summary.record_success(stub_entry("B", "Success"));
-        summary.record_skipped(stub_entry("C", "Skipped"));
+        summary.succeeded = 2;
+        summary.skipped_existing = 1;
+        summary.manifest = vec![
+            stub_entry("A", "Success"),
+            stub_entry("B", "Success"),
+            stub_entry("C", "Skipped"),
+        ];
 
         assert_eq!(summary.succeeded, 2);
         assert_eq!(summary.failed, 0);
         assert_eq!(summary.skipped_existing, 1);
         assert_eq!(summary.manifest.len(), 3, "every outcome is auditable");
         assert!(
-            !summary.all_succeeded(),
+            summary.succeeded != summary.requested,
             "a skipped item is not a full success"
         );
-
-        summary.record_failure(stub_entry("D", "Failed"));
-        assert_eq!(summary.failed, 1);
-        assert_eq!(summary.manifest.len(), 4);
     }
 
     #[test]
     fn test_to_batch_manifest_is_the_single_counters_mapping() {
         let mut summary = FavoritesBatchSummary::new(4);
-        summary.record_success(stub_entry("A", "Success"));
-        summary.record_failure(stub_entry("B", "Failed"));
-        summary.record_failure(stub_entry("C", "Failed"));
-        summary.record_skipped(stub_entry("D", "Skipped"));
+        summary.manifest = vec![
+            stub_entry("A", "Success"),
+            stub_entry("B", "Failed"),
+            stub_entry("C", "Failed"),
+            stub_entry("D", "Skipped"),
+        ];
+        summary.succeeded = 1;
+        summary.failed = 2;
+        summary.skipped_existing = 1;
         summary.received = 4;
         summary.deduplicated = 1;
         summary.enriched = 3;

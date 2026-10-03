@@ -493,13 +493,6 @@ pub fn fuse_genres_semicolon_only(genre_inputs: &[&str]) -> Vec<String> {
     fuse_genres_semicolon_only_with_context(genre_inputs, None)
 }
 
-/// Splits secondary facet values (STYLE / MOOD / TAGS) on ';' only, preserving
-/// slash-joined composite descriptors ("Glam Rock / Berlin Trilogy") as single values.
-/// Applies the same validation, dedup and capitalization pipeline as [`fuse_genres`].
-pub fn split_facet_values(genre_inputs: &[&str]) -> Vec<String> {
-    fuse_genres_semicolon_only_with_context(genre_inputs, None)
-}
-
 /// Formats fused genres as a standard semicolon-separated string (e.g. `"Rock; Pop; Disco"`).
 /// Returns `None` if all inputs are invalid, empty, or junk.
 pub fn format_fused_genres_with_context(

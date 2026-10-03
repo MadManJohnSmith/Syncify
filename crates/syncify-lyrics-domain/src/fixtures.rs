@@ -100,8 +100,8 @@ pub const FIXTURE_LYRICSPLUS_LINE_JSON: &str = r#"{
   "syncedLyrics": "[00:01.00]Is this the real life\n[00:03.50]Is this just fantasy\n[00:06.00]Caught in a landslide\n[00:08.00]No escape from reality"
 }"#;
 
-/// Instrumental Response Object
-pub fn fixture_instrumental() -> LyricsResolution {
+/// Instrumental Response Object (module-internal test helper)
+fn fixture_instrumental() -> LyricsResolution {
     LyricsResolution {
         status: ResolutionStatus::Resolved,
         provider: "LRCLIB".to_string(),
@@ -118,13 +118,8 @@ pub fn fixture_instrumental() -> LyricsResolution {
     }
 }
 
-/// Empty Response Object
-pub fn fixture_empty_response() -> LyricsResolution {
-    LyricsResolution::new_not_found("LRCLIB", "exact_match")
-}
-
-/// HTTP Error Response Object
-pub fn fixture_http_error(code: u16) -> LyricsResolution {
+/// HTTP Error Response Object (module-internal test helper)
+fn fixture_http_error(code: u16) -> LyricsResolution {
     if code == 401 || code == 403 {
         LyricsResolution::new_requires_auth("Spotify", "color_lyrics", format!("HTTP {}", code))
     } else {
@@ -136,63 +131,8 @@ pub fn fixture_http_error(code: u16) -> LyricsResolution {
     }
 }
 
-/// Conflict Results Object
-pub fn fixture_conflict_results() -> (LyricsResolution, LyricsResolution) {
-    let word_synced = LyricsResolution::new_resolved(
-        "Musixmatch",
-        "richsync",
-        LyricsSyncType::KaraokeWordSynced,
-        Some(FIXTURE_ENHANCED_LRC_WORD.to_string()),
-        Some(FIXTURE_PLAIN_LYRICS.to_string()),
-        vec![LyricsLineDomain {
-            start_time_ms: 10000,
-            words: "I wish you could swim".to_string(),
-            end_time_ms: Some(12000),
-        }],
-        false,
-        "desktop_api",
-    );
-
-    let line_synced = LyricsResolution::new_resolved(
-        "LRCLIB",
-        "line_search",
-        LyricsSyncType::LineSynced,
-        Some(FIXTURE_LINE_SYNCED_LRC.to_string()),
-        Some(FIXTURE_PLAIN_LYRICS.to_string()),
-        vec![LyricsLineDomain {
-            start_time_ms: 10000,
-            words: "I wish you could swim".to_string(),
-            end_time_ms: None,
-        }],
-        false,
-        "lrclib.net",
-    );
-
-    (word_synced, line_synced)
-}
-
-/// Fallback Word to Line Resolution
-pub fn fixture_fallback_word_to_line() -> LyricsResolution {
-    let mut res = LyricsResolution::new_resolved(
-        "LRCLIB",
-        "line_search_fallback",
-        LyricsSyncType::LineSynced,
-        Some(FIXTURE_LINE_SYNCED_LRC.to_string()),
-        Some(FIXTURE_PLAIN_LYRICS.to_string()),
-        vec![LyricsLineDomain {
-            start_time_ms: 10000,
-            words: "I wish you could swim".to_string(),
-            end_time_ms: None,
-        }],
-        false,
-        "lrclib.net",
-    );
-    res.fallback_applied = true;
-    res
-}
-
-/// Reject Degradation Guard Case
-pub fn fixture_reject_degradation_case() -> (LyricsResolution, String) {
+/// Reject Degradation Guard Case (module-internal test helper)
+fn fixture_reject_degradation_case() -> (LyricsResolution, String) {
     let res = LyricsResolution::new_resolved(
         "Apple Music",
         "ttml_syllable",

@@ -217,7 +217,7 @@ async fn test_error_taxonomy_classification_properties() {
     let auth_err = ErrorTaxonomy::AuthInvalid {
         message: "Refresh token expired".to_string(),
     };
-    assert!(auth_err.invalidates_credentials());
+    assert!(matches!(auth_err, ErrorTaxonomy::AuthInvalid { .. }));
     assert!(!auth_err.is_retryable());
 
     let not_found_err = ErrorTaxonomy::UnavailableFromProvider {
@@ -226,7 +226,7 @@ async fn test_error_taxonomy_classification_properties() {
         reason: "Catalog item 404".to_string(),
     };
     assert!(
-        !not_found_err.invalidates_credentials(),
+        !matches!(not_found_err, ErrorTaxonomy::AuthInvalid { .. }),
         "404 catalog item must NEVER invalidate user credentials"
     );
     assert!(!not_found_err.is_retryable());
@@ -237,7 +237,7 @@ async fn test_error_taxonomy_classification_properties() {
     };
     assert!(rate_limit_err.is_retryable());
     assert_eq!(rate_limit_err.retry_delay_sec(), 60);
-    assert!(!rate_limit_err.invalidates_credentials());
+    assert!(!matches!(rate_limit_err, ErrorTaxonomy::AuthInvalid { .. }));
 }
 
 #[tokio::test]

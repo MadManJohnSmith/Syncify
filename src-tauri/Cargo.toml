@@ -60,6 +60,10 @@ syncify-tidal-downloader = { path = "../crates/syncify-tidal-downloader" }
 [dev-dependencies]
 tempfile = "3"
 tauri = { version = "2", features = ["test"] }
+# The lyrics domain `fixtures` module is only for tests; this dev-only feature keeps
+# the deterministic sample payloads out of production builds (resolver v2 does not
+# unify dev-dependency features into normal dependency builds).
+syncify-lyrics-domain = { path = "../crates/syncify-lyrics-domain", features = ["test-fixtures"] }
 
 [features]
 default = ["custom-protocol"]

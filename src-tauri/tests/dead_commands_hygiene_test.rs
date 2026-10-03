@@ -362,9 +362,9 @@ fn test_every_registered_command_is_invoked_by_the_frontend() {
     // Sanity anchors: if these are missing the parser stopped understanding the
     // frontend call style and the orphan assertion below would pass vacuously.
     for anchor in [
-        "get_album",          // plain `invokeCommand('x')`
-        "get_kv_settings",    // `invokeCommand<Record<string, string>>('x')`
-        "read_track_tags",    // multi-line payload
+        "get_album",       // plain `invokeCommand('x')`
+        "get_kv_settings", // `invokeCommand<Record<string, string>>('x')`
+        "read_track_tags", // multi-line payload
     ] {
         assert!(
             invoked.contains(anchor),

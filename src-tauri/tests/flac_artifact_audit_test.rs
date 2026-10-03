@@ -121,30 +121,30 @@ fn test_album_sidecars_presence() {
 #[test]
 fn test_flac_country_and_region_tag_separation() {
     use syncify_metadata_domain::country::{
-        normalize_country_code, plan_country_repair, resolve_country, wire_country_value,
+        plan_country_repair, resolve_country, wire_country_value,
         CountryResolution,
     };
 
     // 1. PL, US, GB, ES must be valid ISO sovereign countries
-    assert_eq!(normalize_country_code("PL").as_deref(), Some("PL"));
-    assert_eq!(normalize_country_code("US").as_deref(), Some("US"));
-    assert_eq!(normalize_country_code("GB").as_deref(), Some("GB"));
-    assert_eq!(normalize_country_code("ES").as_deref(), Some("ES"));
+    assert_eq!(resolve_country("PL").country_code(), Some("PL"));
+    assert_eq!(resolve_country("US").country_code(), Some("US"));
+    assert_eq!(resolve_country("GB").country_code(), Some("GB"));
+    assert_eq!(resolve_country("ES").country_code(), Some("ES"));
 
     // 2. Localized aliases
-    assert_eq!(normalize_country_code("Spain").as_deref(), Some("ES"));
-    assert_eq!(normalize_country_code("España").as_deref(), Some("ES"));
-    assert_eq!(normalize_country_code("UK").as_deref(), Some("GB"));
+    assert_eq!(resolve_country("Spain").country_code(), Some("ES"));
+    assert_eq!(resolve_country("España").country_code(), Some("ES"));
+    assert_eq!(resolve_country("UK").country_code(), Some("GB"));
     assert_eq!(
-        normalize_country_code("Great Britain").as_deref(),
+        resolve_country("Great Britain").country_code(),
         Some("GB")
     );
 
     // 3. XE, XW, Europe, Worldwide must resolve to Region and NEVER to Country
-    assert_eq!(normalize_country_code("XE"), None);
-    assert_eq!(normalize_country_code("XW"), None);
-    assert_eq!(normalize_country_code("Europe"), None);
-    assert_eq!(normalize_country_code("Worldwide"), None);
+    assert_eq!(resolve_country("XE").country_code(), None);
+    assert_eq!(resolve_country("XW").country_code(), None);
+    assert_eq!(resolve_country("Europe").country_code(), None);
+    assert_eq!(resolve_country("Worldwide").country_code(), None);
 
     assert_eq!(
         resolve_country("XE"),
@@ -162,7 +162,7 @@ fn test_flac_country_and_region_tag_separation() {
     );
 
     // 4. Unknown values
-    assert_eq!(normalize_country_code("UnknownEntity123"), None);
+    assert_eq!(resolve_country("UnknownEntity123").country_code(), None);
     assert_eq!(
         resolve_country("UnknownEntity123"),
         CountryResolution::Unknown("UnknownEntity123".to_string())

@@ -26,12 +26,6 @@ pub enum LockHierarchyLevel {
     Settings = 7,
 }
 
-impl LockHierarchyLevel {
-    pub fn as_u8(&self) -> u8 {
-        *self as u8
-    }
-}
-
 /// Fine-grained Lock Scope
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "key", rename_all = "snake_case")]

@@ -321,10 +321,6 @@ fn test_tidal_credentials_resolution() {
     // Default downloader picks up env vars when available
     drop(downloader);
 
-    let explicit_downloader =
-        TidalDownloader::with_credentials("inj_id".to_string(), "inj_secret".to_string());
-    drop(explicit_downloader);
-
     // Restore environment
     match prev_id {
         Some(v) => std::env::set_var("TIDAL_CLIENT_ID", v),
