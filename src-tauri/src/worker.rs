@@ -24,6 +24,65 @@ use tokio::sync::Notify;
 /// accounts invalid on that basis poisoned valid logins whenever the machine was
 /// temporarily offline; the download itself already fails safely either way.
 pub fn classify_session_auth_failure(error: &str) -> bool {
+    // Envoltorio deliberado: la firma `bool` es el contrato público que usan
+    // los ~12 call sites y los tests de este módulo. `true` significa
+    // REVOCADA; tanto `Valid` como `UnverifiedTransient` dan `false`, que es
+    // exactamente el comportamiento previo.
+    matches!(classify_auth_verdict(error), AuthVerdict::Revoked)
+}
+
+/// Veredicto de tres valores sobre una sesión.
+///
+/// La ambigüedad "no escribir en BD = válida, escribir = muerta" es
+/// precisamente la causa de los bugs de esta pista: obligaba a que CADA
+/// llamador inventase su propia idea de qué es un rechazo, y por eso un 503
+/// de Deezer terminaba invalidando la cuenta.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthVerdict {
+    /// Evidencia explícita de rechazo de credenciales (401/403/400,
+    /// `invalid_grant`, ARL inválida). SÍ invalida la cuenta.
+    Revoked,
+    /// Comprobación correcta y el token sirve.
+    Valid,
+    /// No se pudo comprobar: 5xx, 429, timeout, DNS, parseo, subproceso caído.
+    /// NUNCA invalida. El token puede seguir siendo perfectamente válido.
+    UnverifiedTransient(String),
+}
+
+impl AuthVerdict {
+    /// Un fallo transitorio deja la sesión como estaba: no se toca la BD.
+    pub fn invalidates_session(&self) -> bool {
+        matches!(self, AuthVerdict::Revoked)
+    }
+
+    /// Traduce el veredicto TIPADO de Deezer al veredicto común de la app.
+    ///
+    /// La conversión es por tipo, nunca por texto: releer el mensaje para
+    /// decidir reintroduciría la ambigüedad que este refactor elimina, y un
+    /// rechazo real cuyo texto no lleva "401" (p. ej. "ARL may be invalid")
+    /// acabaría clasificado como transitorio — justo el bug que se arregla.
+    pub fn from_deezer_init(
+        outcome: &Result<(), crate::services::deezer::DeezerInitError>,
+    ) -> AuthVerdict {
+        match outcome {
+            Ok(()) => AuthVerdict::Valid,
+            Err(crate::services::deezer::DeezerInitError::Rejected(_)) => AuthVerdict::Revoked,
+            Err(crate::services::deezer::DeezerInitError::Transient(m)) => {
+                AuthVerdict::UnverifiedTransient(m.clone())
+            }
+        }
+    }
+}
+
+/// Clasificación de tres valores. `classify_session_auth_failure` es su
+/// proyección a `bool` y conserva exactamente el comportamiento anterior.
+///
+/// Un string de error nunca produce `Valid`: por definición no es una señal de
+/// éxito. `Valid` lo construyen los callers que sí comprobaron el token (Apple
+/// Music con un 200, Deezer con un init exitoso); existe para que esos callers
+/// puedan distinguir "caducada" / "válida" / "no comprobada" en vez de
+/// suponer lo que el `bool` de dos valores no llega a expresar.
+pub fn classify_auth_verdict(error: &str) -> AuthVerdict {
     // Un fallo de TRANSPORTE nunca prueba que la sesión esté muerta: el token
     // sigue siendo válido, simplemente no se pudo comprobar. Sin esta guarda,
     // un corte de wifi de cinco segundos marcaba la cuenta como caducada para
@@ -31,7 +90,7 @@ pub fn classify_session_auth_failure(error: &str) -> bool {
     // El mismo razonamiento aplica al clasificador espejo de
     // operation_recovery::classify_operation_error.
     if is_transport_failure(error) {
-        return false;
+        return AuthVerdict::UnverifiedTransient(error.to_string());
     }
     // Un 401/403 del proveedor ES un rechazo de credenciales: el mensaje real
     // de Qobuz es "Qobuz rejected the credentials (HTTP 401)", que antes NO se
@@ -41,15 +100,22 @@ pub fn classify_session_auth_failure(error: &str) -> bool {
     // Se compara en minúsculas: los mensajes reales mezclan mayúsculas
     // ("Authentication failed for user token").
     let e = error.to_lowercase();
-    e.contains("oauth token refresh failed")
+    let revoked = e.contains("oauth token refresh failed")
         || e.contains("invalid_grant")
         || e.contains("401")
         || e.contains("403")
         || e.contains("authentication failed")
         || e.contains("unauthorized")
-        || e.contains("forbidden")
+        || e.contains("forbidden");
+    if revoked {
+        AuthVerdict::Revoked
+    } else {
+        // Sin transporte y sin rechazo: no hay evidencia de nada. Se clasifica
+        // como "no verificable" para que ningún caller lo interprete como
+        // "caducada"; el comportamiento bool previo también era `false`.
+        AuthVerdict::UnverifiedTransient(error.to_string())
+    }
 }
-
 /// S185: True when the error describes a transport/availability problem rather
 /// than a rejection by the provider.
 ///
@@ -1904,6 +1970,44 @@ mod session_auth_tests {
         assert!(classify_session_auth_failure(err));
     }
 
+    /// La conversión de Deezer es por TIPO, no por texto. Este test fija el
+    /// caso que importaría: un rechazo real cuyo mensaje NO contiene "401"
+    /// ("ARL may be invalid") debe seguir siendo `Revoked`. Si alguien
+    /// reintentara decidir por texto, este aserto fallaría.
+    #[test]
+    fn deezer_rejection_is_classified_by_type_not_by_message_text() {
+        let rejected: Result<(), crate::services::deezer::DeezerInitError> =
+            Err(crate::services::deezer::DeezerInitError::Rejected(
+                "Failed to get Deezer API token - ARL may be invalid (raw: {})".into(),
+            ));
+        let v = AuthVerdict::from_deezer_init(&rejected);
+        assert_eq!(v, AuthVerdict::Revoked);
+        assert!(v.invalidates_session());
+        // Y, para que quede claro por qué importa: ese texto, pasado por el
+        // clasificador genérico de mensajes, NO es un rechazo.
+        assert!(
+            !classify_session_auth_failure("Failed to get Deezer API token - ARL may be invalid"),
+            "el clasificador por texto no reconoce este rechazo; por eso la traducción es tipada"
+        );
+    }
+
+    #[test]
+    fn deezer_transient_and_success_map_to_the_right_verdict() {
+        let transient: Result<(), crate::services::deezer::DeezerInitError> = Err(
+            crate::services::deezer::DeezerInitError::Transient("Request failed: dns".into()),
+        );
+        assert!(matches!(
+            AuthVerdict::from_deezer_init(&transient),
+            AuthVerdict::UnverifiedTransient(_)
+        ));
+        assert!(!AuthVerdict::from_deezer_init(&transient).invalidates_session());
+
+        let ok: Result<(), crate::services::deezer::DeezerInitError> = Ok(());
+        assert_eq!(AuthVerdict::from_deezer_init(&ok), AuthVerdict::Valid);
+    }
+
+    /// Un 5xx desde init() se clasifica igual por ambos caminos, pero solo la
+    /// traducción tipada distingue bien los dos extremos.
     #[test]
     fn transport_markers_are_detected() {
         for e in [
@@ -1923,6 +2027,95 @@ mod session_auth_tests {
             "Qobuz rejected the credentials (HTTP 403)",
         ] {
             assert!(!is_transport_failure(e), "no es transporte: {}", e);
+        }
+    }
+
+    /// A-0: el `bool` de dos valores colapsa "sé que funciona" y "no sé" en el
+    /// mismo `false`. Estos casos NO eran distinguibles antes del fix, así que
+    /// el test falla contra la versión de dos estados.
+    #[test]
+    fn auth_verdict_separates_verified_valid_from_unverified() {
+        // Rechazo explícito: revoca, y el bool legacy lo refleja igual que antes.
+        for e in ["401 unauthorized", "invalid_grant", "authentication failed"] {
+            assert_eq!(classify_auth_verdict(e), AuthVerdict::Revoked, "{}", e);
+            assert!(classify_session_auth_failure(e), "bool legacy: {}", e);
+        }
+        assert!(AuthVerdict::Revoked.invalidates_session());
+
+        // No verificable: conserva el motivo para que la UI pueda decir
+        // "no se pudo comprobar" en vez de "caducado", y NO invalida.
+        let v = classify_auth_verdict("HTTP 503 service unavailable");
+        assert!(
+            matches!(v, AuthVerdict::UnverifiedTransient(ref m) if m.contains("503")),
+            "esperaba transitorio con motivo, {:?}",
+            v
+        );
+        assert!(!v.invalidates_session());
+        assert!(!classify_session_auth_failure(
+            "HTTP 503 service unavailable"
+        ));
+
+        // `Valid` es lo que un caller que SÍ comprobó construye (Apple Music
+        // 200, Deezer init ok). Antes de este fix ese estado no existía: el
+        // `bool` decía `false` igual que un 503, y por eso los callers
+        // acababan tratando "no comprobable" como "caducada".
+        let ok = AuthVerdict::Valid;
+        assert!(!ok.invalidates_session());
+        assert!(!classify_session_auth_failure("Deezer session OK"));
+    }
+
+    /// Un string de error jamás puede producir `Valid`: no es una señal de
+    /// éxito. Un 200 sin comprobar que el token sirva no se marca `Valid`.
+    #[test]
+    fn a_bare_error_string_is_never_verified_valid() {
+        for e in [
+            "Deezer session OK",
+            "Token valid (storefront: 1234)",
+            "algo que no encaja con ningún marcador",
+        ] {
+            assert_ne!(
+                classify_auth_verdict(e),
+                AuthVerdict::Valid,
+                "un error no puede certificar la sesión: {:?}",
+                e
+            );
+            assert!(matches!(
+                classify_auth_verdict(e),
+                AuthVerdict::UnverifiedTransient(_)
+            ));
+        }
+    }
+
+    /// A-0: el wrapper bool NO puede cambiar de veredicto a ningún mensaje
+    /// existente. Fijado contra los marcadores reales de los servicios.
+    #[test]
+    fn auth_verdict_projection_to_bool_is_identical_to_legacy() {
+        let casos = [
+            "OAuth token refresh failed: invalid_grant",
+            "Qobuz rejected the credentials (HTTP 401)",
+            "Service said HTTP 403",
+            "Authentication failed for user token",
+            "Unauthorized",
+            "Forbidden",
+            "NetworkError: request failed",
+            "connect error: dns",
+            "HTTP 500 internal",
+            "HTTP 502",
+            "HTTP 503 service unavailable",
+            "HTTP 429 too many requests",
+            "timed out",
+            "connection refused",
+            "Deezer session OK",
+            "algo que no encaja con ningún marcador",
+        ];
+        for e in casos {
+            let legacy_bool = matches!(classify_auth_verdict(e), AuthVerdict::Revoked);
+            assert_eq!(
+                legacy_bool,
+                classify_session_auth_failure(e),
+                "discrepancia para {:?}",
+                e
+            );
         }
     }
 }

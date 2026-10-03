@@ -110,6 +110,48 @@ where
     }
 }
 
+/// Fallo de `init()`, tipado para que el caller pueda distinguir "el proveedor
+/// rechazó la credencial" de "no se pudo comprobar".
+///
+/// El tipo es la restricción: antes, las cinco salidas de error de `init()`
+/// eran el mismo `String` y el caller no tenía forma de distinguirlas, así que
+/// trate todas como rechazo y marcaba `credentials_invalid = 1` incluso con un
+/// 503 o sin red.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeezerInitError {
+    /// Rechazo explícito de la credencial (401/403, o 2xx sin token de
+    /// sesión). SÍ invalida la cuenta.
+    Rejected(String),
+    /// No se pudo comprobar: sin red, timeout, 5xx, 429, body ilegible.
+    /// NUNCA invalida; la sesión se deja intacta.
+    Transient(String),
+}
+
+impl DeezerInitError {
+    /// Clasifica un status HTTP no-2xx. Solo 401 y 403 hablan de la
+    /// credencial; cualquier otro status es indisponibilidad del proveedor.
+    pub fn from_status(code: u16, message: String) -> Self {
+        if code == 401 || code == 403 {
+            DeezerInitError::Rejected(message)
+        } else {
+            DeezerInitError::Transient(message)
+        }
+    }
+
+    /// El mensaje para la UI / los logs.
+    pub fn message(&self) -> &str {
+        match self {
+            DeezerInitError::Rejected(m) | DeezerInitError::Transient(m) => m,
+        }
+    }
+}
+
+impl std::fmt::Display for DeezerInitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
 /// Deezer API client using ARL cookie
 pub struct DeezerClient {
     client: Client,
@@ -153,7 +195,13 @@ impl DeezerClient {
     }
 
     /// Initialize the client by getting user data and API token
-    pub async fn init(&mut self) -> Result<(), String> {
+    pub async fn init(&mut self) -> Result<(), DeezerInitError> {
+        // Los fallos de TRANSPORTE (sin red, DNS, timeout) y los 5xx/429 son
+        // "no se pudo comprobar", NO "el proveedor rechazó la ARL". Antes todas
+        // estas salidas acababan en el mismo `Err(String)` que el caller
+        // interpretaba como rechazo explícito e invalidaba la cuenta para
+        // siempre: un 503 de Deezer dejaba la biblioteca bloqueada hasta
+        // re-loguear a mano.
         let response = self
             .client
             .post(&self.api_base)
@@ -166,13 +214,13 @@ impl DeezerClient {
             .json(&serde_json::json!({})) // Empty JSON body to satisfy Content-Length
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(|e| DeezerInitError::Transient(format!("Request failed: {}", e)))?;
 
         let status = response.status();
         let text = response
             .text()
             .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
+            .map_err(|e| DeezerInitError::Transient(format!("Failed to read response: {}", e)))?;
 
         tracing::debug!(
             "Deezer getUserData response ({}): {}",
@@ -181,19 +229,24 @@ impl DeezerClient {
         );
 
         if !status.is_success() {
-            return Err(format!(
+            let msg = format!(
                 "Deezer API error ({}): {}",
                 status,
                 &text[..text.len().min(200)]
-            ));
+            );
+            // Solo 401/403 es un veredicto sobre la credencial. Un 5xx o un 429
+            // dice que el servidor está ocupado, no que la ARL esté caducada.
+            return Err(DeezerInitError::from_status(status.as_u16(), msg));
         }
 
         let data: DeezerApiResponse = serde_json::from_str(&text).map_err(|e| {
-            format!(
+            // Un body no parseable sobre un 2xx es normalmente una respuesta
+            // de borde/proxy; no dice nada de la ARL.
+            DeezerInitError::Transient(format!(
                 "Failed to parse Deezer response: {} (raw: {})",
                 e,
                 &text[..text.len().min(200)]
-            )
+            ))
         })?;
 
         if let Some(results) = data.results {
@@ -202,10 +255,13 @@ impl DeezerClient {
         }
 
         if self.api_token.is_none() {
-            return Err(format!(
+            // 2xx + respuesta válida pero SIN token de sesión: Deezer acepta el
+            // transporte y rechaza la credencial. Este es el rechazo real, y el
+            // único camino aquí que sí debe invalidar la cuenta.
+            return Err(DeezerInitError::Rejected(format!(
                 "Failed to get Deezer API token - ARL may be invalid (raw: {})",
                 &text[..text.len().min(200)]
-            ));
+            )));
         }
 
         Ok(())
@@ -642,7 +698,9 @@ impl DeezerClient {
         account_id: i64,
     ) -> Result<super::ImportResult, String> {
         // Initialize first to get user_id
-        self.init().await?;
+        // El tipo de error se aplana a String como antes: esta ruta no decide
+        // si la credencial está revocada, solo propaga el mensaje.
+        self.init().await.map_err(|e| e.to_string())?;
 
         let user_id = self.user_id.clone().ok_or("User ID not available")?;
 

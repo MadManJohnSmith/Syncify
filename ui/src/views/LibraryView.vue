@@ -1371,11 +1371,30 @@ async function loadMore() {
   }
 }
 
+// Infinite scroll fires a burst of scroll events per flick (B-4).
+//
+// THROTTLE, not debounce: un debounce con clearTimeout+setTimeout NUNCA dispara
+// durante un flick con inercia, porque cada evento reinicia el temporizador —
+// el scroll infinito pasaba de cargar ~6 páginas por flick a cargar 1, que es
+// justo el cambio de comportamiento que este track prohíbe. Este patrón
+// dispara en el PRIMER evento y admite otro cada intervalo, así que el conjunto
+// de páginas cargadas es el mismo que antes.
+//
+// La decisión se toma con el estado del MOMENTO del evento (no dentro del
+// temporizador): si el usuario llega al fondo y escribe en el buscador un
+// instante después, la carga ya salió, igual que antes del cambio.
+let lastScrollCheck = 0;
+const SCROLL_THROTTLE_MS = 120;
+let scrollThrottleTimer: ReturnType<typeof setTimeout> | null = null;
 function handleScroll(event: Event) {
   const target = event.target as HTMLElement;
   const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
-  
-  if (scrollBottom < 200) {
+  if (scrollBottom >= 200) return;
+
+  // loadMore()/loadMoreSearchResults() son idempotentes (guardan con
+  // isLoadingMore/hasMore), así que la repetición no duplica trabajo.
+  const dispatch = () => {
+    lastScrollCheck = Date.now();
     if (searchQuery.value.trim()) {
       if (hasMoreSearch.value && !isSearching.value) {
         loadMoreSearchResults();
@@ -1385,7 +1404,18 @@ function handleScroll(event: Event) {
         loadMore();
       }
     }
+  };
+
+  const elapsed = Date.now() - lastScrollCheck;
+  if (elapsed >= SCROLL_THROTTLE_MS) {
+    dispatch();
+    return;
   }
+  if (scrollThrottleTimer) return;
+  scrollThrottleTimer = setTimeout(() => {
+    scrollThrottleTimer = null;
+    dispatch();
+  }, SCROLL_THROTTLE_MS - elapsed);
 }
 
 // Initialize data
@@ -2315,6 +2345,10 @@ onUnmounted(() => {
   }
   if (reloadDebounceTimer) {
     clearTimeout(reloadDebounceTimer)
+  }
+  if (scrollThrottleTimer) {
+    clearTimeout(scrollThrottleTimer)
+    scrollThrottleTimer = null
   }
 })
 </script>

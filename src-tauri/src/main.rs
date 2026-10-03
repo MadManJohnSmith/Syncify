@@ -506,6 +506,13 @@ fn main() {
                                 account_id,
                                 service_name
                             );
+                            // Sin `last_auth_error_at`: esto NO es un rechazo del proveedor sino una
+                            // credencial irrecuperable (cifrada con otra clave de
+                            // keychain). El decay por antigüedad de
+                            // `auth_latch_is_stale` no aplica: reintentar no la
+                            // reconstruye, solo exigiría un login que el usuario
+                            // no puede evitar. Los rechazos de proveedor (Tidal,
+                            // worker) sí lo sellan.
                             let _ =
                                 sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
                                     .bind(account_id)
