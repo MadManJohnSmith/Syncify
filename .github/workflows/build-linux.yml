@@ -97,6 +97,16 @@ jobs:
       # autoaudiosink y la reproducción falla con
       # "GStreamer element autoaudiosink not found. Please install it".
       # Se añaden los plugins mínimos de audio y vídeo al AppImage.
+      # autoaudiosink/autovideosink viven en gst-plugins-good, que NO viene
+      # instalado en los runners: sin él el paso siguiente no encuentra nada
+      # que copiar (primera iteración empaquetó 13 plugins y ninguno de sink).
+      - name: Instalar plugins de GStreamer (gst-plugins-good/base)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gstreamer1.0-plugins-good gstreamer1.0-plugins-base || true
+          echo "--- plugins de sink disponibles tras instalar ---"
+          ls /usr/lib/x86_64-linux-gnu/gstreamer-1.0/ 2>/dev/null | grep -E 'autoaudio|autovideo' || echo "NINGUNO"
+
       - name: Inyectar plugins de GStreamer en el AppImage
         run: |
           set -euo pipefail
@@ -127,7 +137,16 @@ jobs:
             done
           done
           echo "Plugins de GStreamer copiados: $found"
-          [ "$found" -ge 5 ] || echo "::warning::Solo $found plugins disponibles en el runner"
+          # El sink de audio es IMPRESCINDIBLE: sin él el AppImage arranca pero
+          # no reproduce sonido. Publicar un paquete roto es peor que fallar.
+          if [ ! -f "$PLUGDIR/libgstautoaudiosink.so" ]; then
+            echo "::error::autoaudiosink no está disponible en el runner; el AppImage no tendrá salida de audio"
+            exit 1
+          fi
+          if [ ! -f "$PLUGDIR/libgstautovideosink.so" ]; then
+            echo "::error::autovideosink no está disponible en el runner"
+            exit 1
+          fi
           # Reempaquetar con appimagetool (conserva el AppRun y los hooks).
           curl -sL -o "$WORK/appimagetool" \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
