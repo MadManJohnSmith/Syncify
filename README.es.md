@@ -4,20 +4,25 @@
 
 **Toda tu biblioteca musical. Máxima calidad. Bajo tu control.**
 
-Conecta tus cuentas de streaming, importa tu catálogo completo, descárgalo en
-la mejor calidad disponible y mantén una biblioteca local perfectamente
-organizada — lista para Symfonium, Plexamp o cualquier reproductor que quieras.
+Conecta Qobuz, Tidal, Spotify, Deezer, SoundCloud y Apple Music. Importa tu
+catálogo completo, descárgalo en la mejor calidad disponible y conserva una
+biblioteca local perfectamente organizada, con archivos reales, lista para
+Symfonium, Plexamp o cualquier reproductor que quieras.
 
 [English](README.md) · [Español](README.es.md)
 
+**[⬇ Descarga la última versión](https://github.com/MadManJohnSmith/Syncify/releases/latest)**
+· [Compila desde fuente](#compilar-desde-fuente) · [Documentación](docs/README.md)
+
+[![Release](https://img.shields.io/github/v/release/MadManJohnSmith/Syncify?style=flat-square&logo=github)](https://github.com/MadManJohnSmith/Syncify/releases/latest)
+[![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8D8?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust Core](https://img.shields.io/badge/Rust-Core%20Engine-DEA584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Vue 3](https://img.shields.io/badge/Vue.js-v3-4FC08D?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
 [![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38B2AC?style=flat-square&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL%20Mode-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
 
-**Windows** · instalador y portable — **Linux** · AppImage, DEB y tarball
+**Windows** instalador y portable · **Linux** AppImage, DEB y tarball
 
 </div>
 
@@ -43,7 +48,7 @@ pierde una licencia, o quitan una pista — tu biblioteca se va contigo. Syncify
 le da la vuelta: convierte "tu" catálogo en *tu* catálogo.
 
 - **Cambia de servicio sin dejar tu música atrás.** Importa todo (favoritos,
-  playlists, compras e historial) y migra a otro servicio — o descárgalo y
+  playlists, compras e historial) y migra a otro servicio, o descárgalo y
   sé dueño de verdad.
 - **Archivos reales, no licencias.** Las descargas quedan como FLAC
   correctamente etiquetado (hasta Hi-Res 24-bit/192 kHz) o MP3, verificado
@@ -59,8 +64,9 @@ le da la vuelta: convierte "tu" catálogo en *tu* catálogo.
 - **Migra entre servicios**: elige origen, elige destino, revisa las
   coincidencias y transfiere. Tus playlists viajan con su orden y nombres
   intactos.
-- **Descarga con cascada de calidad**: el motor siempre va por el mejor
-  nivel disponible y hace fallback con elegancia, verificando el resultado.
+- **Descarga con cascada de calidad**: el motor siempre apunta al mejor
+  nivel ofrecido para cada pista, baja al siguiente cuando no está y
+  verifica cada archivo que escribe.
 - **Metadatos de nivel profesional automáticos**: artistas múltiples,
   colaboraciones y compilaciones bien resueltas, países, BPM, tonalidad y
   energía — desde MusicBrainz, AcoustID y Last.fm.
@@ -81,7 +87,7 @@ le da la vuelta: convierte "tu" catálogo en *tu* catálogo.
    cifradas en tu máquina.
 2. **Importa.** Un motor unificado en Rust recorre la API del servicio con
    paginación, resuelve la identidad canónica de cada pista (ISRC, IDs del
-   proveedor), la enriquece y la persiste — transaccionalmente, con retry —
+   proveedor), la enriquece y la persiste transaccionalmente, con retry,
    en tu biblioteca SQLite local.
 3. **Descarga.** Pipelines nativos manejan el formato de entrega de cada
    proveedor (incluido el desencriptado DASH de Qobuz), escriben archivos
@@ -92,9 +98,9 @@ le da la vuelta: convierte "tu" catálogo en *tu* catálogo.
    Plexamp, Roon o cualquier reproductor y funciona.
 
 Bajo el capó: una app de escritorio **Tauri 2** (núcleo Rust + UI en Vue 3)
-con IPC tipado, un motor de descarga/reparación multihilo y **83 migraciones
-SQL** de un esquema local probado en combate. Los logins de servicios corren
-por puentes Python pequeños y auditados (Playwright, Mutagen, AcoustID).
+con IPC tipado, un motor de descarga/reparación multihilo y un esquema local
+endurecido a lo largo de **83 migraciones SQL**. Los logins de servicios
+corren por puentes Python pequeños y auditados (Playwright, Mutagen, AcoustID).
 
 ## Servicios soportados
 
@@ -128,8 +134,8 @@ Descarga la última build de la página de
 
 Después:
 
-1. Instala y abre Syncify — `ffmpeg`, `ffprobe` y `fpcalc` (Chromaprint)
-   **viajan dentro de cada paquete**: no hay nada más que descargar,
+1. Instala y abre Syncify: `ffmpeg`, `ffprobe` y `fpcalc` (Chromaprint)
+   **viajan dentro de cada paquete**, así que no hay nada más que descargar,
    instalar ni configurar.
 2. Corre el asistente de primera ejecución: conecta tus cuentas (las
    credenciales se guardan en el llavero de tu sistema — sin archivos de
@@ -138,6 +144,31 @@ Después:
 > ¿Compilando desde fuente? Mira
 > [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md) para saber
 > cómo se proveen los binarios empaquetados en builds locales de producción.
+
+## Preguntas frecuentes
+
+**¿Sobrevive mi biblioteca si desinstalo Syncify?**
+
+Sí. Las descargas son archivos FLAC/MP3 en carpetas normales, con portadas y
+letras `.lrc` como sidecars. Ninguna base de datos propietaria las mantiene
+juntas: Symfonium, Plexamp, Roon o cualquier reproductor las lee
+directamente.
+
+**¿Dónde viven las credenciales de mis servicios?**
+
+En el llavero de tu sistema operativo, cifradas en tu máquina. Cada login
+corre por tu navegador; nada se escribe en archivos de configuración planos.
+
+**¿Qué calidad puedo esperar?**
+
+El motor apunta al mejor nivel que cada servicio ofrezca (FLAC hasta Hi-Res
+24-bit/192 kHz) y baja de nivel pista por pista. Cada archivo se verifica
+contra lo que el proveedor prometió antes de darse por bueno.
+
+**¿Hay versión para macOS?**
+
+Todavía no. Windows (instalador y portable) y Linux (AppImage, DEB, tarball)
+son las plataformas soportadas hoy.
 
 ## Compilar desde fuente
 

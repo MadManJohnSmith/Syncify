@@ -4,20 +4,25 @@
 
 **Your entire music library. Maximum quality. Under your control.**
 
-Connect your streaming accounts, import your whole catalog, download it in the best
-quality available, and keep a perfectly organized local library — ready for
-Symfonium, Plexamp, or any player you love.
+Connect Qobuz, Tidal, Spotify, Deezer, SoundCloud and Apple Music. Import
+your whole catalog, download it in the best quality available, and keep a
+perfectly organized local library of real files, ready for Symfonium,
+Plexamp, or any player you love.
 
 [English](README.md) · [Español](README.es.md)
 
+**[⬇ Download the latest release](https://github.com/MadManJohnSmith/Syncify/releases/latest)**
+· [Build from source](#building-from-source) · [Documentation](docs/README.md)
+
+[![Release](https://img.shields.io/github/v/release/MadManJohnSmith/Syncify?style=flat-square&logo=github)](https://github.com/MadManJohnSmith/Syncify/releases/latest)
+[![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8D8?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust Core](https://img.shields.io/badge/Rust-Core%20Engine-DEA584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Vue 3](https://img.shields.io/badge/Vue.js-v3-4FC08D?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
 [![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38B2AC?style=flat-square&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL%20Mode-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
 
-**Windows** · installer & portable — **Linux** · AppImage, DEB & tarball
+**Windows** installer & portable · **Linux** AppImage, DEB & tarball
 
 </div>
 
@@ -44,7 +49,7 @@ that: it turns "your" catalog into *your* catalog.
 
 - **Leave any service without leaving your music behind.** Import everything
   (favorites, playlists, purchases, history), then migrate it to another
-  service — or download it and own it outright.
+  service, or download it and own it outright.
 - **Own real files, not licenses.** Downloads land as properly tagged FLAC
   (up to Hi-Res 24-bit/192 kHz) or MP3, verified against what the provider
   promised.
@@ -58,8 +63,9 @@ that: it turns "your" catalog into *your* catalog.
   and Apple Music — tracks, albums, artists, playlists.
 - **Migrate between services**: pick a source, pick a destination, review the
   matches, transfer. Your playlists move with their order and names intact.
-- **Download with a quality cascade**: the engine always goes for the best
-  available tier and falls back gracefully, then verifies the result.
+- **Download with a quality cascade**: the engine always targets the best
+  tier a track is offered in, steps down to the next one when it isn't, and
+  verifies every file it writes.
 - **Get professional-grade metadata automatically**: multi-value artists,
   collaborations, compilations handled correctly, countries, BPM, musical
   key and energy — from MusicBrainz, AcoustID and Last.fm.
@@ -78,7 +84,7 @@ that: it turns "your" catalog into *your* catalog.
    encrypted on your machine.
 2. **Import.** A unified Rust engine walks the service API with pagination,
    resolves every track's canonical identity (ISRC, provider IDs), enriches
-   it, and persists it — transactionally, with retry — into your local
+   it, and persists it transactionally, with retry, into your local
    SQLite library.
 3. **Download.** Native pipelines handle each provider's delivery format
    (including DASH decryption for Qobuz), write real FLAC/MP3 files with the
@@ -89,9 +95,9 @@ that: it turns "your" catalog into *your* catalog.
    player at it and it just works.
 
 Under the hood: a **Tauri 2** desktop app (Rust core + Vue 3 UI) with a typed
-IPC layer, a multi-threaded download/repair engine, and **83 SQL migrations**
-of battle-tested local schema. Service logins run through small audited
-Python bridges (Playwright, Mutagen, AcoustID).
+IPC layer, a multi-threaded download/repair engine, and a local schema
+hardened across **83 SQL migrations**. Service logins run through small
+audited Python bridges (Playwright, Mutagen, AcoustID).
 
 ## Supported services
 
@@ -124,7 +130,7 @@ Grab the latest build from the
 
 Then:
 
-1. Install and launch Syncify — `ffmpeg`, `ffprobe` and `fpcalc` (Chromaprint)
+1. Install and launch Syncify: `ffmpeg`, `ffprobe` and `fpcalc` (Chromaprint)
    **ship inside every package**, so there is nothing else to download,
    install or configure.
 2. Run the first-run wizard: connect your accounts (credentials are stored in
@@ -133,6 +139,30 @@ Then:
 > Building from source? See
 > [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md) for how the
 > bundled binaries are provided to local production builds.
+
+## FAQ
+
+**Does my library survive uninstalling Syncify?**
+
+Yes. Downloads are plain FLAC/MP3 files in normal folders, with covers and
+`.lrc` lyrics as sidecars. No proprietary database holds them together, so
+Symfonium, Plexamp, Roon or any player reads them directly.
+
+**Where do my service credentials live?**
+
+In your operating system's keyring, encrypted on your machine. Each login
+runs through your browser; nothing is written to plain config files.
+
+**What quality can I expect?**
+
+The engine targets the best tier each service offers (FLAC up to Hi-Res
+24-bit/192 kHz) and falls back to lower tiers per track. Every file is
+verified against what the provider promised before it counts as done.
+
+**Is there a macOS version?**
+
+Not yet. Windows (installer and portable) and Linux (AppImage, DEB,
+tarball) are the supported platforms today.
 
 ## Building from source
 
