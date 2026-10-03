@@ -23,6 +23,19 @@ organizada — lista para Symfonium, Plexamp o cualquier reproductor que quieras
 
 ---
 
+## Véalo en acción
+
+![Panel de Syncify — resumen de biblioteca, fuentes por servicio y estadísticas de descarga](docs/screenshots/dashboard.png)
+
+| | |
+|---|---|
+| ![Library — todo tu catálogo en una tabla](docs/screenshots/library.png) | ![Letras sincronizadas con el reproductor integrado](docs/screenshots/lyrics.png) |
+| *Todo tu catálogo, unificado* | *Letras sincronizadas, guardadas como .lrc* |
+| ![Downloads — cola con hilos y reintentos](docs/screenshots/downloads.png) | ![Seis servicios conectados en el onboarding](docs/screenshots/services.png) |
+| *Un motor de descargas que controlas* | *Un login por servicio, todo queda sincronizado* |
+
+---
+
 ## ¿Por qué Syncify?
 
 Los servicios de streaming te alquilan la música. Si te vas — o el servicio

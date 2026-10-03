@@ -101,6 +101,7 @@ pub const FIXTURE_LYRICSPLUS_LINE_JSON: &str = r#"{
 }"#;
 
 /// Instrumental Response Object (module-internal test helper)
+#[cfg(test)]
 fn fixture_instrumental() -> LyricsResolution {
     LyricsResolution {
         status: ResolutionStatus::Resolved,
@@ -119,6 +120,7 @@ fn fixture_instrumental() -> LyricsResolution {
 }
 
 /// HTTP Error Response Object (module-internal test helper)
+#[cfg(test)]
 fn fixture_http_error(code: u16) -> LyricsResolution {
     if code == 401 || code == 403 {
         LyricsResolution::new_requires_auth("Spotify", "color_lyrics", format!("HTTP {}", code))
@@ -132,6 +134,7 @@ fn fixture_http_error(code: u16) -> LyricsResolution {
 }
 
 /// Reject Degradation Guard Case (module-internal test helper)
+#[cfg(test)]
 fn fixture_reject_degradation_case() -> (LyricsResolution, String) {
     let res = LyricsResolution::new_resolved(
         "Apple Music",
