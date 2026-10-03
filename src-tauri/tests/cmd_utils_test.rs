@@ -71,6 +71,22 @@ fn test_find_scripts_dir_falls_back_to_project_root() {
 }
 
 #[test]
+fn test_scripts_dir_marker_exists_in_dev_tree() {
+    // Ata el marcador con el que find_scripts_dir valida cada candidato al
+    // árbol real: un renombrado de dependency_manager.py rompería la
+    // resolución en todos los paquetes en silencio, sin fallo de compilación.
+    let repo_scripts = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts");
+    assert!(
+        repo_scripts.join("dependency_manager.py").is_file(),
+        "el marcador de resolución debe existir en scripts/: {:?}",
+        repo_scripts
+    );
+}
+
+#[test]
 fn test_resolve_tool_ignores_non_bundled_programs() {
     assert!(resolve_tool("python").is_none());
     assert!(resolve_tool("python3").is_none());
