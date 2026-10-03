@@ -19,14 +19,37 @@ function normalizeBridgeResult(raw: unknown): BridgeResult {
     }
 }
 
-export const toolsApi = {
-    checkFfmpeg: async (): Promise<BridgeResult> => {
-        return normalizeBridgeResult(await invoke<unknown>('check_ffmpeg_available'))
-    },
+/**
+ * Coalesce concurrent bridge probes for the same command onto one in-flight
+ * `invoke` (B-3). Dashboard loads fire `checkFfmpeg()` and `checkFingerprint()`
+ * from the same tick, and a manual refresh can overlap a mount, so the same
+ * Python bridge would otherwise be spawned twice for one visible result.
+ *
+ * Scope: only *simultaneous* callers share a promise. A call made after the
+ * shared one settles starts a fresh probe, so a later refresh still observes
+ * a newly installed tool. Rejections are shared too and then cleared, so an
+ * error path cannot poison later calls.
+ */
+const inFlight = new Map<string, Promise<BridgeResult>>()
 
-    checkFingerprint: async (): Promise<BridgeResult> => {
-        return normalizeBridgeResult(await invoke<unknown>('check_fingerprint_available'))
-    },
+function coalescedProbe(command: string): Promise<BridgeResult> {
+    const pending = inFlight.get(command)
+    if (pending) return pending
+
+    const request = (async () => normalizeBridgeResult(await invoke<unknown>(command)))()
+    inFlight.set(command, request)
+    // Clear only this generation; a later probe installs its own entry.
+    const clear = () => {
+        if (inFlight.get(command) === request) inFlight.delete(command)
+    }
+    request.then(clear, clear)
+    return request
+}
+
+export const toolsApi = {
+    checkFfmpeg: async (): Promise<BridgeResult> => coalescedProbe('check_ffmpeg_available'),
+
+    checkFingerprint: async (): Promise<BridgeResult> => coalescedProbe('check_fingerprint_available'),
 
     /**
      * Persist UTF-8 text to a user-resolved path (dialog plugin on the caller).

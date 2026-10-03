@@ -1071,13 +1071,18 @@ pub async fn mark_account_credentials_invalid(
         UPDATE accounts
         SET credentials_invalid = 1,
             invalid_reason      = ?,
-            last_auth_error     = ?
+            last_auth_error     = ?,
+            last_auth_error_at  = ?
         WHERE service_id = (SELECT id FROM services WHERE name = ? LIMIT 1)
           AND is_active = 1
         "#,
     )
     .bind(reason)
     .bind(reason)
+    // A-4: el latch se autocura por antigüedad (orchestrator.rs), y para eso
+    // necesita saber CUÁNDO se marcó. Sin esta columna el veredicto no tiene
+    // edad y el servicio quedaba bloqueado para siempre.
+    .bind(chrono::Utc::now().to_rfc3339())
     .bind(service_name)
     .execute(db)
     .await

@@ -223,29 +223,52 @@ async fn test_s189_album_tracks_embedded_isrc() {
 
 #[tokio::test]
 async fn test_s189_init_failure_is_explicit_auth_rejection() {
-    // The sync arm treats ANY init() error as RequiresAuth + credential
-    // invalidation; verify init() actually fails on a rejected ARL payload.
+    // A rejected ARL payload (2xx without a session token) must be an
+    // EXPLICIT auth rejection, not a transient failure.
+    //
+    // `with_api_base` substitutes the whole base URL, so the request lands on
+    // "/" rather than on the production "/ajax/gw-light.php" path. The old
+    // assertion expected that path and therefore panicked INSIDE the mock
+    // responder; the request then died as a transport error, and the
+    // text-only assertion below still passed because it only looked for
+    // "token"/"arl" in the message. A-1's verdict assertion is what finally
+    // made that latent problem visible, because it requires `init()` to reach
+    // the "missing checkForm" branch at all.
     let base = spawn_mock(Arc::new(|_method, target| {
         assert!(
-            target.starts_with("/ajax/gw-light.php"),
-            "unexpected path: {}",
+            target.starts_with('/')
+                && target.contains("method=deezer.getUserData")
+                && target.contains("api_token="),
+            "unexpected init request: {}",
             target
         );
         (
             200,
-            "{\"results\":{\"checkForm\":null,\"USER\":{}}}".to_string(),
+            // `USER` debe traer `USER_ID`: sin él la deserialización falla
+            // ANTES de la comprobación de `checkForm` y el test no estaría
+            // ejercitando la rama "ARL rechazada" que dice ejercitar.
+            "{\"results\":{\"checkForm\":null,\"USER\":{\"USER_ID\":\"0\"}}}".to_string(),
         )
     }))
     .await;
 
     let mut client = DeezerClient::new("bad-arl".into()).with_api_base(base);
-    let err = client
-        .init()
-        .await
+    let result = client.init().await;
+    let err = result
+        .as_ref()
         .expect_err("missing checkForm must fail init");
+    // A-1: `init()` devuelve un error TIPADO. Este caso (2xx sin token de
+    // sesión) es un rechazo real de la ARL y debe seguir invalidando; la
+    // aserción original sobre el texto se conserva vía `message()`.
+    let msg = err.message().to_lowercase();
     assert!(
-        err.to_lowercase().contains("token") || err.to_lowercase().contains("arl"),
-        "error must point at the ARL/token: {}",
+        syncify_tauri_lib::worker::AuthVerdict::from_deezer_init(&result).invalidates_session(),
+        "un 2xx sin checkForm es un rechazo real de la ARL: {:?}",
         err
+    );
+    assert!(
+        msg.contains("token") || msg.contains("arl"),
+        "error must point at the ARL/token: {}",
+        msg
     );
 }

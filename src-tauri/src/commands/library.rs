@@ -239,6 +239,7 @@ async fn get_library_inner(
             COALESCE(t.source_title, t.title) as source_title,
             COALESCE(t.file_disambiguator, d.file_disambiguator) as file_disambiguator
         FROM tracks t
+        JOIN (SELECT id FROM tracks ORDER BY title, id LIMIT ? OFFSET ?) p ON p.id = t.id
         LEFT JOIN albums al ON al.id = t.album_id
         LEFT JOIN track_sources ts ON ts.track_id = t.id
         LEFT JOIN services s ON s.id = ts.service_id
@@ -248,7 +249,6 @@ async fn get_library_inner(
         LEFT JOIN lyrics l ON l.track_id = t.id
         GROUP BY t.id
         ORDER BY t.title ASC
-        LIMIT ? OFFSET ?
         "#
     )
     .bind(limit)
@@ -1836,6 +1836,8 @@ pub async fn get_favorite_tracks(
             t.favorite_at,
             d.file_path
         FROM tracks t
+        JOIN (SELECT id FROM tracks WHERE is_favorite = 1
+              ORDER BY favorite_at DESC, title ASC, id ASC LIMIT ? OFFSET ?) p ON p.id = t.id
         LEFT JOIN albums al ON al.id = t.album_id
         LEFT JOIN track_sources ts ON ts.track_id = t.id
         LEFT JOIN services s ON s.id = ts.service_id
@@ -1843,10 +1845,8 @@ pub async fn get_favorite_tracks(
         LEFT JOIN downloads d ON d.track_id = t.id
         LEFT JOIN download_queue dq ON dq.track_id = t.id AND dq.status IN ('queued', 'downloading')
         LEFT JOIN lyrics l ON l.track_id = t.id
-        WHERE t.is_favorite = 1
         GROUP BY t.id
         ORDER BY t.favorite_at DESC, t.title ASC
-        LIMIT ? OFFSET ?
         "#
     )
     .bind(limit)

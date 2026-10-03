@@ -18,6 +18,34 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+/// Antigüedad máxima de un veredicto `credentials_invalid` para seguir creyéndolo.
+/// Superada, el latch deja de deny-by-default y la descarga vuelve a intentarlo.
+pub const AUTH_LATCH_MAX_AGE_HOURS: i64 = 24;
+
+/// A-4: ¿el latch de credenciales ya es demasiado viejo para seguir bloqueando?
+///
+/// `marked_at` es `accounts.last_auth_error_at` (RFC3339, escrito por
+/// `mark_account_credentials_invalid`).
+///
+/// Se responde `false` (NO está viejo) ante `None` o una fecha ilegible: no
+/// consta que el veredicto sea antiguo, así que se conserva el
+/// deny-by-default. Relajar solo ante una antigüedad **demostrada** es lo que
+/// garantiza que un rechazo recién ocurrido bloquee igual que antes.
+pub fn auth_latch_is_stale(marked_at: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> bool {
+    let Some(ts) = marked_at else {
+        return false;
+    };
+    match chrono::DateTime::parse_from_rfc3339(ts) {
+        Ok(marked) => {
+            let age = now.signed_duration_since(marked.with_timezone(&chrono::Utc));
+            // Un sello en el futuro (desfase de reloj, BD editada a mano) NO es
+            // evidencia de antigüedad: se trata como reciente.
+            age.num_hours() >= AUTH_LATCH_MAX_AGE_HOURS
+        }
+        Err(_) => false,
+    }
+}
+
 /// Matched candidate for controlled edition-identity fallback
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FallbackMatch {
@@ -825,24 +853,40 @@ impl DownloadOrchestrator {
     }
 
     /// Check whether a service has active, valid credentials in the database
+    ///
+    /// A-4: el filtro de `credentials_invalid` sigue intacto — un rechazo
+    /// recién ocurrido bloquea igual que antes. Lo que se añade es la
+    /// autocuración por antigüedad: un veredicto VIEJO (más de
+    /// `AUTH_LATCH_MAX_AGE`) deja de deny-by-default para que la descarga
+    /// vuelva a intentarlo y sea su propio 401 el que decida, vía
+    /// `classify_session_auth_failure`. Sin esto, un solo rechazo bloqueaba el
+    /// servicio de forma permanente: los únicos que limpian el flag son un
+    /// login o un logout manuales.
     pub async fn is_service_available(&self, service: &str) -> bool {
         if let Some(ref db) = self.db {
-            let count: Result<(i64,), _> = sqlx::query_as(
+            // Traemos el flag JUNTO con su edad en una sola fila por servicio.
+            let rows: Result<Vec<(i64, Option<String>)>, _> = sqlx::query_as(
                 r#"
-                SELECT COUNT(*)
+                SELECT COALESCE(a.credentials_invalid, 0), a.last_auth_error_at
                 FROM accounts a
                 JOIN services s ON s.id = a.service_id
                 WHERE LOWER(s.name) = LOWER(?)
                   AND a.is_active = 1
-                  AND COALESCE(a.credentials_invalid, 0) = 0
                 "#,
             )
             .bind(service)
-            .fetch_one(db)
+            .fetch_all(db)
             .await;
 
-            match count {
-                Ok((c,)) => c > 0,
+            match rows {
+                Ok(rows) => rows.iter().any(|(invalid, marked_at)| {
+                    if *invalid == 0 {
+                        return true;
+                    }
+                    !auth_latch_is_stale(marked_at.as_deref(), chrono::Utc::now())
+                }),
+                // Sin lectura fiable se mantiene el `true` previo: es el
+                // comportamiento de antes y no invalida nada por edad.
                 Err(_) => true,
             }
         } else {
@@ -1019,6 +1063,76 @@ lazy_static::lazy_static! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A-4: un rechazo RECIÉN ocurrido debe seguir bloqueando el servicio.
+    /// Este es el comportamiento que no se toca, y falla contra cualquier
+    /// versión que relaje el latch sin mirar la antigüedad.
+    #[test]
+    fn a_fresh_rejection_still_locks_the_service() {
+        let now = chrono::Utc::now();
+        let fresh = (now - chrono::Duration::minutes(5)).to_rfc3339();
+        assert!(
+            !auth_latch_is_stale(Some(&fresh), now),
+            "un veredicto de hace 5 minutos no puede considerarse viejo"
+        );
+        // Justo por debajo del umbral tampoco caduca.
+        let edge = (now - chrono::Duration::hours(AUTH_LATCH_MAX_AGE_HOURS - 1)).to_rfc3339();
+        assert!(!auth_latch_is_stale(Some(&edge), now));
+    }
+
+    /// A-4: pasado el umbral, el latch deja de bloquear para siempre. Este
+    /// aserto falla contra la versión previa, que no miraba la edad en absoluto.
+    #[test]
+    fn an_old_rejection_decays_so_the_service_can_retry() {
+        let now = chrono::Utc::now();
+        let old = (now - chrono::Duration::hours(AUTH_LATCH_MAX_AGE_HOURS + 1)).to_rfc3339();
+        assert!(
+            auth_latch_is_stale(Some(&old), now),
+            "un veredicto de hace más de {} h debe autocurarse",
+            AUTH_LATCH_MAX_AGE_HOURS
+        );
+        let ancient = (now - chrono::Duration::days(30)).to_rfc3339();
+        assert!(auth_latch_is_stale(Some(&ancient), now));
+    }
+
+    /// Ante duda se conserva el deny-by-default: si no consta la fecha, el
+    /// veredicto se trata como reciente (o sea, bloqueante).
+    #[test]
+    fn an_unknown_marking_time_keeps_the_strict_behavior() {
+        let now = chrono::Utc::now();
+        assert!(!auth_latch_is_stale(None, now), "sin fecha no se relaja");
+        assert!(
+            !auth_latch_is_stale(Some(""), now),
+            "fecha vacía no se relaja"
+        );
+        assert!(
+            !auth_latch_is_stale(Some("no-es-una-fecha"), now),
+            "una fecha ilegible no se relaja"
+        );
+    }
+
+    /// Un sello en el futuro no es evidencia de antigüedad (desfase de reloj).
+    #[test]
+    fn a_future_timestamp_is_not_treated_as_stale() {
+        let now = chrono::Utc::now();
+        let future = (now + chrono::Duration::days(2)).to_rfc3339();
+        assert!(!auth_latch_is_stale(Some(&future), now));
+    }
+
+    /// El formato es el que escribe `mark_account_credentials_invalid`
+    /// (`chrono::Utc::now().to_rfc3339()`), no otro: un desfase de formato
+    /// haría que TODO latch pareciera sin fecha y la autocuración no
+    /// ocurriría nunca.
+    #[test]
+    fn the_written_format_is_understood() {
+        let now = chrono::Utc::now();
+        let as_written = chrono::Utc::now().to_rfc3339();
+        assert!(!auth_latch_is_stale(Some(&as_written), now));
+        assert!(auth_latch_is_stale(
+            Some(&as_written),
+            now + chrono::Duration::hours(25)
+        ));
+    }
 
     #[test]
     fn test_orchestrator_creation() {

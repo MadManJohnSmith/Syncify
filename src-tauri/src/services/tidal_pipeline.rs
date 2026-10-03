@@ -669,8 +669,9 @@ pub async fn resolve_and_refresh_gui_credentials_opts(
                             error = %reason,
                             "[Tidal Auth Diagnostics] Tidal OAuth token refresh rejected by provider; marking account credentials_invalid"
                         );
-                        if let Err(err) = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = ? WHERE id = ?")
+                        if let Err(err) = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = ?, last_auth_error_at = ? WHERE id = ?")
                             .bind(e.to_string())
+                            .bind(chrono::Utc::now().to_rfc3339())
                             .bind(account_id)
                             .execute(db)
                             .await
@@ -702,7 +703,8 @@ pub async fn resolve_and_refresh_gui_credentials_opts(
             endpoint = "resolve_and_refresh_gui_credentials",
             "[Tidal Auth Diagnostics] Tidal access token is expired and no refresh token is present; marking account credentials_invalid"
         );
-        if let Err(err) = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = 'Token expired and no refresh token available' WHERE id = ?")
+        if let Err(err) = sqlx::query("UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', last_auth_error = 'Token expired and no refresh token available', last_auth_error_at = ? WHERE id = ?")
+            .bind(chrono::Utc::now().to_rfc3339())
             .bind(account_id)
             .execute(db)
             .await

@@ -144,27 +144,40 @@ class AppleMusicAuth:
             self._log(f"Error fetching access token: {e}")
             return None
 
-    def validate_token(self, token: Optional[str] = None) -> Tuple[bool, str]:
+    def validate_token(self, token: Optional[str] = None) -> Tuple[Optional[bool], str]:
         """
         Validate the media-user-token against Apple Music API.
-        
+
+        Returns a THREE-valued verdict (A-2):
+          * True  → el token sirve de verdad (comprobado con un 200).
+          * False → el proveedor lo rechazó (401/403). Realmente caducado.
+          * None  → NO SE PUDO COMPROBAR (5xx, 429, timeout, DNS, parseo).
+
+        El tercer valor es el que faltaba: antes, cualquier status distinto de
+        200 y cualquier excepción caían en el mismo `else`/`except` y
+        devolvían False, y el consumidor lo traducía a "Token expired". Eso
+        mandaba a re-loguear al usuario porque Apple tuviera un 503, cuando la
+        sesión seguía perfectamente viva.
+
         Returns:
-            (is_valid, storefront_or_error_message)
+            (is_valid_or_None, storefront_or_error_message)
         """
         token = token or self.get_stored_token()
         if not token:
             return False, "No token provided"
-        
+
         # Get access token first
         if not self._access_token:
             self._fetch_access_token()
-        
+
         if not self._access_token:
-            return False, ("no se pudo obtener el developer token de Apple "
-                           "(su red parece bloqueada para peticiones directas); "
-                           "reintenta la conexión — normalmente al segundo intento "
-                           "la recarga del reproductor lo entrega")
-        
+            # No se obtuvo el developer token: es un fallo de entorno/red, no
+            # un rechazo del token del usuario. Antes esto también salía como
+            # False y por tanto como "Token expired".
+            return None, ("could not obtain the Apple developer token "
+                          "(its network looks blocked for direct requests); "
+                          "retry — normally the second attempt gets it")
+
         try:
             response = requests.get(
                 "https://amp-api.music.apple.com/v1/me/storefront",
@@ -176,7 +189,7 @@ class AppleMusicAuth:
                 },
                 timeout=10
             )
-            
+
             if response.status_code == 200:
                 data = response.json()
                 storefront = data.get("data", [{}])[0].get("id", "unknown")
@@ -184,13 +197,21 @@ class AppleMusicAuth:
                     self._storefront = storefront
                 self._log(f"Token valid (storefront: {storefront})")
                 return True, storefront
-            else:
+            elif response.status_code in (401, 403):
+                # Rechazo explícito: aquí sí se puede decir que caducó.
                 self._log(f"Token invalid: HTTP {response.status_code}")
                 return False, f"Invalid token (HTTP {response.status_code})"
-                
+            else:
+                # 429, 5xx, y cualquier otro status: indisponibilidad. NO dice
+                # nada del token del usuario.
+                self._log(f"Could not verify token: HTTP {response.status_code}")
+                return None, (f"Could not verify session "
+                              f"(upstream HTTP {response.status_code})")
+
         except Exception as e:
+            # Timeout, DNS, SSL, JSON mal formado: no verificable.
             self._log(f"Validation error: {e}")
-            return False, str(e)
+            return None, f"Could not verify session ({e})"
     
     async def login_with_browser(self, timeout_seconds: int = 300) -> Tuple[bool, str]:
         """
@@ -335,6 +356,16 @@ class AppleMusicAuth:
                 if is_valid:
                     self.save_token(token, self._access_token)
                     return True, token
+                elif is_valid is None:
+                    # A-2: el token se acaba de capturar de una sesión real del
+                    # navegador, así que la prueba de la API es un veredicto
+                    # sobre NUESTRA comprobación, no sobre el token. Descartarlo
+                    # obligaría a repetir un login que sí funcionó (típico
+                    # cuando Apple devuelve un 5xx justo en ese momento).
+                    # Se guarda y se devuelve el error de comprobación.
+                    self.save_token(token, self._access_token)
+                    self._log(f"Token guardado sin verificar: {result}")
+                    return True, token
                 else:
                     return False, f"Token captured but invalid: {result}"
             else:
@@ -345,21 +376,30 @@ class AppleMusicAuth:
     def get_status(self) -> dict:
         """Get current Apple Music connection status."""
         token = self.get_stored_token()
-        
+
         if not token:
             return {
                 "connected": False,
                 "status": "Not connected",
                 "storefront": None
             }
-        
+
         is_valid, result = self.validate_token(token)
-        
+
         if is_valid:
             return {
                 "connected": True,
                 "status": "Connected",
                 "storefront": result
+            }
+        elif is_valid is None:
+            # A-2: no se pudo comprobar. La sesión NO se declara caducada: se
+            # informa del fallo de comprobación para que la UI ofrezca
+            # reintentar en vez de obligar a re-loguear.
+            return {
+                "connected": False,
+                "status": f"Could not verify session: {result}",
+                "storefront": None
             }
         else:
             return {

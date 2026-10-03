@@ -731,6 +731,68 @@ pub struct SessionStatus {
     pub user_info: Option<String>,
 }
 
+/// Traduce la respuesta del puente de autenticación a un estado de sesión.
+///
+/// A-3: antes esta lógica estaba en línea y solo tenía DOS salidas posibles
+/// (`true` o `false`), más un `connected: true` INCONDICIONAL en
+/// `validate_all_sessions` — la UI veía sesiones no válidas pintadas como
+/// conectadas. Y un `Err(e)` de un subproceso caído (Python no está, el bridge
+/// falló) se leía como "sesión inválida", que es una afirmación que ese error
+/// no puede sostener.
+///
+/// Ahora se separa el caso "no se pudo comprobar" del caso "caducada":
+/// - `valid: true`  → comprobada y válida.
+/// - `connected: false` → el proveedor la rechazó explícitamente.
+/// - `valid: false` + mensaje de comprobación → no verificable; la UI debe
+///   ofrecer reintentar, no re-loguear.
+fn session_status_from_probe(result: Result<AuthResult, String>) -> SessionStatus {
+    match result {
+        Ok(res) if res.success => {
+            let connected = res
+                .data
+                .as_ref()
+                .and_then(|d| d.get("connected"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if connected {
+                SessionStatus {
+                    service: String::new(),
+                    connected: true,
+                    valid: true,
+                    message: "Session valid".to_string(),
+                    user_info: None,
+                }
+            } else {
+                SessionStatus {
+                    service: String::new(),
+                    connected: false,
+                    valid: false,
+                    message: "Session expired or invalid".to_string(),
+                    user_info: None,
+                }
+            }
+        }
+        // El puente respondió, pero con error: puede ser un rechazo real del
+        // proveedor o un fallo de su propio entorno. Se propaga el mensaje.
+        Ok(res) => SessionStatus {
+            service: String::new(),
+            connected: false,
+            valid: false,
+            message: res.error.unwrap_or_else(|| "Unknown error".to_string()),
+            user_info: None,
+        },
+        // El subproceso ni siquiera arrancó: NO sabemos nada de la sesión.
+        Err(e) => SessionStatus {
+            service: String::new(),
+            connected: false,
+            valid: false,
+            message: format!("Could not verify session (check failed: {})", e),
+            user_info: None,
+        },
+    }
+}
+
 /// Validate all connected service sessions
 #[tauri::command]
 pub async fn validate_all_sessions(
@@ -757,37 +819,10 @@ pub async fn validate_all_sessions(
         // Call Python bridge to check status
         let status_result = start_auth(service_name.clone(), "status".to_string()).await;
 
-        let (valid, message) = match status_result {
-            Ok(result) => {
-                if result.success {
-                    let connected = result
-                        .data
-                        .as_ref()
-                        .and_then(|d| d.get("connected"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-
-                    if connected {
-                        (true, "Session valid".to_string())
-                    } else {
-                        (false, "Session expired or invalid".to_string())
-                    }
-                } else {
-                    (
-                        false,
-                        result.error.unwrap_or_else(|| "Unknown error".to_string()),
-                    )
-                }
-            }
-            Err(e) => (false, format!("Check failed: {}", e)),
-        };
-
         statuses.push(SessionStatus {
             service: service_name,
-            connected: true,
-            valid,
-            message,
             user_info: Some(display_name),
+            ..session_status_from_probe(status_result)
         });
     }
 
@@ -1350,5 +1385,98 @@ mod auth_security_tests {
         assert!(redacted.contains(r#""refresh_token": "[REDACTED]""#));
         assert!(redacted.contains(r#""client_secret": "[REDACTED]""#));
         assert!(redacted.contains(r#""password": "[REDACTED]""#));
+    }
+}
+
+#[cfg(test)]
+mod session_status_tri_state_tests {
+    use super::*;
+
+    fn ok_connected() -> AuthResult {
+        AuthResult {
+            success: true,
+            data: Some(serde_json::json!({ "connected": true })),
+            error: None,
+        }
+    }
+
+    fn ok_disconnected() -> AuthResult {
+        AuthResult {
+            success: true,
+            data: Some(serde_json::json!({ "connected": false })),
+            error: None,
+        }
+    }
+
+    /// A-3: una sesión caducada NO puede aparecer como conectada. Antes
+    /// `connected` era `true` incondicional, así que este aserto falla contra
+    /// la versión previa.
+    #[test]
+    fn a_rejected_session_is_never_reported_as_connected() {
+        let s = session_status_from_probe(Ok(ok_disconnected()));
+        assert!(
+            !s.connected,
+            "una sesión rechazada no puede venir marcada como conectada"
+        );
+        assert!(!s.valid);
+    }
+
+    /// El camino feliz no se toca.
+    #[test]
+    fn a_valid_session_stays_connected_and_valid() {
+        let s = session_status_from_probe(Ok(ok_connected()));
+        assert!(s.connected);
+        assert!(s.valid);
+        assert_eq!(s.message, "Session valid");
+    }
+
+    /// A-3: un subproceso que no arrancó NO prueba que la sesión esté
+    /// caducada. Antes `Err(e)` producía exactamente la misma salida que un
+    /// rechazo real ("Check failed: ..." con valid:false y connected:true),
+    /// así que la UI mandaba al usuario a re-loguear sin motivo.
+    #[test]
+    fn a_failed_subprocess_is_unverified_not_rejected() {
+        let s = session_status_from_probe(Err("python3: not found".to_string()));
+        assert!(!s.valid, "no se pudo comprobar, luego no es 'válida'");
+        assert!(
+            !s.connected,
+            "no se comprobó nada, luego no se afirma conexión"
+        );
+        assert!(
+            s.message.contains("Could not verify"),
+            "el mensaje debe distinguir 'no verificable' de 'caducada': {}",
+            s.message
+        );
+        assert!(
+            !s.message.contains("expired") && !s.message.contains("invalid"),
+            "no debe insinuar caducidad cuando solo falló la comprobación: {}",
+            s.message
+        );
+    }
+
+    /// Un error del propio puente (que sí consultaró al proveedor) se propaga
+    /// tal cual: aquí sí hay información de la sesión.
+    #[test]
+    fn a_bridge_error_is_propagated_verbatim() {
+        let s = session_status_from_probe(Ok(AuthResult {
+            success: false,
+            data: None,
+            error: Some("Token expired".to_string()),
+        }));
+        assert_eq!(s.message, "Token expired");
+        assert!(!s.valid);
+        assert!(!s.connected);
+    }
+
+    /// La ausencia de `connected` en la respuesta no puede volverse `true`.
+    #[test]
+    fn a_missing_connected_field_does_not_mean_connected() {
+        let s = session_status_from_probe(Ok(AuthResult {
+            success: true,
+            data: Some(serde_json::json!({ "otro_campo": 1 })),
+            error: None,
+        }));
+        assert!(!s.connected);
+        assert!(!s.valid);
     }
 }

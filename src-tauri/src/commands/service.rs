@@ -5932,17 +5932,38 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 }
             };
             let mut client = crate::services::DeezerClient::new(arl.to_string());
-            // Auth parity (Fase-1 item 3): a failed init or a missing user id
-            // is an explicit provider rejection → invalidate credentials and
-            // surface RequiresAuth; never continue with a stale cached user.
-            if let Err(e) = client.init().await {
-                let _ = mark_account_credentials_invalid(db, "deezer", &e).await;
-                let err_msg = format!("RequiresAuth: Deezer session rejected ({})", e);
-                emit(SyncProgressEvent::requires_auth(
-                    &service_normalized,
-                    Some(account_id),
-                    &err_msg,
-                ));
+            // Auth parity (Fase-1 item 3): SOLO un rechazo explícito de Deezer
+            // invalida las credenciales y produce RequiresAuth. Un 5xx, un 429
+            // o un corte de red son fallos de comprobación: se aborta esta
+            // sincronización y se deja la cuenta como estaba, porque invalidar
+            // por un 503 obligaba a re-loguear con la sesión perfectamente viva.
+            // Un 401/403 o una ARL rechazada (2xx sin token de sesión) siguen
+            // invalidando exactamente igual que antes.
+            let init_result = client.init().await;
+            // A-0: un único veredicto para toda la app. La traducción es
+            // TIPADA (deezer.rs), no por texto: releer el mensaje para decidir
+            // reintroduciría la ambigüedad que este fix elimina, y un rechazo
+            // real como "ARL may be invalid" no contiene ningún marcador 401.
+            let verdict = crate::worker::AuthVerdict::from_deezer_init(&init_result);
+            if let Err(e) = init_result {
+                // Solo un rechazo real emite `requires_auth`. Ese evento se
+                // traduce en `auth-session-expired` (commands/progress.rs:38) y
+                // la UI marca el servicio como `invalid`
+                // (AccountsView.vue:1555-1557), así que emitirlo ante un 503
+                // volvería a mostrar la sesión como caída aunque la BD esté
+                // intacta. Un fallo transitorio solo aborta esta sincronización.
+                let err_msg = if verdict.invalidates_session() {
+                    let _ = mark_account_credentials_invalid(db, "deezer", e.message()).await;
+                    let err_msg = format!("RequiresAuth: Deezer session rejected ({})", e);
+                    emit(SyncProgressEvent::requires_auth(
+                        &service_normalized,
+                        Some(account_id),
+                        &err_msg,
+                    ));
+                    err_msg
+                } else {
+                    format!("Deezer sync failed (transient, session left intact): {}", e)
+                };
                 return Err(err_msg);
             }
             let user_id = match client.user_id() {
