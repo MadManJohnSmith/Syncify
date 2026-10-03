@@ -110,7 +110,9 @@ pub fn is_corrupt_concatenation(lower: &str) -> bool {
     // 3. Immediate word duplication like "indieindie"
     if lower.len() >= 6 && lower.len().is_multiple_of(2) {
         let half = lower.len() / 2;
-        if lower[..half] == lower[half..] {
+        // Guard against multi-byte UTF-8: a byte-half cut can land inside a
+        // character ("осень" from real enrichment data panicked here).
+        if lower.is_char_boundary(half) && lower[..half] == lower[half..] {
             return true;
         }
     }
@@ -515,6 +517,19 @@ pub fn format_fused_genres(genre_inputs: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_corrupt_concatenation_is_utf8_safe() {
+        // Regresión: el corte a la mitad por bytes paniqueaba con multi-byte
+        // ("осень" de datos reales de enriquecimiento — genre.rs byte 5 dentro
+        // de 'е'); la detección de duplicados sí aplica en frontera.
+        assert!(!is_corrupt_concatenation("осень"));
+        assert!(!is_corrupt_concatenation("Жо-ба"));
+        assert!(is_corrupt_concatenation("осеньосень"));
+        assert!(is_corrupt_concatenation("indieindie"));
+        assert!(is_corrupt_concatenation("Dance_electronic"));
+        assert!(is_corrupt_concatenation("rerip grunge"));
+    }
 
     #[test]
     fn test_canonicalize_genre_matrix_rows() {
