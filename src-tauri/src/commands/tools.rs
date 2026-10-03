@@ -341,6 +341,7 @@ where
     );
 
     let mut cmd = crate::cmd_utils::create_tokio_command(&python_cmd);
+    crate::cmd_utils::apply_bundled_tool_env(&mut cmd);
     cmd.arg(&script_path);
 
     for arg in args {

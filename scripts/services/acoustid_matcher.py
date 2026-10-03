@@ -70,21 +70,27 @@ class AcoustIDMatcher:
     
     def _find_fpcalc(self) -> str:
         """Find fpcalc binary."""
-        # Check system PATH
-        fpcalc = shutil.which("fpcalc")
-        if fpcalc:
-            return fpcalc
-        
+        # Explicit override (the app injects FPCALC_PATH for bundled tools;
+        # pyacoustid also honors FPCALC at call time)
+        env_fpcalc = os.getenv("FPCALC_PATH")
+        if env_fpcalc and Path(env_fpcalc).exists():
+            return env_fpcalc
+
         # Check bundled locations
         bundled_paths = [
             Path(__file__).parent.parent / "bin" / "fpcalc.exe",  # Windows
             Path(__file__).parent.parent / "bin" / "fpcalc",      # Linux/Mac
         ]
-        
+
         for path in bundled_paths:
             if path.exists():
                 return str(path)
-        
+
+        # Check system PATH
+        fpcalc = shutil.which("fpcalc")
+        if fpcalc:
+            return fpcalc
+
         return "fpcalc"
     
     def is_available(self) -> bool:

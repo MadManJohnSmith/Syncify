@@ -2750,7 +2750,7 @@ mod tests {
         let orig_md5 = info_before.md5;
 
         // Verify pre-embed audio decode validity with ffmpeg if available
-        let ffmpeg_check_before = std::process::Command::new("ffmpeg")
+        let ffmpeg_check_before = crate::cmd_utils::create_std_command("ffmpeg")
             .args([
                 "-v",
                 "error",
@@ -2882,7 +2882,7 @@ mod tests {
         );
 
         // Verify post-embed audio decode validity with ffmpeg (bit-exact stream playable)
-        let ffmpeg_check_after = std::process::Command::new("ffmpeg")
+        let ffmpeg_check_after = crate::cmd_utils::create_std_command("ffmpeg")
             .args([
                 "-v",
                 "error",

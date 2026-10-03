@@ -55,12 +55,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path "bin"
 
           Write-Host ">>> Descargando FFmpeg (win64)..."
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
+          # Release fechada de BtbN pineada: "latest" es rolling y su hash cambia
+          # con cada build, lo que rompe la verificación SHA-256 (fallo del 2026-10-03).
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-01-13-06/ffmpeg-N-127054-g9d3f0f2c58-win64-gpl.zip" -OutFile "ffmpeg.zip"
           Write-Host ">>> Verificando integridad SHA-256 de FFmpeg..."
           $ffmpegHash = (Get-FileHash -Path "ffmpeg.zip" -Algorithm SHA256).Hash.ToLower()
           $knownFfmpegHashes = @(
-            "9734d61383b25391b90186731106dc8068763baa177c622e57dfaebdf7c21630",
-            "fba0bedc5384674f7dd541504feca3cbf37ef9e84109d4a12569336c1b0d7b76"
+            "c1bb626bca84c6f471a04c13a90af68e406c631cf8f9ea2f1a141d4a71adcf52"
           )
           if ($knownFfmpegHashes -notcontains $ffmpegHash) {
             Remove-Item -Force "ffmpeg.zip"
@@ -89,6 +90,14 @@ jobs:
 
           Write-Host ">>> Binarios en bin/:"
           Get-ChildItem -Path "bin"
+
+          # Copiar a src-tauri/binaries/ con sufijo de target triple: los exige
+          # bundle.externalBin (tauri.conf.json) para incluirlos en el instalador NSIS.
+          New-Item -ItemType Directory -Force -Path "src-tauri/binaries"
+          Copy-Item "bin/ffmpeg.exe"  "src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe" -Force
+          Copy-Item "bin/ffprobe.exe" "src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe" -Force
+          Copy-Item "bin/fpcalc.exe"  "src-tauri/binaries/fpcalc-x86_64-pc-windows-msvc.exe" -Force
+          Get-ChildItem -Path "src-tauri/binaries"
 
       - name: Preparar entorno Python embebido autónomo
         shell: powershell
@@ -131,7 +140,7 @@ jobs:
           & "python/python.exe" -m pip install -r "scripts/requirements.txt" --no-warn-script-location
 
           Write-Host ">>> Verificando modulos criticos en Python embebido..."
-          & "python/python.exe" -c "import spotipy, acoustid, fuzzywuzzy, dotenv, requests, mutagen; print('TODOS LOS MODULOS PYTHON ESTAN LISTOS!')"
+          & "python/python.exe" -c "import spotipy, acoustid, dotenv, requests, mutagen, yarl; print('TODOS LOS MODULOS PYTHON ESTAN LISTOS!')"
 
       - name: Instalar dependencias de UI
         working-directory: ui

@@ -1,0 +1,4 @@
+# PLACEHOLDER
+# Replace with the real ffmpeg binary for target x86_64-unknown-linux-gnu.
+# CI (build-linux.yml / build-windows.yml) downloads the pinned builds automatically.
+# Locally: python3 scripts/dependency_manager.py && bash scripts/prepare_bundled_binaries.sh

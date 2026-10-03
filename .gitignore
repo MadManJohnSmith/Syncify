@@ -108,3 +108,6 @@ scripts/*report.json
 # Directorio de trabajo local (no distribuir)
 workspace/
 Improvement-main/
+# Binarios externos empaquetados con la app (ffmpeg/ffprobe/fpcalc)
+src-tauri/binaries/*
+!src-tauri/binaries/README.md
