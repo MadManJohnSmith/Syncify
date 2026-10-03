@@ -2,120 +2,182 @@
 
 # Syncify
 
-**Tu biblioteca musical, en máxima calidad y bajo tu control.**
-Sincroniza, descarga y organiza tu música desde tus servicios de streaming favoritos, lista para Symfonium, Plexamp o cualquier reproductor local.
+**Your entire music library. Maximum quality. Under your control.**
 
-[![Tauri v2](https://img.shields.io/badge/Tauri-v2.0-24C8D8?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
+Connect your streaming accounts, import your whole catalog, download it in the best
+quality available, and keep a perfectly organized local library — ready for
+Symfonium, Plexamp, or any player you love.
+
+[English](README.md) · [Español](README.es.md)
+
+[![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8D8?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust Core](https://img.shields.io/badge/Rust-Core%20Engine-DEA584?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Vue 3](https://img.shields.io/badge/Vue.js-v3%20SFC-4FC08D?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
-[![TailwindCSS](https://img.shields.io/badge/Tailwind-v4.0-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
-[![SQLite WAL](https://img.shields.io/badge/SQLite-WAL%20Mode-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Vue 3](https://img.shields.io/badge/Vue.js-v3-4FC08D?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
+[![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38B2AC?style=flat-square&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL%20Mode-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
+
+**Windows** · installer & portable — **Linux** · AppImage, DEB & tarball
 
 </div>
 
 ---
 
-## Qué es Syncify
+## Why Syncify?
 
-Syncify es una aplicación de escritorio para quienes llevan su música en serio: conecta tus cuentas de streaming, importa tus favoritos y playlists completos, y descárgalos en la mejor calidad disponible, organizados y etiquetados como una colección profesional.
+Streaming services rent you your music. If you leave — or a service loses a
+license, or a track gets delisted — your library goes with it. Syncify flips
+that: it turns "your" catalog into *your* catalog.
 
-Funciona sobre tu propia biblioteca local (`~/Music/Syncify`), con carpetas por artista y álbum, portadas, letras y toda la información que reproductores como Symfonium y Plexamp necesitan para brillar.
+- **Leave any service without leaving your music behind.** Import everything
+  (favorites, playlists, purchases, history), then migrate it to another
+  service — or download it and own it outright.
+- **Own real files, not licenses.** Downloads land as properly tagged FLAC
+  (up to Hi-Res 24-bit/192 kHz) or MP3, verified against what the provider
+  promised.
+- **One library, every service.** Favorites stay in sync both ways across the
+  services you use, with smart deduplication that knows when two services
+  have the same song.
 
-## Qué puedes hacer con Syncify
+## What can you do with it?
 
-- **Importa tu catálogo completo** de Qobuz, Tidal, Spotify y Deezer: favoritos, playlists, compras e historial. Apple Music y SoundCloud están disponibles como integraciones parciales y no prometen todavía sincronización completa.
-- **Descarga en la calidad máxima disponible**, hasta FLAC Hi-Res de 24-bit/192kHz, con verificación de que lo descargado coincide con lo prometido.
-- **Letras sincronizadas automáticas**: búsqueda en cascada entre 10 proveedores, guardadas como archivos `.lrc` junto a cada pista.
-- **Metadatos de nivel profesional**: artistas múltiples, colaboraciones, compilaciones, códigos de país, BPM y más, extraídos de MusicBrainz, AcoustID y Last.fm.
-- **Portadas en alta resolución**, incluidas portadas animadas compatibles con la pantalla de reproducción de Symfonium.
-- **Playlists fieles al original**: orden, nombres y contenido preservados, con protección nativa contra duplicados.
-- **Deduplicación inteligente** de toda tu biblioteca, incluso entre servicios distintos, sin perder tu pista preferida.
+- **Import your full catalog** from Qobuz, Tidal, Spotify, Deezer, SoundCloud
+  and Apple Music — tracks, albums, artists, playlists.
+- **Migrate between services**: pick a source, pick a destination, review the
+  matches, transfer. Your playlists move with their order and names intact.
+- **Download with a quality cascade**: the engine always goes for the best
+  available tier and falls back gracefully, then verifies the result.
+- **Get professional-grade metadata automatically**: multi-value artists,
+  collaborations, compilations handled correctly, countries, BPM, musical
+  key and energy — from MusicBrainz, AcoustID and Last.fm.
+- **Synced lyrics as `.lrc` sidecars**, resolved through a 16-strategy
+  cascade across 10 providers.
+- **High-resolution covers** (including animated ones) saved next to your
+  music, organized in artist/album folders under `~/Music/Syncify`.
+- **Keep it healthy**: duplicate detection and merge, catalog identity
+  audits, integrity checks and a repair pipeline with full audit history.
+- **Smart playlists** with rule-based filters, built on your own library.
 
-## Requisitos e instalación
+## How it works
 
-Requisitos: Rust 1.75+, Node.js 18+, Python 3.10-3.12, y `ffmpeg` + `fpcalc` (Chromaprint) en el PATH.
+1. **Connect an account.** The app opens a secure login flow per service
+   (browser-based OAuth/session capture) and stores your credentials
+   encrypted on your machine.
+2. **Import.** A unified Rust engine walks the service API with pagination,
+   resolves every track's canonical identity (ISRC, provider IDs), enriches
+   it, and persists it — transactionally, with retry — into your local
+   SQLite library.
+3. **Download.** Native pipelines handle each provider's delivery format
+   (including DASH decryption for Qobuz), write real FLAC/MP3 files with the
+   metadata, covers and lyrics embedded, and verify what landed on disk
+   matches what was promised.
+4. **Enjoy anywhere.** The result is a plain folder tree with sidecar files
+   — no proprietary database lock-in. Point Symfonium, Plexamp, Roon or any
+   player at it and it just works.
+
+Under the hood: a **Tauri 2** desktop app (Rust core + Vue 3 UI) with a typed
+IPC layer, a multi-threaded download/repair engine, and **83 SQL migrations**
+of battle-tested local schema. Service logins run through small audited
+Python bridges (Playwright, Mutagen, AcoustID).
+
+## Supported services
+
+| | Favorites | Albums/Artists | Playlists | History | Migration target |
+|---|---|---|---|---|---|
+| **Qobuz** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tidal** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Spotify** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Deezer** | ✅ | ✅ | ✅ | — ⁽¹⁾ | ✅ |
+| **SoundCloud** | ✅ | ✅ ⁽²⁾ | — ⁽¹⁾ | — ⁽¹⁾ | ✅ |
+| **Apple Music** | ✅ ⁽³⁾ | ✅ ⁽³⁾ | ✅ | — | ✅ |
+
+⁽¹⁾ Not exposed by the provider's public API — Syncify warns instead of pretending.
+⁽²⁾ Derived from each like's publisher metadata; the API has no favorites-albums endpoint.
+⁽³⁾ Apple Music imports through its own ISRC-faithful importer (storefront
+configurable); the unified-engine path is documented in the parity matrix.
+
+The full, honest per-phase matrix lives in
+[`docs/MATRIZ_PARIDAD_IMPORTACION.md`](docs/MATRIZ_PARIDAD_IMPORTACION.md).
+
+## Installation
+
+Grab the latest build from the
+[**Releases**](https://github.com/MadManJohnSmith/Syncify/releases) page:
+
+| Platform | Files |
+|---|---|
+| **Windows** | `Syncify_*_x64-setup.exe` (installer) · `Syncify-Windows-Portable.zip` |
+| **Linux** | `*.AppImage` · `*.deb` · `Syncify-Linux-x86_64.tar.gz` (raw binary + bridges) |
+
+Then:
+
+1. Install and launch Syncify.
+2. Make sure `ffmpeg` and `fpcalc` (Chromaprint) are on your `PATH` — they
+   power audio processing and fingerprinting.
+3. Copy `.env.example` to `.env` next to the app (or in the project folder if
+   you run from source) and fill in the credentials of the services you want
+   to connect. Every variable is documented in the file.
+4. Run the first-run wizard: connect accounts, pick your music folder, done.
+
+## Building from source
+
+Requirements: **Rust** (stable), **Node.js 20+**, **Python 3.11+**, and
+`ffmpeg`, `flac` and `fpcalc` on your `PATH`. On Linux you also need the
+WebKit2GTK/GTK dev packages (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
+`libayatana-appindicator3-dev`, `librsvg2-dev`).
 
 ```bash
 git clone https://github.com/MadManJohnSmith/Syncify.git
 cd Syncify
 
-# Frontend
-cd ui && npm install && cd ..
+# Tauri CLI (repo root) + frontend dependencies
+npm install
+cd ui && npm ci && cd ..
 
-# Entorno Python
+# Python bridges (service logins, metadata, fingerprinting)
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r scripts/requirements.txt
 playwright install chromium
 
-# Ejecutar en modo desarrollo
-cargo tauri dev
+# Run in development (with hot UI reload)
+npm run dev
+
+# Production build (installer for your OS)
+npm run build
 ```
+
+## Documentation
+
+- [`docs/`](docs/README.md) — architecture and feature docs
+- [`docs/MATRIZ_PARIDAD_IMPORTACION.md`](docs/MATRIZ_PARIDAD_IMPORTACION.md) — the living import-parity matrix
+- [`docs/LYRICS_16_PROVIDER_MATRIX.md`](docs/LYRICS_16_PROVIDER_MATRIX.md) — the lyrics cascade, audited
+- [`docs/Deuda_Tecnica_y_UX.md`](docs/Deuda_Tecnica_y_UX.md) — open technical debt, tracked in the open
+
+## Contributing
+
+Contributions are welcome: bugs, UI improvements, new lyrics or metadata
+providers, more services, docs. Fork the repo, create a focused branch, and
+open a PR against `syncify-app` (the development branch; `main` receives
+verified merges for releases). Run the checks before submitting —
+`cargo check`, `cargo test`, `cargo clippy`, `cargo fmt --check` and
+`cd ui && npm run test:run` — the CI runs exactly those.
+
+Found a bug? [Open an issue](https://github.com/MadManJohnSmith/Syncify/issues)
+with your OS/version, steps to reproduce, and relevant logs — never personal
+credentials or tokens.
+
+## License
+
+This repository does not currently grant a license for use, copying,
+modification or redistribution. All rights are reserved by their holders.
+An explicit license will be defined and versioned before any public
+distribution.
 
 ---
 
-## Para desarrolladores
+<div align="center">
 
-- **Arquitectura**: escritorio Tauri v2 con núcleo en Rust multihilo (workers, primitivas atómicas y Tokio Notify) sobre SQLite en modo WAL con 83 archivos de migración sqlx (la numeración salta de `0025` a `0030`; la última es `0087_library_items_artist_link_sync.sql`); UI en Vue 3 + TailwindCSS v4 comunicada por IPC tipado.
-- **Estructura del Cargo Workspace**: Workspace virtual puro (`Cargo.toml` raíz) que agrupa `src-tauri` (aplicación de escritorio) y los crates miembros en `crates/`. El binario stub `syncify-core` (`src/main.rs`) ha sido retirado y el prototipo experimental `legacy/syncify-cli` ya no está en el árbol: quedó archivado solo en la máquina local del autor, bajo `workspace/audit_archive/legacy/syncify-cli`, ruta que `.gitignore` excluye y que por tanto **no existe en ningún checkout ni en CI**.
-- **Crates de dominio**: `syncify-core-domain` (calidad, identidad), `syncify-flac-writer` (escritura Vorbis/FLAC validada), `syncify-lyrics-domain` (contrato compartido de la cascada de letras), `syncify-metadata-domain` y `syncify-tidal-downloader`.
-- **Puentes Python**: Playwright (OAuth y captura de sesión), Mutagen (etiquetado), AcoustID/fpcalc (huellas acústicas).
-- **Descargas**: pipelines nativos de desencriptado DASH (Qobuz) y cliente Tidal con política estricta de calidad y fallback vía SongLink/Odesli.
-- **Pruebas**: suites de integración Rust por subsistema y especificaciones de Vitest en `ui/src/__tests__`.
+<sub>Sincroniza · Descarga · Organiza — <a href="README.es.md">Versión en español</a></sub>
 
----
-
-## Aportar al proyecto
-
-Las contribuciones son bienvenidas: bugs, mejoras de UI, nuevos proveedores de letras o metadatos, soporte de más servicios, documentación.
-
-### 1. Prepara tu entorno
-
-```bash
-# Haz tu fork y clónalo
-git clone https://github.com/TU_USUARIO/Syncify.git
-cd Syncify
-
-# Frontend
-cd ui && npm install && cd ..
-
-# Entorno Python (puentes de servicios)
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-playwright install chromium
-```
-
-### 2. Corre el proyecto en desarrollo
-
-```bash
-cargo tauri dev        # abre la app con recarga en caliente de la UI
-```
-
-Para probar solo el frontend con su servidor propio: `cd ui && npm run dev`.
-
-### 3. Verifica tus cambios antes de proponerlos
-
-```bash
-cargo check                      # compila el backend y los crates
-cargo test                       # suites de integración del backend
-cd ui && npm run test:run        # tests del frontend
-```
-
-El CI del repositorio ejecuta además `cargo clippy` y `cargo fmt`; te recomendamos pasarlos en local (`cargo clippy`, `cargo fmt`) para que tu PR pase a la primera.
-
-### 4. Envía tu contribución
-
-- Crea una rama descriptiva y mantén los commits enfocados, con mensajes estilo convencional (`feat:`, `fix:`, `docs:`, `refactor:`).
-- Si añades una funcionalidad visible, incluye cómo probarla; si tocas el pipeline de descargas o metadatos, añade o actualiza tests.
-- Abre un Pull Request contra `syncify-app` describiendo el qué y el porqué del cambio. Es la rama de desarrollo: `origin/syncify-graphical` está 29 commits por detrás y es un ancestro de `syncify-app`, así que apuntar allí enviaría la contribución a una base obsoleta.
-
-### 5. Reporta bugs y propone ideas
-
-Abre un [Issue](https://github.com/MadManJohnSmith/Syncify/issues) con: versión/OS, pasos para reproducir, resultado esperado vs. obtenido y logs relevantes si los hay (sin credenciales ni tokens personales).
-
----
-
-## Licencia
-
-Este repositorio no concede actualmente una licencia de uso, copia, modificación o redistribución. Todos los derechos están reservados por sus titulares. Antes de una distribución pública deberá definirse y versionarse una licencia explícita.
+</div>
