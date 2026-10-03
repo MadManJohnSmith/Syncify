@@ -233,16 +233,30 @@ fn is_command_literal(literal: &str) -> bool {
 /// `invoke(...)` / `invokeCommand(...)`, mirroring the `invokeCommand` helper in
 /// `ui/src/api/tauri.ts`. Generic arguments (`invokeCommand<Record<string,
 /// string>>(...)`) are skipped with a nesting-aware scan.
+///
+/// `coalescedProbe(...)` is also recognized: `ui/src/api/tools.ts` wraps two
+/// bridge probes in it to share one in-flight promise, and the command is
+/// still passed as a literal first argument. Ignoring that wrapper produced a
+/// false positive ("check_ffmpeg_available is an orphan") and would have
+/// pressured this test into being relaxed exactly when it is doing its job.
+/// `is_command_literal` still filters any string that is not a command name.
 fn collect_invoke_command_names(source: &str, out: &mut HashSet<String>) {
+    for callee in ["invoke", "coalescedProbe"] {
+        collect_call_literals(source, callee, out);
+    }
+}
+
+/// Command names passed as the first string-literal argument of `callee(...)`.
+fn collect_call_literals(source: &str, callee: &str, out: &mut HashSet<String>) {
     let bytes = source.as_bytes();
     let mut cursor = 0usize;
 
     while cursor < bytes.len() {
-        let Some(rel) = source[cursor..].find("invoke") else {
+        let Some(rel) = source[cursor..].find(callee) else {
             break;
         };
         let start = cursor + rel;
-        let mut i = start + "invoke".len();
+        let mut i = start + callee.len();
         cursor = i;
         if start > 0 && is_ident_byte(bytes[start - 1]) {
             continue; // part of a longer identifier (e.g. `myInvoke`)
