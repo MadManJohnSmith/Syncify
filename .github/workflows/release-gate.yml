@@ -1,0 +1,134 @@
+# Puerta de publicación: el único lugar donde se decide si un tag puede existir.
+#
+# Existe para cerrar un fallo real de proceso: los workflows de build eran
+# independientes entre sí y sin gating, así que cualquiera podía pulsar
+# `create_release` y crear el tag/publicar un release sin que existiera CI verde
+# para ese commit. Este workflow hace esa comprobación de forma explícita y
+# falla de forma ruidosa en lugar de dejar que action-gh-release cree el tag.
+#
+# Se invoca como reusable workflow desde build-linux.yml y build-windows.yml:
+#   jobs:
+#     gate:
+#       uses: ./.github/workflows/release-gate.yml
+#     build-linux:
+#       needs: gate
+#
+# Tres reglas, en este orden:
+#   1. El SHA que se va a publicar tiene una corrida de CI *exitosa*.
+#   2. El tag tiene forma vX.Y.Z.
+#   3. El tag no existe todavia, o existe apuntando EXACTAMENTE al mismo SHA.
+#      Nunca se mueve un tag existente, ni se borra.
+
+name: Release Gate
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: 'Tag de la release a publicar (ej: v0.2.1)'
+        required: true
+        type: string
+      create_release:
+        description: 'true cuando la corrida va a publicar un release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify:
+    name: Verificar CI verde y tag publicable
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Validar el formato del tag
+        if: ${{ inputs.create_release }}
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::El tag '$TAG' no tiene la forma vX.Y.Z. No se publica nada."
+            exit 1
+          fi
+          echo "Formato del tag correcto: $TAG"
+
+      - name: Exigir CI verde para el SHA exacto de esta corrida
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "Verificando CI para el commit $SHA"
+
+          # Se filtran las corridas fallidas/incompletas para no dar por bueno
+          # un workflow que se lanzo pero todavia no termino.
+          runs=$(gh run list \
+            --repo "$REPO" \
+            --workflow ci.yml \
+            --commit "$SHA" \
+            --status completed \
+            --json conclusion,headBranch,name \
+            --jq '.[] | "\(.conclusion)"')
+
+          if [[ -z "$runs" ]]; then
+            echo "::error::No hay ninguna corrida de CI completada para $SHA."
+            echo "::error::Si el commit solo toca .md o docs/, CI no se dispara por paths-ignore."
+            echo "::error::Lanzala bajo demanda antes de publicar:"
+            echo "::error::  gh workflow run ci.yml --ref $(git rev-parse --abbrev-ref HEAD)"
+            exit 1
+          fi
+
+          if ! grep -qx "success" <<< "$runs"; then
+            echo "::error::La CI de $SHA no esta en verde. Se obtuvo:"
+            echo "$runs"
+            exit 1
+          fi
+
+          echo "CI en verde para $SHA"
+
+      - name: Impedir crear o mover un tag ya publicado
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          remote_sha=$(git ls-remote --tags "https://github.com/$REPO" "refs/tags/$TAG" \
+            | awk '{print $1}' || true)
+
+          if [[ -z "$remote_sha" ]]; then
+            echo "El tag $TAG no existe todavia. Se creara apuntando a $SHA."
+            exit 0
+          fi
+
+          # peeled: para tags anotados hay una segunda linea refs/tags/TAG^{}
+          peeled=$(git ls-remote --tags "https://github.com/$REPO" "refs/tags/$TAG^{}" \
+            | awk '{print $1}' || true)
+          resolved="${peeled:-$remote_sha}"
+
+          if [[ "$resolved" != "$SHA" ]]; then
+            echo "::error::El tag $TAG ya existe y apunta a $resolved, no a $SHA."
+            echo "::error::No se mueve un tag existente. Publica una version nueva."
+            exit 1
+          fi
+
+          echo "El tag $TAG ya existe y apunta al mismo commit $SHA. Se permite completar la publicacion."
+
+      - name: Resumen de la verificacion
+        env:
+          SHA: ${{ github.sha }}
+          TAG: ${{ inputs.release_tag }}
+          PUBLISH: ${{ inputs.create_release }}
+        run: |
+          echo "commit: $SHA"
+          echo "tag: $TAG"
+          echo "publica release: $PUBLISH"
