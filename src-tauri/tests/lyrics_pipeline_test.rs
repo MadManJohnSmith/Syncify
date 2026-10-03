@@ -111,8 +111,18 @@ fn create_dummy_flac() -> TempFlac {
 fn test_ranking_karaoke_over_linesynced() {
     // The quality contract is expressed through `calculate_confidence_score`:
     // for identical inputs, karaoke must always score above line-synced.
-    let karaoke = calculate_confidence_score(&ResolutionStatus::Resolved, &LyricsSyncType::KaraokeWordSynced, 15, None);
-    let linesynced = calculate_confidence_score(&ResolutionStatus::Resolved, &LyricsSyncType::LineSynced, 15, None);
+    let karaoke = calculate_confidence_score(
+        &ResolutionStatus::Resolved,
+        &LyricsSyncType::KaraokeWordSynced,
+        15,
+        None,
+    );
+    let linesynced = calculate_confidence_score(
+        &ResolutionStatus::Resolved,
+        &LyricsSyncType::LineSynced,
+        15,
+        None,
+    );
 
     assert!(
         karaoke > linesynced,
@@ -124,8 +134,18 @@ fn test_ranking_karaoke_over_linesynced() {
 
 #[test]
 fn test_ranking_linesynced_over_plain() {
-    let linesynced = calculate_confidence_score(&ResolutionStatus::Resolved, &LyricsSyncType::LineSynced, 15, None);
-    let plain = calculate_confidence_score(&ResolutionStatus::Resolved, &LyricsSyncType::Plain, 15, None);
+    let linesynced = calculate_confidence_score(
+        &ResolutionStatus::Resolved,
+        &LyricsSyncType::LineSynced,
+        15,
+        None,
+    );
+    let plain = calculate_confidence_score(
+        &ResolutionStatus::Resolved,
+        &LyricsSyncType::Plain,
+        15,
+        None,
+    );
 
     assert!(
         linesynced > plain,

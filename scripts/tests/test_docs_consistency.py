@@ -217,10 +217,20 @@ class ReadmeTests(unittest.TestCase):
 
     def setUp(self):
         self.readme = _doc_text("README.md")
+        self.readme_es = _doc_text("README.es.md")
 
     def test_pr_target_is_the_development_branch(self):
-        self.assertIn("Pull Request contra `syncify-app`", self.readme)
-        self.assertNotIn("Pull Request contra `syncify-graphical`", self.readme)
+        for name, readme in (("README.md", self.readme), ("README.es.md", self.readme_es)):
+            self.assertIn(
+                "`syncify-app`",
+                readme,
+                f"{name} must point pull requests at the syncify-app development branch",
+            )
+            self.assertNotIn(
+                "`syncify-graphical`",
+                readme,
+                f"{name} must not point pull requests at syncify-graphical",
+            )
 
     def test_no_pointer_to_the_gitignored_workspace_directory(self):
         for line in self.readme.splitlines():

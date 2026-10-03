@@ -114,10 +114,8 @@ Then:
 1. Install and launch Syncify — `ffmpeg`, `ffprobe` and `fpcalc` (Chromaprint)
    **ship inside every package**, so there is nothing else to download,
    install or configure.
-2. Copy `.env.example` to `.env` next to the app (or in the project folder if
-   you run from source) and fill in the credentials of the services you want
-   to connect. Every variable is documented in the file.
-3. Run the first-run wizard: connect accounts, pick your music folder, done.
+2. Run the first-run wizard: connect your accounts (credentials are stored in
+   your OS keyring — no config files needed), pick your music folder, done.
 
 > Building from source? See
 > [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md) for how the

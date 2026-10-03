@@ -36,8 +36,17 @@ fn main() {
     // Endurecimiento de seguridad TASK-112: umask estricto en sistemas Unix
     crate::crypto::set_secure_process_umask();
 
-    // Load environment variables from .env file FIRST
-    let _ = dotenvy::dotenv();
+    // .env solo en desarrollo (SEC-010): dotenvy buscaría el archivo en el CWD
+    // y sus padres, y en release las credenciales llegan por keyring/UI o por
+    // el entorno real del sistema. SYNCIFY_ENV también activa la carga de .env
+    // en los puentes Python.
+    #[cfg(debug_assertions)]
+    {
+        if std::env::var_os("SYNCIFY_ENV").is_none() {
+            std::env::set_var("SYNCIFY_ENV", "development");
+        }
+        let _ = dotenvy::dotenv();
+    }
 
     // Initialize unified logging system (rotating file in dev, console, in-memory ring buffer)
     let log_config = services::logging::init_logging_system(None, None);

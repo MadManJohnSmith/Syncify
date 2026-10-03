@@ -23,7 +23,11 @@ fn test_bundled_tool_candidates_cover_exe_dir_and_bin() {
         .parent()
         .expect("exe directory")
         .to_path_buf();
-    let file = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let file = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
 
     assert!(
         candidates.contains(&exe_dir.join(file)),
