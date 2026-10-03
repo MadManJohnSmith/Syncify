@@ -378,7 +378,7 @@ async fn soundcloud_auth_status_validates_the_token_against_the_api() {
         (
             200,
             String::new(),
-            r#"{"id":7,"username":"alan"}"#.to_string(),
+            r#"{"id":7,"username":"demo_user"}"#.to_string(),
         )
     }))
     .await;
@@ -406,7 +406,7 @@ async fn soundcloud_auth_status_validates_the_token_against_the_api() {
     assert!(status.is_authenticated);
     assert!(status.sync_available);
     // The API answered, so the display name is read back from it.
-    assert_eq!(status.display_name.as_deref(), Some("alan"));
+    assert_eq!(status.display_name.as_deref(), Some("demo_user"));
     assert_eq!(mock.requests().len(), 1, "the token must be presented");
 }
 

@@ -51,7 +51,7 @@ fn test_known_synthetic_mbids_from_legacy_cache_are_rejected() {
 fn test_synthetic_mbid_generation_matches_python_uuid5_and_is_rejected() {
     // Exact mapping derived from python's uuid.uuid5(uuid.NAMESPACE_DNS, "artist.musicbrainz.org:{name}"):
     let test_cases = [
-        ("Alan Mearns", "e774d650-ebf2-5345-acff-8a5ad5cb0ce9"),
+        ("Test Ghost Artist", "ad4d923c-fe1c-5e96-82d5-6e2225f92344"),
         (
             "Between the Crosses",
             "505a107a-e964-59e9-98f4-8f55d166ff63",
@@ -224,11 +224,11 @@ async fn test_enrichment_pipeline_filters_synthetic_and_invalid_mbids() {
 
     // 1. Origin metadata containing synthetic MBIDs (as could occur from legacy DB entries)
     let dirty_origin = OriginTrackMetadata {
-        title: Some("Song by Alan Mearns".to_string()),
-        artist: Some("Alan Mearns".to_string()),
+        title: Some("Song by Test Ghost Artist".to_string()),
+        artist: Some("Test Ghost Artist".to_string()),
         album: Some("Acoustic Sessions".to_string()),
-        // Synthetic MBID for Alan Mearns
-        musicbrainz_artist_id: Some("e774d650-ebf2-5345-acff-8a5ad5cb0ce9".to_string()),
+        // Synthetic MBID for the fixture artist
+        musicbrainz_artist_id: Some("ad4d923c-fe1c-5e96-82d5-6e2225f92344".to_string()),
         // Sentinel value for recording
         musicbrainz_recording_id: Some("NOT_FOUND".to_string()),
         // Malformed UUID for release
@@ -239,9 +239,9 @@ async fn test_enrichment_pipeline_filters_synthetic_and_invalid_mbids() {
     // Enrich without external network query
     let enriched = engine
         .resolve_exhaustive_track_metadata(
-            "Alan Mearns",
+            "Test Ghost Artist",
             "Acoustic Sessions",
-            "Song by Alan Mearns",
+            "Song by Test Ghost Artist",
             None,
             &[dirty_origin],
             false, // no external query
