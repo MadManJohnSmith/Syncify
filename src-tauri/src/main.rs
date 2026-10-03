@@ -437,25 +437,50 @@ fn main() {
                 .unwrap_or_default();
 
                 let mut purged = 0u32;
+                let mut restored = Vec::new();
                 let mut purged_names: Vec<String> = Vec::new();
                 for (account_id, service_name, ciphertext) in &rows {
-                    if crate::crypto::decrypt(ciphertext).is_err() {
-                        tracing::warn!(
-                            "Startup purge: removing stale account {} ({}) — irrecoverable credentials",
-                            account_id,
-                            service_name
-                        );
-                        let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
+                    match crate::crypto::decrypt(ciphertext) {
+                        // La clave actual descifra: si la cuenta venía marcada
+                        // por un arranque donde el keyring no estaba disponible,
+                        // la marca era transitoria y la cuenta vuelve a estar viva.
+                        Ok(_) => {
+                            let _ = sqlx::query(
+                                "UPDATE accounts SET credentials_invalid = 0, invalid_reason = NULL WHERE id = ? AND credentials_invalid = 1",
+                            )
                             .bind(account_id)
                             .execute(&db_for_migration)
                             .await;
-                        purged += 1;
-                        purged_names.push(service_name.clone());
+                            restored.push(service_name.clone());
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                "Startup purge: marking account {} ({}) as needing re-auth — \
+                                 credentials could not be decrypted with the current key",
+                                account_id,
+                                service_name
+                            );
+                            let _ =
+                                sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
+                                    .bind(account_id)
+                                    .execute(&db_for_migration)
+                                    .await;
+                            purged += 1;
+                            purged_names.push(service_name.clone());
+                        }
                     }
+                }
+                if !restored.is_empty() {
+                    tracing::info!(
+                        "Startup check: {} account(s) recovered after the key became readable \
+                         again ({:?}).",
+                        restored.len(),
+                        restored
+                    );
                 }
                 if purged > 0 {
                     tracing::info!(
-                        "Startup purge: removed {} stale accounts ({:?}). Re-authentication required.",
+                        "Startup purge: marked {} account(s) needing re-auth ({:?}).",
                         purged,
                         purged_names
                     );

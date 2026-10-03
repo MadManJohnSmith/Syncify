@@ -228,27 +228,84 @@ where
 
     match store_kc(&key) {
         Ok(()) => {
-            tracing::info!("New encryption key stored in OS Keychain");
-            // Proactively clean up any existing fallback file now that Keychain is functional
-            if let Some(path) = fallback_path {
-                if path.exists() {
-                    if let Err(e) = std::fs::remove_file(path) {
-                        tracing::warn!("Failed to remove fallback encryption key file: {}", e);
-                    } else {
-                        tracing::info!("Removed legacy fallback encryption key file");
+            // Verify the keyring actually persisted it. Some secret-service
+            // backends (KWallet without a session bus, reachable from an
+            // AppImage) return Ok while discarding the write, which silently
+            // turns every credential into undecryptable garbage on the next
+            // launch. Only trust a read-back.
+            match load_kc() {
+                Ok(stored) if stored == key => {
+                    tracing::info!("New encryption key stored in OS Keychain");
+                    // Proactively clean up any existing fallback file now that Keychain is functional
+                    if let Some(path) = fallback_path {
+                        if path.exists() {
+                            if let Err(e) = std::fs::remove_file(path) {
+                                tracing::warn!(
+                                    "Failed to remove fallback encryption key file: {}",
+                                    e
+                                );
+                            } else {
+                                tracing::info!("Removed legacy fallback encryption key file");
+                            }
+                        }
                     }
+                }
+                Ok(other) => {
+                    // A different key is already there: keep it, ours is void.
+                    tracing::error!(
+                        "Keychain write did not persist the new key; recovered an existing \
+                         key instead of the generated one"
+                    );
+                    return Ok(other);
+                }
+                Err(read_err) => {
+                    tracing::error!("Keychain write could not be read back: {}", read_err);
+                    if let Some(path) = fallback_path {
+                        write_fallback_key(path, &key)?;
+                        tracing::warn!(
+                            "Persisted the new encryption key to the fallback file {} because \
+                             the OS Keychain write is not readable",
+                            path.display()
+                        );
+                        return Ok(key);
+                    }
+                    return Err(format!(
+                        "The OS Keychain accepted a new encryption key but cannot read it back \
+                         ({}), and no fallback file location is available. Refusing to start \
+                         with a key that would be lost: existing credentials would be marked \
+                         irrecoverable on the next launch.",
+                        read_err
+                    ));
                 }
             }
         }
-        Err(e) => {
-            tracing::warn!(
-                "Failed to store key in OS Keychain: {}, using fallback file",
-                e
-            );
-            if let Some(path) = fallback_path {
+        Err(kc_err) => match fallback_path {
+            Some(path) => {
                 write_fallback_key(path, &key)?;
+                tracing::warn!(
+                    "Failed to store key in OS Keychain: {}, using fallback file {}",
+                    kc_err,
+                    path.display()
+                );
             }
-        }
+            None => {
+                // NO SE PUEDE persistir la clave en ningún sitio. Arrancar con
+                // una clave efímera descifraría todas las credenciales como
+                // basura en el siguiente arranque, lo que hace que la purga de
+                // arranque marque cuentas perfectamente recuperables como
+                // "irrecuperables" de forma IRREVERSIBLE (el flag persiste).
+                // Verificado en producción: con KWallet no accesible (AppImage
+                // sin D-Bus de sesión), el binario reportaba "New encryption
+                // key stored in OS Keychain" y todas las cuentas caían.
+                return Err(format!(
+                    "No existing encryption key and none could be persisted: \
+                     OS Keychain failed ({}) and no fallback file location is \
+                     available. Refusing to start with an ephemeral key: \
+                     existing credentials would be marked irrecoverable.",
+                    kc_err
+                ));
+            }
+        },
     }
 
     Ok(key)
@@ -697,6 +754,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_keychain_write_that_does_not_persist_is_not_trusted() {
+        // Regresión de producción: un secret-service (KWallet sin bus de
+        // sesión, alcanzable desde un AppImage) devolvía Ok al guardar y luego
+        // no persistía nada. La app arrancaba con una clave efímera, y en el
+        // siguiente arranque TODAS las credenciales se marcaban como
+        // irrecuperables. Aquí el store mente y no hay ruta de fallback.
+        let err = resolve_or_create_key(|| Err("no key".to_string()), |_| Ok(()), None)
+            .expect_err("must refuse to start with an unverifiable key");
+        assert!(err.contains("cannot read it back"), "{}", err);
+    }
+
+    #[test]
+    fn test_keychain_write_that_does_not_persist_falls_back_to_file() {
+        // Mismo keyring mentiroso pero con ruta de fallback disponible: debe
+        // persistir ahí en vez de perder la clave.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let fallback = temp_dir.path().join(".crypto_key");
+        let key = resolve_or_create_key(|| Err("no key".to_string()), |_| Ok(()), Some(&fallback))
+            .expect("fallback must succeed");
+        assert_eq!(load_fallback_key(&fallback).expect("read back"), key);
+    }
+
+    #[test]
+    fn test_existing_key_wins_over_generated_when_store_is_racy() {
+        // Si el store dice Ok pero ya hay OTRA clave en el keyring (otro
+        // proceso ganó la carrera entre load y store), se conserva la
+        // existente: devolver la generada dejaría las credenciales de ese
+        // proceso sin descifrar.
+        let existing = [9u8; 32];
+        // Secuencia: 1er load falla, store dice Ok, read-back devuelve la clave
+        // que otro proceso escribió (distinta de la generada).
+        let mut loads = 0;
+        let resolved = resolve_or_create_key(
+            || {
+                loads += 1;
+                if loads == 1 {
+                    Err("no key yet".to_string())
+                } else {
+                    Ok(existing)
+                }
+            },
+            |_| Ok(()),
+            None,
+        )
+        .expect("existing key must be recovered");
+        assert_eq!(resolved, existing);
+    }
+
+    #[test]
     #[ignore = "requires OS keychain daemon (run with cargo test -- --include-ignored)"]
     fn test_keychain_roundtrip() {
         let key = generate_random_key();
@@ -807,20 +913,26 @@ mod tests {
         std::fs::write(&fallback_file, "legacy_content").expect("Failed to write legacy file");
         assert!(fallback_file.exists());
 
-        let mut stored_key: Option<[u8; 32]> = None;
+        let stored_key = std::cell::RefCell::new(None::<[u8; 32]>);
 
-        // Simulate: load from keychain fails, but store in keychain succeeds
-        let key = resolve_or_create_key(
-            || Err("No key in keychain".into()),
-            |k| {
-                stored_key = Some(*k);
-                Ok(())
-            },
-            Some(&fallback_file),
-        )
-        .expect("resolve_or_create_key failed");
+        // Simulate a working keychain: the store persists and later reads
+        // return it back. (A store that reports Ok but reads back nothing is
+        // covered by test_keychain_write_that_does_not_persist_is_not_trusted.)
+        let load = || {
+            stored_key
+                .borrow()
+                .as_ref()
+                .copied()
+                .ok_or_else(|| "No key in keychain".to_string())
+        };
+        let store = |k: &[u8; 32]| {
+            *stored_key.borrow_mut() = Some(*k);
+            Ok(())
+        };
+        let key = resolve_or_create_key(load, store, Some(&fallback_file))
+            .expect("resolve_or_create_key failed");
 
-        assert_eq!(stored_key, Some(key));
+        assert_eq!(stored_key.borrow().as_ref().copied(), Some(key));
         // Crucial check: .crypto_key must NOT exist on disk when keychain succeeds
         assert!(
             !fallback_file.exists(),
