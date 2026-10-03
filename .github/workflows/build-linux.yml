@@ -91,6 +91,55 @@ jobs:
       - name: Compilar con Tauri v2 (DEB y AppImage)
         run: npx --prefix ui tauri build
 
+      # WebKitGTK delega la reproducción HTML5 a GStreamer. El AppImage
+      # empaqueta las librerías (linuxdeploy las arrastra por dependencia de
+      # webkit2gtk) pero NINGÚN plugin: sin /usr/lib/gstreamer-1.0 no existe
+      # autoaudiosink y la reproducción falla con
+      # "GStreamer element autoaudiosink not found. Please install it".
+      # Se añaden los plugins mínimos de audio y vídeo al AppImage.
+      - name: Inyectar plugins de GStreamer en el AppImage
+        run: |
+          set -euo pipefail
+          APPIMAGE=$(ls target/release/bundle/appimage/*.AppImage | head -1)
+          WORK="$(mktemp -d)"
+          APPIMAGE_ABS="$PWD/$APPIMAGE"
+          (
+            cd "$WORK"
+            "$APPIMAGE_ABS" --appimage-extract >/dev/null
+          )
+          PLUGDIR="$WORK/squashfs-root/usr/lib/gstreamer-1.0"
+          mkdir -p "$PLUGDIR"
+          WANTED='autoaudiosink alsasink pulsesink pipewiresink ossink jackaudiosink \
+                  autoaudiosrc avdec_aac avdec_flac avdec_mp4 avdec_vorbis \
+                  audioconvert audioresample audioparsers audiotestsrc audiorate \
+                  playback typefindfunctions decodebin playbin videoconvert \
+                  videoconvertscale videorate videoparsersbad videoscale \
+                  autovideosink ximagesink waylandsink glimagesink fakesink \
+                  coreelements coretracers'
+          found=0
+          for p in $WANTED; do
+            for src in /usr/lib/x86_64-linux-gnu/gstreamer-1.0 /usr/lib/gstreamer-1.0 /usr/lib64/gstreamer-1.0; do
+              if [ -f "$src/libgst${p}.so" ]; then
+                cp -a "$src/libgst${p}.so" "$PLUGDIR/"
+                found=$((found + 1))
+                break
+              fi
+            done
+          done
+          echo "Plugins de GStreamer copiados: $found"
+          [ "$found" -ge 5 ] || echo "::warning::Solo $found plugins disponibles en el runner"
+          # Reempaquetar con appimagetool (conserva el AppRun y los hooks).
+          curl -sL -o "$WORK/appimagetool" \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x "$WORK/appimagetool"
+          (
+            cd "$WORK/squashfs-root"
+            "$WORK/appimagetool" --no-appstream . "$APPIMAGE_ABS.new"
+          )
+          mv "$APPIMAGE_ABS.new" "$APPIMAGE_ABS"
+          rm -rf "$WORK"
+          ls -la target/release/bundle/appimage/
+
       - name: Organizar artefactos de compilación Linux
         run: |
           mkdir -p dist/linux

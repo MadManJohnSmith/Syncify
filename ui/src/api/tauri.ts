@@ -239,9 +239,11 @@ export const TauriEvents = {
     AUTH_SESSION_EXPIRED: 'auth-session-expired',
     SYNC_SETTINGS_UPDATED: 'sync-settings-updated',
 
-    // Enrichment events
+    // Enrichment events. ENRICHMENT_PROGRESS_ALT apunta al mismo canal
+    // canónico: el antiguo alias sin guion no lo escuchaba nadie y solo
+    // duplicaba el tráfico IPC por evento.
     ENRICHMENT_PROGRESS: 'enrichment-progress',
-    ENRICHMENT_PROGRESS_ALT: 'enrichment_progress',
+    ENRICHMENT_PROGRESS_ALT: 'enrichment-progress',
     ENRICHMENT_STATUS: 'background-enrichment-status',
     BACKGROUND_ENRICHMENT_STATUS: 'background-enrichment-status',
     ENRICHMENT_EVENT: 'syncify:enrichment_event',

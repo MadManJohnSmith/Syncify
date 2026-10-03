@@ -43,9 +43,11 @@ describe('TASK-118: IPC Event Name Symmetry between Frontend and Rust Backend', 
     })
 
     it('defines canonical constants for the diagnosed misaligned pairs', () => {
-        // 1. enrichment-progress vs enrichment_progress
+        // 1. enrichment-progress es el único canal: el alias sin guion
+        //    (enrichment_progress) no tenía ningún listener en la UI y solo
+        //    duplicaba el tráfico IPC por evento.
         expect(TauriEvents.ENRICHMENT_PROGRESS).toBe('enrichment-progress')
-        expect(TauriEvents.ENRICHMENT_PROGRESS_ALT).toBe('enrichment_progress')
+        expect(TauriEvents.ENRICHMENT_PROGRESS_ALT).toBe('enrichment-progress')
 
         // 2. background-enrichment-status vs syncify:enrichment_event
         expect(TauriEvents.BACKGROUND_ENRICHMENT_STATUS).toBe('background-enrichment-status')
@@ -82,7 +84,6 @@ describe('TASK-118: IPC Event Name Symmetry between Frontend and Rust Backend', 
         // Ensure key emitted events are in TauriEvents
         const requiredEmittedEvents = [
             'enrichment-progress',
-            'enrichment_progress',
             'background-enrichment-status',
             'syncify:enrichment_event',
             'sync-failed',

@@ -48,6 +48,21 @@ fn main() {
         let _ = dotenvy::dotenv();
     }
 
+    // ═══════════════════════════════════════════════════════
+    // WEBKIT HARDENING (must run BEFORE the webview is created)
+    // ═══════════════════════════════════════════════════════
+    // WebKitGTK's DMABUF renderer aborts the whole app on some Intel
+    // GPUs ("Could not create default EGL display: EGL_BAD_PARAMETER.
+    // Aborting..." — verified on an Iris Xe / KDE Wayland host). It has to be
+    // set here, in-process: the AppRun hook forces GDK_BACKEND=x11 but that
+    // alone does not prevent it, and asking users to export a variable is not
+    // an acceptable install experience.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        tracing::info!("Disabled WebKit DMABUF renderer (EGL compatibility)");
+    }
+
     // Initialize unified logging system (rotating file in dev, console, in-memory ring buffer)
     let log_config = services::logging::init_logging_system(None, None);
 
@@ -201,6 +216,37 @@ fn main() {
                     let new_path = format!("{}{}{}", prepends.join(sep), sep, current_path);
                     std::env::set_var("PATH", new_path);
                     tracing::info!("Prepended bundled bin directories to PATH: {:?}", prepends);
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════
+            // GSTREAMER PLUGINS (Linux only)
+            // ═══════════════════════════════════════════════════════
+            // WebKitGTK reproduce el audio del player vía GStreamer. En el
+            // AppImage las librerías vienen de webkit2gtk pero los plugins no,
+            // así que hay que apuntar GStreamer a los que empaquetamos.
+            #[cfg(target_os = "linux")]
+            {
+                let gst_candidates = [
+                    project_root.join("usr").join("lib").join("gstreamer-1.0"),
+                    project_root.join("lib").join("gstreamer-1.0"),
+                ];
+                if let Some(gst_dir) = gst_candidates.iter().find(|d| d.is_dir()) {
+                    let gst_str = gst_dir.to_string_lossy().to_string();
+                    let existing = std::env::var("GST_PLUGIN_SYSTEM_PATH_1_0")
+                        .unwrap_or_default();
+                    let new_path = if existing.is_empty() {
+                        gst_str
+                    } else if existing.split(':').any(|p| p == gst_str) {
+                        existing
+                    } else {
+                        format!("{}:{}", gst_str, existing)
+                    };
+                    std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", &new_path);
+                    tracing::info!(
+                        "Bundled GStreamer plugins directory: {}",
+                        gst_dir.to_string_lossy()
+                    );
                 }
             }
 

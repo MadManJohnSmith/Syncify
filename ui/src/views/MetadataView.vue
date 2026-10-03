@@ -1330,6 +1330,7 @@ const isLoading = ref(true)
 const isSaving = ref(false)
 const isEnriching = ref(false)
 let unlistenEnrichment: UnlistenFn | null = null
+let bgRefreshTimer: ReturnType<typeof setTimeout> | undefined
 const enrichProgress = ref<{ current: number; total: number; currentTrack: string } | null>(null)
 
 // Background enrichment status
@@ -1535,12 +1536,25 @@ onMounted(async () => {
     const unlistenBg = await listen<BackgroundEnrichmentStatus>(TauriEvents.BACKGROUND_ENRICHMENT_STATUS, (event) => {
       backgroundEnrichment.value = event.payload
 
-      // Auto-refresh tracks when enrichment completes
+      // Auto-refresh tracks when enrichment completes.
+      // Debounced: the background worker emits this event PER TRACK with
+      // status 'completed', not once per batch, so loadTracks() here re-ran
+      // the full query (hundreds of rows) for every enriched track.
       if (event.payload.status === 'completed' && event.payload.enriched && event.payload.enriched > 0) {
-        loadTracks()
+        if (bgRefreshTimer) clearTimeout(bgRefreshTimer)
+        bgRefreshTimer = setTimeout(() => {
+          bgRefreshTimer = undefined
+          loadTracks()
+        }, 3000)
       }
     })
-    onUnmounted(() => unlistenBg())
+    onUnmounted(() => {
+      unlistenBg()
+      if (bgRefreshTimer) {
+        clearTimeout(bgRefreshTimer)
+        bgRefreshTimer = undefined
+      }
+    })
   } catch (err) {
     console.warn('background-enrichment-status listener unavailable:', err)
   }
