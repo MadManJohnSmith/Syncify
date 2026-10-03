@@ -70,7 +70,7 @@ pub async fn run_auth_bridge_subprocess(
 
     let project_root = get_project_root();
     let python_cmd = get_python_executable();
-    let script_path = project_root.join("scripts").join("auth_bridge.py");
+    let script_path = crate::cmd_utils::find_scripts_dir(&project_root).join("auth_bridge.py");
 
     tracing::debug!(
         "Auth bridge: python={}, script={:?}, cwd={:?}, has_stdin={}",

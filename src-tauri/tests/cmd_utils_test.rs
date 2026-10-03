@@ -3,9 +3,72 @@ use std::path::Path;
 use std::time::Duration;
 use syncify_tauri_lib::cmd_utils::{
     apply_bundled_tool_env, bundled_tool_candidates, create_python_std_command,
-    create_python_tokio_command, create_std_command, is_executable_file, resolve_tool,
-    run_command_with_timeout, DEFAULT_BRIDGE_TIMEOUT,
+    create_python_tokio_command, create_std_command, find_scripts_dir, is_executable_file,
+    resolve_tool, run_command_with_timeout, scripts_dir_from, DEFAULT_BRIDGE_TIMEOUT,
 };
+
+#[test]
+fn test_scripts_dir_from_packaged_layouts() {
+    let base = std::env::temp_dir().join(format!(
+        "syncify_scripts_dir_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    // AppImage/DEB: binario en usr/bin, recursos en usr/lib/<producto>/_up_/scripts
+    std::fs::create_dir_all(base.join("appimage/usr/bin")).unwrap();
+    std::fs::write(base.join("appimage/usr/bin/syncify-tauri"), b"bin").unwrap();
+    std::fs::create_dir_all(base.join("appimage/usr/lib/Syncify/_up_/scripts")).unwrap();
+    std::fs::write(
+        base.join("appimage/usr/lib/Syncify/_up_/scripts/dependency_manager.py"),
+        b"",
+    )
+    .unwrap();
+    assert_eq!(
+        scripts_dir_from(Some(&base.join("appimage/usr/bin")), None),
+        Some(base.join("appimage/usr/lib/Syncify/_up_/scripts"))
+    );
+
+    // Windows NSIS/portable: recursos en _up_/scripts junto al ejecutable
+    std::fs::create_dir_all(base.join("nsis/_up_/scripts")).unwrap();
+    std::fs::write(base.join("nsis/_up_/scripts/dependency_manager.py"), b"").unwrap();
+    assert_eq!(
+        scripts_dir_from(Some(&base.join("nsis")), None),
+        Some(base.join("nsis/_up_/scripts"))
+    );
+
+    // Tarball crudo: scripts/ junto al binario
+    std::fs::create_dir_all(base.join("tarball/scripts")).unwrap();
+    std::fs::write(base.join("tarball/scripts/dependency_manager.py"), b"").unwrap();
+    assert_eq!(
+        scripts_dir_from(Some(&base.join("tarball")), None),
+        Some(base.join("tarball/scripts"))
+    );
+
+    // El override de entorno gana (validado con el marcador)
+    assert_eq!(
+        scripts_dir_from(
+            Some(&base.join("appimage/usr/bin")),
+            Some(&base.join("tarball/scripts").to_string_lossy())
+        ),
+        Some(base.join("tarball/scripts"))
+    );
+
+    // Sin ejecutable ni override validado → None (el caller usa el fallback dev)
+    assert_eq!(scripts_dir_from(None, None), None);
+
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn test_find_scripts_dir_falls_back_to_project_root() {
+    // Sin layout empaquetado real en el runner de tests, el fallback dev debe
+    // preservar el comportamiento histórico: <project_root>/scripts.
+    let root = std::env::temp_dir();
+    assert!(find_scripts_dir(&root).starts_with(&root));
+    assert!(find_scripts_dir(&root).ends_with("scripts"));
+}
 
 #[test]
 fn test_resolve_tool_ignores_non_bundled_programs() {

@@ -919,7 +919,7 @@ pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
 
     let python_cmd = crate::commands::get_python_executable();
     let project_root = crate::commands::get_project_root();
-    let script_path = project_root.join("scripts").join("lyrics_bridge.py");
+    let script_path = crate::cmd_utils::find_scripts_dir(&project_root).join("lyrics_bridge.py");
 
     let output = crate::cmd_utils::create_std_command(&python_cmd)
         .arg(&script_path)
