@@ -111,3 +111,6 @@ Improvement-main/
 # Binarios externos empaquetados con la app (ffmpeg/ffprobe/fpcalc)
 src-tauri/binaries/*
 !src-tauri/binaries/README.md
+
+# Archify: los borradores y recibos son locales; los HTML finales viven en docs/diagrams/
+.archify/
