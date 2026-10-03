@@ -107,8 +107,14 @@ jobs:
           # Sin este paso el runner no trae autoaudiosink/autovideosink y el
           # AppImage se publica sin salida de audio. Sin `|| true`: si la
           # instalación falla hay que verlo, no seguir en silencio.
-          echo "--- sinks tras instalar ---"
-          ls /usr/lib/x86_64-linux-gnu/gstreamer-1.0/ | grep -E 'autoaudio|autovideo'
+          #
+          # `dpkg -L` dice la RUTA REAL de cada plugin en vez de suponerla: el
+          # runner can place it in /usr/lib/x86_64-linux-gnu or in
+          # /usr/lib/gstreamer-1.0 según la imagen.
+          echo "--- autoaudiosink/autovideosink instalados ---"
+          dpkg -L gstreamer1.0-plugins-good 2>/dev/null \
+            | grep -E 'libgstauto(audio|video)sink\.so$' \
+            || { echo "::error::autoaudiosink/autovideosink NO instalados"; exit 1; }
 
       - name: Inyectar plugins de GStreamer en el AppImage
         run: |
@@ -131,13 +137,19 @@ jobs:
                   coreelements coretracers'
           found=0
           for p in $WANTED; do
-            for src in /usr/lib/x86_64-linux-gnu/gstreamer-1.0 /usr/lib/gstreamer-1.0 /usr/lib64/gstreamer-1.0; do
-              if [ -f "$src/libgst${p}.so" ]; then
-                cp -a "$src/libgst${p}.so" "$PLUGDIR/"
-                found=$((found + 1))
-                break
-              fi
-            done
+            # `dpkg -L` es la fuente de verdad de dónde instaló cada plugin;
+            # suponer la ruta fue lo que hizo que este paso copiasen 13 plugins
+            # sin ninguno de los sinks en la iteración anterior.
+            src=$(dpkg -S "libgst${p}.so" 2>/dev/null | cut -d: -f1 | head -1 || true)
+            if [ -n "$src" ]; then
+              real=$(dpkg -L "$src" 2>/dev/null | grep -E "/libgst${p}\.so$" | head -1 || true)
+            else
+              real=""
+            fi
+            if [ -n "$real" ] && [ -f "$real" ]; then
+              cp -a "$real" "$PLUGDIR/"
+              found=$((found + 1))
+            fi
           done
           echo "Plugins de GStreamer copiados: $found"
           # El sink de audio es IMPRESCINDIBLE: sin él el AppImage arranca pero
