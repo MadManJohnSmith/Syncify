@@ -205,6 +205,26 @@ fn main() {
             }
 
             // ═══════════════════════════════════════════════════════
+            // NEUTRALIZE PYTHON ENV INJECTED BY LINUXDEPLOY'S APPRUN
+            // ═══════════════════════════════════════════════════════
+            // AppRun.c:169 de linuxdeploy hace putenv("PYTHONHOME=$APPDIR/usr/")
+            // (+ PYTHONPATH=usr/share/pyshared y PYTHONDONTWRITEBYTECODE) aunque
+            // el AppImage no empaquete Python, y eso revienta cualquier Python
+            // del sistema que la app invoque ("No module named 'encodings'").
+            // Este proceso es dueño de su entorno: se limpia siempre; los
+            // puentes reciben su PYTHONPATH por comando cuando corresponden.
+            {
+                let had_python_env = std::env::var_os("PYTHONHOME").is_some()
+                    || std::env::var_os("PYTHONPATH").is_some();
+                std::env::remove_var("PYTHONHOME");
+                std::env::remove_var("PYTHONPATH");
+                std::env::remove_var("PYTHONDONTWRITEBYTECODE");
+                if had_python_env {
+                    tracing::info!("Cleared inherited Python environment variables");
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════
             // AUTO-DOWNLOAD EXTERNAL DEPENDENCIES IF MISSING (FFmpeg, fpcalc)
             // ═══════════════════════════════════════════════════════
             tauri::async_runtime::spawn(async move {
