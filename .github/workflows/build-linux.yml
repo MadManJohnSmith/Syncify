@@ -18,8 +18,18 @@ permissions:
   contents: write
 
 jobs:
+  # No se compila ni se publica nada hasta que la puerta confirme que el
+  # commit tiene CI verde y que el tag no se esta moviendo.
+  gate:
+    name: Verificar CI verde y tag publicable
+    uses: ./.github/workflows/release-gate.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      create_release: ${{ inputs.create_release }}
+
   build-linux:
     name: Compilar Syncify para Linux
+    needs: gate
     runs-on: ubuntu-22.04
     timeout-minutes: 90
 
@@ -229,9 +239,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag }}
+          # Sin esto la accion crea el tag apuntando a la rama por defecto
+          # (main), no al commit verificado por la puerta. Si main avanzaba
+          # entre la verificacion y la publicacion, el tag acabaria en un
+          # commit distinto del compilado y con CI desconocido.
+          target_commitish: ${{ github.sha }}
           name: "Syncify ${{ inputs.release_tag }}"
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
           files: |
             dist/linux/*.deb
             dist/linux/*.AppImage
