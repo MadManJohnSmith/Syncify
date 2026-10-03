@@ -437,10 +437,22 @@ async function fetchServices() {
   }
 }
 
-// Refresh the services (and therefore "Last synced") when a sync run finishes
+// Refresh the services (and therefore "Last synced") when a sync run finishes.
+// Debounced: deriveSyncState(allTasks) flips while a worker is emitting
+// progress (e.g. the enrichment worker), which fired get_service_statuses
+// every ~1.3s — each call decrypts credentials and hits the DB.
+let servicesRefreshTimer: ReturnType<typeof setTimeout> | undefined
+function scheduleFetchServices(delay = 1500) {
+  if (servicesRefreshTimer) clearTimeout(servicesRefreshTimer)
+  servicesRefreshTimer = setTimeout(() => {
+    servicesRefreshTimer = undefined
+    fetchServices()
+  }, delay)
+}
+
 watch(syncState, (state, prev) => {
   if (prev === 'syncing' && state !== 'syncing') {
-    fetchServices()
+    scheduleFetchServices()
   }
 })
 
@@ -569,6 +581,11 @@ onUnmounted(() => {
 
   if (storageInterval) {
     clearInterval(storageInterval)
+  }
+
+  if (servicesRefreshTimer) {
+    clearTimeout(servicesRefreshTimer)
+    servicesRefreshTimer = undefined
   }
 })
 

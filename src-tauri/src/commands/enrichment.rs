@@ -85,7 +85,6 @@ pub async fn enrich_genre_lastfm(
         "message": format!("Enriching {} tracks with genres...", total)
     });
     let _ = window.emit("enrichment-progress", &start_evt);
-    let _ = window.emit("enrichment_progress", &start_evt);
 
     let mut enriched = 0;
     for (track_id, artist, title) in &tracks {
@@ -127,7 +126,6 @@ pub async fn enrich_genre_lastfm(
                 "message": format!("Enriched {}/{} tracks with genres", enriched, total)
             });
             let _ = window.emit("enrichment-progress", &prog_evt);
-            let _ = window.emit("enrichment_progress", &prog_evt);
         }
     }
 
@@ -140,7 +138,6 @@ pub async fn enrich_genre_lastfm(
         "message": format!("Enriched {} tracks with genres", enriched)
     });
     let _ = window.emit("enrichment-progress", &comp_evt);
-    let _ = window.emit("enrichment_progress", &comp_evt);
 
     tracing::info!(
         "Last.fm genre enrichment complete: {}/{} tracks",
@@ -306,8 +303,9 @@ pub async fn start_library_enrichment(
 
     GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE
         .run_enrichment(&db, mode, track_ids, move |progress| {
+            // Solo el nombre canónico: el alias sin guion no tiene ningún
+            // listener en la UI y duplicaba el tráfico IPC por evento.
             let _ = app_handle.emit("enrichment-progress", &progress);
-            let _ = app_handle.emit("enrichment_progress", &progress);
         })
         .await
 }

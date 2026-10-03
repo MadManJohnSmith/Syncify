@@ -3205,7 +3205,28 @@ fn mask_stored_spotify_secret(stored: &str) -> String {
             format!("{}{}", SPOTIFY_SECRET_MASK_PREFIX, last4)
         }
         Err(e) => {
-            tracing::warn!("Stored Spotify client secret could not be decrypted: {}", e);
+            // Log once per distinct ciphertext: this runs on every settings
+            // read (the UI polls them while views mount), and an undecryptable
+            // secret is a persistent condition, not a per-read event.
+            static LAST_WARNED: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
+                std::sync::OnceLock::new();
+            let slot = LAST_WARNED.get_or_init(|| std::sync::Mutex::new(None));
+            let already_warned = {
+                let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+                if *guard == Some(stored.to_string()) {
+                    true
+                } else {
+                    *guard = Some(stored.to_string());
+                    false
+                }
+            };
+            if !already_warned {
+                tracing::warn!(
+                    "Stored Spotify client secret could not be decrypted: {} \
+                     (further occurrences of this same secret will not be logged)",
+                    e
+                );
+            }
             let trimmed = stored.trim();
             if trimmed.len() >= 4 {
                 let last4: String = trimmed
