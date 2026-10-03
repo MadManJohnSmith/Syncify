@@ -52,6 +52,24 @@ pub fn bundled_tool_candidates(name: &str) -> Vec<PathBuf> {
 /// override (`FFMPEG_PATH`, `FFPROBE_PATH`, `FPCALC_PATH`, `FLAC_PATH`), a
 /// binary shipped with the app, or one in the repository `bin/` directory.
 /// `None` lets the OS resolve the bare name through `PATH`.
+/// A candidate is usable only if it is an executable file: tauri-build copies
+/// the `externalBin` placeholders next to the binary on every build
+/// (`target/<profile>/ffmpeg`), and those placeholder copies carry no exec bit
+/// while real bundled binaries do. Without this check the resolver would
+/// prefer the inert placeholder over a working system `PATH` tool.
+#[cfg(unix)]
+pub fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+pub fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
 pub fn resolve_tool(name: &str) -> Option<PathBuf> {
     if !EXTERNAL_TOOLS.contains(&name) {
         return None;
@@ -61,7 +79,7 @@ pub fn resolve_tool(name: &str) -> Option<PathBuf> {
     }
     bundled_tool_candidates(name)
         .into_iter()
-        .find(|p| p.is_file())
+        .find(|p| is_executable_file(p))
 }
 
 /// Resolves the program name when it is one of the external tools; anything

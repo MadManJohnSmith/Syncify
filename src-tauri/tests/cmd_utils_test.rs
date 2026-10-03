@@ -3,8 +3,8 @@ use std::path::Path;
 use std::time::Duration;
 use syncify_tauri_lib::cmd_utils::{
     apply_bundled_tool_env, bundled_tool_candidates, create_python_std_command,
-    create_python_tokio_command, create_std_command, resolve_tool, run_command_with_timeout,
-    DEFAULT_BRIDGE_TIMEOUT,
+    create_python_tokio_command, create_std_command, is_executable_file, resolve_tool,
+    run_command_with_timeout, DEFAULT_BRIDGE_TIMEOUT,
 };
 
 #[test]
@@ -74,6 +74,40 @@ fn test_apply_bundled_tool_env_publishes_overrides() {
         .and_then(|(_, v)| v)
         .expect("FPCALC_PATH must be published when a tool is resolved");
     assert_eq!(published, override_path.as_os_str());
+}
+
+#[test]
+fn test_resolve_tool_rejects_non_executable_candidate() {
+    // tauri-build copies the externalBin placeholders (plain text, mode 644)
+    // to target/<profile>/ on every build. The resolver must not accept them
+    // as tool binaries, or it would spawn an inert file instead of falling
+    // through to the system PATH (BD-2 acoustic test regression).
+    let dir = std::env::temp_dir().join("syncify-cmdutils-test-placeholder");
+    std::fs::create_dir_all(&dir).expect("create dir");
+    let placeholder = dir.join("ffmpeg");
+    std::fs::write(&placeholder, b"# PLACEHOLDER").expect("write placeholder");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&placeholder, std::fs::Permissions::from_mode(0o644))
+            .expect("clear exec bit");
+        assert!(
+            !is_executable_file(&placeholder),
+            "a mode-644 placeholder must not count as an executable tool"
+        );
+        std::fs::set_permissions(&placeholder, std::fs::Permissions::from_mode(0o755))
+            .expect("set exec bit");
+        assert!(
+            is_executable_file(&placeholder),
+            "a real executable copy must be accepted"
+        );
+    }
+
+    #[cfg(not(unix))]
+    assert!(is_executable_file(&placeholder));
+
+    let _ = std::fs::remove_file(&placeholder);
 }
 
 #[test]

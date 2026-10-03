@@ -160,21 +160,21 @@ jobs:
           New-Item -ItemType Directory -Force -Path "dist/portable/Syncify-Portable"
 
           # 1. Copiar instalador NSIS (.exe)
-          $nsisInstaller = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          $nsisInstaller = Get-ChildItem -Path "target/release/bundle/nsis/*.exe" | Select-Object -First 1
           if ($nsisInstaller) {
             Write-Host "Instalador NSIS encontrado: $($nsisInstaller.FullName)"
             Copy-Item $nsisInstaller.FullName -Destination "dist/installer/"
           } else {
-            Write-Warning "No se encontro el instalador NSIS en src-tauri/target/release/bundle/nsis/"
+            Write-Warning "No se encontro el instalador NSIS en target/release/bundle/nsis/"
           }
 
           # 2. Copiar ejecutable para la versión Portable
-          if (Test-Path "src-tauri/target/release/Syncify.exe") {
-            Copy-Item "src-tauri/target/release/Syncify.exe" -Destination "dist/portable/Syncify-Portable/Syncify.exe"
-          } elseif (Test-Path "src-tauri/target/release/syncify-tauri.exe") {
-            Copy-Item "src-tauri/target/release/syncify-tauri.exe" -Destination "dist/portable/Syncify-Portable/Syncify.exe"
+          if (Test-Path "target/release/Syncify.exe") {
+            Copy-Item "target/release/Syncify.exe" -Destination "dist/portable/Syncify-Portable/Syncify.exe"
+          } elseif (Test-Path "target/release/syncify-tauri.exe") {
+            Copy-Item "target/release/syncify-tauri.exe" -Destination "dist/portable/Syncify-Portable/Syncify.exe"
           } else {
-            throw "No se encontro el ejecutable en src-tauri/target/release/"
+            throw "No se encontro el ejecutable en target/release/"
           }
 
           # 3. Copiar scripts requeridos por Syncify con filtrado estricto de seguridad (TASK-95 / SEC-011)
