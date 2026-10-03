@@ -1557,18 +1557,33 @@ impl SpotifyClient {
                 )
                 .await;
 
-                let retry_after = response
-                    .headers()
-                    .get("Retry-After")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(30);
+                // Count 429s in the same budget as the other failures. The
+                // counter used to advance only on the non-429 branch below, so a
+                // persistently rate-limited endpoint spun here forever: the
+                // `continue` skipped the only increment. Bound it the same way
+                // the other two retry loops in this file do
+                // (`get_playlist_tracks`, `search`).
+                if retry_count >= max_retries {
+                    return Err(format!(
+                        "Spotify API error: rate limited after {} retries",
+                        max_retries
+                    ));
+                }
+                retry_count += 1;
+
+                // Reuse the shared clamp instead of re-parsing the header raw,
+                // which let a `Retry-After: 86400` suspend this worker for 24
+                // hours despite the 300 s ceiling the limiter already applies.
+                let retry_after = crate::services::rate_limiter::retry_after_delay(
+                    response.headers(),
+                    std::time::Duration::from_secs(30),
+                );
 
                 tracing::warn!(
                     "Spotify: Rate limited (429). Retrying after {} seconds...",
-                    retry_after
+                    retry_after.as_secs()
                 );
-                tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
+                tokio::time::sleep(retry_after).await;
                 continue;
             }
 

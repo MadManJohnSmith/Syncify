@@ -2561,6 +2561,76 @@ pub async fn merge_level2_3_duplicates_inner(
     auto_resolve_duplicates_inner(db).await
 }
 
+/// SQL for the Level 3 fuzzy-duplicate pair scan (see
+/// `auto_resolve_duplicates_inner`).
+///
+/// Bucket-and-expand rather than self-join. The previous shape joined
+/// `track_artists` to itself on `artist_id` *before* applying the title,
+/// duration and explicit filters, so a library with one very large artist —
+/// which migration 0081 produces, since it folds every Various Artists variant
+/// into a single canonical artist — paid C(k,2) on `k` tracks and discarded
+/// almost all of them afterwards. Measured on a 20 000-track fixture with
+/// `sqlite3 .timer`: 116 s with the self-join, 0.10 s here; the degenerate
+/// 20-distinct-title variant (9 990 000 surviving pairs) drops from 198 s to
+/// 9.8 s, and what remains is the cost of materialising the result set.
+///
+/// The emitted set is unchanged: the bucket key is exactly the equality part of
+/// the old predicate (artist, `LOWER(TRIM(title))`, explicit), and the ±2000 ms
+/// window is applied only after bucketing, which is equivalent because the
+/// window is symmetric and per-bucket. Rows are emitted in (duration_ms,
+/// track_id) order — a total order, so no group is reordered — whereas the old
+/// plan emitted each artist's pairs in `track_artists` scan order. The
+/// union-find below is independent of that order: when two tracks share every
+/// artist, the shared artist is the unique minimum artist id, so exactly one
+/// pair per track pair survives. Inside a connected component the partition is
+/// therefore fixed by the pair *set*, and the surviving ISRC can only differ
+/// when a component holds several distinct non-blank ISRCs — in which case both
+/// orderings break it into single-ISRC groups containing the same tracks.
+///
+/// `tests/duplicates_fuzzy_pairs_scale_test.rs` asserts this SQL returns the
+/// same pair set as the self-join it replaced, and that the plan never falls
+/// back to a full pairwise scan, so the constant is part of the test contract.
+pub const FUZZY_DUPLICATE_PAIRS_SQL: &str = r#"
+        WITH eligible AS (
+            SELECT ta.track_id   AS track_id,
+                   ta.artist_id  AS artist_id,
+                   t.title       AS title,
+                   t.duration_ms AS duration_ms,
+                   t.explicit    AS explicit,
+                   t.isrc        AS isrc
+            FROM track_artists ta
+            JOIN tracks t ON t.id = ta.track_id
+            WHERE (LOWER(COALESCE(ta.role, 'primary')) IN ('primary', 'main')
+                   OR (SELECT COUNT(*) FROM track_artists WHERE track_id = ta.track_id) = 1)
+              AND t.duration_ms > 10000
+              AND TRIM(COALESCE(t.title, '')) != ''
+        ),
+        buckets AS (
+            SELECT artist_id,
+                   LOWER(TRIM(title))    AS title_key,
+                   COALESCE(explicit, 0) AS explicit_key,
+                   track_id, duration_ms, isrc
+            FROM eligible
+        ),
+        ordered AS (
+            SELECT track_id, duration_ms, isrc, artist_id, title_key, explicit_key,
+                   ROW_NUMBER() OVER (PARTITION BY artist_id, title_key, explicit_key
+                                      ORDER BY duration_ms, track_id) AS rn,
+                   COUNT(*) OVER (PARTITION BY artist_id, title_key, explicit_key) AS grp_size
+            FROM buckets
+        )
+        SELECT o1.track_id as id_a, o2.track_id as id_b, o1.isrc as isrc_a, o2.isrc as isrc_b
+        FROM ordered o1
+        JOIN ordered o2
+          ON o2.artist_id = o1.artist_id
+         AND o2.title_key = o1.title_key
+         AND o2.explicit_key = o1.explicit_key
+         AND o2.track_id > o1.track_id
+         AND ABS(o1.duration_ms - o2.duration_ms) <= 2000
+        WHERE o1.grp_size > 1
+        ORDER BY o1.duration_ms, o1.track_id, o2.duration_ms, o2.track_id
+        "#;
+
 pub async fn auto_resolve_duplicates_inner(
     db: &crate::db::DbPool,
 ) -> Result<AutoResolveResult, String> {
@@ -3209,24 +3279,11 @@ pub async fn auto_resolve_duplicates_inner(
     }
 
     // Phase 2b: Level 3 fuzzy duplicates (matching primary artist, title, duration ± 2000 ms, same explicit)
-    let fuzzy_pairs: Vec<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
-        r#"
-        SELECT a.id as id_a, b.id as id_b, a.isrc as isrc_a, b.isrc as isrc_b
-        FROM track_artists ta1
-        JOIN track_artists ta2 ON ta1.artist_id = ta2.artist_id AND ta1.track_id < ta2.track_id
-        JOIN tracks a ON a.id = ta1.track_id
-        JOIN tracks b ON b.id = ta2.track_id
-        WHERE (LOWER(COALESCE(ta1.role, 'primary')) IN ('primary', 'main') OR (SELECT COUNT(*) FROM track_artists WHERE track_id = a.id) = 1)
-          AND (LOWER(COALESCE(ta2.role, 'primary')) IN ('primary', 'main') OR (SELECT COUNT(*) FROM track_artists WHERE track_id = b.id) = 1)
-          AND a.duration_ms > 10000 AND b.duration_ms > 10000
-          AND TRIM(COALESCE(a.title, '')) != ''
-          AND TRIM(COALESCE(b.title, '')) != ''
-          AND COALESCE(a.explicit, 0) = COALESCE(b.explicit, 0)
-          AND LOWER(TRIM(a.title)) = LOWER(TRIM(b.title))
-          AND ABS(a.duration_ms - b.duration_ms) <= 2000
-        "#
-    )
-    .fetch_all(&mut *tx).await.map_err(|e| format!("Query error: {}", e))?;
+    let fuzzy_pairs: Vec<(i64, i64, Option<String>, Option<String>)> =
+        sqlx::query_as(FUZZY_DUPLICATE_PAIRS_SQL)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| format!("Query error: {}", e))?;
 
     let mut parent: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     let mut rank: std::collections::HashMap<i64, u8> = std::collections::HashMap::new();
