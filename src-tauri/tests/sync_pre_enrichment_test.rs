@@ -432,8 +432,9 @@ async fn test_country_normalization_during_sync() {
             .unwrap();
 
         // Verify domain normalization logic
-        let normalized = syncify_metadata_domain::country::normalize_country_or_region(raw_country);
-        assert_eq!(normalized, Some(expected_iso.to_string()));
+        let resolution = syncify_metadata_domain::country::resolve_country(raw_country);
+        let normalized = resolution.country_code();
+        assert_eq!(normalized, Some(expected_iso));
     }
 }
 

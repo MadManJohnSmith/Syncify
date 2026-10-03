@@ -45,19 +45,6 @@ pub enum TidalAuthStatus {
     Failed(String),
 }
 
-impl TidalAuthStatus {
-    pub fn is_user_authenticated(&self) -> bool {
-        matches!(self, TidalAuthStatus::UserToken(_))
-    }
-
-    pub fn can_access_public_catalog(&self) -> bool {
-        matches!(
-            self,
-            TidalAuthStatus::UserToken(_) | TidalAuthStatus::ClientCredentials(_)
-        )
-    }
-}
-
 /// Decrypted structure stored in `accounts.credentials_json` by Syncify GUI
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalGuiCredentials {
@@ -616,22 +603,6 @@ impl TidalDownloader {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK.to_string());
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .unwrap_or_else(|_| Client::new());
-
-        Self {
-            client,
-            client_id,
-            client_secret,
-            user_token: RwLock::new(None),
-            cached_oauth_token: RwLock::new(None),
-        }
-    }
-
-    /// Construct with explicit client credentials (e.g. from secure database accounts).
-    pub fn with_credentials(client_id: String, client_secret: String) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -2053,18 +2024,6 @@ pub fn validate_audio_header_magic(header_bytes: &[u8], ext_str: &str) -> Result
     Ok(())
 }
 
-/// Validates that an on-disk audio file has valid magic headers for the given extension
-/// using bounded O(1) memory inspection.
-pub async fn validate_audio_file_header(path: &Path, ext_str: &str) -> Result<()> {
-    let (header, n) = read_audio_header_bounded(path).await.map_err(|e| {
-        anyhow!(
-            "ValidationFailed: Cannot read downloaded file header: {}",
-            e
-        )
-    })?;
-    validate_audio_header_magic(&header[..n], ext_str)
-}
-
 impl Default for TidalDownloader {
     fn default() -> Self {
         Self::new()
@@ -2079,16 +2038,25 @@ mod tests {
     #[test]
     fn test_tidal_auth_status_hierarchy() {
         let user = TidalAuthStatus::UserToken("secret".to_string());
-        assert!(user.is_user_authenticated());
-        assert!(user.can_access_public_catalog());
+        assert!(matches!(user, TidalAuthStatus::UserToken(_)));
+        assert!(matches!(
+            user,
+            TidalAuthStatus::UserToken(_) | TidalAuthStatus::ClientCredentials(_)
+        ));
 
         let client = TidalAuthStatus::ClientCredentials("token".to_string());
-        assert!(!client.is_user_authenticated());
-        assert!(client.can_access_public_catalog());
+        assert!(!matches!(client, TidalAuthStatus::UserToken(_)));
+        assert!(matches!(
+            client,
+            TidalAuthStatus::UserToken(_) | TidalAuthStatus::ClientCredentials(_)
+        ));
 
         let unauth = TidalAuthStatus::RequiresAuth;
-        assert!(!unauth.is_user_authenticated());
-        assert!(!unauth.can_access_public_catalog());
+        assert!(!matches!(unauth, TidalAuthStatus::UserToken(_)));
+        assert!(!matches!(
+            unauth,
+            TidalAuthStatus::UserToken(_) | TidalAuthStatus::ClientCredentials(_)
+        ));
     }
 
     #[test]

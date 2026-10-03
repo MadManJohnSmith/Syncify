@@ -63,11 +63,12 @@ fn qobuz_http_failures_drive_the_retry_decision_from_the_taxonomy() {
         );
     }
 
-    // An auth rejection is exactly what requires the user to act.
-    assert!(
-        classify_qobuz_http_failure(reqwest::StatusCode::UNAUTHORIZED, "42")
-            .invalidates_credentials()
-    );
+    // An auth rejection is exactly what requires the user to act: it must classify
+    // as AuthInvalid, the only taxonomy variant that invalidates stored credentials.
+    assert!(matches!(
+        classify_qobuz_http_failure(reqwest::StatusCode::UNAUTHORIZED, "42"),
+        ErrorTaxonomy::AuthInvalid { .. }
+    ));
 }
 
 async fn queue_db() -> sqlx::SqlitePool {

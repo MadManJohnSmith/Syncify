@@ -4,16 +4,6 @@
 //! localized names (English, Spanish, French, German, Japanese, etc.)
 //! to standard ISO 639 language codes.
 
-use serde::{Deserialize, Serialize};
-
-/// Language resolution result
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LanguageResolution {
-    pub iso_639_2: String,
-    pub iso_639_1: Option<String>,
-    pub canonical_name: String,
-}
-
 /// Normalizes diacritics and whitespace for case-insensitive matching
 fn sanitize_language_str(input: &str) -> String {
     let trimmed = input.trim();
@@ -246,11 +236,6 @@ pub fn default_language_for_country(country: &str) -> Option<&'static str> {
         | "ae" => Some("ara"),
         _ => None,
     }
-}
-
-/// Check if a language string is a valid ISO code or resolvable language name
-pub fn is_valid_language(val: &str) -> bool {
-    resolve_language(val).is_some()
 }
 
 /// ISO code -> canonical English display name table used on the tag wire format.

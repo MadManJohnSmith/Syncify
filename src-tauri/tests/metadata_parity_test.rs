@@ -360,7 +360,8 @@ fn test_tauri_consumes_syncify_core_domain_pure_contracts() {
         manifest: vec![entry],
         ..Default::default()
     };
-    assert_eq!(summary.all_succeeded(), true);
+    // Full success contract: every requested item succeeded.
+    assert_eq!(summary.succeeded == summary.requested && summary.failed == 0, true);
 
     // 4. Progress event
     let event = PipelineProgressEvent::new("track-1", "tidal", PipelineStepStatus::Tagging);

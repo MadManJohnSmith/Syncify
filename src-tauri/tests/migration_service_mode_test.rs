@@ -391,18 +391,16 @@ async fn seed_many_source_tracks(pool: &SqlitePool, count: usize) {
         .await
         .unwrap();
 
-    let album_id: i64 = sqlx::query_scalar(
-        "INSERT INTO albums (title) VALUES ('Cancel Album') RETURNING id",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap();
-    let artist_id: i64 = sqlx::query_scalar(
-        "INSERT INTO artists (name) VALUES ('Cancel Artist') RETURNING id",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Cancel Album') RETURNING id")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Cancel Artist') RETURNING id")
+            .fetch_one(pool)
+            .await
+            .unwrap();
 
     for index in 0..count {
         let track_id: i64 = sqlx::query_scalar(
@@ -413,12 +411,14 @@ async fn seed_many_source_tracks(pool: &SqlitePool, count: usize) {
         .fetch_one(pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-            .bind(track_id)
-            .bind(artist_id)
-            .execute(pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, ?)",
         )

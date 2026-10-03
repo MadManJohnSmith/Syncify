@@ -34,21 +34,6 @@ impl ProviderTrackIdentity {
             }
         })
     }
-
-    /// Check if minimum metadata exists without relying on placeholders.
-    pub fn has_minimum_metadata(&self) -> bool {
-        let has_title = self
-            .title
-            .as_deref()
-            .map(|t| !is_placeholder_title(t))
-            .unwrap_or(false);
-        let has_artist = self
-            .artist
-            .as_deref()
-            .map(|a| !is_placeholder_artist(a))
-            .unwrap_or(false);
-        has_title && has_artist
-    }
 }
 
 /// Strict international standard ISRC validator (12 alfanumeric characters: 2 letter country, 3 registrant, 2 year, 5 designation).
@@ -315,27 +300,6 @@ impl TidalTrack {
     /// Return album title ONLY if album is present; NEVER fall back to track title!
     pub fn album_title(&self) -> Option<String> {
         self.album.as_ref().map(|a| sanitize_album_title(&a.title))
-    }
-
-    /// Return album artist name if available, or track artist.
-    pub fn album_artist_name(&self) -> Option<String> {
-        self.album
-            .as_ref()
-            .and_then(|a| a.artist.as_ref().map(|art| art.name.clone()))
-            .or_else(|| {
-                self.album.as_ref().and_then(|a| {
-                    a.artists
-                        .as_ref()
-                        .and_then(|arr| arr.first())
-                        .map(|art| art.name.clone())
-                })
-            })
-            .or_else(|| self.artist_name())
-    }
-
-    /// Return release ID (album ID) if present.
-    pub fn release_id(&self) -> Option<i64> {
-        self.album.as_ref().and_then(|a| a.id)
     }
 
     /// Return track number (default 1).
@@ -2024,7 +1988,17 @@ mod tests {
         };
 
         assert_eq!(ident.sanitized_isrc(), None);
-        assert!(!ident.has_minimum_metadata());
+        // Placeholder title/artist must not count as minimum metadata.
+        assert!(ident
+            .title
+            .as_deref()
+            .map(is_placeholder_title)
+            .unwrap_or(true));
+        assert!(ident
+            .artist
+            .as_deref()
+            .map(is_placeholder_artist)
+            .unwrap_or(true));
     }
 
     #[test]

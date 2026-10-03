@@ -2356,6 +2356,30 @@ mod tests {
         fixtures::*, LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus,
     };
 
+    /// Builds a `Failed` resolution directly (the domain crate only ships
+    /// constructors for statuses production actually produces).
+    fn failed_resolution(
+        provider: impl Into<String>,
+        strategy: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> LyricsResolution {
+        let err_msg = reason.into();
+        LyricsResolution {
+            status: ResolutionStatus::Failed(err_msg.clone()),
+            provider: provider.into(),
+            strategy: strategy.into(),
+            format: "NONE".to_string(),
+            sync_type: LyricsSyncType::None,
+            provenance: "failed".to_string(),
+            fallback_applied: false,
+            error: Some(err_msg),
+            synced_content: None,
+            plain_text: None,
+            lines: Vec::new(),
+            is_instrumental: false,
+        }
+    }
+
     struct TempFlac {
         pub path: std::path::PathBuf,
     }
@@ -2896,7 +2920,7 @@ mod tests {
 
     #[test]
     fn test_corrupt_payload_produces_failed() {
-        let res = LyricsResolution::new_failed(
+        let res = failed_resolution(
             "NetEase Cloud Music",
             "netease_lyrics",
             "JSON decode error: unexpected EOF",
@@ -2994,7 +3018,7 @@ mod tests {
     fn test_cascade_error_priority_ranking() {
         let su =
             LyricsResolution::new_source_unavailable("LyricsPlus", "lyricsplus_search", "HTTP 404");
-        let failed = LyricsResolution::new_failed("NetEase", "netease_lyrics", "Corrupt payload");
+        let failed = failed_resolution("NetEase", "netease_lyrics", "Corrupt payload");
         let auth = LyricsResolution::new_requires_auth(
             "Apple Music",
             "apple_token",
@@ -3178,7 +3202,7 @@ mod tests {
 
     #[test]
     fn test_backend_invalid_json_handling() {
-        let res = LyricsResolution::new_failed(
+        let res = failed_resolution(
             "NetEase",
             "netease_lyrics",
             "Failed to parse JSON response",

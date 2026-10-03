@@ -14,10 +14,38 @@
 //! 11. Shared Qobuz & Tidal lyrics integration contract
 
 use syncify_lyrics_domain::{
-    calculate_confidence_score, deduplicate_lines, evaluate_quality_rank, fixtures::*,
-    strip_lrc_timestamps, validate_lyrics_timestamps, LyricsLineDomain, LyricsResolution,
-    LyricsSyncType, ResolutionStatus,
+    calculate_confidence_score, deduplicate_lines, strip_lrc_timestamps,
+    validate_lyrics_timestamps, LyricsLineDomain, LyricsResolution, LyricsSyncType,
+    ResolutionStatus,
 };
+
+/// Line-synced LRC fixture used by the fallback cascade test.
+const FIXTURE_LINE_SYNCED_LRC: &str = "[00:10.00]I wish you could swim";
+
+/// Plain lyrics fixture used by the fallback cascade test.
+const FIXTURE_PLAIN_LYRICS: &str = "I wish you could swim\nLike dolphins can swim";
+
+/// Word-to-line cascade fallback resolution: a valid line-synced result that the
+/// resolver produced after the higher-tier (word-synced) strategy failed, flagged
+/// with `fallback_applied` so the pipeline can audit the degradation.
+fn fixture_fallback_word_to_line() -> LyricsResolution {
+    let mut res = LyricsResolution::new_resolved(
+        "LRCLIB",
+        "line_search_fallback",
+        LyricsSyncType::LineSynced,
+        Some(FIXTURE_LINE_SYNCED_LRC.to_string()),
+        Some(FIXTURE_PLAIN_LYRICS.to_string()),
+        vec![LyricsLineDomain {
+            start_time_ms: 10000,
+            words: "I wish you could swim".to_string(),
+            end_time_ms: None,
+        }],
+        false,
+        "lrclib.net",
+    );
+    res.fallback_applied = true;
+    res
+}
 use syncify_tauri_lib::download::lyrics::{generate_sidecar_lrc, validate_and_embed_flac_lyrics};
 
 struct TempFlac {
@@ -81,27 +109,29 @@ fn create_dummy_flac() -> TempFlac {
 
 #[test]
 fn test_ranking_karaoke_over_linesynced() {
-    let karaoke_rank = evaluate_quality_rank(&LyricsSyncType::KaraokeWordSynced);
-    let linesynced_rank = evaluate_quality_rank(&LyricsSyncType::LineSynced);
+    // The quality contract is expressed through `calculate_confidence_score`:
+    // for identical inputs, karaoke must always score above line-synced.
+    let karaoke = calculate_confidence_score(&ResolutionStatus::Resolved, &LyricsSyncType::KaraokeWordSynced, 15, None);
+    let linesynced = calculate_confidence_score(&ResolutionStatus::Resolved, &LyricsSyncType::LineSynced, 15, None);
 
     assert!(
-        karaoke_rank < linesynced_rank,
-        "Karaoke word-synced (rank {}) must be preferred over line-synced (rank {})",
-        karaoke_rank,
-        linesynced_rank
+        karaoke > linesynced,
+        "Karaoke word-synced (score {}) must be preferred over line-synced (score {})",
+        karaoke,
+        linesynced
     );
 }
 
 #[test]
 fn test_ranking_linesynced_over_plain() {
-    let linesynced_rank = evaluate_quality_rank(&LyricsSyncType::LineSynced);
-    let plain_rank = evaluate_quality_rank(&LyricsSyncType::Plain);
+    let linesynced = calculate_confidence_score(&ResolutionStatus::Resolved, &LyricsSyncType::LineSynced, 15, None);
+    let plain = calculate_confidence_score(&ResolutionStatus::Resolved, &LyricsSyncType::Plain, 15, None);
 
     assert!(
-        linesynced_rank < plain_rank,
-        "Line-synced (rank {}) must be preferred over plain lyrics (rank {})",
-        linesynced_rank,
-        plain_rank
+        linesynced > plain,
+        "Line-synced (score {}) must be preferred over plain lyrics (score {})",
+        linesynced,
+        plain
     );
 }
 

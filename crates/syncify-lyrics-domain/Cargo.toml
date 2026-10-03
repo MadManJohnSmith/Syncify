@@ -8,3 +8,7 @@ description = "Syncify Lyrics Domain Contract & Pure Deterministic Engine"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1.10"
+
+[features]
+# Exposes `fixtures` (deterministic offline sample payloads) to integration tests.
+test-fixtures = []

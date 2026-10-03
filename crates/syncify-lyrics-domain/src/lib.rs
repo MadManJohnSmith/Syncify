@@ -1,5 +1,9 @@
 //! Syncify Lyrics Domain Contract & Pure Deterministic Engine
 
+/// Shared deterministic fixtures & verification tests. Pure test-support data:
+/// compiled into the crate's own unit tests and into consumers that enable the
+/// `test-fixtures` feature (src-tauri's dev-dependencies) — never in production builds.
+#[cfg(any(test, feature = "test-fixtures"))]
 pub mod fixtures;
 
 use serde::{Deserialize, Serialize};
@@ -137,28 +141,6 @@ impl LyricsResolution {
         }
     }
 
-    pub fn new_failed(
-        provider: impl Into<String>,
-        strategy: impl Into<String>,
-        reason: impl Into<String>,
-    ) -> Self {
-        let err_msg = reason.into();
-        Self {
-            status: ResolutionStatus::Failed(err_msg.clone()),
-            provider: provider.into(),
-            strategy: strategy.into(),
-            format: "NONE".to_string(),
-            sync_type: LyricsSyncType::None,
-            provenance: "failed".to_string(),
-            fallback_applied: false,
-            error: Some(err_msg),
-            synced_content: None,
-            plain_text: None,
-            lines: Vec::new(),
-            is_instrumental: false,
-        }
-    }
-
     pub fn new_requires_auth(
         provider: impl Into<String>,
         strategy: impl Into<String>,
@@ -181,56 +163,6 @@ impl LyricsResolution {
         }
     }
 
-    pub fn new_not_supported(
-        provider: impl Into<String>,
-        strategy: impl Into<String>,
-        reason: impl Into<String>,
-    ) -> Self {
-        let err_msg = reason.into();
-        Self {
-            status: ResolutionStatus::NotSupported,
-            provider: provider.into(),
-            strategy: strategy.into(),
-            format: "NONE".to_string(),
-            sync_type: LyricsSyncType::None,
-            provenance: "not_supported".to_string(),
-            fallback_applied: false,
-            error: Some(err_msg),
-            synced_content: None,
-            plain_text: None,
-            lines: Vec::new(),
-            is_instrumental: false,
-        }
-    }
-
-    /// Derive clean plain text representation from synced content or existing plain text
-    pub fn derived_plain_text(&self) -> Option<String> {
-        if let Some(ref p) = self.plain_text {
-            if !p.trim().is_empty() {
-                return Some(p.clone());
-            }
-        }
-        if let Some(ref s) = self.synced_content {
-            let stripped = strip_lrc_timestamps(s);
-            if !stripped.is_empty() {
-                return Some(stripped);
-            }
-        }
-        if !self.lines.is_empty() {
-            let joined = self
-                .lines
-                .iter()
-                .map(|l| l.words.as_str())
-                .filter(|w| !w.trim().is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !joined.is_empty() {
-                return Some(joined);
-            }
-        }
-        None
-    }
-
     /// Rejection or failure reason if resolution did not succeed
     pub fn rejection_reason(&self) -> Option<&str> {
         self.error.as_deref()
@@ -243,11 +175,6 @@ impl LyricsResolution {
             .as_deref()
             .or(self.synced_content.as_deref())?;
         detect_language_heuristic(text)
-    }
-
-    /// Calculate confidence / quality score (0.0 to 1.0)
-    pub fn confidence_score(&self) -> f32 {
-        calculate_confidence_score(&self.status, &self.sync_type, self.lines.len(), None)
     }
 
     /// Generate unified tag contract for Vorbis tags (`LYRICS`, `UNSYNCEDLYRICS`, `SYNCIFY_LYRICS_SOURCE`) and sidecar `.lrc`
@@ -578,17 +505,6 @@ pub fn simplify_track_name(track: &str) -> String {
         .to_string()
 }
 
-/// Evaluate quality rank of sync type (1 = highest)
-pub fn evaluate_quality_rank(sync_type: &LyricsSyncType) -> u8 {
-    match sync_type {
-        LyricsSyncType::KaraokeWordSynced => 1,
-        LyricsSyncType::LineSynced => 2,
-        LyricsSyncType::Plain => 3,
-        LyricsSyncType::Instrumental => 4,
-        LyricsSyncType::None => 5,
-    }
-}
-
 /// Preserve word-level timestamps exact byte-for-byte
 pub fn preserve_word_timestamps_exact(elrc_input: &str) -> String {
     elrc_input.to_string()
@@ -770,22 +686,6 @@ pub fn detect_language_heuristic(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_tier_quality_rank() {
-        assert!(
-            evaluate_quality_rank(&LyricsSyncType::KaraokeWordSynced)
-                < evaluate_quality_rank(&LyricsSyncType::LineSynced)
-        );
-        assert!(
-            evaluate_quality_rank(&LyricsSyncType::LineSynced)
-                < evaluate_quality_rank(&LyricsSyncType::Plain)
-        );
-        assert!(
-            evaluate_quality_rank(&LyricsSyncType::Plain)
-                < evaluate_quality_rank(&LyricsSyncType::Instrumental)
-        );
-    }
 
     #[test]
     fn test_timestamp_validation_valid_and_invalid() {
