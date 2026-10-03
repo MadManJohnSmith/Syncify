@@ -110,21 +110,36 @@ jobs:
       # autoaudiosink/autovideosink viven en gst-plugins-good, que NO viene
       # instalado en los runners: sin él el paso siguiente no encuentra nada
       # que copiar (primera iteración empaquetó 13 plugins y ninguno de sink).
-      - name: Instalar plugins de GStreamer (gst-plugins-good/base)
+      - name: Instalar plugins de GStreamer y verificar los sinks
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y gstreamer1.0-plugins-good gstreamer1.0-plugins-base
-          # Sin este paso el runner no trae autoaudiosink/autovideosink y el
-          # AppImage se publica sin salida de audio. Sin `|| true`: si la
-          # instalación falla hay que verlo, no seguir en silencio.
+          sudo apt-get install -y --no-install-recommends \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-tools \
+            gstreamer1.0-alsa \
+            gstreamer1.0-pulseaudio
+
+          # Sin esto el runner no trae autoaudiosink/autovideosink y el AppImage
+          # se publica sin salida de audio. Sin `|| true`: si la instalacion
+          # falla hay que verlo, no seguir en silencio.
           #
-          # `dpkg -L` dice la RUTA REAL de cada plugin en vez de suponerla: el
-          # runner can place it in /usr/lib/x86_64-linux-gnu or in
-          # /usr/lib/gstreamer-1.0 según la imagen.
-          echo "--- autoaudiosink/autovideosink instalados ---"
-          dpkg -L gstreamer1.0-plugins-good 2>/dev/null \
-            | grep -E 'libgstauto(audio|video)sink\.so$' \
-            || { echo "::error::autoaudiosink/autovideosink NO instalados"; exit 1; }
+          # La comprobacion la hace GStreamer, no una lista de nombres de
+          # fichero. Una version anterior buscaba un .so por sinks, nombre que
+          # no existe: autoaudiosink y autovideosink son dos elementos dentro de
+          # una misma libreria, asi que el paso fallaba con los plugins ya
+          # instalados y decia que faltaban cuando no faltaban.
+          for el in autoaudiosink autovideosink; do
+            if ! gst-inspect-1.0 "$el" >/dev/null 2>&1; then
+              echo "::error::el elemento '$el' no esta registrado en el runner"
+              echo "--- elementos autosink registrados ---"
+              gst-inspect-1.0 | grep -i autosink || true
+              exit 1
+            fi
+          done
+          echo "OK: autoaudiosink y autovideosink registrados"
 
       - name: Inyectar plugins de GStreamer en el AppImage
         run: |
@@ -138,40 +153,50 @@ jobs:
           )
           PLUGDIR="$WORK/squashfs-root/usr/lib/gstreamer-1.0"
           mkdir -p "$PLUGDIR"
-          WANTED='autoaudiosink alsasink pulsesink pipewiresink ossink jackaudiosink \
-                  autoaudiosrc avdec_aac avdec_flac avdec_mp4 avdec_vorbis \
-                  audioconvert audioresample audioparsers audiotestsrc audiorate \
-                  playback typefindfunctions decodebin playbin videoconvert \
-                  videoconvertscale videorate videoparsersbad videoscale \
-                  autovideosink ximagesink waylandsink glimagesink fakesink \
-                  coreelements coretracers'
-          found=0
-          for p in $WANTED; do
-            # `dpkg -L` es la fuente de verdad de dónde instaló cada plugin;
-            # suponer la ruta fue lo que hizo que este paso copiasen 13 plugins
-            # sin ninguno de los sinks en la iteración anterior.
-            src=$(dpkg -S "libgst${p}.so" 2>/dev/null | cut -d: -f1 | head -1 || true)
-            if [ -n "$src" ]; then
-              real=$(dpkg -L "$src" 2>/dev/null | grep -E "/libgst${p}\.so$" | head -1 || true)
-            else
-              real=""
-            fi
-            if [ -n "$real" ] && [ -f "$real" ]; then
-              cp -a "$real" "$PLUGDIR/"
-              found=$((found + 1))
+
+          # La lista de plugins sale de gst-inspect, no de una constante
+          # escrita a mano. Mantenerla a mano era lo que dejaba el AppImage sin
+          # sinks: los nombres se quedaron obsoletos y ningun paso avisaba.
+          # Se pregunta al registro: se copia lo que de verdad esta disponible.
+          gst-inspect-1.0 > "$WORK/gst-elements.txt"
+
+          # Elementos imprescindibles para reproducir audio y video. Si alguno
+          # no esta en el registro, el AppImage se publicaria roto.
+          REQUIRED="autoaudiosink autovideosink playbin decodebin audioconvert
+                     audioresample videoconvert typefindfunctions"
+          for el in $REQUIRED; do
+            if ! grep -qE "^$el: " "$WORK/gst-elements.txt"; then
+              echo "::error::elemento obligatorio ausente del registro: $el"
+              exit 1
             fi
           done
-          echo "Plugins de GStreamer copiados: $found"
-          # El sink de audio es IMPRESCINDIBLE: sin él el AppImage arranca pero
-          # no reproduce sonido. Publicar un paquete roto es peor que fallar.
-          if [ ! -f "$PLUGDIR/libgstautoaudiosink.so" ]; then
-            echo "::error::autoaudiosink no está disponible en el runner; el AppImage no tendrá salida de audio"
+
+          # Se copia cada libreria que aporta al menos uno de los elementos
+          # anteriores, dedupe por ruta real de la libreria.
+          for el in $REQUIRED; do
+            lib=$(gst-inspect-1.0 "$el" 2>/dev/null | sed -n 's/^ *Filename *: *//p' | head -1)
+            [ -n "$lib" ] && [ -f "$lib" ] && cp -a "$lib" "$PLUGDIR/"
+          done
+
+          # Auto, ALSA, PulseAudio y PipeWire: el sink automatico elige entre
+          # ellos en runtime segun lo que tenga la maquina del usuario.
+          for lib in $(find /usr/lib /lib -name 'libgstauto*.so' \
+                          -o -name 'libgstalsa.so' \
+                          -o -name 'libgstpulseaudio.so' \
+                          -o -name 'libgstpipewire.so' 2>/dev/null | sort -u); do
+            cp -a "$lib" "$PLUGDIR/"
+          done
+
+          echo "Plugins de GStreamer copiados: $(ls -1 "$PLUGDIR" | wc -l)"
+          ls -1 "$PLUGDIR"
+
+          # Sin sink de audio el AppImage arranca pero no suena. Publicar un
+          # paquete roto es peor que fallar la build.
+          if [ ! -f "$PLUGDIR/libgstautosink.so" ]; then
+            echo "::error::no se copio libgstautosink.so (autoaudiosink/autovideosink)"
             exit 1
           fi
-          if [ ! -f "$PLUGDIR/libgstautovideosink.so" ]; then
-            echo "::error::autovideosink no está disponible en el runner"
-            exit 1
-          fi
+
           # Reempaquetar con appimagetool (conserva el AppRun y los hooks).
           curl -sL -o "$WORK/appimagetool" \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
