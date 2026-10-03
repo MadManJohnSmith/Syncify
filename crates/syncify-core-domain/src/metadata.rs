@@ -4,6 +4,26 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
+/// Case-insensitive search for an ASCII `needle` in `haystack`, returning a
+/// byte offset that is guaranteed to be a char boundary of `haystack` itself.
+///
+/// Slicing the ORIGINAL string with an index found on `to_lowercase()` panics
+/// when a character changes byte length in lowercase (U+212A KELVIN SIGN,
+/// U+0130 'İ'); search the original instead. A match implies every compared
+/// byte is ASCII (< 0x80), so the match start is always a char boundary.
+pub fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    debug_assert!(needle.is_ascii(), "needle must be ASCII");
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let hb = haystack.as_bytes();
+    let nb = needle.as_bytes();
+    if nb.len() > hb.len() {
+        return None;
+    }
+    (0..=hb.len() - nb.len()).find(|&i| hb[i..i + nb.len()].eq_ignore_ascii_case(nb))
+}
+
 /// Provider-specific track identity payload.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ProviderTrackIdentity {

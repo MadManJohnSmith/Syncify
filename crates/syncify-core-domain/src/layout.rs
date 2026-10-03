@@ -348,7 +348,11 @@ impl LibraryLayout {
 
         for part in &mut folder_parts {
             if part.len() > part_budget && max_len < 260 {
-                let trimmed = part[..part_budget].trim_end_matches(&[' ', '.'][..]);
+                // part_budget es un presupuesto en BYTES: recortar directo
+                // panicaría partiend un carácter multi-byte ("Кино" con
+                // presupuesto impar).
+                let trimmed =
+                    truncate_at_char_boundary(part, part_budget).trim_end_matches(&[' ', '.'][..]);
                 *part = trimmed.to_string();
             }
             target_dir.push(&*part);
@@ -486,9 +490,58 @@ impl LibraryLayout {
     }
 }
 
+/// Recorta `s` a lo sumo `max_bytes` sin partir un carácter UTF-8 multi-byte.
+///
+/// `&s[..max_bytes]` panicaría si el corte cae dentro de un carácter: los
+/// presupuestos de longitud son en BYTES y los títulos/artistas vienen de
+/// tags Unicode arbitrarios (cirílico, CJK).
+fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes || s.is_char_boundary(max_bytes) {
+        return &s[..max_bytes.min(s.len())];
+    }
+    let mut cut = max_bytes;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &s[..cut]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_truncate_at_char_boundary_never_splits_utf8() {
+        // Presupuesto en bytes sobre texto multi-byte: el corte debe caer en
+        // frontera de carácter, nunca dentro de uno.
+        assert_eq!(truncate_at_char_boundary("кинокино", 5), "ки");
+        assert_eq!(truncate_at_char_boundary("日本語の曲", 4), "日");
+        assert_eq!(truncate_at_char_boundary("abcdef", 3), "abc");
+        assert_eq!(truncate_at_char_boundary("abc", 10), "abc");
+        assert_eq!(truncate_at_char_boundary("", 4), "");
+    }
+
+    #[test]
+    fn test_track_path_long_cyrillic_album_does_not_panic() {
+        // Regresión clase-genre: el presupuesto de longitud es en BYTES y el
+        // corte directo panicaba con álbumes multi-byte ("byte index N is not
+        // a char boundary").
+        let album = "ОченьДлинноеНазваниеАльбомаКотороеПревышаетВсякийБюджет".repeat(2);
+        let layout = LibraryLayout::new("/Music");
+        let p = layout.track_path(
+            "Кино",
+            "Кино",
+            &album,
+            Some(2020),
+            1,
+            1,
+            1,
+            "Звезда",
+            "flac",
+        );
+        let s = p.to_string_lossy().to_string();
+        assert!(s.contains("Кино"), "ruta generada: {}", s);
+    }
 
     #[test]
     fn test_sanitize_filename_windows_forbidden_chars() {

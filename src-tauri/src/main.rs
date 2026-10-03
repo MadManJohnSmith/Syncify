@@ -295,7 +295,8 @@ fn main() {
                             };
                             let mut auto_fixed = false;
                             if req_file.exists() {
-                                let install_result = crate::cmd_utils::create_tokio_command(&python_cmd)
+                                // Intento 1: pip normal (solo funciona tal cual en un venv).
+                                let mut install_result = crate::cmd_utils::create_tokio_command(&python_cmd)
                                     .arg("-m")
                                     .arg("pip")
                                     .arg("install")
@@ -304,11 +305,43 @@ fn main() {
                                     .output()
                                     .await;
 
-                                if let Ok(res) = install_result {
-                                    if res.status.success() {
+                                // Intento 2: Pythons "externally-managed" (PEP 668: Arch,
+                                // Fedora, Debian 12+) rechazan pip global; `--user
+                                // --break-system-packages` instala en el site-packages del
+                                // usuario sin tocar el del sistema. pip antiguo (<23) no
+                                // conoce el flag y fallará igual → evento al frontend.
+                                let first_failed = !install_result
+                                    .as_ref()
+                                    .is_ok_and(|r| r.status.success());
+                                if first_failed {
+                                    tracing::info!(
+                                        "Plain pip install failed; retrying with --user --break-system-packages (PEP 668)"
+                                    );
+                                    install_result = crate::cmd_utils::create_tokio_command(&python_cmd)
+                                        .arg("-m")
+                                        .arg("pip")
+                                        .arg("install")
+                                        .arg("--user")
+                                        .arg("--break-system-packages")
+                                        .arg("-r")
+                                        .arg(&req_file)
+                                        .output()
+                                        .await;
+                                }
+
+                                match install_result {
+                                    Ok(res) if res.status.success() => {
                                         tracing::info!("Successfully auto-installed Python requirements!");
                                         auto_fixed = true;
                                     }
+                                    Ok(res) => {
+                                        let stderr = String::from_utf8_lossy(&res.stderr);
+                                        tracing::warn!(
+                                            "pip auto-install failed: {}",
+                                            stderr.lines().last().unwrap_or("(sin stderr)")
+                                        );
+                                    }
+                                    Err(e) => tracing::warn!("pip auto-install could not run: {}", e),
                                 }
                             }
 
@@ -317,7 +350,7 @@ fn main() {
                                 let _ = startup_handle.emit(
                                     "python_deps_missing",
                                     serde_json::json!({
-                                        "message": "Missing required Python packages (spotipy, pyacoustid, etc). Please pip install -r requirements.txt",
+                                        "message": "Missing required Python packages (spotipy, pyacoustid, etc). Install them with: pip install --user --break-system-packages -r requirements.txt (or use a venv)",
                                     }),
                                 );
                             }

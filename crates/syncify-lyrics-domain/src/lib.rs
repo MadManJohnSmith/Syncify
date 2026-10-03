@@ -468,6 +468,23 @@ pub fn parse_ultrastar_to_elrc(us_txt: &str) -> (Vec<LyricsLineDomain>, String) 
     (lines, elrc_buf)
 }
 
+/// Case-insensitive search for an ASCII `needle` in `haystack`, returning a
+/// byte offset guaranteed to be a char boundary of `haystack` itself. Local
+/// copy of `syncify_core_domain::metadata::find_ascii_case_insensitive` (this
+/// crate does not depend on core-domain); see that fn for the rationale.
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    debug_assert!(needle.is_ascii(), "needle must be ASCII");
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let hb = haystack.as_bytes();
+    let nb = needle.as_bytes();
+    if nb.len() > hb.len() {
+        return None;
+    }
+    (0..=hb.len() - nb.len()).find(|&i| hb[i..i + nb.len()].eq_ignore_ascii_case(nb))
+}
+
 /// Simplify track name by stripping metadata patterns
 pub fn simplify_track_name(track: &str) -> String {
     let mut simplified = track.to_string();
@@ -493,7 +510,10 @@ pub fn simplify_track_name(track: &str) -> String {
     }
 
     for pattern in [" (feat.", " (ft.", " feat.", " ft."] {
-        if let Some(pos) = simplified.to_lowercase().find(pattern) {
+        // Buscar sobre `simplified` (no sobre un to_lowercase()): ese lowercase
+        // puede cambiar la longitud en bytes (U+212A, U+0130) y el índice de la
+        // copia panicaría al cortar el original.
+        if let Some(pos) = find_ascii_case_insensitive(&simplified, pattern) {
             simplified = simplified[..pos].to_string();
         }
     }
@@ -686,6 +706,17 @@ pub fn detect_language_heuristic(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_simplify_track_name_is_utf8_safe_when_lowercase_shifts_length() {
+        // Regresión: el índice venía de to_lowercase() (U+212A cambia de
+        // longitud al lowercasear) y se aplicaba sobre el original →
+        // "byte index 1 is not a char boundary".
+        assert_eq!(simplify_track_name("\u{212A} (feat. X"), "\u{212A}");
+        assert_eq!(simplify_track_name("\u{212A} (FEAT. X"), "\u{212A}");
+        assert_eq!(simplify_track_name("Song (feat. Bob"), "Song");
+        assert_eq!(simplify_track_name("Song (FT. Bob"), "Song");
+    }
 
     #[test]
     fn test_timestamp_validation_valid_and_invalid() {

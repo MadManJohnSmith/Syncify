@@ -246,26 +246,36 @@ pub fn has_technical_role_prefix(val: &str) -> bool {
     if t.is_empty() {
         return false;
     }
-    let lower = t.to_lowercase();
     for prefix in KNOWN_TECHNICAL_ROLE_PREFIXES {
         let p_len = prefix.len();
-        if lower.starts_with(prefix) {
-            let rest = &t[p_len..];
-            if rest.starts_with(" - ")
-                || rest.starts_with(" – ")
-                || rest.starts_with(" — ")
-                || rest.starts_with(": ")
-                || rest.starts_with(", ")
-            {
-                let after = rest[3..].trim();
-                if !after.is_empty() {
-                    return true;
-                }
-            } else if let Some(after) = rest.strip_prefix(':') {
-                let after = after.trim();
-                if !after.is_empty() {
-                    return true;
-                }
+        // Comparar el prefijo directamente sobre `t` (no sobre un
+        // `to_lowercase()`): ese lowercase puede cambiar la longitud en bytes
+        // (U+212A KELVIN, U+0130 'İ') y un índice de la copia panicaría al
+        // cortar el original. Prefijos ASCII ⇒ un match implica frontera.
+        if !t
+            .get(..p_len)
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        {
+            continue;
+        }
+        let rest = &t[p_len..];
+        // strip_prefix (no `rest[3..]`): " – " y " — " miden 4 bytes y un corte
+        // fijo de 3 cae dentro del guion multi-byte ("Guitar – John").
+        let after = rest
+            .strip_prefix(" - ")
+            .or_else(|| rest.strip_prefix(" – "))
+            .or_else(|| rest.strip_prefix(" — "))
+            .or_else(|| rest.strip_prefix(": "))
+            .or_else(|| rest.strip_prefix(", "))
+            .map(str::trim);
+        if let Some(after) = after {
+            if !after.is_empty() {
+                return true;
+            }
+        } else if let Some(after) = rest.strip_prefix(':') {
+            let after = after.trim();
+            if !after.is_empty() {
+                return true;
             }
         }
     }
@@ -987,6 +997,21 @@ pub fn chrono_now_iso() -> String {
 mod tests {
     use super::*;
     use crate::fixtures::*;
+
+    #[test]
+    fn test_has_technical_role_prefix_is_utf8_safe() {
+        // Regresión 1: `rest[3..]` caía DENTRO del guion multi-byte cuando el
+        // separador era " – " (4 bytes) o " — " → "byte index 3 is not a
+        // char boundary". Con strip_prefix deben resolver bien.
+        assert!(has_technical_role_prefix("Guitar – John Mayer"));
+        assert!(has_technical_role_prefix("Producer — Quincy Jones"));
+        // Regresión 2: el índice del prefijo venía de un to_lowercase() que
+        // puede cambiar la longitud en bytes (U+212A).
+        assert!(!has_technical_role_prefix("\u{212A}eys – X"));
+        assert!(has_technical_role_prefix("Guitar - John"));
+        assert!(has_technical_role_prefix("producer: quincy"));
+        assert!(!has_technical_role_prefix("The Beatles"));
+    }
 
     #[test]
     fn test_manual_source_is_immutable_against_higher_confidence() {
