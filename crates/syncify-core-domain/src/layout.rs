@@ -635,10 +635,18 @@ mod tests {
         let layout = LibraryLayout::new("/Music");
         let album_dir = layout.album_dir("Linkin Park", "From Zero", Some(2024));
 
-        assert_eq!(album_dir, PathBuf::from("/Music").join("Linkin Park").join("[2024] From Zero"));
+        assert_eq!(
+            album_dir,
+            PathBuf::from("/Music")
+                .join("Linkin Park")
+                .join("[2024] From Zero")
+        );
         assert_eq!(
             album_dir.join("cover.jpg"),
-            PathBuf::from("/Music").join("Linkin Park").join("[2024] From Zero").join("cover.jpg")
+            PathBuf::from("/Music")
+                .join("Linkin Park")
+                .join("[2024] From Zero")
+                .join("cover.jpg")
         );
     }
 

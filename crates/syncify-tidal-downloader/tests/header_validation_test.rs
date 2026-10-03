@@ -1,17 +1,19 @@
 use std::io::Write;
-use syncify_tidal_downloader::{read_audio_header_bounded, validate_audio_header_magic, AUDIO_HEADER_PROBE_SIZE};
+use syncify_tidal_downloader::{
+    read_audio_header_bounded, validate_audio_header_magic, AUDIO_HEADER_PROBE_SIZE,
+};
 use tempfile::NamedTempFile;
 
 /// Composes the same two primitives the download pipeline uses inline
 /// (`read_audio_header_bounded` + `validate_audio_header_magic`) to validate
 /// an on-disk file with bounded O(1) memory inspection.
-async fn validate_file_header(
-    path: &std::path::Path,
-    ext_str: &str,
-) -> anyhow::Result<()> {
-    let (header, n) = read_audio_header_bounded(path)
-        .await
-        .map_err(|e| anyhow::anyhow!("ValidationFailed: Cannot read downloaded file header: {}", e))?;
+async fn validate_file_header(path: &std::path::Path, ext_str: &str) -> anyhow::Result<()> {
+    let (header, n) = read_audio_header_bounded(path).await.map_err(|e| {
+        anyhow::anyhow!(
+            "ValidationFailed: Cannot read downloaded file header: {}",
+            e
+        )
+    })?;
     validate_audio_header_magic(&header[..n], ext_str)
 }
 
@@ -60,9 +62,7 @@ async fn test_valid_audio_magic_headers() {
         .write_all(b"fLaC\x00\x00\x00\x22\x00\x00\x00\x00")
         .expect("Write FLAC header");
     flac_temp.flush().expect("Flush");
-    assert!(validate_file_header(flac_temp.path(), "flac")
-        .await
-        .is_ok());
+    assert!(validate_file_header(flac_temp.path(), "flac").await.is_ok());
 
     // 2. ISOBMFF FLAC container (Tidal DASH segment)
     let mut dash_temp = NamedTempFile::new().expect("Create tempfile");
@@ -70,9 +70,7 @@ async fn test_valid_audio_magic_headers() {
         .write_all(b"\x00\x00\x00\x18ftypdash\x00\x00\x00\x00")
         .expect("Write ISOBMFF header");
     dash_temp.flush().expect("Flush");
-    assert!(validate_file_header(dash_temp.path(), "flac")
-        .await
-        .is_ok());
+    assert!(validate_file_header(dash_temp.path(), "flac").await.is_ok());
 
     // 3. MP3 with ID3v2 tag
     let mut mp3_id3_temp = NamedTempFile::new().expect("Create tempfile");
@@ -100,12 +98,8 @@ async fn test_valid_audio_magic_headers() {
         .write_all(b"\x00\x00\x00\x20ftypM4A \x00\x00\x00\x00")
         .expect("Write M4A header");
     m4a_temp.flush().expect("Flush");
-    assert!(validate_file_header(m4a_temp.path(), "m4a")
-        .await
-        .is_ok());
-    assert!(validate_file_header(m4a_temp.path(), "mp4")
-        .await
-        .is_ok());
+    assert!(validate_file_header(m4a_temp.path(), "m4a").await.is_ok());
+    assert!(validate_file_header(m4a_temp.path(), "mp4").await.is_ok());
 }
 
 #[tokio::test]
