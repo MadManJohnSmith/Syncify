@@ -358,6 +358,28 @@ pub const DEFAULT_429_PENALTY: Duration = Duration::from_secs(5);
 /// cannot suspend a service for hours.
 pub const MAX_429_PENALTY: Duration = Duration::from_secs(300);
 
+/// The delay a caller should actually sleep for after a `429`, from the
+/// response's own `Retry-After` header.
+///
+/// Same parse as [`penalize_on_rate_limit`] (integer seconds or HTTP-date) and
+/// the same [`MAX_429_PENALTY`] ceiling, but with a caller-chosen fallback
+/// instead of [`DEFAULT_429_PENALTY`] — a caller that waits on this value needs
+/// its own default, and re-parsing the header raw was how a
+/// `Retry-After: 86400` could park a worker for a day.
+pub fn retry_after_delay(headers: &HeaderMap, fallback: Duration) -> Duration {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|val| {
+            crate::services::http_retry::HttpRetryPolicy::parse_retry_after_header(
+                val,
+                SystemTime::now(),
+            )
+        })
+        .unwrap_or(fallback)
+        .min(MAX_429_PENALTY)
+}
+
 /// Suspend `service` after a `429`, so every other caller of the shared limiter
 /// slows down with it — not just the request that happened to be rejected.
 ///
@@ -454,6 +476,45 @@ mod tests {
                 .await
                 .expect("a 429 always registers a penalty");
         assert_eq!(applied, MAX_429_PENALTY);
+    }
+
+    /// `retry_after_delay` is what the Spotify batch loop sleeps on, so it must
+    /// clamp exactly like `penalize_on_rate_limit` while honouring a
+    /// caller-specific fallback.
+    #[test]
+    fn test_retry_after_delay_clamps_and_uses_caller_fallback() {
+        let fallback = Duration::from_secs(30);
+
+        // No header at all -> the caller's own fallback, not DEFAULT_429_PENALTY.
+        assert_eq!(
+            retry_after_delay(&HeaderMap::new(), fallback),
+            Duration::from_secs(30)
+        );
+
+        // A usable header is honoured.
+        let mut ok = HeaderMap::new();
+        ok.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("42"),
+        );
+        assert_eq!(retry_after_delay(&ok, fallback), Duration::from_secs(42));
+
+        // A hostile header is clamped, not obeyed: this is the bug that let a
+        // `Retry-After: 86400` suspend a worker for a day.
+        let mut absurd = HeaderMap::new();
+        absurd.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("86400"),
+        );
+        assert_eq!(retry_after_delay(&absurd, fallback), MAX_429_PENALTY);
+
+        // An unparseable header also falls back, rather than defaulting to 0.
+        let mut junk = HeaderMap::new();
+        junk.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("soon"),
+        );
+        assert_eq!(retry_after_delay(&junk, fallback), Duration::from_secs(30));
     }
 
     #[tokio::test]

@@ -191,10 +191,35 @@ async function validateAndRefreshPath(path: string): Promise<PathValidationResul
 }
 
 // Load all settings from backend
-async function loadFromBackend() {
-    isLoading.value = true
-    error.value = null
+//
+// The module-level reactive state is shared by every consumer: `SettingsView`
+// calls this on mount, and so do several settings tabs, each with its own
+// hand-rolled "is it already loaded?" guard. When those mounts overlap, the
+// same IPC fan-out (`get_effective_download_preferences`,
+// `get_unified_download_settings`, `get_download_settings`, ...) ran more than
+// once for a single screen.
+//
+// Concurrent callers now share one in-flight promise instead of starting a
+// second copy. A caller that arrives *after* a load has finished still performs
+// a full re-read, so no cached snapshot is ever served and the legacy
+// KV -> unified -> default fallback chain below is untouched: it resolves older
+// configurations and was never the source of the duplication.
+let inflightLoad: Promise<void> | null = null
 
+async function loadFromBackend() {
+    if (inflightLoad) return inflightLoad
+
+    isLoading.value = true
+    const run = loadFromBackendInner().finally(() => {
+        isLoading.value = false
+        inflightLoad = null
+    })
+    inflightLoad = run
+    return run
+}
+
+async function loadFromBackendInner() {
+    error.value = null
     try {
         // Try loading canonical effective preferences first
         try {
@@ -311,8 +336,6 @@ async function loadFromBackend() {
     } catch (e) {
         console.error('Failed to load download settings:', e)
         error.value = String(e)
-    } finally {
-        isLoading.value = false
     }
 }
 
