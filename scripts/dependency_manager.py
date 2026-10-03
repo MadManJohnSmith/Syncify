@@ -42,9 +42,11 @@ def json_response(success: bool, data=None, error=None):
 
 
 # Tool download URLs (Windows x64)
+# ffmpeg se pinea a una release fechada de BtbN: "latest" es rolling y su
+# hash cambia con cada build, lo que rompería la verificación SHA-256.
 TOOL_URLS = {
     "ffmpeg": {
-        "windows": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+        "windows": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-01-13-06/ffmpeg-N-127054-g9d3f0f2c58-win64-gpl.zip",
         "darwin": "https://evermeet.cx/ffmpeg/getrelease/zip",
         "linux": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
     },
@@ -59,7 +61,7 @@ TOOL_URLS = {
 # These prevent tampered or malicious downloads from executing (SEC-008 / TASK-92)
 KNOWN_SHA256_HASHES: Dict[str, Dict[str, str]] = {
     "ffmpeg": {
-        "windows": "9734d61383b25391b90186731106dc8068763baa177c622e57dfaebdf7c21630",
+        "windows": "c1bb626bca84c6f471a04c13a90af68e406c631cf8f9ea2f1a141d4a71adcf52",
         "darwin": "8a8c9e549983409fe6604b9aa665648b7a5def9407fe814c39c8b2ea7f64a48f",
         "linux": "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67",
     },

@@ -60,6 +60,26 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # Binarios estáticos que viajan dentro del DEB/AppImage (bundle.externalBin):
+      # el usuario no instala ni configura ffmpeg/fpcalc. Builds pineadas por
+      # fecha (BtbN) y por versión (Chromaprint), con SHA-256 verificado.
+      - name: Descargar binarios externos (ffmpeg, ffprobe, fpcalc)
+        run: |
+          mkdir -p src-tauri/binaries
+          curl -sL -o /tmp/ffmpeg-linux.tar.xz \
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-01-13-06/ffmpeg-N-127054-g9d3f0f2c58-linux64-gpl.tar.xz"
+          echo "4ec801cb048f2ec81ac3b06507fda2f6b48f70c46286e89a27cd89baa041605d  /tmp/ffmpeg-linux.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/ffmpeg-linux.tar.xz -C /tmp
+          cp /tmp/ffmpeg-N-127054-g9d3f0f2c58-linux64-gpl/bin/ffmpeg  src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          cp /tmp/ffmpeg-N-127054-g9d3f0f2c58-linux64-gpl/bin/ffprobe src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+          curl -sL -o /tmp/fpcalc.tar.gz \
+            "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-linux-x86_64.tar.gz"
+          echo "4d7433a7f778e5946d7225230681cbcd634e153316ecac87c538c33ac32387a5  /tmp/fpcalc.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/fpcalc.tar.gz -C /tmp
+          cp /tmp/chromaprint-fpcalc-1.5.1-linux-x86_64/fpcalc src-tauri/binaries/fpcalc-x86_64-unknown-linux-gnu
+          chmod +x src-tauri/binaries/*
+          ls -la src-tauri/binaries/
+
       - name: Instalar dependencias de UI
         working-directory: ui
         run: npm ci
@@ -94,6 +114,12 @@ jobs:
           mkdir -p dist/linux/Syncify-Linux-Raw
           cp src-tauri/target/release/syncify-tauri dist/linux/Syncify-Linux-Raw/syncify
           chmod +x dist/linux/Syncify-Linux-Raw/syncify
+
+          # Incluir los binarios externos junto al binario crudo (resolución en runtime)
+          mkdir -p dist/linux/Syncify-Linux-Raw/bin
+          cp src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu  dist/linux/Syncify-Linux-Raw/bin/ffmpeg
+          cp src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu dist/linux/Syncify-Linux-Raw/bin/ffprobe
+          cp src-tauri/binaries/fpcalc-x86_64-unknown-linux-gnu  dist/linux/Syncify-Linux-Raw/bin/fpcalc
 
           # Copiar scripts excluyendo secretos y cachés temporales
           mkdir -p dist/linux/Syncify-Linux-Raw/scripts

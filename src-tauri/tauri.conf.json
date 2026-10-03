@@ -28,6 +28,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/ffmpeg",
+      "binaries/ffprobe",
+      "binaries/fpcalc"
+    ],
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"

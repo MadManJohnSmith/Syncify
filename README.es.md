@@ -115,14 +115,18 @@ Descarga la última build de la página de
 
 Después:
 
-1. Instala y abre Syncify.
-2. Asegúrate de tener `ffmpeg` y `fpcalc` (Chromaprint) en tu `PATH` —
-   alimentan el procesamiento de audio y el fingerprinting.
-3. Copia `.env.example` a `.env` junto a la app (o en la carpeta del proyecto
+1. Instala y abre Syncify — `ffmpeg`, `ffprobe` y `fpcalc` (Chromaprint)
+   **viajan dentro de cada paquete**: no hay nada más que descargar,
+   instalar ni configurar.
+2. Copia `.env.example` a `.env` junto a la app (o en la carpeta del proyecto
    si corres desde fuente) y llena las credenciales de los servicios que
    quieras conectar. Cada variable está documentada en el archivo.
-4. Corre el asistente de primera ejecución: conecta cuentas, elige tu carpeta
+3. Corre el asistente de primera ejecución: conecta cuentas, elige tu carpeta
    de música, listo.
+
+> ¿Compilando desde fuente? Mira
+> [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md) para saber
+> cómo se proveen los binarios empaquetados en builds locales de producción.
 
 ## Compilar desde fuente
 

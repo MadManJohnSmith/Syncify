@@ -37,18 +37,27 @@ def json_response(success: bool, data=None, error=None):
 
 def find_ffmpeg():
     """Find ffmpeg binary."""
+    # Explicit override (the app injects FFMPEG_PATH for bundled tools)
+    env_path = os.getenv("FFMPEG_PATH")
+    if env_path and Path(env_path).exists():
+        return env_path
+
+    # Bundled copy shipped next to the app
+    bundled = Path(__file__).parent.parent / "bin" / "ffmpeg.exe"
+    if bundled.exists():
+        return str(bundled)
+
     # Check common locations
     locations = [
         shutil.which("ffmpeg"),
         "C:/ffmpeg/bin/ffmpeg.exe",
         "C:/Program Files/ffmpeg/bin/ffmpeg.exe",
-        str(Path(__file__).parent.parent / "bin" / "ffmpeg.exe"),
     ]
-    
+
     for loc in locations:
         if loc and Path(loc).exists():
             return loc
-    
+
     return shutil.which("ffmpeg")
 
 

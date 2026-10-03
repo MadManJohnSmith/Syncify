@@ -484,13 +484,12 @@ impl SilenceTrimmer {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
 
     fn ffmpeg_available() -> bool {
-        Command::new("ffmpeg")
+        crate::cmd_utils::create_std_command("ffmpeg")
             .arg("-version")
             .output()
             .map(|o| o.status.success())
@@ -530,7 +529,7 @@ mod tests {
         let out = unique_name(prefix, ext);
         let _ = std::fs::remove_file(&out);
         let lead_in_ms = (lead_in_sec * 1000.0).round() as i64;
-        let status = Command::new("ffmpeg")
+        let status = crate::cmd_utils::create_std_command("ffmpeg")
             .args(["-v", "error", "-y"])
             .args([
                 "-f",
@@ -565,7 +564,7 @@ mod tests {
         // the fixture close to a real download; ffmpeg must be able to decode it).
         let png_path = unique_name("cover", "png");
         let _ = std::fs::remove_file(&png_path);
-        let png_status = Command::new("ffmpeg")
+        let png_status = crate::cmd_utils::create_std_command("ffmpeg")
             .args([
                 "-v",
                 "error",
@@ -697,7 +696,7 @@ mod tests {
         // Losslessness of the retained region: the trimmed decoded PCM must be a
         // contiguous slice of the original decoded PCM (stream copy, no re-encode).
         let decode = |p: &Path| -> Vec<u8> {
-            Command::new("ffmpeg")
+            crate::cmd_utils::create_std_command("ffmpeg")
                 .args(["-v", "error", "-i"])
                 .arg(p)
                 .args(["-f", "s16le", "-"])
