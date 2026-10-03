@@ -59,7 +59,9 @@ pub fn resolve_tool(name: &str) -> Option<PathBuf> {
     if let Some(path) = tool_env_override(name) {
         return Some(path);
     }
-    bundled_tool_candidates(name).into_iter().find(|p| p.is_file())
+    bundled_tool_candidates(name)
+        .into_iter()
+        .find(|p| p.is_file())
 }
 
 /// Resolves the program name when it is one of the external tools; anything

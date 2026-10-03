@@ -421,7 +421,10 @@ async fn test_orchestrator_credential_and_error_taxonomy() {
         message: "Token has invalid payload".to_string(),
     };
     assert!(!playback_err.is_retryable());
-    assert!(matches!(playback_err, PipelineError::PlaybackUnauthorized { .. }));
+    assert!(matches!(
+        playback_err,
+        PipelineError::PlaybackUnauthorized { .. }
+    ));
 
     let quality_err = PipelineError::RejectedQuality {
         requested: "24-192".to_string(),

@@ -530,9 +530,7 @@ async fn test_staging_lifecycle_and_zero_orphans_post_promotion() {
 
 #[tokio::test]
 async fn test_country_normalization_cli_gui_parity_and_precedence() {
-    use syncify_metadata_domain::{
-        resolve_country, CountryResolution, EnrichedMetadata,
-    };
+    use syncify_metadata_domain::{resolve_country, CountryResolution, EnrichedMetadata};
 
     // 1. ISO alpha-2
     assert_eq!(resolve_country("ES").country_code(), Some("ES"));
@@ -562,14 +560,8 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
     assert_eq!(resolve_country("Spain").country_code(), Some("ES"));
     assert_eq!(resolve_country("España").country_code(), Some("ES"));
     assert_eq!(resolve_country("Espana").country_code(), Some("ES"));
-    assert_eq!(
-        resolve_country("United States").country_code(),
-        Some("US")
-    );
-    assert_eq!(
-        resolve_country("Estados Unidos").country_code(),
-        Some("US")
-    );
+    assert_eq!(resolve_country("United States").country_code(), Some("US"));
+    assert_eq!(resolve_country("Estados Unidos").country_code(), Some("US"));
     assert_eq!(resolve_country("EE.UU.").country_code(), Some("US"));
     assert_eq!(resolve_country("EEUU").country_code(), Some("US"));
     assert_eq!(resolve_country("Germany").country_code(), Some("DE"));
@@ -583,10 +575,7 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
     assert_eq!(resolve_country("Mexico").country_code(), Some("MX"));
     assert_eq!(resolve_country("México").country_code(), Some("MX"));
     assert_eq!(resolve_country("Netherlands").country_code(), Some("NL"));
-    assert_eq!(
-        resolve_country("Países Bajos").country_code(),
-        Some("NL")
-    );
+    assert_eq!(resolve_country("Países Bajos").country_code(), Some("NL"));
     assert_eq!(resolve_country("Holanda").country_code(), Some("NL"));
     assert_eq!(resolve_country("Poland").country_code(), Some("PL"));
     assert_eq!(resolve_country("Polonia").country_code(), Some("PL"));
@@ -597,14 +586,8 @@ async fn test_country_normalization_cli_gui_parity_and_precedence() {
     // 4. Historical aliases (UK / Great Britain -> GB)
     assert_eq!(resolve_country("UK").country_code(), Some("GB"));
     assert_eq!(resolve_country("uk").country_code(), Some("GB"));
-    assert_eq!(
-        resolve_country("Great Britain").country_code(),
-        Some("GB")
-    );
-    assert_eq!(
-        resolve_country("Gran Bretaña").country_code(),
-        Some("GB")
-    );
+    assert_eq!(resolve_country("Great Britain").country_code(), Some("GB"));
+    assert_eq!(resolve_country("Gran Bretaña").country_code(), Some("GB"));
     assert_eq!(resolve_country("Reino Unido").country_code(), Some("GB"));
 
     // 5. Diacritics

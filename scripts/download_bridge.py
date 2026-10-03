@@ -33,12 +33,14 @@ SCRIPTS_DIR = Path(__file__).parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-# Load .env from project root if available
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).parent.parent / ".env")
-except ImportError:
-    pass
+# .env is loaded only in development runs (SYNCIFY_ENV=development);
+# release builds rely on the OS environment / keyring for credentials.
+if os.getenv("SYNCIFY_ENV", "").strip().lower() in ("development", "dev"):
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).parent.parent / ".env")
+    except ImportError:
+        pass
 
 from services.service_base import (
     DownloadQuality,

@@ -3202,11 +3202,7 @@ mod tests {
 
     #[test]
     fn test_backend_invalid_json_handling() {
-        let res = failed_resolution(
-            "NetEase",
-            "netease_lyrics",
-            "Failed to parse JSON response",
-        );
+        let res = failed_resolution("NetEase", "netease_lyrics", "Failed to parse JSON response");
         assert_eq!(
             res.status,
             ResolutionStatus::Failed("Failed to parse JSON response".to_string())

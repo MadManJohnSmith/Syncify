@@ -121,8 +121,7 @@ fn test_album_sidecars_presence() {
 #[test]
 fn test_flac_country_and_region_tag_separation() {
     use syncify_metadata_domain::country::{
-        plan_country_repair, resolve_country, wire_country_value,
-        CountryResolution,
+        plan_country_repair, resolve_country, wire_country_value, CountryResolution,
     };
 
     // 1. PL, US, GB, ES must be valid ISO sovereign countries
@@ -135,10 +134,7 @@ fn test_flac_country_and_region_tag_separation() {
     assert_eq!(resolve_country("Spain").country_code(), Some("ES"));
     assert_eq!(resolve_country("España").country_code(), Some("ES"));
     assert_eq!(resolve_country("UK").country_code(), Some("GB"));
-    assert_eq!(
-        resolve_country("Great Britain").country_code(),
-        Some("GB")
-    );
+    assert_eq!(resolve_country("Great Britain").country_code(), Some("GB"));
 
     // 3. XE, XW, Europe, Worldwide must resolve to Region and NEVER to Country
     assert_eq!(resolve_country("XE").country_code(), None);
