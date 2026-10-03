@@ -802,8 +802,11 @@ mod tests {
         assert_eq!(resolved, existing);
     }
 
+    // Sin #[ignore]: este round-trip es la única red que detecta un backend de
+    // keyring no persistente (con linux-native pasaba el store y fallaba el
+    // load, lo que hacía perder las credenciales en cada arranque). Si el
+    // entorno no tiene keyring, falla el test — que es lo correcto.
     #[test]
-    #[ignore = "requires OS keychain daemon (run with cargo test -- --include-ignored)"]
     fn test_keychain_roundtrip() {
         let key = generate_random_key();
         store_key_in_keychain_with_service(&key, "syncify-test", "test-key")
@@ -811,7 +814,7 @@ mod tests {
         let loaded = load_key_from_keychain_with_service("syncify-test", "test-key")
             .expect("Failed to load key from keychain");
         assert_eq!(key, loaded);
-        // Cleanup: remove test entry from OS keychain
+        // Cleanup: remove test entry from OS keyring
         let _ = keyring::Entry::new("syncify-test", "test-key").and_then(|e| e.delete_credential());
     }
 

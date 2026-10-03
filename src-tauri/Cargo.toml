@@ -35,7 +35,11 @@ dotenvy = "0.15"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 rand = "0.8"
-keyring = "3"
+# sync-secret-service (y NO linux-native): el keyring del kernel es por
+# sesión y no persiste entre arranques. Con el backend por defecto, la app
+# guardaba la clave "con éxito" y al siguiente arranque no la encontraba,
+# generaba otra y marcaba TODAS las cuentas como credenciales irrecuperables.
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 dirs = "5"
 libc = "0.2"
 hostname = "0.4"
