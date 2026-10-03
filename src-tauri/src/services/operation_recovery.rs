@@ -590,6 +590,16 @@ pub fn classify_operation_error(
         provider.to_lowercase()
     };
 
+    // Misma regla que worker::classify_session_auth_failure: un fallo de
+    // TRANSPORTE (timeout, DNS, 5xx, 429) no es un veredicto de credenciales.
+    // Sin esta guarda, un corte de red marcaba la cuenta como AuthInvalid.
+    if crate::worker::is_transport_failure(error) {
+        return ErrorTaxonomy::TemporaryNetworkFailure {
+            endpoint: format!("{} operation", provider),
+            message: error.to_string(),
+        };
+    }
+
     if error.contains("401")
         || error.contains("403")
         || error.contains("RequiresAuth")

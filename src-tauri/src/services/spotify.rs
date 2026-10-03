@@ -530,7 +530,25 @@ impl SpotifyClient {
                         }
                         Err(e) => return Err(format!("Token refresh failed: {}", e)),
                     }
+                } else {
+                    // Sin SpotifyConfig no se puede refrescar: decirlo en voz
+                    // alta en vez de devolver Ok(()) y seguir usando un token
+                    // caducado hasta que la API conteste 401 (que sí marca la
+                    // cuenta como inválida y obliga a re-loguear).
+                    tracing::warn!(
+                        "Spotify: token expired and no SpotifyConfig available to refresh it"
+                    );
+                    return Err(
+                        "Token expired and no refresh configuration available (SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET)".to_string(),
+                    );
                 }
+            } else {
+                // Token caducado sin refresh_token: el cliente no puede
+                // recuperarlo solo. Antes devolvía Ok(()) y el 401 posterior
+                // invalidaba la cuenta; ahora el fallo es explícito y el
+                // clasificador lo distingue de un rechazo real del proveedor.
+                tracing::warn!("Spotify: token expired and no refresh_token stored");
+                return Err("Token expired and no refresh_token is stored".to_string());
             }
         }
         Ok(())
