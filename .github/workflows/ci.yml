@@ -1,13 +1,13 @@
 name: CI
-true:
+'on':
   push:
     branches:
     - main
     paths-ignore:
     - '**.md'
     - docs/**
-  pull_request: null
-  workflow_dispatch: null
+  pull_request:
+  workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -25,7 +25,14 @@ jobs:
     - id: filter
       uses: dorny/paths-filter@v3
       with:
-        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\nfrontend:\n  - 'ui/**'\npython:\n  - 'scripts/**'\n"
+        filters: |
+          rust:
+            - 'src-tauri/**'
+            - 'crates/**'
+          frontend:
+            - 'ui/**'
+          python:
+            - 'scripts/**'
   rust:
     name: Rust (src-tauri · check · test · clippy · fmt)
     needs: changed
