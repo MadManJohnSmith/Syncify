@@ -26,8 +26,7 @@ jobs:
     with:
       release_tag: ${{ inputs.release_tag }}
       create_release: ${{ inputs.create_release }}
-    # El reusable workflow necesita el token para consultar la API de Actions;
-    # hay que pasarselo aunque lo use por github.token.
+    # El reusable workflow necesita el token para consultar la API de Actions.
     secrets: inherit
 
   build-linux:
