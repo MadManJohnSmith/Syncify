@@ -18,18 +18,86 @@ permissions:
   contents: write
 
 jobs:
-  # No se compila ni se publica nada hasta que la puerta confirme que el
-  # commit tiene CI verde y que el tag no se esta moviendo.
+  # No se compila ni se publica nada hasta confirmar que este commit tiene
+  # CI verde y que el tag no se esta moviendo.
+  #
+  # Es un job normal, no un reusable workflow (`uses:`). Invocar un reusable
+  # desde un workflow_dispatch no arranca: el run moria en startup_failure
+  # antes del primer paso. Se comprobó que no era el contenido de la puerta,
+  # sustituyéndola por un reusable minimo de un solo `run: echo ok` y viendo
+  # que el fallo se repetia. La logica vive aqui y tambien, por separado, en
+  # release-gate.yml, que se puede lanzar sola para comprobar la puerta sin
+  # gastar 90 minutos de runner.
   gate:
     name: Verificar CI verde y tag publicable
-    uses: ./.github/workflows/release-gate.yml
-    with:
-      release_tag: ${{ inputs.release_tag }}
-      create_release: ${{ inputs.create_release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validar el formato del tag
+        if: ${{ inputs.create_release }}
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::El tag '$TAG' no tiene la forma vX.Y.Z. No se publica nada."
+            exit 1
+          fi
+          echo "Formato del tag correcto: $TAG"
+
+      - name: Exigir CI verde para el SHA exacto de esta corrida
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "Verificando CI para el commit $SHA"
+          # Solo corridas completadas: una aun en curso no cuenta como verde.
+          runs=$(gh run list --repo "$REPO" --workflow ci.yml --commit "$SHA" \
+            --status completed --json conclusion --jq '.[].conclusion')
+          if [[ -z "$runs" ]]; then
+            echo "::error::No hay ninguna corrida de CI completada para $SHA."
+            echo "::error::Lanzala bajo demanda antes de publicar."
+            exit 1
+          fi
+          if ! grep -qx "success" <<< "$runs"; then
+            echo "::error::La CI de $SHA no esta en verde. Se obtuvo:"
+            echo "$runs"
+            exit 1
+          fi
+          echo "CI en verde para $SHA"
+
+      - name: Impedir crear o mover un tag ya publicado
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          remote_sha=$(git ls-remote --tags "https://github.com/$REPO" "refs/tags/$TAG" \
+            | awk '{print $1}' || true)
+          if [[ -z "$remote_sha" ]]; then
+            echo "El tag $TAG no existe todavia. Se creara apuntando a $SHA."
+            exit 0
+          fi
+          # Para tags anotados hay una segunda linea refs/tags/TAG^{}.
+          peeled=$(git ls-remote --tags "https://github.com/$REPO" "refs/tags/$TAG^{}" \
+            | awk '{print $1}' || true)
+          resolved="${peeled:-$remote_sha}"
+          if [[ "$resolved" != "$SHA" ]]; then
+            echo "::error::El tag $TAG ya existe y apunta a $resolved, no a $SHA."
+            echo "::error::No se mueve un tag existente. Publica una version nueva."
+            exit 1
+          fi
+          echo "El tag $TAG ya existe y apunta al mismo commit $SHA."
 
   build-linux:
-    name: Compilar Syncify para Linux
     needs: gate
+    name: Compilar Syncify para Linux
     runs-on: ubuntu-22.04
     timeout-minutes: 90
 
@@ -154,36 +222,51 @@ jobs:
           PLUGDIR="$WORK/squashfs-root/usr/lib/gstreamer-1.0"
           mkdir -p "$PLUGDIR"
 
-          # La lista de plugins sale de gst-inspect, no de una constante
-          # escrita a mano. Mantenerla a mano era lo que dejaba el AppImage sin
-          # sinks: los nombres se quedaron obsoletos y ningun paso avisaba.
-          # Se pregunta al registro: se copia lo que de verdad esta disponible.
+          # Cada libreria se copia segun la ruta que dice gst-inspect, no
+          # segun un nombre supuesto. Este paso fallo tres veces seguidas por
+          # hardcodear nombres de fichero que no existen:
+          # libgstautoaudiosink.so, libgstautovideosink.so y
+          # libgstautosink.so. autoaudiosink y autovideosink son ELEMENTOS, y
+          # gst-inspect dice que libreria aporta cada uno.
           gst-inspect-1.0 > "$WORK/gst-elements.txt"
+          : > "$WORK/libs.txt"
 
-          # Elementos imprescindibles para reproducir audio y video. Si alguno
-          # no esta en el registro, el AppImage se publicaria roto.
+          # Elementos imprescindibles para reproducir audio y video. Esta
+          # lista si es una decision de producto: es lo que la app necesita.
+          #
+          # gst-inspect lista como "plugin:  elemento: descripcion", asi que el
+          # elemento NO va al principio de la linea. Con "^$el:" no coincidia
+          # nunca y el paso rechazaba un AppImage con los sinks correctos.
           REQUIRED="autoaudiosink autovideosink playbin decodebin audioconvert
                      audioresample videoconvert typefindfunctions"
           for el in $REQUIRED; do
-            if ! grep -qE "^$el: " "$WORK/gst-elements.txt"; then
+            if ! grep -qE "(^|[[:space:]])$el:" "$WORK/gst-elements.txt"; then
               echo "::error::elemento obligatorio ausente del registro: $el"
               exit 1
             fi
+            # La ruta real de la libreria que aporta ese elemento.
+            # gst-inspect separa "Filename" del valor con espacios y SIN dos
+            # puntos, asi que un sed que busque "Filename:" no extrae nada.
+            # Lo que funciona es tomar, en esa linea, el primer token que
+            # empieza por "/".
+            lib=$(gst-inspect-1.0 "$el" 2>/dev/null | awk '/^[[:space:]]*Filename/ {for(i=1;i<=NF;i++) if($i ~ /^\//) {print $i; exit}}')
+            if [ -z "$lib" ] || [ ! -f "$lib" ]; then
+              echo "::error::gst-inspect no dio una ruta existente para $el"
+              exit 1
+            fi
+            echo "$lib" >> "$WORK/libs.txt"
           done
 
-          # Se copia cada libreria que aporta al menos uno de los elementos
-          # anteriores, dedupe por ruta real de la libreria.
-          for el in $REQUIRED; do
-            lib=$(gst-inspect-1.0 "$el" 2>/dev/null | sed -n 's/^ *Filename *: *//p' | head -1)
-            [ -n "$lib" ] && [ -f "$lib" ] && cp -a "$lib" "$PLUGDIR/"
-          done
-
-          # Auto, ALSA, PulseAudio y PipeWire: el sink automatico elige entre
-          # ellos en runtime segun lo que tenga la maquina del usuario.
-          for lib in $(find /usr/lib /lib -name 'libgstauto*.so' \
-                          -o -name 'libgstalsa.so' \
+          # Los sinks entre los que el automatico elige en runtime segun la
+          # maquina del usuario: ALSA, PulseAudio, PipeWire y JACK.
+          for lib in $(find /usr/lib /lib -name 'libgstalsa.so' \
                           -o -name 'libgstpulseaudio.so' \
-                          -o -name 'libgstpipewire.so' 2>/dev/null | sort -u); do
+                          -o -name 'libgstpipewire.so' \
+                          -o -name 'libgstjack.so' 2>/dev/null | sort -u); do
+            echo "$lib" >> "$WORK/libs.txt"
+          done
+
+          sort -u "$WORK/libs.txt" | while read -r lib; do
             cp -a "$lib" "$PLUGDIR/"
           done
 
@@ -191,11 +274,16 @@ jobs:
           ls -1 "$PLUGDIR"
 
           # Sin sink de audio el AppImage arranca pero no suena. Publicar un
-          # paquete roto es peor que fallar la build.
-          if [ ! -f "$PLUGDIR/libgstautosink.so" ]; then
-            echo "::error::no se copio libgstautosink.so (autoaudiosink/autovideosink)"
-            exit 1
-          fi
+          # paquete roto es peor que fallar la build. Se comprueba por
+          # capacidad: PREGUNTANDO cual es la libreria de cada sink, no
+          # comparando con un nombre supuesto.
+          for el in autoaudiosink autovideosink; do
+            lib=$(gst-inspect-1.0 "$el" 2>/dev/null | awk '/^[[:space:]]*Filename/ {for(i=1;i<=NF;i++) if($i ~ /^\//) {print $i; exit}}')
+            if [ ! -f "$PLUGDIR/$(basename "$lib")" ]; then
+              echo "::error::la libreria de $el no llego al AppImage"
+              exit 1
+            fi
+          done
 
           # Reempaquetar con appimagetool (conserva el AppRun y los hooks).
           curl -sL -o "$WORK/appimagetool" \
