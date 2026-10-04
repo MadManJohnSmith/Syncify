@@ -26,8 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # upload-pages-artifact sirve su contenido en la raíz del sitio; copiar
+      # con la estructura del repo para que las URLs mantengan /docs/diagrams/
+      # (así las enlazan las README).
+      - run: mkdir -p site/docs && cp -r docs/diagrams site/docs/diagrams
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/diagrams
+          path: site
       - id: deployment
         uses: actions/deploy-pages@v4
