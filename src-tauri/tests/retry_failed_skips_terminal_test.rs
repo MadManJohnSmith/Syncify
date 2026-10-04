@@ -86,9 +86,9 @@ fn the_retry_budget_is_bounded() {
     );
 
     // Y el comando que usa la UI debe delegar en ese camino, no hacer su propio
-// UPDATE. Se busca solo el UPDATE de reencolado, ignorando los comentarios
-// (// y ///), que describen el SQL viejo como referencia. El fichero tiene
-// además un DELETE legitimo para "borrar fallidos", que es otra cosa.
+    // UPDATE. Se busca solo el UPDATE de reencolado, ignorando los comentarios
+    // (// y ///), que describen el SQL viejo como referencia. El fichero tiene
+    // además un DELETE legitimo para "borrar fallidos", que es otra cosa.
     let comando_ui = include_str!("../src/commands/download.rs");
     let reencola_sin_clasificar = comando_ui
         .lines()
