@@ -10,7 +10,13 @@
 name: CI
 
 on:
+  # Cada push a una rama de trabajo lanzaba un CI, y ademas el que dispara el
+  # pull_request: dos corridas identicas para el mismo commit. El PR ya cubre
+  # la rama de trabajo, asi que aqui solo se ejecuta en main, donde no hay PR
+  # que lo dispare y la proteccion exige los checks sobre el commit exacto.
   push:
+    branches:
+      - main
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -59,14 +65,20 @@ jobs:
   rust:
     name: Rust (src-tauri · check · test · clippy · fmt)
     needs: changed
-    if: needs.changed.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     defaults:
       run:
         working-directory: src-tauri
     steps:
+      - name: Area sin cambios
+        if: needs.changed.outputs.rust != 'true'
+        run: |
+          echo "Sin cambios en src-tauri/ ni crates/: no hay nada que probar."
+          echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
+
       - name: Checkout del repositorio
+        if: needs.changed.outputs.rust == 'true'
         uses: actions/checkout@v4
 
       - name: Instalar dependencias nativas de Tauri (GTK y WebKit2GTK)
@@ -148,7 +160,6 @@ jobs:
 
   frontend:
     needs: changed
-    if: needs.changed.outputs.frontend == 'true'
     name: Frontend (ui · vue-tsc · vitest)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -156,7 +167,14 @@ jobs:
       run:
         working-directory: ui
     steps:
+      - name: Area sin cambios
+        if: needs.changed.outputs.frontend != 'true'
+        run: |
+          echo "Sin cambios en ui/: no hay nada que probar."
+          echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
+
       - name: Checkout del repositorio
+        if: needs.changed.outputs.frontend == 'true'
         uses: actions/checkout@v4
 
       - name: Configurar Node.js 20 con cache npm
@@ -177,12 +195,18 @@ jobs:
 
   python:
     needs: changed
-    if: needs.changed.outputs.python == 'true'
     name: Python (bridges · tests unitarios)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Area sin cambios
+        if: needs.changed.outputs.python != 'true'
+        run: |
+          echo "Sin cambios en scripts/: no hay nada que probar."
+          echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
+
       - name: Checkout del repositorio
+        if: needs.changed.outputs.python == 'true'
         uses: actions/checkout@v4
 
       - name: Configurar Python
