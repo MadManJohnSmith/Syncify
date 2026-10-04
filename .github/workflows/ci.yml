@@ -6,8 +6,8 @@ name: CI
     paths-ignore:
     - '**.md'
     - docs/**
-  pull_request:
-  workflow_dispatch:
+  pull_request: null
+  workflow_dispatch: null
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -21,37 +21,25 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend || steps.fallback.outputs.FRONTEND }}
       python: ${{ steps.filter.outputs.python || steps.fallback.outputs.PYTHON }}
     steps:
-      - uses: actions/checkout@v4
-      - id: filter
-        uses: dorny/paths-filter@v3
-        with:
-          # En una rama nueva, o tras reescribir la historia, paths-filter no
-          # tiene base con la que comparar: se queda sin salida. El paso de
-          # abajo lo cubre, porque un pipeline que no comprueba nada y sale
-          # en verde es peor que uno lento.
-          base: ${{ github.event.pull_request.base.sha || github.event.before }}
-          ref: ${{ github.sha }}
-          filters: |
-            rust:
-              - 'src-tauri/**'
-              - 'crates/**'
-            frontend:
-              - 'ui/**'
-            python:
-              - 'scripts/**'
-      # Si el filtro no produjo ninguna salida, se ejecutan todas las areas:
-      # probar de mas, nunca de menos.
-      - id: fallback
-        name: Sin areas detectadas, probarlas todas
-        if: >-
-          ${{ steps.filter.outputs.rust != 'true' &&
-               steps.filter.outputs.frontend != 'true' &&
-               steps.filter.outputs.python != 'true' }}
-        run: |
-          echo "::notice::El filtro de rutas no detecto areas; se ejecutan todas."
-          echo "RUST=true" >> "$GITHUB_OUTPUT"
-          echo "FRONTEND=true" >> "$GITHUB_OUTPUT"
-          echo "PYTHON=true" >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@v4
+    - id: filter
+      uses: dorny/paths-filter@v3
+      with:
+        base: ${{ github.event.pull_request.base.sha || github.event.before }}
+        ref: ${{ github.sha }}
+        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\nfrontend:\n  - 'ui/**'\npython:\n  - 'scripts/**'\n"
+    - id: fallback
+      name: Sin areas detectadas, probarlas todas
+      if: "${{ steps.filter.outputs.rust != 'true' &&\n     steps.filter.outputs.frontend != 'true' &&\n     steps.filter.outputs.python != 'true' }}"
+      run: 'echo "::notice::El filtro de rutas no detecto areas; se ejecutan todas."
+
+        echo "RUST=true" >> "$GITHUB_OUTPUT"
+
+        echo "FRONTEND=true" >> "$GITHUB_OUTPUT"
+
+        echo "PYTHON=true" >> "$GITHUB_OUTPUT"
+
+        '
   rust:
     name: Rust (src-tauri · check · test · clippy · fmt)
     needs: changed
@@ -73,46 +61,54 @@ jobs:
       if: needs.changed.outputs.rust == 'true'
       uses: actions/checkout@v4
     - name: Instalar dependencias nativas de Tauri (GTK y WebKit2GTK)
-      run: "sudo apt-get update\nsudo apt-get install -y \\\n  ffmpeg \\\n  flac \\\n  libwebkit2gtk-4.1-dev\
-        \ \\\n  libgtk-3-dev \\\n  libayatana-appindicator3-dev \\\n  librsvg2-dev\n"
+      run: "sudo apt-get update\nsudo apt-get install -y \\\n  ffmpeg \\\n  flac \\\n  libwebkit2gtk-4.1-dev \\\n  libgtk-3-dev \\\n  libayatana-appindicator3-dev \\\n  librsvg2-dev\n"
+      if: needs.changed.outputs.rust == 'true'
     - name: Comprobar ejecutable FLAC requerido por tests
       run: flac --version
+      if: needs.changed.outputs.rust == 'true'
     - name: Comprobar capacidad FFmpeg para WebP animado
       shell: bash
-      run: "ffmpeg -version\nffmpeg -hide_banner -decoders | grep -E 'webp(_anim)?' || true\nif ffmpeg\
-        \ -hide_banner -loglevel error \\\n  -i tests/fixtures/animated-cover.webp -f null -; then\n \
-        \ echo \"SYNCIFY_ANIMATED_WEBP_E2E=1\" >> \"$GITHUB_ENV\"\n  echo \"FFmpeg decodifica el fixture\
-        \ WebP animado; se ejecutará el E2E real.\"\nelse\n  echo \"SYNCIFY_ANIMATED_WEBP_E2E=0\" >> \"\
-        $GITHUB_ENV\"\n  echo \"::warning::FFmpeg del runner no decodifica WebP animado; el E2E real se\
-        \ omite explícitamente.\"\nfi\n"
+      run: "ffmpeg -version\nffmpeg -hide_banner -decoders | grep -E 'webp(_anim)?' || true\nif ffmpeg -hide_banner -loglevel error \\\n  -i tests/fixtures/animated-cover.webp -f null -; then\n  echo \"\
+        SYNCIFY_ANIMATED_WEBP_E2E=1\" >> \"$GITHUB_ENV\"\n  echo \"FFmpeg decodifica el fixture WebP animado; se ejecutará el E2E real.\"\nelse\n  echo \"SYNCIFY_ANIMATED_WEBP_E2E=0\" >> \"$GITHUB_ENV\"\
+        \n  echo \"::warning::FFmpeg del runner no decodifica WebP animado; el E2E real se omite explícitamente.\"\nfi\n"
+      if: needs.changed.outputs.rust == 'true'
     - name: Instalar toolchain Rust estable (con clippy y rustfmt)
       uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy, rustfmt
+      if: needs.changed.outputs.rust == 'true'
     - name: Cache de artefactos cargo (workspace src-tauri)
       uses: Swatinem/rust-cache@v2
       with:
         workspaces: src-tauri
+      if: needs.changed.outputs.rust == 'true'
     - name: Configurar Node.js 20 con cache npm
       uses: actions/setup-node@v4
       with:
         node-version: 20
         cache: npm
         cache-dependency-path: ui/package-lock.json
+      if: needs.changed.outputs.rust == 'true'
     - name: Construir frontend requerido por Tauri
       working-directory: ui
       run: npm ci && npm run build
+      if: needs.changed.outputs.rust == 'true'
     - name: cargo check --all-targets --locked
       run: cargo check --all-targets --locked
+      if: needs.changed.outputs.rust == 'true'
     - name: Suite de tests completa
       run: cargo test --locked
+      if: needs.changed.outputs.rust == 'true'
     - name: batch_50_audit_test serializado (--test-threads=1)
       timeout-minutes: 10
       run: cargo test --locked --test batch_50_audit_test -- --test-threads=1
+      if: needs.changed.outputs.rust == 'true'
     - name: cargo clippy estricto
       run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      if: needs.changed.outputs.rust == 'true'
     - name: cargo fmt --all -- --check
       run: cargo fmt --all -- --check
+      if: needs.changed.outputs.rust == 'true'
   frontend:
     needs: changed
     name: Frontend (ui · vue-tsc · vitest)
@@ -139,12 +135,16 @@ jobs:
         node-version: 20
         cache: npm
         cache-dependency-path: ui/package-lock.json
+      if: needs.changed.outputs.frontend == 'true'
     - name: Instalar dependencias (npm ci, reproducible desde package-lock.json)
       run: npm ci
+      if: needs.changed.outputs.frontend == 'true'
     - name: Chequeo de tipos Vue/TS (vue-tsc --noEmit)
       run: npx vue-tsc --noEmit
+      if: needs.changed.outputs.frontend == 'true'
     - name: Tests unitarios (vitest run, modo CI)
       run: npm run test:run
+      if: needs.changed.outputs.frontend == 'true'
   python:
     needs: changed
     name: Python (bridges · tests unitarios)
