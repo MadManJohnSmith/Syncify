@@ -44,6 +44,7 @@ jobs:
     steps:
     - name: Area sin cambios
       if: needs.changed.outputs.rust != 'true'
+      working-directory: .
       run: 'echo "Sin cambios en src-tauri/ ni crates/: no hay nada que probar."
 
         echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
@@ -104,6 +105,7 @@ jobs:
     steps:
     - name: Area sin cambios
       if: needs.changed.outputs.frontend != 'true'
+      working-directory: .
       run: 'echo "Sin cambios en ui/: no hay nada que probar."
 
         echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
@@ -132,6 +134,7 @@ jobs:
     steps:
     - name: Area sin cambios
       if: needs.changed.outputs.python != 'true'
+      working-directory: .
       run: 'echo "Sin cambios en scripts/: no hay nada que probar."
 
         echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
