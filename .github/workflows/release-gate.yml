@@ -33,6 +33,12 @@ on:
         required: false
         type: boolean
         default: false
+    # Un reusable workflow NO hereda `secrets.GITHUB_TOKEN` sin declararlo:
+    # la referencia queda vacia y el workflow es invalido (startup_failure).
+    # `gh run list` y `git ls-remote` de este paso necesitan leer la API.
+    secrets:
+      GITHUB_TOKEN:
+        required: true
 
 permissions:
   actions: read
@@ -60,7 +66,7 @@ jobs:
       - name: Exigir CI verde para el SHA exacto de esta corrida
         if: ${{ inputs.create_release }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
         run: |
@@ -96,7 +102,7 @@ jobs:
       - name: Impedir crear o mover un tag ya publicado
         if: ${{ inputs.create_release }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag }}
           SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
