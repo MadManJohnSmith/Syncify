@@ -189,10 +189,20 @@ fn test_legacy_syncify_cli_archived_and_neutralized() {
             }
             if let Ok(content) = std::fs::read_to_string(&file) {
                 scanned += 1;
-                // The Qobuz app secret is the credential that must never be embedded; the public
-                // app id is audited separately by qobuz_credentials_leak_test.
-                if content.contains("abb21364")
-                    || content.contains("abb21364945c0583309667d13ca3d93a")
+                // El secret del bundle de Qobuz es PÚBLICO (2026-10-04): vive
+                // como valor por defecto en sus dos hogares canónicos
+                // (src-tauri/src/services/qobuz.rs y
+                // scripts/services/qobuz_service.py). Fuera de ellos es una
+                // duplicación innecesaria y se marca; el app_id lo audita
+                // qobuz_credentials_leak_test.
+                let relative = file.strip_prefix(&repo_root).unwrap_or(&file);
+                let canonical_secret_home = matches!(
+                    relative.to_string_lossy().as_ref(),
+                    "src-tauri/src/services/qobuz.rs" | "scripts/services/qobuz_service.py"
+                );
+                if !canonical_secret_home
+                    && (content.contains("abb21364")
+                        || content.contains("abb21364945c0583309667d13ca3d93a"))
                 {
                     violations.push(file.display().to_string());
                 }

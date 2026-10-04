@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Offline proof that Qobuz requests are signed with the operator's secret.
+"""Offline proof of the Qobuz request-signing contract.
 
-SYNC-AUD-062: `QobuzService` signed every `track/getFileUrl` request with the
-class constant `APP_SECRET = ""`, and the app secret supplied by the operator
-(`ServiceCredentials.app_secret` / `client_secret` / `extra["app_secret"]`, fed
-by `QOBUZ_APP_SECRET` in `download_bridge.get_qobuz_service`) was accepted and
-then discarded. The audit could not confirm the failure against the live Qobuz
-API, so this module proves the contract hermetically: the secret reaches the
-signature, an empty secret is refused before any request, and the digest is
-byte-identical to the Rust core algorithm. No network access is required.
+Revisado 2026-10-04: el secreto por defecto es el bundle PÚBLICO de la API de
+Qobuz (el mismo par app_id/secret de los clientes open-source; no es un secreto
+personal). Las credenciales del operador (`ServiceCredentials.app_secret` /
+`client_secret` / `extra["app_secret"]`, alimentadas por `QOBUZ_APP_SECRET` en
+`download_bridge.get_qobuz_service`) tienen prioridad sobre él. El contrato que
+este módulo prueba herméticamente: el secreto elegido llega a la firma, un
+secreto VACÍO se rechaza antes de enviar nada (rama de guardia), y el digest es
+byte-idéntico al algoritmo del núcleo Rust. No se requiere red.
+
+El literal del bundle no se repite aquí: `qobuz_credentials_leak_test` escanea
+scripts/ y este fichero no es un hogar canónico; se lee en runtime.
 """
 
 import hashlib
@@ -151,19 +154,43 @@ class QobuzSigningSecretTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(_service().APP_ID, "env-app-id")
         self.assertEqual(_service().APP_ID, QobuzService.APP_ID)
 
-    async def test_no_secret_refuses_to_sign_and_sends_nothing(self):
-        """An unconfigured secret is a hard stop, not a silently invalid signature."""
+    async def test_default_secret_is_the_public_bundle_and_it_signs(self):
+        """Sin credenciales del operador se firma con el bundle público."""
         service = _service()
-        session = RecordingSession({"url": "https://example.invalid/track.flac"})
+        session = RecordingSession({"url": "https://example.invalid/track.flac", "format_id": 6})
         service.session = session
 
-        self.assertFalse(service.has_signing_secret())
-        with self.assertRaises(QobuzSigningSecretMissing):
-            service._sign_file_url_request(VECTOR_FORMAT_ID, VECTOR_TRACK_ID, VECTOR_TIMESTAMP)
+        self.assertTrue(service.has_signing_secret())
+        with patch("services.qobuz_service.time.time", return_value=VECTOR_TIMESTAMP):
+            url = await service._get_download_url(VECTOR_TRACK_ID, 6)
 
-        url = await service._get_download_url(VECTOR_TRACK_ID, 6)
-        self.assertIsNone(url)
-        self.assertEqual(session.calls, [], "no request may be sent without a secret")
+        self.assertEqual(url, "https://example.invalid/track.flac")
+        expected = hashlib.md5(
+            (
+                f"trackgetFileUrlformat_id{VECTOR_FORMAT_ID}intentstream"
+                f"track_id{VECTOR_TRACK_ID}{VECTOR_TIMESTAMP}{QobuzService.APP_SECRET}"
+            ).encode()
+        ).hexdigest()
+        self.assertEqual(session.sent_params["request_sig"], expected)
+
+    async def test_empty_secret_refuses_to_sign_and_sends_nothing(self):
+        """Un secreto VACÍO es un tope duro, no una firma silenciosamente inválida.
+
+        El estado ya no es alcanzable por defecto (el bundle público existe),
+        así que la rama de guardia se ejerce forzando el atributo de clase.
+        """
+        with patch.object(QobuzService, "APP_SECRET", ""):
+            service = _service()
+            session = RecordingSession({"url": "https://example.invalid/track.flac"})
+            service.session = session
+
+            self.assertFalse(service.has_signing_secret())
+            with self.assertRaises(QobuzSigningSecretMissing):
+                service._sign_file_url_request(VECTOR_FORMAT_ID, VECTOR_TRACK_ID, VECTOR_TIMESTAMP)
+
+            url = await service._get_download_url(VECTOR_TRACK_ID, 6)
+            self.assertIsNone(url)
+            self.assertEqual(session.calls, [], "no request may be sent without a secret")
 
     async def test_signature_matches_the_pinned_rust_algorithm_vector(self):
         """Same concatenation and digest as download/qobuz.rs::build_request_signature.
@@ -178,9 +205,16 @@ class QobuzSigningSecretTests(unittest.IsolatedAsyncioTestCase):
             VECTOR_SIGNATURE,
         )
 
-    async def test_placeholder_secret_stays_empty_in_source(self):
-        """No signing secret is committed: the class default is an empty placeholder."""
-        self.assertEqual(QobuzService.APP_SECRET.strip(), "")
+    async def test_committed_default_is_a_real_public_secret(self):
+        """El valor por defecto es el bundle público: 32 hex, no un placeholder vacío.
+
+        El literal exacto lo congela el suite Rust (`secrets_isolation_security_test.rs`);
+        aquí se comprueba la forma y que la resolución sin credenciales ni env lo usa.
+        """
+        committed = QobuzService.APP_SECRET.strip()
+        self.assertEqual(len(committed), 32)
+        self.assertTrue(all(c in "0123456789abcdef" for c in committed))
+        self.assertEqual(_service().APP_SECRET, committed)
 
 
 class QobuzDownloadFailureDiagnosisTests(unittest.IsolatedAsyncioTestCase):
@@ -209,17 +243,18 @@ class QobuzDownloadFailureDiagnosisTests(unittest.IsolatedAsyncioTestCase):
                 )
 
     async def test_missing_secret_is_named_and_the_tier_is_not_blamed(self):
-        service = _service()
-        session = RecordingSession({"url": "https://example.invalid/track.flac"})
-        service.session = session
+        with patch.object(QobuzService, "APP_SECRET", ""):
+            service = _service()
+            session = RecordingSession({"url": "https://example.invalid/track.flac"})
+            service.session = session
 
-        result = await self._download(service)
+            result = await self._download(service)
 
-        self.assertFalse(result.success)
-        self.assertIn("QOBUZ_APP_SECRET", result.error_message or "")
-        self.assertIn("app secret", (result.error_message or "").lower())
-        self.assertNotIn("check subscription tier", result.error_message or "")
-        self.assertEqual(session.calls, [], "no request may be sent without a secret")
+            self.assertFalse(result.success)
+            self.assertIn("QOBUZ_APP_SECRET", result.error_message or "")
+            self.assertIn("app secret", (result.error_message or "").lower())
+            self.assertNotIn("check subscription tier", result.error_message or "")
+            self.assertEqual(session.calls, [], "no request may be sent without a secret")
 
     async def test_200_without_url_keeps_the_tier_as_the_stated_cause(self):
         service = _service(app_secret="operator-secret")

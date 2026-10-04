@@ -551,11 +551,16 @@ class TestDownloadBridgeContract(unittest.TestCase):
                     loop.run_until_complete(download_bridge.get_deezer_service())
                 self.assertIn("DEEZER_ARL", str(ctx.exception))
 
-            # Deezer must also fail closed when its decryption key is absent.
-            with patch.dict("os.environ", {"DEEZER_ARL": "test-arl"}, clear=True):
-                with self.assertRaises(ValueError) as ctx:
-                    loop.run_until_complete(download_bridge.get_deezer_service())
-                self.assertIn("DEEZER_BLOWFISH_KEY", str(ctx.exception))
+            # Deezer: la clave Blowfish PÚBLICA es el valor por defecto del
+            # servicio (offline, sin autenticar); la env DEEZER_BLOWFISH_KEY
+            # existe solo como override para una clave propia. El ARL es lo
+            # único personal que get_deezer_service exige.
+            from services.deezer_service import DeezerService
+
+            with patch.dict("os.environ", {}, clear=True):
+                self.assertEqual(DeezerService.resolve_blowfish_key(), b"g4el58wc0zvf9na1")
+            with patch.dict("os.environ", {"DEEZER_BLOWFISH_KEY": "0123456789abcdef"}):
+                self.assertEqual(DeezerService.resolve_blowfish_key(), b"0123456789abcdef")
         finally:
             loop.close()
 

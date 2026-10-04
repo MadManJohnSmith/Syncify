@@ -236,20 +236,24 @@ async def download_tidal(track_id: str, output_path: str, quality: str) -> Downl
 
 
 async def get_deezer_service() -> Any:
-    """Initialize and authenticate Deezer service."""
+    """Initialize and authenticate Deezer service.
+
+    El ARL es la cookie PERSONAL de la sesión; la clave Blowfish es PÚBLICA y
+    DeezerService ya cae a ella por defecto (DEEZER_BLOWFISH_KEY solo sobrescribe).
+    """
     arl = os.getenv("DEEZER_ARL", "")
     if not arl:
         raise ValueError("DEEZER_ARL environment variable is required")
-    blowfish_key = os.getenv("DEEZER_BLOWFISH_KEY", "")
-    if not blowfish_key:
-        raise ValueError("DEEZER_BLOWFISH_KEY environment variable is required")
 
     from services.deezer_service import DeezerService
 
+    extra = {"arl": arl}
+    if os.getenv("DEEZER_BLOWFISH_KEY"):
+        extra["blowfish_key"] = os.environ["DEEZER_BLOWFISH_KEY"]
     creds = ServiceCredentials(
         service_type=ServiceType.DEEZER,
         token=arl,
-        extra={"arl": arl, "blowfish_key": blowfish_key},
+        extra=extra,
     )
     service = DeezerService(creds, verbose=False)
     authenticated = await service.authenticate()

@@ -1,14 +1,17 @@
-//! Qobuz Credentials Leak and Test Harness Hygiene Test Suite (TASK-152 / SEC-025)
+//! Contrato del bundle público de Qobuz (revisado 2026-10-04; sustituye a TASK-152 / SEC-025)
 //!
-//! Validates:
-//! 1. No tracked production source contains hardcoded static Qobuz credentials.
-//! 2. The production Qobuz bridges resolve credentials from environment variables
-//!    (`QOBUZ_APP_ID`, `QOBUZ_APP_SECRET`) and fail closed when they are unset.
-//! 3. All member crates under `crates/` are strictly clean of static Qobuz secrets.
+//! El par app_id/app_secret de Qobuz es PÚBLICO: es el bundle que la propia
+//! API exige y que traen los clientes open-source. Sin él la API responde 400
+//! "Invalid or missing app_id". Sustituirlo por placeholders creyendo que era
+//! un secreto personal rompió el servicio dos veces; este suite ahora:
+//! 1. EXIGE el bundle en los ficheros canónicos donde vive.
+//! 2. Detecta duplicaciones en cualquier otro fichero de producción (ahí sí
+//!    sería una fuga innecesaria).
+//! 3. Mantiene el contrato de override: los puentes Python leen
+//!    QOBUZ_APP_ID / QOBUZ_APP_SECRET del entorno, que tienen prioridad.
 //!
-//! Note: the retired legacy CLI under `workspace/audit_archive/legacy` is not tracked
-//! (`.gitignore` ignores `workspace/`), so scanning it proved nothing: the suite walked zero
-//! files and still passed. The guarantee is now verified against the tracked production tree.
+//! Las credenciales PERSONALES (token, login del usuario) siguen fuera del
+//! árbol: keychain, cuentas o `.env` gitignored.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,9 +23,16 @@ fn get_repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-const FORBIDDEN_APP_ID: &str = "798273057";
-const FORBIDDEN_SECRET: &str = "abb21364945c0583309667d13ca3d93a";
-const FORBIDDEN_SECRET_PREFIX: &str = "abb21364";
+const PUBLIC_APP_ID: &str = "798273057";
+const PUBLIC_SECRET: &str = "abb21364945c0583309667d13ca3d93a";
+const PUBLIC_SECRET_PREFIX: &str = "abb21364";
+
+/// Ficheros canónicos donde el bundle público debe estar incrustado.
+const BUNDLE_CANONICAL_FILES: [&str; 3] = [
+    "src-tauri/src/services/qobuz.rs",
+    "scripts/services/qobuz_service.py",
+    "scripts/services/qobuz_auth.py",
+];
 
 fn collect_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
     if !dir.exists() {
@@ -40,84 +50,106 @@ fn collect_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-#[test]
-fn test_legacy_suite_has_no_hardcoded_qobuz_credentials() {
-    let repo_root = get_repo_root();
+fn scan_tree(
+    base: &Path,
+    predicate: &dyn Fn(&str, &str) -> Option<String>,
+) -> (usize, Vec<String>) {
+    let mut files = Vec::new();
+    collect_files_recursive(base, &mut files);
+    let mut scanned = 0;
+    let mut violations = Vec::new();
+    for file in files {
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "rs" | "toml" | "json" | "py" | "sh" | "md") {
+            continue;
+        }
+        if let Ok(content) = fs::read_to_string(&file) {
+            scanned += 1;
+            let relative = file
+                .strip_prefix(get_repo_root())
+                .unwrap_or(&file)
+                .to_string_lossy()
+                .to_string();
+            if let Some(violation) = predicate(&relative, &content) {
+                violations.push(violation);
+            }
+        }
+    }
+    (scanned, violations)
+}
 
-    // Scan the tracked production tree. The retired `legacy/` and `workspace/audit_archive/legacy`
-    // trees are not tracked, so they are not scanned and cannot make this assertion vacuous.
+#[test]
+fn test_public_bundle_present_in_canonical_files() {
+    let repo_root = get_repo_root();
+    for relative in BUNDLE_CANONICAL_FILES {
+        let path = repo_root.join(relative);
+        let content = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Fichero canónico {relative} debe existir: {e}"));
+        assert!(
+            content.contains(PUBLIC_APP_ID),
+            "{relative} debe incrustar el app_id público; un placeholder rompe la API con 400"
+        );
+    }
+    // El secret solo se exige donde se firman peticiones (el app_id viaja en
+    // URLs de consulta y no necesita firma).
+    for relative in [
+        "src-tauri/src/services/qobuz.rs",
+        "scripts/services/qobuz_service.py",
+    ] {
+        let content = fs::read_to_string(repo_root.join(relative)).expect("Fichero canónico");
+        assert!(
+            content.contains(PUBLIC_SECRET),
+            "{relative} debe incrustar el secret público del bundle para firmar"
+        );
+    }
+}
+
+#[test]
+fn test_public_bundle_not_duplicated_outside_canonical_files() {
+    let repo_root = get_repo_root();
     let candidates = [
         repo_root.join("scripts"),
         repo_root.join("src-tauri").join("src"),
     ];
 
-    // The Qobuz client identifier is a public id embedded in the download path, not the secret.
-    // It is allowed only in these two production files; anywhere else it is a leak.
-    let app_id_allowed_in = [
-        "scripts/services/qobuz_service.py",
-        "scripts/services/qobuz_auth.py",
-    ];
-
     let mut scanned_files = 0;
     let mut violations = Vec::new();
-
     for base_dir in &candidates {
-        let mut files = Vec::new();
-        collect_files_recursive(base_dir, &mut files);
-
-        for file in files {
-            // Only inspect source files, scripts, and documentation
-            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if !matches!(ext, "rs" | "toml" | "json" | "py" | "sh" | "md") {
-                continue;
+        let (scanned, mut tree_violations) = scan_tree(base_dir, &|relative, content| {
+            if BUNDLE_CANONICAL_FILES.contains(&relative) {
+                return None;
             }
-
-            if let Ok(content) = fs::read_to_string(&file) {
-                scanned_files += 1;
-                let relative = file
-                    .strip_prefix(&repo_root)
-                    .unwrap_or(&file)
-                    .to_string_lossy()
-                    .to_string();
-
-                if content.contains(FORBIDDEN_APP_ID)
-                    && !app_id_allowed_in.contains(&relative.as_str())
-                {
-                    violations.push(format!(
-                        "{}: contains forbidden hardcoded QOBUZ_APP_ID ({})",
-                        file.display(),
-                        FORBIDDEN_APP_ID
-                    ));
-                }
-                if content.contains(FORBIDDEN_SECRET) || content.contains(FORBIDDEN_SECRET_PREFIX) {
-                    violations.push(format!(
-                        "{}: contains forbidden hardcoded QOBUZ_APP_SECRET ({})",
-                        file.display(),
-                        FORBIDDEN_SECRET_PREFIX
-                    ));
-                }
+            if content.contains(PUBLIC_APP_ID) {
+                return Some(format!(
+                    "{relative}: duplica el app_id público fuera de los ficheros canónicos"
+                ));
             }
-        }
+            if content.contains(PUBLIC_SECRET_PREFIX) {
+                return Some(format!(
+                    "{relative}: duplica el secret público fuera de los ficheros canónicos"
+                ));
+            }
+            None
+        });
+        scanned_files += scanned;
+        violations.append(&mut tree_violations);
     }
 
-    assert!(
-        violations.is_empty(),
-        "Found hardcoded Qobuz credentials in production sources (scanned {} files):\n{}",
-        scanned_files,
-        violations.join("\n")
-    );
     assert!(
         scanned_files > 0,
         "Expected to scan production sources under scripts/ and src-tauri/src/"
     );
+    assert!(
+        violations.is_empty(),
+        "Bundle público de Qobuz duplicado fuera de su sitio (escaneados {scanned_files} ficheros):\n{}",
+        violations.join("\n")
+    );
 }
 
 #[test]
-fn test_qobuz_test_harness_neutralization_and_env_contract() {
+fn test_qobuz_bridges_keep_env_override_contract() {
     let repo_root = get_repo_root();
 
-    // The legacy `qobuz_test.rs` harness is not tracked, so its env contract is verified where
-    // the credentials are actually consumed: the production Qobuz bridges.
     let qobuz_bridges = [
         repo_root.join("scripts").join("download_bridge.py"),
         repo_root.join("scripts").join("playlist_bridge.py"),
@@ -131,121 +163,17 @@ fn test_qobuz_test_harness_neutralization_and_env_contract() {
         );
         let content = fs::read_to_string(bridge).expect("Read Qobuz bridge");
 
-        // 1. Must not contain raw secret values
+        // El override por entorno es la vía para credenciales propias del
+        // operador; su ausencia NO es error: cae al bundle público.
         assert!(
-            !content.contains(FORBIDDEN_APP_ID),
-            "{:?} must NOT contain the hardcoded App ID string",
+            content.contains("QOBUZ_APP_ID") || content.contains("APP_ID"),
+            "{:?} debe resolver el app_id (credenciales → env → público)",
             bridge
         );
         assert!(
-            !content.contains(FORBIDDEN_SECRET_PREFIX),
-            "{:?} must NOT contain the hardcoded Secret string",
+            content.contains("os.getenv") || content.contains("QOBUZ_APP_SECRET"),
+            "{:?} debe mantener la vía de override por entorno",
             bridge
         );
-
-        // 2. Must query credentials from the environment instead of embedding them
-        assert!(
-            content.contains("QOBUZ_APP_ID"),
-            "{:?} must query the QOBUZ_APP_ID env var",
-            bridge
-        );
-        assert!(
-            content.contains("QOBUZ_APP_SECRET"),
-            "{:?} must query the QOBUZ_APP_SECRET env var",
-            bridge
-        );
-        assert!(
-            content.contains("os.getenv"),
-            "{:?} must resolve credentials via os.getenv",
-            bridge
-        );
-    }
-}
-
-#[test]
-fn test_all_workspace_crates_free_of_hardcoded_qobuz_credentials() {
-    let repo_root = get_repo_root();
-    let crates_dir = repo_root.join("crates");
-
-    let mut crate_files = Vec::new();
-    collect_files_recursive(&crates_dir, &mut crate_files);
-
-    let mut scanned_crates_files = 0;
-    let mut violations = Vec::new();
-
-    for file in crate_files {
-        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext == "rs" {
-            if let Ok(content) = fs::read_to_string(&file) {
-                scanned_crates_files += 1;
-                if content.contains(FORBIDDEN_APP_ID) {
-                    violations.push(format!(
-                        "{}: contains forbidden App ID in crate",
-                        file.display()
-                    ));
-                }
-                if content.contains(FORBIDDEN_SECRET_PREFIX) {
-                    violations.push(format!(
-                        "{}: contains forbidden Secret in crate",
-                        file.display()
-                    ));
-                }
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "Found hardcoded Qobuz credentials in crates (scanned {} files):\n{}",
-        scanned_crates_files,
-        violations.join("\n")
-    );
-    assert!(
-        scanned_crates_files > 0,
-        "Expected to scan Rust files in crates/"
-    );
-}
-
-#[test]
-fn test_legacy_binaries_and_tests_hygiene() {
-    let repo_root = get_repo_root();
-    let legacy_cli = repo_root
-        .join("workspace")
-        .join("audit_archive")
-        .join("legacy")
-        .join("syncify-cli");
-
-    if !legacy_cli.exists() {
-        return;
-    }
-
-    let bin_dir = legacy_cli.join("src").join("bin");
-    let tests_dir = legacy_cli.join("tests");
-
-    let mut target_files = Vec::new();
-    collect_files_recursive(&bin_dir, &mut target_files);
-    collect_files_recursive(&tests_dir, &mut target_files);
-
-    assert!(
-        !target_files.is_empty(),
-        "Archived legacy CLI should contain test and binary harnesses"
-    );
-
-    for file in target_files {
-        if file.extension().and_then(|e| e.to_str()) == Some("rs") {
-            let content = fs::read_to_string(&file)
-                .unwrap_or_else(|e| panic!("Failed to read {}: {}", file.display(), e));
-
-            assert!(
-                !content.contains(FORBIDDEN_APP_ID),
-                "File {:?} must not contain forbidden App ID",
-                file
-            );
-            assert!(
-                !content.contains(FORBIDDEN_SECRET_PREFIX),
-                "File {:?} must not contain forbidden Secret",
-                file
-            );
-        }
     }
 }

@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-Tidal OAuth credentials come from the environment, never from the source tree (PY-6).
+Contrato de credenciales de Tidal (revisado 2026-10-04).
 
-`scripts/services/tidal_auth.py` and `scripts/services/tidal_service.py` embedded
-the same Tidal client id and secret as class attributes. The crates already read
-TIDAL_CLIENT_ID / TIDAL_CLIENT_SECRET (crates/syncify-tidal-downloader/src/lib.rs);
-the Python bridges now follow the same contract and fail with an explicit error
-when the variables are absent.
+Las credenciales de cliente de Tidal son PÚBLICAS (el par del cliente de
+escritorio oficial y el client id PKCE, los mismos que usan los clientes
+open-source). La cadena de resolución es: credenciales guardadas en la cuenta →
+variables de entorno → bundle público incrustado. Los tokens PERSONALES del
+usuario nunca se incrustan: viven en el keychain o en la configuración de
+cuentas.
 
-Validates:
-1. No Tidal client credential literal survives anywhere under scripts/.
-2. The resolvers raise a clear, actionable error without the env variables.
-3. Credentials stored on the account take precedence over the environment.
-4. .env.example documents every variable the Python Tidal flows read.
+Valida:
+1. Los resolutores caen al bundle público cuando no hay credenciales ni env.
+2. La env sobrescribe el bundle público.
+3. Las credenciales guardadas tienen prioridad sobre la env.
+4. .env.example documenta las variables de override.
 """
 
-import ast
 import os
 import sys
 import unittest
@@ -34,7 +34,10 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from services.service_base import ServiceCredentials, ServiceType
 from services.tidal_auth import (
-    MissingTidalCredentialsError,
+    PUBLIC_TIDAL_CLIENT_CREDENTIALS,
+    PUBLIC_TIDAL_CLIENT_ID,
+    PUBLIC_TIDAL_CLIENT_ID_PKCE,
+    PUBLIC_TIDAL_CLIENT_SECRET,
     TidalAuth,
     resolve_tidal_client_id,
     resolve_tidal_client_secret,
@@ -45,61 +48,25 @@ from services.tidal_service import TidalService
 TIDAL_CREDENTIAL_VARIABLES = ("TIDAL_CLIENT_ID", "TIDAL_CLIENT_SECRET", "TIDAL_CLIENT_ID_PKCE")
 
 
-class TidalCredentialsSourceTests(unittest.TestCase):
-    TIDAL_MODULES = ("services/tidal_auth.py", "services/tidal_service.py")
-    CREDENTIAL_CONSTANTS = ("CLIENT_ID", "CLIENT_SECRET", "CLIENT_ID_PKCE", "CLIENT_SECRET_PKCE")
-
-    def test_tidal_modules_do_not_assign_client_credential_constants(self):
-        """The literal values are the ones already listed in the Rust secrets test; here we
-        assert structurally that no module assigns them any more."""
-        offenders = []
-        for module in self.TIDAL_MODULES:
-            path = SCRIPTS_DIR / module
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-                    continue
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                for target in targets:
-                    if isinstance(target, ast.Name) and target.id in self.CREDENTIAL_CONSTANTS:
-                        offenders.append(f"{module}:{target.lineno} {target.id}")
-
-        self.assertEqual(
-            offenders, [],
-            f"Tidal OAuth credentials must be resolved from the environment, not assigned as "
-            f"module/class constants: {offenders}",
-        )
-
-    def test_tidal_auth_resolves_every_credential_from_the_environment(self):
-        content = (SCRIPTS_DIR / "services/tidal_auth.py").read_text(encoding="utf-8")
-
-        for variable in TIDAL_CREDENTIAL_VARIABLES:
-            self.assertIn(
-                variable, content,
-                f"scripts/services/tidal_auth.py must resolve {variable} from the environment",
-            )
+def _without_env():
+    env = {k: v for k, v in os.environ.items() if k not in TIDAL_CREDENTIAL_VARIABLES}
+    return patch.dict(os.environ, env, clear=True)
 
 
 class TidalCredentialResolutionTests(unittest.TestCase):
-    def _without_env(self):
-        env = {k: v for k, v in os.environ.items() if k not in TIDAL_CREDENTIAL_VARIABLES}
-        return patch.dict(os.environ, env, clear=True)
+    def test_public_bundle_is_frozen(self):
+        """Congela los valores públicos: perderlos rompió el servicio dos veces."""
+        self.assertEqual(PUBLIC_TIDAL_CLIENT_ID, "fX2JxdmntZWK0ixT")
+        self.assertEqual(PUBLIC_TIDAL_CLIENT_SECRET, "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8=")
+        self.assertEqual(PUBLIC_TIDAL_CLIENT_ID_PKCE, "6BDSRdpK9hqEBTgU")
+        for variable in TIDAL_CREDENTIAL_VARIABLES:
+            self.assertIn(variable, PUBLIC_TIDAL_CLIENT_CREDENTIALS)
 
-    def test_resolvers_fail_with_a_clear_error_when_unconfigured(self):
-        resolvers = (
-            (resolve_tidal_client_id, "TIDAL_CLIENT_ID"),
-            (resolve_tidal_client_secret, "TIDAL_CLIENT_SECRET"),
-            (resolve_tidal_pkce_client_id, "TIDAL_CLIENT_ID_PKCE"),
-        )
-
-        with self._without_env():
-            for resolver, variable in resolvers:
-                with self.subTest(variable=variable):
-                    with self.assertRaises(MissingTidalCredentialsError) as ctx:
-                        resolver()
-                    message = str(ctx.exception)
-                    self.assertIn(variable, message)
-                    self.assertIn(".env.example", message)
+    def test_resolvers_fall_back_to_the_public_bundle_without_configuration(self):
+        with _without_env():
+            self.assertEqual(resolve_tidal_client_id(), PUBLIC_TIDAL_CLIENT_ID)
+            self.assertEqual(resolve_tidal_client_secret(), PUBLIC_TIDAL_CLIENT_SECRET)
+            self.assertEqual(resolve_tidal_pkce_client_id(), PUBLIC_TIDAL_CLIENT_ID_PKCE)
 
     def test_resolvers_read_the_environment(self):
         with patch.dict(os.environ, {
@@ -120,10 +87,13 @@ class TidalCredentialResolutionTests(unittest.TestCase):
             self.assertEqual(auth.client_id, "env-client-id")
             self.assertEqual(auth.client_secret, "env-client-secret")
 
-        with self._without_env():
-            with self.assertRaises(MissingTidalCredentialsError):
-                _ = TidalAuth().client_id
+        with _without_env():
+            auth = TidalAuth()
+            self.assertEqual(auth.client_id, PUBLIC_TIDAL_CLIENT_ID)
+            self.assertEqual(auth.client_secret, PUBLIC_TIDAL_CLIENT_SECRET)
 
+
+class TidalStoredCredentialsTests(unittest.TestCase):
     def test_stored_credentials_take_precedence_over_the_environment(self):
         credentials = ServiceCredentials(
             service_type=ServiceType.TIDAL,
@@ -149,9 +119,9 @@ class TidalCredentialResolutionTests(unittest.TestCase):
             self.assertEqual(service.client_id, "env-client-id")
             self.assertEqual(service.client_secret, "env-client-secret")
 
-        with self._without_env():
-            with self.assertRaises(MissingTidalCredentialsError):
-                _ = service.client_id
+        with _without_env():
+            self.assertEqual(service.client_id, PUBLIC_TIDAL_CLIENT_ID)
+            self.assertEqual(service.client_secret, PUBLIC_TIDAL_CLIENT_SECRET)
 
 
 class TidalEnvExampleTests(unittest.TestCase):

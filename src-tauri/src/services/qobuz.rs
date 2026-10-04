@@ -8,11 +8,16 @@ use sqlx::SqlitePool;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-/// Default placeholder values for development/testing when environment variables are not set.
-/// Production deployments must provide valid credentials via `QOBUZ_APP_ID` and `QOBUZ_APP_SECRET`
-/// environment variables or through secure database settings.
-pub const QOBUZ_APP_ID_FALLBACK: &str = "dev_placeholder_qobuz_app_id";
-pub const QOBUZ_APP_SECRET_FALLBACK: &str = "dev_placeholder_qobuz_app_secret";
+/// Credenciales PÚBLICAS del bundle de la API de Qobuz: son los identificadores
+/// de aplicación que la propia Qobuz reconoce y que usan los clientes
+/// open-source (verificados contra la API: sin ellos la API responde 400
+/// "Invalid or missing app_id"; con ellos responde 401 solo pide login).
+/// NO son credenciales personales de nadie y NO deben volver a sustituirse por
+/// placeholders creyendo que son secretos privados (ocurrió dos veces).
+/// Las credenciales PERSONALES del usuario (token/login) van por keychain o
+/// por las variables de entorno, que tienen prioridad sobre estas constantes.
+pub const QOBUZ_APP_ID_FALLBACK: &str = "798273057";
+pub const QOBUZ_APP_SECRET_FALLBACK: &str = "abb21364945c0583309667d13ca3d93a";
 
 // Kept for backward compatibility with callers referencing the constants,
 // pointing to safe development fallback placeholders.
