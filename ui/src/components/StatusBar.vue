@@ -437,10 +437,10 @@ async function fetchServices() {
   }
 }
 
-// Refresh the services (and therefore "Last synced") when a sync run finishes.
-// Debounced: deriveSyncState(allTasks) flips while a worker is emitting
-// progress (e.g. the enrichment worker), which fired get_service_statuses
-// every ~1.3s — each call decrypts credentials and hits the DB.
+// Refresh the services (and therefore "Last synced") once a whole run
+// finishes, not per item: batches (downloads, syncs, enrichment) complete one
+// task at a time, and a flip-per-item watch fired get_service_statuses every
+// few seconds for as long as a batch ran.
 let servicesRefreshTimer: ReturnType<typeof setTimeout> | undefined
 function scheduleFetchServices(delay = 1500) {
   if (servicesRefreshTimer) clearTimeout(servicesRefreshTimer)
@@ -450,9 +450,9 @@ function scheduleFetchServices(delay = 1500) {
   }, delay)
 }
 
-watch(syncState, (state, prev) => {
-  if (prev === 'syncing' && state !== 'syncing') {
-    scheduleFetchServices()
+watch(() => activeTasks.value.length, (count, prev) => {
+  if (prev > 0 && count === 0) {
+    scheduleFetchServices(1000)
   }
 })
 

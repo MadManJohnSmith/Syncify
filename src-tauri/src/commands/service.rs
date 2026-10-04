@@ -1121,7 +1121,9 @@ pub async fn enrich_qobuz_album_metadata(
 pub async fn get_service_statuses(
     state: State<'_, AppState>,
 ) -> Result<Vec<ServiceStatus>, String> {
-    tracing::info!("get_service_statuses called");
+    // debug: the UI polls this while background batches run; at info it
+    // floods the terminal the app was launched from.
+    tracing::debug!("get_service_statuses called");
 
     let statuses = sqlx::query_as::<_, (String, Option<i64>, Option<String>, i64, i64, i64, Option<String>, i64, Option<String>, Option<String>)>(
         r#"

@@ -613,11 +613,23 @@ export function useGlobalTasks() {
                         current: enriched,
                         total: processed
                     })
-                    completeTask(taskId, true)
+                    // Per-track completion: the worker emits one of these per
+                    // track, and completing here made syncState flip for every
+                    // track (one get_service_statuses + re-render each). Only a
+                    // batch-level event without track_id ends the run; the
+                    // worker sends one when the queue drains.
+                    if (!payload.track_id) {
+                        completeTask(taskId, true)
+                    }
                 }
             } else if (status === 'error') {
                 if (tasks.value.has(taskId)) {
-                    completeTask(taskId, false, message)
+                    if (!payload.track_id) {
+                        completeTask(taskId, false, message)
+                    } else {
+                        // One track failed: keep the run alive, surface the reason
+                        updateTask(taskId, { description: message })
+                    }
                 } else {
                     addTask({
                         id: taskId,
