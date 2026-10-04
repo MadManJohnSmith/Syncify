@@ -102,27 +102,25 @@ con IPC tipado, un motor de descarga/reparación multihilo y un esquema local
 endurecido a lo largo de **83 migraciones SQL**. Los logins de servicios
 corren por puentes Python pequeños y auditados (Playwright, Mutagen, AcoustID).
 
-### Diagramas
+### Cómo encaja todo
 
-Los dos son HTML interactivos y autónomos — ábrelos en un navegador, sigue el
-camino y amplía la parte que te interese.
+Son interactivos: pasa el ratón, arrastra y amplía dentro de ellos.
 
-| | |
-|---|---|
-| **Arquitectura**<br>Cómo encajan una UI en Vue 3, un núcleo Rust, SQLite, el keyring del sistema y los puentes Python — y dónde viven realmente tus credenciales. | **Publicación protegida**<br>Por qué un tag de versión no se puede mover ni borrar antes de que CI esté en verde en ese commit exacto. |
-| [EN](docs/diagrams/architecture.en.html) · [ES](docs/diagrams/architecture.html) | [EN](docs/diagrams/release-gated.en.html) · [ES](docs/diagrams/release-gated.html) |
+<details open>
+<summary><b>De la cuenta a tu música</b> — lo que Syncify hace por ti</summary>
 
-**Arquitectura** — la UI se comunica con el núcleo Rust por IPC tipado; el núcleo
-es dueño de la biblioteca SQLite y habla con el keyring del sistema, así que las
-credenciales nunca se guardan en la base de datos. En paralelo corren los workers
-y los adaptadores de cada servicio, y los puentes Python se encargan del trabajo
-de audio y metadatos a través de `cmd_utils`, que resuelve sus rutas según el
-empaquetado instalado (AppImage, instalador o código fuente).
+<iframe src="docs/diagrams/user-journey.html" width="100%" height="430" style="border:1px solid #d0d7de;border-radius:8px;margin-top:12px" title="Recorrido de Syncify"></iframe>
 
-**Publicación protegida** — `main` exige un pull request con los tres checks de CI
-en verde, y una puerta reutilizable se niega a publicar si el commit exacto no
-pasó CI o si el tag ya apuntaba a otro sitio. Los tags de versión `v*` no se
-pueden mover ni borrar.
+</details>
+
+<details>
+<summary><b>Bajo el capó</b> — cómo encajan las piezas (para los curiosos)</summary>
+
+<iframe src="docs/diagrams/architecture.html" width="100%" height="480" style="border:1px solid #d0d7de;border-radius:8px;margin-top:12px" title="Arquitectura de Syncify"></iframe>
+
+</details>
+
+English: [from account to music](docs/diagrams/user-journey.en.html) · [under the hood](docs/diagrams/architecture.en.html)
 
 ## Servicios soportados
 

@@ -99,26 +99,25 @@ IPC layer, a multi-threaded download/repair engine, and a local schema
 hardened across **83 SQL migrations**. Service logins run through small
 audited Python bridges (Playwright, Mutagen, AcoustID).
 
-### Diagrams
+### How it comes together
 
-Both are interactive standalone HTML — open them in a browser, follow the path,
-and zoom into any part.
+These are interactive — hover, pan and zoom inside them.
 
-| | |
-|---|---|
-| **Architecture**<br>How a Vue 3 UI, a Rust core, SQLite, the system keyring and the Python bridges fit together — and where your credentials actually live. | **Gated release**<br>Why a version tag can't be moved or deleted before CI is green on that exact commit. |
-| [EN](docs/diagrams/architecture.en.html) · [ES](docs/diagrams/architecture.html) | [EN](docs/diagrams/release-gated.en.html) · [ES](docs/diagrams/release-gated.html) |
+<details open>
+<summary><b>From account to music</b> — what Syncify actually does for you</summary>
 
-**Architecture** — the UI talks to the Rust core over typed IPC; the core owns
-the SQLite library and talks to the system keyring, so credentials never land in
-the database. Workers and service adapters run alongside it, and Python bridges
-handle audio and metadata work through `cmd_utils`, which resolves their paths
-for whatever packaging you installed (AppImage, installer, or source checkout).
+<iframe src="docs/diagrams/user-journey.en.html" width="100%" height="430" style="border:1px solid #d0d7de;border-radius:8px;margin-top:12px" title="Syncify user journey"></iframe>
 
-**Gated release** — `main` requires a pull request with all three CI checks
-green, and a reusable gate refuses to publish unless the exact commit passed CI
-and the tag doesn't already point somewhere else. Version tags `v*` can't be
-updated or deleted.
+</details>
+
+<details>
+<summary><b>Under the hood</b> — how the pieces fit (for the curious)</summary>
+
+<iframe src="docs/diagrams/architecture.en.html" width="100%" height="480" style="border:1px solid #d0d7de;border-radius:8px;margin-top:12px" title="Syncify architecture"></iframe>
+
+</details>
+
+Español: [de la cuenta a tu música](docs/diagrams/user-journey.html) · [bajo el capó](docs/diagrams/architecture.html)
 
 ## Supported services
 
