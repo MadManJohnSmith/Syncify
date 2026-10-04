@@ -228,7 +228,7 @@ jobs:
           REQUIRED="autoaudiosink autovideosink playbin decodebin audioconvert
                      audioresample videoconvert typefindfunctions"
           for el in $REQUIRED; do
-            if ! grep -qE "^$el: " "$WORK/gst-elements.txt"; then
+            if ! grep -qE "(^|[[:space:]])$el:" "$WORK/gst-elements.txt"; then
               echo "::error::elemento obligatorio ausente del registro: $el"
               exit 1
             fi
