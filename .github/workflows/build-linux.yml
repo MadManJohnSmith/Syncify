@@ -158,6 +158,24 @@ jobs:
           chmod +x src-tauri/binaries/*
           ls -la src-tauri/binaries/
 
+      - name: Preparar Python autónomo con dependencias
+        run: |
+          set -euo pipefail
+          # Mirror de Windows (python-embed + get-pip + requirements.txt): un
+          # CPython autónomo y reubicable con las dependencias ya instaladas
+          # viaja dentro de cada artefacto Linux, de modo que la app funcione
+          # tras instalar sin pedirle Python ni pip al usuario.
+          curl -sL -o /tmp/cpython.tar.gz \
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20240415/cpython-3.11.9%2B20240415-x86_64-unknown-linux-gnu-install_only.tar.gz"
+          echo "78b1c16a9fd032997ba92a60f46a64f795cd18ff335659dfdf6096df277b24d5  /tmp/cpython.tar.gz" | sha256sum -c -
+          mkdir -p bundle
+          tar -xzf /tmp/cpython.tar.gz -C bundle
+          PY=bundle/python/bin/python3
+          "$PY" -m pip install --no-input --disable-pip-version-check \
+            -r scripts/requirements.txt
+          "$PY" -c "import spotipy, acoustid, dotenv, requests, mutagen, yarl, aiohttp, yaml, musicbrainzngs, m3u8; print('Python bundle listo')"
+          du -sh bundle/python
+
       - name: Instalar dependencias de UI
         working-directory: ui
         run: npm ci
@@ -297,6 +315,41 @@ jobs:
           rm -rf "$WORK"
           ls -la target/release/bundle/appimage/
 
+      - name: Inyectar Python y scripts en el AppImage
+        run: |
+          set -euo pipefail
+          APPIMAGE=$(ls target/release/bundle/appimage/*.AppImage | head -1)
+          WORK="$(mktemp -d)"
+          APPIMAGE_ABS="$PWD/$APPIMAGE"
+          (
+            cd "$WORK"
+            "$APPIMAGE_ABS" --appimage-extract >/dev/null
+          )
+          ROOT="$WORK/squashfs-root"
+
+          # get_project_root sube desde usr/bin y encuentra <AppDir>/resources/
+          # (scripts + python); get_python_executable devuelve entonces
+          # resources/python/bin/python. Espejo del python-embed de Windows.
+          mkdir -p "$ROOT/resources/scripts"
+          cp -a bundle/python "$ROOT/resources/python"
+          cp scripts/*_bridge.py scripts/dependency_manager.py scripts/requirements.txt \
+            "$ROOT/resources/scripts/"
+          cp -a scripts/services "$ROOT/resources/scripts/services"
+          rm -rf "$ROOT/resources/scripts/services/__pycache__"
+
+          # Reempaquetar conservando AppRun y hooks (misma técnica del paso
+          # de GStreamer).
+          curl -sL -o "$WORK/appimagetool" \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x "$WORK/appimagetool"
+          (
+            cd "$ROOT"
+            "$WORK/appimagetool" --no-appstream . "$APPIMAGE_ABS.new"
+          )
+          mv "$APPIMAGE_ABS.new" "$APPIMAGE_ABS"
+          rm -rf "$WORK"
+          ls -la target/release/bundle/appimage/
+
       - name: Organizar artefactos de compilación Linux
         run: |
           mkdir -p dist/linux
@@ -334,8 +387,69 @@ jobs:
             --exclude='*.log' --exclude='*.tmp' --exclude='*.db' --exclude='*.key' \
             --exclude='credentials*' --exclude='.env*' scripts/ dist/linux/Syncify-Linux-Raw/scripts/
 
-          cd dist/linux && tar -czvf Syncify-Linux-x86_64.tar.gz Syncify-Linux-Raw/
+          # Python autónomo junto a scripts/: get_project_root encuentra
+          # Syncify-Linux-Raw (tiene scripts/) y get_python_executable
+          # devuelve <raíz>/python/bin/python.
+          cp -a bundle/python dist/linux/Syncify-Linux-Raw/python
+
+          # Inyectar el mismo Python en el DEB: los recursos de Tauri viven
+          # en usr/lib/<producto>/_up_/scripts, y el resolutor acepta un
+          # python/ hermano de ese scripts/.
+          if ls dist/linux/*.deb 1> /dev/null 2>&1; then
+            DEB=$(ls dist/linux/*.deb | head -1)
+            DEBWORK="$(mktemp -d)"
+            dpkg-deb -R "$DEB" "$DEBWORK/pkg"
+            UP_SCRIPTS="$(dirname "$(find "$DEBWORK/pkg" -path '*_up_/scripts/dependency_manager.py' | head -1)")"
+            if [ -z "$UP_SCRIPTS" ] || [ "$UP_SCRIPTS" = "/" ]; then
+              echo "::error::el DEB no contiene _up_/scripts; no se puede inyectar Python"
+              exit 1
+            fi
+            cp -a bundle/python "$UP_SCRIPTS/../python"
+            # Regenerar md5sums: dpkg no lo hace al reempaquetar.
+            (
+              cd "$DEBWORK/pkg"
+              find . -type f ! -path './DEBIAN/*' -printf '%P\0' | sort -z \
+                | xargs -0 -I{} md5sum "{}" > DEBIAN/md5sums
+            )
+            dpkg-deb --root-owner-group -b "$DEBWORK/pkg" "$DEB"
+            rm -rf "$DEBWORK"
+            echo "Python inyectado en $DEB"
+          fi
+
+          # ── Smoke test del Python empaquetado en cada artefacto final ──
+          # Un paquete cuyo Python no importe los módulos críticos se
+          # publica roto; esto lo detecta antes de subir nada.
+          SMOKE_IMPORTS="import spotipy, acoustid, dotenv, requests, mutagen, yarl, aiohttp, yaml, musicbrainzngs, m3u8"
+          SMOKE_ENV="env -u PYTHONHOME -u PYTHONPATH -u PYTHONDONTWRITEBYTECODE"
+
+          echo "== Smoke python: tarball crudo =="
+          $SMOKE_ENV timeout 120 dist/linux/Syncify-Linux-Raw/python/bin/python3 -c "$SMOKE_IMPORTS; print('OK tarball')"
+
+          echo "== Smoke python: AppImage (con el entorno que deja AppRun) =="
+          AI=$(ls dist/linux/*.AppImage | head -1)
+          AIWORK="$(mktemp -d)"
+          ( cd "$AIWORK" && "$PWD/$AI" --appimage-extract >/dev/null )
+          $SMOKE_ENV LD_LIBRARY_PATH="$AIWORK/squashfs-root/usr/lib" \
+            timeout 120 "$AIWORK/squashfs-root/resources/python/bin/python" -c "$SMOKE_IMPORTS; print('OK appimage')"
+          rm -rf "$AIWORK"
+
+          if ls dist/linux/*.deb 1> /dev/null 2>&1; then
+            echo "== Smoke python: DEB =="
+            DEB=$(ls dist/linux/*.deb | head -1)
+            DEBWORK="$(mktemp -d)"
+            dpkg-deb -x "$DEB" "$DEBWORK/root"
+            PYDEB="$(find "$DEBWORK/root" -path '*_up_/python/bin/python' | head -1)"
+            if [ -z "$PYDEB" ]; then
+              echo "::error::el DEB final no contiene _up_/python/bin/python"
+              exit 1
+            fi
+            $SMOKE_ENV timeout 120 "$PYDEB" -c "$SMOKE_IMPORTS; print('OK deb')"
+            rm -rf "$DEBWORK"
+          fi
+
+          cd dist/linux && tar -czf Syncify-Linux-x86_64.tar.gz Syncify-Linux-Raw/
           echo "Tarball crudo generado en dist/linux/Syncify-Linux-x86_64.tar.gz"
+          du -sh Syncify-Linux-Raw Syncify-Linux-x86_64.tar.gz *.AppImage 2>/dev/null || true
 
       - name: Subir Paquetes Linux como Artefacto
         uses: actions/upload-artifact@v4

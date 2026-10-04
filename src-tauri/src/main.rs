@@ -307,8 +307,11 @@ fn main() {
                 let python_cmd = commands::get_python_executable();
                 let project_root = commands::get_project_root();
 
-                // Log if .venv is missing as requested in S73
-                if !python_cmd.contains(".venv") && !python_cmd.contains("python.exe") {
+                // Log if .venv is missing as requested in S73. Solo es un
+                // problema real si get_python_executable cayó al fallback de
+                // PATH: un Python empaquetado (`python/bin/python`) o un venv
+                // ya son instalaciones válidas y no generan ruido.
+                if python_cmd == "python" {
                     let expected_venv = if cfg!(windows) {
                         project_root.join(".venv").join("Scripts").join("python.exe")
                     } else {
@@ -317,11 +320,15 @@ fn main() {
                     tracing::warn!("Python venv not found at {:?}. Python features disabled.", expected_venv);
                 }
 
-                // Run the check with a 5-second timeout
+                // Run the check with a 5-second timeout. Módulos que los
+                // puentes sí importan: fuzzywuzzy ya no es dependencia
+                // (requirements.txt trae rapidfuzz vía syncedlyrics) y un
+                // import muerto aquí marcaba "deps faltantes" con el bundle
+                // completo instalado.
                 let check_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     crate::cmd_utils::create_tokio_command(&python_cmd)
                         .arg("-c")
-                        .arg("import spotipy, acoustid, fuzzywuzzy")
+                        .arg("import spotipy, acoustid, mutagen, yarl")
                         .output()
                         .await
                 })

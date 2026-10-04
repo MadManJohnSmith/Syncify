@@ -39,6 +39,7 @@
     ],
     "resources": [
       "../scripts/*.py",
+      "../scripts/services/*.py",
       "../scripts/requirements.txt"
     ],
     "windows": {

@@ -233,6 +233,18 @@ pub fn get_python_executable() -> String {
         return res_python.to_string_lossy().to_string();
     }
 
+    // Layouts empaquetados de Linux: un CPython autónomo con las
+    // dependencias instaladas, junto al `scripts/` que find_scripts_dir
+    // resuelve (`<_up_>/python` en AppImage/DEB, `<raíz>/python` en el
+    // tarball crudo). Es el mirror del `python/python.exe` de Windows.
+    for candidate in crate::cmd_utils::packaged_python_candidates(
+        &crate::cmd_utils::find_scripts_dir(&project_root),
+    ) {
+        if candidate.exists() {
+            return candidate.to_string_lossy().to_string();
+        }
+    }
+
     // Method 1: Check for .venv in project
     let venv_python = if cfg!(windows) {
         project_root
