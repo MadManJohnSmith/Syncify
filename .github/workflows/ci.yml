@@ -29,11 +29,18 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Cada job se dispara solo si cambian los archivos de los que depende. Sin
+# esto, un cambio de portada dispara los 20 minutos de cargo test aunque no
+# haya tocar una linea de Rust.
 jobs:
   rust:
     name: Rust (src-tauri · check · test · clippy · fmt)
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    paths:
+      - 'src-tauri/**'
+      - 'crates/**'
+      - '.github/workflows/ci.yml'
     defaults:
       run:
         working-directory: src-tauri
@@ -122,6 +129,9 @@ jobs:
     name: Frontend (ui · vue-tsc · vitest)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    paths:
+      - 'ui/**'
+      - '.github/workflows/ci.yml'
     defaults:
       run:
         working-directory: ui
@@ -149,6 +159,9 @@ jobs:
     name: Python (bridges · tests unitarios)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/ci.yml'
     steps:
       - name: Checkout del repositorio
         uses: actions/checkout@v4
