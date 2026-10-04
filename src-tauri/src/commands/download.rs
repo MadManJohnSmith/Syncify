@@ -106,22 +106,34 @@ pub async fn get_failed_downloads(state: State<'_, AppState>) -> Result<Vec<Down
     Ok(downloads)
 }
 
-/// Retry failed downloads
+/// Reintenta las descargas fallidas que se pueden reintentar solas.
+///
+/// Este comando ya no reencola por su cuenta: delega en
+/// [`super::queue::perform_retry_all_failed`], que clasifica cada fallo con la
+/// taxonomía de errores, se salta los terminales y los que requieren acción
+/// del usuario, y para en el quinto intento.
+///
+/// Antes hacia un UPDATE sin clasificar (`WHERE status = 'failed'`), que
+/// devolvía a la cola descargas con un token caducado o una credencial
+/// revocada y las reintentaba sin límite. La UI llamaba a este comando, así
+/// que el fallo era alcanzable con un clic.
+///
+/// Existe para que la UI no tenga que conocer dos comandos que hacen lo mismo:
+/// `queue::retry_failed` acepta `queue_id: None` y llama al mismo sitio.
 #[tauri::command]
 pub async fn retry_failed_downloads(state: State<'_, AppState>) -> Result<String, String> {
     tracing::info!("retry_failed_downloads called");
 
-    let result = sqlx::query(
-        "UPDATE download_queue SET status = 'queued', error_message = NULL, retry_count = retry_count + 1 WHERE status = 'failed'"
-    )
-    .execute(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+    let count = super::queue::perform_retry_all_failed(&state.db)
+        .await
+        .map_err(|e| format!("Database error: {e}"))?;
 
-    let count = result.rows_affected();
-    tracing::info!("Requeued {} failed downloads", count);
+    tracing::info!(
+        requeued = count,
+        "Requeued retryable failed downloads (terminal ones skipped)"
+    );
 
-    Ok(format!("Requeued {} failed downloads", count))
+    Ok(format!("Requeued {count} failed downloads"))
 }
 
 /// Clear failed downloads
