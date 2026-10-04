@@ -101,23 +101,33 @@ audited Python bridges (Playwright, Mutagen, AcoustID).
 
 ### How it comes together
 
-These are interactive — hover, pan and zoom inside them.
+Each card below is a live diagram — click one to open the interactive version,
+where you can hover, pan and zoom.
 
-<details open>
-<summary><b>From account to music</b> — what Syncify actually does for you</summary>
+<table width="100%">
+<tr>
+  <td width="50%" valign="top">
+    <a href="https://madmanjohnsmith.github.io/Syncify/docs/diagrams/user-journey.en.html"><img src="docs/diagrams/user-journey.en.png" alt="From account to music" width="100%"></a>
+    <p align="center"><a href="https://madmanjohnsmith.github.io/Syncify/docs/diagrams/user-journey.en.html"><b>From account to music</b></a> — what Syncify actually does for you</p>
+  </td>
+  <td width="50%" valign="top">
+    <a href="https://madmanjohnsmith.github.io/Syncify/docs/diagrams/download-journey.en.html"><img src="docs/diagrams/download-journey.en.png" alt="What happens when you download a song" width="100%"></a>
+    <p align="center"><a href="https://madmanjohnsmith.github.io/Syncify/docs/diagrams/download-journey.en.html"><b>What a download does</b></a> — from your service to your disk, step by step</p>
+  </td>
+</tr>
+<tr>
+  <td width="50%" valign="top">
+    <a href="https://madmanjohnsmith.github.io/Syncify/docs/diagrams/library-care.en.html"><img src="docs/diagrams/library-care.en.png" alt="How Syncify takes care of your library" width="100%"></a>
+    <p align="center"><a href="https://madmanjohnsmith.github.io/Syncify/docs/diagrams/library-care.en.html"><b>Your library, cared for</b></a> — sync, order and recovery on its own</p>
+  </td>
+  <td width="50%" valign="top">
+    <a href="https://madmanjohnsmith.github.io/Syncify/docs/diagrams/architecture.en.html"><img src="docs/diagrams/architecture.en.png" alt="Under the hood" width="100%"></a>
+    <p align="center"><a href="https://madmanjohnsmith.github.io/Syncify/docs/diagrams/architecture.en.html"><b>Under the hood</b></a> — how the pieces fit (for the curious)</p>
+  </td>
+</tr>
+</table>
 
-<iframe src="docs/diagrams/user-journey.en.html" width="100%" height="430" style="border:1px solid #d0d7de;border-radius:8px;margin-top:12px" title="Syncify user journey"></iframe>
-
-</details>
-
-<details>
-<summary><b>Under the hood</b> — how the pieces fit (for the curious)</summary>
-
-<iframe src="docs/diagrams/architecture.en.html" width="100%" height="480" style="border:1px solid #d0d7de;border-radius:8px;margin-top:12px" title="Syncify architecture"></iframe>
-
-</details>
-
-Español: [de la cuenta a tu música](docs/diagrams/user-journey.html) · [bajo el capó](docs/diagrams/architecture.html)
+English diagrams: [from account to music](docs/diagrams/user-journey.en.html) · [what a download does](docs/diagrams/download-journey.en.html) · [your library, cared for](docs/diagrams/library-care.en.html) · [under the hood](docs/diagrams/architecture.en.html)
 
 ## Supported services
 

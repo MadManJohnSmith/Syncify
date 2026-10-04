@@ -363,4 +363,68 @@ describe('S128A: Global Tasks & Sync Progress Suite', () => {
         expect(activeTasks.value.some(t => t.id === 'sync-tidal')).toBe(false)
         expect(tasks.value.get('sync-tidal')?.status).toBe('failed')
     })
+
+    it('el enriquecimiento por pista mantiene una sola tarea hasta que la cola se vacia', async () => {
+        const { activeTasks, tasks, initEventListeners } = useGlobalTasks()
+        initEventListeners()
+
+        // Par por pista: running + completed, ambos con track_id
+        await eventBus.emit(TauriEvents.ENRICHMENT_STATUS, {
+            type: 'musicbrainz',
+            status: 'running',
+            message: "Enriching 'A' by 'B'",
+            track_id: 1,
+            enriched: 0,
+            processed: 1,
+        })
+        await eventBus.emit(TauriEvents.ENRICHMENT_STATUS, {
+            type: 'musicbrainz',
+            status: 'completed',
+            message: 'Metadata enrichment completed successfully',
+            track_id: 1,
+            enriched: 1,
+            processed: 1,
+        })
+        // La tarea sigue viva: una completacion por pista no termina la corrida
+        expect(tasks.value.get('metadata-musicbrainz')?.status).toBe('running')
+        expect(activeTasks.value.length).toBe(1)
+
+        // Una segunda pista reutiliza la misma tarea unica
+        await eventBus.emit(TauriEvents.ENRICHMENT_STATUS, {
+            type: 'musicbrainz',
+            status: 'running',
+            message: "Enriching 'C' by 'D'",
+            track_id: 2,
+            enriched: 0,
+            processed: 1,
+        })
+        expect(tasks.value.get('metadata-musicbrainz')?.status).toBe('running')
+        expect(activeTasks.value.length).toBe(1)
+
+        // El worker avisa una vez cuando la cola pendiente se vacia
+        await eventBus.emit(TauriEvents.ENRICHMENT_STATUS, {
+            type: 'musicbrainz',
+            status: 'waiting',
+            message: 'Enrichment queue empty',
+        })
+        expect(tasks.value.has('metadata-musicbrainz')).toBe(false)
+        expect(activeTasks.value.length).toBe(0)
+
+        // Un completed a nivel de lote (sin track_id) si cierra su tarea
+        await eventBus.emit(TauriEvents.ENRICHMENT_STATUS, {
+            type: 'spotify',
+            status: 'running',
+            message: 'Batch enriching',
+            pending: 10,
+        })
+        await eventBus.emit(TauriEvents.ENRICHMENT_STATUS, {
+            type: 'spotify',
+            status: 'completed',
+            message: 'Batch done',
+            enriched: 10,
+            processed: 10,
+        })
+        expect(tasks.value.get('metadata-spotify')?.status).toBe('completed')
+        expect(activeTasks.value.length).toBe(0)
+    })
 })

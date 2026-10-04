@@ -150,6 +150,7 @@ impl EnrichmentWorker {
     pub async fn run(&self) {
         tracing::info!("EnrichmentWorker started");
 
+        let mut had_work = false;
         while !self.state.is_stopped() {
             self.state.wait_if_paused().await;
 
@@ -159,7 +160,16 @@ impl EnrichmentWorker {
 
             match self.process_next_track().await {
                 Ok(has_work) => {
-                    if !has_work {
+                    if has_work {
+                        had_work = true;
+                    } else {
+                        // The UI keeps a single task alive for the whole run
+                        // (per-track completions do not close it), so it needs
+                        // this one signal when the pending queue drains.
+                        if had_work {
+                            self.emit_queue_drained();
+                        }
+                        had_work = false;
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     }
                 }
@@ -171,6 +181,19 @@ impl EnrichmentWorker {
         }
 
         tracing::info!("EnrichmentWorker stopped");
+    }
+
+    fn emit_queue_drained(&self) {
+        if let Some(handle) = &self.app_handle {
+            let _ = handle.emit(
+                "background-enrichment-status",
+                serde_json::json!({
+                    "type": "musicbrainz",
+                    "status": "waiting",
+                    "message": "Enrichment queue empty",
+                }),
+            );
+        }
     }
 
     /// Process a single track
