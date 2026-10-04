@@ -161,8 +161,9 @@ Grab the latest build from the
 Then:
 
 1. Install and launch Syncify: `ffmpeg`, `ffprobe` and `fpcalc` (Chromaprint)
-   **ship inside every package**, so there is nothing else to download,
-   install or configure.
+   **ship inside every package**, and so does a private Python runtime with
+   the service bridges already installed — there is nothing else to
+   download, install or configure.
 2. Run the first-run wizard: connect your accounts (credentials are stored in
    your OS keyring — no config files needed), pick your music folder, done.
 

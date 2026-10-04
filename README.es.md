@@ -164,8 +164,9 @@ Descarga la última build de la página de
 Después:
 
 1. Instala y abre Syncify: `ffmpeg`, `ffprobe` y `fpcalc` (Chromaprint)
-   **viajan dentro de cada paquete**, así que no hay nada más que descargar,
-   instalar ni configurar.
+   **viajan dentro de cada paquete**, igual que un runtime de Python privado
+   con los puentes de servicios ya instalados — no hay nada más que
+   descargar, instalar ni configurar.
 2. Corre el asistente de primera ejecución: conecta tus cuentas (las
    credenciales se guardan en el llavero de tu sistema — sin archivos de
    configuración), elige tu carpeta de música, listo.
