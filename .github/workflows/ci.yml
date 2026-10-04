@@ -1,45 +1,16 @@
-# Primer pipeline de CI de Syncify.
-# Tres jobs independientes en paralelo: Rust (src-tauri), Frontend (ui/) y smoke de sintaxis de los bridges Python (scripts/).
-# Deuda A12 CERRADA: los 2 tests de batch_50_audit_test ya no se excluyen del pase general ni
-# necesitan un pase serializado para no colgarse. La causa no era el paralelismo, sino el pool
-# SQLite en memoria compartida (SYNC-AUD-060), y ademas ya no escriben fuera de su TempDir
-# (SYNC-AUD-061). El paso (c) se conserva unicamente como corrida aislada con cota de tiempo
-# propia (timeout-minutes: 10), no como mitigacion.
-# Los tests live-network están marcados #[ignore]: NO usamos --include-ignored.
-
 name: CI
-
-on:
-  # Cada push a una rama de trabajo lanzaba un CI, y ademas el que dispara el
-  # pull_request: dos corridas identicas para el mismo commit. El PR ya cubre
-  # la rama de trabajo, asi que aqui solo se ejecuta en main, donde no hay PR
-  # que lo dispare y la proteccion exige los checks sobre el commit exacto.
+true:
   push:
     branches:
-      - main
+    - main
     paths-ignore:
-      - '**.md'
-      - 'docs/**'
-  pull_request:
-    # Sin paths-ignore: un PR que solo toca .md no lanzaba nada y, como main
-    # exige los checks en modo strict, su merge quedaba bloqueado para
-    # siempre. Con los guards por area, el pipeline corre igual pero cada
-    # job termina en un segundo si lo suyo no cambio.
-  # Verificación bajo demanda de un commit concreto. Necesaria porque
-  # paths-ignore deja sin pipeline a los commits que solo tocan .md o docs/
-  # (p.ej. una actualización de portada), y el orden de publicación exige
-  # CI verde ANTES de crear tag o release.
-  workflow_dispatch:
-
-# Una corrida activa por rama/ref; un push nuevo cancela la corrida anterior de la misma ref.
+    - '**.md'
+    - docs/**
+  pull_request: null
+  workflow_dispatch: null
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
-# Cada job se condiciona con su propio filtro `paths` en el `if`. GitHub no
-# soporta `paths` a nivel de job (solo en on.push/on.pull_request), asi que el
-# filtro va dentro del `if: changed...`. El efecto buscado: un commit que solo
-# toca docs o .md no pague los 20 minutos de cargo test.
 jobs:
   changed:
     name: Detectar areas afectadas
@@ -50,19 +21,11 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       python: ${{ steps.filter.outputs.python }}
     steps:
-      - uses: actions/checkout@v4
-      - id: filter
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            rust:
-              - 'src-tauri/**'
-              - 'crates/**'
-            frontend:
-              - 'ui/**'
-            python:
-              - 'scripts/**'
-
+    - uses: actions/checkout@v4
+    - id: filter
+      uses: dorny/paths-filter@v3
+      with:
+        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\nfrontend:\n  - 'ui/**'\npython:\n  - 'scripts/**'\n"
   rust:
     name: Rust (src-tauri · check · test · clippy · fmt)
     needs: changed
@@ -72,93 +35,57 @@ jobs:
       run:
         working-directory: src-tauri
     steps:
-      - name: Area sin cambios
-        if: needs.changed.outputs.rust != 'true'
-        run: |
-          echo "Sin cambios en src-tauri/ ni crates/: no hay nada que probar."
-          echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
+    - name: Area sin cambios
+      if: needs.changed.outputs.rust != 'true'
+      run: 'echo "Sin cambios en src-tauri/ ni crates/: no hay nada que probar."
 
-      - name: Checkout del repositorio
-        if: needs.changed.outputs.rust == 'true'
-        uses: actions/checkout@v4
+        echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
 
-      - name: Instalar dependencias nativas de Tauri (GTK y WebKit2GTK)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ffmpeg \
-            flac \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
-
-      - name: Comprobar ejecutable FLAC requerido por tests
-        run: flac --version
-
-      - name: Comprobar capacidad FFmpeg para WebP animado
-        shell: bash
-        run: |
-          ffmpeg -version
-          ffmpeg -hide_banner -decoders | grep -E 'webp(_anim)?' || true
-          if ffmpeg -hide_banner -loglevel error \
-            -i tests/fixtures/animated-cover.webp -f null -; then
-            echo "SYNCIFY_ANIMATED_WEBP_E2E=1" >> "$GITHUB_ENV"
-            echo "FFmpeg decodifica el fixture WebP animado; se ejecutará el E2E real."
-          else
-            echo "SYNCIFY_ANIMATED_WEBP_E2E=0" >> "$GITHUB_ENV"
-            echo "::warning::FFmpeg del runner no decodifica WebP animado; el E2E real se omite explícitamente."
-          fi
-
-      - name: Instalar toolchain Rust estable (con clippy y rustfmt)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Cache de artefactos cargo (workspace src-tauri)
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      # generate_context! valida frontendDist durante la compilación de Rust.
-      - name: Configurar Node.js 20 con cache npm
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      - name: Construir frontend requerido por Tauri
-        working-directory: ui
-        run: npm ci && npm run build
-
-      # a) Compilación completa (lib + bins + tests) validando contra Cargo.lock comprometido.
-      - name: cargo check --all-targets --locked
-        run: cargo check --all-targets --locked
-
-      # b) Suite completa. Los 2 tests de batch_50 vuelven a entrar aquí (Deuda A12
-      #    cerrada): no se colgaban por ejecutarse en paralelo, sino por dejar
-      #    transacciones de escritura abiertas en el pool SQLite en memoria
-      #    compartida, que bloqueaban el PRAGMA integrity_check de otra conexión
-      #    (SYNC-AUD-060). Además ya no escriben fuera de su TempDir (SYNC-AUD-061).
-      - name: Suite de tests completa
-        run: cargo test --locked
-
-      # c) Los 2 tests de batch_50 aparte, con cota de tiempo propia. Antes este paso
-      #    no tenía timeout propio y su mitigación documentada (--test-threads=1) no
-      #    evitaba el bloqueo, así que consumía el presupuesto del job entero.
-      - name: batch_50_audit_test serializado (--test-threads=1)
-        timeout-minutes: 10
-        run: cargo test --locked --test batch_50_audit_test -- --test-threads=1
-
-      # d) Lint bloqueante y reproducible para todo el workspace.
-      - name: cargo clippy estricto
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      # e) Formato bloqueante para todo el workspace Rust.
-      - name: cargo fmt --all -- --check
-        run: cargo fmt --all -- --check
-
+        '
+    - name: Checkout del repositorio
+      if: needs.changed.outputs.rust == 'true'
+      uses: actions/checkout@v4
+    - name: Instalar dependencias nativas de Tauri (GTK y WebKit2GTK)
+      run: "sudo apt-get update\nsudo apt-get install -y \\\n  ffmpeg \\\n  flac \\\n  libwebkit2gtk-4.1-dev\
+        \ \\\n  libgtk-3-dev \\\n  libayatana-appindicator3-dev \\\n  librsvg2-dev\n"
+    - name: Comprobar ejecutable FLAC requerido por tests
+      run: flac --version
+    - name: Comprobar capacidad FFmpeg para WebP animado
+      shell: bash
+      run: "ffmpeg -version\nffmpeg -hide_banner -decoders | grep -E 'webp(_anim)?' || true\nif ffmpeg\
+        \ -hide_banner -loglevel error \\\n  -i tests/fixtures/animated-cover.webp -f null -; then\n \
+        \ echo \"SYNCIFY_ANIMATED_WEBP_E2E=1\" >> \"$GITHUB_ENV\"\n  echo \"FFmpeg decodifica el fixture\
+        \ WebP animado; se ejecutará el E2E real.\"\nelse\n  echo \"SYNCIFY_ANIMATED_WEBP_E2E=0\" >> \"\
+        $GITHUB_ENV\"\n  echo \"::warning::FFmpeg del runner no decodifica WebP animado; el E2E real se\
+        \ omite explícitamente.\"\nfi\n"
+    - name: Instalar toolchain Rust estable (con clippy y rustfmt)
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+    - name: Cache de artefactos cargo (workspace src-tauri)
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src-tauri
+    - name: Configurar Node.js 20 con cache npm
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
+    - name: Construir frontend requerido por Tauri
+      working-directory: ui
+      run: npm ci && npm run build
+    - name: cargo check --all-targets --locked
+      run: cargo check --all-targets --locked
+    - name: Suite de tests completa
+      run: cargo test --locked
+    - name: batch_50_audit_test serializado (--test-threads=1)
+      timeout-minutes: 10
+      run: cargo test --locked --test batch_50_audit_test -- --test-threads=1
+    - name: cargo clippy estricto
+      run: cargo clippy --workspace --all-targets --locked -- -D warnings
+    - name: cargo fmt --all -- --check
+      run: cargo fmt --all -- --check
   frontend:
     needs: changed
     name: Frontend (ui · vue-tsc · vitest)
@@ -168,55 +95,52 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - name: Area sin cambios
-        if: needs.changed.outputs.frontend != 'true'
-        run: |
-          echo "Sin cambios en ui/: no hay nada que probar."
-          echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
+    - name: Area sin cambios
+      if: needs.changed.outputs.frontend != 'true'
+      run: 'echo "Sin cambios en ui/: no hay nada que probar."
 
-      - name: Checkout del repositorio
-        if: needs.changed.outputs.frontend == 'true'
-        uses: actions/checkout@v4
+        echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
 
-      - name: Configurar Node.js 20 con cache npm
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      - name: Instalar dependencias (npm ci, reproducible desde package-lock.json)
-        run: npm ci
-
-      - name: Chequeo de tipos Vue/TS (vue-tsc --noEmit)
-        run: npx vue-tsc --noEmit
-
-      - name: Tests unitarios (vitest run, modo CI)
-        run: npm run test:run
-
+        '
+    - name: Checkout del repositorio
+      if: needs.changed.outputs.frontend == 'true'
+      uses: actions/checkout@v4
+    - name: Configurar Node.js 20 con cache npm
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: ui/package-lock.json
+    - name: Instalar dependencias (npm ci, reproducible desde package-lock.json)
+      run: npm ci
+    - name: Chequeo de tipos Vue/TS (vue-tsc --noEmit)
+      run: npx vue-tsc --noEmit
+    - name: Tests unitarios (vitest run, modo CI)
+      run: npm run test:run
   python:
     needs: changed
     name: Python (bridges · tests unitarios)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Area sin cambios
-        if: needs.changed.outputs.python != 'true'
-        run: |
-          echo "Sin cambios en scripts/: no hay nada que probar."
-          echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
+    - name: Area sin cambios
+      if: needs.changed.outputs.python != 'true'
+      run: 'echo "Sin cambios en scripts/: no hay nada que probar."
 
-      - name: Checkout del repositorio
-        if: needs.changed.outputs.python == 'true'
-        uses: actions/checkout@v4
+        echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
 
-      - name: Configurar Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Instalar dependencias de bridges
-        run: python -m pip install --disable-pip-version-check -r scripts/requirements.txt
-
-      - name: Suite unittest de scripts/
-        run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v
+        '
+    - name: Checkout del repositorio
+      if: needs.changed.outputs.python == 'true'
+      uses: actions/checkout@v4
+    - name: Configurar Python
+      if: needs.changed.outputs.python == 'true'
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Instalar dependencias de bridges
+      if: needs.changed.outputs.python == 'true'
+      run: python -m pip install --disable-pip-version-check -r scripts/requirements.txt
+    - name: Suite unittest de scripts/
+      if: needs.changed.outputs.python == 'true'
+      run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v
