@@ -21,9 +21,10 @@ on:
       - '**.md'
       - 'docs/**'
   pull_request:
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
+    # Sin paths-ignore: un PR que solo toca .md no lanzaba nada y, como main
+    # exige los checks en modo strict, su merge quedaba bloqueado para
+    # siempre. Con los guards por area, el pipeline corre igual pero cada
+    # job termina en un segundo si lo suyo no cambio.
   # Verificación bajo demanda de un commit concreto. Necesaria porque
   # paths-ignore deja sin pipeline a los commits que solo tocan .md o docs/
   # (p.ej. una actualización de portada), y el orden de publicación exige
