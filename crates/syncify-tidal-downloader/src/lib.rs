@@ -59,11 +59,18 @@ pub struct TidalGuiCredentials {
     pub client_secret: Option<String>,
 }
 
-/// Safe fallback placeholders for development/testing when credentials are not configured.
-/// Production deployments must provide valid credentials via `TIDAL_CLIENT_ID` and `TIDAL_CLIENT_SECRET`
-/// environment variables or via secure database accounts configuration.
-pub const DEFAULT_TIDAL_CLIENT_ID_FALLBACK: &str = "dev_placeholder_tidal_client_id";
-pub const DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK: &str = "dev_placeholder_tidal_client_secret";
+/// Credenciales PÚBLICAS del cliente oficial de escritorio de Tidal: son los
+/// identificadores que la app de escritorio distribuye y que usan los clientes
+/// open-source para el device flow y para PKCE. NO son credenciales personales
+/// de nadie y NO deben volver a sustituirse por placeholders creyendo que son
+/// secretos privados (ocurrió dos veces con las de Qobuz). Las credenciales
+/// PERSONALES del usuario van por keychain, por la configuración de la cuenta o
+/// por las variables de entorno, que tienen prioridad sobre estas constantes.
+pub const DEFAULT_TIDAL_CLIENT_ID_FALLBACK: &str = "fX2JxdmntZWK0ixT";
+pub const DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK: &str =
+    "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8=";
+/// Client id público del cliente PKCE (Hi-Res / HiFi+).
+pub const DEFAULT_TIDAL_CLIENT_ID_PKCE: &str = "6BDSRdpK9hqEBTgU";
 
 /// Maximum number of DASH MPD segments allowed to prevent resource exhaustion / DoS attacks (SEC-023).
 pub const MAX_DASH_SEGMENTS: u32 = 500;

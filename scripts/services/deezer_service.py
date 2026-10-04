@@ -70,17 +70,21 @@ class DeezerService(MusicService):
     CLIENT_ID = "447462"
     CLIENT_SECRET = ""
 
+    # Clave Blowfish PÚBLICA de Deezer: es la clave de descifrado que la propia
+    # Deezer usa para sus streams y que todos los clientes open-source traen
+    # incluida. NO es un secreto personal de nadie y NO debe volver a exigirse
+    # por variable de entorno como si lo fuera. La variable
+    # DEEZER_BLOWFISH_KEY (o credentials.extra) solo existe para sobrescribirla.
+    PUBLIC_BLOWFISH_KEY: bytes = b"g4el58wc0zvf9na1"
+
     @classmethod
     def resolve_blowfish_key(cls, credentials: Optional[ServiceCredentials] = None) -> bytes:
-        """Resolve the required Deezer Blowfish key without unsafe fallbacks."""
+        """Resolve the Deezer Blowfish key: env or credentials override, then the public key."""
         raw_key: Any = os.environ.get("DEEZER_BLOWFISH_KEY")
         if not raw_key and credentials and credentials.extra:
             raw_key = credentials.extra.get("blowfish_key")
         if not raw_key:
-            raise ValueError(
-                "DEEZER_BLOWFISH_KEY is required for Deezer downloads; "
-                "refusing to decrypt audio with an unknown key"
-            )
+            return cls.PUBLIC_BLOWFISH_KEY
         key = raw_key if isinstance(raw_key, bytes) else str(raw_key).encode("utf-8")
         if len(key) < 16:
             raise ValueError("DEEZER_BLOWFISH_KEY must contain at least 16 bytes")

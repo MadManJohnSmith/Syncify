@@ -20,17 +20,37 @@ class MissingTidalCredentialsError(RuntimeError):
     """Raised when a required Tidal OAuth credential is not configured."""
 
 
+# Credenciales PÚBLICAS del cliente oficial de escritorio de Tidal, las mismas
+# que usan los clientes open-source (device flow y PKCE). NO son credenciales
+# personales de nadie y NO deben volver a sustituirse por placeholders creyendo
+# que son secretos privados. Las credenciales PERSONALES del usuario (tokens)
+# van por keychain o por la configuración de la cuenta; las variables de
+# entorno y las credenciales almacenadas tienen prioridad sobre estos valores.
+PUBLIC_TIDAL_CLIENT_ID = "fX2JxdmntZWK0ixT"
+PUBLIC_TIDAL_CLIENT_SECRET = "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8="
+PUBLIC_TIDAL_CLIENT_ID_PKCE = "6BDSRdpK9hqEBTgU"
+
+
 def _resolve_credential(credentials: Any, attribute: str, env_var: str, label: str) -> str:
-    """Resolve a Tidal OAuth credential from stored credentials, then the environment."""
+    """Resolve a Tidal OAuth credential: stored credentials, then env, then the public client default."""
     value = getattr(credentials, attribute, None) if credentials is not None else None
     if not value:
         value = os.getenv(env_var)
+    if not value or not str(value).strip():
+        value = PUBLIC_TIDAL_CLIENT_CREDENTIALS.get(env_var)
     if not value or not str(value).strip():
         raise MissingTidalCredentialsError(
             f"{label} is required for Tidal authentication. Set the {env_var} environment "
             "variable (see .env.example) or store the credential in the account configuration."
         )
     return str(value).strip()
+
+
+PUBLIC_TIDAL_CLIENT_CREDENTIALS = {
+    "TIDAL_CLIENT_ID": PUBLIC_TIDAL_CLIENT_ID,
+    "TIDAL_CLIENT_SECRET": PUBLIC_TIDAL_CLIENT_SECRET,
+    "TIDAL_CLIENT_ID_PKCE": PUBLIC_TIDAL_CLIENT_ID_PKCE,
+}
 
 
 def resolve_tidal_client_id(credentials: Any = None) -> str:
@@ -52,9 +72,9 @@ class TidalAuth:
     """
     Tidal authentication via OAuth device code flow.
 
-    Credentials are resolved from the stored account configuration or the
-    environment (TIDAL_CLIENT_ID / TIDAL_CLIENT_SECRET); they are never embedded
-    in the source tree.
+    Credentials are resolved from the stored account configuration, the
+    environment (TIDAL_CLIENT_ID / TIDAL_CLIENT_SECRET), or the public desktop
+    client defaults; user tokens are never embedded in the source tree.
     """
 
     # OAuth endpoints

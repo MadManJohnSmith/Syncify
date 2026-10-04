@@ -313,13 +313,11 @@ class PlanStateTests(unittest.TestCase):
 
 
 class AcceptedQobuzAppIdRiskTests(unittest.TestCase):
-    """SYNC-AUD-071: the Qobuz `app_id` exposure is accepted, so it stays written down.
-
-    The decision is not a code fix: the public client id stays in the Python
-    bridges on purpose while the paired secret never enters the tree. What must
-    never regress is that the decision is visible and that the Rust core keeps
-    its own placeholder.
-    """
+    """SYNC-AUD-071, revisado 2026-10-04: el bundle app_id/secret de Qobuz es
+    PÚBLICO (lo usan los clientes open-source) y DEBE vivir incrustado tanto en
+    los puentes Python como en el núcleo Rust. Lo que no debe regresar: que la
+    decisión siga escrita en docs/Deuda_Tecnica_y_UX.md y que ambos lados
+    compartan el MISMO valor público."""
 
     def _committed_public_app_id(self) -> str:
         """Read the accepted public app id from its single allowed home.
@@ -348,12 +346,12 @@ class AcceptedQobuzAppIdRiskTests(unittest.TestCase):
             "the constant must say that the exposure is a documented accepted risk",
         )
 
-    def test_rust_core_keeps_the_app_id_out_of_source(self):
+    def test_rust_core_embeds_the_same_public_app_id(self):
         core = _doc_text("src-tauri/src/services/qobuz.rs")
-        self.assertNotIn(
+        self.assertIn(
             self._committed_public_app_id(),
             core,
-            "the Rust core keeps a development placeholder for the app id",
+            "the Rust core embeds the same public app_id as the Python bridges",
         )
 
 

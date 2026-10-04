@@ -54,13 +54,13 @@ class QobuzService(MusicService):
     # (docs/Deuda_Tecnica_y_UX.md). Override it per deployment with the
     # operator credentials or the QOBUZ_APP_ID environment variable.
     APP_ID = "798273057"
-    # No signing secret is ever committed. This empty value is only a
-    # placeholder: it is replaced at runtime from the operator credentials
-    # (ServiceCredentials.app_secret / client_secret / extra["app_secret"]) or
-    # from the QOBUZ_APP_SECRET environment variable. Signing with the empty
-    # placeholder is refused by _sign_file_url_request instead of silently
-    # producing a signature that Qobuz always rejects.
-    APP_SECRET = ""
+    # Secreto PÚBLICO del bundle de la API de Qobuz: el mismo par app_id/secret
+    # que traen los clientes open-source y que la propia API exige (sin él no
+    # hay firma posible). NO es un secreto personal de nadie y NO debe volver a
+    # vaciarse creyendo que lo es (ya pasó dos veces). Las credenciales
+    # PERSONALES del usuario (token, login) van por keychain/cuentas; las
+    # credenciales del operador y la env tienen prioridad sobre este valor.
+    APP_SECRET = "abb21364945c0583309667d13ca3d93a"
     
     # Quality mapping: DownloadQuality → Qobuz format_id
     # Qobuz format IDs (verified from QobuzDownloaderX-MOD):
@@ -131,12 +131,7 @@ class QobuzService(MusicService):
 
     @classmethod
     def _resolve_app_secret(cls, credentials: ServiceCredentials) -> str:
-        """Resolve the Qobuz app secret: operator credentials, then env, then default.
-
-        The committed default is intentionally empty; returning it means "no
-        secret configured", which callers must treat as a hard stop before
-        signing (see `_sign_file_url_request`).
-        """
+        """Resolve the Qobuz app secret: operator credentials, then env, then the public bundle."""
         return (
             cls._first_credential_value(credentials, "app_secret", "client_secret")
             or (os.getenv("QOBUZ_APP_SECRET") or "").strip()
