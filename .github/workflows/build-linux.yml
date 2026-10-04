@@ -427,8 +427,9 @@ jobs:
 
           echo "== Smoke python: AppImage (con el entorno que deja AppRun) =="
           AI=$(ls dist/linux/*.AppImage | head -1)
+          AI_ABS="$PWD/$AI"
           AIWORK="$(mktemp -d)"
-          ( cd "$AIWORK" && "$PWD/$AI" --appimage-extract >/dev/null )
+          ( cd "$AIWORK" && "$AI_ABS" --appimage-extract >/dev/null )
           $SMOKE_ENV LD_LIBRARY_PATH="$AIWORK/squashfs-root/usr/lib" \
             timeout 120 "$AIWORK/squashfs-root/resources/python/bin/python" -c "$SMOKE_IMPORTS; print('OK appimage')"
           rm -rf "$AIWORK"
