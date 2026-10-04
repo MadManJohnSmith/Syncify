@@ -4,7 +4,8 @@ use std::time::Duration;
 use syncify_tauri_lib::cmd_utils::{
     apply_bundled_tool_env, bundled_tool_candidates, create_python_std_command,
     create_python_tokio_command, create_std_command, find_scripts_dir, is_executable_file,
-    resolve_tool, run_command_with_timeout, scripts_dir_from, DEFAULT_BRIDGE_TIMEOUT,
+    packaged_python_candidates, resolve_tool, run_command_with_timeout, scripts_dir_from,
+    DEFAULT_BRIDGE_TIMEOUT,
 };
 
 #[test]
@@ -68,6 +69,59 @@ fn test_find_scripts_dir_falls_back_to_project_root() {
     let root = std::env::temp_dir();
     assert!(find_scripts_dir(&root).starts_with(&root));
     assert!(find_scripts_dir(&root).ends_with("scripts"));
+}
+
+#[test]
+fn test_packaged_python_candidates_sit_beside_scripts() {
+    // El Python empaquetado vive junto al `scripts/` resuelto: es la regla
+    // única que cubre `<_up_>/python` (AppImage/DEB) y `<raíz>/python`
+    // (tarball crudo). Un renombrado de la convención rompe el arranque con
+    // features Python deshabilitadas en todos los paquetes a la vez.
+    let scripts = Path::new("/opt/syncify/_up_/scripts");
+    let candidates = packaged_python_candidates(scripts);
+    assert_eq!(
+        candidates.len(),
+        1,
+        "un candidato por layout: {candidates:?}"
+    );
+    if cfg!(windows) {
+        assert_eq!(
+            candidates[0],
+            Path::new("/opt/syncify/_up_/python/python.exe")
+        );
+    } else {
+        assert_eq!(
+            candidates[0],
+            Path::new("/opt/syncify/_up_/python/bin/python")
+        );
+    }
+
+    // Tarball crudo: scripts/ junto al binario.
+    let tarball = packaged_python_candidates(Path::new("/dist/Syncify-Linux-Raw/scripts"));
+    if cfg!(windows) {
+        assert_eq!(
+            tarball[0],
+            Path::new("/dist/Syncify-Linux-Raw/python/python.exe")
+        );
+    } else {
+        assert_eq!(
+            tarball[0],
+            Path::new("/dist/Syncify-Linux-Raw/python/bin/python")
+        );
+    }
+
+    // En el árbol dev no hay `python/` junto a `scripts/`; el candidato no
+    // debe existir para no pisar el `.venv` de desarrollo.
+    let repo_scripts = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("scripts");
+    for candidate in packaged_python_candidates(&repo_scripts) {
+        assert!(
+            !candidate.exists(),
+            "el árbol dev no debe contener Python empaquetado en {candidate:?}"
+        );
+    }
 }
 
 #[test]

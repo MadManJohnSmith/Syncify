@@ -244,5 +244,113 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
                 )
 
 
+class TestLinuxBundledPythonPackaging(unittest.TestCase):
+    """Congela el empaquetado de Python en build-linux.yml (AppImage/DEB/tarball).
+
+    Cada artefacto Linux debe llevar un CPython autónomo con las dependencias
+    de scripts/requirements.txt ya instaladas, para que la app funcione tras
+    instalar sin pedirle Python, pip ni debugging al usuario (mirror del
+    python-embed de Windows). Quitar el bundle, el hash pineado o el smoke
+    test rompe esa garantía y debe fallar la CI aquí primero.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.build_linux_path = Path(__file__).resolve().parent.parent.parent / (
+            ".github/workflows/build-linux.yml"
+        )
+        if not cls.build_linux_path.exists():
+            raise FileNotFoundError(f"Workflow file missing: {cls.build_linux_path}")
+        cls.content = cls.build_linux_path.read_text(encoding="utf-8")
+
+    def test_workflow_is_valid_yaml(self):
+        with open(self.build_linux_path, "r", encoding="utf-8") as f:
+            docs = yaml.safe_load(f)
+        self.assertIsInstance(docs, dict)
+        self.assertIn("jobs", docs)
+
+    def test_python_bundle_step_downloads_pinned_standalone_cpython(self):
+        self.assertIn("python-build-standalone", self.content)
+        self.assertIn(
+            "cpython-3.11.9",
+            self.content,
+            "el bundle debe pinear la misma 3.11.x que el python-embed de Windows",
+        )
+        # Hash verificado contra el sidecar .sha256 oficial de la release.
+        self.assertIn(
+            "78b1c16a9fd032997ba92a60f46a64f795cd18ff335659dfdf6096df277b24d5",
+            self.content.lower(),
+            "el tarball del CPython autónomo debe verificarse con su SHA-256",
+        )
+
+    def test_python_bundle_installs_requirements_and_verifies_imports(self):
+        self.assertIn(
+            "requirements.txt", self.content,
+            "las dependencias de los puentes deben instalarse en el bundle",
+        )
+        self.assertRegex(
+            self.content,
+            r"import spotipy, acoustid[^\n]*mutagen[^\n]*yarl",
+            "el bundle debe verificar los módulos críticos antes de empaquetarse",
+        )
+
+    def test_appimage_injection_places_python_and_scripts_in_resources(self):
+        self.assertRegex(
+            self.content,
+            r"resources/scripts",
+            "el AppImage debe llevar resources/scripts (get_project_root lo usa de marcador)",
+        )
+        self.assertRegex(
+            self.content,
+            r"resources/python",
+            "el AppImage debe llevar resources/python (candidate 0 de get_python_executable)",
+        )
+        self.assertIn(
+            "appimagetool", self.content,
+            "la inyección debe reempaquetar con appimagetool conservando AppRun",
+        )
+
+    def test_deb_injection_places_python_beside_up_scripts(self):
+        self.assertIn("dpkg-deb -R", self.content)
+        self.assertIn("dpkg-deb --root-owner-group -b", self.content)
+        # El resolutor (cmd_utils::packaged_python_candidates) busca un
+        # python/ hermano del _up_/scripts que Tauri empaqueta.
+        self.assertRegex(
+            self.content,
+            r"\*_up_/scripts/dependency_manager\.py",
+            "la inyección en el DEB debe localizar _up_/scripts por el marcador",
+        )
+        self.assertIn(
+            "md5sums", self.content,
+            "los md5sums del DEB deben regenerarse tras la inyección",
+        )
+
+    def test_final_smoke_test_covers_all_three_artifacts(self):
+        self.assertIn("OK tarball", self.content)
+        self.assertIn("OK appimage", self.content)
+        self.assertIn("OK deb", self.content)
+        # El smoke del AppImage replica el entorno de AppRun: si un
+        # LD_LIBRARY_PATH del AppDir sombreara el libpython del bundle,
+        # este es el sitio donde se detecta.
+        self.assertIn("LD_LIBRARY_PATH", self.content)
+
+    def test_smoke_env_clears_python_env_vars(self):
+        # AppRun exporta PYTHONHOME (ver main.rs); el smoke test debe correr
+        # sin él para reproducir lo que ve el binario tras el clear de main.rs.
+        self.assertIn(
+            "-u PYTHONHOME", self.content,
+            "el smoke test debe limpiar PYTHONHOME/PYTHONPATH como hace la app",
+        )
+
+    def test_tauri_resources_include_services_package(self):
+        conf = (self.build_linux_path.parent.parent.parent / "src-tauri/tauri.conf.json"
+                ).read_text(encoding="utf-8")
+        self.assertIn(
+            "../scripts/services/*.py", conf,
+            "el glob de recursos debe incluir scripts/services/ o los puentes "
+            "empaquetados fallan con \"No module named 'services'\"",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

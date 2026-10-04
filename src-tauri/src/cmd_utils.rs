@@ -150,6 +150,25 @@ pub fn find_scripts_dir(project_root: &Path) -> PathBuf {
         .unwrap_or_else(|| project_root.join("scripts"))
 }
 
+/// Bundled-Python candidates sitting next to the resolved `scripts/`
+/// directory. Linux packages carry a self-contained CPython (with the
+/// `requirements.txt` dependencies installed) at `<parent>/python`, mirroring
+/// the `python/python.exe` embed Windows has always shipped: `<_up_>/python`
+/// for AppImage/DEB resources, `<appdir>/resources/python` via the project
+/// root, and `<tarball_root>/python` for the raw tarball. The caller must
+/// still check each candidate for existence; the first hit wins.
+pub fn packaged_python_candidates(scripts_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(base) = scripts_dir.parent() {
+        candidates.push(if cfg!(windows) {
+            base.join("python").join("python.exe")
+        } else {
+            base.join("python").join("bin").join("python")
+        });
+    }
+    candidates
+}
+
 /// Resolves the program name when it is one of the external tools; anything
 /// else (absolute paths, `python`, shell builtins) passes through untouched.
 fn resolve_known_program<S: AsRef<OsStr>>(program: S) -> OsString {
