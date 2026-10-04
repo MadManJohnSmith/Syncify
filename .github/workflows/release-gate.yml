@@ -33,11 +33,6 @@ on:
         required: false
         type: boolean
         default: false
-    # Un reusable workflow NO hereda `secrets.GITHUB_TOKEN` sin declararlo:
-    # la referencia queda vacia y el workflow es invalido (startup_failure).
-    secrets:
-      GITHUB_TOKEN:
-        required: true
 
 permissions:
   actions: read
