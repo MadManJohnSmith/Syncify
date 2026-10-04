@@ -27,7 +27,78 @@ jobs:
       release_tag: ${{ inputs.release_tag }}
       create_release: ${{ inputs.create_release }}
 
+  # No se compila ni se publica nada hasta confirmar que este commit tiene CI
+  # verde y que el tag no se esta moviendo. Es el mismo job que corre
+  # release-gate.yml, copiado aqui porque invocar un reusable workflow desde un
+  # workflow_dispatch moria en startup_failure.
+  gate:
+    name: Verificar CI verde y tag publicable
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validar el formato del tag
+        if: ${{ inputs.create_release }}
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::El tag '$TAG' no tiene la forma vX.Y.Z. No se publica nada."
+            exit 1
+          fi
+          echo "Formato del tag correcto: $TAG"
+
+      - name: Exigir CI verde para el SHA exacto de esta corrida
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "Verificando CI para el commit $SHA"
+          # Solo corridas completadas: una aun en curso no cuenta como verde.
+          runs=$(gh run list --repo "$REPO" --workflow ci.yml --commit "$SHA" \
+            --status completed --json conclusion --jq '.[].conclusion')
+          if [[ -z "$runs" ]]; then
+            echo "::error::No hay ninguna corrida de CI completada para $SHA."
+            echo "::error::Lanzala bajo demanda antes de publicar."
+            exit 1
+          fi
+          if ! grep -qx "success" <<< "$runs"; then
+            echo "::error::La CI de $SHA no esta en verde. Se obtuvo:"
+            echo "$runs"
+            exit 1
+          fi
+          echo "CI en verde para $SHA"
+
+      - name: Impedir crear o mover un tag ya publicado
+        if: ${{ inputs.create_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          remote_sha=$(git ls-remote --tags "https://github.com/$REPO" "refs/tags/$TAG" \
+            | awk '{print $1}' || true)
+          if [[ -z "$remote_sha" ]]; then
+            echo "El tag $TAG no existe todavia. Se creara apuntando a $SHA."
+            exit 0
+          fi
+          peeled=$(git ls-remote --tags "https://github.com/$REPO" "refs/tags/$TAG^{}" \
+            | awk '{print $1}' || true)
+          resolved="${peeled:-$remote_sha}"
+          if [[ "$resolved" != "$SHA" ]]; then
+            echo "::error::El tag $TAG ya existe y apunta a $resolved, no a $SHA."
+            echo "::error::No se mueve un tag existente. Publica una version nueva."
+            exit 1
+          fi
+          echo "El tag $TAG ya existe y apunta al mismo commit $SHA."
+
   build-windows:
+    needs: gate
     name: Compilar Syncify para Windows
     needs: gate
     runs-on: windows-latest

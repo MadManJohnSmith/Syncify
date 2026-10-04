@@ -6,12 +6,15 @@
 # para ese commit. Este workflow hace esa comprobación de forma explícita y
 # falla de forma ruidosa en lugar de dejar que action-gh-release cree el tag.
 #
-# Se invoca como reusable workflow desde build-linux.yml y build-windows.yml:
-#   jobs:
-#     gate:
-#       uses: ./.github/workflows/release-gate.yml
-#     build-linux:
-#       needs: gate
+# Originally era un reusable workflow (workflow_call) invocado con `uses:` desde
+# build-linux.yml y build-windows.yml. No arrancaba nunca: el run moría en
+# startup_failure antes del primer paso. Se comprobó que no era culpa del
+# contenido (un reusable mínimo con un solo `run: echo ok` fallaba igual), sino
+# de invocar un reusable desde un workflow_dispatch.
+#
+# Ahora se ejecuta por sí mismo. Para que un build lo espere sin duplicar la
+# lógica, basta con copiar el job `verify` (sus tres `env` y sus pasos) dentro
+# del build que lo necesite.
 #
 # Tres reglas, en este orden:
 #   1. El SHA que se va a publicar tiene una corrida de CI *exitosa*.
@@ -22,14 +25,15 @@
 name: Release Gate
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       release_tag:
         description: 'Tag de la release a publicar (ej: v0.2.1)'
-        required: true
+        required: false
         type: string
+        default: 'v0.2.1'
       create_release:
-        description: 'true cuando la corrida va a publicar un release'
+        description: '¿Publicar automáticamente como Release en GitHub?'
         required: false
         type: boolean
         default: false
@@ -67,21 +71,20 @@ jobs:
           set -euo pipefail
           echo "Verificando CI para el commit $SHA"
 
-          # Se filtran las corridas fallidas/incompletas para no dar por bueno
-          # un workflow que se lanzo pero todavia no termino.
+          # Solo corridas *completadas*: un workflow lanzado pero que aun no
+          # termina no puede contar como verde.
           runs=$(gh run list \
             --repo "$REPO" \
             --workflow ci.yml \
             --commit "$SHA" \
             --status completed \
-            --json conclusion,headBranch,name \
-            --jq '.[] | "\(.conclusion)"')
+            --json conclusion \
+            --jq '.[].conclusion')
 
           if [[ -z "$runs" ]]; then
             echo "::error::No hay ninguna corrida de CI completada para $SHA."
-            echo "::error::Si el commit solo toca .md o docs/, CI no se dispara por paths-ignore."
             echo "::error::Lanzala bajo demanda antes de publicar:"
-            echo "::error::  gh workflow run ci.yml --ref $(git rev-parse --abbrev-ref HEAD)"
+            echo "::error::  gh workflow run ci.yml --ref <rama>"
             exit 1
           fi
 
@@ -110,7 +113,7 @@ jobs:
             exit 0
           fi
 
-          # peeled: para tags anotados hay una segunda linea refs/tags/TAG^{}
+          # Para tags anotados hay una segunda linea refs/tags/TAG^{}.
           peeled=$(git ls-remote --tags "https://github.com/$REPO" "refs/tags/$TAG^{}" \
             | awk '{print $1}' || true)
           resolved="${peeled:-$remote_sha}"
