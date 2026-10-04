@@ -98,7 +98,6 @@ jobs:
   build-windows:
     needs: gate
     name: Compilar Syncify para Windows
-    needs: gate
     runs-on: windows-latest
     timeout-minutes: 90
 

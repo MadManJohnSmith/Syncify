@@ -98,7 +98,6 @@ jobs:
   build-linux:
     needs: gate
     name: Compilar Syncify para Linux
-    needs: gate
     runs-on: ubuntu-22.04
     timeout-minutes: 90
 
