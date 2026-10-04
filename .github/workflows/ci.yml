@@ -17,22 +17,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      frontend: ${{ steps.filter.outputs.frontend }}
-      python: ${{ steps.filter.outputs.python }}
+      rust: ${{ steps.filter.outputs.rust || steps.fallback.outputs.RUST }}
+      frontend: ${{ steps.filter.outputs.frontend || steps.fallback.outputs.FRONTEND }}
+      python: ${{ steps.filter.outputs.python || steps.fallback.outputs.PYTHON }}
     steps:
-    - uses: actions/checkout@v4
-    - id: filter
-      uses: dorny/paths-filter@v3
-      with:
-        filters: |
-          rust:
-            - 'src-tauri/**'
-            - 'crates/**'
-          frontend:
-            - 'ui/**'
-          python:
-            - 'scripts/**'
+      - uses: actions/checkout@v4
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          # En una rama nueva, o tras reescribir la historia, paths-filter no
+          # tiene base con la que comparar: se queda sin salida. El paso de
+          # abajo lo cubre, porque un pipeline que no comprueba nada y sale
+          # en verde es peor que uno lento.
+          base: ${{ github.event.pull_request.base.sha || github.event.before }}
+          ref: ${{ github.sha }}
+          filters: |
+            rust:
+              - 'src-tauri/**'
+              - 'crates/**'
+            frontend:
+              - 'ui/**'
+            python:
+              - 'scripts/**'
+      # Si el filtro no produjo ninguna salida, se ejecutan todas las areas:
+      # probar de mas, nunca de menos.
+      - id: fallback
+        name: Sin areas detectadas, probarlas todas
+        if: >-
+          ${{ steps.filter.outputs.rust != 'true' &&
+               steps.filter.outputs.frontend != 'true' &&
+               steps.filter.outputs.python != 'true' }}
+        run: |
+          echo "::notice::El filtro de rutas no detecto areas; se ejecutan todas."
+          echo "RUST=true" >> "$GITHUB_OUTPUT"
+          echo "FRONTEND=true" >> "$GITHUB_OUTPUT"
+          echo "PYTHON=true" >> "$GITHUB_OUTPUT"
   rust:
     name: Rust (src-tauri · check · test · clippy · fmt)
     needs: changed
