@@ -1,8 +1,11 @@
 /**
  * SearchView.spec.ts
- * Tests for SearchView.vue download actions and IPC payloads
+ * Tests for SearchView.vue (modal, R17) — download actions, playback and IPC payloads.
+ *
+ * The view renders through `<Teleport to="body">`, so its DOM lives in the
+ * document, not inside the wrapper returned by `mount`.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import SearchView from '@/views/SearchView.vue';
 import { mockInvoke, resetMocks } from '../setup';
@@ -20,21 +23,63 @@ vi.mock('@/composables/usePlayer', () => ({
     }),
 }));
 
+function modal() {
+    return document.body.querySelector('[data-testid="search-modal"]') as HTMLElement;
+}
+
 describe('SearchView', () => {
     beforeEach(() => {
         resetMocks();
         vi.clearAllMocks();
     });
 
+    afterEach(() => {
+        document.body.innerHTML = '';
+    });
+
     const mockSearchResults = {
         tracks: [
-            { id: 501, title: 'Search Hit Track', artist_name: 'Search Hit Artist', album_name: 'Search Hit Album', duration_ms: 210000, isrc: 'US1234567890' }
+            { id: 501, title: 'Search Hit Track', artist_name: 'Search Hit Artist', album_name: 'Search Hit Album', duration_ms: 210000, isrc: 'US1234567890', cover_art_url: null }
         ],
         total: 1,
         offset: 0,
         limit: 50,
         has_more: false
     };
+
+    async function openWithQuery(query: string) {
+        const wrapper = mount(SearchView);
+        await flushPromises();
+
+        const input = modal().querySelector('input[type="text"]') as HTMLInputElement;
+        input.value = query;
+        input.dispatchEvent(new Event('input'));
+        await new Promise(r => setTimeout(r, 600));
+        await flushPromises();
+
+        return wrapper;
+    }
+
+    it('renders as a modal over a backdrop', async () => {
+        mount(SearchView);
+        await flushPromises();
+
+        expect(document.body.querySelector('[data-testid="search-modal-backdrop"]')).not.toBeNull();
+        expect(modal().getAttribute('role')).toBe('dialog');
+        expect(modal().getAttribute('aria-modal')).toBe('true');
+    });
+
+    it('closes on Escape and on the backdrop', async () => {
+        const wrapper = mount(SearchView, { attachTo: document.body });
+        await flushPromises();
+
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        await flushPromises();
+        expect(wrapper.emitted('close')).toBeTruthy();
+
+        wrapper.unmount();
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
 
     it('searches and allows downloading a search result track with add_to_queue', async () => {
         const invokeCalls: { cmd: string; args: any }[] = [];
@@ -45,22 +90,13 @@ describe('SearchView', () => {
             return null;
         });
 
-        const wrapper = mount(SearchView);
-        await flushPromises();
+        await openWithQuery('Search Hit');
 
-        // Type search query
-        const input = wrapper.find('input[type="text"]');
-        await input.setValue('Search Hit');
-        // Wait for debounce timer (500ms)
-        await new Promise(r => setTimeout(r, 600));
-        await flushPromises();
+        expect(modal().textContent).toContain('Search Hit Track');
 
-        expect(wrapper.text()).toContain('Search Hit Track');
-
-        // Click download track button
-        const downloadBtn = wrapper.find('button[title="Download Track"]');
-        expect(downloadBtn.exists()).toBe(true);
-        await downloadBtn.trigger('click');
+        const downloadBtn = modal().querySelector('button[title="Download Track"]') as HTMLButtonElement;
+        expect(downloadBtn).not.toBeNull();
+        downloadBtn.click();
         await flushPromises();
 
         const addCall = invokeCalls.find(c => c.cmd === 'add_to_queue');
@@ -84,19 +120,25 @@ describe('SearchView', () => {
             return null;
         });
 
-        const wrapper = mount(SearchView);
-        await flushPromises();
+        const wrapper = await openWithQuery('Search Hit');
 
-        const input = wrapper.find('input[type="text"]');
-        await input.setValue('Search Hit');
-        await new Promise(r => setTimeout(r, 600));
-        await flushPromises();
-
-        const downloadBtn = wrapper.find('button[title="Download Track"]');
-        await downloadBtn.trigger('click');
+        const downloadBtn = modal().querySelector('button[title="Download Track"]') as HTMLButtonElement;
+        downloadBtn.click();
         await flushPromises();
 
         expect(wrapper.exists()).toBe(true);
+    });
+
+    it('shows a search failure instead of "no results" when the query fails', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'search_tracks') throw new Error('Search backend unavailable');
+            return null;
+        });
+
+        await openWithQuery('Boom');
+
+        expect(document.body.querySelector('[data-testid="search-modal-error"]')).not.toBeNull();
+        expect(modal().textContent).not.toContain('No results found');
     });
 
     it('plays track via usePlayer when clicking on track row in search results', async () => {
@@ -105,17 +147,11 @@ describe('SearchView', () => {
             return null;
         });
 
-        const wrapper = mount(SearchView);
-        await flushPromises();
+        await openWithQuery('Search Hit');
 
-        const input = wrapper.find('input[type="text"]');
-        await input.setValue('Search Hit');
-        await new Promise(r => setTimeout(r, 600));
-        await flushPromises();
-
-        const trackRow = wrapper.find('.cursor-pointer.group');
-        expect(trackRow.exists()).toBe(true);
-        await trackRow.trigger('click');
+        const trackRow = modal().querySelector('.cursor-pointer.group') as HTMLElement;
+        expect(trackRow).not.toBeNull();
+        trackRow.click();
         await flushPromises();
 
         expect(mockPlayerPlay).toHaveBeenCalledTimes(1);

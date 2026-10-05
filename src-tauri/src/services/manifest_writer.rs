@@ -187,6 +187,55 @@ impl ManifestWriter {
                 (status.clone(), None)
             };
 
+            // The manifest is the artifact the user audits or moves the batch with, so it
+            // has to describe the bytes that actually landed on disk. A download that
+            // arrived as AAC must not be recorded as FLAC just because FLAC is the
+            // default request. Falls back to the extension when the container cannot
+            // be parsed, and to the ledger's own numbers when there is no file.
+            let physical = if is_success {
+                file_path_opt
+                    .as_deref()
+                    .map(Path::new)
+                    .and_then(crate::download::audio_inspector::inspect_physical_audio_file)
+            } else {
+                None
+            };
+            let ext_label = file_path_opt
+                .as_deref()
+                .and_then(|fp| Path::new(fp).extension().and_then(|e| e.to_str()))
+                .map(|e| e.to_ascii_lowercase());
+            let obtained_format = physical
+                .as_ref()
+                .map(|p| p.format.clone())
+                .or_else(|| ext_label.clone())
+                .or_else(|| Some("FLAC".to_string()));
+            let obtained_class = physical
+                .as_ref()
+                .map(|p| {
+                    if p.canonical_quality() == "lossy" {
+                        "Lossy"
+                    } else {
+                        "Lossless"
+                    }
+                    .to_string()
+                })
+                .or_else(|| {
+                    ext_label
+                        .as_ref()
+                        .filter(|e| matches!(e.as_str(), "m4a" | "aac" | "mp3" | "opus" | "ogg"))
+                        .map(|_| "Lossy".to_string())
+                })
+                .or_else(|| Some("Lossless".to_string()));
+            let obtained_bit_depth = physical.as_ref().map(|p| p.bit_depth).or(bit_depth);
+            let obtained_sample_rate = physical
+                .as_ref()
+                .map(|p| p.sample_rate.max(0) as u32)
+                .or_else(|| sample_rate.map(|s| s.max(0) as u32));
+            let is_flac_obtained = obtained_format
+                .as_deref()
+                .map(|f| f.eq_ignore_ascii_case("FLAC"))
+                .unwrap_or(false);
+
             let entry = TrackManifestEntry {
                 queue_id: Some(qid),
                 track_id: Some(tid),
@@ -200,31 +249,23 @@ impl ManifestWriter {
                     .clone()
                     .unwrap_or_else(|| "HI_RES_LOSSLESS".to_string()),
                 format_obtained: if is_success {
-                    Some("FLAC".to_string())
+                    obtained_format.clone()
                 } else {
                     None
                 },
                 quality_class_requested: quality_pref.unwrap_or_else(|| "Lossless".to_string()),
-                quality_class_obtained: if is_success {
-                    Some("Lossless".to_string())
-                } else {
-                    None
-                },
+                quality_class_obtained: if is_success { obtained_class } else { None },
                 codec: if is_success {
-                    Some("FLAC".to_string())
+                    obtained_format.clone()
                 } else {
                     None
                 },
                 container: if is_success {
-                    Some("FLAC".to_string())
+                    obtained_format.clone()
                 } else {
                     None
                 },
-                extension: if is_success {
-                    Some("flac".to_string())
-                } else {
-                    None
-                },
+                extension: if is_success { ext_label.clone() } else { None },
                 source: Some("Syncify GUI Downloader".to_string()),
                 quality_fallback: false,
                 download_result: classified_result,
@@ -243,7 +284,9 @@ impl ManifestWriter {
                 },
                 final_path: file_path_opt,
                 size_bytes: size_bytes.map(|s| s as u64),
-                flac_validation: if is_success {
+                flac_validation: if !is_success {
+                    "None".to_string()
+                } else if is_flac_obtained {
                     "Valid".to_string()
                 } else {
                     "None".to_string()
@@ -271,8 +314,8 @@ impl ManifestWriter {
                     "None".to_string()
                 },
                 created_artifacts,
-                bit_depth,
-                sample_rate: sample_rate.map(|s| s as u32),
+                bit_depth: obtained_bit_depth,
+                sample_rate: obtained_sample_rate,
                 created_at,
                 completed_at,
             };

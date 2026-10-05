@@ -9,11 +9,53 @@
 
 use sqlx::{Row, SqlitePool};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use syncify_core_domain::{
     AudioByteValidator, ErrorTaxonomy, LibraryLayout, OperationJournalEntry, OperationPhase,
     OperationRecoveryDetail, OperationStatus, OperationType, RecoveryAction, RecoveryAuditSummary,
 };
 use tracing::{info, warn};
+
+/// Serializes the post-crash download reconciliation across the whole process.
+///
+/// Startup runs the reconciliation from a detached task while the download worker
+/// starts at the same moment and re-queues rows still marked `downloading`. Two
+/// tasks rewriting the same rows is what produced duplicate retries and
+/// contradictory queue states after an unexpected shutdown, so every entry point
+/// takes this lock before touching state.
+fn reconciliation_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Runs both post-crash download passes (journal reconciliation and
+/// staging/stuck-queue cleanup) under a single lock acquisition.
+///
+/// The download worker calls this before it looks at the queue, so that by the time
+/// it re-queues interrupted rows the recovery has already settled them. The passes
+/// are idempotent, so the detached startup task running them again is a no-op.
+pub async fn reconcile_downloads_on_startup(db: &SqlitePool) {
+    let _guard = reconciliation_lock().lock().await;
+
+    if let Err(e) = reconcile_startup_operations_locked(db, None).await {
+        warn!(
+            "[Recovery Engine] Startup journal reconciliation failed: {}",
+            e
+        );
+    }
+    if let Err(e) = cleanup_staging_and_recover_stuck_queue_with_message_locked(
+        db,
+        None,
+        "Download interrupted by system restart",
+    )
+    .await
+    {
+        warn!(
+            "[Recovery Engine] Startup staging cleanup and stuck-queue recovery failed: {}",
+            e
+        );
+    }
+}
 
 /// Record a new operation in the persistent journal.
 pub async fn create_operation_journal(
@@ -716,6 +758,14 @@ pub fn classify_operation_error(
 /// Perform comprehensive startup reconciliation across journal, SQLite state, and filesystem.
 pub async fn reconcile_startup_operations(
     db: &SqlitePool,
+    music_dir: Option<&Path>,
+) -> Result<RecoveryAuditSummary, String> {
+    let _guard = reconciliation_lock().lock().await;
+    reconcile_startup_operations_locked(db, music_dir).await
+}
+
+async fn reconcile_startup_operations_locked(
+    db: &SqlitePool,
     _music_dir: Option<&Path>,
 ) -> Result<RecoveryAuditSummary, String> {
     info!("[Recovery Engine] Starting post-crash deterministic reconciliation...");
@@ -762,6 +812,9 @@ pub async fn reconcile_startup_operations(
         let mut action_taken = RecoveryAction::NoOp;
         let mut new_status = OperationStatus::Interrupted;
         let mut message = String::new();
+        // Writes this reconciliation attempted and could not land. A recovery that
+        // did not persist is not a recovery, so these decide the final status.
+        let mut persist_errors: Vec<String> = Vec::new();
 
         match op_type {
             OperationType::DownloadQobuz
@@ -795,33 +848,50 @@ pub async fn reconcile_startup_operations(
                         let f_size = std::fs::metadata(&dest_path)
                             .map(|m| m.len() as i64)
                             .unwrap_or(0);
+                        let (fmt, depth, rate) = measured_audio_facts(&dest_path);
                         match dl_existing {
                             Some((dl_id, old_fp)) => {
                                 if old_fp != *dest {
-                                    let _ = sqlx::query(
-                                        "UPDATE downloads SET file_path = ?, file_size_bytes = ?, downloaded_at = CURRENT_TIMESTAMP WHERE id = ?"
+                                    if let Err(e) = sqlx::query(
+                                        "UPDATE downloads SET file_path = ?, file_size_bytes = ?, file_format = ?, bit_depth = ?, sample_rate = ?, downloaded_at = CURRENT_TIMESTAMP WHERE id = ?"
                                     )
                                     .bind(dest)
                                     .bind(f_size)
+                                    .bind(&fmt)
+                                    .bind(depth)
+                                    .bind(rate)
                                     .bind(dl_id)
                                     .execute(db)
-                                    .await;
+                                    .await
+                                    {
+                                        persist_errors.push(format!(
+                                            "downloads row {} not updated: {}",
+                                            dl_id, e
+                                        ));
+                                    }
                                 }
                             }
                             None => {
-                                let _ = sqlx::query(
+                                if let Err(e) = sqlx::query(
                                     r#"
                                     INSERT OR REPLACE INTO downloads (
                                         track_id, file_path, file_size_bytes, file_format, bit_depth,
                                         sample_rate, downloaded_at
-                                    ) VALUES (?, ?, ?, 'FLAC', 16, 44100, CURRENT_TIMESTAMP)
+                                    ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                                     "#
                                 )
                                 .bind(tid)
                                 .bind(dest)
                                 .bind(f_size)
+                                .bind(&fmt)
+                                .bind(depth)
+                                .bind(rate)
                                 .execute(db)
-                                .await;
+                                .await
+                                {
+                                    persist_errors
+                                        .push(format!("downloads row for track {} not inserted: {}", tid, e));
+                                }
                             }
                         }
                     }
@@ -829,12 +899,16 @@ pub async fn reconcile_startup_operations(
                     // Update download_queue if applicable
                     if let Some(qid_str) = entity_id.as_deref() {
                         if let Ok(qid) = qid_str.parse::<i64>() {
-                            let _ = sqlx::query(
+                            if let Err(e) = sqlx::query(
                                 "UPDATE download_queue SET status = 'complete', progress_percent = 100.0, completed_at = CURRENT_TIMESTAMP WHERE id = ?"
                             )
                             .bind(qid)
                             .execute(db)
-                            .await;
+                            .await
+                            {
+                                persist_errors
+                                    .push(format!("download_queue row {} not completed: {}", qid, e));
+                            }
                         }
                     }
 
@@ -848,8 +922,26 @@ pub async fn reconcile_startup_operations(
                     }
 
                     action_taken = RecoveryAction::ReconcileDbOnly;
-                    new_status = OperationStatus::Recovered;
-                    message = format!("Reconciled existing physical audio at {}", dest);
+                    if persist_errors.is_empty() {
+                        new_status = OperationStatus::Recovered;
+                        message = format!("Reconciled existing physical audio at {}", dest);
+                    } else {
+                        // The file survived but the ledger did not. Leaving the entry
+                        // interrupted keeps the next reconciliation pass retrying it,
+                        // instead of declaring a recovery that never happened.
+                        new_status = OperationStatus::Interrupted;
+                        message = format!(
+                            "Physical audio found at {} but persisting the recovered state failed: {}",
+                            dest,
+                            persist_errors.join("; ")
+                        );
+                        warn!(
+                            op_id = %op_id,
+                            dest = %dest,
+                            errors = ?persist_errors,
+                            "[Recovery Engine] Reconciliation could not persist the recovered download"
+                        );
+                    }
                 } else if let Some(ref stg) = stg_path {
                     // Check Case 2: Audio validated in staging, but Promotion was interrupted before move
                     let stg_p = PathBuf::from(stg);
@@ -1172,6 +1264,49 @@ fn is_valid_audio_file(path: &Path) -> bool {
     false
 }
 
+/// Read the container and the real bit depth / sample rate off a recovered file.
+///
+/// Recovery must not invent audio metadata: a download that crashed right after
+/// landing as AAC has to be recorded as AAC, because a row claiming FLAC/16/44.1k
+/// contradicts the library the moment anyone opens it. Every value comes back as an
+/// `Option` because `downloads` (migration 0004) CHECKs its vocabulary: the format
+/// list, `bit_depth IN (16,24,32)` and a strictly positive `sample_rate`. Anything
+/// outside that vocabulary is stored as NULL rather than rejected by the write.
+fn measured_audio_facts(path: &Path) -> (Option<String>, Option<i64>, Option<i64>) {
+    let (format, bit_depth, sample_rate) =
+        match crate::download::audio_inspector::inspect_physical_audio_file(path) {
+            Some(meta) => (Some(meta.format), meta.bit_depth, meta.sample_rate),
+            None => {
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_uppercase();
+                let format = match ext.as_str() {
+                    "FLAC" => Some("FLAC".to_string()),
+                    "M4A" | "AAC" | "MP4" => Some("AAC".to_string()),
+                    "MP3" => Some("MP3".to_string()),
+                    "WAV" => Some("WAV".to_string()),
+                    "OGG" => Some("OGG".to_string()),
+                    "OPUS" => Some("OPUS".to_string()),
+                    _ => None,
+                };
+                (format, 16, 44100)
+            }
+        };
+
+    let format = format.filter(|f| {
+        matches!(
+            f.as_str(),
+            "FLAC" | "ALAC" | "WAV" | "MP3" | "AAC" | "OGG" | "OPUS"
+        )
+    });
+    let bit_depth = matches!(bit_depth, 16 | 24 | 32).then_some(bit_depth as i64);
+    let sample_rate = (sample_rate > 0).then_some(sample_rate as i64);
+
+    (format, bit_depth, sample_rate)
+}
+
 fn is_terminal_taxonomy_error(tax_str: Option<&str>) -> bool {
     tax_str
         .map(|s| {
@@ -1221,6 +1356,16 @@ pub async fn cleanup_staging_and_recover_stuck_queue(
 
 /// Overload allowing custom error reason/message for recovered stuck queue items.
 pub async fn cleanup_staging_and_recover_stuck_queue_with_message(
+    db: &SqlitePool,
+    staging_dir: Option<&Path>,
+    error_message: &str,
+) -> Result<StagingRecoverySummary, String> {
+    let _guard = reconciliation_lock().lock().await;
+    cleanup_staging_and_recover_stuck_queue_with_message_locked(db, staging_dir, error_message)
+        .await
+}
+
+async fn cleanup_staging_and_recover_stuck_queue_with_message_locked(
     db: &SqlitePool,
     staging_dir: Option<&Path>,
     error_message: &str,

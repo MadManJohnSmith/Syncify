@@ -1617,6 +1617,16 @@ pub async fn create_playlist(
     Ok(playlist_id)
 }
 
+/// BD-6: `playlist_tracks.track_id` is `ON DELETE CASCADE` (0064), so deleting a
+/// track cascades its relation away and leaves both `playlists.track_count` and
+/// the `position` sequence stale — the counter is the one the UI shows.
+/// `add_to_playlist` refreshed it after every insert; the removals did not, and
+/// `reconcile_playlist_track_counts` (the repair that already existed for
+/// exactly these two symptoms) had no production caller.
+async fn refresh_playlist_track_counts(db: &crate::DbPool) -> Result<usize, String> {
+    crate::commands::reconcile_playlist_track_counts(db).await
+}
+
 /// Remove a single track from the library (cascading deletes via FK)
 #[tauri::command]
 pub async fn remove_track(state: State<'_, AppState>, track_id: i64) -> Result<(), String> {
@@ -1630,6 +1640,12 @@ pub async fn remove_track(state: State<'_, AppState>, track_id: i64) -> Result<(
 
     if result.rows_affected() == 0 {
         return Err(format!("Track {} not found", track_id));
+    }
+
+    // The track is already gone at this point, so a failed recount is reported
+    // but must not turn a successful removal into an error.
+    if let Err(e) = refresh_playlist_track_counts(&state.db).await {
+        tracing::warn!("Playlist counters not refreshed: {}", e);
     }
 
     tracing::info!("Track {} removed successfully", track_id);
@@ -1666,6 +1682,9 @@ pub async fn bulk_remove_tracks(
         .map_err(|e| format!("Failed to bulk remove tracks: {}", e))?;
 
     let removed = result.rows_affected() as usize;
+    if let Err(e) = refresh_playlist_track_counts(&state.db).await {
+        tracing::warn!("Playlist counters not refreshed: {}", e);
+    }
     tracing::info!("Bulk removed {} tracks", removed);
     Ok(removed)
 }
@@ -3430,8 +3449,18 @@ pub async fn auto_resolve_duplicates_inner(
         // count yet. Merging removes a duplicate *representation* of a track, not a track of the
         // album, so a declared count still describes the album and must survive; recounting
         // unconditionally collapsed a declared 10 to the number of surviving local rows.
+        // BD-5: `declared_total_tracks` is what makes that distinction durable
+        // (0088), so this path asks the same column the triggers do.
         let _ = sqlx::query(
-            "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0)"
+            "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND declared_total_tracks = 0"
+        )
+        .bind(album_id)
+        .execute(&mut *tx).await;
+
+        // The merge deletes tracks rows, so the imported count the 0088 triggers
+        // maintain has to be refreshed here too.
+        let _ = sqlx::query(
+            "UPDATE albums SET local_track_count = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ?"
         )
         .bind(album_id)
         .execute(&mut *tx).await;
@@ -4988,96 +5017,116 @@ pub struct AlbumTotalTracksReconcileReport {
     pub divergent_after: i64,
 }
 
+/// Stubs are excluded from the reconciliation throughout: TASK-138 never derives
+/// a total for them, and the 0088 triggers still give them a truthful
+/// `local_track_count` like everybody else.
+const NOT_STUB_SQL: &str = "(is_stub != 1 OR is_stub IS NULL)";
+
+/// Tracks actually imported for an album, counted the way the 0088 triggers
+/// count them.
+const ALBUM_LOCAL_TRACKS_SQL: &str =
+    "(SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)";
+
+/// The EFFECTIVE release total of an album under migration 0088 (BD-5): what the
+/// release declares when the service declared one, the local count when it did
+/// not. `total_tracks` alone cannot answer this — it holds the declared total,
+/// so comparing it against `COUNT(*)` flags every partially imported album of a
+/// declared release as out of sync and writing `COUNT(*)` back would erase the
+/// declaration. This is the same rule as the 0088 triggers and as the
+/// `declared_total_tracks = 0` guard in `auto_resolve_duplicates_inner`.
+const ALBUM_EFFECTIVE_TOTAL_SQL: &str = "CASE WHEN COALESCE(albums.declared_total_tracks, 0) > 0 \
+     THEN albums.declared_total_tracks \
+     ELSE (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) END";
+
+/// An album is divergent when its stored counts disagree with the library: the
+/// effective total is not what `total_tracks` advertises, or `local_track_count`
+/// drifted away from the number of imported tracks.
+fn album_divergence_predicate() -> String {
+    format!(
+        "(total_tracks IS NULL OR total_tracks != {ALBUM_EFFECTIVE_TOTAL_SQL} \
+          OR local_track_count != {ALBUM_LOCAL_TRACKS_SQL})"
+    )
+}
+
+/// Counts the albums out of sync with the library, whole-library or scoped.
+async fn count_divergent_albums(
+    db: &crate::DbPool,
+    album_ids: Option<&[i64]>,
+) -> Result<i64, String> {
+    let predicate = album_divergence_predicate();
+    match album_ids {
+        Some([]) => Ok(0),
+        Some(ids) => {
+            let sql = format!(
+                "SELECT COUNT(*) FROM albums WHERE id = ? AND {NOT_STUB_SQL} AND {predicate}"
+            );
+            let mut count = 0i64;
+            for id in ids {
+                count += sqlx::query_scalar::<_, i64>(&sql)
+                    .bind(id)
+                    .fetch_one(db)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(count)
+        }
+        None => {
+            let sql = format!("SELECT COUNT(*) FROM albums WHERE {NOT_STUB_SQL} AND {predicate}");
+            sqlx::query_scalar::<_, i64>(&sql)
+                .fetch_one(db)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
 pub async fn perform_recalculate_album_total_tracks(
     db: &crate::DbPool,
     album_ids: Option<Vec<i64>>,
 ) -> Result<AlbumTotalTracksReconcileReport, String> {
-    // Count divergent albums before
-    let divergent_before: i64 = if let Some(ref ids) = album_ids {
-        if ids.is_empty() {
-            0
-        } else {
-            let mut count = 0i64;
-            for id in ids {
-                let div: i64 = sqlx::query_scalar(
-                    r#"
-                    SELECT COUNT(*) FROM albums
-                    WHERE id = ?
-                      AND (is_stub != 1 OR is_stub IS NULL)
-                      AND (total_tracks IS NULL OR total_tracks != (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id))
-                    "#
-                )
-                .bind(id)
-                .fetch_one(db)
-                .await
-                .map_err(|e| e.to_string())?;
-                count += div;
-            }
-            count
-        }
-    } else {
-        sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*) FROM albums
-            WHERE (is_stub != 1 OR is_stub IS NULL)
-              AND (total_tracks IS NULL OR total_tracks != (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id))
-            "#
-        )
-        .fetch_one(db)
-        .await
-        .map_err(|e| e.to_string())?
-    };
+    let scoped = album_ids.as_deref();
 
-    let updated = if let Some(ref ids) = album_ids {
-        let mut total_aff = 0u64;
-        for id in ids {
-            let aff = crate::services::enrichment::recalculate_album_total_tracks(db, Some(*id))
-                .await
-                .map_err(|e| e.to_string())?;
-            total_aff += aff;
+    // Count divergent albums before
+    let divergent_before = count_divergent_albums(db, scoped).await?;
+
+    // Repair both counts from the library in one statement, and only on the rows
+    // that actually violate the invariant: `updated_albums` then counts real
+    // repairs, and a declared release total survives a reconciliation it never
+    // violated. A declared album keeps `total_tracks = declared_total_tracks`;
+    // an album that declares nothing still derives its total from the tracks.
+    let predicate = album_divergence_predicate();
+    let repair_sql = format!(
+        r#"
+        UPDATE albums
+        SET local_track_count = {ALBUM_LOCAL_TRACKS_SQL},
+            total_tracks = {ALBUM_EFFECTIVE_TOTAL_SQL}
+        WHERE {NOT_STUB_SQL} AND {predicate}
+        "#
+    );
+
+    let updated = match scoped {
+        Some(ids) => {
+            let per_id = format!("{repair_sql} AND id = ?");
+            let mut total_aff = 0u64;
+            for id in ids {
+                let res = sqlx::query(&per_id)
+                    .bind(id)
+                    .execute(db)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                total_aff += res.rows_affected();
+            }
+            total_aff
         }
-        total_aff
-    } else {
-        crate::services::enrichment::recalculate_album_total_tracks(db, None)
+        None => sqlx::query(&repair_sql)
+            .execute(db)
             .await
             .map_err(|e| e.to_string())?
+            .rows_affected(),
     };
 
     // Count divergent albums after
-    let divergent_after: i64 = if let Some(ref ids) = album_ids {
-        if ids.is_empty() {
-            0
-        } else {
-            let mut count = 0i64;
-            for id in ids {
-                let div: i64 = sqlx::query_scalar(
-                    r#"
-                    SELECT COUNT(*) FROM albums
-                    WHERE id = ?
-                      AND (is_stub != 1 OR is_stub IS NULL)
-                      AND (total_tracks IS NULL OR total_tracks != (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id))
-                    "#
-                )
-                .bind(id)
-                .fetch_one(db)
-                .await
-                .map_err(|e| e.to_string())?;
-                count += div;
-            }
-            count
-        }
-    } else {
-        sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*) FROM albums
-            WHERE (is_stub != 1 OR is_stub IS NULL)
-              AND (total_tracks IS NULL OR total_tracks != (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id))
-            "#
-        )
-        .fetch_one(db)
-        .await
-        .map_err(|e| e.to_string())?
-    };
+    let divergent_after = count_divergent_albums(db, scoped).await?;
 
     Ok(AlbumTotalTracksReconcileReport {
         updated_albums: updated,

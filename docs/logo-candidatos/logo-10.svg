@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 10 - Disco y brazo</title>
+    <circle cx="58" cy="70" r="34" stroke="currentColor" stroke-width="11"/>
+  <path d="M100,28 C100,44 92,53 80,58" stroke="currentColor" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="58" cy="70" r="7" fill="currentColor"/>
+  <circle cx="100" cy="28" r="9" fill="currentColor"/>
+  <circle cx="76" cy="62" r="8" fill="currentColor"/>
+</svg>

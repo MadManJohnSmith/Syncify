@@ -59,17 +59,29 @@ async fn test_refresh_without_stdin_fails_controlled() {
     std::env::set_var("SYNCIFY_AUTH_MOCK", "1");
 
     let result = run_auth_bridge_subprocess("spotify", "refresh", None).await;
-    assert!(
-        result.is_err(),
-        "Subprocess refresh without stdin must fail: {:?}",
-        result
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("sp_dc") || err.contains("Auth bridge error"),
-        "Unexpected error: {}",
-        err
-    );
+
+    // SEC-022: sin stdin el refresh no puede autenticarse. El puente responde
+    // `{"success": false, "error": ...}` y sale con 1, y desde la auditoría 39
+    // ese JSON llega al caller en vez de un error genérico sobre el código de
+    // salida, así que el fallo se comprueba sobre `success` y no sobre `Err`.
+    match result {
+        Ok(auth_result) => {
+            assert!(
+                !auth_result.success,
+                "refresh without stdin must not succeed: {:?}",
+                auth_result
+            );
+            let err = auth_result.error.unwrap_or_default();
+            assert!(err.contains("sp_dc"), "Unexpected error: {}", err);
+        }
+        Err(err) => {
+            assert!(
+                err.contains("sp_dc") || err.contains("Auth bridge error"),
+                "Unexpected error: {}",
+                err
+            );
+        }
+    }
 }
 
 #[tokio::test]

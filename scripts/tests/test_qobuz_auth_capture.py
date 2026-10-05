@@ -18,7 +18,10 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from services.qobuz_auth import should_attempt_token_capture_navigation  # noqa: E402
+from services.qobuz_auth import (  # noqa: E402
+    cookie_names,
+    should_attempt_token_capture_navigation,
+)
 
 MIN_STREAK = 2
 BOUNCE_COOLDOWN = 5
@@ -176,6 +179,42 @@ class TestQobuzAuthCapture(unittest.TestCase):
         state = new_state(token=TOKEN)
         for _ in range(4):
             self.assertFalse(step(state, is_login_page=False, is_logged_in_page=True))
+
+
+class QobuzCookieLogHygieneTests(unittest.TestCase):
+    """Auditoría 66: el log de autenticación no puede llevar valores de cookie.
+
+    `auth_token` y `uid` son credenciales reutilizables de sesión, y la
+    redacción de Rust (`redact_auth_payload`) sólo cubre claves JSON, así que un
+    valor —ni truncado a 50 caracteres— acababa en los logs del usuario.
+    """
+
+    SESSION_COOKIES = {
+        "auth_token": "a" * 64,
+        "uid": "1234567",
+        "qobuz_user_token": "b" * 80,
+        "sid": "c" * 40,
+    }
+
+    def test_only_names_are_returned(self):
+        self.assertEqual(
+            cookie_names(self.SESSION_COOKIES),
+            ["auth_token", "qobuz_user_token", "sid", "uid"],
+        )
+
+    def test_no_cookie_value_can_appear_in_the_result(self):
+        rendered = str(cookie_names(self.SESSION_COOKIES))
+        for value in self.SESSION_COOKIES.values():
+            self.assertNotIn(value, rendered)
+
+    def test_long_values_were_the_leak_and_are_gone(self):
+        # El recorte a 50 caracteres era el que fallaba: con un token de 64
+        # caracteres, los 50 primeros bastan para reutilizar la sesión.
+        long_token = "x" * 120
+        self.assertNotIn(long_token[:50], str(cookie_names({"auth_token": long_token})))
+
+    def test_empty_cookie_jar(self):
+        self.assertEqual(cookie_names({}), [])
 
 
 if __name__ == "__main__":

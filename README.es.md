@@ -5,7 +5,7 @@
 **Toda tu biblioteca musical. Máxima calidad. Bajo tu control.**
 
 Conecta Qobuz, Tidal, Spotify, Deezer, SoundCloud y Apple Music. Importa tu
-catálogo completo, descárgalo en la mejor calidad disponible y conserva una
+biblioteca, descárgala en la mejor calidad disponible y conserva una
 biblioteca local perfectamente organizada, con archivos reales, lista para
 Symfonium, Plexamp o cualquier reproductor que quieras.
 
@@ -47,23 +47,34 @@ Los servicios de streaming te alquilan la música. Si te vas — o el servicio
 pierde una licencia, o quitan una pista — tu biblioteca se va contigo. Syncify
 le da la vuelta: convierte "tu" catálogo en *tu* catálogo.
 
-- **Cambia de servicio sin dejar tu música atrás.** Importa todo (favoritos,
-  playlists, compras e historial) y migra a otro servicio, o descárgalo y
-  sé dueño de verdad.
+- **Cambia de servicio sin dejar tu música atrás.** Importa tus favoritos,
+  álbumes, artistas y playlists — más compras e historial de escucha cuando el
+  proveedor los expone — y migra a otro servicio, o descárgalo y sé dueño de
+  verdad. La cobertura no es idéntica en todos los proveedores; la
+  [matriz de paridad de importación](docs/MATRIZ_PARIDAD_IMPORTACION.md) tiene
+  la verdad servicio por servicio.
 - **Archivos reales, no licencias.** Las descargas quedan como FLAC
   correctamente etiquetado (hasta Hi-Res 24-bit/192 kHz) o MP3, verificado
   contra lo que el proveedor prometió.
-- **Una biblioteca, todos los servicios.** Tus favoritos se sincronizan en
-  ambos sentidos entre los servicios que uses, con deduplicación inteligente
-  que reconoce la misma canción venga de donde venga.
+- **Una biblioteca, todos los servicios.** Una sola importación reúne en una
+  biblioteca deduplicada todos los servicios que conectes, y el motor
+  reconoce la misma canción venga de donde venga. Marcar una pista como
+  favorita dentro de Syncify es una marca **local**: tus cuentas solo se
+  escriben desde la herramienta de migración, no desde la vista de biblioteca.
 
 ## ¿Qué puedes hacer con Syncify?
 
-- **Importa tu catálogo completo** de Qobuz, Tidal, Spotify, Deezer,
-  SoundCloud y Apple Music — pistas, álbumes, artistas y playlists.
+- **Importa tu biblioteca** de Qobuz, Tidal, Spotify, Deezer, SoundCloud y
+  Apple Music — pistas, álbumes, artistas y playlists. No es la misma
+  profundidad en todos: la API pública de SoundCloud no expone playlists ni
+  historial, Deezer no expone historial de escucha, y el importador de Apple
+  Music lee tu biblioteca de favoritos en vez de tu historial. La
+  [matriz de paridad](docs/MATRIZ_PARIDAD_IMPORTACION.md) es la referencia
+  exacta.
 - **Migra entre servicios**: elige origen, elige destino, revisa las
-  coincidencias y transfiere. Tus playlists viajan con su orden y nombres
-  intactos.
+  coincidencias y transfiere. Syncify primero empareja por ISRC y después por
+  título y artista, y transfiere lo que encuentra como **favoritos en la
+  cuenta de destino**. Aún no reconstruye tus playlists allí.
 - **Descarga con cascada de calidad**: el motor siempre apunta al mejor
   nivel ofrecido para cada pista, baja al siguiente cuando no está y
   verifica cada archivo que escribe.
@@ -90,9 +101,10 @@ le da la vuelta: convierte "tu" catálogo en *tu* catálogo.
    proveedor), la enriquece y la persiste transaccionalmente, con retry,
    en tu biblioteca SQLite local.
 3. **Descarga.** Pipelines nativos manejan el formato de entrega de cada
-   proveedor (incluido el desencriptado DASH de Qobuz), escriben archivos
-   FLAC/MP3 reales con metadatos, portadas y letras embebidas, y verifican
-   que lo que aterrizó en disco coincide con lo prometido.
+   proveedor — Qobuz sirve URL directas de FLAC y Tidal entrega flujos
+   segmentados que el pipeline ensambla — y escriben archivos FLAC/MP3 reales
+   con metadatos, portadas y letras embebidas, y verifican que lo que
+   aterrizó en disco coincide con lo prometido.
 4. **Disfrútala donde quieras.** El resultado es un árbol de carpetas plano
    con archivos sidecar — sin encierro propietario. Apunta Symfonium,
    Plexamp, Roon o cualquier reproductor y funciona.
@@ -167,9 +179,13 @@ Después:
    **viajan dentro de cada paquete**, igual que un runtime de Python privado
    con los puentes de servicios ya instalados — no hay nada más que
    descargar, instalar ni configurar.
-2. Corre el asistente de primera ejecución: conecta tus cuentas (las
-   credenciales se guardan en el llavero de tu sistema — sin archivos de
-   configuración), elige tu carpeta de música, listo.
+2. Corre el asistente de primera ejecución: conecta tus cuentas, elige tu
+   carpeta de música, listo. Las credenciales se cifran y se guardan en la
+   base de datos SQLite propia de Syncify, dentro de la carpeta de perfil de
+   la app. La clave de cifrado vive en el llavero de tu sistema operativo
+   cuando hay uno disponible, y si no (Linux sin sesión gráfica, sin Secret
+   Service) cae a un archivo `.crypto_key` con permisos `0600` en esa misma
+   carpeta de perfil.
 
 > ¿Compilando desde fuente? Mira
 > [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md) para saber
@@ -186,8 +202,13 @@ directamente.
 
 **¿Dónde viven las credenciales de mis servicios?**
 
-En el llavero de tu sistema operativo, cifradas en tu máquina. Cada login
-corre por tu navegador; nada se escribe en archivos de configuración planos.
+Cifradas dentro de la base de datos SQLite propia de Syncify, en la carpeta
+de perfil de la app en tu máquina. La clave de cifrado se guarda en el
+llavero de tu sistema operativo cuando hay uno disponible; donde no lo hay
+(Linux sin sesión gráfica, sin Secret Service), la clave cae a un archivo
+`.crypto_key` con permisos `0600` en esa misma carpeta de perfil. Cada login
+corre por tu navegador y ninguna credencial se escribe nunca en un archivo de
+configuración plano.
 
 **¿Qué calidad puedo esperar?**
 
@@ -230,7 +251,7 @@ npm run build
 
 ## Documentación
 
-- [`docs/`](docs/README.md) — arquitectura y features
+- [`docs/`](docs/README.md) — arquitectura y features · [índice en inglés](docs/README.en.md)
 - [`docs/MATRIZ_PARIDAD_IMPORTACION.md`](docs/MATRIZ_PARIDAD_IMPORTACION.md) — matriz viva de paridad de importación
 - [`docs/LYRICS_16_PROVIDER_MATRIX.md`](docs/LYRICS_16_PROVIDER_MATRIX.md) — la cascada de letras, auditada
 - [`docs/Deuda_Tecnica_y_UX.md`](docs/Deuda_Tecnica_y_UX.md) — deuda técnica abierta, rastreada a la vista
@@ -239,10 +260,10 @@ npm run build
 
 Las contribuciones son bienvenidas: bugs, mejoras de UI, nuevos proveedores
 de letras o metadatos, más servicios, documentación. Haz fork, crea una rama
-enfocada y abre un PR contra `syncify-app` (la rama de desarrollo; `main`
-recibe merges verificados para releases). Corre los checks antes de enviar —
-`cargo check`, `cargo test`, `cargo clippy`, `cargo fmt --check` y
-`cd ui && npm run test:run` — el CI ejecuta exactamente esos.
+enfocada y abre un PR contra `main` — la rama de integración sobre la que
+corre CI y de la que salen las releases.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) tiene los comandos exactos de los checks,
+las rutas que CI ignora y cómo mantener los docs al día con el código.
 
 ¿Encontraste un bug? [Abre un issue](https://github.com/MadManJohnSmith/Syncify/issues)
 con tu SO/versión, pasos para reproducir y logs relevantes — nunca

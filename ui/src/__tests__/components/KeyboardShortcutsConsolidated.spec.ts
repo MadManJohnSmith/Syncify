@@ -210,7 +210,8 @@ describe('KeyboardShortcuts Consolidated Composable (TASK-59)', () => {
     wrapper.unmount()
   })
 
-  it('emits commands for Ctrl+K, Ctrl+F, and Ctrl+R', async () => {
+  it('leaves Ctrl+K and Ctrl+F to their owners instead of swallowing them', async () => {
+    const go = vi.spyOn(router, 'go').mockReturnValue(undefined)
     const wrapper = mount(KeyboardShortcuts, {
       attachTo: document.body,
       global: {
@@ -219,33 +220,39 @@ describe('KeyboardShortcuts Consolidated Composable (TASK-59)', () => {
     })
     await flushPromises()
 
-    // Ctrl+K -> command-palette
+    // Ctrl+K is App's: registering it here would make this listener
+    // preventDefault() first and App would bail on event.defaultPrevented.
     document.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'k',
       ctrlKey: true,
       bubbles: true,
+      cancelable: true,
     }))
     await flushPromises()
-    expect(wrapper.emitted('command-palette')).toHaveLength(1)
+    const kEvent = new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true, cancelable: true })
+    document.dispatchEvent(kEvent)
+    expect(kEvent.defaultPrevented).toBe(false)
+    expect(getRegisteredShortcuts().some(s => s.keys === 'Ctrl+K')).toBe(false)
 
-    // Ctrl+F -> search
+    // Ctrl+F no longer advertises a "focus search" nobody implements.
     document.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'f',
       ctrlKey: true,
       bubbles: true,
     }))
     await flushPromises()
-    expect(wrapper.emitted('search')).toHaveLength(1)
+    expect(getRegisteredShortcuts().some(s => s.keys === 'Ctrl+F')).toBe(false)
 
-    // Ctrl+R -> refresh
+    // Ctrl+R now really reloads the current view.
     document.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'r',
       ctrlKey: true,
       bubbles: true,
     }))
     await flushPromises()
-    expect(wrapper.emitted('refresh')).toHaveLength(1)
+    expect(go).toHaveBeenCalledWith(0)
 
+    go.mockRestore()
     wrapper.unmount()
   })
 

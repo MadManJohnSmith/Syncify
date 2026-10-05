@@ -3946,42 +3946,6 @@ pub async fn backfill_social_metadata(
     Ok(report)
 }
 
-/// Recalculates `albums.total_tracks` based on the real count of tracks in the database,
-/// preserving documented stubs (`is_stub == 1`).
-///
-/// If `album_id` is specified, recalculates only that album.
-/// Otherwise, recalculates all non-stub albums in the database.
-pub async fn recalculate_album_total_tracks(
-    pool: &sqlx::SqlitePool,
-    album_id: Option<i64>,
-) -> Result<u64, sqlx::Error> {
-    let affected = if let Some(aid) = album_id {
-        let res = sqlx::query(
-            r#"
-            UPDATE albums
-            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
-            WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL)
-            "#,
-        )
-        .bind(aid)
-        .execute(pool)
-        .await?;
-        res.rows_affected()
-    } else {
-        let res = sqlx::query(
-            r#"
-            UPDATE albums
-            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
-            WHERE is_stub != 1 OR is_stub IS NULL
-            "#,
-        )
-        .execute(pool)
-        .await?;
-        res.rows_affected()
-    };
-    Ok(affected)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

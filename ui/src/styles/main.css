@@ -70,6 +70,27 @@
   body {
     @apply bg-background-light dark:bg-background-dark text-gray-900 dark:text-white font-display overflow-hidden;
   }
+
+  /* El desplegable de un <select> lo pinta el tema del SISTEMA (WebKitGTK en
+     Linux, WebView2 en Windows), no la página: sin `color-scheme` salía fondo
+     blanco mientras el propio <select> heredaba el texto blanco del tema
+     oscuro, es decir blanco sobre blanco. Los 37 <select> de la app (y sus
+     <option>, que no llevan clases) quedan cubiertos por estas reglas. */
+  :root {
+    color-scheme: light dark;
+  }
+
+  select,
+  select option {
+    @apply bg-white text-gray-900;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    select,
+    select option {
+      @apply bg-surface-dark text-white;
+    }
+  }
 }
 
 /* Material Symbols filled variant helper */

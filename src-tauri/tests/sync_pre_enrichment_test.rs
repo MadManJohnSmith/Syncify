@@ -136,24 +136,44 @@ async fn test_sync_pre_enrichment_persists_track_album_artist_credits_metadata()
 
     // 4. Verify Albums Table
     let album_id = result.album_id.unwrap();
-    let (album_title, album_label, album_upc, total_tracks): (
+    let (
+        album_title,
+        album_label,
+        album_upc,
+        total_tracks,
+        local_track_count,
+        declared_total_tracks,
+    ): (
         String,
         Option<String>,
         Option<String>,
         Option<i32>,
-    ) = sqlx::query_as("SELECT title, label, upc, total_tracks FROM albums WHERE id = ?")
-        .bind(album_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        i32,
+        i32,
+    ) = sqlx::query_as(
+        "SELECT title, label, upc, total_tracks, local_track_count, declared_total_tracks \
+         FROM albums WHERE id = ?",
+    )
+    .bind(album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(album_title, "Heroes (2017 Remaster)");
     assert_eq!(album_label.as_deref(), Some("Parlophone UK"));
     assert_eq!(album_upc.as_deref(), Some("0035629007421"));
-    // The declared track_total (10) is written at album upsert, but the 0085
-    // trigger trg_tracks_sync_album_total_tracks_ins (BD-12) immediately
-    // recounts non-stub albums to their real local track count — a single-track
-    // import of a 10-track album holds exactly 1 local row.
-    assert_eq!(total_tracks, Some(1));
+    // Migration 0088 (BD-5) splits the two counts BD-5 asked to separate, and
+    // the 0085 recount trigger this assertion used to describe no longer
+    // overwrites a declared release total:
+    //   * total_tracks          -> what the release DECLARES (track_total = 10
+    //                              was written at the album upsert), so a
+    //                              single-track import keeps advertising 1 of 10;
+    //   * local_track_count     -> how many of them are imported HERE (1);
+    //   * declared_total_tracks -> which of the two total_tracks really is, so a
+    //                              total that disagrees with the local count is
+    //                              distinguishable from a derived one.
+    assert_eq!(total_tracks, Some(10));
+    assert_eq!(declared_total_tracks, 10);
+    assert_eq!(local_track_count, 1);
 
     // 5. Verify Tracks Table
     let (title, isrc, year, audio_quality, enrichment_status): (String, Option<String>, Option<i32>, Option<String>, String) =

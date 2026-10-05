@@ -1,7 +1,8 @@
 /**
  * AlbumArtistDetail.spec.ts
  * Verifies interactive buttons in AlbumDetailView and ArtistDetailView (TASK-24):
- * - "Add to Queue" in AlbumDetailView triggers enqueueAlbum -> add_batch_to_queue
+ * - "Play Album" in AlbumDetailView plays the first track and queues the rest
+ * - "Download All" in AlbumDetailView still calls add_batch_to_queue
  * - "Shuffle Play" in ArtistDetailView triggers shufflePlay -> player.play
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -11,9 +12,11 @@ import ArtistDetailView from '@/views/ArtistDetailView.vue';
 import { mockInvoke, resetMocks } from '../setup';
 
 const mockPlayerPlay = vi.fn().mockResolvedValue(undefined);
+const mockPlayerPlayNext = vi.fn().mockResolvedValue('queued');
 vi.mock('@/composables/usePlayer', () => ({
     usePlayer: () => ({
         play: mockPlayerPlay,
+        playNext: mockPlayerPlayNext,
     }),
 }));
 
@@ -68,8 +71,58 @@ describe('TASK-24: Album & Artist Detail interactive actions', () => {
         ],
     };
 
-    describe('AlbumDetailView - Add to Queue', () => {
-        it('clicking "Add to Queue" calls add_batch_to_queue with track IDs', async () => {
+    describe('AlbumDetailView - Play Album', () => {
+        it('clicking "Play Album" plays the first track and queues the rest in order', async () => {
+            const invokeCalls: { cmd: string; args: any }[] = [];
+            mockInvoke((cmd, args) => {
+                invokeCalls.push({ cmd, args });
+                if (cmd === 'get_album') return { ...mockAlbum, cover_art_url: 'https://cdn.test/abbey.jpg' };
+                return null;
+            });
+
+            const wrapper = mount(AlbumDetailView);
+            await flushPromises();
+
+            const playBtn = wrapper.findAll('button').find(b => b.text().includes('Play Album'));
+            expect(playBtn).toBeDefined();
+
+            await playBtn!.trigger('click');
+            await flushPromises();
+
+            expect(mockPlayerPlay).toHaveBeenCalledTimes(1);
+            expect(mockPlayerPlay.mock.calls[0][0]).toMatchObject({
+                id: 201,
+                title: 'Come Together',
+                album: 'Abbey Road',
+                coverUrl: 'https://cdn.test/abbey.jpg',
+            });
+            expect(mockPlayerPlayNext).toHaveBeenCalledTimes(1);
+            expect(mockPlayerPlayNext.mock.calls[0][0]).toMatchObject({ id: 202, title: 'Something' });
+            // Reproducir no es descargar: el botón no debe encolar descargas.
+            expect(invokeCalls.find(c => c.cmd === 'add_batch_to_queue')).toBeUndefined();
+        });
+
+        it('does not play anything when album has no tracks', async () => {
+            const emptyAlbum = { ...mockAlbum, tracks: [] };
+            mockInvoke((cmd) => {
+                if (cmd === 'get_album') return emptyAlbum;
+                return null;
+            });
+
+            const wrapper = mount(AlbumDetailView);
+            await flushPromises();
+
+            const playBtn = wrapper.findAll('button').find(b => b.text().includes('Play Album'));
+            expect(playBtn).toBeDefined();
+
+            await playBtn!.trigger('click');
+            await flushPromises();
+
+            expect(mockPlayerPlay).not.toHaveBeenCalled();
+            expect(mockPlayerPlayNext).not.toHaveBeenCalled();
+        });
+
+        it('"Download All" still calls add_batch_to_queue with track IDs', async () => {
             const invokeCalls: { cmd: string; args: any }[] = [];
             mockInvoke((cmd, args) => {
                 invokeCalls.push({ cmd, args });
@@ -81,10 +134,10 @@ describe('TASK-24: Album & Artist Detail interactive actions', () => {
             const wrapper = mount(AlbumDetailView);
             await flushPromises();
 
-            const addToQueueBtn = wrapper.findAll('button').find(b => b.text().includes('Add to Queue'));
-            expect(addToQueueBtn).toBeDefined();
+            const downloadBtn = wrapper.findAll('button').find(b => b.text().includes('Download All'));
+            expect(downloadBtn).toBeDefined();
 
-            await addToQueueBtn!.trigger('click');
+            await downloadBtn!.trigger('click');
             await flushPromises();
 
             const batchCall = invokeCalls.find(c => c.cmd === 'add_batch_to_queue');
@@ -93,28 +146,6 @@ describe('TASK-24: Album & Artist Detail interactive actions', () => {
                 trackIds: [201, 202],
                 allowFallback: true,
             });
-        });
-
-        it('does not invoke add_batch_to_queue when album has no tracks', async () => {
-            const emptyAlbum = { ...mockAlbum, tracks: [] };
-            const invokeCalls: { cmd: string; args: any }[] = [];
-            mockInvoke((cmd, args) => {
-                invokeCalls.push({ cmd, args });
-                if (cmd === 'get_album') return emptyAlbum;
-                return null;
-            });
-
-            const wrapper = mount(AlbumDetailView);
-            await flushPromises();
-
-            const addToQueueBtn = wrapper.findAll('button').find(b => b.text().includes('Add to Queue'));
-            expect(addToQueueBtn).toBeDefined();
-
-            await addToQueueBtn!.trigger('click');
-            await flushPromises();
-
-            const batchCall = invokeCalls.find(c => c.cmd === 'add_batch_to_queue');
-            expect(batchCall).toBeUndefined();
         });
     });
 

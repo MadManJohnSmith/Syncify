@@ -42,20 +42,23 @@
 
     <section class="space-y-4">
        <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Download Priority</h3>
-       <p class="text-sm text-text-secondary">Syncify will try services in this order when downloading tracks. Drag to reorder.</p>
+       <p class="text-sm text-text-secondary">Syncify will try services in this order when downloading tracks. Drag a row, or use its arrow buttons, to reorder.</p>
        <div v-if="syncSettings.isLoading.value" class="flex items-center gap-2 text-text-secondary">
          <span class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
          <span class="text-sm">Loading service preferences...</span>
        </div>
        <div v-else class="space-y-2">
-         <DraggableItem 
-           v-for="(pref, i) in orderedServicePreferences" 
-           :key="pref.service_name" 
+<DraggableItem
+           v-for="(pref, i) in orderedServicePreferences"
+           :key="pref.service_name"
            :text="formatServiceName(pref.service_name)"
            :index="i+1"
+           :total="orderedServicePreferences.length"
            :autoImport="pref.auto_import_enabled"
            @move-up="movePriorityUp(i)"
            @move-down="movePriorityDown(i)"
+           @drag-start="handleDragStart"
+           @reorder="handleDragReorder"
            @toggle-auto-import="toggleAutoImport(pref.service_name)"
          />
        </div>
@@ -321,6 +324,23 @@ async function movePriorityDown(index: number) {
   newPreferences[index + 1] = temp
   const newOrder = newPreferences.map(p => p.service_name)
   await syncSettings.reorderPriorities(newOrder)
+}
+
+const draggingPriorityIndex = ref<number | null>(null)
+
+function handleDragStart(fromIndex: number) {
+  draggingPriorityIndex.value = fromIndex
+}
+
+async function handleDragReorder(toIndex: number) {
+  const fromIndex = draggingPriorityIndex.value
+  draggingPriorityIndex.value = null
+  if (fromIndex === null || fromIndex === toIndex) return
+  if (toIndex < 0 || toIndex >= orderedServicePreferences.value.length) return
+  const newPreferences = [...orderedServicePreferences.value]
+  const [moved] = newPreferences.splice(fromIndex, 1)
+  newPreferences.splice(toIndex, 0, moved)
+  await syncSettings.reorderPriorities(newPreferences.map(p => p.service_name))
 }
 
 async function toggleAutoImport(serviceName: string) {

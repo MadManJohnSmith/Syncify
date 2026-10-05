@@ -12,21 +12,25 @@ export function useGeneralSettings() {
         start_on_boot: false,
         start_minimized: false,
         close_to_tray: true,
-        auto_updates: true,
-        anonymous_stats: false,
         db_location: '',
         download_dir: '',
         temp_dir: '',
     })
 
     /**
-     * Push the persisted close_to_tray preference into the backend tray state
-     * (IN-5): the tray only learns this value through update_tray_settings.
+     * Push the persisted startup preferences into the backend tray state (IN-5):
+     * the tray only learns these values through update_tray_settings, which is
+     * also what registers the OS autostart entry.
      */
     async function syncTraySettings(closeToTray: boolean): Promise<void> {
         try {
             const current: TraySettings = await trayApi.getTraySettings()
-            await trayApi.updateTraySettings({ ...current, closeToTray })
+            await trayApi.updateTraySettings({
+                ...current,
+                closeToTray,
+                startOnBoot: settings.start_on_boot,
+                startMinimized: settings.start_minimized,
+            })
         } catch (err) {
             console.warn('[useGeneralSettings] Failed to sync tray settings:', err)
         }
@@ -39,8 +43,6 @@ export function useGeneralSettings() {
                 'start_on_boot',
                 'start_minimized',
                 'close_to_tray',
-                'auto_updates',
-                'anonymous_stats',
                 'db_location',
                 'download_dir',
                 'dl_download_path',
@@ -56,8 +58,6 @@ export function useGeneralSettings() {
             if (values['start_on_boot']) settings.start_on_boot = values['start_on_boot'] === 'true'
             if (values['start_minimized']) settings.start_minimized = values['start_minimized'] === 'true'
             if (values['close_to_tray']) settings.close_to_tray = values['close_to_tray'] === 'true'
-            if (values['auto_updates']) settings.auto_updates = values['auto_updates'] === 'true'
-            if (values['anonymous_stats']) settings.anonymous_stats = values['anonymous_stats'] === 'true'
 
             // Keep the tray behavior in sync with the persisted preference (IN-5).
             void syncTraySettings(settings.close_to_tray)
@@ -109,8 +109,6 @@ export function useGeneralSettings() {
                 'start_on_boot': settings.start_on_boot.toString(),
                 'start_minimized': settings.start_minimized.toString(),
                 'close_to_tray': settings.close_to_tray.toString(),
-                'auto_updates': settings.auto_updates.toString(),
-                'anonymous_stats': settings.anonymous_stats.toString(),
             }
 
             if (settings.db_location) batch['db_location'] = settings.db_location
@@ -156,12 +154,21 @@ export function useGeneralSettings() {
         }
     }
 
+    /**
+     * Restore every backend-owned settings table (advanced, sync, folders,
+     * duplicates, audio processing and lyrics config) and then the general
+     * keys and download paths.
+     *
+     * The confirmation in SettingsView promises *all* settings; without the
+     * backend call only this composable's own keys were being restored and the
+     * rest stayed exactly as the user had left them.
+     */
     async function resetToDefaults() {
+        await settingsApi.resetToDefaults('all')
+
         settings.start_on_boot = false
         settings.start_minimized = false
         settings.close_to_tray = true
-        settings.auto_updates = true
-        settings.anonymous_stats = false
         try {
             settings.download_dir = await settingsApi.getDefaultDownloadPath()
             settings.temp_dir = deriveStagingRoot(settings.download_dir)

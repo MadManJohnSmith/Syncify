@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 04 - Pieza en tránsito</title>
+    <g fill="currentColor" stroke="currentColor" stroke-width="8" stroke-linejoin="round">
+    <path d="M30,48 A18,18 0 0 1 48,30 L80,30 A18,18 0 0 1 98,48 L98,52 L52,98 L48,98 A18,18 0 0 1 30,80 Z"/>
+    <path d="M66,112 L112,66 L112,112 Z"/>
+  </g>
+</svg>

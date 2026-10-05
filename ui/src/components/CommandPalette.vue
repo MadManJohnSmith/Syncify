@@ -206,7 +206,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { searchTracks } from '@/api/library'
+import { searchTracks, getFavoriteTracks, queueDownloads, exportLibrary } from '@/api/library'
+import { syncService } from '@/api/accounts'
+import { clearQueue, retryAllFailed } from '@/api/queue'
+import { fetchMissingLyrics } from '@/api/lyrics'
+import { useToast } from '@/composables/useToast'
 import type { LibraryTrack } from '@/api/types'
 import { escapeHtml, escapeRegex, highlightMatch as safeHighlightMatch } from '@/utils/sanitize'
 
@@ -226,6 +230,7 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+const toast = useToast()
 
 // State
 const internalOpen = ref(false)
@@ -527,6 +532,90 @@ function executeAction(action: any) {
   addToRecent(action.name)
   close()
   emit('action', action)
+  void runAction(action)
+}
+
+const FAVORITES_PAGE_SIZE = 200
+
+async function collectFavoriteTrackIds(): Promise<number[]> {
+  const ids: number[] = []
+  let offset = 0
+  // getFavoriteTracks pagina: queue_downloads necesita los ids de una vez,
+  // así que se recorre toda la lista antes de encolar nada.
+  for (;;) {
+    const page = await getFavoriteTracks(offset, FAVORITES_PAGE_SIZE)
+    ids.push(...page.tracks.map(t => t.id))
+    if (!page.has_more || page.tracks.length === 0) break
+    offset += page.tracks.length
+  }
+  return ids
+}
+
+async function runAction(action: any) {
+  try {
+    switch (action.id) {
+      case 1: {
+        const ids = await collectFavoriteTrackIds()
+        if (ids.length === 0) {
+          toast.info('No favorites to download', 'Mark tracks as favorite first.')
+          return
+        }
+        await queueDownloads(ids)
+        toast.success('Favorites queued', `${ids.length} track(s) added to the download queue.`)
+        return
+      }
+      case 2: {
+        const result = await syncService('spotify')
+        if (result.success) {
+          const imported = result.imported_tracks_total ?? result.importedTracksTotal
+          toast.success(
+            'Spotify sync finished',
+            typeof imported === 'number' ? `${imported} track(s) imported.` : result.message
+          )
+        } else {
+          toast.error('Spotify sync failed', result.message)
+        }
+        return
+      }
+      case 3: {
+        const confirmed = await toast.confirm('Clear the whole download queue?', {
+          title: 'Clear download queue',
+          message: 'Pending and in-progress downloads will be removed. This cannot be undone.',
+          variant: 'danger',
+          confirmLabel: 'Clear queue'
+        })
+        if (!confirmed) return
+        const removed = await clearQueue()
+        toast.success('Download queue cleared', `${removed} item(s) removed.`)
+        return
+      }
+      case 4: {
+        await retryAllFailed()
+        toast.success('Failed downloads queued again')
+        return
+      }
+      case 5: {
+        const result = await fetchMissingLyrics()
+        toast.success(
+          'Lyrics fetch finished',
+          `${result.fetched} fetched, ${result.failed} failed, ${result.skipped} skipped.`
+        )
+        return
+      }
+      case 6: {
+        const result = await exportLibrary()
+        toast.success(
+          'Library exported',
+          `${result.tracks_count} track(s) written to ${result.file_path}`
+        )
+        return
+      }
+      default:
+        toast.warning('That action is not wired up yet', action.name)
+    }
+  } catch (err: any) {
+    toast.error(`Failed to run "${action.name}"`, err?.message || String(err))
+  }
 }
 
 function openSetting(setting: any) {

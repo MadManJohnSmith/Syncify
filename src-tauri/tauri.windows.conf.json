@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "resources": [
+      "../scripts/*.py",
+      "../scripts/services/*.py",
+      "../scripts/requirements.txt",
+      "../python/**/*"
+    ]
+  }
+}

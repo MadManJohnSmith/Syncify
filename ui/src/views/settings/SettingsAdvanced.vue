@@ -11,17 +11,17 @@
           <span class="material-symbols-outlined text-primary">description</span> Logging
         </h3>
         <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-          <span class="font-medium text-gray-900 dark:text-white">Log Level</span>
-          <select :value="advancedSettings.settings.log_level" @change="advancedSettings.updateField('log_level', getEventValue($event))" class="px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm">
+          <label for="advanced-log-level" class="font-medium text-gray-900 dark:text-white">Log Level</label>
+          <select id="advanced-log-level" :value="advancedSettings.settings.log_level" @change="advancedSettings.updateField('log_level', getEventValue($event))" class="px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm">
             <option v-for="opt in advancedSettings.logLevelOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </div>
-        <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-          <span class="font-medium text-gray-900 dark:text-white">Log to File</span>
-          <button @click="advancedSettings.updateField('log_to_file', !advancedSettings.settings.log_to_file)" :class="['relative inline-flex h-6 w-11 items-center rounded-full transition-colors', advancedSettings.settings.log_to_file ? 'bg-primary' : 'bg-gray-300']">
-            <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform', advancedSettings.settings.log_to_file ? 'translate-x-6' : 'translate-x-1']"></span>
-          </button>
-        </div>
+        <BaseToggle
+          title="Log to File"
+          subtitle="Write the application log next to your data directory"
+          :checked="advancedSettings.settings.log_to_file"
+          @click="advancedSettings.updateField('log_to_file', !advancedSettings.settings.log_to_file)"
+        />
       </section>
 
       <!-- Workers Section -->
@@ -31,16 +31,16 @@
         </h3>
         <div class="grid grid-cols-3 gap-4">
           <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2">Max Downloads</label>
-            <input type="number" min="1" max="10" :value="advancedSettings.settings.max_concurrent_downloads" @change="updateClamped('max_concurrent_downloads', getEventValue($event), 1, 10)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
+            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-max-downloads">Max Downloads</label>
+            <input type="number" min="1" max="10" id="advanced-max-downloads" :value="advancedSettings.settings.max_concurrent_downloads" @change="updateClamped('max_concurrent_downloads', getEventValue($event), 1, 10)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
           </div>
           <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2">Max Imports</label>
-            <input type="number" min="1" max="5" :value="advancedSettings.settings.max_concurrent_imports" @change="updateClamped('max_concurrent_imports', getEventValue($event), 1, 5)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
+            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-max-imports">Max Imports</label>
+            <input type="number" min="1" max="5" id="advanced-max-imports" :value="advancedSettings.settings.max_concurrent_imports" @change="updateClamped('max_concurrent_imports', getEventValue($event), 1, 5)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
           </div>
           <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2">Timeout (sec)</label>
-            <input type="number" min="30" max="600" :value="advancedSettings.settings.worker_timeout_seconds" @change="updateClamped('worker_timeout_seconds', getEventValue($event), 30, 600)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
+            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-worker-timeout">Timeout (sec)</label>
+            <input type="number" min="30" max="600" id="advanced-worker-timeout" :value="advancedSettings.settings.worker_timeout_seconds" @change="updateClamped('worker_timeout_seconds', getEventValue($event), 30, 600)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
           </div>
         </div>
       </section>
@@ -50,16 +50,13 @@
          <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark flex items-center gap-2">
            <span class="material-symbols-outlined text-primary">cached</span> Cache
          </h3>
-         <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-           <div class="flex-1">
-             <span class="font-medium text-gray-900 dark:text-white block">Enable Cache</span>
-             <span class="text-xs text-text-secondary">Improve performance by caching images and metadata</span>
-           </div>
-           <button @click="advancedSettings.updateField('cache_enabled', !advancedSettings.settings.cache_enabled)" :class="['relative inline-flex h-6 w-11 items-center rounded-full transition-colors', advancedSettings.settings.cache_enabled ? 'bg-primary' : 'bg-gray-300']">
-             <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform', advancedSettings.settings.cache_enabled ? 'translate-x-6' : 'translate-x-1']"></span>
-           </button>
-         </div>
-         
+<BaseToggle
+           title="Enable Cache"
+           subtitle="Improve performance by caching images and metadata"
+           :checked="advancedSettings.settings.cache_enabled"
+           @click="advancedSettings.updateField('cache_enabled', !advancedSettings.settings.cache_enabled)"
+         />
+
        </section>
 
       <!-- Network Section -->
@@ -69,16 +66,16 @@
         </h3>
         <div class="grid grid-cols-3 gap-4">
           <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2">Timeout</label>
-            <input type="number" min="5" max="300" :value="advancedSettings.settings.request_timeout_seconds" @change="updateClamped('request_timeout_seconds', getEventValue($event), 5, 300)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
+            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-request-timeout">Timeout</label>
+            <input type="number" min="5" max="300" id="advanced-request-timeout" :value="advancedSettings.settings.request_timeout_seconds" @change="updateClamped('request_timeout_seconds', getEventValue($event), 5, 300)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
           </div>
           <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2">Retries</label>
-            <input type="number" min="0" max="10" :value="advancedSettings.settings.max_retries" @change="updateClamped('max_retries', getEventValue($event), 0, 10)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
+            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-max-retries">Retries</label>
+            <input type="number" min="0" max="10" id="advanced-max-retries" :value="advancedSettings.settings.max_retries" @change="updateClamped('max_retries', getEventValue($event), 0, 10)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
           </div>
           <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2">Delay</label>
-            <input type="number" min="1" max="60" :value="advancedSettings.settings.retry_delay_seconds" @change="updateClamped('retry_delay_seconds', getEventValue($event), 1, 60)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
+            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-retry-delay">Delay</label>
+            <input type="number" min="1" max="60" id="advanced-retry-delay" :value="advancedSettings.settings.retry_delay_seconds" @change="updateClamped('retry_delay_seconds', getEventValue($event), 1, 60)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
           </div>
         </div>
       </section>
@@ -90,18 +87,16 @@
          </h3>
          
          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-           <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-             <span class="font-medium text-gray-900 dark:text-white">Debug Mode</span>
-             <button @click="advancedSettings.updateField('debug_mode', !advancedSettings.settings.debug_mode)" :class="['relative inline-flex h-6 w-11 items-center rounded-full transition-colors', advancedSettings.settings.debug_mode ? 'bg-warning' : 'bg-gray-300']">
-               <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform', advancedSettings.settings.debug_mode ? 'translate-x-6' : 'translate-x-1']"></span>
-             </button>
-           </div>
-           <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-             <span class="font-medium text-gray-900 dark:text-white">API Logs</span>
-             <button @click="advancedSettings.updateField('verbose_api_logging', !advancedSettings.settings.verbose_api_logging)" :class="['relative inline-flex h-6 w-11 items-center rounded-full transition-colors', advancedSettings.settings.verbose_api_logging ? 'bg-warning' : 'bg-gray-300']">
-               <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform', advancedSettings.settings.verbose_api_logging ? 'translate-x-6' : 'translate-x-1']"></span>
-             </button>
-           </div>
+           <BaseToggle
+             title="Debug Mode"
+             :checked="advancedSettings.settings.debug_mode"
+             @click="advancedSettings.updateField('debug_mode', !advancedSettings.settings.debug_mode)"
+           />
+           <BaseToggle
+             title="API Logs"
+             :checked="advancedSettings.settings.verbose_api_logging"
+             @click="advancedSettings.updateField('verbose_api_logging', !advancedSettings.settings.verbose_api_logging)"
+           />
          </div>
 
          <!-- Diagnostic Results -->
@@ -132,6 +127,7 @@
 import { watch, onMounted } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { useAdvancedSettings } from '@/composables/useAdvancedSettings'
+import BaseToggle from '@/components/settings/BaseToggle.vue'
 
 const getEventValue = (e: any) => e.target?.value || ''
 

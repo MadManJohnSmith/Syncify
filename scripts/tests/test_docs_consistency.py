@@ -7,7 +7,8 @@ found, and they are hermetic: no network, no repository writes, only the tree.
 Covered:
 
 * SYNC-AUD-063 — the CI header must not describe a debt the workflow already closed.
-* SYNC-AUD-064 — the README must point contributions at the live development branch.
+* SYNC-AUD-064 — the README must point contributions at the branch CI runs on,
+  and never at a branch that has been deleted upstream.
 * SYNC-AUD-065 — the README must not send anyone to `workspace/`, which `.gitignore`
   excludes and no checkout or CI ever contains.
 * SYNC-AUD-067 — the debt register the code and the plan cite must exist in the tree.
@@ -215,22 +216,43 @@ class CiNarrativeTests(unittest.TestCase):
 class ReadmeTests(unittest.TestCase):
     """SYNC-AUD-064 and SYNC-AUD-065: the README must describe this tree."""
 
+    # Branches the README must not send contributors to. `git ls-remote --heads
+    # origin` on 2026-10-05 returned only main, syncify-graphical and the fix/*
+    # topics: `syncify-app` is gone upstream, so the PR target it advertised
+    # could not be opened at all, and `syncify-graphical` still exists but
+    # stopped receiving work on 2026-09-10.
+    NON_TARGET_BRANCHES = ("syncify-app", "syncify-graphical")
+
     def setUp(self):
         self.readme = _doc_text("README.md")
         self.readme_es = _doc_text("README.es.md")
 
-    def test_pr_target_is_the_development_branch(self):
-        for name, readme in (("README.md", self.readme), ("README.es.md", self.readme_es)):
-            self.assertIn(
-                "`syncify-app`",
-                readme,
-                f"{name} must point pull requests at the syncify-app development branch",
-            )
-            self.assertNotIn(
-                "`syncify-graphical`",
-                readme,
-                f"{name} must not point pull requests at syncify-graphical",
-            )
+    def _ci_push_branches(self):
+        """Branches `.github/workflows/ci.yml` runs its jobs on."""
+        ci = _doc_text(".github/workflows/ci.yml")
+        window = ci.split("push:", 1)[1].split("branches:", 1)[1]
+        window = window.split("paths-ignore:", 1)[0]
+        return set(re.findall(r"^\s*-\s*(\S+)\s*$", window, re.MULTILINE))
+
+    def test_pr_target_is_the_live_integration_branch(self):
+        # Frozen on purpose: a CI checkout is shallow, so this gate cannot
+        # resolve refs without network. It stays honest because the branch is
+        # cross-checked against the one the CI workflow in the tree triggers on.
+        live = self._ci_push_branches()
+        self.assertTrue(live, "the push trigger no longer names any branch")
+        for branch in live:
+            for name, readme in (("README.md", self.readme), ("README.es.md", self.readme_es)):
+                self.assertIn(
+                    f"`{branch}`",
+                    readme,
+                    f"{name} must point pull requests at `{branch}`, the branch CI runs on",
+                )
+                for removed in self.NON_TARGET_BRANCHES:
+                    self.assertNotIn(
+                        f"`{removed}`",
+                        readme,
+                        f"{name} must not send contributors to `{removed}`: not an integration target",
+                    )
 
     def test_no_pointer_to_the_gitignored_workspace_directory(self):
         for line in self.readme.splitlines():

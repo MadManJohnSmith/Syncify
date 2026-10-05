@@ -40,10 +40,14 @@
       <div v-else-if="artist" class="p-6 space-y-8">
         <!-- Artist header -->
         <div class="flex gap-6">
-          <!-- Avatar placeholder -->
-          <div class="w-48 h-48 bg-gradient-to-br from-purple-400/20 to-purple-600/40 rounded-full flex items-center justify-center shadow-lg">
-            <span class="material-symbols-outlined text-6xl text-purple-500/60">person</span>
-          </div>
+          <TrackCover
+            :src="artist.image_url"
+            :item-id="artist.id"
+            :alt="artist.name"
+            size-class="w-48 h-48"
+            rounded="rounded-full shadow-lg"
+            icon="person"
+          />
           
           <!-- Artist info -->
           <div class="flex-1 flex flex-col justify-center">
@@ -135,9 +139,14 @@
               @click="navigateToAlbum(album.id)"
               class="group cursor-pointer"
             >
-              <div class="aspect-square bg-gradient-to-br from-primary/10 to-primary/30 rounded-lg mb-2 flex items-center justify-center group-hover:shadow-lg transition-shadow">
-                <span class="material-symbols-outlined text-4xl text-primary/50">album</span>
-              </div>
+              <TrackCover
+                :src="album.cover_url"
+                :item-id="album.id"
+                :alt="album.title"
+                size-class="aspect-square w-full"
+                rounded="rounded-lg mb-2"
+                icon="album"
+              />
               <h4 class="font-medium text-gray-900 dark:text-white text-sm truncate group-hover:text-primary transition-colors">{{ album.title }}</h4>
               <p class="text-xs text-text-secondary">
                 {{ album.release_year || 'Unknown' }} • {{ album.track_count }} tracks
@@ -160,6 +169,12 @@
               class="flex items-center gap-4 px-4 py-3 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors border-b border-gray-100 dark:border-gray-800 last:border-0 group"
             >
               <span class="w-8 text-center text-sm text-text-secondary">{{ index + 1 }}</span>
+              <TrackCover
+                :src="coverByAlbumTitle(track.album)"
+                :item-id="track.id"
+                :alt="track.album || track.title"
+                size-class="w-9 h-9"
+              />
               <div class="flex-1 min-w-0">
                 <p class="font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
                 <p class="text-sm text-text-secondary truncate">{{ track.album }}</p>
@@ -187,6 +202,7 @@ import { getArtist, toggleArtistFavorite } from '@/api/library'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import { useToast } from '@/composables/useToast'
 import { usePlayer } from '@/composables/usePlayer'
+import TrackCover from '@/components/TrackCover.vue'
 import type { ArtistDetail } from '@/api/types'
 
 const route = useRoute()
@@ -202,6 +218,15 @@ const isFavorite = ref(false)
 
 // Get artist ID from route params
 const artistId = Number(route.params.id)
+
+/**
+ * `top_tracks` solo trae el título del disco; la carátula se resuelve contra los
+ * álbumes que ya vinieron en la misma respuesta, sin volver a consultar.
+ */
+function coverByAlbumTitle(albumTitle: string | null | undefined): string | null {
+  if (!artist.value?.albums || !albumTitle) return null
+  return artist.value.albums.find(a => a.title === albumTitle)?.cover_url ?? null
+}
 
 async function downloadArtistTracks() {
   if (!artist.value?.top_tracks || artist.value.top_tracks.length === 0) return
@@ -225,17 +250,25 @@ async function shufflePlay() {
     return
   }
   const artistName = artist.value.name
-  const tracks = artist.value.top_tracks
-  const randomIndex = Math.floor(Math.random() * tracks.length)
-  const randomTrack = tracks[randomIndex]
+  const tracks = [...artist.value.top_tracks]
+  for (let i = tracks.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [tracks[i], tracks[j]] = [tracks[j], tracks[i]]
+  }
+
+  const toPlayerTrack = (t: { id: number; title: string; album: string | null }) => ({
+    id: t.id,
+    title: t.title,
+    artist: artistName,
+    album: t.album || null,
+    coverUrl: coverByAlbumTitle(t.album),
+  })
+
   try {
-    await player.play({
-      id: randomTrack.id,
-      title: randomTrack.title,
-      artist: artistName,
-      album: randomTrack.album || null,
-      coverUrl: null,
-    })
+    await player.play(toPlayerTrack(tracks[0]))
+    for (const track of tracks.slice(1)) {
+      await player.playNext(toPlayerTrack(track))
+    }
   } catch (err: any) {
     const errStr = String(err?.message || err || '')
     toast.error('Playback error', errStr)

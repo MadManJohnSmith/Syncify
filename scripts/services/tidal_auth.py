@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
@@ -266,7 +267,7 @@ class TidalAuth:
         Returns:
             (success, message, device_info)
         """
-        import webbrowser
+        from services.browser_launcher import open_in_system_browser
         
         self._log("Starting device code authorization flow...")
         
@@ -283,12 +284,28 @@ class TidalAuth:
             
             self._log(f"Got device code. URL: {verification_url}")
             
-            # Step 2: Open browser IMMEDIATELY so user can log in while we poll
+            # Step 2: Open browser IMMEDIATELY so user can log in while we poll.
+            # La URL se anuncia en stderr antes de intentarlo: stdout queda
+            # reservado al JSON de auth_bridge.py y Rust registra stderr, así
+            # que es lo único que sobrevive si el proceso muere o se traga el
+            # error. `open_in_system_browser` devuelve False sin excepción cuando
+            # el escritorio no tiene gestor de URLs, y eso antes pasaba por
+            # "conectado": el usuario se quedaba esperando sin ver nada.
+            print(f"[Tidal Auth] Abre esta URL para continuar: {verification_url}", file=sys.stderr, flush=True)
+            opened = False
             try:
-                self._log("Opening browser for Tidal login...")
-                webbrowser.open(verification_url)
+                opened = open_in_system_browser(verification_url)
             except Exception as e:
-                self._log(f"Failed to open browser: {e}")
+                print(f"[Tidal Auth] Failed to open browser: {e}", file=sys.stderr, flush=True)
+
+            if not opened:
+                message = (
+                    "No se pudo abrir el navegador automáticamente. "
+                    f"Abre esta URL para conectar Tidal: {verification_url}"
+                )
+                print(f"[Tidal Auth] {message}", file=sys.stderr, flush=True)
+                await self.session.close()
+                return False, message, device_info
             
             # Step 3: Poll for authorization
             interval = 2  # seconds

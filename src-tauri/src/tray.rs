@@ -2,11 +2,12 @@
 //!
 //! Handles system tray icon, context menu, window toggling, and desktop notifications.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, Runtime,
+    AppHandle, Emitter, Manager, Runtime, State,
 };
 
 // Real commands executed by the tray menu (IN-4) and the sync engine shared
@@ -28,6 +29,237 @@ pub fn set_close_to_tray(enabled: bool) {
 /// Returns whether close to tray is enabled.
 pub fn is_close_to_tray_enabled() -> bool {
     CLOSE_TO_TRAY.load(Ordering::Relaxed)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STARTUP BEHAVIOR PERSISTENCE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `settings` table keys that the tray reads back on every call.
+const KV_CLOSE_TO_TRAY: &str = "close_to_tray";
+const KV_START_MINIMIZED: &str = "start_minimized";
+const KV_START_ON_BOOT: &str = "start_on_boot";
+
+fn kv_bool(raw: Option<&String>, default: bool) -> bool {
+    match raw.map(|v| v.trim().to_ascii_lowercase()) {
+        Some(v) if v == "true" || v == "1" => true,
+        Some(v) if v == "false" || v == "0" => false,
+        _ => default,
+    }
+}
+
+/// Read the startup preferences back from the database.
+///
+/// `TraySettings::default()` is only the fallback for keys that were never
+/// saved: returning defaults unconditionally made `get_tray_settings` disagree
+/// with what the user had actually chosen, and the frontend then re-sent those
+/// defaults on every save.
+pub async fn load_tray_settings(db: &crate::DbPool) -> TraySettings {
+    let defaults = TraySettings::default();
+    let keys = vec![
+        KV_CLOSE_TO_TRAY.to_string(),
+        KV_START_MINIMIZED.to_string(),
+        KV_START_ON_BOOT.to_string(),
+    ];
+
+    match crate::commands::perform_get_kv_settings(db, keys).await {
+        Ok(map) => TraySettings {
+            close_to_tray: kv_bool(map.get(KV_CLOSE_TO_TRAY), defaults.close_to_tray),
+            start_minimized: kv_bool(map.get(KV_START_MINIMIZED), defaults.start_minimized),
+            start_on_boot: kv_bool(map.get(KV_START_ON_BOOT), defaults.start_on_boot),
+            ..defaults
+        },
+        Err(e) => {
+            tracing::warn!("Could not read tray settings from the database: {}", e);
+            defaults
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTO-START REGISTRATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Names of the OS autostart artifacts Syncify writes.
+pub const LINUX_AUTOSTART_FILE: &str = "syncify.desktop";
+pub const MACOS_AUTOSTART_FILE: &str = "com.syncify.app.plist";
+pub const WINDOWS_AUTOSTART_VALUE: &str = "Syncify";
+pub const WINDOWS_AUTOSTART_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+/// Contents of the XDG autostart entry. Kept pure so it can be asserted.
+pub fn linux_autostart_desktop_entry(exe: &Path) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=Syncify\n\
+         Comment=Sync library manager\n\
+         Exec={}\n\
+         Icon=syncify\n\
+         Terminal=false\n\
+         X-GNOME-Autostart-enabled=true\n",
+        exe.display()
+    )
+}
+
+/// Contents of the per-user launch agent. Kept pure so it can be asserted.
+pub fn macos_autostart_plist(exe: &Path) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n\
+         \x20 <key>Label</key>\n\
+         \x20 <string>com.syncify.app</string>\n\
+         \x20 <key>ProgramArguments</key>\n\
+         \x20 <array>\n\
+         \x20   <string>{}</string>\n\
+         \x20 </array>\n\
+         \x20 <key>RunAtLoad</key>\n\
+         \x20 <true/>\n\
+         \x20 <key>KeepAlive</key>\n\
+         \x20 <false/>\n\
+         </dict>\n\
+         </plist>\n",
+        exe.display()
+    )
+}
+
+/// Registry payload for the Windows `Run` key: an install path is very often
+/// quoted already, so only add quotes when they are missing.
+pub fn windows_autostart_command(exe: &Path) -> String {
+    let raw = exe.display().to_string();
+    if raw.starts_with('"') && raw.ends_with('"') {
+        raw
+    } else {
+        format!("\"{}\"", raw)
+    }
+}
+
+fn linux_autostart_path() -> Result<PathBuf, String> {
+    dirs::config_dir()
+        .map(|c| c.join("autostart").join(LINUX_AUTOSTART_FILE))
+        .ok_or_else(|| "Could not resolve the user configuration directory".to_string())
+}
+
+fn macos_autostart_path() -> Result<PathBuf, String> {
+    dirs::home_dir()
+        .map(|h| {
+            h.join("Library")
+                .join("LaunchAgents")
+                .join(MACOS_AUTOSTART_FILE)
+        })
+        .ok_or_else(|| "Could not resolve the user home directory".to_string())
+}
+
+fn write_or_remove(path: &Path, contents: Option<String>) -> Result<(), String> {
+    match contents {
+        Some(body) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+            }
+            std::fs::write(path, body)
+                .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+        }
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("Failed to remove {}: {}", path.display(), e)),
+        },
+    }
+}
+
+fn windows_autostart(exe: &Path, enabled: bool) -> Result<(), String> {
+    let mut command = std::process::Command::new("reg");
+    if enabled {
+        command
+            .arg("add")
+            .arg(WINDOWS_AUTOSTART_RUN_KEY)
+            .arg("/v")
+            .arg(WINDOWS_AUTOSTART_VALUE)
+            .arg("/t")
+            .arg("REG_SZ")
+            .arg("/d")
+            .arg(windows_autostart_command(exe))
+            .arg("/f");
+    } else {
+        command
+            .arg("delete")
+            .arg(WINDOWS_AUTOSTART_RUN_KEY)
+            .arg("/v")
+            .arg(WINDOWS_AUTOSTART_VALUE)
+            .arg("/f");
+    }
+
+    let status = command
+        .status()
+        .map_err(|e| format!("Failed to run reg.exe: {}", e))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "reg.exe returned {} for the autostart entry",
+            status
+        ))
+    }
+}
+
+/// Choose the executable an autostart entry must point at.
+///
+/// Under an AppImage, `current_exe()` resolves inside the ephemeral mount point
+/// (`/tmp/.mount_xxxx`), which no longer exists at the next login; `$APPIMAGE`
+/// holds the real, stable path in that case.
+pub fn pick_autostart_exe(
+    appimage: Option<PathBuf>,
+    current_exe: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    appimage
+        .or(current_exe)
+        .ok_or_else(|| "Could not resolve the executable path".to_string())
+}
+
+/// Resolve the executable to register, honouring `$APPIMAGE` when present.
+pub fn resolve_autostart_exe() -> Result<PathBuf, String> {
+    let appimage = std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty());
+    pick_autostart_exe(appimage, std::env::current_exe().ok())
+}
+
+/// Enable or disable launching Syncify at login for the current user.
+pub fn apply_autostart(exe: &Path, enabled: bool) -> Result<(), String> {
+    if cfg!(target_os = "windows") {
+        windows_autostart(exe, enabled)
+    } else if cfg!(target_os = "macos") {
+        write_or_remove(
+            &macos_autostart_path()?,
+            enabled.then(|| macos_autostart_plist(exe)),
+        )
+    } else {
+        write_or_remove(
+            &linux_autostart_path()?,
+            enabled.then(|| linux_autostart_desktop_entry(exe)),
+        )
+    }
+}
+
+/// Whether the OS currently has a Syncify autostart entry registered.
+pub fn is_autostart_enabled() -> bool {
+    if cfg!(target_os = "windows") {
+        std::process::Command::new("reg")
+            .arg("query")
+            .arg(WINDOWS_AUTOSTART_RUN_KEY)
+            .arg("/v")
+            .arg(WINDOWS_AUTOSTART_VALUE)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    } else if cfg!(target_os = "macos") {
+        macos_autostart_path().map(|p| p.exists()).unwrap_or(false)
+    } else {
+        linux_autostart_path().map(|p| p.exists()).unwrap_or(false)
+    }
 }
 
 /// Tray icon states
@@ -253,7 +485,43 @@ pub fn catch_tray_panic<T>(
 pub fn setup_system_tray_isolated<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    catch_tray_panic(|| setup_system_tray(app).map(|_tray| ()))
+    match catch_tray_panic(|| setup_system_tray(app).map(|_tray| ())) {
+        Ok(()) => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                apply_startup_window_preference(&handle).await;
+            });
+            Ok(())
+        }
+        Err(e) => {
+            // Without a tray icon there is no way to bring the window back, so
+            // closing it would hide the only surface of a process that keeps
+            // running. Fall back to closing the app instead.
+            set_close_to_tray(false);
+            Err(e)
+        }
+    }
+}
+
+/// Apply the persisted `close_to_tray` and `start_minimized` preferences.
+///
+/// Runs right after the tray comes up so the window state matches what the user
+/// asked for instead of the runtime defaults.
+async fn apply_startup_window_preference<R: Runtime>(app: &AppHandle<R>) {
+    let settings = load_tray_settings(&app.state::<crate::AppState>().db).await;
+    set_close_to_tray(settings.close_to_tray);
+    if settings.start_minimized {
+        hide_main_window(app);
+    }
+    // Re-registering an entry that the OS lost (AppImage moved, new machine,
+    // user cleaned the autostart folder) keeps the saved promise true without
+    // waiting for the user to toggle the switch again.
+    if settings.start_on_boot && !is_autostart_enabled() {
+        match resolve_autostart_exe().and_then(|exe| apply_autostart(&exe, true)) {
+            Ok(()) => tracing::info!("Re-registered the missing autostart entry"),
+            Err(e) => tracing::warn!("Could not re-register the autostart entry: {}", e),
+        }
+    }
 }
 
 /// Toggle main window visibility
@@ -482,13 +750,22 @@ pub async fn update_tray_settings<R: Runtime>(
             tracing::warn!("Failed to set tray visibility: {}", e);
         }
     }
+
+    // `start_on_boot` is persisted by the frontend in the same batch, but the OS
+    // entry only exists if it is (re)registered here; a saved preference that
+    // was never applied to the system was exactly the dead toggle it looked like.
+    let exe = resolve_autostart_exe()?;
+    apply_autostart(&exe, settings.start_on_boot)?;
+
     Ok(())
 }
 
 /// Tauri command to retrieve current tray settings
 #[tauri::command]
-pub async fn get_tray_settings() -> Result<TraySettings, String> {
-    let mut settings = TraySettings::default();
+pub async fn get_tray_settings(state: State<'_, crate::AppState>) -> Result<TraySettings, String> {
+    let mut settings = load_tray_settings(&state.db).await;
+    // The running atomic wins for this one field: it is what the window-close
+    // handler actually consults, and the tray-less fallback may have flipped it.
     settings.close_to_tray = is_close_to_tray_enabled();
     Ok(settings)
 }

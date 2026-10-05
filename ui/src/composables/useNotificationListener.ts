@@ -91,7 +91,10 @@ export function useNotificationListener() {
                 } else if (notif.kind === 'success') {
                     toast.success(notif.title, notif.message);
                 } else if (notif.kind === 'progress') {
-                    toast.progress(notif.title);
+                    // AppNotification no trae porcentaje, así que un toast de
+                    // progreso creado aquí no lo completaba nadie y se quedaba
+                    // en pantalla indefinidamente (R16).
+                    toast.info(notif.title, notif.message);
                 } else {
                     toast.info(notif.title, notif.message);
                 }

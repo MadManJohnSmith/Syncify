@@ -5,14 +5,14 @@
 **Your entire music library. Maximum quality. Under your control.**
 
 Connect Qobuz, Tidal, Spotify, Deezer, SoundCloud and Apple Music. Import
-your whole catalog, download it in the best quality available, and keep a
+your library, download it in the best quality available, and keep a
 perfectly organized local library of real files, ready for Symfonium,
 Plexamp, or any player you love.
 
 [English](README.md) · [Español](README.es.md)
 
 **[⬇ Download the latest release](https://github.com/MadManJohnSmith/Syncify/releases/latest)**
-· [Build from source](#building-from-source) · [Documentation](docs/README.md)
+· [Build from source](#building-from-source) · [Documentation](docs/README.en.md)
 
 [![Release](https://img.shields.io/github/v/release/MadManJohnSmith/Syncify?style=flat-square&logo=github)](https://github.com/MadManJohnSmith/Syncify/releases/latest)
 [![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
@@ -47,22 +47,32 @@ Streaming services rent you your music. If you leave — or a service loses a
 license, or a track gets delisted — your library goes with it. Syncify flips
 that: it turns "your" catalog into *your* catalog.
 
-- **Leave any service without leaving your music behind.** Import everything
-  (favorites, playlists, purchases, history), then migrate it to another
-  service, or download it and own it outright.
+- **Leave any service without leaving your music behind.** Import your
+  favorites, albums, artists and playlists — plus purchases and listening
+  history where the provider exposes them — then migrate to another service,
+  or download it and own it outright. Coverage is not identical on every
+  provider; the [import-parity matrix](docs/MATRIZ_PARIDAD_IMPORTACION.md)
+  has the row-by-row truth.
 - **Own real files, not licenses.** Downloads land as properly tagged FLAC
   (up to Hi-Res 24-bit/192 kHz) or MP3, verified against what the provider
   promised.
-- **One library, every service.** Favorites stay in sync both ways across the
-  services you use, with smart deduplication that knows when two services
-  have the same song.
+- **One library, every service.** One import folds every service you connect
+  into a single deduplicated library that knows when two services carry the
+  same song. Starring a track inside Syncify is a **local** marker: your
+  accounts are only written to by the migration tool, not by the library view.
 
 ## What can you do with it?
 
-- **Import your full catalog** from Qobuz, Tidal, Spotify, Deezer, SoundCloud
-  and Apple Music — tracks, albums, artists, playlists.
+- **Import your library** from Qobuz, Tidal, Spotify, Deezer, SoundCloud and
+  Apple Music — tracks, albums, artists, playlists. It is not the same depth
+  everywhere: SoundCloud's public API exposes no playlist or history
+  endpoints, Deezer exposes no listening history, and Apple's importer reads
+  the favorites library rather than your history. The
+  [parity matrix](docs/MATRIZ_PARIDAD_IMPORTACION.md) is the exact reference.
 - **Migrate between services**: pick a source, pick a destination, review the
-  matches, transfer. Your playlists move with their order and names intact.
+  matches, transfer. Syncify matches on ISRC first, then title and artist, and
+  transfers what it matches as **favorites on the destination account**. It
+  does not rebuild your playlists over there yet.
 - **Download with a quality cascade**: the engine always targets the best
   tier a track is offered in, steps down to the next one when it isn't, and
   verifies every file it writes.
@@ -86,10 +96,11 @@ that: it turns "your" catalog into *your* catalog.
    resolves every track's canonical identity (ISRC, provider IDs), enriches
    it, and persists it transactionally, with retry, into your local
    SQLite library.
-3. **Download.** Native pipelines handle each provider's delivery format
-   (including DASH decryption for Qobuz), write real FLAC/MP3 files with the
-   metadata, covers and lyrics embedded, and verify what landed on disk
-   matches what was promised.
+3. **Download.** Native pipelines handle each provider's delivery format —
+   Qobuz hands out direct FLAC URLs, Tidal delivers segmented streams that the
+   pipeline assembles — then write real FLAC/MP3 files with the metadata,
+   covers and lyrics embedded, and verify what landed on disk matches what
+   was promised.
 4. **Enjoy anywhere.** The result is a plain folder tree with sidecar files
    — no proprietary database lock-in. Point Symfonium, Plexamp, Roon or any
    player at it and it just works.
@@ -164,8 +175,11 @@ Then:
    **ship inside every package**, and so does a private Python runtime with
    the service bridges already installed — there is nothing else to
    download, install or configure.
-2. Run the first-run wizard: connect your accounts (credentials are stored in
-   your OS keyring — no config files needed), pick your music folder, done.
+2. Run the first-run wizard: connect your accounts, pick your music folder,
+   done. Credentials are encrypted and stored in Syncify's own SQLite
+   database, inside the app profile folder. The encryption key lives in your
+   OS keyring when one is available, and falls back to a `.crypto_key` file
+   (mode `0600`, same profile folder) when it is not.
 
 > Building from source? See
 > [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md) for how the
@@ -181,8 +195,12 @@ Symfonium, Plexamp, Roon or any player reads them directly.
 
 **Where do my service credentials live?**
 
-In your operating system's keyring, encrypted on your machine. Each login
-runs through your browser; nothing is written to plain config files.
+Encrypted inside Syncify's own SQLite database, in the app profile folder on
+your machine. The encryption key is kept in your operating system's keyring
+when one is available; where it is not (headless Linux, no Secret Service),
+the key falls back to a `.crypto_key` file with `0600` permissions in that
+same profile folder. Each login runs through your browser, and no credential
+is ever written to a plain config file.
 
 **What quality can I expect?**
 
@@ -225,19 +243,20 @@ npm run build
 
 ## Documentation
 
-- [`docs/`](docs/README.md) — architecture and feature docs
-- [`docs/MATRIZ_PARIDAD_IMPORTACION.md`](docs/MATRIZ_PARIDAD_IMPORTACION.md) — the living import-parity matrix
-- [`docs/LYRICS_16_PROVIDER_MATRIX.md`](docs/LYRICS_16_PROVIDER_MATRIX.md) — the lyrics cascade, audited
-- [`docs/Deuda_Tecnica_y_UX.md`](docs/Deuda_Tecnica_y_UX.md) — open technical debt, tracked in the open
+- [`docs/`](docs/README.en.md) — documentation index (English), with the
+  language status of every document; the design specs under `docs/features/`
+  are Spanish-only today
+- [`docs/MATRIZ_PARIDAD_IMPORTACION.md`](docs/MATRIZ_PARIDAD_IMPORTACION.md) — the living import-parity matrix (Spanish)
+- [`docs/LYRICS_16_PROVIDER_MATRIX.md`](docs/LYRICS_16_PROVIDER_MATRIX.md) — the lyrics cascade, audited (English)
+- [`docs/Deuda_Tecnica_y_UX.md`](docs/Deuda_Tecnica_y_UX.md) — open technical debt, tracked in the open (Spanish)
 
 ## Contributing
 
 Contributions are welcome: bugs, UI improvements, new lyrics or metadata
 providers, more services, docs. Fork the repo, create a focused branch, and
-open a PR against `syncify-app` (the development branch; `main` receives
-verified merges for releases). Run the checks before submitting —
-`cargo check`, `cargo test`, `cargo clippy`, `cargo fmt --check` and
-`cd ui && npm run test:run` — the CI runs exactly those.
+open a PR against `main` — the integration branch CI runs on and releases are
+cut from. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the exact check commands,
+the paths CI ignores, and how to keep the docs in step with the code.
 
 Found a bug? [Open an issue](https://github.com/MadManJohnSmith/Syncify/issues)
 with your OS/version, steps to reproduce, and relevant logs — never personal

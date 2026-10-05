@@ -1,11 +1,15 @@
-//! Apple Music Motion / Animated Cover Art Downloader & Converter for `src-tauri`
+//! Motion / Animated Cover Art Downloader & Converter for `src-tauri`
 //!
-//! Pipeline:
-//! 1. Extracts Apple Music developer token (JWT) from web player JS bundle.
-//! 2. Searches iTunes API to resolve exact collectionId.
-//! 3. Queries Apple Music Catalog API for `editorialVideo.motionDetailSquare.video` (HLS .m3u8).
-//! 4. Converts HLS stream to animated WebP sidecars (`cover.webp`, `cover.animated.webp`) using ffmpeg.
-//! 5. Preserves standard JPEG front cover in FLAC files, maintaining animated artwork purely as external sidecars.
+//! Fuentes, en orden:
+//! 1. Apple Music: token (JWT) del bundle JS del web player -> iTunes Search
+//!    -> Catálogo con `editorialVideo` (HLS .m3u8) probando storefronts.
+//! 2. Tidal (fallback): búsqueda anónima con `x-tidal-token` (bundle público)
+//!    -> campo `videoCover` del álbum (UUID) -> MP4 en resources.tidal.com.
+//! Pipeline común:
+//! 3. Convierte el stream a sidecars WebP animado (`cover.webp`,
+//!    `cover.animated.webp`) con ffmpeg.
+//! 4. Preserva la portada JPEG estándar dentro del FLAC, manteniendo el
+//!    artwork animado puramente como sidecar externo.
 
 use reqwest::Client;
 use std::path::{Path, PathBuf};
@@ -360,13 +364,15 @@ pub fn validate_animated_webp_bytes(bytes: &[u8]) -> Result<usize, &'static str>
 /// Authorized protocols for FFmpeg HLS stream ingestion [SEC-015].
 pub const FFMPEG_HLS_PROTOCOL_WHITELIST: &str = "https,tls,tcp";
 
-/// Validate an Apple Music animated artwork HLS stream URL [SEC-015 / TASK-99].
+/// Validate an animated-artwork stream URL [SEC-015 / TASK-99].
 ///
 /// Ensures:
 /// 1. The URL is syntactically valid and can be parsed by `reqwest::Url`.
 /// 2. The URL scheme is strictly HTTPS (`url.scheme() == "https"`).
-/// 3. The host is present and belongs to authorized Apple Music media domains:
-///    `apple.com`, `*.apple.com`, `mzstatic.com`, or `*.mzstatic.com` (case-insensitive).
+/// 3. The host is present and belongs to authorized media domains:
+///    `apple.com` / `*.apple.com`, `mzstatic.com` / `*.mzstatic.com` (Apple
+///    Music HLS) or `tidal.com` / `*.tidal.com` (Tidal motion-cover MP4s),
+///    case-insensitive.
 /// 4. Disallows dangerous protocols (`file://`, `http://`, `concat:`, `gopher://`, etc.)
 ///    preventing SSRF and local file inclusion when passed to FFmpeg.
 pub fn validate_hls_stream_url(m3u8_url: &str) -> Result<reqwest::Url, String> {
@@ -420,7 +426,9 @@ pub fn validate_hls_stream_url_opts(
     let is_authorized_domain = host_clean == "apple.com"
         || host_clean.ends_with(".apple.com")
         || host_clean == "mzstatic.com"
-        || host_clean.ends_with(".mzstatic.com");
+        || host_clean.ends_with(".mzstatic.com")
+        || host_clean == "tidal.com"
+        || host_clean.ends_with(".tidal.com");
 
     if is_authorized_domain {
         return Ok(url);
@@ -445,9 +453,205 @@ pub fn validate_hls_stream_url_opts(
     }
 
     Err(format!(
-        "Unauthorized stream host '{}': host must belong to .apple.com or .mzstatic.com",
+        "Unauthorized stream host '{}': host must belong to .apple.com, .mzstatic.com or .tidal.com",
         host
     ))
+}
+
+// ==============================================
+// TIDAL MOTION-COVER FALLBACK (fuente secundaria tras Apple Music)
+// ==============================================
+
+/// Catálogo v1 de Tidal: acepta el bundle público vía header `x-tidal-token`
+/// sin sesión de usuario (verificado en vivo: la búsqueda responde con el
+/// token del web player; credenciales personales nunca entran aquí).
+const TIDAL_CATALOG_BASE: &str = "https://api.tidal.com/v1";
+
+/// País de la tienda Tidal para la búsqueda del álbum.
+const TIDAL_CATALOG_COUNTRIES: [&str; 2] = ["US", "ES"];
+
+/// Ficheros publicados por Tidal para un UUID de portada animada, en orden
+/// de preferencia (patrón verificado contra `resources.tidal.com/videos/`).
+const TIDAL_VIDEO_COVER_FILES: [&str; 3] = ["640x640.mp4", "1280x1280.mp4", "origin.mp4"];
+
+/// Límite de URLs de video por búsqueda para acotar llamadas.
+const TIDAL_MAX_ALBUM_LOOKUPS: usize = 5;
+
+/// Whether the string looks like a Tidal UUID (8-4-4-4-12 hex), the shape of
+/// the `videoCover` field.
+fn is_tidal_uuid(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('-').collect();
+    parts.len() == 5
+        && [8usize, 4, 4, 4, 12]
+            .iter()
+            .zip(&parts)
+            .all(|(len, part)| part.len() == *len && part.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// Whether the URL is an HTTPS resource hosted on a tidal.com domain.
+fn is_tidal_media_url(url: &str) -> bool {
+    reqwest::Url::parse(url.trim())
+        .ok()
+        .filter(|u| u.scheme() == "https")
+        .and_then(|u| {
+            u.host_str().map(|h| {
+                let host = h.to_ascii_lowercase();
+                host == "tidal.com" || host.ends_with(".tidal.com")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Build the motion-cover MP4 URL for a `videoCover` UUID, mirroring the
+/// dash-to-slash path of Tidal's static cover images.
+pub fn tidal_video_cover_url(video_cover_uuid: &str, file: &str) -> Option<String> {
+    let uuid = video_cover_uuid.trim();
+    if !is_tidal_uuid(uuid) {
+        return None;
+    }
+    Some(format!(
+        "https://resources.tidal.com/videos/{}/{}",
+        uuid.replace('-', "/"),
+        file
+    ))
+}
+
+/// Walk a `videoThumbnail`-shaped value (string, object with size keys, or
+/// array) collecting HTTPS tidal.com media URLs. Tolerant on purpose: the
+/// field only appears populated on a sliver of the catalog and its shape
+/// varies between payloads.
+fn collect_tidal_media_urls(value: Option<&serde_json::Value>, out: &mut Vec<String>) {
+    match value {
+        Some(serde_json::Value::String(s)) => {
+            let trimmed = s.trim();
+            if is_tidal_media_url(trimmed) {
+                out.push(trimmed.to_string());
+            } else if is_tidal_uuid(trimmed) {
+                for file in TIDAL_VIDEO_COVER_FILES {
+                    if let Some(url) = tidal_video_cover_url(trimmed, file) {
+                        out.push(url);
+                    }
+                }
+            }
+        }
+        Some(serde_json::Value::Object(map)) => {
+            for key in ["large", "medium", "small", "video", "url"] {
+                collect_tidal_media_urls(map.get(key), out);
+            }
+        }
+        Some(serde_json::Value::Array(items)) => {
+            for item in items {
+                collect_tidal_media_urls(Some(item), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// URLs candidatas de portada animada para un payload de álbum de Tidal.
+/// `videoCover` (UUID, campo verificado en el endpoint de álbum) primero;
+/// `videoThumbnail` como variante tolerada.
+pub fn extract_tidal_video_candidates(album: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_tidal_media_urls(album.get("videoCover"), &mut out);
+    collect_tidal_media_urls(album.get("videoThumbnail"), &mut out);
+    let mut unique = Vec::new();
+    for url in out {
+        if !unique.contains(&url) {
+            unique.push(url);
+        }
+    }
+    unique
+}
+
+/// Look up motion-cover URLs for `artist - album` on Tidal's anonymous
+/// catalog. Returns empty (not an error) when nothing matches or the catalog
+/// is unreachable: Tidal is a fallback, never a hard dependency.
+async fn tidal_motion_cover_candidates(client: &Client, artist: &str, album: &str) -> Vec<String> {
+    let query = format!("{} {}", artist.trim(), album.trim());
+
+    for country in TIDAL_CATALOG_COUNTRIES {
+        let search_url = format!(
+            "{}/search?query={}&limit=10&countryCode={}",
+            TIDAL_CATALOG_BASE,
+            urlencoding::encode(&query),
+            country
+        );
+        let response = client
+            .get(&search_url)
+            .header(
+                "x-tidal-token",
+                syncify_tidal_downloader::DEFAULT_TIDAL_CLIENT_ID_FALLBACK,
+            )
+            .send()
+            .await;
+        let Ok(response) = response else {
+            return Vec::new();
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(json) = response.json::<serde_json::Value>().await else {
+            continue;
+        };
+        let Some(items) = json["albums"]["items"].as_array() else {
+            continue;
+        };
+
+        // Search items carry `videoCover` but elide the artist, so the match
+        // happens on the album endpoint (which includes artist.name).
+        let lookups: Vec<&serde_json::Value> = items
+            .iter()
+            .filter(|item| item.get("videoCover").is_some_and(|v| !v.is_null()))
+            .take(TIDAL_MAX_ALBUM_LOOKUPS)
+            .collect();
+
+        for item in lookups {
+            let Some(id) = item["id"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| item["id"].as_u64().map(|v| v.to_string()))
+            else {
+                continue;
+            };
+            let album_url = format!(
+                "{}/albums/{}?countryCode={}",
+                TIDAL_CATALOG_BASE, id, country
+            );
+            let Ok(response) = client
+                .get(&album_url)
+                .header(
+                    "x-tidal-token",
+                    syncify_tidal_downloader::DEFAULT_TIDAL_CLIENT_ID_FALLBACK,
+                )
+                .send()
+                .await
+            else {
+                continue;
+            };
+            if !response.status().is_success() {
+                continue;
+            }
+            let Ok(album_json) = response.json::<serde_json::Value>().await else {
+                continue;
+            };
+            let r_artist = album_json["artist"]["name"].as_str().unwrap_or("");
+            let r_album = album_json["title"].as_str().unwrap_or("");
+            if !matches_artist_and_album(r_artist, r_album, artist, album) {
+                continue;
+            }
+            let urls = extract_tidal_video_candidates(&album_json);
+            if !urls.is_empty() {
+                info!(
+                    "[AnimatedCover] ✓ Found Tidal motion cover ({}) for '{} - {}'",
+                    country, artist, album
+                );
+                return urls;
+            }
+        }
+    }
+
+    Vec::new()
 }
 
 /// Construct secure FFmpeg command line arguments for HLS stream conversion to animated WebP.
@@ -1025,38 +1229,71 @@ async fn resolve_and_download_animated_cover_uncached(
         }
     }
 
-    let m3u8_url = match m3u8_url {
-        Some(url) => url,
-        None => {
-            info!(
-                "[AnimatedCover] No animated artwork available for '{}' - '{}' across storefronts",
-                artist, album
-            );
-            return AnimatedCoverStatus::NotFound;
+    // Fuentes en orden: Apple Music (HLS) y Tidal (MP4, fallback anónimo).
+    let mut stream_candidates = Vec::new();
+    if let Some(url) = m3u8_url {
+        info!(
+            "[AnimatedCover] Found animated artwork HLS stream: {}",
+            redact_stream_url(&url)
+        );
+        stream_candidates.push(url);
+    }
+    stream_candidates.extend(tidal_motion_cover_candidates(client, artist, album).await);
+
+    if stream_candidates.is_empty() {
+        info!(
+            "[AnimatedCover] No animated artwork available for '{}' - '{}' (Apple Music + Tidal)",
+            artist, album
+        );
+        return AnimatedCoverStatus::NotFound;
+    }
+
+    let multiple_sources = stream_candidates.len() > 1;
+    for candidate in &stream_candidates {
+        // Security Gate [SEC-015 / TASK-99]: Validate URL scheme and host whitelist before invoking FFmpeg
+        let validated_url = match validate_hls_stream_url(candidate) {
+            Ok(u) => u,
+            Err(err) => {
+                warn!(
+                    "[AnimatedCover] Skipping candidate rejected as untrusted stream URL '{}': {}",
+                    redact_stream_url(candidate),
+                    err
+                );
+                continue;
+            }
+        };
+
+        let status =
+            convert_stream_to_animated_cover(validated_url.as_str(), target_dir, artist, album)
+                .await;
+        match &status {
+            AnimatedCoverStatus::Success(_) => return status,
+            AnimatedCoverStatus::Failed(_) if multiple_sources => {
+                warn!(
+                    "[AnimatedCover] Conversion failed for one source, trying the next for '{} - {}'",
+                    artist, album
+                );
+            }
+            _ => return status,
         }
-    };
+    }
 
-    info!(
-        "[AnimatedCover] Found animated artwork HLS stream: {}",
-        redact_stream_url(&m3u8_url)
-    );
+    AnimatedCoverStatus::NotFound
+}
 
-    // Security Gate [SEC-015 / TASK-99]: Validate URL scheme and host whitelist before invoking FFmpeg
-    let validated_url = match validate_hls_stream_url(&m3u8_url) {
-        Ok(u) => u,
-        Err(err) => {
-            warn!("[AnimatedCover] Refusing to invoke ffmpeg: rejected untrusted or invalid stream URL '{}': {}", redact_stream_url(&m3u8_url), err);
-            return AnimatedCoverStatus::Failed(format!(
-                "Untrusted or invalid stream URL: {}",
-                err
-            ));
-        }
-    };
-
-    // Step 3: Convert HLS stream to animated WebP using ffmpeg with 30s timeout
+/// Convert a validated media URL (HLS `.m3u8` or direct MP4) into the
+/// animated WebP sidecars (`cover.webp`, `cover.animated.webp`) plus the
+/// Symfonium MP4. Shared by the Apple Music and Tidal sources.
+async fn convert_stream_to_animated_cover(
+    validated_url: &str,
+    target_dir: &Path,
+    artist: &str,
+    album: &str,
+) -> AnimatedCoverStatus {
+    // Step 3: Convert stream to animated WebP using ffmpeg with 30s timeout
     let webp_path = target_dir.join("cover.webp");
     let output_str = webp_path.to_str().unwrap_or("cover.webp");
-    let ffmpeg_args = build_ffmpeg_animated_cover_args(validated_url.as_str(), output_str);
+    let ffmpeg_args = build_ffmpeg_animated_cover_args(validated_url, output_str);
 
     let ffmpeg_child = crate::cmd_utils::create_tokio_command("ffmpeg")
         .args(&ffmpeg_args)

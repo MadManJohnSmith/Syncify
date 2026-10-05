@@ -11,6 +11,21 @@ resolver = "2"
 
 [profile.dev]
 opt-level = 0
+# `syncify-tauri` es un crate muy grande y este repo tiene cientos de binarios de
+# prueba, cada uno enlazado con sus ~500 dependencias. Con los símbolos de
+# depuración completos, cada copia ocupaba cientos de MB y la caché llegó a
+# 150 GB en deps. Sin ellos los binarios bajan a unos pocos MB y el workspace
+# sigue siendo diagnosticable con backtraces por número de línea.
+debug = 0
+# La caché incremental guarda el estado intermedio de cada variante de
+# compilación y llegó a 17 GB sin aportar a los tests.
+incremental = false
+
+# Los tests de integración heredan de `test`, no de `dev`.
+[profile.test]
+opt-level = 0
+debug = 0
+incremental = false
 
 [profile.release]
 opt-level = 3

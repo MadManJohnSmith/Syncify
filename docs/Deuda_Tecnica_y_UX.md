@@ -15,26 +15,43 @@ Cada entrada dice **qué se observó**, **dónde** y **qué la cerraría**. Una
 entrada sin observación reproducible no entra aquí. Los riesgos aceptados se
 declaran como tales y no se reopened por reflejo.
 
-Última revisión: ítem 9.1 del plan post-auditoría (2026-10-02) — cierra D-02 y
-redefine D-01 y D-04 a la luz de las fases 4 y 8. Antes: `b9559da` + reparaciones
-de SYNC-AUD-062 a SYNC-AUD-071.
+Última revisión: auditoría 73 ítems, entrada A-01 reescrita contra el árbol
+(2026-10-05) — el par `app_id`/`app_secret` está versionado en Python y en
+Rust, no solo el `app_id`. Antes de eso: ítem 9.1 del plan post-auditoría
+(2026-10-02), que cierra D-02 y redefine D-01 y D-04 a la luz de las fases 4 y
+8. Y antes: `b9559da` + reparaciones de SYNC-AUD-062 a SYNC-AUD-071.
 
 ## Riesgos aceptados
 
-### A-01 — El `app_id` público de Qobuz está en el árbol
+### A-01 — El par `app_id`/`app_secret` público de Qobuz está en el árbol
 
-- **Observado**: `scripts/services/qobuz_service.py` y
-  `scripts/services/qobuz_auth.py` contienen el `app_id` público `798273057`.
-- **Decisión**: exposición **aceptada y documentada**. Es un identificador de
-  cliente, no un secreto, y el núcleo Rust lo mantiene fuera de fuente por
-  diseño (`QOBUZ_APP_ID_FALLBACK` es un placeholder de desarrollo). Dos tests lo
-  tratan como material prohibido en el núcleo: `secrets_isolation_security_test.rs`
-  y `qobuz_credentials_leak_test.rs`, y el escaneo de secretos lo cubre con
-  allowlist explícita.
-- **Lo que NO se acepta**: el `app_secret` emparejado. Nunca se versiona; se
-  resuelve en runtime desde `QOBUZ_APP_SECRET` o desde las credenciales del
-  operador, y una petición sin secreto se rechaza en vez de firmarse con la
-  cadena vacía (SYNC-AUD-062).
+- **Observado**: el bundle de identificadores de aplicación que usa el cliente
+  open-source de Qobuz está versionado **en los dos lados**: en Python,
+  `scripts/services/qobuz_service.py` (líneas 56 y 63) y en el núcleo Rust,
+  `src-tauri/src/services/qobuz.rs` (líneas 19-20,
+  `QOBUZ_APP_ID_FALLBACK` y `QOBUZ_APP_SECRET_FALLBACK`). El `app_id` público
+  es `798273057`; el `app_secret` emparejado no se reproduce aquí para no
+  darle una segunda copia.
+- **Decisión**: exposición **aceptada y documentada** (SYNC-AUD-071). Ambos
+  valores son identificadores de la aplicación pública de Qobuz, no
+  credenciales personales de ningún usuario: sin ellos la API responde 400
+  «Invalid or missing app_id». Lo que este riesgo **no** cubre son las
+  credenciales personales del usuario (token/login), que viajan por el
+  cifrado de la app.
+- **Prioridad de resolución**: las variables de entorno `QOBUZ_APP_ID` y
+  `QOBUZ_APP_SECRET` ganan sobre los literales de respaldo
+  (`src-tauri/src/services/qobuz.rs`, líneas 30-38;
+  `scripts/services/qobuz_service.py`, líneas 95-96), de modo que un operador
+  puede rotar el par sin tocar el árbol.
+- **Lo que no se acepta**: credenciales personales de usuario versionadas, o
+  una petición firmada con el secreto vacío cuando no hay ninguno
+  (SYNC-AUD-062).
+- **Vigilancia**: `scripts/tests/test_docs_consistency.py`
+  (`AcceptedQobuzAppIdRiskTests`) exige que esta entrada siga nombrando el
+  `app_id` que el árbol lleva y que los dos lados compartan el mismo valor
+  público; `src-tauri/tests/secrets_isolation_security_test.rs` y
+  `src-tauri/tests/qobuz_credentials_leak_test.rs` tratan la exposición
+  como material vigilado.
 - **Cierra**: decisión del propietario, no trabajo pendiente. Se revisita solo si
   Qobuz rota el identificador.
 

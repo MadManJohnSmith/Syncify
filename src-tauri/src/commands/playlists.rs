@@ -280,6 +280,43 @@ pub async fn sanitize_single_playlist(
     Ok(purged_count)
 }
 
+/// Aud23: recalcula `playlists.track_count` para las playlists cuyo contador o
+/// cuyas posiciones dejaron de cuadrar, sin tocar las que ya están bien.
+///
+/// `playlist_tracks.track_id` es `ON DELETE CASCADE` (migración 0064), así que
+/// borrar una pista de la biblioteca borra en cascada su fila de
+/// `playlist_tracks`… pero SQLite no dispara ningún trigger sobre `playlists`
+/// y el contador que la UI lee en `get_playlists` (`p.track_count`) se queda
+/// congelado. La cascada además deja huecos en `position` (1, 3, 4…), que es
+/// la otra mitad del mismo defecto: por eso delega en `sanitize_single_playlist`,
+/// que deduplica, recompacta 1..N y sincroniza el contador en una transacción.
+///
+/// Devuelve cuántas playlists corrigió.
+pub async fn reconcile_playlist_track_counts(pool: &sqlx::SqlitePool) -> Result<usize, String> {
+    let stale: Vec<(i64,)> = sqlx::query_as(
+        r#"
+        SELECT p.id
+        FROM playlists p
+        LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
+        GROUP BY p.id
+        HAVING p.track_count != COUNT(pt.id)
+            OR COALESCE(MAX(pt.position), 0) != COUNT(pt.id)
+            OR COALESCE(MIN(pt.position), 1) != 1
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("Failed to list playlists with a stale track_count: {}", e))?;
+
+    let mut reconciled = 0usize;
+    for (playlist_id,) in stale {
+        sanitize_single_playlist(pool, playlist_id).await?;
+        reconciled += 1;
+    }
+
+    Ok(reconciled)
+}
+
 /// TASK-79 & TASK-107: Recompact playlist positions to be strictly 1-indexed, sequential, and gap-free (1, 2, 3... N).
 /// Atomically purges duplicate tracks within the playlist, recompacts positions, and reconciles `playlists.track_count`.
 pub async fn recompact_playlist_positions(

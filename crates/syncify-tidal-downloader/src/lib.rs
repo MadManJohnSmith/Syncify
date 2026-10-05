@@ -321,6 +321,32 @@ pub fn tidal_quality_param_for_endpoint(endpoint_name: &str, target_quality_para
     }
 }
 
+/// R1: pick the winner among the resolutions the official endpoints offered for one track.
+///
+/// The three endpoints are NOT equivalent mirrors of the same account tier:
+/// `playbackinfopostpaywall` answers 2xx with whatever the calling client context is
+/// allowed to serve (an AAC manifest is a perfectly normal success for it), while
+/// `streamUrl` / `url` can still hand out FLAC for the very same track. Settling on
+/// the first answer that arrived is what pinned a lossless request to `.m4a`.
+///
+/// Lossless always outranks lossy; inside one class the earliest answer is kept, so
+/// the endpoint order still decides ties and the resolution stays deterministic.
+pub fn prefer_best_resolution(
+    incumbent: Option<TidalStreamResolution>,
+    candidate: TidalStreamResolution,
+) -> TidalStreamResolution {
+    match incumbent {
+        Some(current)
+            if current.quality_class_obtained == QualityClass::Lossy
+                && candidate.quality_class_obtained == QualityClass::Lossless =>
+        {
+            candidate
+        }
+        Some(current) => current,
+        None => candidate,
+    }
+}
+
 /// Robust parser for Tidal playback info manifests (BTS base64 JSON, MPEG-DASH XML, and direct URLs)
 pub fn parse_tidal_playback_manifest(
     raw_response_text: &str,
@@ -1323,6 +1349,8 @@ impl TidalDownloader {
             ];
 
             let mut last_auth_error: Option<String> = None;
+            let mut best_resolution: Option<TidalStreamResolution> = None;
+            let mut downgrade_error: Option<String> = None;
 
             for (endpoint_name, official_url) in &official_endpoints {
                 match self
@@ -1345,14 +1373,6 @@ impl TidalDownloader {
                             if let Ok(parsed) =
                                 parse_tidal_playback_manifest(&text, target_quality_param)
                             {
-                                QualityPolicy::evaluate_downgrade(
-                                    quality_class_requested,
-                                    parsed.quality_class,
-                                    &parsed.codec,
-                                    allow_lossy_fallback,
-                                )
-                                .map_err(|e| anyhow!(e))?;
-
                                 let obtained_q = if parsed.quality_class == QualityClass::Lossy {
                                     "320"
                                 } else if parsed.format_id_obtained == "HI_RES_LOSSLESS" {
@@ -1380,7 +1400,7 @@ impl TidalDownloader {
                                     "[Tidal] Stream URL resolved successfully via Official Tidal API"
                                 );
 
-                                return Ok(TidalStreamResolution {
+                                let candidate = TidalStreamResolution {
                                     url: parsed.stream_url,
                                     source: StreamSourceType::TidalOfficial,
                                     source_name: "Tidal Official API".to_string(),
@@ -1396,7 +1416,36 @@ impl TidalDownloader {
                                     bit_depth: parsed.bit_depth,
                                     sample_rate: parsed.sample_rate,
                                     is_fallback,
-                                });
+                                };
+
+                                if candidate.quality_class_obtained == quality_class_requested {
+                                    // Nothing later in the list can beat an answer that
+                                    // already matches what was asked for.
+                                    return Ok(candidate);
+                                }
+
+                                // A candidate the policy rejects is not a candidate: keep
+                                // the reason so the caller gets the quality error instead
+                                // of "source unavailable", but keep walking the list —
+                                // a later endpoint can still serve lossless for this track.
+                                match QualityPolicy::evaluate_downgrade(
+                                    quality_class_requested,
+                                    candidate.quality_class_obtained,
+                                    &candidate.codec,
+                                    allow_lossy_fallback,
+                                ) {
+                                    Ok(()) => {
+                                        best_resolution = Some(prefer_best_resolution(
+                                            best_resolution,
+                                            candidate,
+                                        ));
+                                    }
+                                    Err(reason) => {
+                                        if downgrade_error.is_none() {
+                                            downgrade_error = Some(reason);
+                                        }
+                                    }
+                                }
                             }
                         } else {
                             let is_401 = status.as_u16() == 401;
@@ -1459,6 +1508,27 @@ impl TidalDownloader {
                 }
             }
 
+            if let Some(best) = best_resolution {
+                info!(
+                    account_id_anon = %account_id_anon,
+                    provider = "tidal",
+                    track_id = track_id,
+                    region = %country_code,
+                    requested_quality = requested_q,
+                    audio_quality = target_quality_param,
+                    obtained_quality = %best.obtained_quality,
+                    codec_obtained = %best.codec,
+                    final_extension = %best.extension,
+                    final_error_classification = "None",
+                    "[Tidal] Endpoint cascade exhausted; keeping the best resolution it offered"
+                );
+                return Ok(best);
+            }
+
+            if let Some(reason) = downgrade_error {
+                return Err(anyhow!("{}", reason));
+            }
+
             if let Some(err_msg) = last_auth_error {
                 return Err(anyhow!("{}", err_msg));
             }
@@ -1478,6 +1548,9 @@ impl TidalDownloader {
             "[Tidal] Resolving stream URL via proxy cascade for track_id {} (requested: {})",
             track_id, requested_q
         );
+
+        let mut best_resolution: Option<TidalStreamResolution> = None;
+        let mut downgrade_error: Option<String> = None;
 
         for api in &apis {
             let domain = api.replace("https://", "");
@@ -1560,14 +1633,11 @@ impl TidalDownloader {
                             QualityClass::Lossy
                         };
 
-                        if quality_class_requested == QualityClass::Lossless
-                            && quality_class_obtained == QualityClass::Lossy
-                            && !allow_lossy_fallback
-                        {
-                            return Err(anyhow!(
-                                "Quality rejection: requested_lossless_but_received_{}",
-                                final_codec.to_lowercase()
-                            ));
+                        if quality_class_obtained == quality_class_requested {
+                            debug!(
+                                "[Tidal] Proxy API {} served the requested class; stopping the cascade",
+                                domain
+                            );
                         }
 
                         let container = if final_codec == "AAC" {
@@ -1595,9 +1665,7 @@ impl TidalDownloader {
                         };
                         let is_fallback = obtained_q != requested_q;
 
-                        info!("[Tidal] Stream URL resolved via TidalProxy ({})", domain);
-
-                        return Ok(TidalStreamResolution {
+                        let candidate = TidalStreamResolution {
                             url: stream_url,
                             source: StreamSourceType::TidalProxy(domain.clone()),
                             source_name: format!("Tidal Proxy ({})", domain),
@@ -1625,13 +1693,47 @@ impl TidalDownloader {
                                 44100.0
                             },
                             is_fallback,
-                        });
+                        };
+
+                        info!(
+                            "[Tidal] Stream URL resolved via TidalProxy ({}) — {} ({})",
+                            domain, candidate.codec, candidate.extension
+                        );
+
+                        // Same rule as the official cascade: keep the best class on offer
+                        // and only reject the track once the list is exhausted.
+                        if candidate.quality_class_obtained == quality_class_requested {
+                            return Ok(candidate);
+                        }
+                        match QualityPolicy::evaluate_downgrade(
+                            quality_class_requested,
+                            candidate.quality_class_obtained,
+                            &candidate.codec,
+                            allow_lossy_fallback,
+                        ) {
+                            Ok(()) => {
+                                best_resolution =
+                                    Some(prefer_best_resolution(best_resolution, candidate));
+                            }
+                            Err(reason) => {
+                                if downgrade_error.is_none() {
+                                    downgrade_error = Some(reason);
+                                }
+                            }
+                        }
                     }
                 }
                 Err(e) => {
                     debug!("[Tidal] Connection error to proxy API {}: {}", api, e);
                 }
             }
+        }
+
+        if let Some(best) = best_resolution {
+            return Ok(best);
+        }
+        if let Some(reason) = downgrade_error {
+            return Err(anyhow!("{}", reason));
         }
 
         Err(anyhow!(

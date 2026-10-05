@@ -11,6 +11,17 @@ use super::*;
 
 static AUTH_IN_PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Tope del subproceso de autenticación, en segundos.
+///
+/// Los flujos de navegador del puente dan al usuario hasta 300 s para completar
+/// el login (`scripts/services/tidal_auth.py:260`, `scripts/services/qobuz_auth.py:162`,
+/// `scripts/services/deezer_auth.py:67`). Con 120 s Rust mataba el proceso a
+/// mitad del login interactivo y devolvía un timeout genérico, de modo que un
+/// login lento nunca llegaba a completarse y la cuenta quedaba sin guardar.
+/// El margen sobre 300 deja que sea el propio Python el que emita su JSON de
+/// "Authorization timed out", que sí explica qué pasó.
+pub const AUTH_BRIDGE_TIMEOUT_SECS: u64 = 330;
+
 struct AuthGuard;
 
 impl Drop for AuthGuard {
@@ -120,11 +131,16 @@ pub async fn run_auth_bridge_subprocess(
     }
 
     let output = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
+        std::time::Duration::from_secs(AUTH_BRIDGE_TIMEOUT_SECS),
         child.wait_with_output(),
     )
     .await
-    .map_err(|_| "Authentication bridge timed out after 120 seconds".to_string())?
+    .map_err(|_| {
+        format!(
+            "Authentication bridge timed out after {} seconds",
+            AUTH_BRIDGE_TIMEOUT_SECS
+        )
+    })?
     .map_err(|e| format!("Failed to wait for auth_bridge: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -139,11 +155,37 @@ pub async fn run_auth_bridge_subprocess(
         tracing::warn!("Auth stderr (redacted): {}", redact_auth_payload(&stderr));
     }
 
-    if !output.status.success() || stdout.trim().is_empty() {
+    parse_auth_bridge_output(
+        service,
+        &stdout,
+        &stderr,
+        output.status.success(),
+        output.status.code(),
+    )
+}
+
+/// Convierte la salida de `auth_bridge.py` en `AuthResult`.
+///
+/// `json_response` cierra con código 1 en cuanto `success` es false, de modo que
+/// el payload JSON que explica el fallo ya está escrito en stdout cuando el
+/// proceso termina. Se deserializa siempre que exista: descartarlo obligaba a
+/// inventar un error genérico y perdía el mensaje real ("Abre esta URL para
+/// conectar Tidal: …", credenciales ausentes…). Cubierto por
+/// `tests/auth_bridge_json_error_preserved_test.rs`.
+pub fn parse_auth_bridge_output(
+    service: &str,
+    stdout: &str,
+    stderr: &str,
+    exit_ok: bool,
+    exit_code: Option<i32>,
+) -> Result<AuthResult, String> {
+    let redacted_stdout = redact_auth_payload(stdout);
+
+    if stdout.trim().is_empty() {
         let err_detail = if !stderr.trim().is_empty() {
             stderr.trim().to_string()
         } else {
-            format!("Python exited with code {:?}", output.status.code())
+            format!("Python exited with code {:?}", exit_code)
         };
         return Err(format!(
             "Auth bridge error for service '{}': {}",
@@ -164,7 +206,27 @@ pub async fn run_auth_bridge_subprocess(
     };
 
     match json_result {
-        Ok(result) => Ok(result),
+        Ok(mut result) => {
+            if !exit_ok && result.error.is_none() {
+                result.error = Some(if stderr.trim().is_empty() {
+                    format!("Python exited with code {:?}", exit_code)
+                } else {
+                    stderr.trim().to_string()
+                });
+            }
+            Ok(result)
+        }
+        Err(e) if !exit_ok => {
+            let err_detail = if !stderr.trim().is_empty() {
+                stderr.trim().to_string()
+            } else {
+                format!("Python exited with code {:?}", exit_code)
+            };
+            Err(format!(
+                "Auth bridge error for service '{}': {} (unparsable output: {})",
+                service, err_detail, e
+            ))
+        }
         Err(e) => Err(format!(
             "Failed to parse auth result: {} (raw output: {})",
             e, redacted_stdout

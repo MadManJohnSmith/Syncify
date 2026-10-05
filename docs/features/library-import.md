@@ -1,5 +1,9 @@
 # Library Import
 
+> **Idioma:** español. Los títulos de sección están en inglés y el cuerpo
+> sigue en español; no hay traducción de este documento todavía. El índice
+> que marca su estado está en `docs/README.en.md`.
+
 **Estado de revisión:** 2026-09-29 — revalidado por contraste automático de rutas contra el árbol (gate de CI: `scripts/tests/test_docs_consistency.py`): todas las rutas citadas existen o están declaradas como eliminadas. La narrativa sigue siendo referencia de diseño, no una descripción verificada del comportamiento; contrasta con el código antes de confiar en los detalles.
 
 **Último cambio:** S42 — 2026-04-01 — archivos: `service.rs`, `import_cache.rs`, `services/qobuz.rs`

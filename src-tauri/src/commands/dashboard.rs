@@ -411,14 +411,17 @@ pub struct SystemHealthChecks {
 /// Aggregated library statistics for Dashboard
 #[tauri::command]
 pub async fn get_dashboard_stats(state: State<'_, AppState>) -> Result<DashboardStats, String> {
+    // A counter swallowed into `Err` would read as 0, indistinguishable from an
+    // empty library, so a broken query surfaces as an error and the view shows
+    // its failure state instead of a plausible-looking empty panel.
     let (total_tracks,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
         .fetch_one(&state.db)
         .await
-        .unwrap_or((0,));
+        .map_err(|e| format!("Dashboard stats error (tracks): {}", e))?;
     let (total_albums,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM albums")
         .fetch_one(&state.db)
         .await
-        .unwrap_or((0,));
+        .map_err(|e| format!("Dashboard stats error (albums): {}", e))?;
     let (total_artists,): (i64,) = sqlx::query_as(
         r#"
         SELECT COUNT(*) FROM artists art
@@ -431,34 +434,34 @@ pub async fn get_dashboard_stats(state: State<'_, AppState>) -> Result<Dashboard
     )
     .fetch_one(&state.db)
     .await
-    .unwrap_or((0,));
+    .map_err(|e| format!("Dashboard stats error (artists): {}", e))?;
     let (total_playlists,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlists")
         .fetch_one(&state.db)
         .await
-        .unwrap_or((0,));
+        .map_err(|e| format!("Dashboard stats error (playlists): {}", e))?;
     let (total_downloads,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM downloads")
         .fetch_one(&state.db)
         .await
-        .unwrap_or((0,));
+        .map_err(|e| format!("Dashboard stats error (downloads): {}", e))?;
     let (total_favorites,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM tracks WHERE is_favorite = 1 OR favorite_at IS NOT NULL",
     )
     .fetch_one(&state.db)
     .await
-    .unwrap_or((0,));
+    .map_err(|e| format!("Dashboard stats error (favorites): {}", e))?;
 
     let (lyrics_count,): (i64,) = sqlx::query_as(
         "SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE content IS NOT NULL AND content != ''",
     )
     .fetch_one(&state.db)
     .await
-    .unwrap_or((0,));
+    .map_err(|e| format!("Dashboard stats error (lyrics): {}", e))?;
 
     let (enriched_count,): (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE musicbrainz_id IS NOT NULL")
             .fetch_one(&state.db)
             .await
-            .unwrap_or((0,));
+            .map_err(|e| format!("Dashboard stats error (enriched metadata): {}", e))?;
 
     let lyrics_coverage_percentage = if total_tracks > 0 {
         ((lyrics_count as f64) / (total_tracks as f64)) * 100.0
@@ -487,7 +490,7 @@ pub async fn get_dashboard_stats(state: State<'_, AppState>) -> Result<Dashboard
             (SELECT COUNT(DISTINCT p.id) FROM playlists p JOIN accounts a ON a.id = p.account_id WHERE a.service_id = s.id) as playlist_count
         FROM services s
         "#
-    ).fetch_all(&state.db).await.unwrap_or_default();
+    ).fetch_all(&state.db).await.map_err(|e| format!("Dashboard stats error (services breakdown): {}", e))?;
 
     let services: Vec<ServiceStatItem> = services_rows
         .into_iter()
@@ -516,7 +519,7 @@ pub async fn get_dashboard_stats(state: State<'_, AppState>) -> Result<Dashboard
     )
     .fetch_all(&state.db)
     .await
-    .unwrap_or_default();
+    .map_err(|e| format!("Dashboard stats error (quality distribution): {}", e))?;
 
     let quality_distribution: Vec<QualityStatItem> = quality_rows
         .into_iter()
@@ -558,16 +561,16 @@ pub async fn get_health_checks(state: State<'_, AppState>) -> Result<SystemHealt
         .map(|o| o.status.success())
         .unwrap_or(false);
 
-    let accounts: Vec<(String, Option<String>, i64, bool)> = sqlx::query_as(
+    let accounts: Vec<(String, Option<String>, i64, bool, Option<String>)> = sqlx::query_as(
         r#"
-        SELECT s.name, COALESCE(a.display_name, a.email), a.is_active, COALESCE(a.credentials_invalid, 0)
+        SELECT s.name, COALESCE(a.display_name, a.email), a.is_active, COALESCE(a.credentials_invalid, 0), a.last_synced
         FROM services s
         LEFT JOIN accounts a ON a.service_id = s.id
         "#
-    ).fetch_all(&state.db).await.unwrap_or_default();
+    ).fetch_all(&state.db).await.map_err(|e| format!("Health checks error (accounts): {}", e))?;
 
     let mut services = Vec::new();
-    for (s_name, acc_name, is_active, creds_invalid) in accounts {
+    for (s_name, acc_name, is_active, creds_invalid, last_synced) in accounts {
         let is_connected = acc_name.is_some() && is_active == 1;
         let token_status = if !is_connected {
             "missing".to_string()
@@ -583,7 +586,9 @@ pub async fn get_health_checks(state: State<'_, AppState>) -> Result<SystemHealt
             account_name: acc_name,
             token_status,
             rate_limit_status: "ok".to_string(),
-            last_synced: Some(chrono::Utc::now().to_rfc3339()),
+            // The account's stored timestamp; stamping the current time made the panel
+            // announce "All synced" for a service that had never synced.
+            last_synced,
             last_error: if creds_invalid {
                 Some("Credentials expired or revoked".to_string())
             } else {
@@ -623,6 +628,33 @@ pub struct BatchHealthReport {
     pub issues: Vec<String>,
     pub effective_download_path: String,
     pub effective_staging_path: String,
+}
+
+/// Configured download root, read for diagnostics only.
+///
+/// Canonical resolution belongs to `settings::resolve_effective_download_paths`;
+/// the configured row is re-read here because that function's error does not
+/// carry the path, and the report has to name the failing one instead of
+/// falling back to the default.
+async fn configured_download_root(db: &crate::db::DbPool) -> Option<String> {
+    let from_folder_settings: Option<String> = sqlx::query_scalar(
+        "SELECT base_folder FROM folder_settings WHERE id = 1 AND base_folder IS NOT NULL AND TRIM(base_folder) != ''",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    if let Some(path) = from_folder_settings {
+        return Some(path);
+    }
+
+    sqlx::query_scalar(
+        "SELECT value FROM settings WHERE key IN ('dl_download_path', 'download_dir', 'download_path') AND value IS NOT NULL AND TRIM(value) != '' ORDER BY CASE key WHEN 'dl_download_path' THEN 1 WHEN 'download_dir' THEN 2 ELSE 3 END LIMIT 1",
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Perform a comprehensive batch health check on SQLite, download queue, downloads table, and staging directory
@@ -712,27 +744,59 @@ pub async fn perform_batch_health_check(
     }
 
     // 5. Staging directory audit & effective paths
-    let effective = resolve_effective_download_paths(db)
-        .await
-        .unwrap_or_else(|_| {
-            let def_dl = default_download_path();
-            let def_staging = std::path::Path::new(&def_dl)
+    let effective = match resolve_effective_download_paths(db).await {
+        Ok(paths) => paths,
+        Err(resolve_error) => {
+            // Rescuing with the default path and flagging it `valid` reported the panel as
+            // healthy exactly when the configured path is the failing one: the
+            // report names the configured path and its real state, and the
+            // failure is listed as an issue.
+            let root = configured_download_root(db)
+                .await
+                .unwrap_or_else(default_download_path);
+            let staging_root = std::path::Path::new(&root)
                 .join(".staging")
                 .to_string_lossy()
                 .into_owned();
+            let validation = super::settings::validate_directory_path(root.clone())
+                .await
+                .ok();
+            issues.push(format!(
+                "Download path could not be resolved ({}): {}",
+                root, resolve_error
+            ));
             EffectiveDownloadPaths {
-                library_root: def_dl,
-                staging_root: def_staging,
-                path_status: "valid".to_string(),
-                free_space_bytes: 0,
-                is_writable: true,
-                drive_mounted: true,
-                exists: true,
-                error_message: None,
+                library_root: root,
+                staging_root,
+                path_status: "unresolved".to_string(),
+                // `free_space_bytes` cannot be null, so the configured path is
+                // measured instead of hardcoding a 0 the view would read as a
+                // full disk.
+                free_space_bytes: validation.as_ref().map(|v| v.available_bytes).unwrap_or(0),
+                is_writable: validation.as_ref().is_some_and(|v| v.is_writable),
+                drive_mounted: validation.as_ref().is_some_and(|v| v.drive_mounted),
+                exists: validation.as_ref().is_some_and(|v| v.exists),
+                error_message: validation
+                    .as_ref()
+                    .and_then(|v| v.error_message.clone())
+                    .or(Some(resolve_error)),
             }
-        });
+        }
+    };
 
     let effective_dl_path = effective.library_root.clone();
+    let effective_path_status = effective.path_status.clone();
+    if effective_path_status != "valid" {
+        issues.push(format!(
+            "Download path is not healthy (status: {}){}",
+            effective_path_status,
+            effective
+                .error_message
+                .as_ref()
+                .map(|m| format!(": {}", m))
+                .unwrap_or_default()
+        ));
+    }
     let staging_path = if let Some(p) = staging_override {
         Some(p.to_path_buf())
     } else {
@@ -750,6 +814,18 @@ pub async fn perform_batch_health_check(
         if staging_dir.exists() && staging_dir.is_dir() {
             if let Ok(entries) = std::fs::read_dir(staging_dir) {
                 for entry in entries.flatten() {
+                    // Los ficheros ocultos no son huérfanos: la propia app escribe
+                    // `.nomedia` en staging (ver qobuz.rs y tidal_pipeline.rs), así
+                    // que contarlos hacía que el panel diese "no sano" para siempre
+                    // en cuanto el usuario descargaba su primera pista.
+                    if entry
+                        .file_name()
+                        .to_str()
+                        .map(|n| n.starts_with('.'))
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
                     if let Ok(meta) = entry.metadata() {
                         if meta.is_file() {
                             staging_orphans_count += 1;
@@ -781,7 +857,8 @@ pub async fn perform_batch_health_check(
         && foreign_keys_valid
         && downloads_missing_on_disk == 0
         && staging_orphans_count == 0
-        && queue_failed == 0;
+        && queue_failed == 0
+        && effective_path_status == "valid";
 
     Ok(BatchHealthReport {
         timestamp: chrono::Utc::now().to_rfc3339(),

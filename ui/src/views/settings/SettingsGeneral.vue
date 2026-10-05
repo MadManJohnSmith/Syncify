@@ -1,24 +1,24 @@
 <template>
   <div class="space-y-8 animate-in fade-in duration-300">
-    <section class="space-y-4">
+<section class="space-y-4">
        <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Application Behavior</h3>
-       <BaseToggle 
-         title="Start on system boot" 
-         subtitle="Launch Syncify when Windows starts" 
-         :checked="generalSettings.settings.start_on_boot" 
-         @click="generalSettings.settings.start_on_boot = !generalSettings.settings.start_on_boot" 
+       <BaseToggle
+         title="Start on system boot"
+         subtitle="Launch Syncify when you log in (registers an entry in your OS startup configuration)"
+         :checked="generalSettings.settings.start_on_boot"
+         @click="generalSettings.settings.start_on_boot = !generalSettings.settings.start_on_boot"
        />
-       <BaseToggle 
-         title="Start minimized to tray" 
-         subtitle="Hide main window on startup" 
-         :checked="generalSettings.settings.start_minimized" 
-         @click="generalSettings.settings.start_minimized = !generalSettings.settings.start_minimized" 
+       <BaseToggle
+         title="Start minimized to tray"
+         subtitle="Keep the window hidden in the system tray when Syncify starts"
+         :checked="generalSettings.settings.start_minimized"
+         @click="generalSettings.settings.start_minimized = !generalSettings.settings.start_minimized"
        />
-       <BaseToggle 
-         title="Close to tray instead of exit" 
-         subtitle="Keep running in the background when closing the window" 
-         :checked="generalSettings.settings.close_to_tray" 
-         @click="generalSettings.settings.close_to_tray = !generalSettings.settings.close_to_tray" 
+       <BaseToggle
+         title="Close to tray instead of exit"
+         subtitle="Keep running in the background when closing the window"
+         :checked="generalSettings.settings.close_to_tray"
+         @click="generalSettings.settings.close_to_tray = !generalSettings.settings.close_to_tray"
        />
     </section>
 
@@ -52,8 +52,8 @@
        <div class="pt-4 border-t border-gray-200 dark:border-border-dark">
          <div class="flex items-center justify-between">
            <div>
-             <h4 class="text-sm font-medium text-gray-900 dark:text-white">Reset Database</h4>
-             <p class="text-xs text-text-secondary mt-0.5">Delete all library data, accounts, and settings. This cannot be undone.</p>
+<h4 class="text-sm font-medium text-gray-900 dark:text-white">Reset Database</h4>
+            <p class="text-xs text-text-secondary mt-0.5">Delete all library data (tracks, albums, artists, playlists). Your service accounts and every settings value are kept. This cannot be undone.</p>
            </div>
            <button 
              @click="confirmResetDatabase"
@@ -63,22 +63,7 @@
            </button>
          </div>
        </div>
-    </section>
-
-     <section class="space-y-4">
-       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Updates & Telemetry</h3>
-       <BaseToggle 
-          title="Check for updates automatically" 
-          :checked="generalSettings.settings.auto_updates" 
-          @click="generalSettings.settings.auto_updates = !generalSettings.settings.auto_updates" 
-       />
-       <BaseToggle 
-          title="Send anonymous usage statistics" 
-          subtitle="Help improve Syncify by sharing non-identifying usage data" 
-          :checked="generalSettings.settings.anonymous_stats" 
-          @click="generalSettings.settings.anonymous_stats = !generalSettings.settings.anonymous_stats" 
-       />
-    </section>
+</section>
   </div>
 </template>
 
