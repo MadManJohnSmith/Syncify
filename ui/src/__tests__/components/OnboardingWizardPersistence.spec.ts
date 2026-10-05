@@ -249,17 +249,32 @@ describe('OnboardingWizard persistence (FE-5)', () => {
     expect((prefs!.args?.preferences as Record<string, unknown>).service_name).toBe('apple_music')
   })
 
-  it('still finishes onboarding (emits complete) when persistence fails, and reports the failure', async () => {
+  it('does NOT finish onboarding when persistence fails: no complete, wizard stays open, retry closes', async () => {
     const wrapper = await mountWizard(calls, {
       save_settings_batch: new Error('db locked'),
       update_quality_preference: new Error('db locked'),
     })
     const vm = wrapper.vm as any
+    vm.currentStep = 5
+    await wrapper.vm.$nextTick()
 
     await vm.completeSetup()
 
-    expect(wrapper.emitted('complete')).toBeTruthy()
+    // Ítem 44: las preferencias no se guardaron de verdad, así que el wizard
+    // ni se cierra ni emite complete (App.vue no marca el onboarding hecho).
+    expect(wrapper.emitted('complete')).toBeFalsy()
+    expect(vm.isVisible).toBe(true)
+    expect(vm.setupSaveErrors.length).toBeGreaterThan(0)
     expect(useToast().error).toHaveBeenCalled()
+    // El fallo se muestra en el paso final para que el usuario pueda reintentar
+    expect(wrapper.find('[data-testid="onboarding-save-errors"]').exists()).toBe(true)
+
+    // Reintento con la API funcionando: guarda, espera confirmación y cierra.
+    calls.length = 0
+    mockInvoke(recordingHandler(calls))
+    await vm.completeSetup()
+    expect(wrapper.emitted('complete')).toBeTruthy()
+    expect(vm.setupSaveErrors).toEqual([])
   })
 
   it('queries and renders the real available disk space instead of a hardcoded value', async () => {

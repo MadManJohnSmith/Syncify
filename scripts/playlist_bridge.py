@@ -166,12 +166,19 @@ def get_spotify_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
 # ==============================================================================
 
 def _qobuz_configuration():
-    app_id = os.getenv("QOBUZ_APP_ID")
-    app_secret = os.getenv("QOBUZ_APP_SECRET")
-    token = os.getenv("QOBUZ_AUTH_TOKEN")
-    if not all([app_id, app_secret, token]):
-        raise Exception("Qobuz credentials not configured (QOBUZ_APP_ID, QOBUZ_APP_SECRET, QOBUZ_AUTH_TOKEN)")
-    return app_id, app_secret, token
+    """Resolve Qobuz credentials from the environment.
+
+    The app_id/app_secret pair is the PUBLIC Qobuz API bundle (the same one the
+    Rust core ships in src-tauri/src/services/qobuz.rs and QobuzService resolves
+    by default), so the QOBUZ_APP_ID / QOBUZ_APP_SECRET variables only override
+    it. The user auth token is personal and is required; both the bridge's
+    historical name (QOBUZ_AUTH_TOKEN) and the app-wide one (QOBUZ_USER_TOKEN,
+    read by src-tauri/src/download/qobuz.rs) are accepted.
+    """
+    token = os.getenv("QOBUZ_AUTH_TOKEN") or os.getenv("QOBUZ_USER_TOKEN")
+    if not token:
+        raise Exception("Qobuz not authenticated (QOBUZ_AUTH_TOKEN or QOBUZ_USER_TOKEN missing)")
+    return os.getenv("QOBUZ_APP_ID"), os.getenv("QOBUZ_APP_SECRET"), token
 
 
 async def _with_qobuz_service(operation):
@@ -187,11 +194,11 @@ async def _with_qobuz_service(operation):
         app_secret=app_secret,
     )
     service = QobuzService(credentials)
-    service.APP_ID = app_id
-    service.APP_SECRET = app_secret
+    # The service constructor resolves the public bundle when the environment
+    # does not override it; do not clobber that resolution with empty values.
     service.user_auth_token = token
     service._authenticated = True
-    service.session = aiohttp.ClientSession(headers={"X-App-Id": app_id})
+    service.session = aiohttp.ClientSession(headers={"X-App-Id": service.APP_ID})
     try:
         return await operation(service)
     finally:
@@ -232,17 +239,22 @@ def get_qobuz_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
 # ==============================================================================
 
 def _tidal_configuration():
+    """Resolve Tidal credentials from the environment.
+
+    The access token is personal and required. The user id and country code are
+    optional: a valid token yields both from the /sessions endpoint, the
+    environment variables only override what the session reports.
+    """
     token = os.getenv("TIDAL_ACCESS_TOKEN")
-    user_id = os.getenv("TIDAL_USER_ID")
-    country_code = os.getenv("TIDAL_COUNTRY_CODE", "US")
     if not token:
         raise Exception("Tidal not authenticated (TIDAL_ACCESS_TOKEN missing)")
-    if not user_id:
-        raise Exception("Tidal user not configured (TIDAL_USER_ID missing)")
-    try:
-        return token, int(user_id), country_code
-    except ValueError as exc:
-        raise Exception("TIDAL_USER_ID must be an integer") from exc
+    user_id = os.getenv("TIDAL_USER_ID")
+    if user_id is not None:
+        try:
+            user_id = int(user_id)
+        except ValueError as exc:
+            raise Exception("TIDAL_USER_ID must be an integer") from exc
+    return token, user_id, os.getenv("TIDAL_COUNTRY_CODE")
 
 
 async def _with_tidal_service(operation):
@@ -254,10 +266,18 @@ async def _with_tidal_service(operation):
     credentials = ServiceCredentials(service_type=ServiceType.TIDAL, token=token)
     service = TidalService(credentials)
     service.access_token = token
-    service.user_id = user_id
-    service.country_code = country_code
     service.session = aiohttp.ClientSession()
     try:
+        # is_authenticated() requires session_id: without validating the token
+        # against /sessions every playlist call silently returned []. The
+        # public authenticate() is deliberately avoided here — with a rejected
+        # token it falls into the interactive PKCE/OAuth flows, which would
+        # corrupt the bridge's JSON stdout and hang until the Rust timeout.
+        if not await service._validate_session():
+            raise Exception("Tidal authentication failed (TIDAL_ACCESS_TOKEN rejected)")
+        if user_id is not None:
+            service.user_id = user_id
+        service.country_code = country_code or service.country_code or "US"
         return await operation(service)
     finally:
         await service.close()

@@ -27,6 +27,9 @@ pub struct QueueItem {
     pub quality_preference: Option<String>,
     pub title: Option<String>,
     pub artist: Option<String>,
+    // Portada para la cola: el schema no guarda imagen en `tracks` (0073 la
+    // normaliza vía album_id), así que llega de `albums.cover_art_url`.
+    pub cover_art_url: Option<String>,
     pub status: String,
     pub priority: i64,
     pub progress_percent: f64,
@@ -2044,6 +2047,7 @@ pub async fn get_queue(
                       COALESCE(dq.target_title, t.title) as title,
                       COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
                        JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist,
+                      NULLIF(al.cover_art_url, '') as cover_art_url,
                       dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded,
                       dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count,
                       dq.position, dq.resumable, dq.staging_path,
@@ -2052,6 +2056,7 @@ pub async fn get_queue(
                       dq.quality_decision, dq.provider_fallback_used, dq.quality_fallback_used, dq.decision_reason
                FROM download_queue dq
                LEFT JOIN tracks t ON t.id = dq.track_id
+               LEFT JOIN albums al ON al.id = t.album_id
                WHERE dq.status = ?
                ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
                LIMIT ?"#,
@@ -2068,6 +2073,7 @@ pub async fn get_queue(
                       COALESCE(dq.target_title, t.title) as title,
                       COALESCE(dq.target_artist, (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
                        JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist,
+                      NULLIF(al.cover_art_url, '') as cover_art_url,
                       dq.status, dq.priority, dq.progress_percent, dq.bytes_downloaded,
                       dq.total_bytes, dq.error_message, dq.last_error, dq.retry_count,
                       dq.position, dq.resumable, dq.staging_path,
@@ -2076,6 +2082,7 @@ pub async fn get_queue(
                       dq.quality_decision, dq.provider_fallback_used, dq.quality_fallback_used, dq.decision_reason
                FROM download_queue dq
                LEFT JOIN tracks t ON t.id = dq.track_id
+               LEFT JOIN albums al ON al.id = t.album_id
                ORDER BY
                    CASE dq.status
                        WHEN 'downloading' THEN 1

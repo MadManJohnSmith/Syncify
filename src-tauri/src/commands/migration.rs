@@ -975,6 +975,63 @@ impl DestinationClients {
         }
     }
 
+    /// True when the destination client can create remote playlists. The
+    /// `create_playlists` option only has effect for these services; for the
+    /// rest the transfer stays favorites-only.
+    fn supports_playlist_creation(&self) -> bool {
+        self.qobuz.is_some() || self.tidal.is_some()
+    }
+
+    /// Create a playlist owned by the destination account and return its
+    /// remote id (the ids the migration recorded for matched tracks are what
+    /// goes inside it, so both stay in the service's own id space).
+    async fn create_playlist(&self, name: &str) -> Result<String, String> {
+        if let Some(ref client) = self.qobuz {
+            let id = client.create_playlist(name, "").await?;
+            Ok(id.to_string())
+        } else if let Some(ref client) = self.tidal {
+            client.create_playlist(name, "").await
+        } else {
+            Err(
+                "Destination service client unavailable; remote playlists cannot be created"
+                    .to_string(),
+            )
+        }
+    }
+
+    /// Append destination tracks to a destination playlist.
+    async fn add_playlist_tracks(
+        &self,
+        playlist_id: &str,
+        track_ids: &[String],
+    ) -> Result<(), String> {
+        if let Some(ref client) = self.qobuz {
+            // Qobuz ids are numeric; the migration records them as strings.
+            let mut parsed: Vec<i64> = Vec::with_capacity(track_ids.len());
+            for id in track_ids {
+                match id.parse::<i64>() {
+                    Ok(n) => parsed.push(n),
+                    Err(_) => {
+                        tracing::warn!("Skipping non-numeric Qobuz track id '{}' for playlist", id);
+                    }
+                }
+            }
+            client
+                .add_playlist_tracks(
+                    playlist_id.parse::<i64>().map_err(|e| e.to_string())?,
+                    &parsed,
+                )
+                .await
+        } else if let Some(ref client) = self.tidal {
+            client.add_playlist_tracks(playlist_id, track_ids).await
+        } else {
+            Err(
+                "Destination service client unavailable; remote playlists cannot be filled"
+                    .to_string(),
+            )
+        }
+    }
+
     /// Match one source track and, when a destination track was found, add it
     /// to the destination favorites. This is start_migration's per-track
     /// behavior, expressed over `search_match` + `add_favorite`.
@@ -1065,6 +1122,68 @@ pub async fn record_migration_item_result(
     .await
     .map(|_| ())
     .map_err(|e| format!("Failed to update migration item: {}", e))
+}
+
+/// Upper bound for one `addTracks` call against a destination playlist: keeps
+/// request URLs and forms small no matter how long the source playlist is.
+const PLAYLIST_ADD_TRACKS_CHUNK: usize = 100;
+
+/// Destination playlists a finished job should mirror, in playlist order:
+/// `(playlist name, destination track ids)` — one entry per source playlist
+/// that contributed at least one transferred track, ids deduplicated keeping
+/// their first occurrence.
+///
+/// The join follows the same shape `fetch_migration_source_tracks` reads: the
+/// job's source service links `migration_items.source_track_id` (external id)
+/// back to the local item via `track_sources`, and from there to the local
+/// playlists of that same service (`playlists.source_service`, migration 0067).
+async fn fetch_job_destination_playlists(
+    db: &sqlx::SqlitePool,
+    job_id: &str,
+) -> Result<Vec<(String, Vec<String>)>, String> {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        r#"SELECT p.name, mi.destination_track_id
+           FROM migration_items mi
+           JOIN migration_jobs mj ON mj.id = mi.job_id
+           JOIN track_sources ts ON ts.service_track_id = mi.source_track_id
+           JOIN services s ON s.id = ts.service_id AND s.name = mj.source_service
+           JOIN library_items li ON li.id = ts.track_id
+           JOIN playlist_tracks pt ON pt.track_id = li.id
+           JOIN playlists p ON p.id = pt.playlist_id AND p.source_service = mj.source_service
+           WHERE mi.job_id = ?
+             AND mi.status = 'transferred'
+             AND mi.destination_track_id IS NOT NULL
+           ORDER BY p.name COLLATE NOCASE, pt.position"#,
+    )
+    .bind(job_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to collect destination playlists: {}", e))?;
+
+    let mut ordered_names: Vec<String> = Vec::new();
+    let mut by_playlist: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (name, dest_id) in rows {
+        let Some(dest_id) = dest_id else { continue };
+        if dest_id.trim().is_empty() {
+            continue;
+        }
+        let entry = by_playlist.entry(name.clone()).or_insert_with(|| {
+            ordered_names.push(name.clone());
+            Vec::new()
+        });
+        if !entry.iter().any(|existing| existing == &dest_id) {
+            entry.push(dest_id);
+        }
+    }
+
+    Ok(ordered_names
+        .into_iter()
+        .map(|name| {
+            let ids = by_playlist.remove(&name).unwrap_or_default();
+            (name, ids)
+        })
+        .collect())
 }
 
 /// Start a new migration
@@ -1317,6 +1436,93 @@ pub async fn start_migration<R: tauri::Runtime>(
 
         // Small delay to avoid rate limiting
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    // `create_playlists` (migration options): when it is on, the source
+    // playlists that contributed transferred tracks are mirrored on the
+    // destination account; when it is off, the transfer stays favorites-only
+    // and no playlist is created. This is the tail of the flag's journey:
+    // the UI sends it in `MigrationOptions`, the command stores it with the
+    // job, and here is where it finally changes behavior. Failures in this
+    // phase never fail the job — every track is already transferred and
+    // reported — they are logged and the job closes with its real status.
+    if options.create_playlists && !cancelled {
+        let processed = completed + failed + skipped;
+        if !clients.supports_playlist_creation() {
+            tracing::info!(
+                "Migration {}: destination '{}' does not support remote playlist creation; skipping playlist mirror",
+                job_id,
+                destination_service
+            );
+        } else {
+            match fetch_job_destination_playlists(&state.db, &job_id).await {
+                Ok(playlists) => {
+                    for (playlist_name, dest_ids) in playlists {
+                        if dest_ids.is_empty() {
+                            continue;
+                        }
+                        let _ = app.emit(
+                            "migration-progress",
+                            build_migration_progress(
+                                started_at.elapsed().as_secs_f64(),
+                                &job_id,
+                                processed,
+                                total_items,
+                                format!("{} - {}", destination_service, playlist_name),
+                                format!("Creating playlist '{}'...", playlist_name),
+                                "running",
+                                completed,
+                                failed,
+                                skipped,
+                            ),
+                        );
+
+                        match clients.create_playlist(&playlist_name).await {
+                            Ok(remote_id) => {
+                                let mut added = 0usize;
+                                for chunk in dest_ids.chunks(PLAYLIST_ADD_TRACKS_CHUNK) {
+                                    match clients.add_playlist_tracks(&remote_id, chunk).await {
+                                        Ok(()) => added += chunk.len(),
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Migration {}: failed to add tracks to playlist '{}': {}",
+                                                job_id,
+                                                playlist_name,
+                                                e
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                                tracing::info!(
+                                    "Migration {}: created destination playlist '{}' ({}) with {} of {} tracks",
+                                    job_id,
+                                    playlist_name,
+                                    remote_id,
+                                    added,
+                                    dest_ids.len()
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Migration {}: failed to create destination playlist '{}': {}",
+                                    job_id,
+                                    playlist_name,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Migration {}: could not collect source playlists for the destination mirror: {}",
+                        job_id,
+                        e
+                    );
+                }
+            }
+        }
     }
 
     // Close the job with the status it really ended in: a job the user

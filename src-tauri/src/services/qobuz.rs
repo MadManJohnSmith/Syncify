@@ -704,6 +704,56 @@ impl QobuzClient {
         self.api_request("playlist/get", params, true).await
     }
 
+    /// Create a playlist on the user's Qobuz account and return its remote id.
+    ///
+    /// Used by the migration engine when `create_playlists` is on: the
+    /// destination playlists mirror the source ones. Same API surface as the
+    /// rest of the playlist methods (`playlist/create` with the user token).
+    pub async fn create_playlist(&self, name: &str, description: &str) -> Result<i64, String> {
+        let params = vec![
+            ("name", name.to_string()),
+            ("description", description.to_string()),
+            ("is_public", "false".to_string()),
+        ];
+
+        let result: serde_json::Value = self.api_request("playlist/create", params, true).await?;
+
+        result["id"].as_i64().ok_or_else(|| {
+            format!(
+                "No playlist id in Qobuz playlist/create response: {}",
+                result
+            )
+        })
+    }
+
+    /// Add tracks to a Qobuz playlist (`playlist/addTracks`).
+    ///
+    /// `track_ids` are Qobuz track ids (the destination ids recorded by the
+    /// migration, numeric strings); they go as one comma-separated value, the
+    /// same shape `favorite/create` uses for `track_ids`.
+    pub async fn add_playlist_tracks(
+        &self,
+        playlist_id: i64,
+        track_ids: &[i64],
+    ) -> Result<(), String> {
+        if track_ids.is_empty() {
+            return Ok(());
+        }
+
+        let joined = track_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let params = vec![
+            ("playlist_id", playlist_id.to_string()),
+            ("track_ids", joined),
+        ];
+
+        let _: serde_json::Value = self.api_request("playlist/addTracks", params, true).await?;
+        Ok(())
+    }
+
     /// Get user's favorite artists (paginated)
     pub async fn get_favorite_artists(
         &self,

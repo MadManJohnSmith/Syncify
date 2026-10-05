@@ -583,8 +583,8 @@ pub async fn fetch_artist(
         SELECT
             a.id,
             a.name,
-            -- bio and image_url don't exist in current db layout natively, mapped to null/None
-            NULL as image_url,
+            -- bio doesn't exist in the schema yet; image_url does (migration 0076)
+            a.image_url as image_url,
             (SELECT COUNT(*) FROM album_artists WHERE artist_id = a.id) as album_count,
             (SELECT COUNT(*) FROM track_artists WHERE artist_id = a.id) as track_count
         FROM artists a

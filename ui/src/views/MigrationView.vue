@@ -1108,7 +1108,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useMigration } from '../composables/useMigration'
-import { useToast } from '../composables/useToast'
+// R13: confirm unificado; antes se resolvía el window.confirm global nativo.
+import { useToast, confirm } from '../composables/useToast'
 import { accountsApi } from '../api/accounts'
 import { getMigrationItemsByStatus } from '../api/migration'
 import MigrationTransferPanel, { type MigrationActivityEntry, type MigrationProgressDisplay } from '../components/MigrationTransferPanel.vue'
@@ -1326,13 +1327,18 @@ const skippedTracks = computed<MigrationItem[]>(() =>
 
 // Handler: Delete migration job
 async function handleDeleteMigration(jobId: string) {
-  if (confirm('Are you sure you want to delete this migration?')) {
-    const ok = await migration.deleteJob(jobId)
-    if (ok) {
-      toast.success('Migration deleted')
-    } else {
-      toast.error('Could not delete the migration')
-    }
+  // R13: confirmación unificada en la app (antes window.confirm nativo).
+  const confirmed = await confirm('Are you sure you want to delete this migration?', {
+    title: 'Delete Migration',
+    variant: 'danger',
+    confirmLabel: 'Delete'
+  })
+  if (!confirmed) return
+  const ok = await migration.deleteJob(jobId)
+  if (ok) {
+    toast.success('Migration deleted')
+  } else {
+    toast.error('Could not delete the migration')
   }
 }
 
@@ -1971,13 +1977,18 @@ async function saveTemplate(): Promise<void> {
 }
 
 async function handleDeleteTemplate(templateId: number) {
-  if (confirm('Are you sure you want to delete this template?')) {
-    const ok = await migration.deleteTemplate(templateId)
-    if (ok) {
-      toast.success('Template deleted')
-    } else {
-      toast.error('Could not delete the template')
-    }
+  // R13: confirmación unificada en la app (antes window.confirm nativo).
+  const confirmed = await confirm('Are you sure you want to delete this template?', {
+    title: 'Delete Template',
+    variant: 'danger',
+    confirmLabel: 'Delete'
+  })
+  if (!confirmed) return
+  const ok = await migration.deleteTemplate(templateId)
+  if (ok) {
+    toast.success('Template deleted')
+  } else {
+    toast.error('Could not delete the template')
   }
 }
 </script>

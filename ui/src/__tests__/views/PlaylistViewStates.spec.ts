@@ -1,14 +1,17 @@
 /**
- * PlaylistViewStates.spec.ts — regresión de auditoría 5, 24 y 26.
+ * PlaylistViewStates.spec.ts — regresión de auditoría 5, 24, 26 y 46.
  *
  * 5:  la vista distingue «cargando» y «falló» de «esta vacía».
  * 24: Favoritos se lee de la biblioteca (id sintético -1), no de `playlists`.
  * 26: el botón de opciones abre un menú; no borra nada por su cuenta.
+ * 46: `/playlists?create=1` abre el formulario de creación y limpia el query.
+ * R13: el borrado pide la confirmación unificada de la app, no window.confirm.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import PlaylistView from '@/views/PlaylistView.vue';
 import { mockInvoke, resetMocks } from '../setup';
+import { useDialog } from '@/composables/useToast';
 
 const mockPlayerPlay = vi.fn().mockResolvedValue(undefined);
 const mockPlayerPlayNext = vi.fn().mockResolvedValue('queued');
@@ -19,9 +22,21 @@ vi.mock('@/composables/usePlayer', () => ({
     }),
 }));
 
+// Estado hoisted: la factoría del mock se evalúa al importar la vista, antes
+// de que el cuerpo del módulo declare sus variables, así que vive aquí.
+const routerState = vi.hoisted(() => ({
+    query: {} as Record<string, unknown>,
+    replace: undefined as undefined | ((query: unknown) => Promise<void>),
+}));
+
 vi.mock('vue-router', () => ({
-    useRouter: () => ({ push: vi.fn(), back: vi.fn() }),
-    useRoute: () => ({ query: {}, params: {} }),
+    useRouter: () => ({
+        push: vi.fn(),
+        back: vi.fn(),
+        replace: (query: unknown) =>
+            routerState.replace ? routerState.replace(query) : Promise.resolve(),
+    }),
+    useRoute: () => ({ query: routerState.query, params: {} }),
 }));
 
 const mockPlaylists = [
@@ -55,6 +70,7 @@ describe('PlaylistView — estados de carga y error (auditoría 5)', () => {
     beforeEach(() => {
         resetMocks();
         vi.clearAllMocks();
+        routerState.query = {};
         document.body.innerHTML = '';
     });
 
@@ -119,6 +135,7 @@ describe('PlaylistView — Favoritos reales (auditoría 24)', () => {
     beforeEach(() => {
         resetMocks();
         vi.clearAllMocks();
+        routerState.query = {};
         document.body.innerHTML = '';
     });
 
@@ -170,11 +187,16 @@ describe('PlaylistView — menú de opciones (auditoría 26)', () => {
     beforeEach(() => {
         resetMocks();
         vi.clearAllMocks();
+        routerState.query = {};
         document.body.innerHTML = '';
         vi.spyOn(window, 'confirm').mockReturnValue(false);
     });
 
     afterEach(() => {
+        // El diálogo unificado es un singleton de módulo: cierra lo pendiente
+        // para no contaminar el test siguiente.
+        const { dialogQueue, resolveDialog } = useDialog();
+        while (dialogQueue.value.length > 0) resolveDialog(null);
         vi.restoreAllMocks();
         document.body.innerHTML = '';
     });
@@ -222,10 +244,13 @@ describe('PlaylistView — menú de opciones (auditoría 26)', () => {
         expect(labels).toEqual(['Play', 'Open', 'Rename', 'Delete']);
     });
 
-    it('Delete es la única entrada que pide confirmación', async () => {
-        const wrapper = await mountView((cmd) => {
+    it('Delete pide la confirmación unificada de la app (no window.confirm) y no borra hasta aceptar', async () => {
+        const calls: { cmd: string; args: any }[] = [];
+        const wrapper = await mountView((cmd, args) => {
+            calls.push({ cmd, args: args ?? {} });
             if (cmd === 'get_playlists') return mockPlaylists;
             if (cmd === 'get_local_playlist_tracks') return page(mockTracks);
+            if (cmd === 'delete_playlist') return null;
             return null;
         });
 
@@ -239,7 +264,17 @@ describe('PlaylistView — menú de opciones (auditoría 26)', () => {
         deleteBtn.click();
         await flushPromises();
 
-        expect(window.confirm).toHaveBeenCalled();
+        // R13: nada de confirm nativo; el diálogo interno queda encolado y la
+        // playlist NO se borra mientras está pendiente.
+        expect(window.confirm).not.toHaveBeenCalled();
+        const { dialogQueue, resolveDialog } = useDialog();
+        expect(dialogQueue.value.length).toBe(1);
+        expect(calls.some(c => c.cmd === 'delete_playlist')).toBe(false);
+
+        // Al aceptar el diálogo unificado, el borrado sí viaja al backend.
+        resolveDialog('confirm');
+        await flushPromises();
+        expect(calls.some(c => c.cmd === 'delete_playlist')).toBe(true);
     });
 
     it('un clic fuera cierra el menú', async () => {
@@ -258,5 +293,54 @@ describe('PlaylistView — menú de opciones (auditoría 26)', () => {
         await flushPromises();
 
         expect(document.body.querySelector('[data-testid="playlist-options-menu"]')).toBeNull();
+    });
+});
+
+describe('PlaylistView — acción rápida /playlists?create=1 (auditoría 46)', () => {
+    beforeEach(() => {
+        resetMocks();
+        vi.clearAllMocks();
+        document.body.innerHTML = '';
+    });
+
+    afterEach(() => {
+        routerState.query = {};
+        document.body.innerHTML = '';
+    });
+
+    it('montar con ?create=1 abre el formulario y limpia el query del router', async () => {
+        routerState.query = { create: '1' };
+        const replace = vi.fn().mockResolvedValue(undefined);
+        routerState.replace = replace;
+
+        const wrapper = await mountView((cmd) => {
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') return page(mockTracks);
+            return null;
+        });
+
+        // El formulario de creación está abierto sin ningún clic. El modal es
+        // un <Teleport to="body">, así que se consulta el body (texto único
+        // del modal; el encabezado de la página también dice «Create Playlist»).
+        expect(document.body.textContent).toContain('Make playlist public');
+
+        // El parámetro se consume: el replace va sin `create`.
+        expect(replace).toHaveBeenCalledTimes(1);
+        expect(replace.mock.calls[0][0]).toEqual({ query: {} });
+    });
+
+    it('montar sin el flag no abre el formulario ni toca el query', async () => {
+        routerState.query = {};
+        const replace = vi.fn().mockResolvedValue(undefined);
+        routerState.replace = replace;
+
+        const wrapper = await mountView((cmd) => {
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') return page(mockTracks);
+            return null;
+        });
+
+        expect(document.body.textContent).not.toContain('Make playlist public');
+        expect(replace).not.toHaveBeenCalled();
     });
 });

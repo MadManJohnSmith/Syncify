@@ -56,6 +56,54 @@ pub async fn get_or_create_canonical_various_artists(db: &SqlitePool) -> Result<
     get_or_create_canonical_various_artists_conn(&mut conn).await
 }
 
+/// Ítem 22: same-title album candidates for one edition identity — the album
+/// linked to the (normalized) artist, or any compilation when importing under
+/// Various Artists. Ordered most-complete first: primary link, imported track
+/// count, total duration, oldest id last, so the caller can reuse the row that
+/// best describes the edition instead of an arbitrary one.
+async fn find_album_candidates(
+    db: &SqlitePool,
+    title: &str,
+    artist_id: i64,
+    effective_is_compilation: bool,
+) -> Result<Vec<(i64,)>, String> {
+    if effective_is_compilation {
+        sqlx::query_as(
+            "SELECT a.id
+             FROM albums a
+             JOIN album_artists aa ON aa.album_id = a.id
+             WHERE LOWER(a.title) = LOWER(?) AND (aa.artist_id = ? OR a.is_compilation = 1)
+             GROUP BY a.id
+             ORDER BY MAX(a.is_compilation) DESC,
+                      (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = a.id) DESC,
+                      (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks WHERE tracks.album_id = a.id) DESC,
+                      a.id ASC",
+        )
+        .bind(title)
+        .bind(artist_id)
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("DB error: {}", e))
+    } else {
+        sqlx::query_as(
+            "SELECT a.id
+             FROM albums a
+             JOIN album_artists aa ON aa.album_id = a.id
+             WHERE LOWER(a.title) = LOWER(?) AND aa.artist_id = ?
+             GROUP BY a.id
+             ORDER BY MAX(aa.is_primary) DESC,
+                      (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = a.id) DESC,
+                      (SELECT COALESCE(SUM(duration_ms), 0) FROM tracks WHERE tracks.album_id = a.id) DESC,
+                      a.id ASC",
+        )
+        .bind(title)
+        .bind(artist_id)
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("DB error: {}", e))
+    }
+}
+
 /// Cache for artist and album IDs during import
 /// Reduces redundant DB lookups when multiple tracks share artists/albums
 #[derive(Default)]
@@ -179,35 +227,31 @@ impl ImportCache {
             return Ok(id);
         }
 
-        // Try to find existing album
-        let existing: Option<(i64,)> = if effective_is_compilation {
-            sqlx::query_as(
-                "SELECT a.id FROM albums a
-                 JOIN album_artists aa ON aa.album_id = a.id
-                 WHERE LOWER(a.title) = LOWER(?) AND (aa.artist_id = ? OR a.is_compilation = 1)
-                 ORDER BY a.is_compilation DESC, a.total_tracks DESC, a.id ASC LIMIT 1",
-            )
-            .bind(&clean_name)
-            .bind(effective_artist_id)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?
-        } else {
-            sqlx::query_as(
-                "SELECT a.id FROM albums a
-                 JOIN album_artists aa ON aa.album_id = a.id
-                 WHERE LOWER(a.title) = LOWER(?) AND aa.artist_id = ? AND aa.is_primary = 1",
-            )
-            .bind(&clean_name)
-            .bind(primary_artist_id)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?
-        };
+        // Ítem 22: match the album by edition identity (title normalized + artist
+        // link), not by title alone. When several candidates share the normalized
+        // title, the tie is broken by how complete each row is — imported track
+        // count, then total duration — and the tie is registered in the log,
+        // keeping every candidate row intact (no data merging here).
+        let candidates = find_album_candidates(
+            db,
+            &clean_name,
+            effective_artist_id,
+            effective_is_compilation,
+        )
+        .await?;
+        if candidates.len() > 1 {
+            tracing::warn!(
+                album_title = %clean_name,
+                artist_id = effective_artist_id,
+                candidates = candidates.len(),
+                chosen_album_id = candidates[0].0,
+                "Album title collision for the same edition identity: resolved by imported track count and total duration; all candidate rows kept, tie recorded in this log entry"
+            );
+        }
 
         let is_comp_flag = if effective_is_compilation { 1 } else { 0 };
 
-        let id = if let Some((id,)) = existing {
+        let id = if let Some(&(id,)) = candidates.first() {
             if effective_is_compilation {
                 let _ = sqlx::query(
                     "UPDATE albums SET is_compilation = 1 WHERE id = ? AND is_compilation != 1",
@@ -223,56 +267,50 @@ impl ImportCache {
             }
             id
         } else {
-            // Try to insert (may fail if another task just created it - that's OK)
-            let insert_result = sqlx::query(
-                "INSERT OR IGNORE INTO albums (title, release_date, cover_art_url, is_compilation) VALUES (?, ?, ?, ?)"
+            // Create the row and read back OUR id via RETURNING: the old
+            // "INSERT OR IGNORE + SELECT newest row with this title" could land
+            // on another artist's same-titled album under concurrency.
+            let mut created = sqlx::query_scalar::<_, i64>(
+                "INSERT INTO albums (title, release_date, cover_art_url, is_compilation) VALUES (?, ?, ?, ?) RETURNING id",
             )
             .bind(&clean_name)
             .bind(release_date)
             .bind(image_url)
             .bind(is_comp_flag)
-            .execute(db)
+            .fetch_one(db)
             .await;
 
-            // Ignore insert errors - we'll SELECT anyway
-            if let Err(e) = &insert_result {
-                tracing::debug!("Album insert (race condition OK): {}", e);
+            if created.is_err() {
+                // Concurrent import may have created the row between the
+                // candidate lookup and this insert: re-run the match once
+                // before duplicating the row.
+                match find_album_candidates(
+                    db,
+                    &clean_name,
+                    effective_artist_id,
+                    effective_is_compilation,
+                )
+                .await
+                {
+                    Ok(retry) if !retry.is_empty() => {
+                        created = Ok(retry[0].0);
+                    }
+                    _ => {
+                        created = sqlx::query_scalar::<_, i64>(
+                            "INSERT INTO albums (title, release_date, cover_art_url, is_compilation) VALUES (?, ?, ?, ?) RETURNING id",
+                        )
+                        .bind(&clean_name)
+                        .bind(release_date)
+                        .bind(image_url)
+                        .bind(is_comp_flag)
+                        .fetch_one(db)
+                        .await;
+                    }
+                }
             }
 
-            // Get the album ID (works whether we just created it or another task did)
-            let result: Option<(i64,)> = sqlx::query_as(
-                "SELECT id FROM albums WHERE LOWER(title) = LOWER(?) ORDER BY id DESC LIMIT 1",
-            )
-            .bind(&clean_name)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| format!("Failed to get album ID: {}", e))?;
-
-            let id = match result {
-                Some((id,)) => id,
-                None => {
-                    // Very rare: album not found after insert attempt - retry with fresh insert
-                    sqlx::query(
-                        "INSERT INTO albums (title, release_date, cover_art_url, is_compilation) VALUES (?, ?, ?, ?)",
-                    )
-                    .bind(&clean_name)
-                    .bind(release_date)
-                    .bind(image_url)
-                    .bind(is_comp_flag)
-                    .execute(db)
-                    .await
-                    .map_err(|e| format!("Failed to create album (retry): {}", e))?;
-
-                    let (id,): (i64,) = sqlx::query_as(
-                        "SELECT id FROM albums WHERE LOWER(title) = LOWER(?) ORDER BY id DESC LIMIT 1"
-                    )
-                    .bind(&clean_name)
-                    .fetch_one(db)
-                    .await
-                    .map_err(|e| format!("Failed to get album ID (retry): {}", e))?;
-                    id
-                }
-            };
+            let id =
+                created.map_err(|e| format!("Failed to create album '{}': {}", clean_name, e))?;
 
             // Link to primary artist (INSERT OR IGNORE handles duplicates)
             let _ = sqlx::query(

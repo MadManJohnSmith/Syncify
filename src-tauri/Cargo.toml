@@ -1,6 +1,6 @@
 [package]
 name = "syncify-tauri"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Syncify Tauri application"
 default-run = "syncify-tauri"
@@ -16,6 +16,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+# Ítem 31: autoinicio en el arranque del sistema, controlado por `start_on_boot`
+tauri-plugin-autostart = "2"
+# Ítem 32: notificaciones nativas del SO, respetando la preferencia del usuario
+tauri-plugin-notification = "2"
 opener = { version = "0.8", features = ["reveal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -70,7 +70,8 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { confirm, message } from '@tauri-apps/plugin-dialog'
+// R13: confirm/alert unificados (antes plugin-dialog nativo, fuera de la ventana).
+import { confirm, alert } from '@/composables/useToast'
 import { useGeneralSettings } from '@/composables/useGeneralSettings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import { useToast } from '@/composables/useToast'
@@ -119,21 +120,21 @@ onMounted(async () => {
   await generalSettings.loadSettings()
 })
 
-// Reset database with confirmation (Audit verified: includes Tauri confirm guard)
+// Reset database with confirmation (R13: guardia unificado en la app)
 async function confirmResetDatabase() {
   const confirmed = await confirm('Are you sure you want to reset your library? This will delete all tracks, albums, artists, and playlists. Your accounts and settings will be PRESERVED.', {
     title: 'Reset Database',
-    kind: 'warning'
+    variant: 'warning'
   })
-  
+
   if (confirmed !== true) return
-  
+
   try {
     const result = await invoke<string>('reset_database')
-    await message(result, { title: 'Database Reset', kind: 'info' })
+    await alert(result, { title: 'Database Reset', variant: 'info' })
   } catch (err) {
     console.error('Failed to reset database:', err)
-    await message('Failed to reset database: ' + err, { title: 'Error', kind: 'error' })
+    await alert('Failed to reset database: ' + err, { title: 'Error', variant: 'danger' })
   }
 }
 </script>

@@ -10,9 +10,17 @@ import { mount, flushPromises } from '@vue/test-utils'
 
 const confirmMock = vi.fn(async () => true)
 vi.mock('@tauri-apps/plugin-dialog', () => ({
-  confirm: (...args: unknown[]) => confirmMock(...(args as [])),
   open: vi.fn(async () => null),
 }))
+// R13: la confirmación llega por el diálogo unificado de la app, no por
+// plugin-dialog; se intercepta en su nuevo origen dejando el resto intacto.
+vi.mock('@/composables/useToast', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/composables/useToast')>()
+  return {
+    ...actual,
+    confirm: (...args: unknown[]) => confirmMock(...(args as [])),
+  }
+})
 
 import { mockInvoke, resetMocks } from '../setup'
 import SettingsView from '@/views/SettingsView.vue'

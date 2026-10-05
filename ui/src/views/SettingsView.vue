@@ -84,7 +84,8 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { settingsApi } from '@/api/settings'
-import { confirm } from '@tauri-apps/plugin-dialog'
+// R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
+import { confirm } from '@/composables/useToast'
 import { useToast } from '@/composables/useToast'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import { useLyricsSettings } from '@/composables/useLyricsSettings'
@@ -157,7 +158,7 @@ async function handleSaveChanges() {
 async function handleResetToDefaults() {
   const confirmed = await confirm('Reset all settings to their default values? This cannot be undone.', {
     title: 'Reset to Defaults',
-    kind: 'warning'
+    variant: 'warning'
   })
   if (confirmed !== true) return
   isLoading.value = true

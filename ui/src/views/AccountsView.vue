@@ -103,9 +103,6 @@
                 </div>
               </div>
               <p class="text-xs text-text-secondary text-center">Last synced: {{ service.lastSync }}</p>
-              <p v-if="!supportsFullCatalogSync(service.id)" class="text-[11px] text-amber-500 text-center mt-2 leading-tight">
-                Full catalog sync is not available yet; this integration remains limited.
-              </p>
               <!-- Apple Music: iCloud Music Library hint -->
               <p v-if="service.id === 'apple_music' && service.importedTracks === '0' && service.lastSync !== 'Never'" class="text-[11px] text-amber-500 text-center mt-2 leading-tight">
                 ⚠️ Sync requires iCloud Music Library enabled in Apple Music → Preferences
@@ -130,22 +127,20 @@
             <!-- Actions -->
             <div class="flex items-center gap-2">
               <template v-if="service.status === 'connected'">
-                <button 
+                <button
                   @click="importFromService(service.id)"
-                  :disabled="syncingServices[service.id] || !supportsFullCatalogSync(service.id)"
-                  :title="supportsFullCatalogSync(service.id) ? 'Sync full catalog' : 'Full catalog sync is not available for this partial integration'"
+                  :disabled="syncingServices[service.id]"
+                  title="Sync full catalog"
                   :class="[
                     'flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
                     syncingServices[service.id]
                       ? 'bg-primary/50 text-white/70 cursor-wait'
-                      : !supportsFullCatalogSync(service.id)
-                        ? 'bg-gray-300 dark:bg-gray-700 text-gray-500 cursor-not-allowed'
-                        : 'bg-primary text-white hover:bg-primary-hover shadow-sm'
+                      : 'bg-primary text-white hover:bg-primary-hover shadow-sm'
                   ]"
                 >
                   <span v-if="syncingServices[service.id]" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
                   <span v-else class="material-symbols-outlined text-[18px]">sync_disabled</span>
-                  {{ syncingServices[service.id] ? 'Syncing...' : supportsFullCatalogSync(service.id) ? 'Sync' : 'Unavailable' }}
+                  {{ syncingServices[service.id] ? 'Syncing...' : 'Sync' }}
                 </button>
                 <button
                   v-if="service.id === 'qobuz'"
@@ -699,11 +694,6 @@ const syncingServices = reactive<Record<string, boolean>>({})
 const importUrl = ref('')
 const importUrlLoading = ref(false)
 const spotifyApiCard = ref<InstanceType<typeof SpotifyApiConfigCard> | null>(null)
-const partialCatalogServices = new Set(['apple_music', 'soundcloud'])
-
-function supportsFullCatalogSync(serviceId: string): boolean {
-  return !partialCatalogServices.has(serviceId.toLowerCase())
-}
 
 /**
  * S196: the Spotify connect flow resolves its API credentials from DB settings
@@ -915,13 +905,11 @@ async function importQobuzPurchases() {
 }
 
 // Import from service using unified sync_service with real auth & preferences
+// R3: Apple Music y SoundCloud comparten el mismo sync completo que el resto;
+// el antiguo veto `partialCatalogServices` ya no existe.
 async function importFromService(serviceName: string) {
   const serviceKey = serviceName.toLowerCase()
-  if (!supportsFullCatalogSync(serviceKey)) {
-    showToast(`${serviceName} full catalog sync is not available yet`, 'info')
-    return
-  }
-  
+
   // Prevent duplicate sync calls if already syncing this service
   if (syncingServices[serviceKey]) {
     showToast(`${serviceName} sync already in progress`, 'info')

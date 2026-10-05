@@ -152,6 +152,46 @@ describe('LogsView.vue', () => {
     expect(wrapper.text()).not.toContain('Download failed 404')
   })
 
+  it('R15: level "success" stays in-memory only — the disk history query never carries it', async () => {
+    const { addLog } = useLogs()
+    addLog({ level: 'success', provider: 'Tidal', category: 'Downloads', message: 'Download 100% complete', rawCategory: 'downloads' })
+
+    const historyCalls: Array<Record<string, unknown> | undefined> = []
+    mockInvoke((command, args) => {
+      if (command === 'read_log_history') {
+        historyCalls.push(args)
+        return { entries: [], total: 0, offset: 0, limit: 500 }
+      }
+      return null
+    })
+
+    const wrapper = mount(LogsView)
+    await flushPromises()
+
+    const levelSelect = wrapper.find('select:has(option[value="success"])')
+    expect(levelSelect.exists()).toBe(true)
+    await levelSelect.setValue('success')
+
+    const loadBtn = wrapper.find('button[title*="Load the log history"]')
+    expect(loadBtn.exists()).toBe(true)
+    await loadBtn.trigger('click')
+    await flushPromises()
+
+    // SUCCESS never reaches read_log_history: FileLogLayer does not write it
+    // to disk, so the filter would always match 0 entries there.
+    expect(historyCalls).toHaveLength(1)
+    expect(historyCalls[0]?.level).toBeNull()
+    // The in-memory SUCCESS entry is still shown through the level filter.
+    expect(wrapper.text()).toContain('Download 100% complete')
+
+    // Control: a real disk level IS forwarded to the history query.
+    await levelSelect.setValue('error')
+    await loadBtn.trigger('click')
+    await flushPromises()
+    expect(historyCalls).toHaveLength(2)
+    expect(historyCalls[1]?.level).toBe('error')
+  })
+
   it('filters logs by module/provider', async () => {
     const { addLog } = useLogs()
     addLog({ level: 'info', provider: 'Spotify', category: 'Enrichment', message: 'Spotify track resolved', rawCategory: 'enrichment' })

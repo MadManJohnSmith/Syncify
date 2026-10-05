@@ -64,10 +64,15 @@ class AlbumContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TidalPlaylistBridgeContractTests(unittest.TestCase):
-    def test_bridge_constructs_tidal_with_credentials(self):
+    def _make_fake_tidal_service(self):
         fake_service = MagicMock()
         fake_service.get_user_playlists = AsyncMock(return_value=[{"id": "p1"}])
+        fake_service._validate_session = AsyncMock(return_value=True)
         fake_service.close = AsyncMock()
+        return fake_service
+
+    def test_bridge_constructs_tidal_with_credentials(self):
+        fake_service = self._make_fake_tidal_service()
         service_cls = MagicMock(return_value=fake_service)
         module = ModuleType("services.tidal_service")
         module.TidalService = service_cls
@@ -80,10 +85,44 @@ class TidalPlaylistBridgeContractTests(unittest.TestCase):
         credentials = service_cls.call_args.args[0]
         self.assertEqual(credentials.service_type, ServiceType.TIDAL)
         self.assertEqual(credentials.token, "token")
+        # The token must be validated against /sessions: without it the service
+        # reports is_authenticated() == False and every call silently returns [].
+        fake_service._validate_session.assert_awaited_once_with()
         self.assertEqual(fake_service.user_id, 42)
         self.assertEqual(fake_service.country_code, "US")
         fake_service.get_user_playlists.assert_awaited_once_with()
         fake_service.close.assert_awaited_once_with()
+
+    def test_bridge_raises_when_tidal_token_is_rejected(self):
+        """A rejected TIDAL_ACCESS_TOKEN must fail loudly, never return [] as success."""
+        fake_service = self._make_fake_tidal_service()
+        fake_service._validate_session = AsyncMock(return_value=False)
+        service_cls = MagicMock(return_value=fake_service)
+        module = ModuleType("services.tidal_service")
+        module.TidalService = service_cls
+        with patch.dict(sys.modules, {"services.tidal_service": module}), patch.dict(
+            os.environ, {"TIDAL_ACCESS_TOKEN": "expired", "TIDAL_USER_ID": "42"}, clear=False
+        ):
+            with self.assertRaises(Exception) as ctx:
+                playlist_bridge.get_tidal_playlists()
+
+        self.assertIn("Tidal authentication failed", str(ctx.exception))
+        fake_service.get_user_playlists.assert_not_awaited()
+        fake_service.close.assert_awaited_once_with()
+
+    def test_bridge_requires_tidal_access_token(self):
+        """Without TIDAL_ACCESS_TOKEN the bridge must fail clearly before touching the service."""
+        service_cls = MagicMock()
+        module = ModuleType("services.tidal_service")
+        module.TidalService = service_cls
+        with patch.dict(sys.modules, {"services.tidal_service": module}), patch.dict(
+            os.environ, {}, clear=True
+        ):
+            with self.assertRaises(Exception) as ctx:
+                playlist_bridge.get_tidal_playlists()
+
+        self.assertIn("TIDAL_ACCESS_TOKEN", str(ctx.exception))
+        service_cls.assert_not_called()
 
 
 if __name__ == "__main__":
