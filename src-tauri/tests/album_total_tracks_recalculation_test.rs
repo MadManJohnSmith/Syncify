@@ -14,7 +14,6 @@ use syncify_tauri_lib::commands::{
     merge_level2_3_duplicates_inner, perform_recalculate_album_total_tracks,
 };
 use syncify_tauri_lib::crypto;
-use syncify_tauri_lib::services::enrichment::recalculate_album_total_tracks;
 
 async fn setup_test_db() -> sqlx::SqlitePool {
     let _ = crypto::init_crypto([42u8; 32]);
@@ -31,6 +30,19 @@ async fn setup_test_db() -> sqlx::SqlitePool {
         .expect("Failed to run migrations");
 
     pool
+}
+
+/// Reads the counts migration 0088 put in play for one album: what
+/// `total_tracks` advertises, what the release declares, and how many of those
+/// tracks are imported here.
+async fn album_counts(pool: &sqlx::SqlitePool, album_id: i64) -> (Option<i32>, i32, i32) {
+    sqlx::query_as(
+        "SELECT total_tracks, declared_total_tracks, local_track_count FROM albums WHERE id = ?",
+    )
+    .bind(album_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -126,62 +138,75 @@ async fn test_recalculate_album_total_tracks_fixes_divergences() {
         .await
         .expect("perform_recalculate_album_total_tracks failed");
 
+    // Migration 0088 (BD-5) split the album total, so the reconciliation works
+    // on the EFFECTIVE total: an album that DECLARES a release total is not out
+    // of sync just because it is partially imported, and repairing it must not
+    // overwrite that declaration with the local count. The seed above captured
+    // those declarations through the 0088 triggers — album 1 declares 23 and
+    // album 2 declares 1 — so only album 3, whose total_tracks is NULL and which
+    // declares nothing, is actually divergent here.
     assert_eq!(
-        report.divergent_before, 3,
-        "Expected 3 divergent albums before repair"
+        report.divergent_before, 1,
+        "A declared release total that exceeds the local count is not a divergence"
     );
     assert_eq!(
         report.divergent_after, 0,
         "Expected 0 divergent albums after repair"
     );
+    assert_eq!(
+        report.updated_albums, 1,
+        "Only the genuinely divergent album should be rewritten"
+    );
 
-    // Verify reconciled values
-    let tt1: i32 = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
-        .bind(alb1_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(tt1, 2, "Album 1 should have been reconciled to 2 tracks");
+    // Verify BOTH counts on every album: the declared total and the local one.
+    assert_eq!(
+        album_counts(&pool, alb1_id).await,
+        (Some(23), 23, 2),
+        "Album 1 must keep advertising its declared 23 and its local 2"
+    );
 
-    let tt2: i32 = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
-        .bind(alb2_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(tt2, 4, "Album 2 should have been reconciled to 4 tracks");
+    assert_eq!(
+        album_counts(&pool, alb2_id).await,
+        (Some(1), 1, 4),
+        "Album 2 must keep advertising its declared 1 and its local 4"
+    );
 
-    let tt3: i32 = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
-        .bind(alb3_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(tt3, 3, "Album 3 should have been reconciled to 3 tracks");
+    // Album 3 declares nothing, so its total is derived from the library: this
+    // is the legacy NULL divergence this reconciliation exists to repair.
+    assert_eq!(
+        album_counts(&pool, alb3_id).await,
+        (Some(3), 0, 3),
+        "Album 3 must derive both counts from its 3 imported tracks"
+    );
 
-    let tt4: i32 = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
-        .bind(alb4_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(tt4, 2, "Album 4 should remain at 2 tracks");
+    // Album 4 declared 2 and had all 2 imported: consistent before and after.
+    assert_eq!(
+        album_counts(&pool, alb4_id).await,
+        (Some(2), 2, 2),
+        "Album 4 must remain consistent"
+    );
 
-    // Also test single album recalculation via service helper
-    sqlx::query("UPDATE albums SET total_tracks = 999 WHERE id = ?")
+    // Scoped recalculation of a single album. The drift seeded here is on the LOCAL
+    // column on purpose: `trg_albums_capture_declared_total_tracks_upd` (0088)
+    // treats a write to `total_tracks` as the service publishing a release total,
+    // so corrupting `total_tracks` by hand would simply re-declare the album and
+    // leave nothing to repair. Album 1 DECLARES 23 with 2 of them imported, so
+    // the scoped repair must fix `local_track_count` and leave the declaration in
+    // `total_tracks` alone — writing the local count into `total_tracks` is
+    // exactly what 0088 replaced.
+    sqlx::query("UPDATE albums SET local_track_count = 7 WHERE id = ?")
         .bind(alb1_id)
         .execute(&pool)
         .await
         .unwrap();
-    let aff = recalculate_album_total_tracks(&pool, Some(alb1_id))
+    let scoped = perform_recalculate_album_total_tracks(&pool, Some(vec![alb1_id]))
         .await
         .expect("Single album recalculation failed");
-    assert_eq!(aff, 1);
-    let tt1_again: i32 = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
-        .bind(alb1_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    assert_eq!(scoped.updated_albums, 1);
     assert_eq!(
-        tt1_again, 2,
-        "Single album recalculation should reset Album 1 to 2 tracks"
+        album_counts(&pool, alb1_id).await,
+        (Some(23), 23, 2),
+        "Scoped recalculation must repair the local count and keep the declared 23"
     );
 }
 
@@ -442,10 +467,11 @@ async fn test_merge_duplicates_synchronizes_total_tracks() {
         "Expected 1 duplicate track removed per album (2 albums)"
     );
 
-    // A declared total no longer survives the merge: migration 0085 installed
-    // trg_tracks_sync_album_total_tracks_del (BD-12), so removing the duplicate
-    // row recounts the album to its surviving track count. The duplicate really
-    // was removed, so the recount is the honest value.
+    // BD-5 (audit item 21): a declared total survives the merge. 0088 splits
+    // the release total (albums.declared_total_tracks, here 2 — the album was
+    // created with it) from the imported count (albums.local_track_count), so
+    // removing the duplicate row no longer rewrites what the release declares.
+    // The honest count is still there, in local_track_count.
     let tt_post: Option<i32> = sqlx::query_scalar("SELECT total_tracks FROM albums WHERE id = ?")
         .bind(album_id)
         .fetch_one(&pool)
@@ -453,8 +479,32 @@ async fn test_merge_duplicates_synchronizes_total_tracks() {
         .unwrap();
     assert_eq!(
         tt_post,
+        Some(2),
+        "Post-merge total_tracks must keep the declared release total"
+    );
+
+    let local_post: Option<i32> =
+        sqlx::query_scalar("SELECT local_track_count FROM albums WHERE id = ?")
+            .bind(album_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        local_post,
         Some(1),
-        "Post-merge total_tracks must reflect the single surviving track row"
+        "BD-5: the imported count must reflect the single surviving track row"
+    );
+
+    let declared_post: Option<i32> =
+        sqlx::query_scalar("SELECT declared_total_tracks FROM albums WHERE id = ?")
+            .bind(album_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        declared_post,
+        Some(2),
+        "BD-5: the declaration is recorded apart from the derived count"
     );
 
     // The duplicate really was removed: the album now holds a single row for that track.

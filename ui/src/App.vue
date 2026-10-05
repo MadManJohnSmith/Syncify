@@ -26,15 +26,6 @@
           <span class="text-sm font-medium">Dashboard</span>
         </router-link>
 
-        <router-link 
-          to="/search" 
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/search' }">search</span>
-          <span class="text-sm font-medium">Search</span>
-        </router-link>
-
         <router-link
           to="/library"
           data-tour="library"
@@ -137,15 +128,15 @@
         </div>
         
         <div class="flex items-center gap-3">
-          <!-- Search Button (Ctrl+K) -->
+          <!-- Search Button: abre el modal de búsqueda (Ctrl+F / Ctrl+K) -->
           <button
-            @click="showCommandPalette = true"
+            @click="openSearchModal"
             data-tour="search"
             class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-dark/50 border border-border-dark/50 hover:bg-surface-dark transition-colors cursor-pointer text-text-secondary hover:text-white"
           >
             <span class="material-symbols-outlined text-lg">search</span>
             <span class="text-xs hidden md:inline">Search...</span>
-            <kbd class="hidden md:inline px-1.5 py-0.5 bg-surface-dark rounded text-xs text-gray-500">⌘K</kbd>
+            <kbd class="hidden md:inline px-1.5 py-0.5 bg-surface-dark rounded text-xs text-gray-500">⌘F</kbd>
           </button>
           
           <!-- Status Indicator with Dropdown -->
@@ -370,7 +361,8 @@
     <NowPlayingBar />
     <ToastNotifications />
     <CommandPalette v-model="showCommandPalette" @close="showCommandPalette = false" />
-    <KeyboardShortcuts />
+    <SearchView v-if="showSearchModal" @close="closeSearchModal" />
+    <KeyboardShortcuts @search="openSearchModal" @command-palette="showCommandPalette = true" />
     <HelpPanel v-model="showHelp" @close="showHelp = false" />
     <QuickActionsFab
       :currentTab="currentTab"
@@ -445,7 +437,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 // Global Components
@@ -457,6 +449,7 @@ import KeyboardShortcuts from './components/KeyboardShortcuts.vue'
 import HelpPanel from './components/HelpPanel.vue'
 import QuickActionsFab, { type ActionCallback } from './components/QuickActionsFab.vue'
 import NowPlayingBar from './components/NowPlayingBar.vue'
+import SearchView from './views/SearchView.vue'
 import OnboardingWizard from './components/OnboardingWizard.vue'
 
 // Composables & APIs
@@ -503,6 +496,19 @@ const splashError = ref<string | null>(null)
 const splashStatusText = ref('Initializing...')
 const splashProgress = ref(15)
 const showCommandPalette = ref(false)
+const showSearchModal = ref(false)
+
+// R17: `/search` ya no es una vista. Cualquier enlace viejo (o un marcador)
+// abre el modal y devuelve al usuario al panel.
+watch(
+  () => route?.path,
+  (path) => {
+    if (path !== '/search') return
+    showSearchModal.value = true
+    router.replace('/dashboard')
+  },
+  { immediate: true }
+)
 const showNotifications = ref(false)
 const showTasksDropdown = ref(false)
 const showHelp = ref(false)
@@ -858,11 +864,24 @@ function handleOutsideClick(e: MouseEvent) {
 
 // Global keydown listener (e.g. Ctrl+K)
 function handleKeydown(e: KeyboardEvent) {
+  if (e.defaultPrevented) return
   if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-    if (e.defaultPrevented) return
     e.preventDefault()
     showCommandPalette.value = true
+    return
   }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault()
+    openSearchModal()
+  }
+}
+
+function openSearchModal() {
+  showSearchModal.value = true
+}
+
+function closeSearchModal() {
+  showSearchModal.value = false
 }
 
 const ONBOARDING_COMPLETED_KEY = 'syncify_onboarding_completed'

@@ -27,58 +27,32 @@
       </div>
     </section>
 
-    <section class="space-y-4">
-      <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Background Downloads</h3>
-      
-      <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-        <span class="font-medium text-gray-900 dark:text-white">Download in background when idle</span>
-        <button @click="syncSettings.globalSettings.backgroundDownload = !syncSettings.globalSettings.backgroundDownload; syncSettings.saveGlobalSettings()" :class="['relative inline-flex h-6 w-11 items-center rounded-full transition-colors', syncSettings.globalSettings.backgroundDownload ? 'bg-primary' : 'bg-gray-300']">
-          <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform', syncSettings.globalSettings.backgroundDownload ? 'translate-x-6' : 'translate-x-1']"></span>
-        </button>
-      </div>
+<section class="space-y-4">
+      <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Download Scheduling</h3>
 
-      <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-        <span class="font-medium text-gray-900 dark:text-white">Pause downloads when on metered connection</span>
-        <button @click="syncSettings.globalSettings.pauseOnMetered = !syncSettings.globalSettings.pauseOnMetered; syncSettings.saveGlobalSettings()" :class="['relative inline-flex h-6 w-11 items-center rounded-full transition-colors', syncSettings.globalSettings.pauseOnMetered ? 'bg-primary' : 'bg-gray-300']">
-          <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform', syncSettings.globalSettings.pauseOnMetered ? 'translate-x-6' : 'translate-x-1']"></span>
-        </button>
-      </div>
-
-      <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-        <div>
-          <div class="font-medium text-gray-900 dark:text-white">Pause downloads when battery is low</div>
-          <div class="text-xs text-text-secondary">For laptops, threshold at 20%</div>
-        </div>
-        <button @click="syncSettings.globalSettings.pauseOnLowBattery = !syncSettings.globalSettings.pauseOnLowBattery; syncSettings.saveGlobalSettings()" :class="['relative inline-flex h-6 w-11 items-center rounded-full transition-colors', syncSettings.globalSettings.pauseOnLowBattery ? 'bg-primary' : 'bg-gray-300']">
-          <span :class="['inline-block h-4 w-4 transform rounded-full bg-white transition-transform', syncSettings.globalSettings.pauseOnLowBattery ? 'translate-x-6' : 'translate-x-1']"></span>
-        </button>
-      </div>
-    </section>
-
-     <section class="space-y-4">
-      <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-        <span class="font-medium text-gray-900 dark:text-white">Max concurrent downloads</span>
-        <input 
-          type="number" 
-          v-model.number="syncSettings.globalSettings.maxConcurrentDownloads" 
+      <div class="flex items-center justify-between gap-4 p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
+        <label for="max-concurrent-downloads" class="font-medium text-gray-900 dark:text-white">Max concurrent downloads</label>
+        <input
+          id="max-concurrent-downloads"
+          type="number"
+          v-model.number="syncSettings.globalSettings.maxConcurrentDownloads"
           @change="syncSettings.saveGlobalSettings()"
-          min="1" max="10" 
+          min="1" max="10"
           class="w-16 px-2 py-1 bg-white dark:bg-surface-dark border border-gray-300 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white"
         >
       </div>
 
-      <div class="flex items-center justify-between p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-        <span class="font-medium text-gray-900 dark:text-white">Delay between downloads (ms)</span>
-        <input 
-          type="number" 
-          v-model.number="syncSettings.globalSettings.rateLimitDelayMs" 
+      <div class="flex items-center justify-between gap-4 p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
+        <label for="rate-limit-delay" class="font-medium text-gray-900 dark:text-white">Delay between downloads (ms)</label>
+        <input
+          id="rate-limit-delay"
+          type="number"
+          v-model.number="syncSettings.globalSettings.rateLimitDelayMs"
           @change="syncSettings.saveGlobalSettings()"
           min="0" max="5000" step="100"
           class="w-20 px-2 py-1 bg-white dark:bg-surface-dark border border-gray-300 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white"
         >
       </div>
-
-
     </section>
   </div>
 </template>

@@ -135,6 +135,39 @@ export function useGlobalTasks() {
         return Math.round(totalProgress / active.length)
     })
 
+    // Overall progress weighted by the real size of each task. A plain mean of
+    // percentages lets a 3-track sync at 100% sink a 1000-track download at
+    // 2%, and shows "50%" when half the work is genuinely done. Tasks with no
+    // declared total (indeterminate phases) weigh as the average of the ones
+    // that do, so they still count instead of resetting everything to zero.
+    const aggregateProgress = computed(() => {
+        const active = activeTasks.value
+        if (active.length === 0) return 0
+        const declaredTotals = active
+            .map(t => t.total ?? 0)
+            .filter(t => t > 0)
+        const referenceTotal = declaredTotals.length > 0
+            ? declaredTotals.reduce((a, b) => a + b, 0) / declaredTotals.length
+            : 1
+
+        let weighted = 0
+        let totalWeight = 0
+        for (const task of active) {
+            const progress = Math.min(100, Math.max(0, task.progress ?? 0))
+            const weight = (task.total ?? 0) > 0 ? (task.total as number) : referenceTotal
+            weighted += progress * weight
+            totalWeight += weight
+        }
+        if (totalWeight <= 0) return 0
+        return Math.min(100, Math.max(0, Math.round(weighted / totalWeight)))
+    })
+
+    // If no active task declares a total, the bar cannot be determinate (and
+    // freezing it at 0% would be worse than an indeterminate animation).
+    const hasDeterminateProgress = computed(() =>
+        activeTasks.value.some(t => (t.total ?? 0) > 0)
+    )
+
     const isAnyDownloading = computed(() =>
         activeTasks.value.some(t => t.type === 'download' && t.status === 'running')
     )
@@ -449,9 +482,29 @@ export function useGlobalTasks() {
     }
 
     // Structured Event Handlers
+
+    /**
+     * Imported/favourite track counters of a sync event.
+     *
+     * `SyncProgressEvent` serializes its fields in snake_case
+     * (`imported_tracks_total`, `favorite_tracks_total`, see
+     * src-tauri/src/commands/types.rs:137-138) while `import-complete`
+     * publishes them already renamed to `imported`/`favorites`. Reading a
+     * single pair of names left the counters undefined forever.
+     */
+    function readSyncCounters(payload: any): { imported?: number; favorites?: number } {
+        const imported = payload.imported ?? payload.imported_tracks_total
+        const favorites = payload.favorites ?? payload.favorite_tracks_total
+        return {
+            imported: typeof imported === 'number' ? imported : undefined,
+            favorites: typeof favorites === 'number' ? favorites : undefined
+        }
+    }
+
     function handleSyncProgressEvent(payload: any) {
         if (!payload || !payload.service) return
-        const { status, error, requires_auth, current, total, progress, message, phase, imported, favorites } = payload
+        const { status, error, requires_auth, current, total, progress, message, phase } = payload
+        const { imported, favorites } = readSyncCounters(payload)
 
         if (status === 'failed' || status === 'error' || requires_auth || status === 'stale_source' || status === 'rejected_quality') {
             failSyncTask(payload.service, error || message || 'Sync failed', !!requires_auth)
@@ -480,9 +533,10 @@ export function useGlobalTasks() {
 
     function handleSyncCompleteEvent(payload: any) {
         if (!payload || !payload.service) return
+        const { imported, favorites } = readSyncCounters(payload)
         completeSyncTask(payload.service, payload.success !== false, {
-            imported: payload.imported,
-            favorites: payload.favorites,
+            imported,
+            favorites,
             message: payload.message || `Successfully synced ${formatServiceName(payload.service)}`
         })
     }
@@ -657,6 +711,8 @@ export function useGlobalTasks() {
         hasActiveTasks,
         activeTaskCount,
         overallProgress,
+        aggregateProgress,
+        hasDeterminateProgress,
         isAnyDownloading,
         downloadingCount,
 

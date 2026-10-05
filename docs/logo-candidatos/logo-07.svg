@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 07 - Molinete</title>
+    <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(0 64 64)" fill="#3c83f6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(90 64 64)" fill="#6366f1"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(180 64 64)" fill="#8b5cf6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(270 64 64)" fill="#a855f7"/>
+</svg>

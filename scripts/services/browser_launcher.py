@@ -5,8 +5,9 @@ Linux y macOS, con detección de stubs/dummies y soporte para Chrome, Brave,
 Vivaldi, Opera, Thorium, Chromium y Edge.
 """
 import os
-import sys
 import shutil
+import subprocess
+import sys
 
 _LINUX_CANDIDATES = [
     "/usr/bin/google-chrome-stable",
@@ -142,3 +143,57 @@ def chrome_launch_kwargs() -> dict:
         "Si tu Windows no tiene Microsoft Edge instalado, por favor instala Google Chrome o Brave, "
         "o define la variable de entorno SYNCIFY_BROWSER_PATH con la ruta de tu navegador."
     )
+
+
+# Apertores del gestor de URLs del escritorio, en orden de preferencia por
+# plataforma. `webbrowser` sólo conoce `BROWSER` y `xdg-open`, así que en una
+# máquina sin xdg-utils devuelve False sin lanzar nada.
+_LINUX_URL_OPENERS = ["xdg-open", "gio", "gnome-open", "kde-open", "x-www-browser", "wslview"]
+_MACOS_URL_OPENERS = ["open"]
+_WINDOWS_URL_OPENERS = ["explorer"]
+
+
+def _platform_url_openers():
+    if sys.platform.startswith("win") or os.name == "nt":
+        return list(_WINDOWS_URL_OPENERS)
+    if sys.platform == "darwin":
+        return list(_MACOS_URL_OPENERS)
+    return list(_LINUX_URL_OPENERS)
+
+
+def open_in_system_browser(url: str) -> bool:
+    """Abre `url` en el navegador del escritorio. True solo si se lanzó de verdad.
+
+    `webbrowser.open()` devuelve False —sin excepción— cuando no encuentra
+    `BROWSER` ni `xdg-open`, y el flujo de device code de Tidal no puede seguir
+    sin esa pestaña, así que el valor de retorno se comprueba y se degradan
+    aperturas explícitas por plataforma hasta que una abre la URL.
+    """
+    import webbrowser
+
+    try:
+        if webbrowser.open(url, new=2):
+            return True
+    except Exception:
+        pass
+
+    for opener in _platform_url_openers():
+        resolved = shutil.which(opener)
+        if not resolved:
+            continue
+        argv = [resolved, "open", url] if opener == "gio" else [resolved, url]
+        try:
+            # `explorer.exe` devuelve 1 aunque abra la ventana con éxito, así
+            # que se acepta cualquier salida siempre que no sea un fallo de arranque.
+            completed = subprocess.run(
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            if completed.returncode in (0, 1):
+                return True
+        except (OSError, subprocess.SubprocessError):
+            continue
+
+    return False

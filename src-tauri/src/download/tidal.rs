@@ -207,7 +207,12 @@ impl TidalOrchestratorExt for TidalDownloader {
             };
 
         let stream_res = self
-            .get_stream_resolution(track_id, Some(&request.quality), None, true)
+            .get_stream_resolution(
+                track_id,
+                Some(&request.quality),
+                None,
+                request.allow_fallback || !request.strict_quality,
+            )
             .await?;
 
         let filename = format!(

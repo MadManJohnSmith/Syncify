@@ -175,92 +175,103 @@ pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata>
 
     // 1. FLAC files
     if ext == "flac" {
+        // metaflac walks the metadata block chain by slicing the file and panics when
+        // a transfer was cut short (a truncated download must degrade to "unknown
+        // metrics", never take the worker down). Only hand it a file whose STREAMINFO
+        // block is actually present and parseable; otherwise fall through to the
+        // bounded parser below.
+        let header_is_complete = read_header_prefix(path, 42)
+            .and_then(|h| AudioByteValidator::parse_flac_streaminfo(&h))
+            .is_some();
+
         // Try metaflac first
-        if let Ok(tag) = metaflac::Tag::read_from_path(path) {
-            if let Some(streaminfo) = tag.get_streaminfo() {
-                let sample_rate = streaminfo.sample_rate as i32;
-                let bit_depth = streaminfo.bits_per_sample as i32;
-                let channels = streaminfo.num_channels as i32;
-                let total_samples = streaminfo.total_samples;
-                let duration_secs = if sample_rate > 0 {
-                    Some(total_samples as f64 / sample_rate as f64)
-                } else {
-                    None
-                };
-                let bitrate = duration_secs.and_then(|dur| {
-                    if dur > 0.0 && file_size > 0 {
-                        Some(((file_size as f64 * 8.0) / dur / 1000.0).round() as i32)
+        if header_is_complete {
+            if let Ok(tag) = metaflac::Tag::read_from_path(path) {
+                if let Some(streaminfo) = tag.get_streaminfo() {
+                    let sample_rate = streaminfo.sample_rate as i32;
+                    let bit_depth = streaminfo.bits_per_sample as i32;
+                    let channels = streaminfo.num_channels as i32;
+                    let total_samples = streaminfo.total_samples;
+                    let duration_secs = if sample_rate > 0 {
+                        Some(total_samples as f64 / sample_rate as f64)
                     } else {
                         None
-                    }
-                });
+                    };
+                    let bitrate = duration_secs.and_then(|dur| {
+                        if dur > 0.0 && file_size > 0 {
+                            Some(((file_size as f64 * 8.0) / dur / 1000.0).round() as i32)
+                        } else {
+                            None
+                        }
+                    });
 
-                let streaminfo_md5_valid =
-                    streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
-                let md5_signature = if streaminfo.md5.len() == 16 {
-                    Some(
-                        streaminfo
-                            .md5
-                            .iter()
-                            .map(|b| format!("{:02x}", b))
-                            .collect::<String>(),
-                    )
-                } else {
-                    None
-                };
-                let integrity_check_mode = if streaminfo_md5_valid {
-                    Some("streaminfo_md5".to_string())
-                } else {
-                    Some("decode_check".to_string())
-                };
+                    let streaminfo_md5_valid =
+                        streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
+                    let md5_signature = if streaminfo.md5.len() == 16 {
+                        Some(
+                            streaminfo
+                                .md5
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<String>(),
+                        )
+                    } else {
+                        None
+                    };
+                    let integrity_check_mode = if streaminfo_md5_valid {
+                        Some("streaminfo_md5".to_string())
+                    } else {
+                        Some("decode_check".to_string())
+                    };
 
-                return Some(PhysicalAudioMetadata {
-                    format: "FLAC".to_string(),
-                    sample_rate,
-                    bit_depth,
-                    channels,
-                    bitrate,
-                    duration_secs,
-                    md5_signature,
-                    streaminfo_md5_valid,
-                    integrity_check_mode,
-                    loudness: None,
-                });
+                    return Some(PhysicalAudioMetadata {
+                        format: "FLAC".to_string(),
+                        sample_rate,
+                        bit_depth,
+                        channels,
+                        bitrate,
+                        duration_secs,
+                        md5_signature,
+                        streaminfo_md5_valid,
+                        integrity_check_mode,
+                        loudness: None,
+                    });
+                }
             }
-        }
 
-        // Fallback: Read first chunk and parse with AudioByteValidator
-        if let Some(header_bytes) = read_header_prefix(path, 4096) {
-            if let Some(streaminfo) = AudioByteValidator::parse_flac_streaminfo(&header_bytes) {
-                let sample_rate = streaminfo.sample_rate as i32;
-                let bit_depth = streaminfo.bits_per_sample as i32;
-                let channels = streaminfo.channels as i32;
-                let total_samples = streaminfo.total_samples;
-                let duration_secs = if sample_rate > 0 {
-                    Some(total_samples as f64 / sample_rate as f64)
-                } else {
-                    None
-                };
-                let bitrate = duration_secs.and_then(|dur| {
-                    if dur > 0.0 && file_size > 0 {
-                        Some(((file_size as f64 * 8.0) / dur / 1000.0).round() as i32)
+            // Fallback: Read first chunk and parse with AudioByteValidator
+            if let Some(header_bytes) = read_header_prefix(path, 4096) {
+                if let Some(streaminfo) = AudioByteValidator::parse_flac_streaminfo(&header_bytes) {
+                    let sample_rate = streaminfo.sample_rate as i32;
+                    let bit_depth = streaminfo.bits_per_sample as i32;
+                    let channels = streaminfo.channels as i32;
+                    let total_samples = streaminfo.total_samples;
+                    let duration_secs = if sample_rate > 0 {
+                        Some(total_samples as f64 / sample_rate as f64)
                     } else {
                         None
-                    }
-                });
+                    };
+                    let bitrate = duration_secs.and_then(|dur| {
+                        if dur > 0.0 && file_size > 0 {
+                            Some(((file_size as f64 * 8.0) / dur / 1000.0).round() as i32)
+                        } else {
+                            None
+                        }
+                    });
 
-                return Some(PhysicalAudioMetadata {
-                    format: "FLAC".to_string(),
-                    sample_rate,
-                    bit_depth,
-                    channels,
-                    bitrate,
-                    duration_secs,
-                    md5_signature: None,
-                    streaminfo_md5_valid: false,
-                    integrity_check_mode: Some("decode_check".to_string()),
-                    loudness: None,
-                });
+                    return Some(PhysicalAudioMetadata {
+                        format: "FLAC".to_string(),
+                        sample_rate,
+                        bit_depth,
+                        channels,
+                        bitrate,
+                        duration_secs,
+                        md5_signature: None,
+                        streaminfo_md5_valid: false,
+                        integrity_check_mode: Some("decode_check".to_string()),
+                        loudness: None,
+                    });
+                }
             }
         }
     }

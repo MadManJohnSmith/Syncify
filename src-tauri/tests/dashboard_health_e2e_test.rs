@@ -260,3 +260,182 @@ async fn test_dashboard_batch_health_report() {
         "Overall batch health must be true on clean DB"
     );
 }
+
+#[tokio::test]
+async fn test_dashboard_stats_propagates_sql_errors_instead_of_zeroes() {
+    let db = create_test_db().await;
+    let app = create_test_app(db.clone());
+
+    sqlx::query("DROP TABLE tracks")
+        .execute(&db)
+        .await
+        .expect("dropping tracks must succeed");
+
+    let error = get_dashboard_stats(app.state::<AppState>())
+        .await
+        .expect_err("a broken counter query must surface as an error, not as zero tracks");
+
+    assert!(
+        error.contains("tracks"),
+        "error must name the failing counter, got: {}",
+        error
+    );
+}
+
+#[tokio::test]
+async fn test_dashboard_stats_propagates_missing_services_breakdown() {
+    let db = create_test_db().await;
+    let app = create_test_app(db.clone());
+
+    sqlx::query("DROP TABLE services")
+        .execute(&db)
+        .await
+        .expect("dropping services must succeed");
+
+    let error = get_dashboard_stats(app.state::<AppState>())
+        .await
+        .expect_err("a failing services breakdown must not be reported as an empty list");
+
+    assert!(
+        error.contains("services"),
+        "error must name the failing breakdown, got: {}",
+        error
+    );
+}
+
+#[tokio::test]
+async fn test_health_checks_report_real_last_sync_instead_of_now() {
+    let db = create_test_db().await;
+    let app = create_test_app(db.clone());
+
+    let before = get_health_checks(app.state::<AppState>())
+        .await
+        .expect("get_health_checks should succeed");
+    let spotify_before = before
+        .services
+        .iter()
+        .find(|s| s.service == "spotify")
+        .expect("spotify health entry must exist");
+    assert!(
+        spotify_before.last_synced.is_none(),
+        "an account that never synced must not report a last-synced timestamp"
+    );
+
+    sqlx::query("UPDATE accounts SET last_synced = '2026-01-02T03:04:05Z' WHERE id = 1")
+        .execute(&db)
+        .await
+        .expect("updating last_synced must succeed");
+
+    let after = get_health_checks(app.state::<AppState>())
+        .await
+        .expect("get_health_checks should succeed");
+    let spotify_after = after
+        .services
+        .iter()
+        .find(|s| s.service == "spotify")
+        .expect("spotify health entry must exist");
+    assert_eq!(
+        spotify_after.last_synced.as_deref(),
+        Some("2026-01-02T03:04:05Z"),
+        "health checks must expose the stored last-synced value"
+    );
+}
+
+#[tokio::test]
+async fn test_batch_health_flags_invalid_download_path() {
+    let db = create_test_db().await;
+    let worker_state = DownloadWorkerState::new(2);
+
+    // The configured path points at a file: it exists but is not a writable
+    // directory, so the report cannot call it healthy.
+    let file_path = std::env::temp_dir().join("syncify_not_a_folder_test");
+    std::fs::write(&file_path, b"not a folder").expect("temp file must be writable");
+
+    sqlx::query("INSERT OR REPLACE INTO folder_settings (id, base_folder) VALUES (1, ?)")
+        .bind(file_path.to_string_lossy().to_string())
+        .execute(&db)
+        .await
+        .expect("seeding folder_settings must succeed");
+
+    let report = perform_batch_health_check(&db, None, Some(&worker_state))
+        .await
+        .expect("perform_batch_health_check should succeed");
+
+    assert!(
+        !report.healthy,
+        "an unusable download path must not be reported as healthy"
+    );
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("Download path is not healthy")),
+        "issues must flag the unusable path, got: {:?}",
+        report.issues
+    );
+
+    let _ = std::fs::remove_file(&file_path);
+}
+
+#[tokio::test]
+async fn test_batch_health_names_configured_path_when_resolution_fails() {
+    let db = create_test_db().await;
+    let worker_state = DownloadWorkerState::new(2);
+
+    let configured = tempfile::tempdir().expect("temp dir must be creatable");
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('dl_download_path', ?)")
+        .bind(configured.path().to_string_lossy().to_string())
+        .execute(&db)
+        .await
+        .expect("seeding settings must succeed");
+
+    // Without `folder_settings` the canonical resolution fails, and the report must
+    // name the configured path instead of vouching for the default one.
+    sqlx::query("DROP TABLE folder_settings")
+        .execute(&db)
+        .await
+        .expect("dropping folder_settings must succeed");
+
+    let report = perform_batch_health_check(&db, None, Some(&worker_state))
+        .await
+        .expect("perform_batch_health_check should succeed");
+
+    assert_eq!(
+        report.effective_download_path,
+        configured.path().to_string_lossy().to_string(),
+        "the report must name the configured path that failed to resolve"
+    );
+    assert!(
+        !report.healthy,
+        "an unresolved download path must not be reported as healthy"
+    );
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("could not be resolved")),
+        "issues must record the resolution failure, got: {:?}",
+        report.issues
+    );
+}
+
+#[tokio::test]
+async fn test_batch_health_ignores_hidden_files_in_staging() {
+    let db = create_test_db().await;
+    let worker_state = DownloadWorkerState::new(2);
+
+    let staging = tempfile::tempdir().expect("temp dir must be creatable");
+    std::fs::write(staging.path().join(".nomedia"), b"").expect(".nomedia must be writable");
+    std::fs::write(staging.path().join("partial.flac"), &[0u8; 2048])
+        .expect("file must be writable");
+
+    let report = perform_batch_health_check(&db, Some(staging.path()), Some(&worker_state))
+        .await
+        .expect("perform_batch_health_check should succeed");
+
+    assert_eq!(
+        report.staging_orphans_count, 1,
+        "only the real leftover file counts as an orphan"
+    );
+    assert_eq!(report.staging_orphans_bytes, 2048);
+}

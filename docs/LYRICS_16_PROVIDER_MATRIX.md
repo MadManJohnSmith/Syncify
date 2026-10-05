@@ -1,6 +1,6 @@
 # Lyrics Resolution Matrix: 16 Provider Strategies Across 10 Providers
 
-This document provides a technical audit of the **16 resolution strategies across 10 unique providers** in the Syncify lyrics engine cascade (`src-tauri/src/download/lyrics.rs`). This matrix describes the current Rust engine only: the experimental prototype whose source it originally cited alongside it is no longer in the tree — it was archived outside every checkout and in CI, and `README.md` records where it went.
+This document provides a technical audit of the **16 resolution strategies across 10 unique providers** in the Syncify lyrics engine cascade (`src-tauri/src/download/lyrics.rs`). This matrix describes the current Rust engine only. The experimental prototype it originally cited alongside the engine is not in this repository: it lived under `workspace/`, which `.gitignore` excludes, so no checkout and no CI job has ever contained it. Its location is not recorded anywhere in the tree, so nothing here should be read as describing it.
 
 ## 1. Scope & Taxonomy Definitions
 

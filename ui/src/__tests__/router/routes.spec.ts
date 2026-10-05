@@ -4,7 +4,7 @@
  * Verifies:
  * 1. Navigating to `/queue` redirects to `/downloads`.
  * 2. Navigating to an unknown route (404 fallback) redirects to `/dashboard`.
- * 3. The `/search` link is present and navigable in the main navigation layout (App.vue).
+ * 3. La búsqueda ya no es una pestaña del sidebar: se abre como modal desde el navbar (R17).
  * 4. Keyboard shortcut tabRoutes map slot 7 to `/downloads`.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -58,7 +58,7 @@ describe('Router & Navigation Graph (TASK-17)', () => {
     expect(router.currentRoute.value.path).toBe('/dashboard')
   })
 
-  it('contains navigable router-link to /search in App sidebar layout', async () => {
+  it('no longer exposes a /search sidebar tab and opens the search modal from the navbar (R17)', async () => {
     const wrapper = mount(App, {
       global: {
         plugins: [router],
@@ -77,10 +77,43 @@ describe('Router & Navigation Graph (TASK-17)', () => {
     })
     await flushPromises()
 
-    const searchLink = wrapper.find('aside nav router-link[to="/search"], aside nav a[href="/search"]')
-    expect(searchLink.exists()).toBe(true)
-    expect(searchLink.text()).toContain('Search')
-    expect(searchLink.html()).toContain('search')
+    expect(wrapper.find('aside nav router-link[to="/search"], aside nav a[href="/search"]').exists()).toBe(false)
+
+    const searchButton = wrapper.find('header button[data-tour="search"]')
+    expect(searchButton.exists()).toBe(true)
+    expect(searchButton.text()).toContain('Search...')
+
+    await searchButton.trigger('click')
+    await flushPromises()
+
+    expect(document.body.querySelector('[data-testid="search-modal"]')).not.toBeNull()
+  })
+
+  it('opens the search modal when a stale /search navigation lands (R17)', async () => {
+    const wrapper = mount(App, {
+      global: {
+        plugins: [router],
+        stubs: {
+          SplashScreen: true,
+          StatusBar: true,
+          NowPlayingBar: true,
+          ToastNotifications: true,
+          CommandPalette: true,
+          KeyboardShortcuts: true,
+          HelpPanel: true,
+          QuickActionsFab: true,
+          OnboardingWizard: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    await router.push('/search')
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+
+    expect(document.body.querySelector('[data-testid="search-modal"]')).not.toBeNull()
+    expect(router.currentRoute.value.path).toBe('/dashboard')
   })
 
   it('updates KeyboardShortcuts Ctrl+7 tab route to /downloads', async () => {

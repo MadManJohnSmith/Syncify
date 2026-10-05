@@ -31,7 +31,7 @@
         >
           <span class="material-symbols-outlined text-[15px] text-amber-500">schedule</span>
           <span>Queued:</span>
-          <strong class="font-bold text-gray-900 dark:text-white">{{ queueStats?.queued ?? queueItems.length }}</strong>
+          <strong class="font-bold text-gray-900 dark:text-white">{{ queueStats?.queued ?? queuedCount }}</strong>
         </button>
 
         <!-- Completed Pill -->
@@ -42,7 +42,7 @@
         >
           <span class="material-symbols-outlined text-[15px] text-success">check_circle</span>
           <span>Completed:</span>
-          <strong class="font-bold text-gray-900 dark:text-white">{{ queueStats?.completed ?? completedItems.length }}</strong>
+          <strong class="font-bold text-gray-900 dark:text-white">{{ queueStats?.completed ?? completedItemsCount }}</strong>
         </button>
 
         <!-- Failed Pill -->
@@ -53,7 +53,7 @@
         >
           <span class="material-symbols-outlined text-[15px] text-error">cancel</span>
           <span>Failed:</span>
-          <strong class="font-bold text-gray-900 dark:text-white">{{ queueStats?.failed ?? failedItems.length }}</strong>
+          <strong class="font-bold text-gray-900 dark:text-white">{{ queueStats?.failed ?? failedItemsCount }}</strong>
         </button>
 
         <div class="h-5 w-px bg-gray-200 dark:bg-border-dark mx-1 hidden sm:block"></div>
@@ -111,19 +111,19 @@
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
           <span title="Excluded before queuing due to preflight filter">Excluidas Preflight: <strong class="text-amber-500">{{ (queueStats?.skipped ?? 0) + (queueStats?.deduplicated ?? 0) }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Tracks currently in queued state">Pendientes: <strong class="text-amber-500">{{ queueStats?.queued ?? queueItems.length }}</strong></span>
+          <span title="Tracks currently in queued state">Pendientes: <strong class="text-amber-500">{{ queueStats?.queued ?? queuedCount }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
           <span title="Tracks currently downloading concurrently">Activas: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Finished downloads in queue">Completadas: <strong class="text-success">{{ queueStats?.completed ?? completedItems.length }}</strong></span>
+          <span title="Finished downloads in queue">Completadas: <strong class="text-success">{{ queueStats?.completed ?? completedItemsCount }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Failed downloads in queue">Fallidas: <strong class="text-error">{{ queueStats?.failed ?? failedItems.length }}</strong></span>
+          <span title="Failed downloads in queue">Fallidas: <strong class="text-error">{{ queueStats?.failed ?? failedItemsCount }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
           <span title="Cancelled downloads in queue">Canceladas: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
           <span title="Skipped tracks due to stale/missing sources">Skipped: <strong class="text-gray-500">{{ queueStats?.skipped ?? 0 }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Physical audio files saved on disk in downloads library">Archivos Físicos: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItems.length }}</strong></span>
+          <span title="Physical audio files saved on disk in downloads library">Archivos Físicos: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItemsCount }}</strong></span>
         </div>
       </div>
 
@@ -207,7 +207,7 @@
         <div class="flex items-center gap-3 flex-1 min-w-[260px]">
           <div class="flex items-center gap-2 text-xs font-semibold text-gray-700 dark:text-gray-300 shrink-0">
             <span class="material-symbols-outlined text-[18px] text-primary">download</span>
-            <span>Queue: <strong class="text-gray-900 dark:text-white">{{ completedItems.length }}</strong>/<strong class="text-gray-900 dark:text-white">{{ totalItemCount }}</strong> completed</span>
+            <span>Queue: <strong class="text-gray-900 dark:text-white">{{ completedItemsCount }}</strong>/<strong class="text-gray-900 dark:text-white">{{ totalItemCount }}</strong> completed</span>
             <span v-if="searchQuery.trim()" class="text-[11px] text-primary font-medium">
               ({{ matchingCount }} match)
             </span>
@@ -244,7 +244,7 @@
           <!-- Cancel / Clear Queue -->
           <button 
             @click="clearPendingQueue" 
-            :disabled="isProcessing || queueItems.length === 0" 
+            :disabled="isProcessing || queuedCount === 0" 
             class="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
             title="Cancel queued downloads"
           >
@@ -255,7 +255,7 @@
           <!-- Retry Failed -->
           <button 
             @click="retryFailed" 
-            :disabled="isProcessing || failedItems.length === 0" 
+            :disabled="isProcessing || failedItemsCount === 0" 
             class="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
             title="Retry failed downloads"
           >
@@ -300,7 +300,7 @@
               </button>
               <button 
                 @click="clearCompleted" 
-                :disabled="isProcessing || completedItems.length === 0" 
+                :disabled="isProcessing || completedItemsCount === 0" 
                 class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors disabled:opacity-50"
               >
                 <span class="material-symbols-outlined text-[16px] text-gray-400">delete_sweep</span>
@@ -308,7 +308,7 @@
               </button>
               <button 
                 @click="clearFailed" 
-                :disabled="isProcessing || failedItems.length === 0" 
+                :disabled="isProcessing || failedItemsCount === 0" 
                 class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-error hover:bg-error/10 transition-colors disabled:opacity-50"
               >
                 <span class="material-symbols-outlined text-[16px]">delete</span>
@@ -400,8 +400,29 @@
         </div>
         
         <div class="flex flex-col gap-3">
+          <!-- Error: sin datos no se puede afirmar que la cola esté vacía -->
+          <div
+            v-if="loadError"
+            class="rounded-xl bg-red-50 dark:bg-surface-dark border border-red-200 dark:border-red-500/40 p-6 text-center flex flex-col items-center"
+            data-testid="downloads-load-error"
+          >
+            <span class="material-symbols-outlined text-3xl text-error mb-2">cloud_off</span>
+            <p class="text-sm font-semibold text-gray-900 dark:text-white mb-1">Could not load the download queue</p>
+            <p class="text-xs text-text-secondary mb-4">{{ loadError }}</p>
+            <button
+              @click="fetchData"
+              class="px-3 py-1.5 bg-error text-white rounded-lg text-xs font-semibold flex items-center gap-1.5"
+            >
+              <span class="material-symbols-outlined text-sm">refresh</span>
+              Retry
+            </button>
+          </div>
+
           <!-- Empty state when no active downloads -->
-          <div v-if="filteredActiveDownloads.length === 0" class="rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark p-6 text-center">
+          <div
+            v-else-if="filteredActiveDownloads.length === 0"
+            class="rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark p-6 text-center"
+          >
             <span class="material-symbols-outlined text-3xl text-gray-300 dark:text-gray-600 mb-1">cloud_done</span>
             <p class="text-xs text-text-secondary">No active downloads running</p>
           </div>
@@ -414,9 +435,14 @@
           >
             <div class="flex items-center gap-4">
               <!-- Album Art -->
-              <div :class="['w-14 h-14 rounded-lg shrink-0 flex items-center justify-center text-white/30', item.artGradient]">
-                <span class="material-symbols-outlined text-2xl">album</span>
-              </div>
+              <TrackCover
+                :src="item.coverUrl"
+                :item-id="item.id"
+                :alt="item.album || item.title"
+                size-class="w-14 h-14"
+                rounded="rounded-lg"
+                icon="album"
+              />
               
               <!-- Track Info -->
               <div class="flex-1 min-w-0">
@@ -548,9 +574,12 @@
                   <span class="text-xs text-gray-400 w-10 text-right font-mono font-medium shrink-0">{{ item.absoluteIndex + 1 }}</span>
                   
                   <!-- Album Art (compact) -->
-                  <div :class="['w-9 h-9 rounded-md shrink-0 flex items-center justify-center', item.artGradient]">
-                    <span class="material-symbols-outlined text-lg text-white/40">music_note</span>
-                  </div>
+                  <TrackCover
+                    :src="item.coverUrl"
+                    :item-id="item.id"
+                    :alt="item.album || item.title"
+                    size-class="w-9 h-9"
+                  />
                   
                   <!-- Track Info -->
                   <div class="flex-1 min-w-0">
@@ -601,9 +630,12 @@
               >
                 <div class="completed-item flex items-center gap-3.5 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 transition-colors group">
                   <!-- Album Art (36x36) -->
-                  <div :class="['w-9 h-9 rounded-md shrink-0 flex items-center justify-center', item.artGradient]">
-                    <span class="material-symbols-outlined text-lg text-white/40">music_note</span>
-                  </div>
+                  <TrackCover
+                    :src="item.coverUrl"
+                    :item-id="item.id"
+                    :alt="item.album || item.title"
+                    size-class="w-9 h-9"
+                  />
                   
                   <!-- Track Info -->
                   <div class="flex-1 min-w-0">
@@ -788,9 +820,14 @@
             
             <div class="flex items-start gap-4 p-4 pl-5">
               <!-- Album Art (52x52) -->
-              <div :class="['w-13 h-13 rounded-lg shrink-0 flex items-center justify-center text-white/30', item.artGradient]">
-                <span class="material-symbols-outlined text-2xl">album</span>
-              </div>
+              <TrackCover
+                :src="item.coverUrl"
+                :item-id="item.id"
+                :alt="item.album || item.title"
+                size-class="w-13 h-13"
+                rounded="rounded-lg"
+                icon="album"
+              />
               
               <!-- Track Info + Error Classification -->
               <div class="flex-1 min-w-0">
@@ -1125,7 +1162,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, shallowRef, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { confirm } from '@tauri-apps/plugin-dialog'
@@ -1137,6 +1174,7 @@ import { settingsApi } from '@/api/settings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
+import TrackCover from '@/components/TrackCover.vue'
 import { auditDownloadQueue, type DownloadFavoritesResult, type QueueAuditReport } from '@/api/library'
 import { formatServiceName } from '@/composables/useGlobalTasks'
 
@@ -1172,6 +1210,8 @@ export interface EnrichedQueueItem extends QueueItem {
   bitDepth?: number | null
   sample_rate?: number | null
   sampleRate?: number | null
+  /** Lo rellena `get_queue` cuando el backend resuelve la carátula del disco. */
+  cover_art_url?: string | null
 }
 
 export interface ExtendedQueueStats extends QueueStats {
@@ -1360,6 +1400,8 @@ async function handleFavoritesEnqueued(res: DownloadFavoritesResult) {
 const viewFilter = ref<'all' | 'active' | 'queued' | 'completed' | 'failed'>('all')
 const searchQuery = ref('')
 const loading = ref(true)
+/** Fallo de la última carga de la cola; distingue «vacía» de «no se pudo leer». */
+const loadError = ref<string | null>(null)
 const isProcessing = ref(false)
 
 // Section visibility
@@ -1376,7 +1418,20 @@ const showSettingsPanel = ref(false)
 // Backend data
 const queueStats = ref<ExtendedQueueStats>({ total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 })
 const workerStatus = ref<WorkerStatus>({ running: true, paused: false, active_downloads: 0, max_concurrent: 3 })
-const rawQueueItems = ref<EnrichedQueueItem[]>([])
+// R11: la cola llega con hasta 50 000 filas. Guardarlas en un `ref` normal las
+// convertía en 50 000 proxies reactivos que Vue recorría en cada evento de
+// progreso: medido en 194 ms de hilo principal por evento (ui/scripts/
+// measure-downloads-reactivity.mts), frente a 2,7 ms con datos planos. Aquí los
+// items son objetos planos y el aviso de cambio llega por `progressTick`, que
+// solo se incrementa cuando un evento supera el throttle y muta de verdad.
+const rawQueueItems = shallowRef<EnrichedQueueItem[]>([])
+const progressTick = ref(0)
+
+/** La cola vigente; leerla registra la dependencia de `progressTick`. */
+function currentQueueItems(): EnrichedQueueItem[] {
+  void progressTick.value
+  return rawQueueItems.value
+}
 
 // Concurrency state (1 to 10 threads — S203, reactive & persisted in AppState)
 const currentConcurrency = computed(() => {
@@ -1418,7 +1473,7 @@ function matchesSearch(item: SearchableItem): boolean {
 
 // Computed: Active downloads
 const activeDownloads = computed(() => {
-  return rawQueueItems.value
+  return currentQueueItems()
     .filter(item => item.status === 'downloading')
     .map(item => {
       const sName = item.service_name || item.service || 'Unknown'
@@ -1431,7 +1486,7 @@ const activeDownloads = computed(() => {
         title: item.target_title || item.title || 'Unknown Track',
         artist: item.target_artist || item.artist || 'Unknown Artist',
         album: item.target_album || 'Album',
-        artGradient: getArtGradient(item.id),
+        coverUrl: item.cover_art_url ?? null,
         service: sName,
         serviceBadgeClass: getServiceBadgeClass(sName),
         quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
@@ -1457,151 +1512,153 @@ const filteredActiveDownloads = computed(() => {
 })
 
 // Computed: Queue items (Up Next)
-const queueItems = computed(() => {
-  return rawQueueItems.value
-    .filter(item => item.status === 'queued')
-    .map(item => {
-      const sName = item.service_name || item.service || 'Unknown'
-      const rawQuality = item.quality_preference || item.quality || 'FLAC'
-      return {
-        id: item.id,
-        trackId: item.track_id,
-        title: item.target_title || item.title || 'Unknown Track',
-        artist: item.target_artist || item.artist || 'Unknown Artist',
-        album: item.target_album || 'Album',
-        artGradient: getArtGradient(item.id),
-        service: sName,
-        serviceBadgeClass: getServiceBadgeClass(sName),
-        quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
-        qualityBadgeClass: 'bg-gray-100 dark:bg-surface-highlight text-text-secondary border border-gray-200 dark:border-border-dark',
-        progress: item.progress_percent || 0,
-        status: item.status,
-      }
-    })
-})
+// R11: el mapeo se aplica solo a la ventana visible. Mapear las 50 000 filas
+// de la cola en cada evento de progreso costaba ~57 ms de hilo principal por
+// evento (medido en ui/scripts/measure-downloads-reactivity.mts).
+function mapQueueItem(item: EnrichedQueueItem) {
+  const sName = item.service_name || item.service || 'Unknown'
+  const rawQuality = item.quality_preference || item.quality || 'FLAC'
+  return {
+    id: item.id,
+    trackId: item.track_id,
+    title: item.target_title || item.title || 'Unknown Track',
+    artist: item.target_artist || item.artist || 'Unknown Artist',
+    album: item.target_album || 'Album',
+    coverUrl: item.cover_art_url ?? null,
+    service: sName,
+    serviceBadgeClass: getServiceBadgeClass(sName),
+    quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
+    qualityBadgeClass: 'bg-gray-100 dark:bg-surface-highlight text-text-secondary border border-gray-200 dark:border-border-dark',
+    progress: item.progress_percent || 0,
+    status: item.status,
+  }
+}
 
-const filteredQueueItems = computed(() => {
-  return queueItems.value.filter(matchesSearch)
-})
+const queuedItemsRaw = computed(() => currentQueueItems().filter(item => item.status === 'queued'))
+const queuedCount = computed(() => queuedItemsRaw.value.length)
+
+const filteredQueueItems = computed(() => queuedItemsRaw.value.filter(matchesSearch))
 
 // Computed: Completed items
-const completedItems = computed(() => {
-  return rawQueueItems.value
-    .filter(item => item.status === 'complete' || item.status === 'completed')
-    .map(item => {
-      const originalService = item.original_service || item.service_name || item.service || 'Unknown'
-      const effectiveService = item.effective_service || item.service_name || item.service || 'Unknown'
-      const rawQuality = item.quality_preference || item.quality || 'FLAC'
-      const providerFallbackUsed = Boolean(item.provider_fallback_used || (originalService.toLowerCase() !== effectiveService.toLowerCase()))
-      const qualityFallbackUsed = Boolean(item.quality_fallback_used || item.effective_format === 'AAC' || item.quality_decision === 'CompletedWithQualityFallback')
-      const requestedQualityLabel = formatQualityLabel(item.requested_quality || item.quality_preference || item.quality)
-      const effectiveQualityLabel = qualityFallbackUsed ? 'AAC 320 kbps' : formatPhysicalQualitySpec(item)
-      const resultLabel = formatQualityDecisionResult({ ...item, provider_fallback_used: providerFallbackUsed, quality_fallback_used: qualityFallbackUsed })
-      const resultClass = qualityFallbackUsed ? 'text-amber-500 font-semibold' : (providerFallbackUsed ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold')
-      const decisionReason = item.decision_reason || (qualityFallbackUsed ? 'Provider returned AAC; lossy fallback is enabled' : null)
+// R11: el objeto mapeado se construye solo para las filas que se pintan;
+// `completedItemsCount` alimenta los contadores sin materializar 50 000 objetos.
+function mapCompletedItem(item: EnrichedQueueItem) {
+    const originalService = item.original_service || item.service_name || item.service || 'Unknown'
+    const effectiveService = item.effective_service || item.service_name || item.service || 'Unknown'
+    const rawQuality = item.quality_preference || item.quality || 'FLAC'
+    const providerFallbackUsed = Boolean(item.provider_fallback_used || (originalService.toLowerCase() !== effectiveService.toLowerCase()))
+    const qualityFallbackUsed = Boolean(item.quality_fallback_used || item.effective_format === 'AAC' || item.quality_decision === 'CompletedWithQualityFallback')
+    const requestedQualityLabel = formatQualityLabel(item.requested_quality || item.quality_preference || item.quality)
+    const effectiveQualityLabel = qualityFallbackUsed ? 'AAC 320 kbps' : formatPhysicalQualitySpec(item)
+    const resultLabel = formatQualityDecisionResult({ ...item, provider_fallback_used: providerFallbackUsed, quality_fallback_used: qualityFallbackUsed })
+    const resultClass = qualityFallbackUsed ? 'text-amber-500 font-semibold' : (providerFallbackUsed ? 'text-blue-400 font-semibold' : 'text-emerald-400 font-semibold')
+    const decisionReason = item.decision_reason || (qualityFallbackUsed ? 'Provider returned AAC; lossy fallback is enabled' : null)
 
-      return {
-        id: item.id,
-        trackId: item.track_id,
-        title: item.target_title || item.title || 'Unknown Track',
-        artist: item.target_artist || item.artist || 'Unknown Artist',
-        album: item.target_album || 'Album',
-        artGradient: getArtGradient(item.id),
-        service: effectiveService,
-        originalService,
-        effectiveService,
-        serviceBadgeClass: getServiceBadgeClass(effectiveService),
-        quality: rawQuality.startsWith('Downloaded') ? rawQuality : `Downloaded ${rawQuality}`,
-        qualityBadgeClass: 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20',
-        completedAt: formatTime(item.completed_at ?? undefined),
-        timeline: item.timeline || [],
-        phaseTimings: item.phase_timings || null,
-        providerFallbackUsed,
-        qualityFallbackUsed,
-        requestedQualityLabel,
-        effectiveQualityLabel,
-        resultLabel,
-        resultClass,
-        decisionReason,
-      }
-    })
-})
+    return {
+      id: item.id,
+      trackId: item.track_id,
+      title: item.target_title || item.title || 'Unknown Track',
+      artist: item.target_artist || item.artist || 'Unknown Artist',
+      album: item.target_album || 'Album',
+      coverUrl: item.cover_art_url ?? null,
+      service: effectiveService,
+      originalService,
+      effectiveService,
+      serviceBadgeClass: getServiceBadgeClass(effectiveService),
+      quality: rawQuality.startsWith('Downloaded') ? rawQuality : `Downloaded ${rawQuality}`,
+      qualityBadgeClass: 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20',
+      completedAt: formatTime(item.completed_at ?? undefined),
+      timeline: item.timeline || [],
+      phaseTimings: item.phase_timings || null,
+      providerFallbackUsed,
+      qualityFallbackUsed,
+      requestedQualityLabel,
+      effectiveQualityLabel,
+      resultLabel,
+      resultClass,
+      decisionReason,
+    }
+}
 
-const filteredCompletedItems = computed(() => {
-  return completedItems.value.filter(matchesSearch)
-})
+const completedItemsRaw = computed(() =>
+  currentQueueItems().filter(item => item.status === 'complete' || item.status === 'completed')
+)
+const completedItemsCount = computed(() => completedItemsRaw.value.length)
 
-const visibleCompletedSlice = computed(() => {
-  return filteredCompletedItems.value.slice(0, completedLimit.value)
-})
+const filteredCompletedItems = computed(() => completedItemsRaw.value.filter(matchesSearch))
+
+const visibleCompletedSlice = computed(() =>
+  filteredCompletedItems.value.slice(0, completedLimit.value).map(mapCompletedItem)
+)
 
 // Computed: Failed items
-const failedItems = computed(() => {
-  return rawQueueItems.value
-    .filter(item => item.status === 'failed')
-    .map(item => {
-      const originalService = item.original_service || item.service_name || item.service || 'Unknown'
-      const effectiveService = item.effective_service || item.service_name || item.service || null
-      const rawQuality = item.quality_preference || item.quality || 'FLAC'
-      const retryCount = item.retry_count ?? 0
-      const failure = classifyFailureReason(item.error_message, item.last_error)
-      const isRejectedQuality = failure.reason === 'rejected_quality' || item.quality_decision === 'RejectedQuality'
-      const requestedQualityLabel = formatQualityLabel(item.requested_quality || item.quality_preference || item.quality)
-      const receivedQualityLabel = isRejectedQuality ? (item.effective_quality ? formatQualityLabel(item.effective_quality) : 'AAC 320 kbps') : null
-      const resultLabel = isRejectedQuality ? 'Rejected quality' : (failure.label || 'Failed')
-      const decisionReason = item.decision_reason || item.error_message || null
+// R11: mismo criterio que las completadas: el mapeo es perezoso.
+function mapFailedItem(item: EnrichedQueueItem) {
+    const originalService = item.original_service || item.service_name || item.service || 'Unknown'
+    const effectiveService = item.effective_service || item.service_name || item.service || null
+    const rawQuality = item.quality_preference || item.quality || 'FLAC'
+    const retryCount = item.retry_count ?? 0
+    const failure = classifyFailureReason(item.error_message, item.last_error)
+    const isRejectedQuality = failure.reason === 'rejected_quality' || item.quality_decision === 'RejectedQuality'
+    const requestedQualityLabel = formatQualityLabel(item.requested_quality || item.quality_preference || item.quality)
+    const receivedQualityLabel = isRejectedQuality ? (item.effective_quality ? formatQualityLabel(item.effective_quality) : 'AAC 320 kbps') : null
+    const resultLabel = isRejectedQuality ? 'Rejected quality' : (failure.label || 'Failed')
+    const decisionReason = item.decision_reason || item.error_message || null
 
-      return {
-        id: item.id,
-        trackId: item.track_id,
-        title: item.target_title || item.title || 'Unknown Track',
-        artist: item.target_artist || item.artist || 'Unknown Artist',
-        album: item.target_album || 'Album',
-        artGradient: getArtGradient(item.id),
-        service: effectiveService || originalService,
-        originalService,
-        effectiveService,
-        serviceBadgeClass: getServiceBadgeClass(effectiveService || originalService),
-        quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
-        qualityBadgeClass: 'bg-red-500/10 text-red-500 border border-red-500/20',
-        errorMessage: item.error_message || 'Download failed',
-        errorDetails: item.last_error || item.error_message || 'Unknown error',
-        failure,
-        retryCount,
-        allowFallback: item.allow_fallback ?? true,
-        failedAt: formatTime(item.completed_at ?? item.started_at ?? item.created_at ?? undefined),
-        showDetails: false,
-        timeline: item.timeline || [],
-        phaseTimings: item.phase_timings || null,
-        isRejectedQuality,
-        requestedQualityLabel,
-        receivedQualityLabel,
-        resultLabel,
-        decisionReason,
-      }
-    })
-})
+    return {
+      id: item.id,
+      trackId: item.track_id,
+      title: item.target_title || item.title || 'Unknown Track',
+      artist: item.target_artist || item.artist || 'Unknown Artist',
+      album: item.target_album || 'Album',
+      coverUrl: item.cover_art_url ?? null,
+      service: effectiveService || originalService,
+      originalService,
+      effectiveService,
+      serviceBadgeClass: getServiceBadgeClass(effectiveService || originalService),
+      quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
+      qualityBadgeClass: 'bg-red-500/10 text-red-500 border border-red-500/20',
+      errorMessage: item.error_message || 'Download failed',
+      errorDetails: item.last_error || item.error_message || 'Unknown error',
+      failure,
+      retryCount,
+      allowFallback: item.allow_fallback ?? true,
+      failedAt: formatTime(item.completed_at ?? item.started_at ?? item.created_at ?? undefined),
+      showDetails: false,
+      timeline: item.timeline || [],
+      phaseTimings: item.phase_timings || null,
+      isRejectedQuality,
+      requestedQualityLabel,
+      receivedQualityLabel,
+      resultLabel,
+      decisionReason,
+    }
+}
 
-const filteredFailedItems = computed(() => {
-  return failedItems.value.filter(matchesSearch)
-})
+const failedItemsRaw = computed(() =>
+  currentQueueItems().filter(item => item.status === 'failed')
+)
+const failedItemsCount = computed(() => failedItemsRaw.value.length)
 
-const visibleFailedSlice = computed(() => {
-  return filteredFailedItems.value.slice(0, failedLimit.value)
-})
+const filteredFailedItems = computed(() => failedItemsRaw.value.filter(matchesSearch))
+
+const visibleFailedSlice = computed(() =>
+  filteredFailedItems.value.slice(0, failedLimit.value).map(mapFailedItem)
+)
+
 
 // Summary counts
-const totalItemCount = computed(() => rawQueueItems.value.length)
+const totalItemCount = computed(() => currentQueueItems().length)
 const matchingCount = computed(() => {
   return filteredActiveDownloads.value.length + filteredQueueItems.value.length + filteredCompletedItems.value.length + filteredFailedItems.value.length
 })
 
 const filterTabs = computed(() => [
-  { value: 'all' as const, label: 'All', icon: 'list', count: rawQueueItems.value.length },
+  { value: 'all' as const, label: 'All', icon: 'list', count: currentQueueItems().length },
   { value: 'active' as const, label: 'Active', icon: 'sync', count: activeDownloads.value.length },
-  { value: 'queued' as const, label: 'Queued', icon: 'schedule', count: queueItems.value.length },
-  { value: 'completed' as const, label: 'Completed', icon: 'check_circle', count: completedItems.value.length },
-  { value: 'failed' as const, label: 'Failed', icon: 'error', count: failedItems.value.length },
+  { value: 'queued' as const, label: 'Queued', icon: 'schedule', count: queuedCount.value },
+  { value: 'completed' as const, label: 'Completed', icon: 'check_circle', count: completedItemsCount.value },
+  { value: 'failed' as const, label: 'Failed', icon: 'error', count: failedItemsCount.value },
 ])
 
 // ==============================================
@@ -1621,9 +1678,9 @@ const successRate = computed<number>(() => {
   if (queueStats.value && typeof queueStats.value.success_rate === 'number') {
     return Math.round(queueStats.value.success_rate * 10) / 10
   }
-  const finished = completedItems.value.length + failedItems.value.length
+  const finished = completedItemsCount.value + failedItemsCount.value
   if (finished === 0) return 100.0
-  return Math.round((completedItems.value.length / finished) * 1000) / 10
+  return Math.round((completedItemsCount.value / finished) * 1000) / 10
 })
 
 const formattedThroughput = computed<string>(() => {
@@ -1637,13 +1694,13 @@ const formattedThroughput = computed<string>(() => {
 
 const etaSeconds = computed<number | null>(() => {
   const activeCount = activeDownloads.value.length
-  const queuedCount = queueItems.value.length
-  if (activeCount === 0 && queuedCount === 0) return 0
+  const pendingCount = queuedCount.value
+  if (activeCount === 0 && pendingCount === 0) return 0
   if (isPaused.value) return null
 
   const avgTrackBytes = 25 * 1024 * 1024 // ~25MB FLAC
   const remainingActivePercent = activeDownloads.value.reduce((acc, item) => acc + (100 - (item.progress || 0)), 0)
-  const totalRemainingBytes = (queuedCount * avgTrackBytes) + ((remainingActivePercent / 100) * avgTrackBytes)
+  const totalRemainingBytes = (pendingCount * avgTrackBytes) + ((remainingActivePercent / 100) * avgTrackBytes)
 
   const currentSpeedBytesPerSec = throughputKbps.value > 0 
     ? throughputKbps.value * 1024 
@@ -1684,8 +1741,8 @@ const eligibleQueueTotal = computed(() => {
 const overallProgress = computed(() => {
   const denominator = eligibleQueueTotal.value
   if (denominator === 0) return 0
-  const completedPart = completedItems.value.length * 100
-  const failedPart = failedItems.value.length * 100
+  const completedPart = completedItemsCount.value * 100
+  const failedPart = failedItemsCount.value * 100
   const skippedCount = queueStats.value?.skipped ?? 0
   const skippedPart = skippedCount * 100
   const activePart = activeDownloads.value.reduce((acc, item) => {
@@ -1735,7 +1792,7 @@ const visibleQueueItems = computed(() => {
   return filteredQueueItems.value
     .slice(virtualStartIndex.value, virtualEndIndex.value)
     .map((item, idx) => ({
-      ...item,
+      ...mapQueueItem(item),
       absoluteIndex: virtualStartIndex.value + idx,
     }))
 })
@@ -1757,17 +1814,6 @@ function jumpToPosition() {
 }
 
 // Helper functions
-function getArtGradient(id: number): string {
-  const gradients = [
-    'bg-gradient-to-br from-red-500 to-pink-600',
-    'bg-gradient-to-br from-pink-400 to-rose-500',
-    'bg-gradient-to-br from-indigo-500 to-violet-500',
-    'bg-gradient-to-br from-amber-400 to-orange-500',
-    'bg-gradient-to-br from-cyan-400 to-blue-500',
-  ]
-  return gradients[id % gradients.length]
-}
-
 function getServiceBadgeClass(service: string | undefined): string {
   const classes: Record<string, string> = {
     'spotify': 'bg-[#1ed760]/10 text-[#1ed760] border border-[#1ed760]/20',
@@ -1803,7 +1849,7 @@ function onDragOver(e: DragEvent) {
 async function onDrop(targetAbsoluteIndex: number) {
   if (draggedIndex.value === null || draggedIndex.value === targetAbsoluteIndex) return
 
-  const currentQueued = [...queueItems.value]
+  const currentQueued = [...queuedItemsRaw.value]
   const [dragged] = currentQueued.splice(draggedIndex.value, 1)
   currentQueued.splice(targetAbsoluteIndex, 0, dragged)
 
@@ -1822,6 +1868,7 @@ async function onDrop(targetAbsoluteIndex: number) {
 // Fetch data
 async function fetchData() {
   loading.value = true
+  loadError.value = null
   try {
     const [queue, stats, worker, audit] = await Promise.all([
       queueApi.getQueue(undefined, 50000),
@@ -1829,7 +1876,7 @@ async function fetchData() {
       queueApi.getWorkerStatus(),
       auditDownloadQueue().catch(() => null),
     ])
-    
+
     rawQueueItems.value = queue
     queueStats.value = stats
     workerStatus.value = worker
@@ -1846,6 +1893,8 @@ async function fetchData() {
       auditReport.value = audit
     }
   } catch (e) {
+    // Sin marcarlo, los contadores a cero se leen como «no tengo descargas».
+    loadError.value = String(e)
     console.error('Failed to fetch queue data:', e)
   } finally {
     loading.value = false
@@ -1985,6 +2034,10 @@ function handleProgressEvent(event: DownloadProgressEventPayload | null | undefi
     } else if (status === 'started' || status === 'downloading') {
       item.status = 'downloading'
     }
+
+    // Los items son planos: un único aviso invalida los derivados que leen
+    // `currentQueueItems()`, en vez de depender de cada campo reactivo.
+    progressTick.value += 1
   }
 
   if (activeDownloads.value.length === 0) {
@@ -2043,7 +2096,7 @@ async function clearCompleted() {
 }
 
 async function clearPendingQueue() {
-  const count = queueItems.value.length
+  const count = queuedCount.value
   if (count === 0) return
   const confirmed = await confirm(`Are you sure you want to clear all ${count.toLocaleString()} pending downloads?`, {
     title: 'Clear Pending Downloads',
@@ -2071,7 +2124,7 @@ async function removeQueueItem(id: number) {
   isProcessing.value = true
   try {
     await queueApi.removeFromQueue(id)
-    rawQueueItems.value = rawQueueItems.value.filter(q => q.id !== id)
+    rawQueueItems.value = currentQueueItems().filter(q => q.id !== id)
     lastProgressTimestamps.delete(id)
   } finally {
     isProcessing.value = false

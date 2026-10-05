@@ -1,5 +1,9 @@
 # Playlist System
 
+> **Idioma:** español. Los títulos de sección están en inglés y el cuerpo
+> sigue en español; no hay traducción de este documento todavía. El índice
+> que marca su estado está en `docs/README.en.md`.
+
 **Estado de revisión:** 2026-10-02 — narrativa re-derivada del código (ítem 9.1 del plan post-auditoría, DO-5): la sección "Sync Per-Service" ya no afirma que solo Spotify importe playlists en Rust; el motor unificado las importa para Qobuz, Tidal, Spotify, Deezer y Apple Music. Gate de rutas: `scripts/tests/test_docs_consistency.py` — todas las rutas citadas existen o están declaradas como eliminadas.
 
 **Último cambio:** ítem 9.1 del plan post-auditoría (2026-10-02) — estado real de la importación de playlists por servicio. Antes: S40 — 2026-03-30 — archivos: `migrations/0006_playlists.sql`, `commands/library.rs`, `commands/service.rs`

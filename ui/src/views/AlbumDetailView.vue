@@ -2,9 +2,9 @@
   <div class="flex flex-col h-full bg-background-light dark:bg-background-dark">
     <!-- Header with back navigation -->
     <header class="sticky top-0 z-10 bg-background-light/80 dark:bg-background-dark/80 backdrop-blur-lg border-b border-gray-200 dark:border-border-dark">
-      <div class="flex items-center gap-4 px-6 py-4">
-        <button 
-          @click="goBack" 
+<div class="flex items-center gap-4 px-6 py-4">
+        <button
+          @click="goBack"
           class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors"
         >
           <span class="material-symbols-outlined text-gray-600 dark:text-gray-400">arrow_back</span>
@@ -40,10 +40,14 @@
       <div v-else-if="album" class="p-6 space-y-8">
         <!-- Album header -->
         <div class="flex gap-6">
-          <!-- Artwork placeholder -->
-          <div class="w-48 h-48 bg-gradient-to-br from-primary/20 to-primary/40 rounded-xl flex items-center justify-center shadow-lg">
-            <span class="material-symbols-outlined text-6xl text-primary/60">album</span>
-          </div>
+          <TrackCover
+            :src="album.cover_art_url"
+            :item-id="album.id"
+            :alt="album.title"
+            size-class="w-48 h-48"
+            rounded="rounded-xl"
+            icon="album"
+          />
           
           <!-- Album info -->
           <div class="flex-1 flex flex-col justify-center">
@@ -78,12 +82,12 @@
                 <span class="material-symbols-outlined text-[18px]">download</span>
                 Download All
               </button>
-              <button 
-                @click="enqueueAlbum" 
+<button
+                @click="playAlbum"
                 class="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
               >
-                <span class="material-symbols-outlined text-[18px]">queue_music</span>
-                Add to Queue
+                <span class="material-symbols-outlined text-[18px]">play_arrow</span>
+                Play Album
               </button>
               <button 
                 @click="handleToggleFavorite"
@@ -129,6 +133,13 @@
               class="flex items-center gap-4 px-4 py-3 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors border-b border-gray-100 dark:border-gray-800 last:border-0 group"
             >
               <span class="w-8 text-center text-sm text-text-secondary">{{ index + 1 }}</span>
+              <!-- Todas las pistas comparten la carátula del disco. -->
+              <TrackCover
+                :src="album.cover_art_url"
+                :item-id="track.id"
+                :alt="album.title"
+                size-class="w-9 h-9"
+              />
               <div class="flex-1 min-w-0">
                 <p class="font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
                 <p class="text-sm text-text-secondary truncate">{{ track.artist_name }}</p>
@@ -155,12 +166,15 @@ import { useRoute, useRouter } from 'vue-router'
 import { getAlbum, toggleAlbumFavorite } from '@/api/library'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import { useToast } from '@/composables/useToast'
+import { usePlayer } from '@/composables/usePlayer'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
+import TrackCover from '@/components/TrackCover.vue'
 import type { AlbumDetail } from '@/api/types'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const player = usePlayer()
 
 const album = ref<AlbumDetail | null>(null)
 const isLoading = ref(true)
@@ -189,15 +203,23 @@ async function downloadAlbum() {
   }
 }
 
-async function enqueueAlbum() {
+async function playAlbum() {
   if (!album.value?.tracks || album.value.tracks.length === 0) return
-  const trackIds = album.value.tracks.map(t => t.id)
+  const cover = album.value.cover_art_url || null
+  const toPlayerTrack = (t: { id: number; title: string }) => ({
+    id: t.id,
+    title: t.title,
+    artist: album.value?.artist_name || 'Unknown Artist',
+    album: album.value?.title || null,
+    coverUrl: cover,
+  })
+
   try {
-    const res = await addBatchToQueue({
-      trackIds,
-      allowFallback: true,
-    })
-    toast.success('Added to Queue', `${res.added} tracks added to queue`)
+    await player.play(toPlayerTrack(album.value.tracks[0]))
+    for (const track of album.value.tracks.slice(1)) {
+      await player.playNext(toPlayerTrack(track))
+    }
+    toast.success('Playing album', `${album.value.title} · ${album.value.tracks.length} tracks queued`)
   } catch (err: any) {
     const errStr = String(err?.message || err || '')
     if (errStr.includes('SourceIdentityMissing')) {

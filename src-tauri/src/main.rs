@@ -51,16 +51,30 @@ fn main() {
     // ═══════════════════════════════════════════════════════
     // WEBKIT HARDENING (must run BEFORE the webview is created)
     // ═══════════════════════════════════════════════════════
-    // WebKitGTK's DMABUF renderer aborts the whole app on some Intel
-    // GPUs ("Could not create default EGL display: EGL_BAD_PARAMETER.
-    // Aborting..." — verified on an Iris Xe / KDE Wayland host). It has to be
-    // set here, in-process: the AppRun hook forces GDK_BACKEND=x11 but that
-    // alone does not prevent it, and asking users to export a variable is not
-    // an acceptable install experience.
+    // WebKitGTK opens an EGL display for the webview's accelerated
+    // compositing and ABORTS the whole process when that fails ("Could not
+    // create default EGL display: EGL_BAD_PARAMETER. Aborting..." — verified
+    // on the AppImage v0.3.0 on an Iris Xe / KDE Wayland host, where the DMABUF
+    // workaround alone was not enough).
+    //
+    // Two switches are needed, not one: WEBKIT_DISABLE_DMABUF_RENDERER only
+    // drops the DMABuf renderer, and compositing still creates the EGL display,
+    // so WEBKIT_DISABLE_COMPOSITING_MODE is the one that keeps the webview on
+    // cairo and never touches EGL. LIBGL_ALWAYS_SOFTWARE would also stop the
+    // abort, but it forces llvmpipe on every machine including the ones whose
+    // GPU works fine.
+    //
+    // They have to be set here, in-process: the WebKit UI process inherits the
+    // environment when it is spawned, and asking users to export a variable is
+    // not an acceptable install experience.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        tracing::info!("Disabled WebKit DMABUF renderer (EGL compatibility)");
+    for var in [
+        "WEBKIT_DISABLE_DMABUF_RENDERER",
+        "WEBKIT_DISABLE_COMPOSITING_MODE",
+    ] {
+        if std::env::var_os(var).is_none() {
+            std::env::set_var(var, "1");
+        }
     }
 
     // Initialize unified logging system (rotating file in dev, console, in-memory ring buffer)
@@ -72,6 +86,16 @@ fn main() {
         log_level = %log_config.log_level,
         log_dir = %log_config.log_dir.display(),
         "Syncify starting..."
+    );
+
+    // Hasta `init_logging_system` no hay subscriber: un `tracing::info!` en el
+    // bloque de arriba se perdía sin llegar al log de arranque.
+    #[cfg(target_os = "linux")]
+    tracing::info!(
+        dmabuf_disabled = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").as_deref() == Ok("1"),
+        compositing_disabled =
+            std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").as_deref() == Ok("1"),
+        "WebKit rendering: EGL-independent path configured"
     );
 
     // Create async runtime for database initialization
@@ -227,11 +251,42 @@ fn main() {
             // así que hay que apuntar GStreamer a los que empaquetamos.
             #[cfg(target_os = "linux")]
             {
-                let gst_candidates = [
+                let mut gst_candidates = vec![
                     project_root.join("usr").join("lib").join("gstreamer-1.0"),
                     project_root.join("lib").join("gstreamer-1.0"),
                 ];
-                if let Some(gst_dir) = gst_candidates.iter().find(|d| d.is_dir()) {
+                // AppImage: el ejecutable vive en `<AppDir>/usr/bin` y los
+                // plugins se inyectan en `<AppDir>/usr/lib/gstreamer-1.0`.
+                // `project_root` resuelve a `<AppDir>/resources` (es donde
+                // encuentra `scripts/`), así que sin estas rutas el
+                // GST_PLUGIN_SYSTEM_PATH_1_0 apuntaba a un directorio inexistente
+                // y el audio acababa dependiendo de los plugins del anfitrión.
+                // Se descarta lo que cuelgue de `/usr` o `/bin`: ahí el
+                // directorio es el del sistema y pisar la variable taparía las
+                // rutas que GStreamer añade por defecto (p.ej. multiarch).
+                if let Ok(exe) = std::env::current_exe() {
+                    if let Some(exe_dir) = exe.parent() {
+                        if !exe_dir.starts_with("/usr") && !exe_dir.starts_with("/bin") {
+                            gst_candidates.push(exe_dir.join("lib").join("gstreamer-1.0"));
+                            if let Some(app_usr) = exe_dir.parent() {
+                                gst_candidates.push(app_usr.join("lib").join("gstreamer-1.0"));
+                            }
+                        }
+                    }
+                }
+                // Un directorio vacío también es peor que no tocar nada:
+                // GST_PLUGIN_SYSTEM_PATH_1_0 sustituye la lista por defecto.
+                let has_plugins = |dir: &std::path::Path| {
+                    dir.is_dir()
+                        && std::fs::read_dir(dir)
+                            .map(|entries| {
+                                entries.flatten().any(|entry| {
+                                    entry.path().extension().is_some_and(|ext| ext == "so")
+                                })
+                            })
+                            .unwrap_or(false)
+                };
+                if let Some(gst_dir) = gst_candidates.iter().find(|d| has_plugins(d)) {
                     let gst_str = gst_dir.to_string_lossy().to_string();
                     let existing = std::env::var("GST_PLUGIN_SYSTEM_PATH_1_0")
                         .unwrap_or_default();
@@ -306,6 +361,20 @@ fn main() {
                 tracing::info!("Checking Python dependencies...");
                 let python_cmd = commands::get_python_executable();
                 let project_root = commands::get_project_root();
+
+                // El runtime empaquetado (AppImage/DEB/instalador NSIS) y el
+                // Python del sistema no fallan igual: al primero no le sirve
+                // de nada un `pip install` en la máquina del usuario.
+                let bundled_python = crate::cmd_utils::packaged_python_candidates(
+                    &crate::cmd_utils::find_scripts_dir(&project_root),
+                )
+                .iter()
+                .any(|candidate| candidate == std::path::Path::new(&python_cmd));
+                let recovery_hint = if bundled_python {
+                    "The Python runtime bundled with Syncify is incomplete (spotipy, pyacoustid, mutagen or yarl missing). Nothing to install: reinstall the app, and report it from Help if it persists."
+                } else {
+                    "Missing required Python packages (spotipy, pyacoustid, etc). Install them with: pip install --user --break-system-packages -r requirements.txt (or use a venv)"
+                };
 
                 // Log if .venv is missing as requested in S73. Solo es un
                 // problema real si get_python_executable cayó al fallback de
@@ -407,7 +476,7 @@ fn main() {
                                 let _ = startup_handle.emit(
                                     "python_deps_missing",
                                     serde_json::json!({
-                                        "message": "Missing required Python packages (spotipy, pyacoustid, etc). Install them with: pip install --user --break-system-packages -r requirements.txt (or use a venv)",
+                                        "message": recovery_hint,
                                     }),
                                 );
                             }
@@ -421,7 +490,7 @@ fn main() {
                         let _ = startup_handle.emit(
                             "python_deps_missing",
                             serde_json::json!({
-                                "message": format!("Failed to run python check: {}. Is python in your PATH?", e),
+                                "message": format!("Failed to run python check: {}. {}", e, recovery_hint),
                             }),
                         );
                     }

@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Syncify - candidatos de logo</title>
+<style>
+  :root {
+    --bg: #0b0f16;
+    --panel: #121a26;
+    --line: #24334a;
+    --fg: #e8eef7;
+    --muted: #90a7cb;
+    --dark-tile: #101722;   /* fondo oscuro de la app  */
+    --light-tile: #f5f7f8;  /* fondo claro de la app */
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  header { padding: 40px 32px 20px; max-width: 1180px; }
+  h1 { margin: 0 0 8px; font-size: 26px; letter-spacing: -0.02em; }
+  header p { margin: 0; color: var(--muted); max-width: 78ch; }
+  header p + p { margin-top: 8px; }
+  kbd {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+    padding: 1px 6px; font-size: 12px; color: var(--fg);
+  }
+  .hint { margin-top: 14px; font-size: 13px; color: var(--muted); }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    margin: 18px 32px 0; padding: 12px 14px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--panel); font-size: 13px; color: var(--muted);
+  }
+  .legend b { color: var(--fg); font-weight: 600; }
+  .legend .tile { display: inline-flex; }
+  .strip { overflow-x: auto; padding: 22px 32px 56px; }
+  .row {
+    display: grid; grid-auto-flow: column; grid-auto-columns: 196px;
+    gap: 16px; align-items: start; min-width: min-content;
+  }
+  .card {
+    margin: 0; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 12px;
+  }
+  .previews { display: flex; gap: 8px; }
+  .previews.small { margin-top: 10px; gap: 7px; }
+  .tile {
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 9px; border: 1px solid var(--line); overflow: hidden;
+  }
+  .tile.dark  { background: var(--dark-tile);  color: #eef3fb; }
+  .tile.light { background: var(--light-tile); color: #101722; }
+  .box { display: block; line-height: 0; }
+  .tile svg { display: block; width: 100%; height: 100%; }
+  .big { width: 88px; height: 88px; padding: 10px; }
+  .s32 { width: 40px; height: 40px; padding: 4px; }
+  .s16 { width: 28px; height: 28px; padding: 6px; }
+  figcaption { margin-top: 12px; }
+  figcaption h3 { margin: 0 0 2px; font-size: 13px; }
+  figcaption h3 .num { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+  figcaption h3 .name { font-weight: 600; }
+  .tag {
+    display: inline-block; margin-left: 4px; vertical-align: 1px;
+    font-size: 10px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700;
+    border-radius: 999px; padding: 2px 7px; border: 1px solid var(--line); color: var(--muted);
+  }
+  .tag.mono { color: #cfe0ff; border-color: #33455f; }
+  .tag.color { color: #d9c9ff; border-color: #4a3a6b; background: rgba(139, 92, 246, .14); }
+  figcaption p { margin: 7px 0 8px; font-size: 12.5px; color: var(--muted); }
+  figcaption a { font-size: 11.5px; color: #6f8dbd; text-decoration: none; }
+  figcaption a:hover { text-decoration: underline; }
+  footer { padding: 0 32px 40px; color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Syncify &mdash; 12 candidatos de logo</h1>
+  <p>Todos son vectoriales, sin fondo y <strong>sin texto dentro del glifo</strong>: la palabra
+  &laquo;Syncify&raquo; va al lado, en la app. Ninguno lleva tipografia, as&iacute; que a 16&nbsp;px
+  solo puede quedar una forma.</p>
+  <p>Cada candidato se prueba a <strong>68&nbsp;px</strong> (grande, en square),
+  <strong>32&nbsp;px</strong> y <strong>16&nbsp;px</strong>, sobre fondo oscuro
+  (<code>#101722</code>) y claro (<code>#f5f7f8</code> &mdash; los de la propia app).
+  Los monocromos usan <code>currentColor</code>: en la app heredan el color del tema, por eso
+  funcionan en los dos.</p>
+  <p class="hint">Fila de 12, en el mismo orden. Si no cabe en pantalla, desplaza en horizontal.</p>
+</header>
+
+<div class="legend">
+  <b>Leyenda</b>
+  <span class="tile dark big" style="width:34px;height:34px;padding:4px"><div class="box">
+    <svg viewBox="0 0 128 128"><circle cx="46" cy="64" r="26" fill="#3c83f6"/><circle cx="82" cy="64" r="26" fill="#8b5cf6" fill-opacity="0.55"/></svg>
+  </div></span> fondo oscuro
+  <span class="tile light big" style="width:34px;height:34px;padding:4px"><div class="box">
+    <svg viewBox="0 0 128 128"><circle cx="46" cy="64" r="26" fill="#3c83f6"/><circle cx="82" cy="64" r="26" fill="#8b5cf6" fill-opacity="0.55"/></svg>
+  </div></span> fondo claro
+  <span class="tag mono">mono</span> un solo color, se adapta al tema
+  <span class="tag color">color</span> dos o mas colores, tono medio: funciona en ambos fondos
+</div>
+
+<div class="strip">
+  <div class="row">
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 01 - Venn de dos anillos</title>
+    <g stroke="currentColor" stroke-width="11">
+    <circle cx="47.5" cy="64" r="30"/>
+    <circle cx="80.5" cy="64" r="30"/>
+  </g>
+  <path d="M64,38.95 A30,30 0 0 1 64,89.05 A30,30 0 0 1 64,38.95 Z" fill="currentColor"/>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 01 - Venn de dos anillos</title>
+    <g stroke="currentColor" stroke-width="11">
+    <circle cx="47.5" cy="64" r="30"/>
+    <circle cx="80.5" cy="64" r="30"/>
+  </g>
+  <path d="M64,38.95 A30,30 0 0 1 64,89.05 A30,30 0 0 1 64,38.95 Z" fill="currentColor"/>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 01 - Venn de dos anillos</title>
+    <g stroke="currentColor" stroke-width="11">
+    <circle cx="47.5" cy="64" r="30"/>
+    <circle cx="80.5" cy="64" r="30"/>
+  </g>
+  <path d="M64,38.95 A30,30 0 0 1 64,89.05 A30,30 0 0 1 64,38.95 Z" fill="currentColor"/>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 01 - Venn de dos anillos</title>
+    <g stroke="currentColor" stroke-width="11">
+    <circle cx="47.5" cy="64" r="30"/>
+    <circle cx="80.5" cy="64" r="30"/>
+  </g>
+  <path d="M64,38.95 A30,30 0 0 1 64,89.05 A30,30 0 0 1 64,38.95 Z" fill="currentColor"/>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 01 - Venn de dos anillos</title>
+    <g stroke="currentColor" stroke-width="11">
+    <circle cx="47.5" cy="64" r="30"/>
+    <circle cx="80.5" cy="64" r="30"/>
+  </g>
+  <path d="M64,38.95 A30,30 0 0 1 64,89.05 A30,30 0 0 1 64,38.95 Z" fill="currentColor"/>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 01 - Venn de dos anillos</title>
+    <g stroke="currentColor" stroke-width="11">
+    <circle cx="47.5" cy="64" r="30"/>
+    <circle cx="80.5" cy="64" r="30"/>
+  </g>
+  <path d="M64,38.95 A30,30 0 0 1 64,89.05 A30,30 0 0 1 64,38.95 Z" fill="currentColor"/>
+</svg></div></div></div>
+  <figcaption>
+    <h3>01 <span class="name">Venn de dos anillos</span> <span class="tag mono">mono</span></h3>
+    <p>Dos servicios que se solapan. La zona maciza es la pista en común: ISRC, o título + artista. El matching es el corazón de Syncify.</p>
+    <a href="logo-01.svg" target="_blank" rel="noopener">logo-01.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 02 - Bucle de flechas</title>
+  <defs>
+    <marker id="arrow-i10" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="2.2" markerHeight="2.2" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,1.2 L11,6 L1,10.8 Z" fill="currentColor"/>
+    </marker>
+  </defs>
+    <g stroke="currentColor" stroke-width="13" fill="none" marker-end="url(#arrow-i10)">
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80"/>
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80" transform="rotate(180 64 64)"/>
+  </g>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 02 - Bucle de flechas</title>
+  <defs>
+    <marker id="arrow-i11" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="2.2" markerHeight="2.2" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,1.2 L11,6 L1,10.8 Z" fill="currentColor"/>
+    </marker>
+  </defs>
+    <g stroke="currentColor" stroke-width="13" fill="none" marker-end="url(#arrow-i11)">
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80"/>
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80" transform="rotate(180 64 64)"/>
+  </g>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 02 - Bucle de flechas</title>
+  <defs>
+    <marker id="arrow-i14" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="2.2" markerHeight="2.2" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,1.2 L11,6 L1,10.8 Z" fill="currentColor"/>
+    </marker>
+  </defs>
+    <g stroke="currentColor" stroke-width="13" fill="none" marker-end="url(#arrow-i14)">
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80"/>
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80" transform="rotate(180 64 64)"/>
+  </g>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 02 - Bucle de flechas</title>
+  <defs>
+    <marker id="arrow-i15" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="2.2" markerHeight="2.2" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,1.2 L11,6 L1,10.8 Z" fill="currentColor"/>
+    </marker>
+  </defs>
+    <g stroke="currentColor" stroke-width="13" fill="none" marker-end="url(#arrow-i15)">
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80"/>
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80" transform="rotate(180 64 64)"/>
+  </g>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 02 - Bucle de flechas</title>
+  <defs>
+    <marker id="arrow-i16" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="2.2" markerHeight="2.2" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,1.2 L11,6 L1,10.8 Z" fill="currentColor"/>
+    </marker>
+  </defs>
+    <g stroke="currentColor" stroke-width="13" fill="none" marker-end="url(#arrow-i16)">
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80"/>
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80" transform="rotate(180 64 64)"/>
+  </g>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 02 - Bucle de flechas</title>
+  <defs>
+    <marker id="arrow-i17" viewBox="0 0 12 12" refX="10.5" refY="6" markerWidth="2.2" markerHeight="2.2" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,1.2 L11,6 L1,10.8 Z" fill="currentColor"/>
+    </marker>
+  </defs>
+    <g stroke="currentColor" stroke-width="13" fill="none" marker-end="url(#arrow-i17)">
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80"/>
+    <path d="M96.85,72.80 A34,34 0 0 1 31.15,72.80" transform="rotate(180 64 64)"/>
+  </g>
+</svg></div></div></div>
+  <figcaption>
+    <h3>02 <span class="name">Bucle de flechas</span> <span class="tag mono">mono</span></h3>
+    <p>Sincronización continua: lo que sale de una plataforma vuelve a la otra. El ciclo nunca se detiene.</p>
+    <a href="logo-02.svg" target="_blank" rel="noopener">logo-02.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 03 - Anillo con onda</title>
+  <defs>
+    <linearGradient id="w1-i20" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3c83f6"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+    <g stroke="url(#w1-i20)" stroke-width="10">
+    <circle cx="64" cy="64" r="40"/>
+  </g>
+  <g fill="url(#w1-i20)">
+    <rect x="34" y="56" width="8" height="16" rx="4"/>
+    <rect x="47" y="50" width="8" height="28" rx="4"/>
+    <rect x="60" y="43" width="8" height="42" rx="4"/>
+    <rect x="73" y="50" width="8" height="28" rx="4"/>
+    <rect x="86" y="56" width="8" height="16" rx="4"/>
+  </g>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 03 - Anillo con onda</title>
+  <defs>
+    <linearGradient id="w1-i21" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3c83f6"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+    <g stroke="url(#w1-i21)" stroke-width="10">
+    <circle cx="64" cy="64" r="40"/>
+  </g>
+  <g fill="url(#w1-i21)">
+    <rect x="34" y="56" width="8" height="16" rx="4"/>
+    <rect x="47" y="50" width="8" height="28" rx="4"/>
+    <rect x="60" y="43" width="8" height="42" rx="4"/>
+    <rect x="73" y="50" width="8" height="28" rx="4"/>
+    <rect x="86" y="56" width="8" height="16" rx="4"/>
+  </g>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 03 - Anillo con onda</title>
+  <defs>
+    <linearGradient id="w1-i24" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3c83f6"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+    <g stroke="url(#w1-i24)" stroke-width="10">
+    <circle cx="64" cy="64" r="40"/>
+  </g>
+  <g fill="url(#w1-i24)">
+    <rect x="34" y="56" width="8" height="16" rx="4"/>
+    <rect x="47" y="50" width="8" height="28" rx="4"/>
+    <rect x="60" y="43" width="8" height="42" rx="4"/>
+    <rect x="73" y="50" width="8" height="28" rx="4"/>
+    <rect x="86" y="56" width="8" height="16" rx="4"/>
+  </g>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 03 - Anillo con onda</title>
+  <defs>
+    <linearGradient id="w1-i25" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3c83f6"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+    <g stroke="url(#w1-i25)" stroke-width="10">
+    <circle cx="64" cy="64" r="40"/>
+  </g>
+  <g fill="url(#w1-i25)">
+    <rect x="34" y="56" width="8" height="16" rx="4"/>
+    <rect x="47" y="50" width="8" height="28" rx="4"/>
+    <rect x="60" y="43" width="8" height="42" rx="4"/>
+    <rect x="73" y="50" width="8" height="28" rx="4"/>
+    <rect x="86" y="56" width="8" height="16" rx="4"/>
+  </g>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 03 - Anillo con onda</title>
+  <defs>
+    <linearGradient id="w1-i26" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3c83f6"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+    <g stroke="url(#w1-i26)" stroke-width="10">
+    <circle cx="64" cy="64" r="40"/>
+  </g>
+  <g fill="url(#w1-i26)">
+    <rect x="34" y="56" width="8" height="16" rx="4"/>
+    <rect x="47" y="50" width="8" height="28" rx="4"/>
+    <rect x="60" y="43" width="8" height="42" rx="4"/>
+    <rect x="73" y="50" width="8" height="28" rx="4"/>
+    <rect x="86" y="56" width="8" height="16" rx="4"/>
+  </g>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 03 - Anillo con onda</title>
+  <defs>
+    <linearGradient id="w1-i27" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3c83f6"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+    <g stroke="url(#w1-i27)" stroke-width="10">
+    <circle cx="64" cy="64" r="40"/>
+  </g>
+  <g fill="url(#w1-i27)">
+    <rect x="34" y="56" width="8" height="16" rx="4"/>
+    <rect x="47" y="50" width="8" height="28" rx="4"/>
+    <rect x="60" y="43" width="8" height="42" rx="4"/>
+    <rect x="73" y="50" width="8" height="28" rx="4"/>
+    <rect x="86" y="56" width="8" height="16" rx="4"/>
+  </g>
+</svg></div></div></div>
+  <figcaption>
+    <h3>03 <span class="name">Anillo con onda</span> <span class="tag color">color</span></h3>
+    <p>Audio dentro de un disco. El anillo dice «servicio», la onda interior dice «música». Degradado azul a violeta, el de la app.</p>
+    <a href="logo-03.svg" target="_blank" rel="noopener">logo-03.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 04 - Pieza en tránsito</title>
+    <g fill="currentColor" stroke="currentColor" stroke-width="8" stroke-linejoin="round">
+    <path d="M30,48 A18,18 0 0 1 48,30 L80,30 A18,18 0 0 1 98,48 L98,52 L52,98 L48,98 A18,18 0 0 1 30,80 Z"/>
+    <path d="M66,112 L112,66 L112,112 Z"/>
+  </g>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 04 - Pieza en tránsito</title>
+    <g fill="currentColor" stroke="currentColor" stroke-width="8" stroke-linejoin="round">
+    <path d="M30,48 A18,18 0 0 1 48,30 L80,30 A18,18 0 0 1 98,48 L98,52 L52,98 L48,98 A18,18 0 0 1 30,80 Z"/>
+    <path d="M66,112 L112,66 L112,112 Z"/>
+  </g>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 04 - Pieza en tránsito</title>
+    <g fill="currentColor" stroke="currentColor" stroke-width="8" stroke-linejoin="round">
+    <path d="M30,48 A18,18 0 0 1 48,30 L80,30 A18,18 0 0 1 98,48 L98,52 L52,98 L48,98 A18,18 0 0 1 30,80 Z"/>
+    <path d="M66,112 L112,66 L112,112 Z"/>
+  </g>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 04 - Pieza en tránsito</title>
+    <g fill="currentColor" stroke="currentColor" stroke-width="8" stroke-linejoin="round">
+    <path d="M30,48 A18,18 0 0 1 48,30 L80,30 A18,18 0 0 1 98,48 L98,52 L52,98 L48,98 A18,18 0 0 1 30,80 Z"/>
+    <path d="M66,112 L112,66 L112,112 Z"/>
+  </g>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 04 - Pieza en tránsito</title>
+    <g fill="currentColor" stroke="currentColor" stroke-width="8" stroke-linejoin="round">
+    <path d="M30,48 A18,18 0 0 1 48,30 L80,30 A18,18 0 0 1 98,48 L98,52 L52,98 L48,98 A18,18 0 0 1 30,80 Z"/>
+    <path d="M66,112 L112,66 L112,112 Z"/>
+  </g>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 04 - Pieza en tránsito</title>
+    <g fill="currentColor" stroke="currentColor" stroke-width="8" stroke-linejoin="round">
+    <path d="M30,48 A18,18 0 0 1 48,30 L80,30 A18,18 0 0 1 98,48 L98,52 L52,98 L48,98 A18,18 0 0 1 30,80 Z"/>
+    <path d="M66,112 L112,66 L112,112 Z"/>
+  </g>
+</svg></div></div></div>
+  <figcaption>
+    <h3>04 <span class="name">Pieza en tránsito</span> <span class="tag mono">mono</span></h3>
+    <p>Al cuadrado se le arranca una esquina y la esquina viaja. Migrar, o mover una biblioteca entera de un sitio a otro.</p>
+    <a href="logo-04.svg" target="_blank" rel="noopener">logo-04.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 05 - Bifurcación 1 a 3</title>
+    <g stroke="currentColor" stroke-width="12" fill="none" stroke-linecap="round">
+    <path d="M64,24 L64,52"/>
+    <path d="M64,52 C64,74 38,68 38,88"/>
+    <path d="M64,52 L64,88"/>
+    <path d="M64,52 C64,74 90,68 90,88"/>
+  </g>
+  <g fill="currentColor">
+    <circle cx="38" cy="88" r="8"/>
+    <circle cx="64" cy="88" r="8"/>
+    <circle cx="90" cy="88" r="8"/>
+  </g>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 05 - Bifurcación 1 a 3</title>
+    <g stroke="currentColor" stroke-width="12" fill="none" stroke-linecap="round">
+    <path d="M64,24 L64,52"/>
+    <path d="M64,52 C64,74 38,68 38,88"/>
+    <path d="M64,52 L64,88"/>
+    <path d="M64,52 C64,74 90,68 90,88"/>
+  </g>
+  <g fill="currentColor">
+    <circle cx="38" cy="88" r="8"/>
+    <circle cx="64" cy="88" r="8"/>
+    <circle cx="90" cy="88" r="8"/>
+  </g>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 05 - Bifurcación 1 a 3</title>
+    <g stroke="currentColor" stroke-width="12" fill="none" stroke-linecap="round">
+    <path d="M64,24 L64,52"/>
+    <path d="M64,52 C64,74 38,68 38,88"/>
+    <path d="M64,52 L64,88"/>
+    <path d="M64,52 C64,74 90,68 90,88"/>
+  </g>
+  <g fill="currentColor">
+    <circle cx="38" cy="88" r="8"/>
+    <circle cx="64" cy="88" r="8"/>
+    <circle cx="90" cy="88" r="8"/>
+  </g>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 05 - Bifurcación 1 a 3</title>
+    <g stroke="currentColor" stroke-width="12" fill="none" stroke-linecap="round">
+    <path d="M64,24 L64,52"/>
+    <path d="M64,52 C64,74 38,68 38,88"/>
+    <path d="M64,52 L64,88"/>
+    <path d="M64,52 C64,74 90,68 90,88"/>
+  </g>
+  <g fill="currentColor">
+    <circle cx="38" cy="88" r="8"/>
+    <circle cx="64" cy="88" r="8"/>
+    <circle cx="90" cy="88" r="8"/>
+  </g>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 05 - Bifurcación 1 a 3</title>
+    <g stroke="currentColor" stroke-width="12" fill="none" stroke-linecap="round">
+    <path d="M64,24 L64,52"/>
+    <path d="M64,52 C64,74 38,68 38,88"/>
+    <path d="M64,52 L64,88"/>
+    <path d="M64,52 C64,74 90,68 90,88"/>
+  </g>
+  <g fill="currentColor">
+    <circle cx="38" cy="88" r="8"/>
+    <circle cx="64" cy="88" r="8"/>
+    <circle cx="90" cy="88" r="8"/>
+  </g>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 05 - Bifurcación 1 a 3</title>
+    <g stroke="currentColor" stroke-width="12" fill="none" stroke-linecap="round">
+    <path d="M64,24 L64,52"/>
+    <path d="M64,52 C64,74 38,68 38,88"/>
+    <path d="M64,52 L64,88"/>
+    <path d="M64,52 C64,74 90,68 90,88"/>
+  </g>
+  <g fill="currentColor">
+    <circle cx="38" cy="88" r="8"/>
+    <circle cx="64" cy="88" r="8"/>
+    <circle cx="90" cy="88" r="8"/>
+  </g>
+</svg></div></div></div>
+  <figcaption>
+    <h3>05 <span class="name">Bifurcación 1 a 3</span> <span class="tag mono">mono</span></h3>
+    <p>Una biblioteca que se abre en varios destinos: exportar la misma lista a Spotify, Qobuz, Tidal, Deezer…</p>
+    <a href="logo-05.svg" target="_blank" rel="noopener">logo-05.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 06 - Hub y satélites</title>
+    <g stroke="#64748b" stroke-width="6">
+    <path d="M64,64 L64.00,24.00"/>
+    <path d="M64,64 L102.04,51.64"/>
+    <path d="M64,64 L87.51,96.36"/>
+    <path d="M64,64 L40.49,96.36"/>
+    <path d="M64,64 L25.96,51.64"/>
+  </g>
+  <circle cx="64" cy="64" r="12" fill="#3c83f6"/>
+  <g>
+    <circle cx="64.00" cy="24.00" r="8" fill="#3c83f6"/>
+    <circle cx="102.04" cy="51.64" r="8" fill="#8b5cf6"/>
+    <circle cx="87.51" cy="96.36" r="8" fill="#10b981"/>
+    <circle cx="40.49" cy="96.36" r="8" fill="#fbbf24"/>
+    <circle cx="25.96" cy="51.64" r="8" fill="#0ea5e9"/>
+  </g>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 06 - Hub y satélites</title>
+    <g stroke="#64748b" stroke-width="6">
+    <path d="M64,64 L64.00,24.00"/>
+    <path d="M64,64 L102.04,51.64"/>
+    <path d="M64,64 L87.51,96.36"/>
+    <path d="M64,64 L40.49,96.36"/>
+    <path d="M64,64 L25.96,51.64"/>
+  </g>
+  <circle cx="64" cy="64" r="12" fill="#3c83f6"/>
+  <g>
+    <circle cx="64.00" cy="24.00" r="8" fill="#3c83f6"/>
+    <circle cx="102.04" cy="51.64" r="8" fill="#8b5cf6"/>
+    <circle cx="87.51" cy="96.36" r="8" fill="#10b981"/>
+    <circle cx="40.49" cy="96.36" r="8" fill="#fbbf24"/>
+    <circle cx="25.96" cy="51.64" r="8" fill="#0ea5e9"/>
+  </g>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 06 - Hub y satélites</title>
+    <g stroke="#64748b" stroke-width="6">
+    <path d="M64,64 L64.00,24.00"/>
+    <path d="M64,64 L102.04,51.64"/>
+    <path d="M64,64 L87.51,96.36"/>
+    <path d="M64,64 L40.49,96.36"/>
+    <path d="M64,64 L25.96,51.64"/>
+  </g>
+  <circle cx="64" cy="64" r="12" fill="#3c83f6"/>
+  <g>
+    <circle cx="64.00" cy="24.00" r="8" fill="#3c83f6"/>
+    <circle cx="102.04" cy="51.64" r="8" fill="#8b5cf6"/>
+    <circle cx="87.51" cy="96.36" r="8" fill="#10b981"/>
+    <circle cx="40.49" cy="96.36" r="8" fill="#fbbf24"/>
+    <circle cx="25.96" cy="51.64" r="8" fill="#0ea5e9"/>
+  </g>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 06 - Hub y satélites</title>
+    <g stroke="#64748b" stroke-width="6">
+    <path d="M64,64 L64.00,24.00"/>
+    <path d="M64,64 L102.04,51.64"/>
+    <path d="M64,64 L87.51,96.36"/>
+    <path d="M64,64 L40.49,96.36"/>
+    <path d="M64,64 L25.96,51.64"/>
+  </g>
+  <circle cx="64" cy="64" r="12" fill="#3c83f6"/>
+  <g>
+    <circle cx="64.00" cy="24.00" r="8" fill="#3c83f6"/>
+    <circle cx="102.04" cy="51.64" r="8" fill="#8b5cf6"/>
+    <circle cx="87.51" cy="96.36" r="8" fill="#10b981"/>
+    <circle cx="40.49" cy="96.36" r="8" fill="#fbbf24"/>
+    <circle cx="25.96" cy="51.64" r="8" fill="#0ea5e9"/>
+  </g>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 06 - Hub y satélites</title>
+    <g stroke="#64748b" stroke-width="6">
+    <path d="M64,64 L64.00,24.00"/>
+    <path d="M64,64 L102.04,51.64"/>
+    <path d="M64,64 L87.51,96.36"/>
+    <path d="M64,64 L40.49,96.36"/>
+    <path d="M64,64 L25.96,51.64"/>
+  </g>
+  <circle cx="64" cy="64" r="12" fill="#3c83f6"/>
+  <g>
+    <circle cx="64.00" cy="24.00" r="8" fill="#3c83f6"/>
+    <circle cx="102.04" cy="51.64" r="8" fill="#8b5cf6"/>
+    <circle cx="87.51" cy="96.36" r="8" fill="#10b981"/>
+    <circle cx="40.49" cy="96.36" r="8" fill="#fbbf24"/>
+    <circle cx="25.96" cy="51.64" r="8" fill="#0ea5e9"/>
+  </g>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 06 - Hub y satélites</title>
+    <g stroke="#64748b" stroke-width="6">
+    <path d="M64,64 L64.00,24.00"/>
+    <path d="M64,64 L102.04,51.64"/>
+    <path d="M64,64 L87.51,96.36"/>
+    <path d="M64,64 L40.49,96.36"/>
+    <path d="M64,64 L25.96,51.64"/>
+  </g>
+  <circle cx="64" cy="64" r="12" fill="#3c83f6"/>
+  <g>
+    <circle cx="64.00" cy="24.00" r="8" fill="#3c83f6"/>
+    <circle cx="102.04" cy="51.64" r="8" fill="#8b5cf6"/>
+    <circle cx="87.51" cy="96.36" r="8" fill="#10b981"/>
+    <circle cx="40.49" cy="96.36" r="8" fill="#fbbf24"/>
+    <circle cx="25.96" cy="51.64" r="8" fill="#0ea5e9"/>
+  </g>
+</svg></div></div></div>
+  <figcaption>
+    <h3>06 <span class="name">Hub y satélites</span> <span class="tag color">color</span></h3>
+    <p>Un centro y cinco servicios alrededor, cada uno con su color. La biblioteca conectada, cada proveedor en su sitio.</p>
+    <a href="logo-06.svg" target="_blank" rel="noopener">logo-06.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 07 - Molinete</title>
+    <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(0 64 64)" fill="#3c83f6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(90 64 64)" fill="#6366f1"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(180 64 64)" fill="#8b5cf6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(270 64 64)" fill="#a855f7"/>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 07 - Molinete</title>
+    <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(0 64 64)" fill="#3c83f6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(90 64 64)" fill="#6366f1"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(180 64 64)" fill="#8b5cf6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(270 64 64)" fill="#a855f7"/>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 07 - Molinete</title>
+    <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(0 64 64)" fill="#3c83f6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(90 64 64)" fill="#6366f1"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(180 64 64)" fill="#8b5cf6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(270 64 64)" fill="#a855f7"/>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 07 - Molinete</title>
+    <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(0 64 64)" fill="#3c83f6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(90 64 64)" fill="#6366f1"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(180 64 64)" fill="#8b5cf6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(270 64 64)" fill="#a855f7"/>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 07 - Molinete</title>
+    <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(0 64 64)" fill="#3c83f6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(90 64 64)" fill="#6366f1"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(180 64 64)" fill="#8b5cf6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(270 64 64)" fill="#a855f7"/>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 07 - Molinete</title>
+    <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(0 64 64)" fill="#3c83f6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(90 64 64)" fill="#6366f1"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(180 64 64)" fill="#8b5cf6"/>
+  <path d="M64,64 L64,26 A38,38 0 0 1 96.91,45 Z" transform="rotate(270 64 64)" fill="#a855f7"/>
+</svg></div></div></div>
+  <figcaption>
+    <h3>07 <span class="name">Molinete</span> <span class="tag color">color</span></h3>
+    <p>Cuatro aspas que giran: ordenar, clasificar, limpiar duplicados. Se lee como «en proceso» y como «en movimiento».</p>
+    <a href="logo-07.svg" target="_blank" rel="noopener">logo-07.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 08 - Convergencia</title>
+    <g stroke="currentColor" stroke-width="14" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M30,26 L64,54 L98,26"/>
+    <path d="M30,102 L64,82 L98,102"/>
+  </g>
+  <circle cx="64" cy="68" r="6.5" fill="currentColor"/>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 08 - Convergencia</title>
+    <g stroke="currentColor" stroke-width="14" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M30,26 L64,54 L98,26"/>
+    <path d="M30,102 L64,82 L98,102"/>
+  </g>
+  <circle cx="64" cy="68" r="6.5" fill="currentColor"/>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 08 - Convergencia</title>
+    <g stroke="currentColor" stroke-width="14" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M30,26 L64,54 L98,26"/>
+    <path d="M30,102 L64,82 L98,102"/>
+  </g>
+  <circle cx="64" cy="68" r="6.5" fill="currentColor"/>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 08 - Convergencia</title>
+    <g stroke="currentColor" stroke-width="14" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M30,26 L64,54 L98,26"/>
+    <path d="M30,102 L64,82 L98,102"/>
+  </g>
+  <circle cx="64" cy="68" r="6.5" fill="currentColor"/>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 08 - Convergencia</title>
+    <g stroke="currentColor" stroke-width="14" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M30,26 L64,54 L98,26"/>
+    <path d="M30,102 L64,82 L98,102"/>
+  </g>
+  <circle cx="64" cy="68" r="6.5" fill="currentColor"/>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 08 - Convergencia</title>
+    <g stroke="currentColor" stroke-width="14" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M30,26 L64,54 L98,26"/>
+    <path d="M30,102 L64,82 L98,102"/>
+  </g>
+  <circle cx="64" cy="68" r="6.5" fill="currentColor"/>
+</svg></div></div></div>
+  <figcaption>
+    <h3>08 <span class="name">Convergencia</span> <span class="tag mono">mono</span></h3>
+    <p>Dos flujos que se juntan en un punto y salen como uno: fusionar dos cuentas o dos bibliotecas en una sola.</p>
+    <a href="logo-08.svg" target="_blank" rel="noopener">logo-08.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 09 - Ondas desfasadas</title>
+    <path d="M10.00,50.00 C16.00,41.62 22.00,34.00 28.00,34.00 C34.00,34.00 40.00,41.62 46.00,50.00 C52.00,41.62 58.00,34.00 64.00,34.00 C70.00,34.00 76.00,41.62 82.00,50.00 C88.00,41.62 94.00,34.00 100.00,34.00 C106.00,34.00 112.00,41.62 118.00,50.00" stroke="#3c83f6" stroke-width="9" stroke-linecap="round"/>
+  <path d="M10.00,78.00 C16.00,69.62 22.00,62.00 28.00,62.00 C34.00,62.00 40.00,69.62 46.00,78.00 C52.00,69.62 58.00,62.00 64.00,62.00 C70.00,62.00 76.00,69.62 82.00,78.00 C88.00,69.62 94.00,62.00 100.00,62.00 C106.00,62.00 112.00,69.62 118.00,78.00" stroke="#8b5cf6" stroke-width="9" stroke-linecap="round"/>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 09 - Ondas desfasadas</title>
+    <path d="M10.00,50.00 C16.00,41.62 22.00,34.00 28.00,34.00 C34.00,34.00 40.00,41.62 46.00,50.00 C52.00,41.62 58.00,34.00 64.00,34.00 C70.00,34.00 76.00,41.62 82.00,50.00 C88.00,41.62 94.00,34.00 100.00,34.00 C106.00,34.00 112.00,41.62 118.00,50.00" stroke="#3c83f6" stroke-width="9" stroke-linecap="round"/>
+  <path d="M10.00,78.00 C16.00,69.62 22.00,62.00 28.00,62.00 C34.00,62.00 40.00,69.62 46.00,78.00 C52.00,69.62 58.00,62.00 64.00,62.00 C70.00,62.00 76.00,69.62 82.00,78.00 C88.00,69.62 94.00,62.00 100.00,62.00 C106.00,62.00 112.00,69.62 118.00,78.00" stroke="#8b5cf6" stroke-width="9" stroke-linecap="round"/>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 09 - Ondas desfasadas</title>
+    <path d="M10.00,50.00 C16.00,41.62 22.00,34.00 28.00,34.00 C34.00,34.00 40.00,41.62 46.00,50.00 C52.00,41.62 58.00,34.00 64.00,34.00 C70.00,34.00 76.00,41.62 82.00,50.00 C88.00,41.62 94.00,34.00 100.00,34.00 C106.00,34.00 112.00,41.62 118.00,50.00" stroke="#3c83f6" stroke-width="9" stroke-linecap="round"/>
+  <path d="M10.00,78.00 C16.00,69.62 22.00,62.00 28.00,62.00 C34.00,62.00 40.00,69.62 46.00,78.00 C52.00,69.62 58.00,62.00 64.00,62.00 C70.00,62.00 76.00,69.62 82.00,78.00 C88.00,69.62 94.00,62.00 100.00,62.00 C106.00,62.00 112.00,69.62 118.00,78.00" stroke="#8b5cf6" stroke-width="9" stroke-linecap="round"/>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 09 - Ondas desfasadas</title>
+    <path d="M10.00,50.00 C16.00,41.62 22.00,34.00 28.00,34.00 C34.00,34.00 40.00,41.62 46.00,50.00 C52.00,41.62 58.00,34.00 64.00,34.00 C70.00,34.00 76.00,41.62 82.00,50.00 C88.00,41.62 94.00,34.00 100.00,34.00 C106.00,34.00 112.00,41.62 118.00,50.00" stroke="#3c83f6" stroke-width="9" stroke-linecap="round"/>
+  <path d="M10.00,78.00 C16.00,69.62 22.00,62.00 28.00,62.00 C34.00,62.00 40.00,69.62 46.00,78.00 C52.00,69.62 58.00,62.00 64.00,62.00 C70.00,62.00 76.00,69.62 82.00,78.00 C88.00,69.62 94.00,62.00 100.00,62.00 C106.00,62.00 112.00,69.62 118.00,78.00" stroke="#8b5cf6" stroke-width="9" stroke-linecap="round"/>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 09 - Ondas desfasadas</title>
+    <path d="M10.00,50.00 C16.00,41.62 22.00,34.00 28.00,34.00 C34.00,34.00 40.00,41.62 46.00,50.00 C52.00,41.62 58.00,34.00 64.00,34.00 C70.00,34.00 76.00,41.62 82.00,50.00 C88.00,41.62 94.00,34.00 100.00,34.00 C106.00,34.00 112.00,41.62 118.00,50.00" stroke="#3c83f6" stroke-width="9" stroke-linecap="round"/>
+  <path d="M10.00,78.00 C16.00,69.62 22.00,62.00 28.00,62.00 C34.00,62.00 40.00,69.62 46.00,78.00 C52.00,69.62 58.00,62.00 64.00,62.00 C70.00,62.00 76.00,69.62 82.00,78.00 C88.00,69.62 94.00,62.00 100.00,62.00 C106.00,62.00 112.00,69.62 118.00,78.00" stroke="#8b5cf6" stroke-width="9" stroke-linecap="round"/>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 09 - Ondas desfasadas</title>
+    <path d="M10.00,50.00 C16.00,41.62 22.00,34.00 28.00,34.00 C34.00,34.00 40.00,41.62 46.00,50.00 C52.00,41.62 58.00,34.00 64.00,34.00 C70.00,34.00 76.00,41.62 82.00,50.00 C88.00,41.62 94.00,34.00 100.00,34.00 C106.00,34.00 112.00,41.62 118.00,50.00" stroke="#3c83f6" stroke-width="9" stroke-linecap="round"/>
+  <path d="M10.00,78.00 C16.00,69.62 22.00,62.00 28.00,62.00 C34.00,62.00 40.00,69.62 46.00,78.00 C52.00,69.62 58.00,62.00 64.00,62.00 C70.00,62.00 76.00,69.62 82.00,78.00 C88.00,69.62 94.00,62.00 100.00,62.00 C106.00,62.00 112.00,69.62 118.00,78.00" stroke="#8b5cf6" stroke-width="9" stroke-linecap="round"/>
+</svg></div></div></div>
+  <figcaption>
+    <h3>09 <span class="name">Ondas desfasadas</span> <span class="tag color">color</span></h3>
+    <p>Dos ondas de distinta fase que se cruzan y vuelven a encontrarse. La señal de sincronización, y el cruce es el match.</p>
+    <a href="logo-09.svg" target="_blank" rel="noopener">logo-09.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 10 - Disco y brazo</title>
+    <circle cx="58" cy="70" r="34" stroke="currentColor" stroke-width="11"/>
+  <path d="M100,28 C100,44 92,53 80,58" stroke="currentColor" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="58" cy="70" r="7" fill="currentColor"/>
+  <circle cx="100" cy="28" r="9" fill="currentColor"/>
+  <circle cx="76" cy="62" r="8" fill="currentColor"/>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 10 - Disco y brazo</title>
+    <circle cx="58" cy="70" r="34" stroke="currentColor" stroke-width="11"/>
+  <path d="M100,28 C100,44 92,53 80,58" stroke="currentColor" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="58" cy="70" r="7" fill="currentColor"/>
+  <circle cx="100" cy="28" r="9" fill="currentColor"/>
+  <circle cx="76" cy="62" r="8" fill="currentColor"/>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 10 - Disco y brazo</title>
+    <circle cx="58" cy="70" r="34" stroke="currentColor" stroke-width="11"/>
+  <path d="M100,28 C100,44 92,53 80,58" stroke="currentColor" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="58" cy="70" r="7" fill="currentColor"/>
+  <circle cx="100" cy="28" r="9" fill="currentColor"/>
+  <circle cx="76" cy="62" r="8" fill="currentColor"/>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 10 - Disco y brazo</title>
+    <circle cx="58" cy="70" r="34" stroke="currentColor" stroke-width="11"/>
+  <path d="M100,28 C100,44 92,53 80,58" stroke="currentColor" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="58" cy="70" r="7" fill="currentColor"/>
+  <circle cx="100" cy="28" r="9" fill="currentColor"/>
+  <circle cx="76" cy="62" r="8" fill="currentColor"/>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 10 - Disco y brazo</title>
+    <circle cx="58" cy="70" r="34" stroke="currentColor" stroke-width="11"/>
+  <path d="M100,28 C100,44 92,53 80,58" stroke="currentColor" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="58" cy="70" r="7" fill="currentColor"/>
+  <circle cx="100" cy="28" r="9" fill="currentColor"/>
+  <circle cx="76" cy="62" r="8" fill="currentColor"/>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 10 - Disco y brazo</title>
+    <circle cx="58" cy="70" r="34" stroke="currentColor" stroke-width="11"/>
+  <path d="M100,28 C100,44 92,53 80,58" stroke="currentColor" stroke-width="11" stroke-linecap="round"/>
+  <circle cx="58" cy="70" r="7" fill="currentColor"/>
+  <circle cx="100" cy="28" r="9" fill="currentColor"/>
+  <circle cx="76" cy="62" r="8" fill="currentColor"/>
+</svg></div></div></div>
+  <figcaption>
+    <h3>10 <span class="name">Disco y brazo</span> <span class="tag mono">mono</span></h3>
+    <p>El vinilo y el brazo: la colección propia, el punto de partida de todo lo demás.</p>
+    <a href="logo-10.svg" target="_blank" rel="noopener">logo-10.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 11 - Lemniscato</title>
+    <path d="M22,64 C22,36 44,36 64,64 C84,92 106,92 106,64 C106,36 84,36 64,64 C44,92 22,92 22,64" stroke="currentColor" stroke-width="13" stroke-linecap="round"/>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 11 - Lemniscato</title>
+    <path d="M22,64 C22,36 44,36 64,64 C84,92 106,92 106,64 C106,36 84,36 64,64 C44,92 22,92 22,64" stroke="currentColor" stroke-width="13" stroke-linecap="round"/>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 11 - Lemniscato</title>
+    <path d="M22,64 C22,36 44,36 64,64 C84,92 106,92 106,64 C106,36 84,36 64,64 C44,92 22,92 22,64" stroke="currentColor" stroke-width="13" stroke-linecap="round"/>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 11 - Lemniscato</title>
+    <path d="M22,64 C22,36 44,36 64,64 C84,92 106,92 106,64 C106,36 84,36 64,64 C44,92 22,92 22,64" stroke="currentColor" stroke-width="13" stroke-linecap="round"/>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 11 - Lemniscato</title>
+    <path d="M22,64 C22,36 44,36 64,64 C84,92 106,92 106,64 C106,36 84,36 64,64 C44,92 22,92 22,64" stroke="currentColor" stroke-width="13" stroke-linecap="round"/>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 11 - Lemniscato</title>
+    <path d="M22,64 C22,36 44,36 64,64 C84,92 106,92 106,64 C106,36 84,36 64,64 C44,92 22,92 22,64" stroke="currentColor" stroke-width="13" stroke-linecap="round"/>
+</svg></div></div></div>
+  <figcaption>
+    <h3>11 <span class="name">Lemniscato</span> <span class="tag mono">mono</span></h3>
+    <p>Un bucle infinito sin principio ni fin. La música no se detiene y la sincronización tampoco.</p>
+    <a href="logo-11.svg" target="_blank" rel="noopener">logo-11.svg</a>
+  </figcaption>
+</figure>
+<figure class="card">
+  <div class="previews"><div class="tile dark big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 12 - Yin de flujo</title>
+    <path d="M64,20 A44,44 0 0 0 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#3c83f6"/>
+  <path d="M64,20 A44,44 0 0 1 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#8b5cf6"/>
+</svg></div></div><div class="tile light big"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 12 - Yin de flujo</title>
+    <path d="M64,20 A44,44 0 0 0 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#3c83f6"/>
+  <path d="M64,20 A44,44 0 0 1 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#8b5cf6"/>
+</svg></div></div></div>
+  <div class="previews small"><div class="tile dark s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 12 - Yin de flujo</title>
+    <path d="M64,20 A44,44 0 0 0 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#3c83f6"/>
+  <path d="M64,20 A44,44 0 0 1 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#8b5cf6"/>
+</svg></div></div><div class="tile light s32"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 12 - Yin de flujo</title>
+    <path d="M64,20 A44,44 0 0 0 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#3c83f6"/>
+  <path d="M64,20 A44,44 0 0 1 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#8b5cf6"/>
+</svg></div></div><div class="tile dark s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 12 - Yin de flujo</title>
+    <path d="M64,20 A44,44 0 0 0 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#3c83f6"/>
+  <path d="M64,20 A44,44 0 0 1 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#8b5cf6"/>
+</svg></div></div><div class="tile light s16"><div class="box"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 12 - Yin de flujo</title>
+    <path d="M64,20 A44,44 0 0 0 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#3c83f6"/>
+  <path d="M64,20 A44,44 0 0 1 64,108 A22,22 0 0 1 64,64 A22,22 0 0 0 64,20 Z" fill="#8b5cf6"/>
+</svg></div></div></div>
+  <figcaption>
+    <h3>12 <span class="name">Yin de flujo</span> <span class="tag color">color</span></h3>
+    <p>Dos mitades en equilibrio dentro de un círculo: lo que sale de aquí y lo que vuelve. El trazo en S es el flujo.</p>
+    <a href="logo-12.svg" target="_blank" rel="noopener">logo-12.svg</a>
+  </figcaption>
+</figure>
+  </div>
+</div>
+
+<footer>
+  Paleta tomada de la app: <code>ui/src/styles/main.css</code> &mdash;
+  primary <code>#3c83f6</code>, purple <code>#8b5cf6</code>, success <code>#10b981</code>,
+  gold <code>#fbbf24</code>, info <code>#0ea5e9</code>, fondo oscuro <code>#101722</code>,
+  fondo claro <code>#f5f7f8</code>.
+</footer>
+</body>
+</html>

@@ -112,6 +112,47 @@ export function getRegisteredShortcuts(): ShortcutBinding[] {
     return Array.from(globalBindings.value.values())
 }
 
+/**
+ * Busca en `bindings` la primera combinación que case con el evento y la
+ * ejecuta. Devuelve si llegó a disparar algo.
+ */
+function dispatchBinding(
+    event: KeyboardEvent,
+    bindings: Map<string, ShortcutBinding>
+): boolean {
+    if (event.defaultPrevented) return false
+
+    const target = event.target as HTMLElement | null
+    const isInput = Boolean(
+        target && (
+            target.tagName === 'INPUT' ||
+            target.tagName === 'TEXTAREA' ||
+            target.isContentEditable
+        )
+    )
+
+    for (const [keys, binding] of bindings) {
+        if (!matchesKeys(event, keys)) continue
+        if (binding.when && !binding.when()) continue
+        if (isInput && !keys.toLowerCase().includes('ctrl') && !keys.toLowerCase().includes('escape')) continue
+
+        event.preventDefault()
+        binding.handler(event)
+        return true
+    }
+    return false
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+    dispatchBinding(event, globalBindings.value)
+}
+
+// Un único listener global para todo el registro: useShortcut() y
+// registerShortcut() funcionan sin que cada componente añada el suyo.
+if (typeof document !== 'undefined') {
+    document.addEventListener('keydown', handleGlobalKeydown)
+}
+
 // Format keys utility
 export function formatKeys(keys: string): string[] {
     return keys.split('+').map(k => {
@@ -188,43 +229,12 @@ export function useKeyboardShortcuts() {
         return Array.from(map.values())
     }
 
-    // Handle keydown event
+    // Handle keydown event. Solo los enlaces locales de esta instancia: los
+// globales los atiende el listener único de módulo, y.dispatchBinding se
+// volvería a ejecutar si se comprobaran aquí (preventDefault() no marca el
+// evento cuando no es cancelable, que es como los lanzan los tests).
     function handleKeydown(event: KeyboardEvent) {
-        if (event.defaultPrevented) return
-
-        // Skip if in input/textarea (unless explicitly allowed)
-        const target = event.target as HTMLElement | null
-        const isInput = Boolean(
-            target && (
-                target.tagName === 'INPUT' ||
-                target.tagName === 'TEXTAREA' ||
-                target.isContentEditable
-            )
-        )
-
-        // Check local bindings first
-        for (const [keys, binding] of localBindings.value) {
-            if (matchesKeys(event, keys)) {
-                if (binding.when && !binding.when()) continue
-                if (isInput && !keys.toLowerCase().includes('ctrl') && !keys.toLowerCase().includes('escape')) continue
-
-                event.preventDefault()
-                binding.handler(event)
-                return
-            }
-        }
-
-        // Then check global bindings
-        for (const [keys, binding] of globalBindings.value) {
-            if (matchesKeys(event, keys)) {
-                if (binding.when && !binding.when()) continue
-                if (isInput && !keys.toLowerCase().includes('ctrl') && !keys.toLowerCase().includes('escape')) continue
-
-                event.preventDefault()
-                binding.handler(event)
-                return
-            }
-        }
+        dispatchBinding(event, localBindings.value)
     }
 
     const cleanup = () => {
@@ -264,14 +274,20 @@ export function useShortcut(
     keys: string,
     handler: ShortcutHandler,
     options?: ShortcutOptions
-) {
-    const { register } = useKeyboardShortcuts()
+): () => void {
+    // Registra en el mapa global para que un único listener de documento
+    // atienda todos los atajos. Antes creaba una instancia propia de
+    // useKeyboardShortcuts() por cada componente que lo usaba, y cada una
+    // añadía su propio listener de teclado a `document`.
+    const unregister = registerShortcut(keys, handler, {
+        description: options?.description,
+        category: options?.category,
+        when: options?.when
+    })
 
     if (getCurrentInstance()) {
-        onMounted(() => {
-            register(keys, handler, options)
-        })
-    } else {
-        register(keys, handler, options)
+        onUnmounted(unregister)
     }
+
+    return unregister
 }

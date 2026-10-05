@@ -85,15 +85,111 @@
       </div>
     </TransitionGroup>
   </div>
+
+  <!-- Diálogos internos: sustituyen a los alert/confirm/message nativos -->
+  <Teleport to="body">
+    <Transition name="dialog-overlay">
+      <div
+        v-if="activeDialog"
+        class="dialog-overlay fixed inset-0 z-[300] flex items-center justify-center p-4"
+        @click.self="cancelDialog"
+        @keydown.esc="cancelDialog"
+      >
+        <div
+          class="dialog-card w-full max-w-md rounded-2xl shadow-2xl overflow-hidden bg-white dark:bg-surface-dark text-gray-900 dark:text-white"
+          role="alertdialog"
+          aria-modal="true"
+          :aria-label="activeDialog.title"
+        >
+          <div class="flex items-start gap-3 p-5">
+            <span
+              class="material-symbols-outlined text-2xl shrink-0"
+              :class="dialogIconClass"
+              aria-hidden="true"
+            >{{ dialogIcon }}</span>
+            <div class="min-w-0 flex-1">
+              <p class="text-base font-semibold">{{ activeDialog.title }}</p>
+              <p v-if="activeDialog.message" class="text-sm text-gray-600 dark:text-gray-300 mt-1 whitespace-pre-line">
+                {{ activeDialog.message }}
+              </p>
+            </div>
+          </div>
+
+          <div v-if="activeDialog.kind === 'prompt'" class="px-5 pb-4">
+            <input
+              ref="dialogInput"
+              v-model="dialogValue"
+              type="text"
+              :placeholder="activeDialog.placeholder"
+              class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50"
+              @keydown.enter.prevent="acceptDialog"
+            >
+          </div>
+
+          <div class="px-5 py-4 border-t border-gray-200 dark:border-border-dark flex justify-end gap-3">
+            <button
+              v-if="activeDialog.kind !== 'alert'"
+              class="dialog-cancel px-4 py-2 rounded-lg text-sm font-medium border border-gray-300 dark:border-border-dark hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors"
+              @click="cancelDialog"
+            >
+              {{ activeDialog.cancelLabel }}
+            </button>
+            <button
+              class="dialog-confirm px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors"
+              :class="dialogConfirmClass"
+              @click="acceptDialog"
+            >
+              {{ activeDialog.confirmLabel }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useToast, type Toast, type ToastAction } from '@/composables/useToast'
+import { computed, nextTick, ref, watch } from 'vue'
+import { useToast, useDialog, type Toast, type ToastAction } from '@/composables/useToast'
 
 const { toasts, dismiss, pauseToast, resumeToast } = useToast()
+const { activeDialog, dialogValue, resolveDialog } = useDialog()
 
 const visibleToasts = computed(() => toasts.value.slice(0, 5))
+
+const dialogInput = ref<HTMLInputElement | null>(null)
+
+const dialogIcon = computed(() => {
+    if (activeDialog.value?.variant === 'danger') return 'error'
+    if (activeDialog.value?.variant === 'warning') return 'warning'
+    return 'info'
+})
+
+const dialogIconClass = computed(() => {
+    if (activeDialog.value?.variant === 'danger') return 'text-red-500'
+    if (activeDialog.value?.variant === 'warning') return 'text-amber-500'
+    return 'text-primary'
+})
+
+const dialogConfirmClass = computed(() => {
+    if (activeDialog.value?.variant === 'danger') return 'bg-red-500 hover:bg-red-600'
+    return 'bg-primary hover:opacity-90'
+})
+
+watch(activeDialog, (dialog) => {
+    if (!dialog) return
+    nextTick(() => dialogInput.value?.focus())
+})
+
+function acceptDialog() {
+    const dialog = activeDialog.value
+    if (!dialog) return
+    resolveDialog(dialog.kind === 'prompt' ? dialogValue.value : 'confirm')
+}
+
+function cancelDialog() {
+    resolveDialog(null)
+}
 
 function dismissToast(id: string) {
   dismiss(id)
@@ -170,5 +266,31 @@ function handleAction(toast: { id: string }, action: { handler: () => void }) {
 
 .animate-spin {
   animation: spin 1s linear infinite;
+}
+
+/* Dialogs */
+.dialog-overlay {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.dialog-overlay-enter-active,
+.dialog-overlay-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.dialog-overlay-enter-active .dialog-card,
+.dialog-overlay-leave-active .dialog-card {
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.dialog-overlay-enter-from,
+.dialog-overlay-leave-to {
+  opacity: 0;
+}
+
+.dialog-overlay-enter-from .dialog-card,
+.dialog-overlay-leave-to .dialog-card {
+  transform: scale(0.96) translateY(8px);
+  opacity: 0;
 }
 </style>

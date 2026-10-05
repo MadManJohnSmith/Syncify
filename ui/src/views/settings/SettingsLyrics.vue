@@ -2,37 +2,37 @@
   <div class="space-y-8">
     <section class="space-y-4">
       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Lyrics Sources (Priority Order)</h3>
-      <p class="text-sm text-text-secondary">Syncify will try sources in this order. Drag to reorder.</p>
+      <p class="text-sm text-text-secondary">Syncify will try sources in this order. Drag a row, or use its arrow buttons, to reorder.</p>
       <div v-if="lyricsSettings.isLoading.value" class="flex items-center gap-2 text-text-secondary">
         <span class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
         <span class="text-sm">Loading lyrics providers...</span>
       </div>
-      <div v-else class="space-y-2">
-        <div 
-          v-for="(provider, i) in lyricsSettings.orderedProviders.value" 
+<div v-else class="space-y-2">
+        <DraggableItem
+          v-for="(provider, i) in lyricsSettings.orderedProviders.value"
           :key="provider.provider_id"
-          class="flex items-center justify-between p-3 bg-white dark:bg-surface-dark rounded-lg border border-gray-200 dark:border-border-dark"
+          :text="provider.provider_name"
+          :subtitle="`${provider.sync_level}-level sync`"
+          :index="i + 1"
+          :total="lyricsSettings.orderedProviders.value.length"
+          @drag-start="handleDragStart"
+          @reorder="handleDragReorder"
+          @move-up="lyricsSettings.moveProviderUp(provider.provider_id)"
+          @move-down="lyricsSettings.moveProviderDown(provider.provider_id)"
         >
-          <div class="flex items-center gap-3">
-            <span class="w-6 h-6 flex items-center justify-center bg-gray-100 dark:bg-surface-highlight rounded text-xs font-medium text-gray-600 dark:text-gray-400">{{ i + 1 }}</span>
-            <div>
-              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ provider.provider_name }}</span>
-              <span class="block text-xs text-text-secondary capitalize">{{ provider.sync_level }}-level sync</span>
-            </div>
-          </div>
-          <div class="flex items-center gap-2">
-            <button @click="lyricsSettings.moveProviderUp(provider.provider_id)" :disabled="i === 0" class="p-1 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded transition-colors disabled:opacity-30">
-              <span class="material-symbols-outlined text-[18px] text-gray-500">arrow_upward</span>
+          <template #actions>
+            <button
+              :disabled="!provider.enabled"
+              :aria-label="provider.enabled ? `Disable ${provider.provider_name}` : `Enable ${provider.provider_name}`"
+              @click.stop="lyricsSettings.toggleProvider(provider.provider_id)"
+              class="p-1 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded transition-colors"
+            >
+              <span class="material-symbols-outlined text-[18px]" :class="provider.enabled ? 'text-emerald-500' : 'text-gray-400'">
+                {{ provider.enabled ? 'toggle_on' : 'toggle_off' }}
+              </span>
             </button>
-            <button @click="lyricsSettings.moveProviderDown(provider.provider_id)" :disabled="i === lyricsSettings.orderedProviders.value.length - 1" class="p-1 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded transition-colors disabled:opacity-30">
-              <span class="material-symbols-outlined text-[18px] text-gray-500">arrow_downward</span>
-            </button>
-            <div class="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-1"></div>
-            <button @click="lyricsSettings.toggleProvider(provider.provider_id)" class="p-1 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded transition-colors">
-              <span class="material-symbols-outlined text-[18px]" :class="provider.enabled ? 'text-success' : 'text-gray-400'">{{ provider.enabled ? 'check_circle' : 'cancel' }}</span>
-            </button>
-          </div>
-        </div>
+          </template>
+        </DraggableItem>
       </div>
     </section>
 
@@ -75,30 +75,24 @@
         </select>
       </div>
       
-      <div class="flex items-center justify-between py-2 cursor-pointer" @click="toggleAutoFetchLyrics">
-        <div>
-          <span class="block text-sm font-medium text-gray-900 dark:text-white">Auto-fetch lyrics on import</span>
-          <span class="block text-xs text-text-secondary mt-0.5">Automatically search for lyrics when adding new tracks</span>
-        </div>
-        <div class="relative inline-block w-10 align-middle select-none">
-          <div :class="lyricsSettings.config.auto_fetch_on_import ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'" class="block h-5 rounded-full transition-colors"></div>
-          <div :class="lyricsSettings.config.auto_fetch_on_import ? 'translate-x-5' : 'translate-x-0'" class="absolute top-0 left-0 w-5 h-5 bg-white rounded-full shadow transform transition-transform"></div>
-        </div>
-      </div>
+      <BaseToggle
+        title="Auto-fetch lyrics on import"
+        subtitle="Automatically search for lyrics when adding new tracks"
+        :checked="lyricsSettings.config.auto_fetch_on_import"
+        test-id="toggle-auto-fetch-lyrics"
+        @click="toggleAutoFetchLyrics"
+      />
     </section>
 
     <section class="space-y-4">
       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Retry Behavior</h3>
-      <div class="flex items-center justify-between py-2 cursor-pointer" @click="toggleRetryFailed">
-        <div>
-          <span class="block text-sm font-medium text-gray-900 dark:text-white">Retry failed lookups</span>
-          <span class="block text-xs text-text-secondary mt-0.5">Periodically retry tracks that failed to find lyrics</span>
-        </div>
-        <div class="relative inline-block w-10 align-middle select-none">
-          <div :class="lyricsSettings.config.retry_failed ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600'" class="block h-5 rounded-full transition-colors"></div>
-          <div :class="lyricsSettings.config.retry_failed ? 'translate-x-5' : 'translate-x-0'" class="absolute top-0 left-0 w-5 h-5 bg-white rounded-full shadow transform transition-transform"></div>
-        </div>
-      </div>
+      <BaseToggle
+        title="Retry failed lookups"
+        subtitle="Periodically retry tracks that failed to find lyrics"
+        :checked="lyricsSettings.config.retry_failed"
+        test-id="toggle-retry-failed"
+        @click="toggleRetryFailed"
+      />
       
       <div v-if="lyricsSettings.config.retry_failed">
         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Retry frequency</label>
@@ -115,12 +109,32 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useLyricsSettings } from '@/composables/useLyricsSettings'
+import DraggableItem from '@/components/settings/DraggableItem.vue'
+import BaseToggle from '@/components/settings/BaseToggle.vue'
 
 const getEventValue = (e: any) => e.target?.value || ''
 
 const lyricsSettings = useLyricsSettings()
+
+const draggingIndex = ref<number | null>(null)
+
+function handleDragStart(fromIndex: number) {
+  draggingIndex.value = fromIndex
+}
+
+async function handleDragReorder(toIndex: number) {
+  const fromIndex = draggingIndex.value
+  draggingIndex.value = null
+  if (fromIndex === null || fromIndex === toIndex) return
+  const ordered = [...lyricsSettings.orderedProviders.value]
+  if (fromIndex < 0 || fromIndex >= ordered.length) return
+  if (toIndex < 0 || toIndex >= ordered.length) return
+  const [moved] = ordered.splice(fromIndex, 1)
+  ordered.splice(toIndex, 0, moved)
+  await lyricsSettings.reorderProviders(ordered.map(p => p.provider_id))
+}
 
 async function toggleAutoFetchLyrics() {
   lyricsSettings.config.auto_fetch_on_import = !lyricsSettings.config.auto_fetch_on_import

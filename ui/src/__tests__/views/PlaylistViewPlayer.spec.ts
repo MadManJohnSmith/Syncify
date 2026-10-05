@@ -8,9 +8,11 @@ import PlaylistView from '@/views/PlaylistView.vue';
 import { mockInvoke, resetMocks } from '../setup';
 
 const mockPlayerPlay = vi.fn().mockResolvedValue(undefined);
+const mockPlayerPlayNext = vi.fn().mockResolvedValue('queued');
 vi.mock('@/composables/usePlayer', () => ({
     usePlayer: () => ({
         play: mockPlayerPlay,
+        playNext: mockPlayerPlayNext,
     }),
 }));
 
@@ -69,6 +71,23 @@ describe('PlaylistView Player Integration', () => {
             artist: 'Artist 1',
             album: 'Album 1',
             coverUrl: 'http://img1.jpg',
+        });
+    });
+
+    it('playAll() queues the remaining tracks in playlist order (item 25)', async () => {
+        const wrapper = await setupPlaylistViewWithTracks();
+
+        const playAllBtn = wrapper.findAll('button').find(b => b.text().includes('Play All'));
+        await playAllBtn!.trigger('click');
+        await flushPromises();
+
+        expect(mockPlayerPlayNext).toHaveBeenCalledTimes(1);
+        expect(mockPlayerPlayNext).toHaveBeenCalledWith({
+            id: 302,
+            title: 'Chill Track 2',
+            artist: 'Artist 2',
+            album: 'Album 2',
+            coverUrl: 'http://img2.jpg',
         });
     });
 

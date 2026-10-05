@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 06 - Hub y satélites</title>
+    <g stroke="#64748b" stroke-width="6">
+    <path d="M64,64 L64.00,24.00"/>
+    <path d="M64,64 L102.04,51.64"/>
+    <path d="M64,64 L87.51,96.36"/>
+    <path d="M64,64 L40.49,96.36"/>
+    <path d="M64,64 L25.96,51.64"/>
+  </g>
+  <circle cx="64" cy="64" r="12" fill="#3c83f6"/>
+  <g>
+    <circle cx="64.00" cy="24.00" r="8" fill="#3c83f6"/>
+    <circle cx="102.04" cy="51.64" r="8" fill="#8b5cf6"/>
+    <circle cx="87.51" cy="96.36" r="8" fill="#10b981"/>
+    <circle cx="40.49" cy="96.36" r="8" fill="#fbbf24"/>
+    <circle cx="25.96" cy="51.64" r="8" fill="#0ea5e9"/>
+  </g>
+</svg>

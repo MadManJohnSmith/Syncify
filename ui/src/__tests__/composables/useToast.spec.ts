@@ -82,9 +82,10 @@ describe('useToast pauseToast & resumeToast', () => {
   })
 
   it('safely handles non-existent IDs or non-auto-dismissing toasts', () => {
-    const { error, toasts, pauseToast, resumeToast } = useToast()
-    // Error toasts have duration = 0 (autoDismiss = false)
-    const errorId = error('Fatal Error', 'Does not auto dismiss')
+    const { progress, toasts, pauseToast, resumeToast } = useToast()
+    // Progress toasts have duration = 0 (autoDismiss = false): only
+    // completeProgress() retires them.
+    const progressId = progress('Working...', 10)
     expect(toasts.value.length).toBe(1)
 
     // Pausing non-existent id
@@ -92,7 +93,7 @@ describe('useToast pauseToast & resumeToast', () => {
     expect(() => resumeToast('invalid-id')).not.toThrow()
 
     // Pausing non-auto-dismiss toast
-    expect(() => pauseToast(errorId)).not.toThrow()
+    expect(() => pauseToast(progressId)).not.toThrow()
     expect(toasts.value[0].paused).toBe(false)
   })
 })

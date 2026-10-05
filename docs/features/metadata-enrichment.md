@@ -1,5 +1,9 @@
 # Metadata Enrichment
 
+> **Idioma:** español. Los títulos de sección están en inglés y el cuerpo
+> sigue en español; no hay traducción de este documento todavía. El índice
+> que marca su estado está en `docs/README.en.md`.
+
 **Estado de revisión:** 2026-10-02 — narrativa re-derivada del código (ítem 9.1 del plan post-auditoría, DO-4): el flujo de Spotify Audio Features se retiró del código (S68/F4-1) y este documento ya no lo describe. Gate de rutas: `scripts/tests/test_docs_consistency.py` — todas las rutas citadas existen o están declaradas como eliminadas.
 
 **Último cambio:** ítem 9.1 del plan post-auditoría (2026-10-02) — re-derivación del flujo on-demand, del worker de fondo y de las fuentes tras la retirada de Spotify Audio Features. Antes: S199 — 2026-08-25 — archivos: `commands/metadata.rs`, `commands/tools.rs`, `main.rs`, `ui/src/views/MetadataView.vue`

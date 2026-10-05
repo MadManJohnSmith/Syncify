@@ -784,7 +784,7 @@ impl DownloadWorker {
             }
 
             // Also update track_sources with real physical metrics
-            let _ = sqlx::query(
+            let ts_result = sqlx::query(
                 r#"UPDATE track_sources
                    SET bit_depth = ?, sample_rate = ?, bitrate = ?, format = ?
                    WHERE track_id = ? AND service_id = (SELECT id FROM services WHERE LOWER(name) = LOWER(?))"#
@@ -797,6 +797,19 @@ impl DownloadWorker {
             .bind(effective_srv)
             .execute(&self.db)
             .await;
+
+            if let Err(e) = ts_result {
+                tracing::error!(
+                    "Failed to sync track_sources physical audio ({} {}bit/{}Hz {}) for track {} on {}: {}",
+                    physical_format,
+                    real_bit_depth,
+                    real_sample_rate,
+                    canon_tier,
+                    tid,
+                    effective_srv,
+                    e
+                );
+            }
         }
 
         // F5.3: Ensure .lrc sidecar is registered in lyrics ledger upon download completion (mitiga A11)
@@ -1004,7 +1017,7 @@ impl DownloadWorker {
             global_canonical,
             service_raw_for_log.as_deref().unwrap_or("none")
         );
-        let _ = sqlx::query(
+        let persisted = sqlx::query(
             r#"
             UPDATE download_queue
             SET requested_quality = COALESCE(requested_quality, ?),
@@ -1019,6 +1032,16 @@ impl DownloadWorker {
         .bind(queue_id)
         .execute(&self.db)
         .await;
+
+        if let Err(e) = persisted {
+            tracing::error!(
+                queue_id,
+                requested = %requested_label,
+                clamped = %clamped,
+                "Failed to persist quality provenance on the queue row: {}",
+                e
+            );
+        }
 
         clamped
     }
@@ -1413,11 +1436,40 @@ impl DownloadWorker {
 
                 self.mark_complete(queue_id, &download_result).await;
                 let file_size = tokio::fs::metadata(&file_path).await.map(|m| m.len()).ok();
-                let _ = crate::services::ManifestWriter::generate_and_save_manifest(
+                let manifest_result = crate::services::ManifestWriter::generate_and_save_manifest(
                     &self.db,
                     std::path::Path::new(&output_dir),
                 )
                 .await;
+                // The manifest is the artifact that lets the user audit or move the
+                // batch; a silent failure here leaves a completed download with no
+                // record of what actually landed on disk.
+                if let Err(ref err) = manifest_result {
+                    tracing::error!(
+                        queue_id,
+                        output_dir = %output_dir,
+                        "Failed to write the downloads manifest after completing {}: {}",
+                        queue_id,
+                        err
+                    );
+                    if let Some(handle) = &self.app_handle {
+                        let notif = crate::commands::AppNotification::new(
+                            crate::commands::NotificationKind::Warning,
+                            "Download Manifest Not Written",
+                            format!(
+                                "{} - {} downloaded, but manifest.json could not be written to {}: {}",
+                                effective_artist, effective_title, output_dir, err
+                            ),
+                            crate::commands::NotificationCategory::Download,
+                            Some(serde_json::json!({
+                                "queue_id": queue_id,
+                                "output_dir": output_dir,
+                                "error": err.to_string(),
+                            })),
+                        );
+                        let _ = crate::commands::emit_app_notification(handle, &notif);
+                    }
+                }
                 let is_shortfall = download_result.quality_decision.as_ref()
                     .is_some_and(|qd| qd.decision == syncify_core_domain::quality::QualityDecisionKind::CompletedWithQualityShortfall);
                 let is_fallback = download_result.quality_decision.as_ref()
@@ -1764,6 +1816,13 @@ impl DownloadWorker {
 
         // TASK-84: Sanitize stuck downloads older than 1 hour to failed and purge staging files
         let _ = Self::sanitize_stuck_downloads(&self.db, None).await;
+
+        // The post-crash reconciliation is also spawned as a detached task at startup.
+        // Running it here too, under the same process-wide lock, means the queue is
+        // already settled by the time the reset below runs — otherwise the reset could
+        // re-queue rows the reconciliation had just resolved, and the download would be
+        // retried twice or the row would end up in two states at once.
+        crate::services::operation_recovery::reconcile_downloads_on_startup(&self.db).await;
 
         // Reset remaining interrupted downloads on startup back to queued so worker resumes them
         let reset_count = sqlx::query(

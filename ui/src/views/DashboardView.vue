@@ -1,225 +1,283 @@
 <template>
-  <div class="stats-dashboard h-full overflow-y-auto custom-scrollbar bg-background-dark">
+  <div class="stats-dashboard h-full min-h-0 flex flex-col overflow-hidden bg-background-dark">
     <!-- Header -->
-    <div class="sticky top-0 bg-background-dark z-10 px-6 py-4 border-b border-border-dark flex items-center justify-between">
-      <div>
-        <h1 class="text-2xl font-bold text-white">Dashboard</h1>
-        <p class="text-sm text-gray-500">Library statistics and analytics</p>
+    <div class="shrink-0 px-4 py-2.5 border-b border-border-dark flex items-center justify-between gap-4">
+      <div class="flex items-baseline gap-3 min-w-0">
+        <h1 class="text-lg font-bold text-white">Dashboard</h1>
+        <p class="text-xs text-gray-500 truncate">Library statistics and analytics</p>
       </div>
-      <div class="flex items-center gap-4">
-        <span class="text-xs text-gray-400">Updated {{ lastUpdated }}</span>
-        <button @click="refresh" class="px-4 py-2 bg-surface-dark border border-gray-200 dark:border-border-dark text-gray-700 dark:text-gray-300 rounded-lg text-sm flex items-center gap-2 hover:bg-gray-50 dark:hover:bg-surface-highlight">
-          <span class="material-symbols-outlined text-lg" :class="{ 'animate-spin': isRefreshing }">refresh</span>
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="text-[11px] text-gray-400">Updated {{ lastUpdated }}</span>
+        <button @click="refresh" class="px-3 py-1.5 bg-surface-dark border border-border-dark text-gray-300 rounded-lg text-xs flex items-center gap-1.5 hover:bg-surface-highlight">
+          <span class="material-symbols-outlined text-base" :class="{ 'animate-spin': isRefreshing }">refresh</span>
           Refresh
         </button>
-        <button @click="exportReport" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm flex items-center gap-2">
-          <span class="material-symbols-outlined text-lg">download</span>
+        <button @click="exportReport" class="px-3 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs flex items-center gap-1.5">
+          <span class="material-symbols-outlined text-base">download</span>
           Export Report
         </button>
       </div>
     </div>
-    
+
     <!-- Loading state -->
-    <div v-if="loading" class="flex-1 flex flex-col items-center justify-center py-20">
-      <div class="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mb-4"></div>
-      <p class="text-gray-400">Loading dashboard data...</p>
+    <div v-if="loading" class="flex-1 min-h-0 flex flex-col items-center justify-center">
+      <div class="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin mb-3"></div>
+      <p class="text-sm text-gray-400">Loading dashboard data...</p>
     </div>
 
     <!-- Error state -->
-    <div v-else-if="error" class="flex-1 flex flex-col items-center justify-center py-20 px-6 text-center">
-      <span class="material-symbols-outlined text-5xl text-red-500 mb-4">error</span>
-      <h3 class="text-lg font-semibold text-white mb-2">Failed to load dashboard</h3>
-      <p class="text-gray-400 max-w-md mb-6">{{ error }}</p>
-      <button @click="fetchData" class="px-6 py-2 bg-surface-highlight hover:bg-surface-highlight/80 text-white rounded-lg transition-colors">
+    <div v-else-if="error" class="flex-1 min-h-0 flex flex-col items-center justify-center px-6 text-center">
+      <span class="material-symbols-outlined text-4xl text-red-500 mb-3">error</span>
+      <h3 class="text-base font-semibold text-white mb-1">Failed to load dashboard</h3>
+      <p class="text-sm text-gray-400 max-w-md mb-4">{{ error }}</p>
+      <button @click="fetchData" class="px-4 py-1.5 bg-surface-highlight hover:bg-surface-highlight/80 text-white rounded-lg text-sm">
         Try Again
       </button>
     </div>
 
-    <!-- Stats Grid -->
-    <div v-else class="p-6">
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-        
-        <!-- Library Overview (Spans 2 columns) -->
-        <div class="stat-card library-overview col-span-1 md:col-span-2 bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-6">Library Overview</h3>
-          
-          <div class="flex flex-col lg:flex-row gap-8">
-            <!-- Key Metrics -->
-            <div class="flex-1 grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <div class="metric-box p-4 bg-surface-highlight rounded-xl text-center">
-                <span class="material-symbols-outlined text-3xl text-primary mb-2">music_note</span>
-                <p class="text-2xl font-bold text-white">{{ stats.totalTracks.toLocaleString() }}</p>
-                <p class="text-sm text-gray-500">Total Tracks</p>
-              </div>
-              <div class="metric-box p-4 bg-surface-highlight rounded-xl text-center">
-                <span class="material-symbols-outlined text-3xl text-purple-500 mb-2">album</span>
-                <p class="text-2xl font-bold text-white">{{ stats.totalAlbums }}</p>
-                <p class="text-sm text-gray-500">Albums</p>
-              </div>
-              <div class="metric-box p-4 bg-surface-highlight rounded-xl text-center">
-                <span class="material-symbols-outlined text-3xl text-teal-500 mb-2">person</span>
-                <p class="text-2xl font-bold text-white">{{ stats.totalArtists }}</p>
-                <p class="text-sm text-gray-500">Artists</p>
-              </div>
-              <div class="metric-box p-4 bg-surface-highlight rounded-xl text-center">
-                <span class="material-symbols-outlined text-3xl text-orange-500 mb-2">queue_music</span>
-                <p class="text-2xl font-bold text-white">{{ stats.totalPlaylists }}</p>
-                <p class="text-sm text-gray-500">Playlists</p>
-              </div>
+    <!-- Dashboard grid: una sola pantalla, la página no hace scroll -->
+    <div v-else class="flex-1 min-h-0 overflow-y-auto xl:overflow-hidden p-3">
+      <div class="xl:h-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-3 xl:grid-rows-3 auto-rows-fr">
+        <!-- Library Overview -->
+        <div class="stat-card library-overview xl:col-span-4 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Library Overview</h3>
+          <div class="flex-1 min-h-0 grid grid-cols-3 gap-2 content-start">
+            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
+              <p class="text-lg font-bold text-white leading-tight">{{ stats.totalTracks.toLocaleString() }}</p>
+              <p class="text-[11px] text-gray-500">Tracks</p>
             </div>
-            
-            <!-- Donut Chart -->
-            <div class="w-48 h-48 shrink-0 relative">
-              <svg viewBox="0 0 100 100" class="transform -rotate-90">
-                <circle cx="50" cy="50" r="40" fill="none" stroke="#e5e7eb" stroke-width="12" class="dark:stroke-gray-700" />
-                <circle 
-                  cx="50" cy="50" r="40" fill="none" 
-                  stroke="#22c55e" stroke-width="12" stroke-linecap="round"
-                  :stroke-dasharray="`${stats.downloadedPercent * 2.51} 251`"
-                />
-              </svg>
-              <div class="absolute inset-0 flex flex-col items-center justify-center">
-                <p class="text-2xl font-bold text-white">{{ stats.downloadedPercent }}%</p>
-                <p class="text-xs text-gray-500">Downloaded</p>
-              </div>
+            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
+              <p class="text-lg font-bold text-purple-400 leading-tight">{{ stats.totalAlbums }}</p>
+              <p class="text-[11px] text-gray-500">Albums</p>
+            </div>
+            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
+              <p class="text-lg font-bold text-teal-400 leading-tight">{{ stats.totalArtists }}</p>
+              <p class="text-[11px] text-gray-500">Artists</p>
+            </div>
+            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
+              <p class="text-lg font-bold text-indigo-400 leading-tight">{{ stats.totalPlaylists }}</p>
+              <p class="text-[11px] text-gray-500">Playlists</p>
+            </div>
+            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
+              <p class="text-lg font-bold text-green-400 leading-tight">{{ stats.downloadedTracks.toLocaleString() }}</p>
+              <p class="text-[11px] text-gray-500">Downloaded</p>
+            </div>
+            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
+              <p class="text-lg font-bold text-amber-400 leading-tight">{{ stats.activeDownloads }}</p>
+              <p class="text-[11px] text-gray-500">Active downloads</p>
             </div>
           </div>
-          
-          <div class="flex items-center gap-6 mt-4 text-sm">
-            <span class="flex items-center gap-2">
-              <span class="w-3 h-3 rounded-full bg-green-500"></span>
-              Downloaded: {{ stats.downloadedTracks }}
-            </span>
-            <span class="flex items-center gap-2">
-              <span class="w-3 h-3 rounded-full bg-blue-500"></span>
-              Streaming: {{ stats.streamingTracks }}
-            </span>
+          <div class="shrink-0 mt-2 pt-2 border-t border-border-dark flex items-center justify-between text-[11px] text-gray-500">
+            <span>{{ stats.streamingTracks.toLocaleString() }} streaming only</span>
+            <span>{{ stats.downloadedPercent }}% of the library on disk</span>
           </div>
         </div>
-        
+
+        <!-- Library Growth -->
+        <div class="stat-card growth-chart xl:col-span-5 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <div class="flex items-center justify-between mb-2 shrink-0 gap-2">
+            <h3 class="text-xs font-semibold text-white">Library Growth</h3>
+            <select v-model="timeRange" class="px-2 py-1 bg-surface-highlight border border-border-dark rounded text-[11px] text-gray-300 focus:outline-none">
+              <option value="7d">Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+              <option value="1y">Last year</option>
+              <option value="all">All time</option>
+            </select>
+          </div>
+          <div v-if="growthData.length > 0" class="flex-1 min-h-0 flex items-end gap-3">
+            <div class="flex-1 min-h-0 flex items-end justify-around gap-2">
+              <div v-for="(entry, i) in growthData" :key="i" class="flex-1 flex flex-col items-center gap-1 min-w-0">
+                <div class="w-full flex items-end justify-center gap-0.5 h-full max-h-[150px]">
+                  <div class="w-1/3 bg-primary/40 rounded-t" :style="{ height: entry.total + '%' }"></div>
+                  <div class="w-1/3 bg-primary rounded-t" :style="{ height: entry.downloaded + '%' }"></div>
+                </div>
+                <span class="text-[10px] text-gray-500 truncate w-full text-center">{{ entry.label }}</span>
+              </div>
+            </div>
+            <div class="shrink-0 space-y-1 text-[10px] text-gray-400">
+              <div class="flex items-center gap-1">
+                <span class="w-2 h-2 rounded bg-primary/40"></span>Total tracks
+              </div>
+              <div class="flex items-center gap-1">
+                <span class="w-2 h-2 rounded bg-primary"></span>Downloaded
+              </div>
+            </div>
+          </div>
+          <div v-else class="flex-1 min-h-0 flex flex-col items-center justify-center text-center">
+            <span class="material-symbols-outlined text-3xl text-gray-600 mb-1">show_chart</span>
+            <p class="text-sm text-gray-300 font-medium">No library growth data</p>
+            <p class="text-[11px] text-gray-500 mt-0.5 mb-2">Track trends and history will appear here once tracks are imported.</p>
+            <button @click="router.push('/library')" class="px-3 py-1 text-xs bg-primary/20 text-primary hover:bg-primary/30 rounded-lg transition-colors">
+              Go to Library
+            </button>
+          </div>
+        </div>
+
         <!-- Storage Usage -->
-        <div class="stat-card storage-usage bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Storage Usage</h3>
-          <p class="text-3xl font-bold text-white mb-4">{{ stats.storageUsed }}</p>
-          
-          <!-- Stacked Bar -->
-          <div class="h-4 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden flex mb-4">
+        <div class="stat-card storage-usage xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Storage Usage</h3>
+          <p class="text-xl font-bold text-white shrink-0">{{ stats.storageUsed }}</p>
+
+          <div class="h-2 bg-gray-700 rounded-full overflow-hidden flex mt-2 mb-2 shrink-0">
             <template v-if="storageData">
-              <div 
-                v-for="(item, i) in storageData.breakdown" 
+              <div
+                v-for="(item, i) in storageData.breakdown"
                 :key="item.format"
                 :class="[i === 0 ? 'bg-blue-500' : i === 1 ? 'bg-green-500' : 'bg-gray-400', 'h-full']"
                 :style="{ width: (item.size_bytes / storageData.used_bytes * 100) + '%' }"
               ></div>
             </template>
-            <div v-else class="bg-gray-200 dark:bg-gray-600 h-full w-full"></div>
+            <div v-else class="bg-gray-600 h-full w-full"></div>
           </div>
-          
-          <div class="space-y-2 text-sm">
+
+          <div class="flex-1 min-h-0 space-y-1 text-[11px] overflow-hidden">
             <template v-if="storageData">
               <div v-for="(item, i) in storageData.breakdown" :key="item.format" class="flex justify-between">
-                <span class="flex items-center gap-2">
+                <span class="flex items-center gap-1.5 text-gray-300">
                   <span :class="[i === 0 ? 'bg-blue-500' : i === 1 ? 'bg-green-500' : 'bg-gray-400', 'w-2 h-2 rounded']"></span>
                   {{ item.format }}
                 </span>
-                <span class="text-gray-600 dark:text-gray-400">{{ formatBytes(item.size_bytes) }}</span>
+                <span class="text-gray-500">{{ formatBytes(item.size_bytes) }}</span>
               </div>
             </template>
-            <p v-else class="text-gray-500 text-center py-2">No storage data</p>
+            <p v-else class="text-gray-500 py-1">No storage data</p>
           </div>
-          
-          <p class="text-xs text-gray-500 mt-4">{{ stats.storageAvailable }} available · ~{{ stats.perTrackSize }} per track</p>
+
+          <p class="shrink-0 text-[11px] text-gray-500 mt-1">{{ freeSpaceLabel }} · ~{{ stats.perTrackSize }} per track</p>
         </div>
-        
+
         <!-- Quality Distribution -->
-        <div class="stat-card quality-distribution bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Audio Quality</h3>
-          
-          <div v-if="qualityData.length > 0" class="space-y-4">
-            <div v-for="(item, i) in qualityData" :key="item.label" @click="handleQualityClick(item.label)" class="cursor-pointer hover:bg-white/5 rounded-lg p-1 -m-1 transition-colors">
-              <div class="flex justify-between text-sm mb-1">
-                <span class="text-gray-300">{{ item.label }}</span>
-                <span class="text-gray-500">{{ item.count }} tracks</span>
+        <div class="stat-card quality-distribution xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Audio Quality</h3>
+          <div v-if="qualityData.length > 0" class="flex-1 min-h-0 space-y-2 overflow-hidden">
+            <div v-for="(item, i) in qualityData" :key="item.label" @click="handleQualityClick(item.label)" class="cursor-pointer hover:bg-white/5 rounded-lg px-1 -mx-1 py-0.5 transition-colors">
+              <div class="flex justify-between text-[11px] mb-0.5">
+                <span class="text-gray-300 truncate">{{ item.label }}</span>
+                <span class="text-gray-500 shrink-0">{{ item.count }} tracks</span>
               </div>
-              <div class="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
-                <div 
-                  :class="[i === 0 ? 'bg-indigo-500' : i === 1 ? 'bg-blue-400' : 'bg-gray-500', 'h-full rounded-full']" 
+              <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  :class="[i === 0 ? 'bg-indigo-500' : i === 1 ? 'bg-blue-400' : 'bg-gray-500', 'h-full rounded-full']"
                   :style="{ width: (item.count / stats.totalTracks * 100) + '%' }"
                 ></div>
               </div>
             </div>
           </div>
-          <div v-else class="flex flex-col items-center justify-center py-8 text-gray-500 italic text-sm">
-            <span class="material-symbols-outlined text-4xl mb-2">Graphic_Eq</span>
+          <div v-else class="flex-1 min-h-0 flex flex-col items-center justify-center text-gray-500 italic text-xs">
+            <span class="material-symbols-outlined text-3xl mb-1">graphic_eq</span>
             No downloads yet
           </div>
         </div>
-        
+
         <!-- Service Distribution -->
-        <div class="stat-card service-distribution bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Sources</h3>
-          
-          <div class="space-y-4">
+        <div class="stat-card service-distribution xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Sources</h3>
+          <div class="flex-1 min-h-0 space-y-2 overflow-hidden">
             <div v-for="service in stats.services" :key="service.name">
-              <div class="flex justify-between text-sm mb-1">
-                <span class="text-gray-700 dark:text-gray-300">{{ service.name }}</span>
-                <span class="text-gray-500">{{ service.percent }}%</span>
+              <div class="flex justify-between text-[11px] mb-0.5">
+                <span class="text-white truncate pr-2">{{ service.name }}</span>
+                <span class="text-gray-500 shrink-0">{{ service.percent }}%</span>
               </div>
-              <div class="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
-                <div :class="service.color" class="h-full rounded-full" :style="{ width: service.percent + '%' }"></div>
+              <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                <div :class="[service.color, 'h-full rounded-full']" :style="{ width: service.percent + '%' }"></div>
               </div>
             </div>
           </div>
         </div>
-        
-        <!-- Download Stats -->
-        <div class="stat-card download-stats bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Download Statistics</h3>
-          
-          <div class="grid grid-cols-2 gap-4 mb-4">
-            <div>
-              <p class="text-2xl font-bold text-white">{{ queueStats?.total || 0 }}</p>
-              <p class="text-sm text-gray-500">Total Downloads</p>
+
+        <!-- Download Queue -->
+        <div class="stat-card queue-stats xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Download Queue</h3>
+          <div v-if="queueStats" class="flex-1 min-h-0 space-y-1.5 text-[11px] overflow-hidden">
+            <div class="flex justify-between">
+              <span class="text-gray-400">Queued</span>
+              <span class="text-gray-200 font-mono">{{ queueStats.queued }}</span>
             </div>
-            <div>
-              <p class="text-2xl font-bold text-green-500">{{ queueStats?.total ? Math.round((queueStats.completed / queueStats.total) * 100) : 100 }}%</p>
-              <p class="text-sm text-gray-500">Success Rate</p>
+            <div class="flex justify-between">
+              <span class="text-blue-400">Downloading</span>
+              <span class="text-blue-300 font-mono">{{ queueStats.downloading }}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-400">Completed</span>
+              <span class="text-green-500 font-mono">+{{ queueStats.completed }} tracks</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-400">Failed</span>
+              <button v-if="queueStats.failed > 0" @click="goToFailed" class="text-red-400 hover:underline font-mono">{{ queueStats.failed }}</button>
+              <span v-else class="text-gray-600 font-mono">0</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-600">In the queue overall</span>
+              <span class="text-gray-400 font-mono">{{ queueStats.total }}</span>
             </div>
           </div>
-          
-          <div class="space-y-3 text-sm">
-            <div class="flex justify-between">
-              <span class="text-gray-600 dark:text-gray-400">Failed downloads</span>
-              <span class="text-red-500 cursor-pointer hover:underline" @click="goToFailed">{{ queueStats?.failed || 0 }} tracks →</span>
+          <div v-else class="flex-1 min-h-0 flex items-center justify-center text-gray-500 italic text-xs">No queue data</div>
+        </div>
+
+        <!-- Recent Activity -->
+        <div class="stat-card recent-activity xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Recent Activity</h3>
+          <div v-if="recentActivity.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-hidden">
+            <div v-for="activity in recentActivity" :key="activity.id" class="flex items-center gap-2">
+              <div :class="['w-6 h-6 rounded-full flex items-center justify-center shrink-0', activity.color]">
+                <span class="material-symbols-outlined text-xs">{{ activity.icon }}</span>
+              </div>
+              <div class="min-w-0 flex-1">
+                <p class="text-[11px] text-white truncate">{{ activity.text }}</p>
+                <p class="text-[10px] text-gray-500">{{ activity.time }}</p>
+              </div>
             </div>
-            <div class="flex justify-between">
-              <span class="text-gray-600 dark:text-gray-400">Average speed</span>
-              <span class="text-white">—</span>
+          </div>
+          <div v-else class="flex-1 min-h-0 flex flex-col items-center justify-center text-center">
+            <span class="material-symbols-outlined text-3xl text-gray-600 mb-1">history</span>
+            <p class="text-sm text-gray-300 font-medium">No recent activity</p>
+            <p class="text-[11px] text-gray-500 mt-0.5 mb-2">Activity from downloads and queue tasks will appear here.</p>
+            <button @click="router.push('/queue')" class="px-3 py-1 text-xs bg-primary/20 text-primary hover:bg-primary/30 rounded-lg transition-colors">
+              Go to Queue
+            </button>
+          </div>
+        </div>
+
+        <!-- System Diagnostics -->
+        <div class="stat-card system-diagnostics xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">System Diagnostics</h3>
+          <div class="flex-1 min-h-0 space-y-1.5 text-[11px] overflow-hidden">
+            <div class="flex items-center justify-between bg-surface-highlight rounded-lg px-2 py-1.5">
+              <span class="flex items-center gap-1.5 text-gray-200">
+                <span class="material-symbols-outlined text-sm text-blue-400">transform</span>
+                FFmpeg
+              </span>
+              <span v-if="ffmpegStatus === 'checking'" class="material-symbols-outlined text-sm animate-spin text-gray-500">sync</span>
+              <span v-else-if="ffmpegStatus === 'installed'" class="text-success">Installed</span>
+              <span v-else class="text-red-400">Missing</span>
             </div>
-            <div class="flex justify-between">
-              <span class="text-gray-600 dark:text-gray-400">Completed this session</span>
-              <span class="text-green-500">+{{ queueStats?.completed || 0 }} tracks</span>
+            <div class="flex items-center justify-between bg-surface-highlight rounded-lg px-2 py-1.5">
+              <span class="flex items-center gap-1.5 text-gray-200">
+                <span class="material-symbols-outlined text-sm text-purple-400">fingerprint</span>
+                Chromaprint
+              </span>
+              <span v-if="fpcalcStatus === 'checking'" class="material-symbols-outlined text-sm animate-spin text-gray-500">sync</span>
+              <span v-else-if="fpcalcStatus === 'installed'" class="text-success">Installed</span>
+              <span v-else class="text-red-400">Missing</span>
             </div>
           </div>
         </div>
-        
-        <div class="stat-card metadata-quality bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Metadata Quality</h3>
-          
-          <div v-if="metadataStats" class="flex items-center gap-6 mb-4">
-            <!-- Gauge -->
-            <div class="w-24 h-24 relative">
-              <svg viewBox="0 0 100 100" class="transform -rotate-90">
-                <circle cx="50" cy="50" r="40" fill="none" stroke="#e5e7eb" stroke-width="10" class="dark:stroke-gray-700" />
+
+        <!-- Metadata Quality -->
+        <div class="stat-card metadata-quality xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Metadata Quality</h3>
+          <div v-if="metadataStats" class="flex-1 min-h-0 flex gap-3 overflow-hidden">
+            <div class="w-16 h-16 relative shrink-0 self-start">
+              <svg viewBox="0 0 100 100" class="transform -rotate-90 w-full h-full">
+                <circle cx="50" cy="50" r="40" fill="none" stroke="#374151" stroke-width="10" />
                 <circle cx="50" cy="50" r="40" fill="none" stroke="#6366f1" stroke-width="10" stroke-linecap="round"
                   :stroke-dasharray="`${(metadataStats?.average_completeness || 0) * 2.51} 251`" />
               </svg>
               <div class="absolute inset-0 flex items-center justify-center">
-                <p class="text-xl font-bold text-indigo-500">{{ Math.round(metadataStats?.average_completeness || 0) }}%</p>
+                <p class="text-xs font-bold text-indigo-500">{{ Math.round(metadataStats?.average_completeness || 0) }}%</p>
               </div>
             </div>
-            
-            <div class="flex-1 space-y-2 text-sm">
+            <div class="flex-1 min-w-0 space-y-1 text-[11px]">
               <div class="flex justify-between">
                 <span class="text-blue-500">With Art</span>
                 <span>{{ metadataStats.total_tracks > 0 ? Math.round((metadataStats.with_art / metadataStats.total_tracks) * 100) : 0 }}%</span>
@@ -238,226 +296,94 @@
               </div>
             </div>
           </div>
-          
-          <button @click="goToMetadata" class="w-full py-2 text-sm text-primary hover:bg-primary/5 rounded-lg border border-primary/20 mt-2">Improve Metadata</button>
+          <div v-else class="flex-1 min-h-0 flex items-center justify-center text-gray-500 italic text-xs">No metadata data</div>
         </div>
-        
-        <div class="stat-card lyrics-coverage bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Lyrics Coverage</h3>
-          
-          <div v-if="lyricsStats" class="flex items-center gap-4 mb-4">
-            <div class="w-20 h-20 relative">
-              <svg viewBox="0 0 100 100" class="transform -rotate-90">
-                <circle cx="50" cy="50" r="35" fill="none" stroke="#3b82f6" stroke-width="15" 
-                  :stroke-dasharray="`${(lyricsStats.total_tracks > 0 ? (lyricsStats.synced_lyrics / lyricsStats.total_tracks) * 100 : 0) * 2.2} 220`" />
-                <circle cx="50" cy="50" r="35" fill="none" stroke="#9ca3af" stroke-width="15" 
-                  :stroke-dasharray="`${(lyricsStats.total_tracks > 0 ? ((lyricsStats.with_lyrics - lyricsStats.synced_lyrics) / lyricsStats.total_tracks) * 100 : 0) * 2.2} 220`" 
-                  :stroke-dashoffset="`-${(lyricsStats.total_tracks > 0 ? (lyricsStats.synced_lyrics / lyricsStats.total_tracks) * 100 : 0) * 2.2}`" />
-                <circle cx="50" cy="50" r="35" fill="none" stroke="#ef4444" stroke-width="15" 
-                  :stroke-dasharray="`${(lyricsStats.total_tracks > 0 ? ((lyricsStats.total_tracks - lyricsStats.with_lyrics) / lyricsStats.total_tracks) * 100 : 0) * 2.2} 220`" 
-                  :stroke-dashoffset="`-${(lyricsStats.total_tracks > 0 ? (lyricsStats.with_lyrics / lyricsStats.total_tracks) * 100 : 0) * 2.2}`" />
-              </svg>
+
+        <!-- Lyrics Coverage -->
+        <div class="stat-card lyrics-coverage xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Lyrics Coverage</h3>
+          <div v-if="lyricsStats" class="flex-1 min-h-0 flex flex-col overflow-hidden">
+            <div class="shrink-0 flex items-baseline gap-2 mb-2">
+              <span class="text-xl font-bold text-white">{{ lyricsStats.total_tracks > 0 ? Math.round((lyricsStats.with_lyrics / lyricsStats.total_tracks) * 100) : 0 }}%</span>
+              <span class="text-[11px] text-gray-500">{{ lyricsStats.with_lyrics }} / {{ lyricsStats.total_tracks }} tracks</span>
             </div>
-            
-            <div class="flex-1 space-y-2 text-sm">
-              <div class="flex justify-between">
-                <span class="flex items-center gap-2"><span class="w-2 h-2 rounded bg-blue-500"></span>Synced</span>
-                <span>{{ lyricsStats.total_tracks > 0 ? Math.round((lyricsStats.synced_lyrics / lyricsStats.total_tracks) * 100) : 0 }}%</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="flex items-center gap-2"><span class="w-2 h-2 rounded bg-gray-400"></span>Unsynced</span>
-                <span>{{ lyricsStats.total_tracks > 0 ? Math.round(((lyricsStats.with_lyrics - lyricsStats.synced_lyrics) / lyricsStats.total_tracks) * 100) : 0 }}%</span>
-              </div>
-              <div class="flex justify-between">
-                <span class="flex items-center gap-2"><span class="w-2 h-2 rounded bg-red-500"></span>Missing</span>
-                <span>{{ lyricsStats.total_tracks > 0 ? Math.round(((lyricsStats.total_tracks - lyricsStats.with_lyrics) / lyricsStats.total_tracks) * 100) : 0 }}%</span>
-              </div>
+            <div class="shrink-0 h-1.5 bg-gray-700 rounded-full overflow-hidden mb-2">
+              <div class="h-full bg-primary rounded-full" :style="{ width: (lyricsStats.total_tracks > 0 ? (lyricsStats.with_lyrics / lyricsStats.total_tracks) * 100 : 0) + '%' }"></div>
             </div>
+            <div class="flex-1 min-h-0 flex items-end justify-between text-[10px] text-gray-500 shrink-0">
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-green-500"></span>{{ lyricsStats.synced_lyrics }} synced</span>
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-yellow-500"></span>Missing {{ lyricsStats.total_tracks > 0 ? lyricsStats.total_tracks - lyricsStats.with_lyrics : 0 }}</span>
+            </div>
+            <button
+              class="shrink-0 mt-2 py-1 text-[11px] text-primary hover:bg-primary/5 rounded-lg border border-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              @click="fetchMissingLyrics"
+              :disabled="isFetchingLyrics"
+            >
+              <span v-if="isFetchingLyrics" class="flex items-center justify-center gap-1">
+                <span class="material-symbols-outlined text-sm animate-spin">sync</span>
+                Fetching...
+              </span>
+              <span v-else>Fetch Missing Lyrics</span>
+            </button>
           </div>
-          
-          <button 
-            class="w-full py-2 text-sm text-primary hover:bg-primary/5 rounded-lg border border-primary/20 mt-2 disabled:opacity-50 disabled:cursor-not-allowed" 
-            @click="fetchMissingLyrics"
-            :disabled="isFetchingLyrics"
-          >
-            <span v-if="isFetchingLyrics" class="flex items-center justify-center gap-2">
-              <span class="material-symbols-outlined text-[18px] animate-spin">sync</span>
-              Fetching...
-            </span>
-            <span v-else>Fetch Missing Lyrics</span>
-          </button>
+          <div v-else class="flex-1 min-h-0 flex items-center justify-center text-gray-500 italic text-xs">No lyrics data</div>
         </div>
-        
+
         <!-- Top Artists -->
-        <div class="stat-card top-artists bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Top Artists</h3>
-          <div v-if="stats.topArtists.length > 0" class="space-y-4">
+        <div class="stat-card top-artists xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Top Artists</h3>
+          <div v-if="stats.topArtists.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-hidden">
             <div v-for="artist in stats.topArtists" :key="artist.name">
-              <div class="flex justify-between text-sm mb-1">
-                <span class="text-white truncate pr-2 max-w-[150px]">{{ artist.name }}</span>
+              <div class="flex justify-between text-[11px] mb-0.5">
+                <span class="text-white truncate pr-2">{{ artist.name }}</span>
                 <span class="text-gray-500 shrink-0">{{ artist.tracks }} tracks</span>
               </div>
-              <div class="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
                 <div class="bg-primary h-full rounded-full" :style="{ width: artist.percent + '%' }"></div>
               </div>
             </div>
           </div>
-          <div v-else class="flex flex-col items-center justify-center py-8 text-gray-500 italic text-sm text-center">
-            <span class="material-symbols-outlined text-4xl mb-2">person_search</span>
+          <div v-else class="flex-1 min-h-0 flex flex-col items-center justify-center text-gray-500 italic text-xs text-center">
+            <span class="material-symbols-outlined text-3xl mb-1">person_search</span>
             No artists in library
           </div>
         </div>
-        
+
         <!-- Top Genres -->
-        <div class="stat-card top-genres bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Top Genres</h3>
-          <div v-if="stats.topGenres.length > 0" class="space-y-4">
+        <div class="stat-card top-genres xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Top Genres</h3>
+          <div v-if="stats.topGenres.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-hidden">
             <div v-for="genre in stats.topGenres" :key="genre.name">
-              <div class="flex justify-between text-sm mb-1">
-                <span class="text-white truncate pr-2 max-w-[150px]">{{ genre.name }}</span>
+              <div class="flex justify-between text-[11px] mb-0.5">
+                <span class="text-white truncate pr-2">{{ genre.name }}</span>
                 <span class="text-gray-500 shrink-0">{{ genre.tracks }} tracks</span>
               </div>
-              <div class="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
                 <div class="bg-primary h-full rounded-full" :style="{ width: genre.percent + '%' }"></div>
               </div>
             </div>
           </div>
-          <div v-else class="flex flex-col items-center justify-center py-8 text-gray-500 italic text-sm text-center">
-            <span class="material-symbols-outlined text-4xl mb-2">category</span>
+          <div v-else class="flex-1 min-h-0 flex flex-col items-center justify-center text-gray-500 italic text-xs text-center">
+            <span class="material-symbols-outlined text-3xl mb-1">category</span>
             No genres in library
           </div>
         </div>
-        
-        <!-- Library Growth (Spans 2 columns) -->
-        <div class="stat-card growth-chart col-span-1 md:col-span-2 bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-semibold text-white">Library Growth</h3>
-            <select v-model="timeRange" class="px-3 py-1.5 bg-gray-100 dark:bg-surface-highlight rounded-lg text-sm text-gray-700 dark:text-gray-300">
-              <option value="7d">Last 7 days</option>
-              <option value="30d">Last 30 days</option>
-              <option value="1y">Last year</option>
-              <option value="all">All time</option>
-            </select>
-          </div>
-          
-          <!-- Simplified Chart Placeholder -->
-          <template v-if="growthData.length > 0">
-            <div class="h-48 flex items-end gap-2 px-4">
-              <div v-for="(point, index) in growthData" :key="index" class="flex-1 flex flex-col items-center gap-1">
-                <div class="w-full bg-primary/20 rounded-t relative" :style="{ height: point.total + '%' }">
-                  <div class="absolute bottom-0 w-full bg-green-500 rounded-t" :style="{ height: point.total > 0 ? (point.downloaded / point.total * 100) + '%' : '0%' }"></div>
-                </div>
-                <span class="text-xs text-gray-400">{{ point.label }}</span>
-              </div>
-            </div>
-            
-            <div class="flex items-center gap-6 mt-4 text-sm">
-              <span class="flex items-center gap-2">
-                <span class="w-3 h-3 rounded bg-primary/20"></span>
-                Total tracks
-              </span>
-              <span class="flex items-center gap-2">
-                <span class="w-3 h-3 rounded bg-green-500"></span>
-                Downloaded
-              </span>
-            </div>
-          </template>
-          <div v-else class="h-48 flex flex-col items-center justify-center text-gray-400 text-sm text-center">
-            <span class="material-symbols-outlined text-4xl mb-2 text-gray-500">trending_up</span>
-            <p class="text-gray-300 font-medium">No library growth data</p>
-            <p class="text-xs text-gray-500 mt-1 mb-3">Track trends and history will appear here once tracks are imported.</p>
-            <button @click="router.push('/library')" class="px-3 py-1.5 text-xs bg-primary/20 text-primary hover:bg-primary/30 rounded-lg transition-colors cursor-pointer">
-              Go to Library
-            </button>
-          </div>
-        </div>
-        
-        <!-- Recent Activity -->
-        <div class="stat-card activity-timeline bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">Recent Activity</h3>
-          
-          <div v-if="recentActivity.length > 0" class="space-y-4">
-            <div v-for="activity in recentActivity" :key="activity.id" class="flex items-start gap-3">
-              <div :class="['w-8 h-8 rounded-full flex items-center justify-center shrink-0', activity.color]">
-                <span class="material-symbols-outlined text-sm">{{ activity.icon }}</span>
-              </div>
-              <div class="flex-1 min-w-0">
-                <p class="text-sm text-white truncate">{{ activity.text }}</p>
-                <p class="text-xs text-gray-500">{{ activity.time }}</p>
-              </div>
-            </div>
-          </div>
-          <div v-else class="flex flex-col items-center justify-center py-10 text-gray-400 text-sm text-center">
-            <span class="material-symbols-outlined text-4xl mb-2 text-gray-500">history</span>
-            <p class="text-gray-300 font-medium">No recent activity</p>
-            <p class="text-xs text-gray-500 mt-1 mb-3">Activity from downloads and queue tasks will appear here.</p>
-            <button @click="router.push('/queue')" class="px-3 py-1.5 text-xs bg-primary/20 text-primary hover:bg-primary/30 rounded-lg transition-colors cursor-pointer">
-              Go to Queue
-            </button>
-          </div>
-        </div>
-        
+
         <!-- Duplicates -->
-        <div class="stat-card duplicates bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6" :class="{ 'opacity-60': duplicateStats === null }">
-          <h3 class="text-lg font-semibold text-white mb-4">Duplicates</h3>
-          
-          <div class="text-center py-4">
-            <p class="text-3xl font-bold text-gray-600 mb-1" :class="{ 'text-warning': duplicateStats && duplicateStats > 0 }">{{ duplicateStats ?? '—' }}</p>
-            <p class="text-sm text-gray-500">{{ duplicateStats === null ? 'Scanning...' : 'Extra tracks detected' }}</p>
+        <div class="stat-card duplicates xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden" :class="{ 'opacity-60': duplicateStats === null }">
+          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Duplicates</h3>
+          <div class="flex-1 min-h-0 flex flex-col items-center justify-center">
+            <p class="text-2xl font-bold text-gray-600 mb-0.5" :class="{ 'text-warning': duplicateStats && duplicateStats > 0 }">{{ duplicateStats ?? '—' }}</p>
+            <p class="text-[11px] text-gray-500 text-center">{{ duplicateStats === null ? 'Scanning...' : 'Extra tracks detected' }}</p>
           </div>
-          
-          <div class="flex gap-2 mt-4">
-            <button :disabled="!duplicateStats" @click="goToDuplicates" :class="[duplicateStats ? 'bg-primary/20 text-primary hover:bg-primary/30 cursor-pointer' : 'bg-primary/5 text-primary/40 cursor-not-allowed']" class="flex-1 py-2 text-sm rounded-lg transition-colors">Review</button>
-            <button @click="handleAutoResolveDuplicates" :disabled="isAutoResolving || !duplicateStats" :title="isAutoResolving ? 'Resolving duplicates...' : 'Auto-resolve duplicates by keeping highest quality'" class="flex-1 py-2 text-sm border border-gray-800 text-gray-400 hover:text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-              <span v-if="isAutoResolving" class="material-symbols-outlined text-sm animate-spin mr-1">sync</span>
+          <div class="shrink-0 flex gap-1.5 mt-2">
+            <button :disabled="!duplicateStats" @click="goToDuplicates" :class="[duplicateStats ? 'bg-primary/20 text-primary hover:bg-primary/30 cursor-pointer' : 'bg-primary/5 text-primary/40 cursor-not-allowed']" class="flex-1 py-1 text-[11px] rounded-lg transition-colors">Review</button>
+            <button @click="handleAutoResolveDuplicates" :disabled="isAutoResolving || !duplicateStats" title="Auto-resolve duplicates by keeping highest quality" class="flex-1 py-1 text-[11px] border border-border-dark text-gray-400 hover:text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <span v-if="isAutoResolving" class="material-symbols-outlined text-xs animate-spin mr-1">sync</span>
               Auto-resolve
             </button>
           </div>
         </div>
-
-        <!-- System Diagnostics -->
-        <div class="stat-card system-diagnostics bg-surface-dark rounded-2xl shadow-sm border border-gray-200 dark:border-border-dark p-6">
-          <h3 class="text-lg font-semibold text-white mb-4">System Diagnostics</h3>
-          
-          <div class="space-y-4">
-            <!-- FFmpeg -->
-            <div class="flex items-center justify-between p-3 bg-surface-highlight rounded-xl">
-              <div class="flex items-center gap-3">
-                <span class="material-symbols-outlined text-blue-400">transform</span>
-                <span class="text-sm text-gray-200">FFmpeg (Conversion)</span>
-              </div>
-              <div class="flex items-center gap-2">
-                <span v-if="ffmpegStatus === 'checking'" class="material-symbols-outlined text-sm animate-spin text-gray-500">sync</span>
-                <span v-else-if="ffmpegStatus === 'installed'" class="material-symbols-outlined text-success">check_circle</span>
-                <span v-else class="material-symbols-outlined text-error">cancel</span>
-                <span class="text-xs uppercase font-bold" :class="ffmpegStatus === 'installed' ? 'text-success' : 'text-gray-500'">
-                  {{ ffmpegStatus === 'checking' ? 'Checking' : ffmpegStatus }}
-                </span>
-              </div>
-            </div>
-
-            <!-- Chromaprint (fpcalc) -->
-            <div class="flex items-center justify-between p-3 bg-surface-highlight rounded-xl">
-              <div class="flex items-center gap-3">
-                <span class="material-symbols-outlined text-purple-400">fingerprint</span>
-                <span class="text-sm text-gray-200">Chromaprint (fpcalc)</span>
-              </div>
-              <div class="flex items-center gap-2">
-                <span v-if="fpcalcStatus === 'checking'" class="material-symbols-outlined text-sm animate-spin text-gray-500">sync</span>
-                <span v-else-if="fpcalcStatus === 'installed'" class="material-symbols-outlined text-success">check_circle</span>
-                <span v-else class="material-symbols-outlined text-error">cancel</span>
-                <span class="text-xs uppercase font-bold" :class="fpcalcStatus === 'installed' ? 'text-success' : 'text-gray-500'">
-                  {{ fpcalcStatus === 'checking' ? 'Checking' : fpcalcStatus }}
-                </span>
-              </div>
-            </div>
-          </div>
-          
-          <p class="text-[10px] text-gray-500 mt-4 leading-tight italic">
-            Required for audio conversion and duplicate detection.
-          </p>
-        </div>
-        
       </div>
     </div>
   </div>
@@ -563,6 +489,7 @@ const stats = computed(() => {
     totalArtists: lib?.total_artists ?? 0,
     totalPlaylists: lib?.playlists ?? 0,
     downloadedTracks: lib?.total_downloads ?? 0,
+    activeDownloads: lib?.active_downloads ?? 0,
     streamingTracks: (lib?.total_tracks ?? 0) - (lib?.total_downloads ?? 0),
     downloadedPercent,
     storageUsed: storageData.value ? formatBytes(storageData.value.used_bytes) : '-- GB',
@@ -590,6 +517,15 @@ const stats = computed(() => {
 
 // Growth chart data (initialized empty to avoid fictitious mock data)
 const growthData = ref<{ label: string, total: number, downloaded: number }[]>([])
+
+// `get_storage_stats` returns total_bytes = 0 when it cannot locate the disk
+// holding the library (see storage.rs:36-59). Painting that 0 as free space
+// claimed a full disk that was never measured.
+const freeSpaceLabel = computed(() => {
+  const storage = storageData.value
+  if (!storage || storage.total_bytes <= 0) return 'Free space unavailable'
+  return `${formatBytes(storage.available_bytes)} free on disk`
+})
 
 async function fetchRecentActivity() {
   try {

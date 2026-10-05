@@ -452,6 +452,52 @@ jobs:
           echo "Tarball crudo generado en dist/linux/Syncify-Linux-x86_64.tar.gz"
           du -sh Syncify-Linux-Raw Syncify-Linux-x86_64.tar.gz *.AppImage 2>/dev/null || true
 
+      # El abort de EGL ("Could not create default EGL display: EGL_BAD_PARAMETER.
+      # Aborting...") mata el proceso entero y ningun paso anterior lo ve: el
+      # smoke de Python solo lanza el interprete. Aqui arranca la app de verdad
+      # y se comprueba que sigue viva y que su log cuenta lo mismo. El runner no
+      # tiene GPU, asi que esto NO reproduce la combinacion (Iris Xe + Wayland)
+      # que provoca el fallo del usuario: cubre el arranque, no ese hardware.
+      #
+      # Se ejecuta el binario del AppImage YA EXTRAIDO y no el AppImage: los
+      # runners no garantizan FUSE y el abort viene de WebKitGTK dentro del
+      # proceso, no del AppRun.
+      - name: Arranque real del AppImage (guarda contra el abort de EGL)
+        run: |
+          set -uo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb
+          AI=$(ls dist/linux/*.AppImage | head -1)
+          AI_ABS="$PWD/$AI"
+          WORK="$(mktemp -d)"
+          ( cd "$WORK" && "$AI_ABS" --appimage-extract >/dev/null )
+          BIN=$(find "$WORK/squashfs-root/usr/bin" -maxdepth 1 -type f -name 'syncify*' | head -1)
+          if [ -z "$BIN" ]; then
+            echo "::error::no se encontro el binario dentro del AppImage"
+            ls -R "$WORK/squashfs-root/usr" | head -40
+            exit 1
+          fi
+          LOG="$(mktemp)"
+          set +e
+          # 124 es el codigo de `timeout` cuando el proceso aguanto hasta el corte.
+          timeout --signal=INT 45 xvfb-run -a "$BIN" > "$LOG" 2>&1
+          code=$?
+          set -e
+          cat "$LOG"
+          if grep -q "Could not create default EGL display" "$LOG"; then
+            echo "::error::el AppImage aborta al crear el display EGL"
+            exit 1
+          fi
+          if ! grep -q "Syncify starting" "$LOG"; then
+            echo "::error::la app no llego al arranque (log arriba)"
+            exit 1
+          fi
+          if [ "$code" -ne 124 ]; then
+            echo "::error::la app salio con codigo $code en vez de seguir viva (log arriba)"
+            exit 1
+          fi
+          echo "Arranque verificado: ventana viva 45 s sin abort de EGL"
+
       - name: Subir Paquetes Linux como Artefacto
         uses: actions/upload-artifact@v4
         with:

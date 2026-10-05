@@ -213,6 +213,10 @@ def handle_tidal(action: str):
     if action == "login":
         auth = TidalAuth(verbose=False)
         result = tidal_login(auth)
+        # La URL de verificación viaja en la respuesta aunque el flujo falle: es
+        # el único modo de que el usuario pueda completar la conexión a mano
+        # cuando el escritorio no abre el navegador.
+        verification_url = (result.get("device_info") or {}).get("verification_url")
         # tidal_login returns {"status": "success"} not {"success": true}
         if result.get("status") == "success":
             tokens = result.get("tokens") or auth.get_stored_tokens()
@@ -225,11 +229,19 @@ def handle_tidal(action: str):
                     "user_id": str(tokens.get("user_id", tokens.get("user", {}).get("userId", ""))),
                     "country_code": tokens.get("user", {}).get("countryCode", "US"),
                     "email": tokens.get("user", {}).get("email"),
+                    "verification_url": verification_url,
                 })
             else:
-                json_response(True, {"message": result.get("message", "Connected to Tidal")})
+                json_response(True, {
+                    "message": result.get("message", "Connected to Tidal"),
+                    "verification_url": verification_url,
+                })
         else:
-            json_response(False, error=result.get("message", "Tidal login failed"))
+            json_response(
+                False,
+                {"verification_url": verification_url},
+                error=result.get("message", "Tidal login failed"),
+            )
             
     elif action == "status":
         result = tidal_status()

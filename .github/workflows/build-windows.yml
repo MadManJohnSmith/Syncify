@@ -231,6 +231,39 @@ jobs:
       - name: Compilar con Tauri v2 (Instalador NSIS y Binarios)
         run: npx --prefix ui tauri build
 
+      # Sin esto el instalador sale sin Python: bundle.resources solo declaraba
+      # scripts, el NSIS empaqueta lo que encuentra en el arbol y una instalacion
+      # limpia caia al Python del sistema (auditoria 1). Se comprueba DENTRO del
+      # instalador con 7-Zip, que sabe listar archivos NSIS. Si 7-Zip no consigue
+      # listarlo se avisa y se sigue (bloquear la release por una limitacion de
+      # la herramienta seria peor); si lo lista y no encuentra el runtime, el
+      # build falla, que es justo el fallo silencioso que hay que cazar.
+      - name: Verificar que el instalador NSIS incluye el Python embebido
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $nsisInstaller = Get-ChildItem -Path "target/release/bundle/nsis/*.exe" | Select-Object -First 1
+          if (-not $nsisInstaller) {
+            throw "No se encontro el instalador NSIS en target/release/bundle/nsis/"
+          }
+          if (-not (Test-Path "python/python.exe")) {
+            throw "python/python.exe no existe: el instalador se empaquetaria sin runtime"
+          }
+
+          $listing = Join-Path $env:RUNNER_TEMP "nsis-listing.txt"
+          & 7z l $nsisInstaller.FullName > $listing 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "7-Zip no pudo listar el instalador (salida $LASTEXITCODE): verificacion omitida"
+            Get-Content $listing -TotalCount 10
+            exit 0
+          }
+          if (-not (Select-String -Path $listing -Pattern '_up_.+python\.exe' -Quiet)) {
+            Write-Host "Primeras entradas del instalador:"
+            Get-Content $listing -TotalCount 20
+            throw "El instalador NSIS no contiene _up_/python/python.exe: bundle.resources no lo empaco"
+          }
+          Write-Host "Runtime Python embebido confirmado en: $($nsisInstaller.Name)"
+
       - name: Preparar versión Portable y organizar artefactos
         shell: powershell
         run: |

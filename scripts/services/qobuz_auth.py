@@ -13,6 +13,17 @@ from typing import Optional, Tuple, Dict, Any
 from urllib.parse import parse_qs, urlparse
 
 
+def cookie_names(cookies: Dict[str, Any]) -> list:
+    """Nombres de las cookies presentes, nunca sus valores.
+
+    `auth_token` y `uid` son fragmentos de sesión que Qobuz reutiliza como
+    credencial, y la redacción de `src-tauri/src/commands/auth.rs` sólo cubre
+    claves JSON: un valor —ni siquiera truncado a 50 caracteres— acababa en el
+    log de autenticación. Para diagnosticar qué falta basta con los nombres.
+    """
+    return sorted(cookies.keys())
+
+
 def should_attempt_token_capture_navigation(
     *,
     is_logged_in_page: bool,
@@ -318,14 +329,12 @@ class QobuzAuth:
                 # Look for Qobuz session cookies - check various possible names
                 user_id = None
                 auth_token = None
-                all_cookies = {}
                 full_cookies = {}
                 
                 for cookie in cookies:
                     name = cookie["name"]
                     value = cookie["value"]
                     full_cookies[name] = value
-                    all_cookies[name] = value[:50] + "..." if len(value) > 50 else value
                     
                     # Check for user ID cookies
                     if name in ("qobuz_user_id", "user_id", "uid"):
@@ -402,7 +411,7 @@ class QobuzAuth:
                     
                     if is_logged_in_page and not session_data:
                         self._log(f"Detected logged-in page: {current_url}")
-                        self._log(f"All cookies: {all_cookies}")
+                        self._log(f"Cookie names present: {cookie_names(full_cookies)}")
                         
                         # User is logged in - try to get user info from page
                         try:

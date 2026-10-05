@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 05 - Bifurcación 1 a 3</title>
+    <g stroke="currentColor" stroke-width="12" fill="none" stroke-linecap="round">
+    <path d="M64,24 L64,52"/>
+    <path d="M64,52 C64,74 38,68 38,88"/>
+    <path d="M64,52 L64,88"/>
+    <path d="M64,52 C64,74 90,68 90,88"/>
+  </g>
+  <g fill="currentColor">
+    <circle cx="38" cy="88" r="8"/>
+    <circle cx="64" cy="88" r="8"/>
+    <circle cx="90" cy="88" r="8"/>
+  </g>
+</svg>

@@ -1,4 +1,4 @@
-//! Security Tests for Apple Music Motion / Animated Cover Stream Ingestion [SEC-015 / TASK-99]
+//! Security Tests for Motion / Animated Cover Stream Ingestion [SEC-015 / TASK-99]
 //!
 //! Validates:
 //! 1. Insecure URL schemes (`file://`, `http://`, `concat:`, `gopher://`, `ftp://`, etc.) are strictly rejected.
@@ -7,10 +7,13 @@
 //! 4. Embedded credentials (userinfo) in stream URLs are rejected.
 //! 5. Loopback URLs are rejected by default and only accepted when explicitly permitted for tests.
 //! 6. FFmpeg argument builder enforces `-protocol_whitelist` `"https,tls,tcp"` positioned before `-i`.
+//! 7. Tidal fallback (`*.tidal.com`) is accepted and its `videoCover` UUID
+//!    parser only emits HTTPS `resources.tidal.com` URLs.
 
 use syncify_tauri_lib::services::animated_cover::{
-    build_ffmpeg_animated_cover_args, validate_hls_stream_url, validate_hls_stream_url_for_test,
-    validate_hls_stream_url_opts, FFMPEG_HLS_PROTOCOL_WHITELIST,
+    build_ffmpeg_animated_cover_args, extract_tidal_video_candidates, tidal_video_cover_url,
+    validate_hls_stream_url, validate_hls_stream_url_for_test, validate_hls_stream_url_opts,
+    FFMPEG_HLS_PROTOCOL_WHITELIST,
 };
 
 #[test]
@@ -230,4 +233,124 @@ fn test_ffmpeg_arguments_include_protocol_whitelist_before_input() {
 
     // 4. Verify output path is the final argument
     assert_eq!(args.last(), Some(&test_output));
+}
+
+// ═══════════════════════════════════════════════════════
+// TIDAL FALLBACK (fuente secundaria)
+// ═══════════════════════════════════════════════════════
+
+#[test]
+fn test_accepts_legitimate_tidal_motion_cover_urls() {
+    let legitimate_urls = [
+        "https://resources.tidal.com/videos/d5/e4/8f/de/b33c400aa632b1e667731cd4/640x640.mp4",
+        "https://resources.tidal.com/videos/d5/e4/8f/de/b33c400aa632b1e667731cd4/1280x1280.mp4",
+        "https://resources.tidal.com/videos/d5/e4/8f/de/b33c400aa632b1e667731cd4/origin.mp4",
+        // Case-insensitivity
+        "https://RESOURCES.TIDAL.COM/videos/d5/e4/8f/de/b33c400aa632b1e667731cd4/640x640.mp4",
+    ];
+
+    for raw_url in legitimate_urls {
+        let result = validate_hls_stream_url(raw_url);
+        assert!(
+            result.is_ok(),
+            "Expected legitimate Tidal URL to be accepted: '{}', got error: {:?}",
+            raw_url,
+            result.err()
+        );
+    }
+}
+
+#[test]
+fn test_rejects_tidal_host_spoofs() {
+    let unauthorized_urls = [
+        "https://resources.tidal.com.attacker.com/videos/x/640x640.mp4",
+        "https://resources.tidal.com.evil.com/videos/x/640x640.mp4",
+        "https://tideal.com/videos/x/640x640.mp4",
+        "http://resources.tidal.com/videos/x/640x640.mp4",
+    ];
+
+    for raw_url in unauthorized_urls {
+        let result = validate_hls_stream_url(raw_url);
+        assert!(
+            result.is_err(),
+            "Expected spoofed/invalid Tidal host to be rejected: '{}', got {:?}",
+            raw_url,
+            result
+        );
+    }
+}
+
+#[test]
+fn test_tidal_video_cover_url_builds_verified_pattern() {
+    // UUID real observado en la API (Certified Lover Boy, id 196486028). El
+    // patrón verificado (sone, vivi-music y Levyra coinciden): cada guion del
+    // UUID se convierte en barra de ruta.
+    let uuid = "d5e48fde-b33c-400a-a632-b1e667731cd4";
+    assert_eq!(
+        tidal_video_cover_url(uuid, "640x640.mp4"),
+        Some(
+            "https://resources.tidal.com/videos/d5e48fde/b33c/400a/a632/b1e667731cd4/640x640.mp4"
+                .to_string()
+        )
+    );
+
+    // Un valor que no sea UUID válido no construye URL alguna.
+    assert_eq!(tidal_video_cover_url("not-a-uuid", "640x640.mp4"), None);
+    assert_eq!(tidal_video_cover_url("", "640x640.mp4"), None);
+    assert_eq!(
+        tidal_video_cover_url("zzzzzzzz-1111-2222-3333-444444444444", "640x640.mp4"),
+        None,
+        "hex no válido debe rechazarse"
+    );
+}
+
+#[test]
+fn test_extract_tidal_video_candidates_prefers_videocover_uuid() {
+    let album = serde_json::json!({
+        "id": 196486028,
+        "title": "Certified Lover Boy",
+        "videoCover": "d5e48fde-b33c-400a-a632-b1e667731cd4"
+    });
+
+    let candidates = extract_tidal_video_candidates(&album);
+    assert_eq!(
+        candidates.len(),
+        3,
+        "un UUID expande a los 3 ficheros: {candidates:?}"
+    );
+    assert!(
+        candidates[0].ends_with("/640x640.mp4"),
+        "orden de preferencia: {candidates:?}"
+    );
+    assert!(candidates[1].ends_with("/1280x1280.mp4"));
+    assert!(candidates[2].ends_with("/origin.mp4"));
+}
+
+#[test]
+fn test_extract_tidal_video_candidates_handles_videothumbnail_shapes() {
+    // Objeto con claves por tamaño: se aceptan URLs https de tidal.com,
+    // se descartan esquemas inseguros y hosts ajenos.
+    let album = serde_json::json!({
+        "videoThumbnail": {
+            "large": "https://resources.tidal.com/videos/aa/bb/cc/dd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/origin.mp4",
+            "small": "http://evil.com/steal.mp4",
+            "medium": "https://attacker.com/steal.mp4"
+        }
+    });
+    let candidates = extract_tidal_video_candidates(&album);
+    assert_eq!(
+        candidates,
+        vec!["https://resources.tidal.com/videos/aa/bb/cc/dd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/origin.mp4".to_string()],
+        "solo la URL https de tidal.com debe salir: {candidates:?}"
+    );
+
+    // String plano con URL de tidal.com también se acepta.
+    let album_string = serde_json::json!({
+        "videoThumbnail": "https://resources.tidal.com/videos/aa/bb/cc/dd/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/640x640.mp4"
+    });
+    assert_eq!(extract_tidal_video_candidates(&album_string).len(), 1);
+
+    // Un álbum sin campos de video no produce candidatos.
+    let plain = serde_json::json!({ "title": "Renaissance", "videoCover": null });
+    assert!(extract_tidal_video_candidates(&plain).is_empty());
 }

@@ -96,6 +96,48 @@ pub struct SoundCloudLike {
     pub created_at: Option<String>,
 }
 
+/// Colección paginada de la API v2: `next_href` es la URL completa de la
+/// página siguiente (o `null` en la última), igual que en los likes.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Cubierta por `tests/soundcloud_playlists_client_test.rs`.
+pub struct SoundCloudPlaylistCollection {
+    pub collection: Vec<SoundCloudPlaylistItem>,
+    pub next_href: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Cubierta por `tests/soundcloud_playlists_client_test.rs`.
+pub struct SoundCloudPlaylistItem {
+    pub playlist: Option<SoundCloudPlaylist>,
+}
+
+/// Playlist propia de una cuenta. La API v2 las expone en
+/// `/me/library/playlists_without_albums`; el mismo recorrido ya lo hacía el
+/// servicio Python (`scripts/services/soundcloud_service.py:454`), así que el
+/// endpoint es real y no una suposición.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Cubierta por `tests/soundcloud_playlists_client_test.rs`.
+pub struct SoundCloudPlaylist {
+    pub id: i64,
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub track_count: i64,
+    /// Duración acumulada en milisegundos, igual que `SoundCloudTrack::duration`.
+    #[serde(default)]
+    pub duration: i64,
+    #[serde(default)]
+    pub user: Option<SoundCloudUser>,
+}
+
+impl SoundCloudPlaylist {
+    #[allow(dead_code)] // Cubierta por `tests/soundcloud_playlists_client_test.rs`.
+    pub fn display_name(&self) -> &str {
+        self.title.trim()
+    }
+}
+
 impl SoundCloudTrack {
     /// Artista credited por el sello, si el track tiene `publisher_metadata`.
     pub fn publisher_artist(&self) -> Option<&str> {
@@ -214,21 +256,35 @@ impl SoundCloudClient {
         self
     }
 
-    /// Get user's liked tracks (paginated via next_href)
-    pub async fn get_likes(&self, url: Option<&str>) -> Result<SoundCloudCollection, String> {
-        let user_id = self.user_id.ok_or("User ID not set")?;
+    /// Convierte el `next_href` de una página en una URL absoluta.
+    ///
+    /// `reqwest` rechaza una ruta relativa con `builder error`, y el fallo ocurre
+    /// a mitad de la paginación: aborta el resto del sync y deja un error que no
+    /// dice qué pasa. Resolver la ruta contra `api_base` cubre las dos formas sin
+    /// depender de cuál devuelva cada endpoint.
+    fn resolve_next_href(&self, next_href: &str) -> String {
+        if next_href.starts_with("http://") || next_href.starts_with("https://") {
+            return next_href.to_string();
+        }
+        format!("{}/{}", self.api_base, next_href.trim_start_matches('/'))
+    }
 
-        let request_url = url
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("{}/users/{}/likes?limit=100", self.api_base, user_id));
-
+    /// Petición GET autenticada a una colección paginada de la API v2.
+    ///
+    /// Likes, playlists y pistas de playlist comparten autenticación, limitador
+    /// global y forma de error; la única diferencia es la URL y el tipo que se
+    /// deserializa, así que viven aquí en vez de triplicarse.
+    async fn get_collection<T: for<'de> Deserialize<'de>>(
+        &self,
+        request_url: &str,
+    ) -> Result<T, String> {
         crate::services::rate_limiter::GLOBAL_RATE_LIMITER
             .acquire("soundcloud")
             .await;
 
         let response = self
             .client
-            .get(&request_url)
+            .get(request_url)
             .header("Authorization", format!("OAuth {}", self.oauth_token))
             .send()
             .await
@@ -250,6 +306,54 @@ impl SoundCloudClient {
             .json()
             .await
             .map_err(|e| format!("Failed to parse: {}", e))
+    }
+
+    /// Get user's liked tracks (paginated via next_href)
+    pub async fn get_likes(&self, url: Option<&str>) -> Result<SoundCloudCollection, String> {
+        let user_id = self.user_id.ok_or("User ID not set")?;
+
+        let request_url = url
+            .map(|s| self.resolve_next_href(s))
+            .unwrap_or_else(|| format!("{}/users/{}/likes?limit=100", self.api_base, user_id));
+
+        self.get_collection(&request_url).await
+    }
+
+    /// Playlists propias de la cuenta (paginado vía `next_href`).
+    ///
+    /// El brazo del motor unificado avisaba de que SoundCloud no expone playlists
+    /// de usuario; el endpoint `/me/library/playlists_without_albums` sí existe
+    /// y es el que ya usaba el servicio Python para la misma cuenta.
+    #[allow(dead_code)] // Cubierta por `tests/soundcloud_playlists_client_test.rs`.
+    pub async fn get_playlists(
+        &self,
+        url: Option<&str>,
+    ) -> Result<SoundCloudPlaylistCollection, String> {
+        let request_url = url.map(|s| self.resolve_next_href(s)).unwrap_or_else(|| {
+            format!(
+                "{}/me/library/playlists_without_albums?limit=50",
+                self.api_base
+            )
+        });
+
+        self.get_collection(&request_url).await
+    }
+
+    /// Pistas de una playlist concreta, en el orden en que las guarda el usuario.
+    #[allow(dead_code)] // Cubierta por `tests/soundcloud_playlists_client_test.rs`.
+    pub async fn get_playlist_tracks(
+        &self,
+        playlist_id: &str,
+        url: Option<&str>,
+    ) -> Result<SoundCloudCollection, String> {
+        let request_url = url.map(|s| self.resolve_next_href(s)).unwrap_or_else(|| {
+            format!(
+                "{}/playlists/{}/tracks?limit=100",
+                self.api_base, playlist_id
+            )
+        });
+
+        self.get_collection(&request_url).await
     }
 
     // Helper methods for database operations

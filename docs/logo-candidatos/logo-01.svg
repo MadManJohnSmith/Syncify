@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img">
+  <title>Syncify candidato 01 - Venn de dos anillos</title>
+    <g stroke="currentColor" stroke-width="11">
+    <circle cx="47.5" cy="64" r="30"/>
+    <circle cx="80.5" cy="64" r="30"/>
+  </g>
+  <path d="M64,38.95 A30,30 0 0 1 64,89.05 A30,30 0 0 1 64,38.95 Z" fill="currentColor"/>
+</svg>

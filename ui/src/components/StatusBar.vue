@@ -9,8 +9,11 @@
       <!-- Syncing -->
       <template v-if="syncState === 'syncing'">
         <span class="material-symbols-outlined text-blue-400 text-sm animate-spin">sync</span>
-        <span class="text-blue-400">Syncing {{ syncService }}...</span>
-        <span class="text-blue-300">{{ syncProgress }}%</span>
+        <span class="text-blue-400">
+          <template v-if="activeTasks.length > 1">{{ activeTasks.length }} tasks</template>
+          <template v-else>Syncing {{ syncService }}...</template>
+        </span>
+        <span v-if="hasDeterminateProgress" class="text-blue-300">{{ syncProgress }}%</span>
       </template>
       
       <!-- Idle -->
@@ -42,14 +45,28 @@
           </button>
         </div>
         
-        <div v-if="syncState === 'syncing'" class="space-y-2">
+<div v-if="syncState === 'syncing'" class="space-y-2">
           <div class="flex items-center gap-2">
             <span class="material-symbols-outlined text-blue-400 text-lg animate-spin">sync</span>
             <span class="text-gray-300">{{ syncService }}</span>
           </div>
-          <div class="text-sm text-gray-400">{{ syncCurrent }} / {{ syncTotal }} items</div>
-          <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-            <div class="h-full bg-blue-500 rounded-full transition-all" :style="{ width: syncProgress + '%' }"></div>
+          <div v-if="taskProgressRows.length > 1" class="text-xs text-gray-500">
+            {{ taskProgressRows.length }} tasks in progress
+          </div>
+          <div v-for="row in taskProgressRows" :key="row.id" class="space-y-1">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-gray-300 text-xs truncate">{{ row.name }}</span>
+              <span class="text-gray-400 text-[11px] font-mono shrink-0">
+                <template v-if="row.determinate">{{ row.detail }} · {{ Math.round(row.progress) }}%</template>
+                <template v-else>{{ row.detail }}</template>
+              </span>
+            </div>
+            <div v-if="row.determinate" class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+              <div class="h-full bg-blue-500 rounded-full transition-all" :style="{ width: row.progress + '%' }"></div>
+            </div>
+            <div v-else class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+              <div class="h-full w-1/3 bg-blue-500/60 rounded-full animate-pulse"></div>
+            </div>
           </div>
           <div v-if="syncETA" class="text-xs text-gray-500">ETA: ~{{ syncETA }}</div>
           <button @click="cancelSync" class="w-full mt-2 py-1.5 text-red-400 hover:bg-red-500/10 rounded-lg text-sm">
@@ -95,11 +112,31 @@
         <span :class="isOnline ? 'text-gray-400' : 'text-red-400'">{{ isOnline ? 'Online' : 'Offline' }}</span>
       </div>
       
-      <!-- Active Operations -->
-      <div v-if="activeOperations.length > 0" class="flex items-center gap-2 text-gray-400">
+      <!-- Global Progress: covers every active task at once -->
+      <div v-if="activeTasks.length > 0" class="flex items-center gap-3 text-gray-400">
         <span class="material-symbols-outlined text-sm animate-pulse">pending</span>
-        <span>{{ activeOperations[0] }}</span>
-        <span v-if="activeOperations.length > 1" class="text-gray-500">+{{ activeOperations.length - 1 }} more</span>
+        <div class="w-44">
+          <div class="flex items-center justify-between gap-2 mb-0.5">
+            <span class="text-gray-300 text-[11px] truncate max-w-[120px]">{{ activeOperations[0] }}</span>
+            <span class="text-gray-500 text-[11px] shrink-0">{{ activeTasks.length }} {{ activeTasks.length === 1 ? 'task' : 'tasks' }}</span>
+          </div>
+          <div
+            class="h-1 bg-gray-700 rounded-full overflow-hidden"
+            role="progressbar"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-valuenow="hasDeterminateProgress ? syncProgress : undefined"
+            :aria-label="hasDeterminateProgress ? 'Overall task progress' : 'Overall task progress (indeterminate)'"
+          >
+            <div
+              v-if="hasDeterminateProgress"
+              class="h-full bg-blue-500 rounded-full transition-all"
+              :style="{ width: syncProgress + '%' }"
+            ></div>
+            <div v-else class="h-full w-1/3 bg-blue-500/60 rounded-full animate-pulse"></div>
+          </div>
+        </div>
+        <span v-if="hasDeterminateProgress" class="text-gray-400 text-[11px] font-mono">{{ syncProgress }}%</span>
       </div>
     </div>
     
@@ -255,7 +292,7 @@ const showNetworkPopover = ref(false)
 const showStoragePopover = ref(false)
 
 // Global Tasks Integration
-const { activeTasks, allTasks, overallProgress } = useGlobalTasks()
+const { activeTasks, allTasks, aggregateProgress, hasDeterminateProgress } = useGlobalTasks()
 const eventBus = useEventBus()
 const router = useRouter()
 const toast = useToast()
@@ -277,13 +314,29 @@ const syncService = computed(() => {
   return syncTask.service || syncTask.name.replace(/^Syncing\s+/, '') || 'Service'
 })
 
-const syncProgress = computed(() => overallProgress.value)
-const syncCurrent = computed(() => {
-   return activeTasks.value.reduce((acc, t) => acc + (t.current || 0), 0)
-})
-const syncTotal = computed(() => {
-   return activeTasks.value.reduce((acc, t) => acc + (t.total || 0), 0)
-})
+const syncProgress = computed(() => aggregateProgress.value)
+
+// One row per task: summing `current`/`total` across tasks mixed a
+// thousand-file scan with a three-track sync and produced meaningless counts.
+interface TaskProgressRow {
+  id: string
+  name: string
+  detail: string
+  progress: number
+  determinate: boolean
+}
+
+const taskProgressRows = computed<TaskProgressRow[]>(() =>
+  activeTasks.value.map(task => ({
+    id: task.id,
+    name: task.name,
+    detail: (task.total ?? 0) > 0
+      ? `${task.current ?? 0} / ${task.total}`
+      : task.description || task.phase || 'In progress',
+    progress: Math.min(100, Math.max(0, task.progress ?? 0)),
+    determinate: (task.total ?? 0) > 0
+  }))
+)
 
 // Real ETA estimate: extrapolate the elapsed time of the primary running sync
 // task. Hidden (null) while there is no basis to estimate from.

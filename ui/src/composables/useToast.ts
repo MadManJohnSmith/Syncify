@@ -44,10 +44,12 @@ function formatNow(): string {
     return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-// Toast default durations
+// Toast default durations. `error` antes valía 0 y por eso ningún error se
+// iba solo: se quedaba en pantalla hasta que el usuario lo cerraba a mano
+// (R16). Se le da un plazo más largo que al resto porque exige leerlo.
 const defaultDurations: Record<string, number> = {
     success: 3000,
-    error: 0, // Never auto-dismiss
+    error: 8000,
     warning: 5000,
     info: 4000,
     progress: 0 // Never auto-dismiss until complete
@@ -108,6 +110,7 @@ function addToast(options: Partial<Toast> & { title: string; type: Toast['type']
 function dismissToast(id: string) {
     clearTimer(id)
     toasts.value = toasts.value.filter(t => t.id !== id)
+    markAsRead(id)
 }
 
 function startTimer(id: string, duration: number) {
@@ -178,12 +181,12 @@ function completeProgress(id: string, success: boolean, message?: string) {
         if (message) toast.title = message
         toast.progress = undefined
         toast.timeRemaining = undefined
-        toast.autoDismiss = success
-        toast.duration = success ? 3000 : 0
+        // Un download fallido también se retira solo: antes `duration = 0`
+        // dejaba el aviso clavado en pantalla para siempre.
+        toast.autoDismiss = true
+        toast.duration = success ? 3000 : defaultDurations.error
         toast.createdAt = Date.now()
-        if (success) {
-            startTimer(id, 3000)
-        }
+        startTimer(id, toast.duration)
     }
 }
 
@@ -199,6 +202,105 @@ function markAllAsRead() {
 function clearAllHistory() {
     history.value = []
 }
+
+// ============================================================
+// Diálogos internos (R13): sustituyen a alert()/confirm()/message()
+// nativos de plugin-dialog, que se abrían fuera de la ventana de la app.
+export type DialogVariant = 'info' | 'warning' | 'danger'
+export type DialogKind = 'alert' | 'confirm' | 'prompt'
+
+export interface DialogRequest {
+    id: string
+    kind: DialogKind
+    variant: DialogVariant
+    title: string
+    message?: string
+    placeholder?: string
+    defaultValue: string
+    confirmLabel: string
+    cancelLabel: string
+}
+
+export interface DialogOptions {
+    title?: string
+    message?: string
+    variant?: DialogVariant
+    confirmLabel?: string
+    cancelLabel?: string
+    placeholder?: string
+    defaultValue?: string
+}
+
+const dialogQueue = ref<DialogRequest[]>([])
+const dialogValue = ref('')
+const dialogResolvers = new Map<string, (value: string | null) => void>()
+
+const activeDialog = computed<DialogRequest | null>(() => dialogQueue.value[0] ?? null)
+
+function openDialog(kind: DialogKind, message: string, options: DialogOptions = {}): Promise<string | null> {
+    const id = generateId()
+    const body = options.message ?? message
+    const request: DialogRequest = {
+        id,
+        kind,
+        variant: options.variant ?? (kind === 'confirm' ? 'warning' : 'info'),
+        title: options.title ?? body,
+        message: options.title ? body : undefined,
+        placeholder: options.placeholder,
+        defaultValue: options.defaultValue ?? '',
+        confirmLabel: options.confirmLabel ?? (kind === 'alert' ? 'OK' : 'Confirm'),
+        cancelLabel: options.cancelLabel ?? 'Cancel'
+    }
+
+    dialogQueue.value = [...dialogQueue.value, request]
+    dialogValue.value = request.defaultValue
+
+    return new Promise<string | null>((resolve) => {
+        dialogResolvers.set(id, resolve)
+    })
+}
+
+function resolveDialog(value: string | null) {
+    const current = dialogQueue.value[0]
+    if (!current) return
+
+    dialogQueue.value = dialogQueue.value.slice(1)
+    dialogResolvers.get(current.id)?.(value)
+    dialogResolvers.delete(current.id)
+    dialogValue.value = dialogQueue.value[0]?.defaultValue ?? ''
+}
+
+function alertDialog(message: string, options?: DialogOptions): Promise<void> {
+    return openDialog('alert', message, options).then(() => undefined)
+}
+
+function confirmDialog(message: string, options?: DialogOptions): Promise<boolean> {
+    return openDialog('confirm', message, options).then(value => value === 'confirm')
+}
+
+function promptDialog(message: string, options?: DialogOptions): Promise<string | null> {
+    return openDialog('prompt', message, options).then(value => (value === null ? null : value))
+}
+
+export function useDialog() {
+    return {
+        dialogQueue: readonly(dialogQueue),
+        dialogValue,
+        activeDialog,
+        openDialog,
+        resolveDialog,
+        alert: alertDialog,
+        confirm: confirmDialog,
+        prompt: promptDialog
+    }
+}
+
+// Se exportan sueltos para que migrar un fichero sea cambiar el import:
+// `import { confirm } from '@tauri-apps/plugin-dialog'` ->
+// `import { confirm } from '@/composables/useToast'`.
+export const alert = alertDialog
+export const confirm = confirmDialog
+export const prompt = promptDialog
 
 // Composable
 export function useToast() {
@@ -232,7 +334,12 @@ export function useToast() {
         resumeToast,
         markAsRead,
         markAllAsRead,
-        clearAllHistory
+        clearAllHistory,
+
+        // Avisos con respuesta: el mismo canal que los toasts, sin salir de la app.
+        alert: alertDialog,
+        confirm: confirmDialog,
+        prompt: promptDialog
     }
 }
 

@@ -409,12 +409,27 @@
     <!-- Content Area -->
     <div class="flex-1 overflow-hidden px-8 pb-8 flex flex-col">
       
+<!-- ERROR STATE: un fallo de carga no es una biblioteca vacía -->
+      <div v-if="loadError && !isLoading" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16" data-testid="library-load-error">
+        <span class="material-symbols-outlined text-[80px] text-error mb-6">error</span>
+        <h3 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Could not load your library</h3>
+        <p class="text-text-secondary mb-2 max-w-md">Your tracks are still there — the app could not read them just now.</p>
+        <p class="text-xs text-text-secondary mb-8 max-w-md break-words">{{ loadError }}</p>
+        <button
+          @click="loadLibrary"
+          class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium shadow-lg shadow-primary/20 transition-all cursor-pointer flex items-center gap-2"
+        >
+          <span class="material-symbols-outlined text-[18px]">refresh</span>
+          Try Again
+        </button>
+      </div>
+
       <!-- EMPTY STATE: Syncing in Progress -->
-      <div v-if="tracks.length === 0 && !isLoading && hasSyncingTask" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
+      <div v-else-if="tracks.length === 0 && !isLoading && hasSyncingTask" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
         <span class="material-symbols-outlined text-[80px] text-primary mb-6 animate-spin">sync</span>
         <h3 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Syncing your music collection...</h3>
         <p class="text-text-secondary mb-8 max-w-md">Importing albums, playlists, and favorites from your connected services. Your tracks and albums will appear here automatically when sync completes.</p>
-        <button 
+        <button
           @click="loadLibrary"
           class="px-5 py-2.5 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 rounded-xl font-medium transition-all flex items-center gap-2 cursor-pointer"
         >
@@ -530,9 +545,12 @@
 
               <!-- Title (Artwork + Title + Artist + Album) -->
               <div v-else-if="col.id === 'title'" :class="['track-cell flex-1 min-w-[200px] min-w-0 flex items-center gap-3', col.hideBreakpoint || '']">
-                <div :class="['h-10 w-10 rounded-md shrink-0 overflow-hidden group-hover:shadow-md transition-all', !track.coverUrl && track.artGradient]">
-                  <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
-                </div>
+                <TrackCover
+                  :src="track.coverUrl"
+                  :item-id="track.id"
+                  :alt="track.album || track.title"
+                  size-class="h-10 w-10 rounded-md"
+                />
                 <div class="flex flex-col gap-0.5 overflow-hidden min-w-0">
                   <span class="font-medium text-gray-900 dark:text-white truncate text-sm">{{ track.title }}</span>
                   <div class="flex items-center gap-1.5 text-xs text-text-secondary truncate">
@@ -752,9 +770,13 @@
                 @contextmenu.prevent="openContextMenu($event, track)"
               >
                 <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <div :class="['w-10 h-10 rounded shrink-0 overflow-hidden', !track.coverUrl && track.artGradient]">
-                  <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
-                </div>
+                <TrackCover
+                  :src="track.coverUrl"
+                  :item-id="track.id"
+                  :alt="track.album || track.title"
+                  size-class="w-10 h-10"
+                  rounded="rounded"
+                />
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
                   <p class="text-xs text-text-secondary truncate">{{ track.album }}</p>
@@ -850,9 +872,13 @@
                 @contextmenu.prevent="openContextMenu($event, track)"
               >
                 <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <div :class="['w-10 h-10 rounded shrink-0 overflow-hidden', !track.coverUrl && track.artGradient]">
-                  <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
-                </div>
+                <TrackCover
+                  :src="track.coverUrl"
+                  :item-id="track.id"
+                  :alt="track.album || track.title"
+                  size-class="w-10 h-10"
+                  rounded="rounded"
+                />
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
                   <p class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</p>
@@ -896,9 +922,13 @@
                 @contextmenu.prevent="openContextMenu($event, track)"
               >
                 <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <div :class="['w-10 h-10 rounded shrink-0 overflow-hidden', !track.coverUrl && track.artGradient]">
-                  <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
-                </div>
+                <TrackCover
+                  :src="track.coverUrl"
+                  :item-id="track.id"
+                  :alt="track.album || track.title"
+                  size-class="w-10 h-10"
+                  rounded="rounded"
+                />
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
                   <p class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</p>
@@ -925,12 +955,15 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { libraryApi, searchTracks, enqueueTracks, reconcileQueue, type DownloadFavoritesResult } from '@/api/library'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch } from '@/api/queue'
+import { playlistsApi } from '@/api/playlists'
 import type { LibraryTrack, Playlist, LyricsType } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { usePlayer } from '@/composables/usePlayer'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
+import TrackCover from '@/components/TrackCover.vue'
+import { getArtGradient } from '@/utils/artGradient'
 
 const router = useRouter()
 const route = useRoute()
@@ -969,6 +1002,8 @@ function handleAlbumPlay(album: { tracks: Track[] }) {
 
 // Fetch real data from backend
 const isLoading = ref(true)
+/** Fallo de la última carga; distingue «biblioteca vacía» de «no se pudo leer». */
+const loadError = ref<string | null>(null)
 
 // State - will be updated from backend
 const trackCount = ref(0)
@@ -990,18 +1025,56 @@ const selectedCount = ref(0)
 const isEnriching = ref(false)
 const enrichProgress = ref<{ current: number; total: number; currentTrack: string } | null>(null)
 
+/** Evento MusicBrainz de `enrich_metadata_musicbrainz`. */
+interface MusicBrainzProgress {
+  status?: string
+  total: number
+  current: number
+  enriched?: number
+  failed?: number
+  currentTrack?: string
+}
+
+/**
+ * `enrichment-progress` es un canal compartido. MusicBrainz emite
+ * `{ status, total, current, enriched, failed, currentTrack }` sin campo
+ * `type`; Last.fm emite `{ type: "lastfm_genre", status, current, total,
+ * message }` donde `current` cuenta aciertos, y el enriquecimiento incremental
+ * emite su `EnrichmentJobSummary` en camelCase (`totalTracks`,
+ * `processedTracks`). Ninguno de esos dos describe el trabajo que este botón
+ * lanzó, así que se ignoran en vez de pintar una barra con `undefined`.
+ */
+function asMusicBrainzProgress(payload: unknown): MusicBrainzProgress | null {
+  if (!payload || typeof payload !== 'object') return null
+  const candidate = payload as Record<string, unknown>
+  // MusicBrainz nunca etiqueta el evento; el resto de productores siempre lo hacen.
+  if ('type' in candidate) return null
+  if (typeof candidate.current !== 'number' || typeof candidate.total !== 'number') return null
+  if (!Number.isFinite(candidate.current) || !Number.isFinite(candidate.total)) return null
+  return {
+    status: typeof candidate.status === 'string' ? candidate.status : undefined,
+    current: candidate.current,
+    total: candidate.total,
+    enriched: typeof candidate.enriched === 'number' ? candidate.enriched : undefined,
+    failed: typeof candidate.failed === 'number' ? candidate.failed : undefined,
+    currentTrack: typeof candidate.currentTrack === 'string' ? candidate.currentTrack : '',
+  }
+}
+
 async function enrichMetadata() {
   if (isEnriching.value) return
-  
+
   isEnriching.value = true
   enrichProgress.value = { current: 0, total: 0, currentTrack: '' }
-  
+
   const { listen } = await import('@tauri-apps/api/event')
-  const unlisten = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack: string }>(TauriEvents.ENRICHMENT_PROGRESS, (event) => {
+  const unlisten = await listen<unknown>(TauriEvents.ENRICHMENT_PROGRESS, (event) => {
+    const progress = asMusicBrainzProgress(event.payload)
+    if (!progress) return
     enrichProgress.value = {
-      current: event.payload.current,
-      total: event.payload.total,
-      currentTrack: event.payload.currentTrack
+      current: progress.current,
+      total: progress.total,
+      currentTrack: progress.currentTrack ?? ''
     }
   })
   
@@ -1253,21 +1326,6 @@ interface Track {
 // Mock tracks data
 const tracks = ref<Track[]>([])
 
-// Helper: Generate random art gradient from track id
-function getArtGradient(id: number): string {
-  const gradients = [
-    'bg-gradient-to-br from-purple-500 to-pink-500',
-    'bg-gradient-to-br from-blue-500 to-cyan-500',
-    'bg-gradient-to-br from-green-500 to-emerald-500',
-    'bg-gradient-to-br from-orange-500 to-red-500',
-    'bg-gradient-to-br from-yellow-500 to-amber-500',
-    'bg-gradient-to-br from-indigo-500 to-purple-500',
-    'bg-gradient-to-br from-rose-500 to-pink-500',
-    'bg-gradient-to-br from-teal-500 to-green-500',
-  ];
-  return gradients[id % gradients.length];
-}
-
 // Convert LibraryTrack to UI Track
 function mapToTrack(item: LibraryTrack, index: number): Track {
   const durationSec = (item.duration_ms ?? 0) / 1000;
@@ -1327,20 +1385,23 @@ const PAGE_SIZE = 100;
 // Load tracks from backend
 async function loadLibrary() {
   isLoading.value = true;
+  loadError.value = null;
   currentOffset.value = 0;
   try {
-    const page = activeFilters.value.includes('duplicates') 
+    const page = activeFilters.value.includes('duplicates')
       ? await libraryApi.getDuplicateTracks(0, PAGE_SIZE)
       : activeFilters.value.includes('favorites')
       ? await libraryApi.getFavoriteTracks(0, PAGE_SIZE)
       : await libraryApi.getLibrary(0, PAGE_SIZE);
-      
+
     tracks.value = page.tracks.map(mapToTrack);
     trackCount.value = tracks.value.length;
     totalTracks.value = page.total;
     hasMore.value = page.has_more;
     currentOffset.value = page.offset + page.tracks.length;
   } catch (error) {
+    // Sin marcarlo, un fallo de carga se renderiza como biblioteca vacía.
+    loadError.value = String(error);
     console.error('Failed to load library:', error);
   } finally {
     isLoading.value = false;
@@ -1838,6 +1899,20 @@ async function handleShowInFolder(track: Track) {
   }
 }
 
+/**
+ * Borrar una pista la elimina en cascada de `playlist_tracks`, pero no de
+ * `playlists.track_count`: sin esto, la sidebar de Playlists seguiría anunciando
+ * canciones que ya no existen. Es una pasada de mantenimiento, así que un fallo
+ * aquí no debe tumbar el borrado que ya se completó.
+ */
+async function reconcilePlaylistCounts() {
+  try {
+    await playlistsApi.sanitizePlaylists()
+  } catch (error) {
+    console.warn('Could not refresh playlist track counts:', error)
+  }
+}
+
 async function handleRemoveFromLibrary(track: Track) {
   try {
     await libraryApi.removeTrack(track.id);
@@ -1847,6 +1922,7 @@ async function handleRemoveFromLibrary(track: Track) {
       trackCount.value = tracks.value.length;
     }
     closeContextMenu();
+    await reconcilePlaylistCounts();
     toast.success('Track removed', `"${track.title}" removed from library`);
   } catch (error) {
     toast.error('Failed to remove track', String(error));
@@ -1856,7 +1932,7 @@ async function handleRemoveFromLibrary(track: Track) {
 async function handleBulkRemove() {
   const selectedTracks = tracks.value.filter(t => t.isSelected);
   if (selectedTracks.length === 0) return;
-  
+
   try {
     const ids = selectedTracks.map(t => t.id);
     const removed = await libraryApi.bulkRemoveTracks(ids);
@@ -1864,6 +1940,7 @@ async function handleBulkRemove() {
     selectedCount.value = 0;
     trackCount.value = tracks.value.length;
     showBulkMenu.value = false;
+    await reconcilePlaylistCounts();
     toast.success('Tracks removed', `${removed} tracks removed from library`);
   } catch (error) {
     toast.error('Failed to remove tracks', String(error));

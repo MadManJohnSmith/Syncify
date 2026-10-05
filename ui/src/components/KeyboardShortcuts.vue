@@ -109,10 +109,9 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { escapeHtml, escapeRegExp, highlightMatch as safeHighlightMatch } from '@/utils/sanitize'
-import { useKeyboardShortcuts } from '@/composables/useKeyboardShortcuts'
+import { useKeyboardShortcuts, registerShortcut } from '@/composables/useKeyboardShortcuts'
 
 const router = useRouter()
-const emit = defineEmits(['command-palette', 'search', 'refresh', 'settings'])
 
 // Composable integration
 const {
@@ -120,7 +119,6 @@ const {
   openShortcutsHelp,
   closeShortcutsHelp,
   toggleShortcutsHelp,
-  registerShortcut,
 } = useKeyboardShortcuts()
 
 // Two-way reactive connection with showShortcutsHelp
@@ -136,86 +134,108 @@ const collapsedSections = ref<string[]>([])
 const showFirstTimeHint = ref(true)
 const hasSeenHint = ref(false)
 
-// Shortcut definitions
-const shortcutSections = ref([
+// Shortcut definitions. Single source of truth: every entry is registered as a
+// real key binding AND listed in the sheet, so the help can no longer advertise
+// a combination that nobody handles (audit 8).
+//
+// `external: true` marks a documented shortcut handled by someone else: it is
+// listed but not registered here, because this component's document listener
+// runs before App's and its preventDefault() would make the owner bail out on
+// `event.defaultPrevented`.
+interface ShortcutDef {
+  section: string
+  action: string
+  keys: string[]
+  combo: string
+  external?: boolean
+  when?: () => boolean
+  run: () => void
+}
+
+const tabRoutes: Array<{ keys: string[]; combo: string; route: string; action: string }> = [
+  { keys: ['Ctrl', '1'], combo: 'Ctrl+1', route: '/library', action: 'Go to Library' },
+  { keys: ['Ctrl', '2'], combo: 'Ctrl+2', route: '/downloads', action: 'Go to Downloads' },
+  { keys: ['Ctrl', '3'], combo: 'Ctrl+3', route: '/metadata', action: 'Go to Metadata' },
+  { keys: ['Ctrl', '4'], combo: 'Ctrl+4', route: '/lyrics', action: 'Go to Lyrics' },
+  { keys: ['Ctrl', '5'], combo: 'Ctrl+5', route: '/accounts', action: 'Go to Accounts' },
+  { keys: ['Ctrl', '6'], combo: 'Ctrl+6', route: '/migration', action: 'Go to Migration' },
+  { keys: ['Ctrl', '7'], combo: 'Ctrl+7', route: '/queue', action: 'Go to Downloads / Queue' },
+  { keys: ['Ctrl', '8'], combo: 'Ctrl+8', route: '/settings', action: 'Go to Settings' },
+]
+
+const shortcutDefs: ShortcutDef[] = [
   {
-    name: 'Global',
-    shortcuts: [
-      { action: 'Show keyboard shortcuts', keys: ['?'] },
-      { action: 'Toggle keyboard shortcuts', keys: ['Ctrl', '/'] },
-      { action: 'Open command palette', keys: ['Ctrl', 'K'] },
-      { action: 'Open Settings', keys: ['Ctrl', ','] },
-      { action: 'Toggle help panel', keys: ['Ctrl', 'H'] },
-      { action: 'Close modal/dialog', keys: ['Escape'] },
-      { action: 'Refresh current view', keys: ['Ctrl', 'R'] },
-      { action: 'Undo', keys: ['Ctrl', 'Z'] },
-      { action: 'Redo', keys: ['Ctrl', 'Y'] },
-    ]
+    section: 'Global',
+    action: 'Show keyboard shortcuts',
+    keys: ['?'],
+    combo: '?',
+    run: () => openShortcutsHelp()
   },
   {
-    name: 'Navigation',
-    shortcuts: [
-      { action: 'Go to Library', keys: ['Ctrl', '1'] },
-      { action: 'Go to Downloads', keys: ['Ctrl', '2'] },
-      { action: 'Go to Metadata', keys: ['Ctrl', '3'] },
-      { action: 'Go to Lyrics', keys: ['Ctrl', '4'] },
-      { action: 'Go to Accounts', keys: ['Ctrl', '5'] },
-      { action: 'Go to Migration', keys: ['Ctrl', '6'] },
-      { action: 'Go to Downloads / Queue', keys: ['Ctrl', '7'] },
-      { action: 'Go to Settings', keys: ['Ctrl', '8'] },
-    ]
+    section: 'Global',
+    action: 'Open command palette',
+    keys: ['Ctrl', 'K'],
+    combo: 'Ctrl+K',
+    external: true,
+    run: () => {}
   },
   {
-    name: 'Selection & Actions',
-    shortcuts: [
-      { action: 'Select all', keys: ['Ctrl', 'A'] },
-      { action: 'Download selected', keys: ['Ctrl', 'D'] },
-      { action: 'Add to queue', keys: ['Ctrl', 'Q'] },
-      { action: 'New playlist', keys: ['Ctrl', 'N'] },
-      { action: 'Focus search', keys: ['Ctrl', 'F'] },
-      { action: 'Delete selected', keys: ['Delete'] },
-    ]
+    section: 'Global',
+    action: 'Open Settings',
+    keys: ['Ctrl', ','],
+    combo: 'Ctrl+,',
+    run: () => router.push('/settings')
   },
   {
-    name: 'Playback',
-    shortcuts: [
-      { action: 'Play / Pause', keys: ['Space'] },
-      { action: 'Previous track', keys: ['Ctrl', '←'] },
-      { action: 'Next track', keys: ['Ctrl', '→'] },
-      { action: 'Volume up', keys: ['Ctrl', '↑'] },
-      { action: 'Volume down', keys: ['Ctrl', '↓'] },
-    ]
+    section: 'Global',
+    action: 'Toggle this shortcuts sheet',
+    keys: ['Ctrl', '/'],
+    combo: 'Ctrl+/',
+    run: () => toggleShortcutsHelp()
   },
   {
-    name: 'Library',
-    shortcuts: [
-      { action: 'Navigate tracks', keys: ['↑', '↓'] },
-      { action: 'Open context menu', keys: ['Enter'] },
-      { action: 'Select range', keys: ['Shift', 'Click'] },
-      { action: 'Multi-select', keys: ['Ctrl', 'Click'] },
-      { action: 'Toggle view mode', keys: ['L'] },
-    ]
+    section: 'Global',
+    action: 'Toggle this shortcuts sheet',
+    keys: ['Ctrl', 'H'],
+    combo: 'Ctrl+H',
+    run: () => toggleShortcutsHelp()
   },
   {
-    name: 'Downloads',
-    shortcuts: [
-      { action: 'Pause selected', keys: ['P'] },
-      { action: 'Retry failed', keys: ['R'] },
-      { action: 'Pause all', keys: ['Ctrl', 'P'] },
-      { action: 'Retry all failed', keys: ['Ctrl', 'R'] },
-    ]
+    section: 'Global',
+    action: 'Close this sheet',
+    keys: ['Escape'],
+    combo: 'Escape',
+    when: () => showShortcutsHelp.value,
+    run: () => closeShortcutsHelp()
   },
   {
-    name: 'Metadata & Lyrics',
-    shortcuts: [
-      { action: 'Save changes', keys: ['Ctrl', 'S'] },
-      { action: 'Edit mode', keys: ['Ctrl', 'E'] },
-      { action: 'Fetch from MusicBrainz', keys: ['Ctrl', 'B'] },
-      { action: 'Fetch from Last.fm', keys: ['Ctrl', 'L'] },
-      { action: 'Navigate form fields', keys: ['Tab'] },
-    ]
+    section: 'Global',
+    action: 'Reload the current view',
+    keys: ['Ctrl', 'R'],
+    combo: 'Ctrl+R',
+    run: () => router.go(0)
   },
-])
+  ...tabRoutes.map((entry): ShortcutDef => ({
+    section: 'Navigation',
+    action: entry.action,
+    keys: entry.keys,
+    combo: entry.combo,
+    run: () => router.push(entry.route)
+  }))
+]
+
+const shortcutSections = computed(() => {
+  const sections: Array<{ name: string; shortcuts: Array<{ action: string; keys: string[] }> }> = []
+  for (const def of shortcutDefs) {
+    let section = sections.find(s => s.name === def.section)
+    if (!section) {
+      section = { name: def.section, shortcuts: [] }
+      sections.push(section)
+    }
+    section.shortcuts.push({ action: def.action, keys: def.keys })
+  }
+  return sections
+})
 
 // Computed
 const filteredSections = computed(() => {
@@ -262,68 +282,14 @@ function dismissHint() {
 }
 
 // Register shortcuts using the composable
-registerShortcut('?', () => {
-  openShortcutsHelp()
-}, { description: 'Show keyboard shortcuts' })
-
-registerShortcut('Ctrl+/', () => {
-  toggleShortcutsHelp()
-}, { description: 'Toggle keyboard shortcuts' })
-
-registerShortcut('Ctrl+?', () => {
-  toggleShortcutsHelp()
-}, { description: 'Toggle keyboard shortcuts' })
-
-registerShortcut('Ctrl+H', () => {
-  toggleShortcutsHelp()
-}, { description: 'Toggle help panel' })
-
-registerShortcut('Escape', () => {
-  closeShortcutsHelp()
-}, {
-  description: 'Close shortcuts modal',
-  when: () => showShortcutsHelp.value
-})
-
-registerShortcut('Ctrl+K', () => {
-  emit('command-palette')
-}, { description: 'Open command palette' })
-
-registerShortcut('Ctrl+,', () => {
-  router.push('/settings')
-}, { description: 'Open Settings' })
-
-registerShortcut('Ctrl+F', () => {
-  emit('search')
-}, {
-  description: 'Focus search',
-  when: () => {
-    const active = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
-    return !active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA' && !active.isContentEditable)
-  }
-})
-
-registerShortcut('Ctrl+R', () => {
-  emit('refresh')
-}, { description: 'Refresh current view' })
-
-// Tab navigation Ctrl+1 to Ctrl+8
-const tabRoutes = [
-  '/library',
-  '/downloads',
-  '/metadata',
-  '/lyrics',
-  '/accounts',
-  '/migration',
-  '/downloads',
-  '/settings'
-]
-
-tabRoutes.forEach((routePath, index) => {
-  registerShortcut(`Ctrl+${index + 1}`, () => {
-    router.push(routePath)
-  }, { description: `Navigate to tab ${index + 1}` })
-})
+shortcutDefs
+  .filter(def => !def.external)
+  .forEach(def => {
+    registerShortcut(def.combo, def.run, {
+      description: def.action,
+      when: def.when
+    })
+  })
 
 onMounted(() => {
   hasSeenHint.value = typeof localStorage !== 'undefined' && localStorage && typeof localStorage.getItem === 'function'

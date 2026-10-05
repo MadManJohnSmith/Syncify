@@ -7,6 +7,7 @@ Uses Chromaprint fingerprints to identify tracks without metadata.
 import os
 import subprocess
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -16,6 +17,15 @@ try:
     ACOUSTID_AVAILABLE = True
 except ImportError:
     ACOUSTID_AVAILABLE = False
+
+
+class AcoustIDNotConfiguredError(RuntimeError):
+    """Raised when a lookup is attempted without `ACOUSTID_API_KEY`.
+
+    Sin esta distinción el puente traducía "falta la credencial" a una lista
+    vacía y la mostraba como `No matches found`, que empujaba al usuario a
+    reintentar un comando que no podía funcionar nunca.
+    """
 
 
 @dataclass
@@ -59,7 +69,11 @@ class AcoustIDMatcher:
     
     def _log(self, message: str):
         if self.verbose:
-            print(f"[AcoustID] {message}", flush=True)
+            # stderr, no stdout: el puente se serializa como único objeto JSON
+            # desde stdout, y cualquier aviso previo lo hacía fallar al
+            # deserializar (`scripts/commands/tools.rs` deserializa la salida
+            # entera).
+            print(f"[AcoustID] {message}", file=sys.stderr, flush=True)
     
     def _get_api_key(self) -> Optional[str]:
         """Get API key from environment variable ACOUSTID_API_KEY or None."""
@@ -164,8 +178,10 @@ class AcoustIDMatcher:
             return []
 
         if not self.api_key:
-            self._log("AcoustID API key not configured - returning empty match results")
-            return []
+            raise AcoustIDNotConfiguredError(
+                "ACOUSTID_API_KEY is not set. Configure it in .env or in the app "
+                "settings before identifying tracks by fingerprint."
+            )
 
         self._log(f"Identifying: {audio_path.name}")
 
@@ -190,9 +206,11 @@ class AcoustIDMatcher:
             return []
         
         if not self.api_key:
-            self._log("AcoustID API key not configured - returning empty match results")
-            return []
-        
+            raise AcoustIDNotConfiguredError(
+                "ACOUSTID_API_KEY is not set. Configure it in .env or in the app "
+                "settings before identifying tracks by fingerprint."
+            )
+
         try:
             import urllib.request
             import urllib.parse

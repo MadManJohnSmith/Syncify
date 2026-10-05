@@ -351,6 +351,13 @@ pub struct MigrationSourceTrack {
     pub playlist_name: Option<String>,
 }
 
+/// Rows read per page while the migration source set is walked.
+///
+/// BD-3: both source queries ended in a hard `LIMIT 1000`, so a service library
+/// (or playlist) with more tracks migrated only its first thousand — silently,
+/// because the job counted the truncated result and closed as `completed`.
+const MIGRATION_SOURCE_PAGE_SIZE: i64 = 500;
+
 /// Resolve the tracks a migration job will process.
 ///
 /// With `playlist_ids` (the external playlist ids the user selected, the same
@@ -361,79 +368,135 @@ pub struct MigrationSourceTrack {
 /// library (favorites view) is used. BD-6: the selection is actually applied
 /// here — before this filter, a playlist-scoped job silently migrated every
 /// playlist of the source service.
+///
+/// BD-1: `library_items` mirrors one row per canonical track and keeps only the
+/// track's *best* source, so `library_items.external_id` belongs to whichever
+/// service won that ranking — reading it for a job whose source service is a
+/// different one either dropped the track (`source_service` filter) or sent an
+/// id that means nothing to the source API. The external id comes from the
+/// `track_sources` row of the source service instead, which also keeps a track
+/// shared between two providers migratable from both.
+///
+/// BD-3: the result set is walked in pages of `MIGRATION_SOURCE_PAGE_SIZE`
+/// until a short page arrives, so the total the job reports is the real one.
 pub async fn fetch_migration_source_tracks(
     db: &sqlx::SqlitePool,
     source_service: &str,
     playlist_ids: Option<&[String]>,
 ) -> Result<Vec<MigrationSourceTrack>, String> {
-    if let Some(ids) = playlist_ids {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut query = sqlx::QueryBuilder::new(
-            r#"SELECT DISTINCT li.external_id, li.title, li.artist, li.album,
-                      COALESCE(p.external_id, CAST(p.id AS TEXT)), p.name
-               FROM library_items li
-               JOIN playlist_tracks pt ON pt.track_id = li.id
-               JOIN playlists p ON p.id = pt.playlist_id
-               WHERE p.source_service = "#,
-        );
-        query.push_bind(source_service);
-        query.push(" AND p.external_id IN (");
-        let mut separated = query.separated(", ");
-        for id in ids {
-            separated.push_bind(id);
-        }
-        query.push(") LIMIT 1000");
-
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )> = query
-            .build_query_as()
-            .fetch_all(db)
-            .await
-            .map_err(|e| format!("Failed to load migration tracks: {}", e))?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(external_id, title, artist, album, playlist_id, playlist_name)| {
-                    MigrationSourceTrack {
-                        external_id,
-                        title,
-                        artist,
-                        album,
-                        playlist_id,
-                        playlist_name,
-                    }
-                },
-            )
-            .collect())
-    } else {
-        let rows: Vec<(String, String, String, Option<String>)> =
-            sqlx::query_as(
-                "SELECT external_id, title, artist, album FROM library_items WHERE source_service = ? LIMIT 1000",
-            )
-            .bind(source_service)
-            .fetch_all(db)
-            .await
-            .map_err(|e| format!("Failed to load migration tracks: {}", e))?;
-        Ok(rows
-            .into_iter()
-            .map(|(external_id, title, artist, album)| MigrationSourceTrack {
-                external_id,
-                title,
-                artist,
-                album,
-                playlist_id: None,
-                playlist_name: None,
-            })
-            .collect())
+    let playlist_scoped = playlist_ids.is_some();
+    let ids: &[String] = playlist_ids.unwrap_or(&[]);
+    if playlist_scoped && ids.is_empty() {
+        return Ok(Vec::new());
     }
+
+    let mut tracks: Vec<MigrationSourceTrack> = Vec::new();
+    let mut offset = 0i64;
+
+    loop {
+        let page = if playlist_scoped {
+            let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+                r#"SELECT DISTINCT ts.service_track_id AS external_id, li.title, li.artist, li.album,
+                          COALESCE(p.external_id, CAST(p.id AS TEXT)) AS playlist_id,
+                          p.name AS playlist_name
+                   FROM library_items li
+                   JOIN track_sources ts ON ts.track_id = li.id
+                   JOIN services s ON s.id = ts.service_id
+                   JOIN playlist_tracks pt ON pt.track_id = li.id
+                   JOIN playlists p ON p.id = pt.playlist_id
+                   WHERE s.name = "#,
+            );
+            query.push_bind(source_service);
+            query.push(" AND p.source_service = ");
+            query.push_bind(source_service);
+            query.push(" AND p.external_id IN (");
+            let mut separated = query.separated(", ");
+            for id in ids {
+                separated.push_bind(id);
+            }
+            query
+                .push(")")
+                // Ordering by every selected column gives the pages a total
+                // order, so no row is read twice or skipped across page bounds.
+                .push(
+                    " ORDER BY external_id, title, artist, album, playlist_id, playlist_name
+                      LIMIT ",
+                )
+                .push_bind(MIGRATION_SOURCE_PAGE_SIZE)
+                .push(" OFFSET ")
+                .push_bind(offset);
+
+            let rows: Vec<(
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            )> = query
+                .build_query_as()
+                .fetch_all(db)
+                .await
+                .map_err(|e| format!("Failed to load migration tracks: {}", e))?;
+
+            rows.into_iter()
+                .map(
+                    |(external_id, title, artist, album, playlist_id, playlist_name)| {
+                        MigrationSourceTrack {
+                            external_id,
+                            title,
+                            artist,
+                            album,
+                            playlist_id,
+                            playlist_name,
+                        }
+                    },
+                )
+                .collect::<Vec<_>>()
+        } else {
+            let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+                r#"SELECT ts.service_track_id, li.title, li.artist, li.album
+                   FROM library_items li
+                   JOIN track_sources ts ON ts.track_id = li.id
+                   JOIN services s ON s.id = ts.service_id
+                   WHERE s.name = "#,
+            );
+            query
+                .push_bind(source_service)
+                // `track_sources` is UNIQUE on (service_id, service_track_id),
+                // so the service_track_id order is already a total order.
+                .push(" ORDER BY ts.service_track_id LIMIT ")
+                .push_bind(MIGRATION_SOURCE_PAGE_SIZE)
+                .push(" OFFSET ")
+                .push_bind(offset);
+
+            let rows: Vec<(String, String, String, Option<String>)> = query
+                .build_query_as()
+                .fetch_all(db)
+                .await
+                .map_err(|e| format!("Failed to load migration tracks: {}", e))?;
+
+            rows.into_iter()
+                .map(|(external_id, title, artist, album)| MigrationSourceTrack {
+                    external_id,
+                    title,
+                    artist,
+                    album,
+                    playlist_id: None,
+                    playlist_name: None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let fetched = page.len();
+        tracks.extend(page);
+        if (fetched as i64) < MIGRATION_SOURCE_PAGE_SIZE {
+            break;
+        }
+        offset += MIGRATION_SOURCE_PAGE_SIZE;
+    }
+
+    Ok(tracks)
 }
 
 /// Insert one pending migration item and return its row id.
@@ -1037,9 +1100,29 @@ pub async fn start_migration<R: tauri::Runtime>(
     // Get tracks to migrate. BD-6: when the user selected playlists, filter by
     // them (external ids, same ids saved in source_playlist_ids) instead of
     // migrating every playlist of the source service.
-    let tracks = fetch_migration_source_tracks(&state.db, &source_service, playlist_ids.as_deref())
-        .await
-        .unwrap_or_default();
+    // BD-4: a failed read used to become an empty list, so the job stored
+    // total_items = 0 and closed as `completed`, telling the user everything
+    // migrated when not a single track had been read.
+    let tracks = match fetch_migration_source_tracks(
+        &state.db,
+        &source_service,
+        playlist_ids.as_deref(),
+    )
+    .await
+    {
+        Ok(tracks) => tracks,
+        Err(e) => {
+            tracing::error!("Migration {} failed reading source tracks: {}", job_id, e);
+            let _ = sqlx::query(
+                "UPDATE migration_jobs SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            )
+            .bind(&e)
+            .bind(&job_id)
+            .execute(&state.db)
+            .await;
+            return Err(e);
+        }
+    };
 
     let total_items = tracks.len() as i64;
 
@@ -1470,10 +1553,15 @@ pub async fn search_destination_track(
     // Fallback: Search our local library for tracks from the destination service
     let results: Vec<(String, String, String, Option<String>, i64, Option<String>)> =
         sqlx::query_as(
-            r#"SELECT external_id, title, artist, album, duration_ms, quality
-           FROM library_items
-           WHERE source_service = ? AND (title LIKE ? OR artist LIKE ?)
-           ORDER BY title LIMIT 20"#,
+            // BD-1: the mirror keeps the track's best source, so the id returned
+            // here has to be the destination service's own one, resolved from
+            // track_sources instead of read off the mirrored row.
+            r#"SELECT ts.service_track_id, li.title, li.artist, li.album, li.duration_ms, li.quality
+           FROM library_items li
+           JOIN track_sources ts ON ts.track_id = li.id
+           JOIN services s ON s.id = ts.service_id
+           WHERE s.name = ? AND (li.title LIKE ? OR li.artist LIKE ?)
+           ORDER BY li.title LIMIT 20"#,
         )
         .bind(&service)
         .bind(format!("%{}%", query))

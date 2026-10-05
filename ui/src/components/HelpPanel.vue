@@ -207,24 +207,11 @@
                   </button>
                 </div>
                 
-                <!-- External Links -->
-                <div class="space-y-2">
-                  <a href="#" class="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg transition-colors">
-                    <span class="material-symbols-outlined text-gray-400">forum</span>
-                    <span class="text-sm text-gray-700 dark:text-gray-300">Community Forum</span>
-                    <span class="material-symbols-outlined text-gray-300 text-lg ml-auto">open_in_new</span>
-                  </a>
-                  <a href="#" class="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg transition-colors">
-                    <span class="material-symbols-outlined text-gray-400">mail</span>
-                    <span class="text-sm text-gray-700 dark:text-gray-300">Email Support</span>
-                    <span class="material-symbols-outlined text-gray-300 text-lg ml-auto">open_in_new</span>
-                  </a>
-                  <a href="#" class="flex items-center gap-3 p-3 hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg transition-colors">
-                    <span class="material-symbols-outlined text-gray-400">chat_bubble</span>
-                    <span class="text-sm text-gray-700 dark:text-gray-300">Join Discord</span>
-                    <span class="material-symbols-outlined text-gray-300 text-lg ml-auto">open_in_new</span>
-                  </a>
-                </div>
+                <!-- Report destination -->
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  Reports and feedback are written as files under your Syncify reports folder;
+                  the path is shown as soon as the file is saved.
+                </p>
                 
                 <!-- System Info -->
                 <div class="mt-4">
@@ -261,7 +248,7 @@
                   <div class="flex items-center gap-3">
                     <span class="material-symbols-outlined text-primary">new_releases</span>
                     <div>
-                      <p class="text-sm font-medium text-gray-900 dark:text-white">What's New in v2.1.0</p>
+                      <p class="text-sm font-medium text-gray-900 dark:text-white">What's New in {{ systemInfo.appVersion }}</p>
                       <p class="text-xs text-gray-500">See the latest features</p>
                     </div>
                   </div>
@@ -367,7 +354,7 @@
                 :disabled="feedbackSubmitting"
                 class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {{ feedbackSubmitting ? 'Sending...' : 'Send Feedback' }}
+                {{ feedbackSubmitting ? 'Saving...' : 'Send Feedback' }}
               </button>
             </div>
           </div>
@@ -383,7 +370,7 @@
             <div class="px-5 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
               <div>
                 <h3 class="text-lg font-semibold text-gray-900 dark:text-white">What's New</h3>
-                <p class="text-sm text-gray-500">Version 2.1.0 • December 2024</p>
+                <p class="text-sm text-gray-500">Version {{ systemInfo.appVersion }}</p>
               </div>
               <button @click="showWhatsNew = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg">
                 <span class="material-symbols-outlined text-gray-400">close</span>
@@ -442,12 +429,6 @@
                   </li>
                 </ul>
               </div>
-            </div>
-            <div class="px-5 py-4 border-t border-gray-200 dark:border-border-dark">
-              <a href="#" class="text-sm text-primary hover:underline flex items-center gap-1">
-                View full changelog
-                <span class="material-symbols-outlined text-[16px]">open_in_new</span>
-              </a>
             </div>
           </div>
         </div>
@@ -569,10 +550,10 @@ const tutorials = ref([
 
 // FAQs
 const faqs = ref([
-  { id: 1, question: 'How do I add multiple accounts for the same service?', answer: 'Go to Settings > Accounts and click "Add Account" for any service. You can have multiple accounts per service.' },
+  { id: 1, question: 'How do I add multiple accounts for the same service?', answer: 'Open the Accounts view and click "Add Connection" for any service. You can have multiple accounts per service.' },
   { id: 2, question: 'What audio formats are supported?', answer: 'Syncify supports FLAC, ALAC, WAV, MP3, AAC, and OGG formats. Hi-Res audio up to 24-bit/192kHz is supported.' },
   { id: 3, question: 'How does matching work between services?', answer: 'Matching uses ISRC codes, MusicBrainz IDs, and fuzzy title/artist matching to find equivalent tracks across services.' },
-  { id: 4, question: 'Can I sync favorites automatically?', answer: 'Yes! Enable "Continuous Sync" in Settings > Sync to automatically sync favorites across services.' },
+  { id: 4, question: 'Can I sync favorites automatically?', answer: 'Yes! In Settings > Sync, switch on "Sync favorites" for every service you want to keep in sync, then run the sync from the Dashboard or from the command palette.' },
   { id: 5, question: 'How much storage do I need?', answer: 'Storage depends on quality settings. Hi-Res FLAC uses ~100MB per album, CD quality ~50MB, and MP3 ~10MB.' },
   { id: 6, question: 'Is my data encrypted?', answer: 'Yes, all credentials are encrypted using AES-256 and stored locally. No data is sent to external servers.' },
 ])

@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -46,7 +47,11 @@ from services.metadata_enrichment import (
     normalize_album_title,
     select_release_for_album,
 )
-from services.acoustid_matcher import AcoustIDMatcher, AcoustIDResult
+from services.acoustid_matcher import (
+    AcoustIDMatcher,
+    AcoustIDNotConfiguredError,
+    AcoustIDResult,
+)
 
 
 class TestMetadataBridgeRobustness(unittest.TestCase):
@@ -266,6 +271,18 @@ class TestAlbumContextEnrichment(unittest.TestCase):
         self.assertEqual(normalize_album_title(""), "")
 
 
+@contextmanager
+def _acoustid_installed():
+    """Fuerza ACOUSTID_AVAILABLE=True.
+
+    Sin pyacoustid el matcher corta antes de mirar la API key y devuelve [],
+    así que el contrato que se prueba (credencial ausente -> error explícito)
+    sólo se observa fijando la bandera.
+    """
+    with patch("services.acoustid_matcher.ACOUSTID_AVAILABLE", True):
+        yield
+
+
 class TestAcoustIDMatcherRobustness(unittest.TestCase):
     """Validation for AcoustIDMatcher decoupling and missing key handling."""
 
@@ -294,19 +311,26 @@ class TestAcoustIDMatcherRobustness(unittest.TestCase):
             matcher = AcoustIDMatcher(api_key="explicit-key")
             self.assertEqual(matcher.api_key, "explicit-key")
 
-    def test_identify_without_api_key_returns_empty_gracefully(self):
-        """When API key is not configured, identify returns empty list without raising."""
-        with patch.dict(os.environ, {}, clear=True):
-            matcher = AcoustIDMatcher(api_key=None, verbose=True)
-            results = matcher.identify(Path("/nonexistent/audio.mp3"))
-            self.assertEqual(results, [])
+    def test_identify_without_api_key_raises_not_configured(self):
+        """Sin API key el matcher dice que falta la credencial, no que no hay coincidencias.
 
-    def test_identify_with_fingerprint_without_api_key_returns_empty_gracefully(self):
-        """When API key is not configured, identify_with_fingerprint returns empty list."""
-        with patch.dict(os.environ, {}, clear=True):
+        Antes devolvía una lista vacía y el puente la pintaba como
+        `No matches found`, que empuja a reintentar un comando que no puede
+        funcionar nunca (auditoría 67).
+        """
+        with patch.dict(os.environ, {}, clear=True), _acoustid_installed():
             matcher = AcoustIDMatcher(api_key=None, verbose=True)
-            results = matcher.identify_with_fingerprint(180, "AQADtEmSREmURIn...")
-            self.assertEqual(results, [])
+            with self.assertRaises(AcoustIDNotConfiguredError) as ctx:
+                matcher.identify(Path("/nonexistent/audio.mp3"))
+            self.assertIn("ACOUSTID_API_KEY", str(ctx.exception))
+
+    def test_identify_with_fingerprint_without_api_key_raises_not_configured(self):
+        """Idem por el camino de fingerprint, que es el que usa el puente."""
+        with patch.dict(os.environ, {}, clear=True), _acoustid_installed():
+            matcher = AcoustIDMatcher(api_key=None, verbose=True)
+            with self.assertRaises(AcoustIDNotConfiguredError) as ctx:
+                matcher.identify_with_fingerprint(180, "AQADtEmSREmURIn...")
+            self.assertIn("ACOUSTID_API_KEY", str(ctx.exception))
 
 
 if __name__ == "__main__":

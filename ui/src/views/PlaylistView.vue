@@ -48,13 +48,13 @@
       
       <!-- Playlist Categories -->
       <div class="flex-1 overflow-y-auto custom-scrollbar">
-        <!-- Favorites (System) -->
-        <div 
+<!-- Favorites (System) -->
+        <div
           class="playlist-item p-3 mx-2 mt-2 rounded-lg cursor-pointer transition-colors flex items-center gap-3"
-          :class="selectedPlaylist?.id === 'favorites' ? 'bg-primary/10 border border-primary/20' : 'hover:bg-gray-100 dark:hover:bg-surface-highlight'"
+          :class="selectedPlaylist?.id === FAVORITES_PLAYLIST_ID ? 'bg-primary/10 border border-primary/20' : 'hover:bg-gray-100 dark:hover:bg-surface-highlight'"
           @click="selectPlaylist(favoritesPlaylist)"
         >
-          <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-red-500 to-pink-500 flex items-center justify-center">
+          <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-red-500 to-pink-500 flex items-center justify-center shrink-0">
             <span class="material-symbols-outlined text-white text-lg">favorite</span>
           </div>
           <div class="flex-1 min-w-0">
@@ -80,16 +80,18 @@
                 class="playlist-item p-2 rounded-lg cursor-pointer transition-colors flex items-center gap-3 group"
                 :class="selectedPlaylist?.id === playlist.id ? 'bg-primary/10 border border-primary/20' : 'hover:bg-gray-100 dark:hover:bg-surface-highlight'"
                 @click="selectPlaylist(playlist)"
-                @contextmenu.prevent="showPlaylistMenu($event, playlist)"
+                @contextmenu.prevent="openPlaylistMenu($event, playlist)"
                 draggable="true"
                 @dragstart="onDragStart($event, playlist)"
               >
-                <div class="w-10 h-10 rounded-lg bg-gray-200 dark:bg-gray-700 overflow-hidden shrink-0">
-                  <img v-if="playlist.image_url" :src="playlist.image_url" class="w-full h-full object-cover">
-                  <div v-else class="w-full h-full flex items-center justify-center">
-                    <span class="material-symbols-outlined text-gray-400">queue_music</span>
-                  </div>
-                </div>
+                <TrackCover
+                  :src="playlist.image_url"
+                  :item-id="playlist.id"
+                  :alt="playlist.name"
+                  size-class="w-10 h-10"
+                  rounded="rounded-lg"
+                  icon="queue_music"
+                />
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ playlist.name }}</p>
                   <p class="text-xs text-gray-500">{{ playlist.track_count }} tracks</p>
@@ -98,7 +100,7 @@
                   <button @click.stop="playPlaylist(playlist)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
                     <span class="material-symbols-outlined text-sm">play_arrow</span>
                   </button>
-                  <button @click.stop="showPlaylistMenu($event, playlist)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
+                  <button @click.stop="openPlaylistMenu($event, playlist)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
                     <span class="material-symbols-outlined text-sm">more_vert</span>
                   </button>
                 </div>
@@ -202,12 +204,14 @@
         <div class="flex gap-6">
           <!-- Cover Art -->
           <div class="relative group shrink-0">
-            <div class="w-32 h-32 rounded-xl overflow-hidden bg-gray-200 dark:bg-gray-700 shadow-lg">
-              <img v-if="selectedPlaylist.coverArt" :src="selectedPlaylist.coverArt" class="w-full h-full object-cover">
-              <div v-else class="w-full h-full flex items-center justify-center">
-                <span class="material-symbols-outlined text-5xl text-gray-400">queue_music</span>
-              </div>
-            </div>
+            <TrackCover
+              :src="selectedPlaylist.coverArt || selectedPlaylist.image_url || null"
+              :item-id="selectedPlaylist.id"
+              :alt="selectedPlaylist.name"
+              size-class="w-32 h-32 shadow-lg"
+              rounded="rounded-xl"
+              icon="queue_music"
+            />
 
           </div>
           
@@ -348,8 +352,30 @@
       
       <!-- Track List -->
       <div v-if="selectedPlaylist" class="flex-1 overflow-y-auto custom-scrollbar">
+        <!-- Loading: mientras llegan las pistas no se puede afirmar que la lista esté vacía -->
+        <div v-if="isLoading" class="flex-1 flex items-center justify-center py-16" data-testid="playlist-tracks-loading">
+          <div class="text-center">
+            <span class="material-symbols-outlined text-3xl text-gray-400 animate-spin block mb-4">progress_activity</span>
+            <p class="text-gray-500 text-sm">Loading tracks…</p>
+          </div>
+        </div>
+
+        <!-- Error: un fallo de carga no es una playlist vacía -->
+        <div v-else-if="tracksError" class="flex-1 flex items-center justify-center py-16 px-6" data-testid="playlist-tracks-error">
+          <div class="text-center">
+            <div class="w-16 h-16 mx-auto rounded-full bg-red-50 dark:bg-surface-highlight flex items-center justify-center mb-4">
+              <span class="material-symbols-outlined text-3xl text-error">error</span>
+            </div>
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Could not load tracks</h3>
+            <p class="text-gray-500 text-sm mb-4">{{ tracksError }}</p>
+            <button @click="loadPlaylistTracks" class="px-4 py-2 bg-primary text-white rounded-lg text-sm">
+              Try Again
+            </button>
+          </div>
+        </div>
+
         <!-- Empty Playlist -->
-        <div v-if="!playlistTracks.length" class="flex-1 flex items-center justify-center py-16">
+        <div v-else-if="!playlistTracks.length" class="flex-1 flex items-center justify-center py-16" data-testid="playlist-tracks-empty">
           <div class="text-center">
             <div class="w-16 h-16 mx-auto rounded-full bg-gray-100 dark:bg-surface-highlight flex items-center justify-center mb-4">
               <span class="material-symbols-outlined text-3xl text-gray-400">music_note</span>
@@ -371,6 +397,14 @@
           <div class="w-32">Added</div>
           <div class="w-20 text-right">Duration</div>
           <div class="w-10"></div>
+        </div>
+
+        <div
+          v-if="tracksTruncated && !isLoading && !tracksError"
+          class="mx-4 mt-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-600 dark:text-amber-400"
+          data-testid="playlist-tracks-truncated"
+        >
+          Showing the first {{ playlistTracks.length }} tracks of this list.
         </div>
         
         <!-- Track Rows -->
@@ -394,9 +428,12 @@
           
           <!-- Album Art -->
           <div class="w-12 pr-3">
-            <div class="w-10 h-10 rounded bg-gray-200 dark:bg-gray-700 overflow-hidden">
-              <img v-if="track.albumArt" :src="track.albumArt" class="w-full h-full object-cover">
-            </div>
+            <TrackCover
+              :src="track.albumArt"
+              :item-id="track.id"
+              :alt="track.album || track.title"
+              size-class="w-10 h-10"
+            />
           </div>
           
           <!-- Title & Artist -->
@@ -631,6 +668,45 @@
         </div>
       </Transition>
     </Teleport>
+
+    <!-- Menú de opciones de playlist (sustituye al borrado directo) -->
+    <Teleport to="body">
+      <div
+        v-if="playlistMenu"
+        class="fixed z-[300] w-50 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-highlight py-1 shadow-xl"
+        :style="{ left: `${playlistMenu.x}px`, top: `${playlistMenu.y}px` }"
+        data-testid="playlist-options-menu"
+        @click.stop
+      >
+        <button class="w-full flex items-center gap-3 px-4 py-2 text-sm text-left hover:bg-gray-100 dark:hover:bg-surface-dark" @click="menuPlayPlaylist">
+          <span class="material-symbols-outlined text-base">play_arrow</span>
+          <span>Play</span>
+        </button>
+        <button class="w-full flex items-center gap-3 px-4 py-2 text-sm text-left hover:bg-gray-100 dark:hover:bg-surface-dark" @click="menuSelectPlaylist">
+          <span class="material-symbols-outlined text-base">open_in_new</span>
+          <span>Open</span>
+        </button>
+        <button
+          class="w-full flex items-center gap-3 px-4 py-2 text-sm text-left hover:bg-gray-100 dark:hover:bg-surface-dark"
+          :disabled="!canMutateMenuPlaylist"
+          :class="{ 'opacity-40 pointer-events-none': !canMutateMenuPlaylist }"
+          @click="menuStartEditName"
+        >
+          <span class="material-symbols-outlined text-base">edit</span>
+          <span>Rename</span>
+        </button>
+        <div class="my-1 border-t border-gray-200 dark:border-border-dark"></div>
+        <button
+          class="w-full flex items-center gap-3 px-4 py-2 text-sm text-left text-error hover:bg-red-50 dark:hover:bg-red-500/10"
+          :disabled="!canMutateMenuPlaylist"
+          :class="{ 'opacity-40 pointer-events-none': !canMutateMenuPlaylist }"
+          @click="menuDeletePlaylist"
+        >
+          <span class="material-symbols-outlined text-base">delete</span>
+          <span>Delete</span>
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -643,6 +719,10 @@ import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { Playlist, LibraryTrack } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 import { usePlayer } from '@/composables/usePlayer'
+import TrackCover from '@/components/TrackCover.vue'
+
+/** Id sintético de la entrada Favoritos: no existe en la tabla `playlists`. */
+const FAVORITES_PLAYLIST_ID = -1
 
 const toast = useToast()
 const player = usePlayer()
@@ -700,7 +780,7 @@ const importUrl = ref('')
 const isImporting = ref(false)
 
 const favoritesPlaylist = ref<any>({
-  id: -1, // Changed from 'favorites' string to number
+  id: FAVORITES_PLAYLIST_ID,
   name: 'Favorites',
   track_count: 0,
   duration: '0h 0m',
@@ -712,6 +792,12 @@ const importedServices = ref<any[]>([])
 const smartPlaylists = ref<any[]>([])
 const playlistTracks = ref<any[]>([])
 const isLoading = ref(false)
+/** Fallo de la última carga de pistas; distingue «vacía» de «no se pudo leer». */
+const tracksError = ref<string | null>(null)
+/** La página superaba el tope por página: lo que se ve no es todo el contenido. */
+const tracksTruncated = ref(false)
+/** Tope por página del backend (`limit` se recorta a 500 en get_playlist_tracks). */
+const PLAYLIST_PAGE_SIZE = 500
 
 const canMutateSelectedPlaylist = computed(() => {
   const playlist = selectedPlaylist.value
@@ -780,6 +866,8 @@ onUnmounted(() => {
     clearTimeout(previewDebounceTimer)
     previewDebounceTimer = null
   }
+  document.removeEventListener('click', closePlaylistMenu)
+  document.removeEventListener('keydown', onMenuKeydown)
 })
 
 watch(
@@ -795,22 +883,36 @@ watch(
 async function selectPlaylist(playlist: any) {
   selectedPlaylist.value = playlist
   selectedTracks.value = []
-  
-  if (playlist.id === 'favorites') {
-    // Handle Favorites specially if needed, but for core wiring:
-    playlistTracks.value = []
-    return
-  }
-  
+  tracksError.value = null
+  isLoading.value = true
+
   try {
-    isLoading.value = true
-    const page = await libraryApi.getPlaylistTracks(playlist.id)
+    if (playlist.id === FAVORITES_PLAYLIST_ID) {
+      // Favoritos no es una fila de `playlists`: `get_playlist_tracks(-1)`
+      // contaría cero, así que se leen directamente de la biblioteca.
+      const page = await libraryApi.getFavoriteTracks(0, PLAYLIST_PAGE_SIZE)
+      playlistTracks.value = page.tracks.map((t, i) => mapToTrack(t, i))
+      favoritesPlaylist.value.track_count = page.total
+      tracksTruncated.value = page.has_more
+      return
+    }
+
+    const page = await libraryApi.getPlaylistTracks(playlist.id, 0, PLAYLIST_PAGE_SIZE)
     playlistTracks.value = page.tracks.map((t, i) => mapToTrack(t, i))
+    tracksTruncated.value = page.has_more
   } catch (error) {
+    playlistTracks.value = []
+    tracksError.value = String(error)
     toast.error('Failed to load playlist tracks', String(error))
   } finally {
     isLoading.value = false
   }
+}
+
+/** Recarga las pistas de la selección actual tras un error o un reintento. */
+async function loadPlaylistTracks() {
+  if (!selectedPlaylist.value) return
+  await selectPlaylist(selectedPlaylist.value)
 }
 
 async function loadPlaylists() {
@@ -866,10 +968,16 @@ async function triggerSyncPlaylists() {
 
 onMounted(() => {
   loadPlaylists()
+  document.addEventListener('click', closePlaylistMenu)
+  document.addEventListener('keydown', onMenuKeydown)
 })
 
+function onMenuKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && playlistMenu.value) closePlaylistMenu()
+}
+
 function startEditName() {
-  if (selectedPlaylist.value?.id === 'favorites' || selectedPlaylist.value?.smart) return
+  if (selectedPlaylist.value?.id === FAVORITES_PLAYLIST_ID || selectedPlaylist.value?.smart) return
   editingName.value = selectedPlaylist.value.name
   isEditingName.value = true
   nextTick(() => nameInput.value?.focus())
@@ -1088,9 +1196,24 @@ async function playTrack(track: any) {
   }
 }
 
+function toPlayerTrack(track: any) {
+  return {
+    id: track.id,
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    coverUrl: track.albumArt || null,
+  }
+}
+
 async function playAll() {
-  if (playlistTracks.value.length > 0) {
-    await playTrack(playlistTracks.value[0])
+  if (!playlistTracks.value.length) return
+
+  await playTrack(playlistTracks.value[0])
+
+  // El resto entra en «siguiente» en orden: la escucha sigue la lista sola.
+  for (const track of playlistTracks.value.slice(1)) {
+    await player.playNext(toPlayerTrack(track))
   }
 }
 
@@ -1258,13 +1381,67 @@ async function playPlaylist(playlist: any) {
   if (selectedPlaylist.value?.id !== playlist.id) {
     await selectPlaylist(playlist)
   }
-  if (playlistTracks.value.length > 0) {
-    await playTrack(playlistTracks.value[0])
+  await playAll()
+}
+
+// Menú de opciones de la sidebar: abrirlo nunca borra nada por su cuenta.
+const playlistMenu = ref<{ playlist: any; x: number; y: number } | null>(null)
+
+function openPlaylistMenu(event: MouseEvent, playlist: any) {
+  event.preventDefault()
+  event.stopPropagation()
+
+  // Anclado al elemento que abrió el menú, no al evento: el mismo menú sirve
+  // para el botón de tres puntos (izquierda) y para el clic derecho.
+  const target = event.currentTarget as HTMLElement | null
+  const anchor = target?.getBoundingClientRect()
+  const width = 200
+  const height = 208
+  const x = anchor ? anchor.right - width : event.clientX
+  const y = anchor ? anchor.bottom + 4 : event.clientY
+
+  playlistMenu.value = {
+    playlist,
+    x: Math.max(8, Math.min(x, window.innerWidth - width - 8)),
+    y: Math.max(8, Math.min(y, window.innerHeight - height - 8)),
   }
 }
 
-async function showPlaylistMenu(_event: MouseEvent, playlist: any) {
-  if (selectedPlaylist.value?.id !== playlist.id) await selectPlaylist(playlist)
+function closePlaylistMenu() {
+  playlistMenu.value = null
+}
+
+/** El menú actúa sobre su propia entrada, que puede no ser la seleccionada. */
+const canMutateMenuPlaylist = computed(() => {
+  const id = playlistMenu.value?.playlist?.id
+  return typeof id === 'number' && id > 0 && !playlistMenu.value?.playlist?.smart
+})
+
+async function menuSelectPlaylist() {
+  const playlist = playlistMenu.value?.playlist
+  closePlaylistMenu()
+  if (playlist) await selectPlaylist(playlist)
+}
+
+async function menuPlayPlaylist() {
+  const playlist = playlistMenu.value?.playlist
+  closePlaylistMenu()
+  if (playlist) await playPlaylist(playlist)
+}
+
+async function menuStartEditName() {
+  const playlist = playlistMenu.value?.playlist
+  closePlaylistMenu()
+  if (!playlist) return
+  await selectPlaylist(playlist)
+  startEditName()
+}
+
+async function menuDeletePlaylist() {
+  const playlist = playlistMenu.value?.playlist
+  closePlaylistMenu()
+  if (!playlist) return
+  await selectPlaylist(playlist)
   await deleteSelectedPlaylist()
 }
 
