@@ -125,7 +125,8 @@
 
 <script setup lang="ts">
 import { watch, onMounted } from 'vue'
-import { confirm } from '@tauri-apps/plugin-dialog'
+// R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
+import { confirm } from '@/composables/useToast'
 import { useAdvancedSettings } from '@/composables/useAdvancedSettings'
 import BaseToggle from '@/components/settings/BaseToggle.vue'
 
@@ -155,7 +156,7 @@ async function runBatchHealthCheck() {
 async function confirmVacuum() {
   const confirmed = await confirm('This will compact the database file. The app may be unresponsive briefly. Continue?', {
     title: 'Vacuum Database',
-    kind: 'warning'
+    variant: 'warning'
   })
   if (confirmed !== true) return
   await advancedSettings.vacuumDatabase()
@@ -164,7 +165,7 @@ async function confirmVacuum() {
 async function confirmResetAdvanced() {
   const confirmed = await confirm('Reset all advanced settings to their default values?', {
     title: 'Reset Advanced Settings',
-    kind: 'warning'
+    variant: 'warning'
   })
   if (confirmed !== true) return
   await advancedSettings.resetToDefaults('advanced')

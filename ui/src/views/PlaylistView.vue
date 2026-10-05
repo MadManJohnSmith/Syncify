@@ -712,12 +712,15 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { useRouter, useRoute, type LocationQueryRaw } from 'vue-router'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
 import { playlistsApi, exportPlaylistM3u, importPlaylists, type MissingPlaylistFile } from '@/api/playlists'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { Playlist, LibraryTrack } from '@/api/types'
-import { useToast } from '@/composables/useToast'
+// R13: `confirm`/`prompt` unificados (diálogo dentro de la app) en lugar de
+// `window.confirm`/`window.prompt`, que se abren fuera de la ventana.
+import { useToast, confirm, prompt } from '@/composables/useToast'
 import { usePlayer } from '@/composables/usePlayer'
 import TrackCover from '@/components/TrackCover.vue'
 
@@ -726,6 +729,10 @@ const FAVORITES_PLAYLIST_ID = -1
 
 const toast = useToast()
 const player = usePlayer()
+// Encadenado con el router (encadenado opcional como SettingsView/LibraryView:
+// la vista también se monta en tests sin instancia de router).
+const router = useRouter()
+const route = useRoute()
 
 // State
 const searchQuery = ref('')
@@ -968,9 +975,24 @@ async function triggerSyncPlaylists() {
 
 onMounted(() => {
   loadPlaylists()
+  void consumeCreateQuery()
   document.addEventListener('click', closePlaylistMenu)
   document.addEventListener('keydown', onMenuKeydown)
 })
+
+// Ítem 46: la acción rápida «New Playlist» (App.handleNewPlaylist) navega a
+// /playlists?create=1. Al montar con ese flag se abre el formulario de
+// creación y el parámetro se consume SIEMPRE para que recargar o volver atrás
+// no lo vuelva a abrir (mismo patrón que LibraryView con ?track=).
+async function consumeCreateQuery() {
+  if (route?.query?.create !== '1') return
+
+  const rest: LocationQueryRaw = { ...route.query }
+  delete rest.create
+  await router.replace({ query: rest })
+
+  showCreateModal.value = true
+}
 
 function onMenuKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && playlistMenu.value) closePlaylistMenu()
@@ -1049,7 +1071,13 @@ function applyUpdatedPlaylist(updated: Playlist) {
 async function deleteSelectedPlaylist() {
   if (!canMutateSelectedPlaylist.value) return
   const playlist = selectedPlaylist.value
-  if (!window.confirm(`Delete playlist “${playlist.name}”?`)) return
+  // R13: confirmación unificada en la app (antes window.confirm nativo).
+  const confirmed = await confirm(`Delete playlist “${playlist.name}”?`, {
+    title: 'Delete Playlist',
+    variant: 'danger',
+    confirmLabel: 'Delete'
+  })
+  if (!confirmed) return
   try {
     await playlistsApi.deletePlaylist(playlist.id)
     myPlaylists.value = myPlaylists.value.filter(p => p.id !== playlist.id)
@@ -1063,7 +1091,12 @@ async function deleteSelectedPlaylist() {
 
 async function addTracksById() {
   if (!canMutateSelectedPlaylist.value) return
-  const raw = window.prompt('Track IDs to add (comma-separated)')
+  // R13: prompt unificado en la app (antes window.prompt nativo).
+  const raw = await prompt('Track IDs to add (comma-separated)', {
+    title: 'Add Tracks by ID',
+    placeholder: 'e.g. 301, 302, 303',
+    confirmLabel: 'Add'
+  })
   if (raw === null) return
   const trackIds = [...new Set(raw.split(',').map(value => Number(value.trim())).filter(id => Number.isSafeInteger(id) && id > 0))]
   if (trackIds.length === 0) {
@@ -1352,11 +1385,25 @@ function missingReasonLabel(reason: string): string {
 
 async function downloadTrack(track: any) {
   try {
+    // Ítem 63: una pista cuya fuente disponible es Tidal (y no Qobuz) bloquea
+    // su identidad de origen a Tidal. El backend solo fija de serie el origen
+    // exacto de Qobuz (tracks.qobuz_id en perform_add_to_queue), así que sin
+    // este lock una pista con fuente Tidal podía no llegar a descargarse por
+    // Tidal. Con el lock el worker la procesa por el pipeline de Tidal
+    // (orchestrator → TidalDownloader → execute_tidal_single_track_download)
+    // con la misma cola, estados y progreso que una descarga de Qobuz.
+    const availableServices = String(track.available_services || track.services || '')
+      .split(',')
+      .map(s => s.trim().toLowerCase())
+      .filter(Boolean)
+    const tidalOnly = availableServices.includes('tidal') && !availableServices.includes('qobuz')
+
     await addToQueue({
       trackId: track.id,
       targetTitle: track.title,
       targetArtist: track.artist,
       targetAlbum: track.album,
+      ...(tidalOnly ? { serviceName: 'tidal' } : {}),
       allowFallback: true,
     })
     toast.success('Queued for download', track.title)

@@ -89,7 +89,7 @@ describe('Router & Navigation Graph (TASK-17)', () => {
     expect(document.body.querySelector('[data-testid="search-modal"]')).not.toBeNull()
   })
 
-  it('opens the search modal when a stale /search navigation lands (R17)', async () => {
+  it('redirects a stale /search navigation to /dashboard: the route no longer exists (R17)', async () => {
     const wrapper = mount(App, {
       global: {
         plugins: [router],
@@ -108,12 +108,14 @@ describe('Router & Navigation Graph (TASK-17)', () => {
     })
     await flushPromises()
 
+    // main.ts ya no registra /search (la búsqueda es solo un modal): el
+    // catch-all redirige al dashboard y el modal no se auto-abre.
     await router.push('/search')
     await flushPromises()
     await wrapper.vm.$nextTick()
 
-    expect(document.body.querySelector('[data-testid="search-modal"]')).not.toBeNull()
     expect(router.currentRoute.value.path).toBe('/dashboard')
+    expect(routes.find(r => r.path === '/search')).toBeUndefined()
   })
 
   it('updates KeyboardShortcuts Ctrl+7 tab route to /downloads', async () => {

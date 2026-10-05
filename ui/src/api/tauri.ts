@@ -264,6 +264,8 @@ export const TauriEvents = {
     SERVICE_NOTIFICATION: 'service-notification',
     LOG_EVENT: 'syncify:log_event',
     TRAY_NOTIFICATION: 'tray-notification',
+    TRAY_SETTINGS_CHANGED: 'tray-settings-changed',
+    TRAY_OPEN_SETTINGS: 'tray-open-settings',
     PYTHON_DEPS_MISSING: 'python_deps_missing',
     BPM_ANALYSIS_PROGRESS: 'syncify:bpm_analysis_progress',
     FAVORITES_SYNC_COMPLETED: 'syncify:favorites_sync_completed',

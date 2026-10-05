@@ -4,6 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { useLogs, resetLogs, formatLogTime, normalizeProviderName, mapSystemLogToLogEntry } from '@/composables/useLogs'
 import { mockInvoke, resetMocks, emitMockEvent } from '../setup'
 
@@ -40,7 +41,7 @@ describe('useLogs Composable', () => {
     expect(logs.value).toEqual([])
   })
 
-  it('adds structured log entries and respects 1000 items capacity limit', () => {
+  it('adds structured log entries and respects the 2000 items capacity limit (R15, aligned with the native ring buffer)', () => {
     const { logs, addLog } = useLogs()
 
     addLog({
@@ -56,8 +57,8 @@ describe('useLogs Composable', () => {
     expect(logs.value[0].message).toBe('Downloading FLAC 24-bit stream')
     expect(logs.value[0].level).toBe('info')
 
-    // Add 1005 items
-    for (let i = 0; i < 1005; i++) {
+    // Add 2005 items
+    for (let i = 0; i < 2005; i++) {
       addLog({
         level: 'info',
         provider: 'System',
@@ -67,7 +68,7 @@ describe('useLogs Composable', () => {
       })
     }
 
-    expect(logs.value.length).toBe(1000)
+    expect(logs.value.length).toBe(2000)
   })
 
   it('preserves state across multiple useLogs instances (singleton pattern)', () => {
@@ -147,6 +148,107 @@ describe('useLogs Composable', () => {
 
     await clearLogs()
     expect(logs.value.length).toBe(0)
+  })
+
+  it('R15: keeps worker progress telemetry (queue_id + progress_percent) out of the audit history', async () => {
+    const { logs, initLogListeners } = useLogs()
+    await initLogListeners()
+
+    // Telemetría de progreso del worker por queue_id + progress_percent:
+    // cada tick NO es una entrada de log y no debe contaminar el histórico.
+    for (let pct = 0; pct <= 100; pct += 25) {
+      emitMockEvent('syncify:progress', {
+        queue_id: 42,
+        status: 'downloading',
+        progress_percent: pct,
+      })
+    }
+    // El mismo canal para el pipeline single-track (item_id + percent): fuera.
+    emitMockEvent('syncify:progress', {
+      item_id: 'abc',
+      status: 'downloading',
+      progress_percent: 50,
+    })
+    // Eventos de pipeline sin porcentaje (scan/organize): siguen entrando.
+    emitMockEvent('syncify:progress', {
+      operation: 'scan',
+      status: 'completed',
+      message: 'Scan finished',
+    })
+
+    expect(logs.value.some(l => l.details?.queue_id === 42)).toBe(false)
+    expect(logs.value.some(l => l.details?.item_id === 'abc')).toBe(false)
+    expect(logs.value.some(l => l.message.includes('Scan finished'))).toBe(true)
+  })
+
+  it('R15: loads the on-disk history pages with stable ids and dated times', async () => {
+    mockInvoke((command) => {
+      if (command === 'read_log_history') {
+        return {
+          entries: [
+            {
+              id: 'hist-abc',
+              timestamp: '2026-10-04T09:00:00Z',
+              level: 'warn',
+              target: 'syncify_tauri::worker',
+              module: 'Worker',
+              message: 'Old warning from disk',
+              fields: null,
+            },
+          ],
+          total: 1,
+          offset: 0,
+          limit: 500,
+        }
+      }
+      return null
+    })
+
+    const { logs, loadLogHistory } = useLogs()
+    const page = await loadLogHistory({ from: '2026-10-04', to: '2026-10-05' })
+    expect(page.total).toBe(1)
+    expect(page.entries[0].message).toBe('Old warning from disk')
+    expect(logs.value.some(l => l.id === 'hist-abc')).toBe(true)
+    // La entrada no es de hoy: la columna de tiempo lleva la fecha (MM-DD).
+    expect(logs.value.find(l => l.id === 'hist-abc')?.time).toMatch(/^\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+
+    // Recargar la misma página no duplica la entrada (id estable).
+    await loadLogHistory({ from: '2026-10-04' })
+    expect(logs.value.filter(l => l.id === 'hist-abc').length).toBe(1)
+  })
+
+  it('R15: exports the history via the native dialog (path only) and export_log_range', async () => {
+    const exported: Array<{ command: string; args: Record<string, unknown> | undefined }> = []
+    vi.mocked(saveDialog).mockResolvedValueOnce('/tmp/syncify-history.txt')
+    mockInvoke((command, args) => {
+      if (command === 'export_log_range') {
+        exported.push({ command, args })
+        return { path: '/tmp/syncify-history.txt', exportedCount: 3 }
+      }
+      return null
+    })
+
+    const { exportLogHistory } = useLogs()
+    const ok = await exportLogHistory({ from: '2026-10-04', to: '2026-10-05', level: 'warn' })
+    expect(ok).toBe(true)
+    expect(exported).toHaveLength(1)
+    expect(exported[0].args?.destPath).toBe('/tmp/syncify-history.txt')
+    expect(exported[0].args?.level).toBe('warn')
+    expect(exported[0].args?.from).toBe('2026-10-04')
+  })
+
+  it('R15: does not invoke export_log_range when the user cancels the save dialog', async () => {
+    const exported: string[] = []
+    vi.mocked(saveDialog).mockResolvedValueOnce(null)
+    mockInvoke((command) => {
+      if (command === 'export_log_range') exported.push(command)
+      return null
+    })
+
+    const { exportLogHistory } = useLogs()
+    const ok = await exportLogHistory({})
+    expect(ok).toBe(false)
+    expect(exported).toHaveLength(0)
   })
 
   it('copies logs to clipboard formatted nicely', async () => {

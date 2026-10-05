@@ -20,7 +20,7 @@ async fn setup_migrated_db() -> SqlitePool {
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
-        .expect("Failed to run migrations 0001..=0067");
+        .expect("Failed to run migrations 0001..=latest (includes 0088)");
 
     pool
 }
@@ -346,4 +346,130 @@ async fn test_accounts_credentials_and_service_name_queries() {
 
     assert!(creds.is_some(), "Account credentials should be found");
     assert!(creds.unwrap().0.contains("token_abc_123"));
+}
+
+/// TASK-123 follow-up: migration 0088 (BD-5) schema alignment. The album total
+/// is split in two columns — `declared_total_tracks` holds the release total as
+/// the service declares it (0 = never declared) and `local_track_count` holds
+/// how many of those tracks are imported here; `total_tracks` keeps advertising
+/// the declared total and is only derived from COUNT(*) while nothing is
+/// declared.
+#[tokio::test]
+async fn test_migration_0088_album_totals_declared_and_local_semantics() {
+    let pool = setup_migrated_db().await;
+
+    // 1. The two 0088 columns exist on albums.
+    let album_columns: Vec<(i64, String, String, i64, Option<String>, i64)> =
+        sqlx::query_as("PRAGMA table_info(albums)")
+            .fetch_all(&pool)
+            .await
+            .expect("Failed to get albums columns");
+    let album_col_names: Vec<String> = album_columns.into_iter().map(|c| c.1).collect();
+    assert!(
+        album_col_names.contains(&"declared_total_tracks".to_string()),
+        "albums must contain declared_total_tracks column (0088)"
+    );
+    assert!(
+        album_col_names.contains(&"local_track_count".to_string()),
+        "albums must contain local_track_count column (0088)"
+    );
+
+    // 2. The 0088 triggers are installed: capture of declarations and the
+    //    per-track maintenance of both counts.
+    for trigger in &[
+        "trg_albums_capture_declared_total_tracks_ins",
+        "trg_albums_capture_declared_total_tracks_upd",
+        "trg_tracks_sync_album_total_tracks_ins",
+        "trg_tracks_sync_album_total_tracks_del",
+        "trg_tracks_sync_album_total_tracks_upd",
+    ] {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        )
+        .bind(trigger)
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to query sqlite_master");
+        assert_eq!(n, 1, "Trigger '{}' from migration 0088 must exist", trigger);
+    }
+
+    // 3. Declared release: the API total is captured and survives partial
+    //    imports; the imported count lives in local_track_count.
+    let declared_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Declared Release', 10, 0) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query("INSERT INTO tracks (title, album_id) VALUES ('D1', ?), ('D2', ?)")
+        .bind(declared_id)
+        .bind(declared_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (total, declared, local): (i32, i32, i32) = sqlx::query_as(
+        "SELECT total_tracks, declared_total_tracks, local_track_count FROM albums WHERE id = ?",
+    )
+    .bind(declared_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (total, declared, local),
+        (10, 10, 2),
+        "A declared release keeps advertising 10 with only 2 imported: total_tracks=declared_total_tracks=10, local_track_count=2"
+    );
+
+    // 4. declared_total_tracks = 0 means "never declared": the total is derived
+    //    from the library count.
+    let undeclared_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, is_stub) VALUES ('Undeclared Release', 0) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query("INSERT INTO tracks (title, album_id) VALUES ('U1', ?), ('U2', ?), ('U3', ?)")
+        .bind(undeclared_id)
+        .bind(undeclared_id)
+        .bind(undeclared_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (total, declared, local): (i32, i32, i32) = sqlx::query_as(
+        "SELECT total_tracks, declared_total_tracks, local_track_count FROM albums WHERE id = ?",
+    )
+    .bind(undeclared_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (total, declared, local),
+        (3, 0, 3),
+        "An album that declares nothing derives total_tracks from its imported tracks"
+    );
+
+    // 5. Removing a track from a declared release keeps the declaration and
+    //    only moves the local count.
+    sqlx::query("DELETE FROM tracks WHERE album_id = ? AND title = 'D1'")
+        .bind(declared_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (total, declared, local): (i32, i32, i32) = sqlx::query_as(
+        "SELECT total_tracks, declared_total_tracks, local_track_count FROM albums WHERE id = ?",
+    )
+    .bind(declared_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (total, declared, local),
+        (10, 10, 1),
+        "Deleting an imported track must not rewrite the declared release total"
+    );
 }

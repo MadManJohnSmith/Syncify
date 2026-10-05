@@ -11,8 +11,11 @@ mod db;
 mod download;
 pub mod enrichment_worker;
 mod import_cache;
+mod logs_history;
 mod models;
 mod services;
+mod sync_scheduler;
+mod system_conditions;
 mod tray;
 mod worker;
 
@@ -121,6 +124,15 @@ fn main() {
         })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        // Ítem 31: autoinicio al arrancar el sistema, gobernado por el ajuste
+        // existente `start_on_boot` (tray.rs lo aplica con el ManagerExt del plugin).
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        // Ítem 32: notificaciones nativas del escritorio, respetando la
+        // preferencia del usuario (`notifications_enabled` en tray.rs).
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             // Initialize database using AppHandle inside setup
             let init_handle = app.handle().clone();
@@ -765,6 +777,20 @@ fn main() {
 
             tracing::info!("Background enrichment worker started");
 
+            // ═══════════════════════════════════════════════════════
+            // ITEM 29: SCHEDULED SYNCHRONIZATION
+            // Reads the persisted `sync_settings` interval and fires the same
+            // flow as the manual tray sync while the toggle is on.
+            // ═══════════════════════════════════════════════════════
+            sync_scheduler::start_sync_scheduler(app.handle().clone());
+
+            // ═══════════════════════════════════════════════════════
+            // ITEM 28: ENVIRONMENT PAUSES (metered network / low battery)
+            // Real D-Bus detection (NetworkManager Metered + UPower) wired to
+            // the existing `pause_on_metered` / `pause_on_low_battery` flags.
+            // ═══════════════════════════════════════════════════════
+            system_conditions::start_environment_watch(app.handle().clone());
+
             // Initialize system tray (TASK-120), isolating any panic from the
             // appindicator FFI (TASK-154): if libayatana-appindicator3 is
             // missing, libappindicator-sys panics before returning an error.
@@ -1109,6 +1135,9 @@ fn main() {
             commands::export_system_logs,
             commands::record_system_log,
             commands::get_logging_status,
+            // R15: log history read back from the rotating files on disk
+            logs_history::read_log_history,
+            logs_history::export_log_range,
             // User Reports from Help panel (FE-8)
             commands::save_user_report,
             // Local BPM & Tempo Analysis (Sprint 173)

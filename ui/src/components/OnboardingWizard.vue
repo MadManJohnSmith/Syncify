@@ -381,6 +381,25 @@
               </div>
             </div>
             
+            <!-- Persistence failure (ítem 44): si la calidad o las
+                 preferencias de importación no se guardaron de verdad vía la
+                 API de settings, el asistente NO se cierra y no se marca el
+                 onboarding como completado hasta que el reintento confirme. -->
+            <div
+              v-if="setupSaveErrors.length > 0"
+              class="save-errors mb-6 max-w-md mx-auto p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-left"
+              data-testid="onboarding-save-errors"
+            >
+              <p class="text-sm text-red-400 font-medium flex items-center gap-2">
+                <span class="material-symbols-outlined text-[16px]">error</span>
+                Some settings could not be saved
+              </p>
+              <ul class="mt-2 space-y-1">
+                <li v-for="failure in setupSaveErrors" :key="failure" class="text-xs text-gray-400 break-words">• {{ failure }}</li>
+              </ul>
+              <p class="text-xs text-gray-500 mt-2">Press "Start Using Syncify" again to retry.</p>
+            </div>
+
             <!-- Optional Features -->
             <div class="space-y-3 mb-10 text-left max-w-md mx-auto">
               <label class="flex items-center gap-3 cursor-pointer">
@@ -392,10 +411,15 @@
                 <span class="text-gray-300">Check for updates automatically</span>
               </label>
             </div>
-            
+
             <!-- Start Button -->
-            <button @click="completeSetup" class="px-10 py-4 bg-primary hover:bg-primary-hover text-white text-lg font-semibold rounded-xl transition-colors shadow-lg shadow-primary/30">
-              Start Using Syncify
+            <button
+              @click="completeSetup"
+              :disabled="isSavingSetup"
+              class="px-10 py-4 bg-primary hover:bg-primary-hover text-white text-lg font-semibold rounded-xl transition-colors shadow-lg shadow-primary/30 disabled:opacity-60 disabled:cursor-wait"
+            >
+              <span v-if="isSavingSetup" class="material-symbols-outlined align-middle text-base animate-spin mr-1">progress_activity</span>
+              {{ isSavingSetup ? 'Saving...' : 'Start Using Syncify' }}
             </button>
           </div>
         </Transition>
@@ -534,6 +558,11 @@ const importPlanLabel = computed(() => {
 // Step 5: Completion
 const takeTour = ref(false)
 const autoUpdate = ref(true)
+// Ítem 44: estado de guardado del paso final. Mientras `isSavingSetup` el
+// botón espera la confirmación de la API de settings; `setupSaveErrors` lista
+// lo que NO se guardó para que el usuario reintente antes de cerrar.
+const isSavingSetup = ref(false)
+const setupSaveErrors = ref<string[]>([])
 
 // Tour State — targets are real app elements marked with data-tour in App.vue
 const showTourOverlay = ref(false)
@@ -929,15 +958,28 @@ async function connectService(service: OnboardingService) {
 }
 
 /**
- * Persists every onboarding choice, then either starts the real app tour or
- * finishes. Persistence failures are surfaced via toast but never block
- * leaving the wizard.
+ * Persists every onboarding choice, waits for the settings API to confirm and
+ * ONLY THEN closes the wizard (ítem 44). If quality or import preferences
+ * did not really save, the wizard stays open, shows what failed and lets the
+ * user retry: `complete` is never emitted with unconfirmed settings, so
+ * App.vue cannot mark the onboarding as done.
  */
 async function completeSetup() {
-  const failures = await persistOnboardingChoices()
-  if (failures.length > 0) {
-    toast.error(`Some settings could not be saved: ${failures.join('; ')}`)
+  if (isSavingSetup.value) return
+  isSavingSetup.value = true
+  let failures: string[] = []
+  try {
+    failures = await persistOnboardingChoices()
+  } finally {
+    isSavingSetup.value = false
   }
+
+  if (failures.length > 0) {
+    setupSaveErrors.value = failures
+    toast.error(`Some settings could not be saved: ${failures.join('; ')}`)
+    return
+  }
+  setupSaveErrors.value = []
 
   if (takeTour.value) {
     await startTour()
@@ -1030,6 +1072,8 @@ defineExpose({
   chooseDifferentFolder,
   refreshAvailableSpace,
   persistOnboardingChoices,
+  isSavingSetup,
+  setupSaveErrors,
   showTourOverlay,
   tourIndex,
   spotlightStyle,

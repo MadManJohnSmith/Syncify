@@ -326,12 +326,14 @@ const actions = ref([
 ])
 
 const settings = ref([
-  { id: 1, name: 'Download location', path: 'Settings → Storage' },
-  { id: 2, name: 'Audio quality preferences', path: 'Settings → Audio Quality' },
-  { id: 3, name: 'Lyrics providers', path: 'Settings → Lyrics' },
-  { id: 4, name: 'Folder structure', path: 'Settings → Organization' },
-  { id: 5, name: 'Connected accounts', path: 'Settings → Accounts' },
-  { id: 6, name: 'Metadata templates', path: 'Settings → Metadata' },
+  // Ítem 47: cada entrada lleva la subpestaña de Ajustes (`?tab=`) que debe
+  // abrir; los ids son los de `settingsCategories` en SettingsView.
+  { id: 1, name: 'Download location', path: 'Settings → Storage', tab: 'general' },
+  { id: 2, name: 'Audio quality preferences', path: 'Settings → Audio Quality', tab: 'quality' },
+  { id: 3, name: 'Lyrics providers', path: 'Settings → Lyrics', tab: 'lyrics' },
+  { id: 4, name: 'Folder structure', path: 'Settings → Organization', tab: 'folders' },
+  { id: 5, name: 'Connected accounts', path: 'Settings → Accounts', tab: 'services' },
+  { id: 6, name: 'Metadata templates', path: 'Settings → Metadata', tab: 'metadata' },
 ])
 
 const navigation = ref([
@@ -621,7 +623,9 @@ async function runAction(action: any) {
 function openSetting(setting: any) {
   addToRecent(setting.name)
   close()
-  router.push('/settings')
+  // Ítem 47: navegar a la subpestaña concreta en el query; SettingsView lee
+  // `tab` al montar y con un watcher mientras está abierta.
+  router.push({ path: '/settings', query: { tab: setting.tab || 'general' } })
 }
 
 function navigate(nav: any) {

@@ -6,10 +6,11 @@
  * and maintains history across tab changes without mock logs.
  */
 
-import { ref, computed, readonly } from 'vue'
+import { ref, computed, readonly, toRaw, triggerRef } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { getSystemLogs, clearSystemLogs as apiClearSystemLogs, exportSystemLogs as apiExportSystemLogs, type SystemLogEntry } from '@/api/logs'
-import { TauriEvents } from '@/api/tauri'
+import { TauriEvents, invokeCommand } from '@/api/tauri'
 import { useToast } from './useToast'
 
 export interface LogEntry {
@@ -31,6 +32,16 @@ let unlistenFns: UnlistenFn[] = []
 let logIdCounter = 1000
 
 export const SESSION_STORAGE_KEY = 'syncify_cached_logs'
+
+/**
+ * R15 / límites: el anillo nativo guarda 2000 entradas
+ * (`services::logging::DEFAULT_BUFFER_CAPACITY`); la UI quedaba corta en 1000.
+ * El histórico anterior a esto se recupera de disco con `read_log_history`.
+ */
+export const MAX_LOG_ENTRIES = 2000
+
+/** Page size used when paging through the on-disk log history. */
+export const HISTORY_PAGE_SIZE = 500
 
 /**
  * Format ISO timestamp or Date into HH:MM:SS
@@ -250,6 +261,53 @@ export function mapSystemLogToLogEntry(sys: SystemLogEntry): LogEntry {
 }
 
 /**
+ * R15: el histórico leído de disco tiene fechas pasadas, así que la columna de
+ * tiempo lleva la fecha cuando la entrada no es de hoy ("MM-DD HH:MM:SS").
+ */
+export function formatHistoryLogTime(isoOrDate?: string | Date): string {
+    try {
+        const d = isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate ?? '')
+        if (isNaN(d.getTime())) return formatLogTime(isoOrDate)
+        if (d.toDateString() === new Date().toDateString()) {
+            return d.toTimeString().split(' ')[0]
+        }
+        const mm = String(d.getMonth() + 1).padStart(2, '0')
+        const dd = String(d.getDate()).padStart(2, '0')
+        return `${mm}-${dd} ${d.toTimeString().split(' ')[0]}`
+    } catch {
+        return formatLogTime(isoOrDate)
+    }
+}
+
+/**
+ * Convert a history SystemLogEntry (read from the rotating files on disk)
+ * into a frontend LogEntry, keeping the date in the time column.
+ */
+export function mapHistorySystemLogToLogEntry(sys: SystemLogEntry): LogEntry {
+    return {
+        ...mapSystemLogToLogEntry(sys),
+        time: formatHistoryLogTime(sys.timestamp),
+    }
+}
+
+/** Filters accepted by loadLogHistory / exportLogHistory. */
+export interface LogHistoryFilters {
+    from?: string
+    to?: string
+    level?: string
+    query?: string
+}
+
+/** One page of the on-disk log history returned by `read_log_history`. */
+export interface LogHistoryPage {
+    entries: LogEntry[]
+    total: number
+    offset: number
+    limit: number
+    hasMore: boolean
+}
+
+/**
  * Reset all logs and listeners (primarily for tests)
  */
 export function resetLogs(initialEntries: LogEntry[] = []) {
@@ -292,19 +350,29 @@ export function useLogs() {
             details: entry.details,
         }
 
+        // R15 (rendimiento): la lista puede recibir ráfagas de miles de
+        // entradas y mutar el proxy reactivo es O(n) por llamada (unshift
+        // dispara un set reactivo por cada elemento desplazado). Se muta el
+        // array crudo y se notifica UNA vez con triggerRef: cualquier
+        // consumidor reacciona igual porque siempre lee `logs.value`
+        // (dependencia del propio ref) antes de recorrer la lista.
+        const rawLogs = toRaw(logs.value)
+
         // Avoid adding duplicate identical ID if re-fetched
-        const existingIdx = logs.value.findIndex(l => l.id === idStr)
+        const existingIdx = rawLogs.findIndex(l => l.id === idStr)
         if (existingIdx >= 0) {
-            logs.value[existingIdx] = fullEntry
+            rawLogs[existingIdx] = fullEntry
         } else {
-            logs.value.unshift(fullEntry)
+            rawLogs.unshift(fullEntry)
         }
 
-        // Bound memory array to maximum 1000 items
-        if (logs.value.length > 1000) {
-            logs.value.pop()
+        // Bound memory array: aligned with the native 2000-entry ring buffer
+        // (MAX_LOG_ENTRIES); older entries live on disk and are paged in.
+        if (rawLogs.length > MAX_LOG_ENTRIES) {
+            rawLogs.pop()
         }
 
+        triggerRef(logs)
         persistToSessionStorage(logs.value)
     }
 
@@ -399,6 +467,93 @@ export function useLogs() {
     }
 
     /**
+     * R15: load a page of the on-disk log history (rotating files read back by
+     * the `read_log_history` command) merged into the live log list.
+     * History entries carry stable ids (`hist-...`) so re-loading or paging
+     * never duplicates them.
+     */
+    async function loadLogHistory(
+        filters: LogHistoryFilters & { offset?: number; limit?: number },
+    ): Promise<LogHistoryPage> {
+        const offset = filters.offset ?? 0
+        const limit = filters.limit ?? HISTORY_PAGE_SIZE
+        const raw = await invokeCommand<unknown>('read_log_history', {
+            from: filters.from ?? null,
+            to: filters.to ?? null,
+            level: filters.level ?? null,
+            query: filters.query ?? null,
+            offset,
+            limit,
+        })
+
+        const rec = (raw ?? {}) as Record<string, any>
+        const rawEntries = Array.isArray(rec.entries) ? rec.entries : []
+        const mapped: LogEntry[] = rawEntries.map((entry: any) => mapHistorySystemLogToLogEntry(entry as SystemLogEntry))
+
+        // Newest-first pages: page 2+ (older entries) appends below what is
+        // already on screen; ids are stable so reloads do not duplicate rows.
+        const existingIds = new Set(logs.value.map(l => l.id))
+        for (const item of mapped) {
+            if (!existingIds.has(item.id)) {
+                logs.value.push(item)
+                existingIds.add(item.id)
+            }
+        }
+        if (logs.value.length > MAX_LOG_ENTRIES) {
+            logs.value.splice(MAX_LOG_ENTRIES)
+        }
+        persistToSessionStorage(logs.value, true)
+
+        const total = typeof rec.total === 'number' ? rec.total : mapped.length
+        const pageLimit = typeof rec.limit === 'number' ? rec.limit : limit
+        return {
+            entries: mapped,
+            total,
+            offset: typeof rec.offset === 'number' ? rec.offset : offset,
+            limit: pageLimit,
+            hasMore: offset + mapped.length < total,
+        }
+    }
+
+    /**
+     * R15: export the filtered on-disk history. The native dialog is used ONLY
+     * to pick the destination path; all feedback goes through useToast.
+     */
+    async function exportLogHistory(filters: LogHistoryFilters): Promise<boolean> {
+        let destPath: string | null = null
+        try {
+            destPath = await saveDialog({
+                title: 'Export log history',
+                defaultPath: `syncify-logs-history-${new Date().toISOString().slice(0, 10)}.txt`,
+                filters: [{ name: 'Text', extensions: ['txt'] }],
+            })
+        } catch (e) {
+            console.error('[useLogs] Native save dialog failed:', e)
+            toast.error('Export Failed', 'Could not open the file dialog')
+            return false
+        }
+        if (!destPath) return false // Usuario canceló el diálogo
+
+        try {
+            const raw = await invokeCommand<unknown>('export_log_range', {
+                from: filters.from ?? null,
+                to: filters.to ?? null,
+                destPath,
+                level: filters.level ?? null,
+                query: filters.query ?? null,
+            })
+            const rec = (raw ?? {}) as Record<string, any>
+            const exportedCount = typeof rec.exportedCount === 'number' ? rec.exportedCount : 0
+            toast.success('Export Successful', `Log history exported to ${rec.path || destPath} (${exportedCount} entries)`)
+            return true
+        } catch (e) {
+            console.error('[useLogs] Failed to export log history:', e)
+            toast.error('Export Failed', `Could not export the log history: ${e instanceof Error ? e.message : String(e)}`)
+            return false
+        }
+    }
+
+    /**
      * Initialize background event listeners across whole app lifecycle (idempotent)
      */
     async function initLogListeners() {
@@ -487,6 +642,20 @@ export function useLogs() {
             const unlistenProgress = await listen<any>(TauriEvents.PROGRESS, (event) => {
                 const payload = event.payload
                 if (!payload) return
+                // R15 (dedup): la telemetría de progreso NO es una entrada de
+                // log. Cada tick del worker llega identificado por
+                // queue_id/item_id + progress_percent y contaminaba el
+                // histórico de auditoría. La barra de progreso se alimenta de
+                // su propio canal (syncify:download_progress → store), los
+                // resultados de descarga siguen entrando por ese listener y
+                // los eventos de pipeline sin porcentaje (scan, organize…)
+                // se siguen registrando aquí.
+                const isDownloadProgressTick =
+                    (payload.queue_id !== undefined && payload.queue_id !== null) ||
+                    (payload.item_id !== undefined && payload.item_id !== null)
+                if (isDownloadProgressTick && payload.progress_percent !== undefined && payload.progress_percent !== null) {
+                    return
+                }
                 addLog({
                     level: payload.status === 'completed' ? 'success' : (payload.status === 'failed' ? 'error' : 'info'),
                     provider: normalizeProviderName(payload.provider || payload.operation || 'System'),
@@ -535,7 +704,9 @@ export function useLogs() {
         clearLogs,
         copyLogs,
         exportLogsFile,
+        exportLogHistory,
         fetchLogs,
+        loadLogHistory,
         initLogListeners,
         resetLogs,
 

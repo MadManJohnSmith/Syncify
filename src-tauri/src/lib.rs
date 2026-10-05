@@ -22,8 +22,11 @@ pub mod db;
 pub mod download;
 pub mod enrichment_worker;
 pub mod import_cache;
+pub mod logs_history;
 pub mod models;
 pub mod services;
+pub mod sync_scheduler;
+pub mod system_conditions;
 pub mod tray;
 pub mod worker;
 

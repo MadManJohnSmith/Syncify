@@ -895,6 +895,83 @@ impl TidalClient {
             .map_err(|e| format!("Failed to parse playlist tracks: {}", e))
     }
 
+    /// Create a playlist on the user's Tidal account and return its remote id.
+    ///
+    /// Used by the migration engine when `create_playlists` is on: POST to the
+    /// same user playlists collection `get_playlists` reads
+    /// (`/users/{user_id}/playlists`, form-encoded like `add_favorite_track`).
+    /// The response carries the new playlist under `uuid` (or `id`).
+    pub async fn create_playlist(&self, name: &str, description: &str) -> Result<String, String> {
+        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
+        let url = format!("{}/users/{}/playlists", self.base_url, user_id);
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[("countryCode", self.country_code.as_str())])
+            .form(&[("title", name), ("description", description)])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::handle_api_error(status, &body, &url));
+        }
+
+        let payload: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse created playlist: {}", e))?;
+
+        let id = payload["uuid"]
+            .as_str()
+            .map(|s| s.to_string())
+            .or_else(|| payload["id"].as_i64().map(|v| v.to_string()))
+            .or_else(|| payload["id"].as_str().map(|s| s.to_string()));
+
+        id.ok_or_else(|| format!("No playlist id in Tidal create response: {}", payload))
+    }
+
+    /// Add tracks to a Tidal playlist
+    /// (POST `/playlists/{playlist_id}/items`, the same collection
+    /// `get_playlist_tracks` reads, form-encoded `trackIds`).
+    pub async fn add_playlist_tracks(
+        &self,
+        playlist_id: &str,
+        track_ids: &[String],
+    ) -> Result<(), String> {
+        if track_ids.is_empty() {
+            return Ok(());
+        }
+
+        let url = format!("{}/playlists/{}/items", self.base_url, playlist_id);
+        let joined = track_ids.join(",");
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[("countryCode", self.country_code.as_str())])
+            .form(&[
+                ("trackIds", joined.as_str()),
+                ("onDuplicateChoices", "SKIP"),
+            ])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(Self::handle_api_error(status, &body, &url))
+        }
+    }
+
     /// Get tracks in an album (paginated)
     #[allow(dead_code)] // Cubierta por `tests/dead_commands_hygiene_test.rs`, `tests/queries_consistency_test.rs`.
     pub async fn get_album_tracks(
