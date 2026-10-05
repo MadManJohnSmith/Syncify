@@ -3,9 +3,10 @@
 //! Handles system tray icon, context menu, window toggling, and desktop notifications.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, Runtime, State,
 };
@@ -21,6 +22,17 @@ pub const SYNCIFY_TRAY_ID: &str = "syncify-tray";
 
 static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);
 
+/// Whether desktop notifications are enabled (Item 32). Mirrors the persisted
+/// `notifications_enabled` preference so the tray menu can render the toggle
+/// without blocking on the database.
+static NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Last activity state rendered in the tray menu, kept so the notifications
+/// toggle can rebuild the menu without losing the status/pause items.
+static LAST_MENU_DOWNLOADING: AtomicBool = AtomicBool::new(false);
+static LAST_MENU_DOWNLOAD_COUNT: AtomicUsize = AtomicUsize::new(0);
+static LAST_MENU_SYNC_SERVICE: Mutex<Option<String>> = Mutex::new(None);
+
 /// Sets whether closing the main window minimizes to tray instead of exiting.
 pub fn set_close_to_tray(enabled: bool) {
     CLOSE_TO_TRAY.store(enabled, Ordering::Relaxed);
@@ -31,6 +43,16 @@ pub fn is_close_to_tray_enabled() -> bool {
     CLOSE_TO_TRAY.load(Ordering::Relaxed)
 }
 
+/// Sets whether desktop notifications are shown (Item 32 toggle).
+pub fn set_notifications_enabled(enabled: bool) {
+    NOTIFICATIONS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns whether desktop notifications are enabled.
+pub fn is_notifications_enabled() -> bool {
+    NOTIFICATIONS_ENABLED.load(Ordering::Relaxed)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // STARTUP BEHAVIOR PERSISTENCE
 // ─────────────────────────────────────────────────────────────────────────────
@@ -39,6 +61,8 @@ pub fn is_close_to_tray_enabled() -> bool {
 const KV_CLOSE_TO_TRAY: &str = "close_to_tray";
 const KV_START_MINIMIZED: &str = "start_minimized";
 const KV_START_ON_BOOT: &str = "start_on_boot";
+/// Ítem 32: el toggle del menú de bandeja persiste aquí.
+const KV_NOTIFICATIONS_ENABLED: &str = "notifications_enabled";
 
 fn kv_bool(raw: Option<&String>, default: bool) -> bool {
     match raw.map(|v| v.trim().to_ascii_lowercase()) {
@@ -60,6 +84,7 @@ pub async fn load_tray_settings(db: &crate::DbPool) -> TraySettings {
         KV_CLOSE_TO_TRAY.to_string(),
         KV_START_MINIMIZED.to_string(),
         KV_START_ON_BOOT.to_string(),
+        KV_NOTIFICATIONS_ENABLED.to_string(),
     ];
 
     match crate::commands::perform_get_kv_settings(db, keys).await {
@@ -67,6 +92,10 @@ pub async fn load_tray_settings(db: &crate::DbPool) -> TraySettings {
             close_to_tray: kv_bool(map.get(KV_CLOSE_TO_TRAY), defaults.close_to_tray),
             start_minimized: kv_bool(map.get(KV_START_MINIMIZED), defaults.start_minimized),
             start_on_boot: kv_bool(map.get(KV_START_ON_BOOT), defaults.start_on_boot),
+            notifications_enabled: kv_bool(
+                map.get(KV_NOTIFICATIONS_ENABLED),
+                defaults.notifications_enabled,
+            ),
             ..defaults
         },
         Err(e) => {
@@ -399,6 +428,17 @@ pub fn build_tray_menu<R: Runtime>(
     let sep3 = PredefinedMenuItem::separator(app)?;
     menu.append(&sep3)?;
 
+    // Ítem 32: toggle de notificaciones nativas del menú de bandeja.
+    let notifications_item = CheckMenuItem::with_id(
+        app,
+        "toggle_notifications",
+        "Desktop Notifications",
+        true,
+        is_notifications_enabled(),
+        None::<&str>,
+    )?;
+    menu.append(&notifications_item)?;
+
     let settings_item = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     menu.append(&settings_item)?;
 
@@ -503,6 +543,39 @@ pub fn setup_system_tray_isolated<R: Runtime>(
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTOSTART VIA tauri-plugin-autostart (ÍTEM 31)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Apply the `start_on_boot` preference through the registered autostart
+/// plugin (Item 31). The manual desktop-entry/plist/Run-key writer above stays
+/// as fallback for environments where the plugin fails.
+pub fn apply_autostart_via_plugin<R: Runtime>(
+    app: &AppHandle<R>,
+    enabled: bool,
+) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())
+    } else {
+        manager.disable().map_err(|e| e.to_string())
+    }
+}
+
+/// Whether the OS currently has the app registered for autostart, asking the
+/// plugin first and the manual artifacts as fallback.
+pub fn is_autostart_enabled_via_plugin<R: Runtime>(app: &AppHandle<R>) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or_else(|e| {
+        tracing::warn!(
+            "Plugin autostart check failed, falling back to manual artifacts: {}",
+            e
+        );
+        is_autostart_enabled()
+    })
+}
+
 /// Apply the persisted `close_to_tray` and `start_minimized` preferences.
 ///
 /// Runs right after the tray comes up so the window state matches what the user
@@ -510,14 +583,23 @@ pub fn setup_system_tray_isolated<R: Runtime>(
 async fn apply_startup_window_preference<R: Runtime>(app: &AppHandle<R>) {
     let settings = load_tray_settings(&app.state::<crate::AppState>().db).await;
     set_close_to_tray(settings.close_to_tray);
+    set_notifications_enabled(settings.notifications_enabled);
     if settings.start_minimized {
+        // Ítem 31: arrancar oculto en la bandeja cuando start_minimized está activo.
         hide_main_window(app);
     }
     // Re-registering an entry that the OS lost (AppImage moved, new machine,
     // user cleaned the autostart folder) keeps the saved promise true without
     // waiting for the user to toggle the switch again.
-    if settings.start_on_boot && !is_autostart_enabled() {
-        match resolve_autostart_exe().and_then(|exe| apply_autostart(&exe, true)) {
+    if settings.start_on_boot && !is_autostart_enabled_via_plugin(app) {
+        let manual_fallback = |e: String| {
+            tracing::warn!(
+                "Plugin autostart registration failed ({}), using manual artifacts",
+                e
+            );
+            resolve_autostart_exe().and_then(|exe| apply_autostart(&exe, true))
+        };
+        match apply_autostart_via_plugin(app, true).or_else(manual_fallback) {
             Ok(()) => tracing::info!("Re-registered the missing autostart entry"),
             Err(e) => tracing::warn!("Could not re-register the autostart entry: {}", e),
         }
@@ -571,9 +653,13 @@ pub fn handle_menu_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
             hide_main_window(app);
         }
         "pause_downloads" => {
+            // Pausa manual: el usuario pasa a ser el dueño de la pausa y el
+            // watcher del entorno (ítem 28) no la levantará por su cuenta.
+            crate::system_conditions::notify_user_pause();
             crate::commands::pause_downloads(app.state::<crate::AppState>());
         }
         "resume_downloads" => {
+            crate::system_conditions::notify_user_resume();
             crate::commands::resume_downloads(app.state::<crate::AppState>());
         }
         "sync_all" => {
@@ -584,8 +670,41 @@ pub fn handle_menu_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
                 }
             });
         }
+        "toggle_notifications" => {
+            // Ítem 32: alternar, persistir y reconstruir el menú para reflejar
+            // el estado actualizado.
+            let new_value = !is_notifications_enabled();
+            set_notifications_enabled(new_value);
+
+            let db = app.state::<crate::AppState>().db.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = crate::commands::perform_save_setting(
+                    &db,
+                    "notifications_enabled".to_string(),
+                    new_value.to_string(),
+                )
+                .await
+                {
+                    tracing::warn!("Could not persist notifications_enabled: {}", e);
+                }
+            });
+
+            if let Err(e) = rebuild_tray_menu(app) {
+                tracing::warn!(
+                    "Could not rebuild the tray menu after the notifications toggle: {}",
+                    e
+                );
+            }
+            let _ = app.emit(
+                "tray-settings-changed",
+                serde_json::json!({ "notifications_enabled": new_value }),
+            );
+        }
         "settings" => {
             show_main_window(app);
+            // Ítem 48: el listener de App.vue navega a Settings con este evento
+            // (nombre literal acordado entre carriles).
+            let _ = app.emit("tray-open-settings", ());
         }
         "quit" => {
             app.exit(0);
@@ -600,7 +719,20 @@ pub fn handle_menu_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
 /// (`perform_sync_service_with_emitter`), so progress events reach the UI
 /// through the canonical channels. A summary notification is published on
 /// the canonical `syncify:notification` channel consumed by the UI toasts.
+///
+/// Both the tray entry and the scheduled-sync scheduler (ítem 29) funnel
+/// through this exclusive guard: a sync never starts while another runs.
 pub async fn sync_all_services<R: Runtime>(app: &AppHandle<R>) -> Result<usize, String> {
+    if !crate::sync_scheduler::try_begin_sync() {
+        tracing::info!("Tray 'Sync All Services': a sync is already in progress");
+        return Ok(0);
+    }
+    let result = sync_all_services_inner(app).await;
+    crate::sync_scheduler::end_sync();
+    result
+}
+
+async fn sync_all_services_inner<R: Runtime>(app: &AppHandle<R>) -> Result<usize, String> {
     let db = app.state::<crate::AppState>().db.clone();
 
     let services: Vec<String> = sqlx::query_scalar(
@@ -685,6 +817,14 @@ pub fn update_tray_menu<R: Runtime>(
     download_count: usize,
     sync_service: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Snapshot for rebuild_tray_menu: the notifications toggle re-renders the
+    // menu with the same activity state.
+    LAST_MENU_DOWNLOADING.store(is_downloading, Ordering::Relaxed);
+    LAST_MENU_DOWNLOAD_COUNT.store(download_count, Ordering::Relaxed);
+    if let Ok(mut guard) = LAST_MENU_SYNC_SERVICE.lock() {
+        *guard = sync_service.map(str::to_string);
+    }
+
     if let Some(tray) = app.tray_by_id(SYNCIFY_TRAY_ID) {
         let menu = build_tray_menu(
             app,
@@ -696,6 +836,26 @@ pub fn update_tray_menu<R: Runtime>(
         tray.set_menu(Some(menu))?;
     }
     Ok(())
+}
+
+/// Rebuild the tray menu keeping the last known activity state (used by the
+/// notifications toggle so the checkmark refreshes in place).
+fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::error::Error>> {
+    let is_visible = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(true);
+    update_tray_menu(
+        app,
+        is_visible,
+        LAST_MENU_DOWNLOADING.load(Ordering::Relaxed),
+        LAST_MENU_DOWNLOAD_COUNT.load(Ordering::Relaxed),
+        LAST_MENU_SYNC_SERVICE
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .as_deref(),
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -744,6 +904,7 @@ pub async fn update_tray_settings<R: Runtime>(
     settings: TraySettings,
 ) -> Result<(), String> {
     set_close_to_tray(settings.close_to_tray);
+    set_notifications_enabled(settings.notifications_enabled);
 
     if let Some(tray) = app.tray_by_id(SYNCIFY_TRAY_ID) {
         if let Err(e) = tray.set_visible(settings.show_tray_icon) {
@@ -751,11 +912,19 @@ pub async fn update_tray_settings<R: Runtime>(
         }
     }
 
-    // `start_on_boot` is persisted by the frontend in the same batch, but the OS
-    // entry only exists if it is (re)registered here; a saved preference that
-    // was never applied to the system was exactly the dead toggle it looked like.
-    let exe = resolve_autostart_exe()?;
-    apply_autostart(&exe, settings.start_on_boot)?;
+    // Ítem 31: `start_on_boot` is persisted by the frontend in the same batch,
+    // but the OS entry only exists if it is (re)registered here; a saved
+    // preference that was never applied to the system was exactly the dead
+    // toggle it looked like. The autostart plugin is the primary mechanism and
+    // the manual desktop-entry writer is the fallback.
+    if let Err(e) = apply_autostart_via_plugin(&app, settings.start_on_boot) {
+        tracing::warn!(
+            "Plugin autostart failed ({}), falling back to manual registration",
+            e
+        );
+        let exe = resolve_autostart_exe()?;
+        apply_autostart(&exe, settings.start_on_boot)?;
+    }
 
     Ok(())
 }
@@ -771,6 +940,13 @@ pub async fn get_tray_settings(state: State<'_, crate::AppState>) -> Result<Tray
 }
 
 /// Show desktop notification
+///
+/// Ítem 32: the native desktop notification is delivered through
+/// `tauri-plugin-notification` and respects the user preferences — it is
+/// skipped when `notifications_enabled` is off, or when `notify_when_visible`
+/// is on and the main window is visible (the frontend toast already covers
+/// that case). The `tray-notification` event still reaches the UI so the
+/// in-app toast pipeline keeps working.
 #[tauri::command]
 pub async fn show_notification<R: Runtime>(
     app: AppHandle<R>,
@@ -778,6 +954,33 @@ pub async fn show_notification<R: Runtime>(
     body: String,
 ) -> Result<(), String> {
     tracing::info!(title = %title, body = %body, "Notification dispatched");
+
+    // El estado se suelta al cerrar el bloque; las preferencias se leen antes
+    // de cualquier uso posterior del AppHandle.
+    let prefs = {
+        let state = app.state::<crate::AppState>();
+        load_tray_settings(&state.db).await
+    };
+
+    let window_visible = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+    let native_allowed =
+        prefs.notifications_enabled && !(prefs.notify_when_visible && window_visible);
+
+    if native_allowed {
+        use tauri_plugin_notification::NotificationExt;
+        if let Err(e) = app
+            .notification()
+            .builder()
+            .title(title.clone())
+            .body(body.clone())
+            .show()
+        {
+            tracing::warn!("Native desktop notification failed: {}", e);
+        }
+    }
 
     let _ = app.emit(
         "tray-notification",

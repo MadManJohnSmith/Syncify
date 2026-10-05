@@ -513,9 +513,10 @@
 
         <!-- Scrollable List -->
         <div class="flex-1 overflow-y-auto custom-scrollbar border-x border-b border-gray-200 dark:border-border-dark rounded-b-xl bg-white dark:bg-surface-dark" @scroll="handleScroll">
-          <div 
-            v-for="(track, index) in filteredTracks" 
+          <div
+            v-for="(track, index) in filteredTracks"
             :key="track.id"
+            :data-track-id="track.id"
             @click="handleTrackClick(track)"
             @dblclick="handleTrackPlay(track)"
             @contextmenu.prevent="openContextMenu($event, track)"
@@ -523,7 +524,8 @@
               'track-row flex items-center gap-2 px-3 py-2 border-b border-gray-100 dark:border-border-dark/50 last:border-0 transition-all group cursor-pointer',
               track.isPlaying ? 'bg-primary/5 border-l-4 border-l-primary' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight/30',
               track.isSelected ? 'bg-blue-500/10' : '',
-              index % 2 === 1 ? 'bg-gray-50/30 dark:bg-[#1e2938]/30' : ''
+              index % 2 === 1 ? 'bg-gray-50/30 dark:bg-[#1e2938]/30' : '',
+              highlightedTrackId === track.id ? 'bg-primary/10 ring-1 ring-inset ring-primary' : ''
             ]"
           >
             <!-- Checkbox Cell -->
@@ -762,9 +764,11 @@
             
             <!-- Group Tracks -->
             <div v-if="expandedGroups.includes(artistGroup.artist)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div 
-                v-for="(track, idx) in artistGroup.tracks" 
+              <div
+                v-for="(track, idx) in artistGroup.tracks"
                 :key="track.id"
+                :data-track-id="track.id"
+                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
                 @click="handleTrackClick(track)"
                 @contextmenu.prevent="openContextMenu($event, track)"
@@ -822,9 +826,11 @@
             
             <!-- Group Tracks -->
             <div v-if="expandedGroups.includes(albumGroup.title)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div 
-                v-for="(track, idx) in albumGroup.tracks" 
+              <div
+                v-for="(track, idx) in albumGroup.tracks"
                 :key="track.id"
+                :data-track-id="track.id"
+                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
                 @click="handleTrackClick(track)"
                 @contextmenu.prevent="openContextMenu($event, track)"
@@ -864,9 +870,11 @@
             
             <!-- Group Tracks -->
             <div v-if="expandedGroups.includes(genreGroup.genre)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div 
-                v-for="(track, idx) in genreGroup.tracks" 
+              <div
+                v-for="(track, idx) in genreGroup.tracks"
                 :key="track.id"
+                :data-track-id="track.id"
+                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
                 @click="handleTrackClick(track)"
                 @contextmenu.prevent="openContextMenu($event, track)"
@@ -914,9 +922,11 @@
             
             <!-- Group Tracks -->
             <div v-if="expandedGroups.includes(qualityGroup.quality)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div 
-                v-for="(track, idx) in qualityGroup.tracks" 
+              <div
+                v-for="(track, idx) in qualityGroup.tracks"
                 :key="track.id"
+                :data-track-id="track.id"
+                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
                 @click="handleTrackClick(track)"
                 @contextmenu.prevent="openContextMenu($event, track)"
@@ -951,8 +961,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
 import { libraryApi, searchTracks, enqueueTracks, reconcileQueue, type DownloadFavoritesResult } from '@/api/library'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
@@ -2380,6 +2390,58 @@ function applyRouteFilters() {
   activeFilters.value = [filterParam]
 }
 
+// ==============================================
+// Ítem 45: deep-link /library?track=<id>
+// ==============================================
+// Al montar, con la biblioteca ya cargada, si el query trae `track` se hace
+// scroll hasta esa fila, se resalta unos segundos y se limpia el parámetro
+// para que recargar no repita el salto.
+const highlightedTrackId = ref<number | null>(null)
+let highlightClearTimer: ReturnType<typeof setTimeout> | null = null
+
+/** Tope de páginas cargadas al buscar la pista enlazada (50 × PAGE_SIZE). */
+const TRACK_DEEP_LINK_MAX_PAGES = 50
+
+async function focusTrackFromQuery() {
+  const raw = route?.query?.track
+  if (raw === undefined || raw === null || raw === '') return
+
+  // El parámetro se consume SIEMPRE, exista o no la pista: así un recargazo o
+  // volver atrás no repite el scroll.
+  const rest: Record<string, LocationQueryValue | LocationQueryValue[]> = { ...route.query }
+  delete rest.track
+  await router.replace({ query: rest })
+
+  const trackId = typeof raw === 'string' ? Number.parseInt(raw, 10) : NaN
+  if (!Number.isFinite(trackId)) return
+
+  // Si la pista cae en páginas aún no cargadas, pagina hasta encontrarla.
+  let pagesLoaded = 0
+  while (
+    !tracks.value.some(t => t.id === trackId) &&
+    hasMore.value &&
+    !isLoadingMore.value &&
+    pagesLoaded < TRACK_DEEP_LINK_MAX_PAGES
+  ) {
+    await loadMore()
+    pagesLoaded++
+  }
+
+  await nextTick()
+  const row = document.querySelector(`[data-track-id="${trackId}"]`)
+  if (!row) return
+
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  highlightedTrackId.value = trackId
+  if (highlightClearTimer) {
+    clearTimeout(highlightClearTimer)
+  }
+  highlightClearTimer = setTimeout(() => {
+    highlightedTrackId.value = null
+    highlightClearTimer = null
+  }, 5000)
+}
+
 // Lifecycle
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
@@ -2388,6 +2450,9 @@ onMounted(async () => {
   applyRouteFilters()
 
   await loadLibrary()
+
+  // Ítem 45: tras la carga inicial, atiende el deep-link ?track=<id>.
+  await focusTrackFromQuery()
 
   eventBus.on(TauriEvents.LIBRARY_UPDATED, async () => {
     debouncedReloadLibrary()
@@ -2426,6 +2491,10 @@ onUnmounted(() => {
   if (scrollThrottleTimer) {
     clearTimeout(scrollThrottleTimer)
     scrollThrottleTimer = null
+  }
+  if (highlightClearTimer) {
+    clearTimeout(highlightClearTimer)
+    highlightClearTimer = null
   }
 })
 </script>

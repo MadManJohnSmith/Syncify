@@ -17,6 +17,8 @@
         { "href": "^https?://.+" }
       ]
     },
-    "dialog:default"
+    "dialog:default",
+    "autostart:default",
+    "notification:default"
   ]
 }

@@ -1369,18 +1369,26 @@ impl SpotifyClient {
             .map_err(|e| format!("DB error: {}", e))?;
 
             if let Some((existing_id,)) = existing {
+                // BD-5 (0088): the API's release total is a DECLARATION, so it
+                // wins over whatever count is stored (which may be a local
+                // derivation) and is recorded in declared_total_tracks too —
+                // the old COALESCE(total_tracks, ?) kept the derived count and
+                // the declaration was never captured.
                 let _ = sqlx::query(
                     "UPDATE albums SET
                         is_compilation = 1,
                         spotify_id = COALESCE(spotify_id, ?),
                         cover_art_url = COALESCE(cover_art_url, ?),
-                        total_tracks = COALESCE(total_tracks, ?),
+                        total_tracks = COALESCE(?, total_tracks),
+                        declared_total_tracks = CASE WHEN COALESCE(?, 0) > 0 THEN ? ELSE declared_total_tracks END,
                         label = COALESCE(label, ?),
                         upc = COALESCE(upc, ?)
                      WHERE id = ?",
                 )
                 .bind(&album.id)
                 .bind(&cover_url)
+                .bind(album.total_tracks)
+                .bind(album.total_tracks)
                 .bind(album.total_tracks)
                 .bind(&album.label)
                 .bind(&upc)
@@ -1401,12 +1409,20 @@ impl SpotifyClient {
         }
 
         // Create or update album by spotify_id
+        // BD-5 (0088): excluded.total_tracks is the release total the API
+        // declares, so on conflict it must overwrite the stored count (which
+        // may be a local derivation) and land in declared_total_tracks as
+        // well. COALESCE(albums.total_tracks, ...) kept the derived count and
+        // the declaration was never captured.
         let album_id: (i64,) = sqlx::query_as:: <sqlx::Sqlite, (i64,)>(
             "INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id, label, upc, is_compilation)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(spotify_id) WHERE spotify_id IS NOT NULL DO UPDATE SET
                 cover_art_url = COALESCE(albums.cover_art_url, excluded.cover_art_url),
-                total_tracks = COALESCE(albums.total_tracks, excluded.total_tracks),
+                total_tracks = COALESCE(excluded.total_tracks, albums.total_tracks),
+                declared_total_tracks = CASE WHEN COALESCE(excluded.total_tracks, 0) > 0
+                                              THEN excluded.total_tracks
+                                              ELSE albums.declared_total_tracks END,
                 label = COALESCE(albums.label, excluded.label),
                 upc = COALESCE(albums.upc, excluded.upc),
                 is_compilation = CASE WHEN excluded.is_compilation = 1 THEN 1 ELSE albums.is_compilation END

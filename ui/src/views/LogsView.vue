@@ -55,13 +55,53 @@
         <!-- Search input -->
         <div class="relative group">
           <span class="absolute left-3 top-2 text-gray-400 material-symbols-outlined text-[18px]">search</span>
-          <input 
+          <input
             v-model="searchQuery"
-            type="text" 
-            placeholder="Search logs & events..." 
+            type="text"
+            placeholder="Search logs & events..."
             class="pl-9 pr-4 py-1.5 bg-gray-100 dark:bg-surface-dark border border-transparent dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary w-48 focus:w-60 transition-all"
           >
         </div>
+
+        <!-- R15: history date range (read back from the rotating files on disk) -->
+        <div class="flex items-center gap-1.5" title="History date range">
+          <input
+            v-model="historyFrom"
+            type="date"
+            aria-label="History from date"
+            class="px-2 py-1.5 bg-gray-100 dark:bg-surface-dark border border-transparent dark:border-border-dark rounded-lg text-xs text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary"
+          >
+          <span class="text-gray-500 text-xs select-none">→</span>
+          <input
+            v-model="historyTo"
+            type="date"
+            aria-label="History to date"
+            class="px-2 py-1.5 bg-gray-100 dark:bg-surface-dark border border-transparent dark:border-border-dark rounded-lg text-xs text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary"
+          >
+        </div>
+
+        <!-- R15: load history from disk (paginated) -->
+        <button
+          @click="loadHistoryPage(true)"
+          :disabled="historyLoading"
+          class="px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition-colors border-gray-300 dark:border-border-dark text-gray-500 hover:text-white hover:bg-primary/10 disabled:opacity-50 disabled:cursor-wait"
+          title="Load the log history stored on disk for the current filters"
+        >
+          <span class="material-symbols-outlined text-[16px]">history</span>
+          {{ historyLoading ? 'Loading…' : 'Load History' }}
+        </button>
+
+        <!-- R15: load the next (older) history page -->
+        <button
+          v-if="historyHasMore"
+          @click="loadHistoryPage(false)"
+          :disabled="historyLoading"
+          class="px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition-colors border-gray-300 dark:border-border-dark text-gray-500 hover:text-white hover:bg-primary/10 disabled:opacity-50 disabled:cursor-wait"
+          :title="`Load older history (${historyShownCount} of ${historyTotal} loaded)`"
+        >
+          <span class="material-symbols-outlined text-[16px]">unfold_more</span>
+          Load Older
+        </button>
 
         <!-- Filter Level -->
         <select 
@@ -72,7 +112,7 @@
           <option value="info">INFO</option>
           <option value="warn">WARN</option>
           <option value="error">ERROR</option>
-          <option value="success">SUCCESS</option>
+          <option value="success" title="SUCCESS entries only live in the in-memory buffer (they are never written to disk), so 'Load History' / 'Export' are not filtered by this level">SUCCESS</option>
           <option value="debug">DEBUG</option>
           <option value="trace">TRACE</option>
         </select>
@@ -120,10 +160,10 @@
         </button>
 
         <!-- Export Log File -->
-        <button 
-          @click="handleExport" 
+        <button
+          @click="handleExport"
           class="p-2 text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors"
-          title="Export logs to file"
+          title="Export the log history (disk) for the current filters to a file"
         >
           <span class="material-symbols-outlined text-[18px]">download</span>
         </button>
@@ -264,15 +304,65 @@ async function copyLogPath() {
 }
 
 // Use singleton global logs state
-const { 
-  logs, 
-  clearLogs, 
-  copyLogs, 
-  exportLogsFile, 
-  getLevelBadgeClass, 
+const {
+  logs,
+  clearLogs,
+  copyLogs,
+  loadLogHistory,
+  exportLogHistory,
+  getLevelBadgeClass,
   getProviderBadgeClass,
   fetchLogs
 } = useLogs()
+
+// ── R15: on-disk history state ──────────────────────────────────────────────
+const historyFrom = ref('')
+const historyTo = ref('')
+const historyLoading = ref(false)
+const historyOffset = ref(0)
+const historyTotal = ref(0)
+const historyHasMore = ref(false)
+const historyShownCount = ref(0)
+
+/** Filters shared by the history loader and the exporter. */
+function currentHistoryFilters() {
+  return {
+    from: historyFrom.value || undefined,
+    to: historyTo.value || undefined,
+    // R15: SUCCESS only exists in the in-memory buffer (FileLogLayer writes
+    // ERROR/WARN/INFO/DEBUG/TRACE to disk), so it is never forwarded to the
+    // on-disk history: read_log_history would always match 0 entries.
+    level: filterLevel.value !== 'all' && filterLevel.value !== 'success' ? filterLevel.value : undefined,
+    query: searchQuery.value.trim() || undefined,
+  }
+}
+
+/** Loads a page of the on-disk log history (reset = first page). */
+async function loadHistoryPage(reset: boolean) {
+  if (historyLoading.value) return
+  historyLoading.value = true
+  try {
+    const offset = reset ? 0 : historyOffset.value
+    const page = await loadLogHistory({ ...currentHistoryFilters(), offset })
+    historyOffset.value = offset + page.entries.length
+    historyTotal.value = page.total
+    historyHasMore.value = page.hasMore
+    historyShownCount.value = reset ? page.entries.length : historyOffset.value
+    if (reset) {
+      toast.info('History Loaded', `${page.total} entries match the current filters on disk`)
+    }
+  } catch (e) {
+    console.error('Failed to load log history:', e)
+    toast.error('History Load Failed', 'Could not read the log history from disk')
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+/** Exports the filtered on-disk history; the native dialog only picks the destination path. */
+async function exportHistory() {
+  await exportLogHistory(currentHistoryFilters())
+}
 
 const filteredLogs = computed(() => {
   return logs.value.filter(log => {
@@ -356,7 +446,7 @@ async function handleCopy() {
 }
 
 async function handleExport() {
-  await exportLogsFile(filteredLogs.value)
+  await exportHistory()
 }
 
 async function fetchStatus() {

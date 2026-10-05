@@ -18,7 +18,9 @@
 
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
-use syncify_tauri_lib::commands::sync_soundcloud_likes_with_engine;
+use syncify_tauri_lib::commands::{
+    sync_soundcloud_likes_with_engine, sync_soundcloud_playlists_with_engine,
+};
 use syncify_tauri_lib::services::SoundCloudClient;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -543,4 +545,199 @@ async fn test_second_run_is_idempotent() {
         .await
         .expect("count tracks");
     assert_eq!(track_rows, 1, "re-importing must not duplicate the track");
+}
+
+/// R4: the `"soundcloud"` arm used to warn that SoundCloud exposes no playlists
+/// and skip the phase entirely. `/me/library/playlists_without_albums` does
+/// exist (the Python service already walks it), so the arm must import the
+/// account's playlists through the same engine as the likes: canonical
+/// identity, `publisher_metadata` enrichment and `playlist_tracks` membership.
+#[tokio::test]
+async fn test_playlists_reach_the_catalog_through_the_engine() {
+    let base = spawn_mock(Arc::new(|_method, target| {
+        if target.starts_with("/me/library/playlists_without_albums") {
+            (
+                200,
+                serde_json::json!({
+                    "collection": [{
+                        "playlist": {
+                            "id": 77,
+                            "title": "Late Night Drive",
+                            "description": "Synthwave picks",
+                            "track_count": 2,
+                            "duration": 400_000,
+                            "user": {"id": 42, "username": "curator"}
+                        }
+                    }],
+                    "next_href": null
+                })
+                .to_string(),
+            )
+        } else if target.starts_with("/playlists/77/tracks") {
+            (
+                200,
+                serde_json::json!({
+                    "collection": [
+                        {
+                            "created_at": "2024-01-01T00:00:00Z",
+                            "track": {
+                                "id": 3001,
+                                "title": "Nightcall",
+                                "duration": 258000,
+                                "user": {"id": 9, "username": " uploader_account "},
+                                "artwork_url": "https://i1.sndcdn.com/artworks-xyz-t500x500.jpg",
+                                "publisher_metadata": {
+                                    "artist": "Kavinsky",
+                                    "album_title": "OutRun",
+                                    "isrc": "FR-10S8-13-00001"
+                                }
+                            }
+                        },
+                        {
+                            "created_at": "2024-01-02T00:00:00Z",
+                            "track": {
+                                "id": 3002,
+                                "title": "Resonance",
+                                "duration": 212000,
+                                "user": {"id": 11, "username": "home_recording"}
+                            }
+                        }
+                    ],
+                    "next_href": null
+                })
+                .to_string(),
+            )
+        } else {
+            panic!("unexpected request: {}", target);
+        }
+    }))
+    .await;
+
+    let (pool, account_id, soundcloud_service_id) = setup_test_db().await;
+    let client = SoundCloudClient::new("token".into())
+        .with_user_id(7)
+        .with_api_base(base);
+
+    let mut finished_pages: Vec<(String, u64)> = Vec::new();
+    let totals = sync_soundcloud_playlists_with_engine(
+        &pool,
+        account_id,
+        soundcloud_service_id,
+        &client,
+        |res, playlist_title, processed, page_finished| {
+            if page_finished {
+                finished_pages.push((playlist_title.to_string(), processed));
+            }
+            assert!(res.track_id > 0, "every reported track is persisted");
+        },
+    )
+    .await
+    .expect("playlists sync");
+
+    assert!(totals.errors.is_empty(), "errors: {:?}", totals.errors);
+    assert_eq!(totals.playlists_seen, 1);
+    assert_eq!(totals.playlists_synced, 1);
+    assert_eq!(totals.tracks_seen, 2);
+    assert_eq!(totals.imported, 2);
+    assert_eq!(totals.skipped, 0);
+    assert_eq!(
+        finished_pages,
+        vec![("Late Night Drive".to_string(), 2)],
+        "the callback reports the last track of each page with its playlist"
+    );
+
+    // The playlist row exists and is linked by its remote identity.
+    let playlist: (String, i64) = sqlx::query_as(
+        "SELECT p.name, p.track_count FROM playlists p \
+         JOIN playlist_sources ps ON ps.playlist_id = p.id \
+         WHERE ps.account_id = ? AND ps.service_playlist_id = '77'",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("playlist row linked by playlist_sources");
+    assert_eq!(playlist.0, "Late Night Drive");
+    assert_eq!(playlist.1, 2, "track_count is reconciled");
+
+    // Membership rows keep the collection order (1..N).
+    let membership: Vec<(String, i32)> = sqlx::query_as(
+        "SELECT t.title, pt.position FROM playlist_tracks pt \
+         JOIN tracks t ON t.id = pt.track_id \
+         JOIN playlist_sources ps ON ps.playlist_id = pt.playlist_id \
+         WHERE ps.account_id = ? AND ps.service_playlist_id = '77' \
+         ORDER BY pt.position",
+    )
+    .bind(account_id)
+    .fetch_all(&pool)
+    .await
+    .expect("membership rows");
+    assert_eq!(
+        membership,
+        vec![("Nightcall".to_string(), 1), ("Resonance".to_string(), 2),],
+        "playlist tracks keep the order the user saved them in"
+    );
+
+    // The label track keeps the same enrichment as the likes: publisher artist,
+    // album and ISRC; the raw upload resolves by Check A without an ISRC.
+    let kavinsky_track_id: i64 = sqlx::query_scalar(
+        "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = '3001'",
+    )
+    .bind(soundcloud_service_id)
+    .fetch_one(&pool)
+    .await
+    .expect("label track source");
+
+    let primary_artist: Option<String> = sqlx::query_scalar(
+        "SELECT ar.name FROM track_artists ta JOIN artists ar ON ar.id = ta.artist_id \
+         WHERE ta.track_id = ? AND ta.role = 'primary'",
+    )
+    .bind(kavinsky_track_id)
+    .fetch_one(&pool)
+    .await
+    .expect("primary artist");
+    assert_eq!(
+        primary_artist.as_deref(),
+        Some("Kavinsky"),
+        "publisher_metadata.artist wins over the uploader account"
+    );
+
+    let isrc: Option<String> = sqlx::query_scalar("SELECT isrc FROM tracks WHERE id = ?")
+        .bind(kavinsky_track_id)
+        .fetch_one(&pool)
+        .await
+        .expect("isrc");
+    assert_eq!(isrc.as_deref(), Some("FR-10S8-13-00001"));
+
+    // Playlist tracks are library entries, but not favorites.
+    let liked_flags: Vec<(i32,)> =
+        sqlx::query_as("SELECT is_liked FROM library_entries WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_all(&pool)
+            .await
+            .expect("library entries");
+    assert_eq!(liked_flags.len(), 2, "one library entry per playlist track");
+    assert!(
+        liked_flags.iter().all(|(liked,)| *liked == 0),
+        "playlist membership is not a like"
+    );
+
+    // Second run: idempotent — no new tracks, no duplicated membership.
+    let second = sync_soundcloud_playlists_with_engine(
+        &pool,
+        account_id,
+        soundcloud_service_id,
+        &client,
+        |_res, _title, _processed, _page_finished| {},
+    )
+    .await
+    .expect("second playlists sync");
+    assert!(second.errors.is_empty(), "errors: {:?}", second.errors);
+    assert_eq!(second.imported, 0, "the catalog already holds the tracks");
+    assert_eq!(second.skipped, 2);
+
+    let membership_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playlist_tracks")
+        .fetch_one(&pool)
+        .await
+        .expect("count membership");
+    assert_eq!(membership_rows, 2, "membership is not duplicated");
 }

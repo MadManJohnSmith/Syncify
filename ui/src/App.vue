@@ -163,7 +163,9 @@
               >
                 <div class="p-3 border-b border-gray-700 flex items-center justify-between">
                   <span class="font-medium text-white text-sm">Active Tasks</span>
-                  <span v-if="hasActiveTasks" class="text-xs text-gray-400">{{ overallProgress }}% overall</span>
+                  <span v-if="hasActiveTasks" class="text-xs text-gray-400">
+                    {{ Math.round(gpProgress) }}% overall<template v-if="gpEta"> · ~{{ gpEta }} left</template>
+                  </span>
                 </div>
                 
                 <div v-if="activeTasks.length > 0" class="max-h-80 overflow-y-auto">
@@ -334,13 +336,34 @@
           </button>
         </div>
         
-        <!-- Global Progress Bar -->
+        <!-- Global Progress Bar: agregado ponderado de todas las tareas
+             activas (bytes si hay, si no por ítem), con suavizado. Sin datos
+             de peso se mantiene indeterminada (animación). -->
         <div class="absolute bottom-0 left-0 right-0 h-[2px] bg-surface-dark">
-          <div 
-            v-if="hasActiveTasks" 
-            class="h-full bg-primary shadow-[0_0_8px_rgba(60,131,246,0.6)] rounded-r-full transition-all duration-300"
-            :style="{ width: overallProgress + '%' }"
+          <div
+            v-if="gpHasActive && gpIndeterminate"
+            class="h-full bg-primary shadow-[0_0_8px_rgba(60,131,246,0.6)] rounded-r-full animate-loading-bar"
+            data-testid="global-progress-indeterminate"
           ></div>
+          <div
+            v-else-if="gpHasActive"
+            class="h-full bg-primary shadow-[0_0_8px_rgba(60,131,246,0.6)] rounded-r-full"
+            :style="{ width: gpProgress + '%' }"
+            data-testid="global-progress-bar"
+          ></div>
+        </div>
+
+        <!-- Resumen de la barra global: ítem actual + % total + ETA cuando
+             hay datos. Centrado sobre la zona vacía de la cabecera. -->
+        <div
+          v-if="gpHasActive"
+          class="global-progress-summary absolute bottom-1 left-1/2 -translate-x-1/2 flex items-center gap-1.5 text-[10px] font-medium text-text-secondary bg-surface-dark/70 border border-border-dark/40 rounded-full px-2.5 py-0.5 max-w-[320px] select-none"
+          data-testid="global-progress-summary"
+        >
+          <span class="material-symbols-outlined text-[12px] text-primary shrink-0" :class="{ 'animate-spin': !gpIndeterminate }">progress_activity</span>
+          <span class="truncate" :title="gpCurrent">{{ gpCurrent }}</span>
+          <span class="shrink-0 font-mono" data-testid="global-progress-percent">{{ Math.round(gpProgress) }}%</span>
+          <span v-if="gpEta" class="shrink-0 text-gray-500" data-testid="global-progress-eta">~{{ gpEta }}</span>
         </div>
       </header>
 
@@ -437,7 +460,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 // Global Components
@@ -454,6 +477,7 @@ import OnboardingWizard from './components/OnboardingWizard.vue'
 
 // Composables & APIs
 import { useGlobalTasks } from './composables/useGlobalTasks'
+import { useGlobalProgressBar } from './composables/useGlobalProgressBar'
 import { useToast } from './composables/useToast'
 import { useNotificationListener } from './composables/useNotificationListener'
 import { useLogs } from './composables/useLogs'
@@ -477,18 +501,29 @@ const { initLogListeners } = useLogs()
 const { current } = usePlayer()
 
 let unlistenPythonDeps: UnlistenFn | null = null
+let unlistenTrayOpenSettings: UnlistenFn | null = null
 
 // Global tasks state
 const {
   activeTasks,
   hasActiveTasks,
   activeTaskCount,
-  overallProgress,
   initEventListeners,
   startSyncTask,
   completeTask,
   startScanTask
 } = useGlobalTasks()
+
+// Barra de progreso global ponderada (bytes si hay, si no por ítem),
+// suavizada y con ETA. Se destructura para que las refs se auto-desenvuelvan
+// en la plantilla.
+const {
+  hasActive: gpHasActive,
+  isIndeterminate: gpIndeterminate,
+  progress: gpProgress,
+  currentLabel: gpCurrent,
+  etaLabel: gpEta,
+} = useGlobalProgressBar()
 
 // Global state
 const showSplash = ref(true)
@@ -497,18 +532,6 @@ const splashStatusText = ref('Initializing...')
 const splashProgress = ref(15)
 const showCommandPalette = ref(false)
 const showSearchModal = ref(false)
-
-// R17: `/search` ya no es una vista. Cualquier enlace viejo (o un marcador)
-// abre el modal y devuelve al usuario al panel.
-watch(
-  () => route?.path,
-  (path) => {
-    if (path !== '/search') return
-    showSearchModal.value = true
-    router.replace('/dashboard')
-  },
-  { immediate: true }
-)
 const showNotifications = ref(false)
 const showTasksDropdown = ref(false)
 const showHelp = ref(false)
@@ -985,10 +1008,20 @@ onMounted(async () => {
   } catch (err) {
     console.warn('Failed to listen for python_deps_missing:', err)
   }
-  
+
+  // Ítem 48: el menú de bandeja pide abrir Ajustes. El backend emite el evento
+  // con este nombre EXACTO; aquí solo se escucha y se navega.
+  try {
+    unlistenTrayOpenSettings = await listen(TauriEvents.TRAY_OPEN_SETTINGS, () => {
+      void router.push('/settings')
+    })
+  } catch (err) {
+    console.warn('Failed to listen for tray-open-settings:', err)
+  }
+
   // Add outside click handler
   document.addEventListener('click', handleOutsideClick)
-  
+
   // Listen for Ctrl+K
   document.addEventListener('keydown', handleKeydown)
 
@@ -999,6 +1032,8 @@ onMounted(async () => {
 onUnmounted(() => {
   unlistenPythonDeps?.()
   unlistenPythonDeps = null
+  unlistenTrayOpenSettings?.()
+  unlistenTrayOpenSettings = null
   stopNotificationListening()
   document.removeEventListener('click', handleOutsideClick)
   document.removeEventListener('keydown', handleKeydown)

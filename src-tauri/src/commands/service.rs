@@ -1782,6 +1782,214 @@ where
     Ok(totals)
 }
 
+/// Totales de la fase de playlists del sync de SoundCloud. Los comparte el
+/// brazo "soundcloud" del motor unificado con el test de regresión, de modo
+/// que la persistencia verificada es exactamente la de producción.
+#[derive(Debug, Clone, Default)]
+pub struct SoundCloudPlaylistsSyncTotals {
+    /// Playlists leídas del proveedor, incluidas las que fallan al persistir.
+    pub playlists_seen: u64,
+    /// Playlists cuya fila se creó o actualizó en la biblioteca de la cuenta.
+    pub playlists_synced: u64,
+    /// Pistas leídas de las playlists, incluidas las que fallan al persistir.
+    pub tracks_seen: u64,
+    /// Pistas que entraron en la biblioteca de la cuenta.
+    pub imported: u64,
+    /// Pistas ya presentes en el catálogo (idempotencia).
+    pub skipped: u64,
+    /// Milisegundos gastados hablando con la API de SoundCloud.
+    pub api_fetch_ms: u64,
+    /// Milisegundos gastados en enriquecimiento + persistencia.
+    pub enrichment_ms: u64,
+    /// Fallos por playlist o pista: se acumulan y no abortan el lote.
+    pub errors: Vec<String>,
+}
+
+/// Fase de playlists del sync de SoundCloud (completa el F3 del plan de
+/// unificación, `docs/PLAN_UNIFICACION_IMPORTACION.md`): las playlists propias
+/// de la cuenta llegan por `/me/library/playlists_without_albums` —el mismo
+/// endpoint que ya recorre el servicio Python
+/// (`scripts/services/soundcloud_service.py`)— y sus pistas por
+/// `/playlists/{id}/tracks`. Cada pista entra por `EnrichmentEngine` con la
+/// misma identidad canónica y el mismo enriquecimiento vía
+/// `publisher_metadata` que los likes; la pertenencia se registra en
+/// `playlist_tracks` y las posiciones se recompactan al terminar cada
+/// playlist.
+// Cubierto por `tests/soundcloud_unified_engine_test.rs`.
+pub async fn sync_soundcloud_playlists_with_engine<F>(
+    db: &DbPool,
+    account_id: i64,
+    soundcloud_service_id: i64,
+    client: &crate::services::SoundCloudClient,
+    mut on_track: F,
+) -> Result<SoundCloudPlaylistsSyncTotals, String>
+where
+    F: FnMut(&crate::services::enrichment::SyncTrackResult, &str, u64, bool),
+{
+    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::new();
+    let mut totals = SoundCloudPlaylistsSyncTotals::default();
+    let mut playlist_next_url: Option<String> = None;
+
+    loop {
+        let t_api = std::time::Instant::now();
+        let page = client.get_playlists(playlist_next_url.as_deref()).await?;
+        totals.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+        if page.collection.is_empty() {
+            break;
+        }
+        for item in &page.collection {
+            let Some(playlist) = item.playlist.as_ref() else {
+                continue;
+            };
+            totals.playlists_seen += 1;
+            let playlist_title = playlist.display_name().to_string();
+
+            // Fila de playlist + `playlist_sources`: la identidad remota
+            // (cuenta, id de SoundCloud) manda, igual que en el brazo Deezer.
+            // El endpoint no expone `sharing` ni portada; el servicio Python
+            // también asume público por defecto.
+            let playlist_db_id = match upsert_playlist_and_source(
+                db,
+                account_id,
+                &playlist.id.to_string(),
+                &playlist_title,
+                playlist.description.as_deref(),
+                playlist.user.as_ref().map(|u| u.username.as_str()),
+                1,
+                0,
+                None,
+                playlist.track_count.clamp(0, i64::from(i32::MAX)) as i32,
+            )
+            .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    totals.errors.push(format!(
+                        "SoundCloud playlist '{}' upsert failed: {}",
+                        playlist_title, e
+                    ));
+                    continue;
+                }
+            };
+            totals.playlists_synced += 1;
+
+            // Pistas de la playlist, en el orden en que las guarda el usuario.
+            let mut track_next_url: Option<String> = None;
+            let mut processed_in_playlist: u64 = 0;
+            loop {
+                let t_tracks_api = std::time::Instant::now();
+                let tracks_page = client
+                    .get_playlist_tracks(&playlist.id.to_string(), track_next_url.as_deref())
+                    .await?;
+                totals.api_fetch_ms += t_tracks_api.elapsed().as_millis() as u64;
+                if tracks_page.collection.is_empty() {
+                    break;
+                }
+                let last_index = tracks_page
+                    .collection
+                    .iter()
+                    .rposition(|like| like.track.is_some());
+                for (index, like) in tracks_page.collection.iter().enumerate() {
+                    let Some(track) = like.track.as_ref() else {
+                        continue;
+                    };
+                    totals.tracks_seen += 1;
+                    let sync_input = crate::services::enrichment::SyncTrackInput {
+                        origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                            title: Some(track.title.clone()),
+                            artist: Some(
+                                track.attributed_artist().unwrap_or("Unknown").to_string(),
+                            ),
+                            // `album_artist` solo cuando lo declara el sello: el
+                            // nombre de la cuenta que subió el audio no es el
+                            // artista del álbum.
+                            album_artist: track.publisher_artist().map(str::to_string),
+                            album: track.album_title().map(str::to_string),
+                            isrc: track.isrc().map(str::to_string),
+                            label: track.label().map(str::to_string),
+                            release_year: track.release_year().map(|y| y.to_string()),
+                            genre: track.genre.clone(),
+                            source_name: "soundcloud".to_string(),
+                            // Instante en que la pista entró en la playlist: es
+                            // el `added_at` que se persiste.
+                            added_at: like.created_at.clone(),
+                            ..Default::default()
+                        },
+                        service_track_id: track.id.to_string(),
+                        service_name: "soundcloud".to_string(),
+                        service_id: soundcloud_service_id,
+                        account_id,
+                        // Pertenencia a playlist: no es un like de la cuenta.
+                        is_favorite: false,
+                        format: Some("MP3".to_string()),
+                        // SoundCloud solo reparte audio con pérdida; sin
+                        // `quality_score`, misma decisión que los likes.
+                        audio_quality: Some(
+                            classify_audio_tier(None, None, None, Some("MP3"))
+                                .as_str()
+                                .to_string(),
+                        ),
+                        cover_art_url: track.cover_art_url(),
+                        // SoundCloud ya entrega la duración en milisegundos.
+                        duration_ms: Some(track.duration),
+                        query_musicbrainz: false,
+                        ..Default::default()
+                    };
+                    let t_enrich = std::time::Instant::now();
+                    match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await
+                    {
+                        Ok(res) => {
+                            totals.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                            // La pertenencia se registra aunque la pista ya
+                            // estuviera en el catálogo (idempotencia por
+                            // `INSERT OR IGNORE`), igual que en el brazo Deezer.
+                            let _ = sqlx::query(
+                                "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+                            )
+                            .bind(playlist_db_id)
+                            .bind(res.track_id)
+                            .bind((processed_in_playlist + 1) as i32)
+                            .execute(db)
+                            .await;
+                            if res.is_new_import {
+                                totals.imported += 1;
+                            } else {
+                                totals.skipped += 1;
+                            }
+                            processed_in_playlist += 1;
+                            on_track(
+                                &res,
+                                &playlist_title,
+                                processed_in_playlist,
+                                Some(index) == last_index,
+                            );
+                        }
+                        Err(e) => {
+                            totals.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                            totals
+                                .errors
+                                .push(format!("SoundCloud playlist track {}: {}", track.id, e));
+                        }
+                    }
+                }
+                track_next_url = tracks_page.next_href;
+                if track_next_url.is_none() {
+                    break;
+                }
+            }
+            // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
+            let _ =
+                crate::commands::playlists::recompact_playlist_positions(db, playlist_db_id).await;
+        }
+        playlist_next_url = page.next_href;
+        if playlist_next_url.is_none() {
+            break;
+        }
+    }
+
+    Ok(totals)
+}
+
 /// Resuelve credenciales, cliente y `service_id` de SoundCloud desde la cuenta
 /// activa. Compartido por el comando legacy y el brazo del motor unificado para
 /// que ambos hablen con el mismo cliente y el mismo criterio de credenciales.
@@ -6524,9 +6732,11 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             // importador legacy de likes —CRUD crudo, dedup por título+duración y
             // el username del uploader como artista—. Ahora cada like entra por
             // `EnrichmentEngine` con la identidad canónica y los metadatos que
-            // persisten qobuz/tidal/spotify/deezer. La ausencia de ISRC en los
-            // tracks sin `publisher_metadata` es una limitación de capacidad del
-            // servicio, documentada en `sync_soundcloud_likes_with_engine`.
+            // persisten qobuz/tidal/spotify/deezer, y las playlists propias de
+            // la cuenta se importan por el mismo motor
+            // (`sync_soundcloud_playlists_with_engine`). La ausencia de ISRC en
+            // los tracks sin `publisher_metadata` es una limitación de capacidad
+            // del servicio, documentada en `sync_soundcloud_likes_with_engine`.
             let oauth_token = creds["oauth_token"]
                 .as_str()
                 .or_else(|| creds["access_token"].as_str())
@@ -6650,19 +6860,119 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 }
             }
 
-            // Fases sin endpoint propio: la API pública de SoundCloud solo expone
-            // los likes de la cuenta. Los rows de álbum y artista nacen igual de
-            // cada like cuando su `publisher_metadata` los aporta, pero no hay
-            // nada adicional que leer — capacidad del servicio, no un hueco del
+            // Fase 2: Playlists — `/me/library/playlists_without_albums` expone
+            // las playlists propias de la cuenta (el mismo endpoint que recorre
+            // el servicio Python) y `/playlists/{id}/tracks` da las pistas en
+            // el orden guardado. El brazo avisaba de que SoundCloud no exponía
+            // playlists; el endpoint existe y el cliente lo pagina igual que
+            // los likes (ver `SoundCloudClient::get_playlists`).
+            if prefs.playlists {
+                emit(SyncProgressEvent::running(
+                    &service_normalized,
+                    Some(account_id),
+                    "importing_playlists",
+                    0,
+                    None,
+                    "Importing SoundCloud playlists...",
+                    imported_tracks_total,
+                    favorite_tracks_total,
+                ));
+                let outcome = sync_soundcloud_playlists_with_engine(
+                    db,
+                    account_id,
+                    soundcloud_service_id,
+                    &client,
+                    |res, playlist_title, processed, page_finished| {
+                        tracks_processed += 1;
+                        tracks_expanded += 1;
+                        if res.is_new_global_track {
+                            tracks_new_global += 1;
+                        }
+                        if res.is_new_source_for_service {
+                            sources_new_for_service += 1;
+                        }
+                        if res.is_new_library_entry_for_account {
+                            library_entries_new_for_account += 1;
+                        }
+                        if res.is_already_present {
+                            tracks_already_present += 1;
+                        }
+                        if res.is_new_import {
+                            tracks_changed_unique += 1;
+                            imported_tracks_total += 1;
+                        } else {
+                            skipped_tracks_total += 1;
+                        }
+                        match res.completeness {
+                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                                metadata_enriched += 1
+                            }
+                            _ => metadata_partial += 1,
+                        }
+                        if page_finished {
+                            emit(SyncProgressEvent::running(
+                                &service_normalized,
+                                Some(account_id),
+                                "importing_playlists",
+                                processed,
+                                None,
+                                &format!(
+                                    "Processed {} SoundCloud playlist tracks ({} new)",
+                                    playlist_title, imported_tracks_total
+                                ),
+                                imported_tracks_total,
+                                favorite_tracks_total,
+                            ));
+                        }
+                    },
+                )
+                .await;
+                match outcome {
+                    Ok(totals) => {
+                        playlists_seen += totals.playlists_seen;
+                        playlists_total += totals.playlists_synced;
+                        api_fetch_ms += totals.api_fetch_ms;
+                        enrichment_ms += totals.enrichment_ms;
+                        errors.extend(totals.errors);
+                    }
+                    Err(sc_err) if is_soundcloud_auth_error(&sc_err) => {
+                        tracing::warn!("[perform_sync_service/soundcloud] 401 on playlists — marking credentials invalid");
+                        let _ = mark_account_credentials_invalid(
+                            db,
+                            "soundcloud",
+                            "HTTP 401: SoundCloud OAuth token rejected or expired",
+                        )
+                        .await;
+                        let err_msg = format!(
+                            "RequiresAuth: SoundCloud session rejected (401) while fetching playlists: {}",
+                            sc_err
+                        );
+                        emit(SyncProgressEvent::requires_auth(
+                            &service_normalized,
+                            Some(account_id),
+                            &err_msg,
+                        ));
+                        return Err(err_msg);
+                    }
+                    Err(sc_err) => {
+                        errors.push(format!("SoundCloud playlists: {}", sc_err));
+                    }
+                }
+            }
+
+            // Fases sin endpoint propio: la API de SoundCloud no expone álbumes
+            // ni artistas favoritos, compras ni historial de escucha de la
+            // cuenta. Los rows de álbum y artista nacen igual de cada pista
+            // cuando su `publisher_metadata` los aporta, pero no hay nada
+            // adicional que leer — capacidad del servicio, no un hueco del
             // motor.
             if prefs.favorite_albums
                 || prefs.favorite_artists
-                || prefs.playlists
                 || prefs.purchases
                 || prefs.library_history
             {
                 warnings.push(
-                    "SoundCloud: the public API exposes only a user's likes — favorite albums/artists, playlists, purchases and listen history have no user endpoint; album and artist rows come from each like's own publisher_metadata".to_string(),
+                    "SoundCloud: the API exposes a user's likes and own playlists — favorite albums/artists, purchases and listen history have no user endpoint; album and artist rows come from each track's own publisher_metadata".to_string(),
                 );
             }
         }

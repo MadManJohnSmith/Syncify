@@ -5,10 +5,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
-import { confirm } from '@tauri-apps/plugin-dialog';
 import DisambiguationRepairReviewModal from '@/components/DisambiguationRepairReviewModal.vue';
 import { useToast } from '@/composables/useToast';
 import { mockInvoke, resetMocks } from '../setup';
+
+// R13: el modal pide la confirmación al diálogo unificado de la app
+// (`@/composables/useToast`), ya no al `confirm` nativo de plugin-dialog.
+const { unifiedConfirm } = vi.hoisted(() => ({ unifiedConfirm: vi.fn() }));
+vi.mock('@/composables/useToast', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/composables/useToast')>();
+  return { ...actual, confirm: unifiedConfirm };
+});
 
 describe('DisambiguationRepairReviewModal', () => {
   beforeEach(() => {
@@ -115,7 +122,7 @@ describe('DisambiguationRepairReviewModal', () => {
       if (cmd === 'plan_disambiguation_repair') return dryRunPlanPayload;
       return null;
     });
-    vi.mocked(confirm).mockResolvedValueOnce(false);
+    unifiedConfirm.mockResolvedValueOnce(false);
 
     const wrapper = mount(DisambiguationRepairReviewModal, {
       props: { modelValue: true },
@@ -127,7 +134,7 @@ describe('DisambiguationRepairReviewModal', () => {
     await applyButton!.trigger('click');
     await flushPromises();
 
-    expect(confirm).toHaveBeenCalled();
+    expect(unifiedConfirm).toHaveBeenCalled();
     expect(commands).not.toContain('execute_disambiguation_repair');
   });
 
@@ -141,7 +148,7 @@ describe('DisambiguationRepairReviewModal', () => {
       }
       return null;
     });
-    vi.mocked(confirm).mockResolvedValueOnce(true);
+    unifiedConfirm.mockResolvedValueOnce(true);
 
     const wrapper = mount(DisambiguationRepairReviewModal, {
       props: { modelValue: true },
@@ -177,7 +184,7 @@ describe('DisambiguationRepairReviewModal', () => {
       if (cmd === 'execute_disambiguation_repair') throw new Error('SQLite transaction failed');
       return null;
     });
-    vi.mocked(confirm).mockResolvedValueOnce(true);
+    unifiedConfirm.mockResolvedValueOnce(true);
 
     const wrapper = mount(DisambiguationRepairReviewModal, {
       props: { modelValue: true },

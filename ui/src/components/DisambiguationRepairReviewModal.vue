@@ -200,7 +200,8 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { confirm } from '@tauri-apps/plugin-dialog';
+// R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
+import { confirm } from '@/composables/useToast';
 import { executeDisambiguationRepair, planDisambiguationRepair } from '@/api/metadata';
 import { useToast } from '@/composables/useToast';
 import type { DisambiguationRepairReport } from '@/api/types';
@@ -285,7 +286,7 @@ async function applyRepair() {
 
   const confirmed = await confirm(
     `Rename ${readyCount.value} track${readyCount.value > 1 ? 's' : ''} and update the library database? Files changed outside this plan are rolled back automatically.`,
-    { title: 'Apply Disambiguation Repair', kind: 'warning' }
+    { title: 'Apply Disambiguation Repair', variant: 'warning' }
   );
   if (confirmed !== true) return;
 

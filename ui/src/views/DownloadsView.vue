@@ -1165,7 +1165,8 @@
 import { ref, shallowRef, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useToast } from '@/composables/useToast'
-import { confirm } from '@tauri-apps/plugin-dialog'
+// R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
+import { confirm } from '@/composables/useToast'
 import { queueApi, classifyFailureReason, type FailureInfo, type FailureReason } from '@/api/queue'
 import { formatDownloadPhase, formatDurationMs } from '@/utils/downloadPhase'
 import { invokeCommand } from '@/api/tauri'
@@ -2100,7 +2101,7 @@ async function clearPendingQueue() {
   if (count === 0) return
   const confirmed = await confirm(`Are you sure you want to clear all ${count.toLocaleString()} pending downloads?`, {
     title: 'Clear Pending Downloads',
-    kind: 'warning'
+    variant: 'warning'
   })
   if (confirmed !== true) return
   
@@ -2117,7 +2118,7 @@ async function clearPendingQueue() {
 async function removeQueueItem(id: number) {
   const confirmed = await confirm('Remove this track from the queue?', {
     title: 'Remove Track',
-    kind: 'warning'
+    variant: 'warning'
   })
   if (confirmed !== true) return
   
@@ -2155,7 +2156,7 @@ async function retryFailed() {
 async function clearFailed() {
   const confirmed = await confirm('Clear all failed downloads?', {
     title: 'Clear Failed Downloads',
-    kind: 'warning'
+    variant: 'warning'
   })
   if (confirmed !== true) return
   
@@ -2173,7 +2174,7 @@ async function clearFailed() {
 async function clearHistory() {
   const confirmed = await confirm('Clear all finished downloads (completed, failed and cancelled)?', {
     title: 'Clear Download History',
-    kind: 'warning'
+    variant: 'warning'
   })
   if (confirmed !== true) return
 
@@ -2191,7 +2192,7 @@ async function clearHistory() {
 async function cancelItem(id: number) {
   const confirmed = await confirm('Cancel this download?', {
     title: 'Cancel Download',
-    kind: 'warning'
+    variant: 'warning'
   })
   if (confirmed !== true) return
   

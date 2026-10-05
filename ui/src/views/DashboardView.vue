@@ -394,7 +394,8 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { getVersion } from '@tauri-apps/api/app'
-import { confirm } from '@tauri-apps/plugin-dialog'
+// R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
+import { confirm } from '@/composables/useToast'
 import { libraryApi } from '@/api/library'
 import { queueApi } from '@/api/queue'
 import { accountsApi } from '@/api/accounts'
@@ -598,7 +599,7 @@ async function handleAutoResolveDuplicates() {
   
   const confirmed = await confirm(
     'Auto-resolve will keep the highest quality version of each duplicate group. Downloaded files are always preserved. This cannot be undone.',
-    { title: 'Auto-resolve Duplicates', kind: 'warning' }
+    { title: 'Auto-resolve Duplicates', variant: 'warning' }
   )
   
   if (confirmed !== true) return

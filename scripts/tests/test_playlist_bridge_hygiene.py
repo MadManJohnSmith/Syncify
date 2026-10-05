@@ -318,6 +318,95 @@ class TestPlaylistBridgeHygiene(unittest.TestCase):
         fake_service.get_user_playlists.assert_awaited_once_with()
         fake_service.close.assert_awaited_once_with()
 
+    def test_qobuz_bridge_defaults_to_public_bundle_without_app_env(self):
+        """Qobuz app_id/secret are the PUBLIC API bundle: only the user token is required.
+
+        Regression for the public-bundle contract: demanding QOBUZ_APP_ID and
+        QOBUZ_APP_SECRET made the bridge unusable without operator env even
+        though QobuzService resolves the public bundle itself (the same pair the
+        Rust core ships in src-tauri/src/services/qobuz.rs).
+        """
+        from types import ModuleType
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        fake_service = MagicMock()
+        # Sentinel values standing in for the public bundle the real service
+        # constructor resolves. The real literals live only in the canonical
+        # files (src-tauri/src/services/qobuz.rs, scripts/services/qobuz*.py);
+        # duplicating them here trips the leak guard
+        # (src-tauri/tests/qobuz_credentials_leak_test.rs).
+        fake_service.APP_ID = "sentinel-public-app-id"
+        fake_service.APP_SECRET = "sentinel-public-app-secret"
+        fake_service.get_user_playlists = AsyncMock(return_value=[])
+        fake_service.close = AsyncMock()
+
+        service_cls = MagicMock(return_value=fake_service)
+        qobuz_module = ModuleType("services.qobuz_service")
+        qobuz_module.QobuzService = service_cls
+        aiohttp_module = ModuleType("aiohttp")
+        session_factory = MagicMock(return_value=MagicMock())
+        aiohttp_module.ClientSession = session_factory
+
+        with patch.dict(os.environ, {"QOBUZ_AUTH_TOKEN": "user-token"}, clear=True), patch.dict(
+            sys.modules,
+            {"services.qobuz_service": qobuz_module, "aiohttp": aiohttp_module},
+        ):
+            playlist_bridge.get_qobuz_playlists()
+
+        credentials = service_cls.call_args.args[0]
+        self.assertIsNone(credentials.app_id)
+        self.assertIsNone(credentials.app_secret)
+        self.assertEqual(credentials.token, "user-token")
+        # The bridge must not clobber the public-bundle resolution the service
+        # constructor performed, and must open the session with that app id.
+        self.assertEqual(fake_service.APP_ID, "sentinel-public-app-id")
+        self.assertEqual(fake_service.APP_SECRET, "sentinel-public-app-secret")
+        session_factory.assert_called_once_with(headers={"X-App-Id": "sentinel-public-app-id"})
+
+    def test_qobuz_bridge_requires_user_auth_token(self):
+        """Without QOBUZ_AUTH_TOKEN the bridge must fail clearly, never fake a connection."""
+        from types import ModuleType
+        from unittest.mock import MagicMock, patch
+
+        service_cls = MagicMock()
+        qobuz_module = ModuleType("services.qobuz_service")
+        qobuz_module.QobuzService = service_cls
+        aiohttp_module = ModuleType("aiohttp")
+        aiohttp_module.ClientSession = MagicMock()
+
+        with patch.dict(os.environ, {}, clear=True), patch.dict(
+            sys.modules,
+            {"services.qobuz_service": qobuz_module, "aiohttp": aiohttp_module},
+        ):
+            with self.assertRaises(Exception) as ctx:
+                playlist_bridge.get_qobuz_playlists()
+
+        self.assertIn("QOBUZ_AUTH_TOKEN", str(ctx.exception))
+        service_cls.assert_not_called()
+
+    def test_qobuz_bridge_accepts_the_app_wide_user_token_alias(self):
+        """QOBUZ_USER_TOKEN (the app-wide name read by the Rust core) must also work."""
+        from types import ModuleType
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        fake_service = MagicMock()
+        fake_service.get_user_playlists = AsyncMock(return_value=[{"id": "p1"}])
+        fake_service.close = AsyncMock()
+
+        service_cls = MagicMock(return_value=fake_service)
+        qobuz_module = ModuleType("services.qobuz_service")
+        qobuz_module.QobuzService = service_cls
+        aiohttp_module = ModuleType("aiohttp")
+        aiohttp_module.ClientSession = MagicMock(return_value=MagicMock())
+
+        with patch.dict(os.environ, {"QOBUZ_USER_TOKEN": "alias-token"}, clear=True), patch.dict(
+            sys.modules,
+            {"services.qobuz_service": qobuz_module, "aiohttp": aiohttp_module},
+        ):
+            self.assertEqual(playlist_bridge.get_qobuz_playlists(), [{"id": "p1"}])
+
+        self.assertEqual(fake_service.user_auth_token, "alias-token")
+
     def test_soundcloud_bridge_uses_service_credentials_contract(self):
         """SoundCloud bridge must call SoundCloudService(credentials) and authenticate it.
 

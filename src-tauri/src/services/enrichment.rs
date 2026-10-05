@@ -2036,8 +2036,10 @@ impl EnrichmentEngine {
             // library. An already recorded count describes the album and is left alone:
             // recounting unconditionally collapsed a 10-track album to the number of its
             // locally downloaded tracks, so a partial library mislabelled every album.
+            // 0088 (BD-5) makes the distinction durable: deriving is only allowed while
+            // declared_total_tracks = 0 ("never declared").
             if let Err(e) = sqlx::query(
-                "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0)"
+                "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0) AND COALESCE(declared_total_tracks, 0) = 0"
             )
             .bind(album_id)
             .execute(&mut *tx)
@@ -3370,10 +3372,11 @@ impl EnrichmentEngine {
         // TASK-138: derive total_tracks of affected albums from the library, but only when the
         // album has no declared count yet. A provider track_total (or a previously derived one)
         // describes the album, so it survives a partial sync instead of collapsing to the
-        // number of tracks that happen to be downloaded.
+        // number of tracks that happen to be downloaded. Under 0088 (BD-5) that is exactly
+        // declared_total_tracks = 0; a declared release keeps its total.
         if let Some(aid) = album_id_opt {
             if let Err(e) = sqlx::query(
-                "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0)"
+                "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0) AND COALESCE(declared_total_tracks, 0) = 0"
             )
             .bind(aid)
             .execute(&mut *tx)
@@ -3386,7 +3389,7 @@ impl EnrichmentEngine {
         if let Some(old_aid) = old_album_id {
             if Some(old_aid) != album_id_opt {
                 if let Err(e) = sqlx::query(
-                    "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0)"
+                    "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND (total_tracks IS NULL OR total_tracks <= 0) AND COALESCE(declared_total_tracks, 0) = 0"
                 )
                 .bind(old_aid)
                 .execute(&mut *tx)
