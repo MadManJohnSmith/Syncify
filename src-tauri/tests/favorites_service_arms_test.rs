@@ -293,6 +293,61 @@ async fn deezer_push_rejects_item_types_deezer_has_no_endpoint_for() {
 }
 
 #[tokio::test]
+async fn deezer_sync_favorites_uses_explicit_inactive_account() {
+    let _env = lock_env();
+    let mock = spawn_mock(Arc::new(|method, target| {
+        if method == "POST" && target.contains("method=deezer.getUserData") {
+            (200, String::new(), DEEZER_USER_DATA.to_string())
+        } else if target.starts_with("/user/4242/tracks") {
+            (
+                200,
+                String::new(),
+                r#"{"total":1,"data":[{"id":777,"title":"Selected Account Track","duration":200,"artist":{"name":"Selected Artist"}}]}"#
+                    .to_string(),
+            )
+        } else {
+            (404, String::new(), "{}".to_string())
+        }
+    }))
+    .await;
+    std::env::set_var("SYNCIFY_DEEZER_API_BASE", &mock.base);
+    std::env::set_var("SYNCIFY_DEEZER_PUBLIC_API_BASE", &mock.base);
+
+    let pool = setup_db().await;
+    let selected = seed_account(
+        &pool,
+        "deezer",
+        serde_json::json!({ "arl": "selected-arl" }),
+    )
+    .await;
+    let active = seed_account(&pool, "deezer", serde_json::json!({ "arl": "active-arl" })).await;
+    sqlx::query("UPDATE accounts SET is_active = 0 WHERE id = ?")
+        .bind(selected)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let selected_sync = perform_sync_favorites(&pool, "deezer", Some("tracks"), Some(selected))
+        .await
+        .expect("chosen inactive account may sync favorites");
+    assert_eq!(selected_sync.imported, 1);
+    assert_eq!(favorite_rows(&pool, selected, "track").await, vec!["777"]);
+    // The provider receives ARL as a Cookie header, not a URL query parameter.
+    // The mock records request targets only; the imported favorite is written to
+    // the explicitly selected inactive account, never its active sibling.
+    assert!(mock
+        .requests()
+        .iter()
+        .any(|(_, target)| target.contains("method=deezer.getUserData")));
+    assert!(favorite_rows(&pool, active, "track").await.is_empty());
+    let active_flag: i64 = sqlx::query_scalar("SELECT is_active FROM accounts WHERE id = ?")
+        .bind(active)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(active_flag, 1);
+}
+
+#[tokio::test]
 async fn deezer_sync_favorites_imports_tracks_albums_and_artists() {
     let _env = lock_env();
     let mock = spawn_mock(Arc::new(|method, target| {
@@ -334,7 +389,7 @@ async fn deezer_sync_favorites_imports_tracks_albums_and_artists() {
     let pool = setup_db().await;
     let account_id = seed_account(&pool, "deezer", serde_json::json!({ "arl": "arl-test" })).await;
 
-    let result = perform_sync_favorites(&pool, "deezer", Some("all"))
+    let result = perform_sync_favorites(&pool, "deezer", Some("all"), None)
         .await
         .expect("deezer favorites sync must succeed");
 
@@ -596,7 +651,7 @@ async fn soundcloud_sync_favorites_imports_liked_tracks() {
     )
     .await;
 
-    let result = perform_sync_favorites(&pool, "soundcloud", Some("all"))
+    let result = perform_sync_favorites(&pool, "soundcloud", Some("all"), None)
         .await
         .expect("soundcloud favorites sync must succeed");
 
@@ -855,7 +910,7 @@ async fn apple_music_sync_favorites_imports_library_songs_and_albums() {
     )
     .await;
 
-    let result = perform_sync_favorites(&pool, "apple_music", Some("all"))
+    let result = perform_sync_favorites(&pool, "apple_music", Some("all"), None)
         .await
         .expect("apple music favorites sync must succeed");
 
@@ -938,7 +993,7 @@ async fn apple_music_sync_favorites_paginates_with_the_next_cursor() {
     )
     .await;
 
-    perform_sync_favorites(&pool, "apple_music", Some("tracks"))
+    perform_sync_favorites(&pool, "apple_music", Some("tracks"), None)
         .await
         .expect("apple music favorites sync must succeed");
 

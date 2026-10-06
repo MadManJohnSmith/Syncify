@@ -1025,6 +1025,7 @@ fn main() {
             commands::remove_account,
             commands::update_account_sync_time,
             commands::toggle_account_active,
+            commands::set_active_account,
             commands::purge_stale_credentials,
             commands::get_service_auth_status,
             commands::sync_service,

@@ -144,8 +144,16 @@ fn test_legacy_syncify_cli_archived_and_neutralized() {
     // unrunnable everywhere but on the machine that produced the archive. The durable TASK-152 /
     // SEC-025 guarantee is instead verified against the tracked production tree: no legacy CLI
     // directory is tracked, and no production source carries hardcoded Qobuz credentials.
+    // Scan only productive source roots: ignored virtualenvs and local tooling
+    // contain unrelated directories named `legacy` (for example pip's resolver).
     let mut legacy_dirs = Vec::new();
-    let mut dirs = vec![repo_root.clone()];
+    let mut dirs: Vec<_> = ["src-tauri", "crates", "ui", "scripts", "bin"]
+        .iter()
+        .map(|root| repo_root.join(root))
+        .collect();
+    if repo_root.join("syncify-cli").is_dir() {
+        legacy_dirs.push(repo_root.join("syncify-cli").display().to_string());
+    }
     while let Some(dir) = dirs.pop() {
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,

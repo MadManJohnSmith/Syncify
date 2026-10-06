@@ -313,12 +313,14 @@ async fn test_s186_email_distinct_login_leaves_single_usable_active_row() {
     .await
     .expect("insert row B");
 
-    // Re-login con el email B: debe activar/limpiar B y desactivar A con flags limpios.
+    // Re-login con el email B: debe activar/limpiar B y desactivar A. A conserva sus
+    // flags (multi-cuenta: solo se desactiva; su requires_auth se preserva).
     upsert_service_account(
         &pool,
         service_id,
         "New Login",
         Some("b@example.com"),
+        None,
         &crypto::encrypt(r#"{"user_auth_token":"brand_new_login_token_424242"}"#).unwrap(),
     )
     .await
@@ -368,6 +370,69 @@ async fn test_s186_email_distinct_login_leaves_single_usable_active_row() {
     .await
     .expect("freshly connected row is instantly usable by sync");
     assert_eq!(resolved, "brand_new_login_token_424242");
+}
+
+/// Multi-cuenta: la identidad por email se compara NORMALIZADA (LOWER/TRIM), así
+/// que teclear `'  B@Example.COM '` revive la MISMA fila que `b@example.com` en
+/// lugar de crear una cuenta duplicada. La UNIQUE(service_id, email) de 0002 es
+/// BINARY: 'B@Example.com' y 'b@example.com' pueden convivir en ella, y sin
+/// normalizar el mismo usuario obtendría dos cuentas al teclear el email con
+/// otra capitalización.
+#[tokio::test]
+async fn test_s186_email_match_is_case_and_space_insensitive() {
+    let pool = setup_test_db().await;
+    let service_id = qobuz_service_id(&pool).await;
+
+    sqlx::query(
+        r#"INSERT INTO accounts (service_id, display_name, email, credentials_json, credentials_invalid, is_active)
+           VALUES (?, 'Owner', 'b@example.com', ?, 0, 0)"#,
+    )
+    .bind(service_id)
+    .bind(&crypto::encrypt(r#"{"user_auth_token":"original_token_111111"}"#).unwrap())
+    .execute(&pool)
+    .await
+    .expect("insert owner row");
+
+    let upserted = upsert_service_account(
+        &pool,
+        service_id,
+        "Owner",
+        Some("  B@Example.COM  "),
+        None,
+        &crypto::encrypt(r#"{"user_auth_token":"revived_same_row_222222"}"#).unwrap(),
+    )
+    .await
+    .expect("normalización LOWER/TRIM casa con la fila existente");
+
+    let rows: Vec<(i64, String, i64, String)> = sqlx::query_as(
+        r#"SELECT a.id, IFNULL(a.email,''), a.is_active, a.credentials_json FROM accounts a
+           JOIN services s ON s.id = a.service_id
+           WHERE s.name = 'qobuz' ORDER BY a.id"#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("rows exist");
+
+    assert_eq!(
+        rows.len(),
+        1,
+        "el mismo email tecleado con otra capitalización NO crea una cuenta duplicada"
+    );
+    assert_eq!(
+        rows[0].0, upserted,
+        "el upsert devuelve el id de la fila revivida"
+    );
+    assert_eq!(
+        rows[0].1, "b@example.com",
+        "el email se escribe normalizado"
+    );
+    assert_eq!(rows[0].2, 1, "la cuenta revivida queda activa");
+    assert!(
+        crypto::decrypt(&rows[0].3)
+            .unwrap()
+            .contains("revived_same_row_222222"),
+        "la fila conserva el id: solo se renuevan sus credenciales"
+    );
 }
 
 #[tokio::test]

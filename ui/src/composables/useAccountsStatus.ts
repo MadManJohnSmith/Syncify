@@ -45,6 +45,7 @@ export interface ServiceCardData {
   playlists: string
   lastSync: string
   email: string
+  accounts: Account[]
   invalidReason?: string | null
   lastAuthError?: string | null
 }
@@ -84,6 +85,7 @@ export function useAccountsStatus(customToast?: ReturnType<typeof useToast>) {
         playlists: (status.playlists_count ?? 0).toLocaleString(),
         lastSync: status.last_synced ? formatTimeAgo(status.last_synced) : 'Never',
         email: status.account_email || '',
+        accounts: accountsForService(status.name),
         invalidReason: status.invalid_reason,
         lastAuthError: status.last_auth_error,
       }
@@ -140,12 +142,15 @@ export function useAccountsStatus(customToast?: ReturnType<typeof useToast>) {
   const retry = fetchData
   const refreshAccounts = fetchData
 
-  /** Find account for a given service ID */
+  /** List every account belonging to a service, including inactive ones. */
+  function accountsForService(serviceId: string): Account[] {
+    const service = rawServices.value.find(s => s.name.toLowerCase() === serviceId.toLowerCase())
+    return service ? rawAccounts.value.filter(a => a.service_id === service.id) : []
+  }
+
   function findAccountForService(serviceId: string): Account | undefined {
-    return rawAccounts.value.find(a => {
-      const service = rawServices.value.find(s => s.id === a.service_id)
-      return service && service.name.toLowerCase() === serviceId.toLowerCase()
-    })
+    const matches = accountsForService(serviceId)
+    return matches.find(a => a.is_active) ?? matches[0]
   }
 
   return {
@@ -161,6 +166,7 @@ export function useAccountsStatus(customToast?: ReturnType<typeof useToast>) {
     refreshAccounts,
     retry,
     findAccountForService,
+    accountsForService,
     getServiceIcon,
     getServiceBgClass,
     formatTimeAgo,

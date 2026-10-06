@@ -61,6 +61,50 @@ describe('[TASK-23] AccountsView & MigrationView Honest State (No Mocks)', () =>
       expect(emptyState.text()).toContain('No library folders configured')
     })
 
+    it('passes the active account ID to sync_service from the service card', async () => {
+      const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+      mockInvoke((cmd, args) => {
+        calls.push({ cmd, args })
+        if (cmd === 'get_services') return [{ id: 1, name: 'spotify', supports_download: 1, max_quality: null }]
+        if (cmd === 'get_accounts') return [
+          { id: 10, service_id: 1, service_name: 'spotify', is_active: false, display_name: 'Old' },
+          { id: 11, service_id: 1, service_name: 'spotify', is_active: true, display_name: 'Active' },
+        ]
+        if (cmd === 'get_service_statuses') return [{ name: 'spotify', connected: true, credentials_invalid: false, library_count: 0, favorites_count: 0, playlists_count: 0, last_synced: null }]
+        if (cmd === 'sync_service') return { success: true, errors: [], imported: 0 }
+        return null
+      })
+      const wrapper = mount(AccountsView, { global: { stubs: { SpotifyApiConfigCard: true } } })
+      await flushPromises()
+      await wrapper.find('.service-card button[title="Sync full catalog"]').trigger('click')
+      await flushPromises()
+      expect(calls.find(c => c.cmd === 'sync_service')?.args).toMatchObject({ service: 'spotify', accountId: 11 })
+    })
+
+    it('disconnects only the chosen Spotify account without deleting either account', async () => {
+      const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+      mockInvoke((cmd, args) => {
+        calls.push({ cmd, args })
+        if (cmd === 'get_services') return [{ id: 1, name: 'spotify', supports_download: 1, max_quality: null }]
+        if (cmd === 'get_accounts') return [
+          { id: 10, service_id: 1, service_name: 'spotify', is_active: false, display_name: 'Old' },
+          { id: 11, service_id: 1, service_name: 'spotify', is_active: true, display_name: 'Active' },
+        ]
+        if (cmd === 'get_service_statuses') return [{ name: 'spotify', connected: true, credentials_invalid: false, library_count: 0, favorites_count: 0, playlists_count: 0, last_synced: null }]
+        if (cmd === 'logout_service') return { success: true, data: { account_id: 10 }, error: null }
+        return null
+      })
+      const wrapper = mount(AccountsView, { global: { stubs: { SpotifyApiConfigCard: true } } })
+      await flushPromises()
+      const accountRow = wrapper.findAll('.service-card details div').find(row => row.text().includes('Old') && row.find('button').exists())
+      expect(accountRow).toBeDefined()
+      await accountRow!.findAll('button').find(button => button.text() === 'Desconectar')!.trigger('click')
+      await flushPromises()
+      expect(calls.find(call => call.cmd === 'logout_service')?.args).toEqual({ service: 'spotify', accountId: 10 })
+      expect(calls.filter(call => call.cmd === 'remove_account')).toHaveLength(0)
+      wrapper.unmount()
+    })
+
     it('initializes activity log empty without pre-populated fake sync entries', async () => {
       mockInvoke((cmd) => {
         if (cmd === 'get_services') return []
@@ -212,6 +256,8 @@ describe('[TASK-23] AccountsView & MigrationView Honest State (No Mocks)', () =>
           id: 'mig-task23-001',
           source_service: 'spotify',
           destination_service: 'qobuz',
+          source_account_id: null,
+          destination_account_id: null,
           source_playlist_ids: null,
           options: '{}',
           status: 'completed',
@@ -228,6 +274,8 @@ describe('[TASK-23] AccountsView & MigrationView Honest State (No Mocks)', () =>
           id: 'mig-task23-002',
           source_service: 'tidal',
           destination_service: 'qobuz',
+          source_account_id: null,
+          destination_account_id: null,
           source_playlist_ids: null,
           options: '{}',
           status: 'partial',
@@ -290,6 +338,8 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
     id: 'job-1',
     source_service: 'spotify',
     destination_service: 'qobuz',
+    source_account_id: null,
+    destination_account_id: null,
     source_playlist_ids: null,
     options: '{}',
     status: 'completed',
@@ -482,7 +532,11 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
     const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
     backend(
       {
-        get_migration_history: [reviewJob],
+        get_accounts: [
+          { id: 11, service_id: 1, service_name: 'spotify', is_active: true },
+          { id: 20, service_id: 2, service_name: 'qobuz', is_active: true },
+        ],
+        get_migration_history: [{ ...reviewJob, source_account_id: 11, destination_account_id: 20 }],
         get_migration_items_by_status: [reviewItem],
         preview_migration: { total_tracks: 1, matched_tracks: 0, unmatched_tracks: 1, playlists: [] },
         search_destination_track: [

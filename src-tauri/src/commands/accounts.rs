@@ -27,11 +27,31 @@ pub fn get_global_app_handle() -> Option<&'static tauri::AppHandle> {
 
 /// Helper to emit auth state change event across the application
 pub fn emit_auth_state_updated(service: &str, action: &str, details: Option<&str>) {
+    emit_auth_state_updated_for_account(service, action, None, details);
+}
+
+/// Same channel as [`emit_auth_state_updated`] but able to name the ACCOUNT the
+/// transition happened on.
+///
+/// Multi-cuenta: `set_active_account` and `logout_service` act on one row, and
+/// "conectado" is ambiguous with several accounts of the same service, so the
+/// payload carries `account_id`. Kept as a separate helper (and not as an extra
+/// parameter) so the dozens of existing `emit_auth_state_updated` call sites —
+/// which have no account at hand — keep compiling unchanged.
+pub fn emit_auth_state_updated_for_account(
+    service: &str,
+    action: &str,
+    account_id: Option<i64>,
+    details: Option<&str>,
+) {
     if let Some(app) = get_global_app_handle() {
         let mut payload = serde_json::json!({
             "service": service,
             "action": action,
         });
+        if let Some(id) = account_id {
+            payload["account_id"] = serde_json::Value::from(id);
+        }
         if let Some(d) = details {
             payload["details"] = serde_json::Value::String(d.to_string());
         }
@@ -129,6 +149,12 @@ pub async fn get_accounts(state: State<'_, AppState>) -> Result<Vec<AccountInfo>
 }
 
 /// Add a new account with encrypted credentials
+///
+/// Multi-cuenta: la fila se inserta SIEMPRE con `is_active = 1` (import y
+/// restore dependen de eso), pero dentro de una transacción que desactiva a las
+/// hermanas del mismo servicio. Sin ese paso, añadir una segunda cuenta
+/// dejaba dos filas activas y el backend resolvía 'la cuenta activa' de forma
+/// arbitraria para el servicio.
 #[tauri::command]
 pub async fn add_account(
     app: tauri::AppHandle,
@@ -141,19 +167,20 @@ pub async fn add_account(
     // Encrypt credentials before storage
     let encrypted = crypto::encrypt(&credentials_json)?;
 
-    let account_id: i64 = sqlx::query_scalar(
-        r#"INSERT INTO accounts (service_id, credentials_json, display_name, email, is_active, created_at)
-           VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP) RETURNING id"#
+    let account_id = insert_account_exclusive(
+        &state.db,
+        service_id,
+        &encrypted,
+        display_name.as_deref(),
+        email.as_deref(),
     )
-    .bind(service_id)
-    .bind(&encrypted)
-    .bind(&display_name)
-    .bind(&email)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
+    .await?;
 
-    tracing::info!("Added account for service_id={}", service_id);
+    tracing::info!(
+        "Added account {} for service_id={} (siblings deactivated)",
+        account_id,
+        service_id
+    );
 
     let _ = app.emit(
         "auth-state-updated",
@@ -163,6 +190,46 @@ pub async fn add_account(
             "account_id": account_id,
         }),
     );
+
+    Ok(account_id)
+}
+
+/// DB half of [`add_account`]: insert the row active AND deactivate its siblings
+/// in one transaction. Separate from the command so the invariant is testable
+/// without a Tauri AppHandle. Returns the new account id.
+pub async fn insert_account_exclusive(
+    db: &sqlx::SqlitePool,
+    service_id: i64,
+    encrypted_credentials: &str,
+    display_name: Option<&str>,
+    email: Option<&str>,
+) -> Result<i64, String> {
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let account_id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO accounts (service_id, credentials_json, display_name, email, is_active, created_at)
+           VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP) RETURNING id"#,
+    )
+    .bind(service_id)
+    .bind(encrypted_credentials)
+    .bind(display_name)
+    .bind(email)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Exclusividad: la cuenta recién añadida es la activa del servicio.
+    sqlx::query("UPDATE accounts SET is_active = 0 WHERE service_id = ? AND id != ?")
+        .bind(service_id)
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tx.commit().await.map_err(|e| e.to_string())?;
 
     Ok(account_id)
 }
@@ -331,15 +398,32 @@ pub async fn purge_stale_credentials(
 }
 
 /// Toggle account active status
+///
+/// Multi-cuenta:
+///   * `is_active = true` delega en [`set_active_account`]: activar una cuenta
+///     es un CAMBIO DE CUENTA y, dentro de la misma transacción, desactiva a sus
+///     hermanas del servicio. Activar sin ese paso es lo que dejaba servicios
+///     con dos o más filas activas.
+///   * `is_active = false` conserva el camino anterior y permite quedar con cero
+///     cuentas activas: es la forma de "silenciar" un servicio. Si se desactiva la
+///     ÚNICA cuenta activa del servicio, el servicio se queda sin cuenta que
+///     usar hasta que se active alguna.
+///
+/// La firma no cambia: la UI existente (ServiceCard, SettingsServices) sigue
+/// llamando a este comando.
 #[tauri::command]
-pub async fn toggle_account_active(
-    app: tauri::AppHandle,
+pub async fn toggle_account_active<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     account_id: i64,
     is_active: bool,
 ) -> Result<(), String> {
+    if is_active {
+        return set_active_account(app, state, account_id).await;
+    }
+
     sqlx::query("UPDATE accounts SET is_active = ? WHERE id = ?")
-        .bind(if is_active { 1 } else { 0 })
+        .bind(0)
         .bind(account_id)
         .execute(&state.db)
         .await
@@ -355,6 +439,100 @@ pub async fn toggle_account_active(
     );
 
     Ok(())
+}
+
+/// Make `account_id` THE active account of its service ("usar esta cuenta").
+///
+/// Multi-cuenta: activa la fila y desactiva a sus hermanas del mismo servicio en
+/// UNA transacción, que es la forma de mantener el invariante 'exactamente una
+/// activa por servicio' que asumen todos los resolvedores del backend
+/// (`is_active = 1 ORDER BY id DESC LIMIT 1`). Desactivar a las hermanas antes
+/// que activar la nueva dejaría una ventana en la que el servicio no tiene
+/// cuenta activa.
+///
+/// Emite `auth-state-updated` con action "activated" y `account_id` mediante
+/// `app.emit` directo (mismo canal que add_account/toggle_account_active):
+/// [`emit_auth_state_updated`] tiene firma fija (service, action, details) y no
+/// puede llevar la cuenta.
+///
+/// Nota de refresco: el ÚNICO oyente de este evento en la UI hoy es
+/// `AccountsView.vue`; App.vue y StatusBar no lo escuchan, así que las demás
+/// vistas verán el cambio cuando hagan su propio fetchData/polling.
+#[tauri::command]
+pub async fn set_active_account<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<(), String> {
+    let service_id = activate_account_exclusive(&state.db, account_id).await?;
+
+    // The payload keeps the `service` key every other emission on this channel
+    // carries (see `emit_auth_state_updated`), so a future listener can filter by
+    // service without having to map account_id back to it.
+    let service_name: String = sqlx::query_scalar("SELECT name FROM services WHERE id = ?")
+        .bind(service_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+
+    tracing::info!(
+        "Activated account {} (service_id={}); siblings deactivated",
+        account_id,
+        service_id
+    );
+
+    let _ = app.emit(
+        "auth-state-updated",
+        serde_json::json!({
+            "service": service_name,
+            "action": "activated",
+            "account_id": account_id,
+            "is_active": true,
+        }),
+    );
+
+    Ok(())
+}
+
+/// DB half of [`set_active_account`] (and of `toggle_account_active(true)`).
+///
+/// Separate from the command so the exclusivity invariant is testable without a
+/// Tauri AppHandle. Returns the `service_id` of the activated account.
+pub async fn activate_account_exclusive(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+) -> Result<i64, String> {
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to begin account activation: {}", e))?;
+
+    let service_id: i64 = sqlx::query_scalar("SELECT service_id FROM accounts WHERE id = ?")
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Account {} not found", account_id))?;
+
+    sqlx::query("UPDATE accounts SET is_active = 1 WHERE id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    sqlx::query("UPDATE accounts SET is_active = 0 WHERE service_id = ? AND id != ?")
+        .bind(service_id)
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit account activation: {}", e))?;
+
+    Ok(service_id)
 }
 
 /// Query real service authentication status for an account/service
@@ -382,15 +560,21 @@ pub async fn perform_get_service_auth_status(
         Option<String>,
         Option<String>,
     )> = if let Some(aid) = account_id {
+        // Membership check: an account_id of ANOTHER service must not answer for
+        // this one. Without the `AND s.name = ?` filter the caller would get the
+        // row's own `svc_name` back — a status for a service it never asked
+        // about. `LOWER()` on both sides matches how every other resolver in the
+        // codebase compares service names (`load_service_credentials`).
         sqlx::query_as(
             r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.credentials_json,
                       IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error,
                       a.last_auth_error_at
                FROM accounts a
                JOIN services s ON s.id = a.service_id
-               WHERE a.id = ?"#
+               WHERE a.id = ? AND LOWER(s.name) = LOWER(?)"#
         )
         .bind(aid)
+        .bind(service_name)
         .fetch_optional(db)
         .await
         .map_err(|e| e.to_string())?
@@ -428,6 +612,7 @@ pub async fn perform_get_service_auth_status(
             return Ok(ServiceAuthStatus {
                 service: service_name.to_string(),
                 account_id: None,
+                is_active: false,
                 status: "missing".to_string(),
                 is_authenticated: false,
                 credentials_valid: false,
@@ -446,10 +631,17 @@ pub async fn perform_get_service_auth_status(
         }
     };
 
-    if is_active == 0 {
+    // Multi-cuenta: el corte por `is_active == 0` solo aplica al camino SIN id.
+    // Ese camino solo devuelve filas activas (su consulta filtra `is_active = 1`),
+    // así que el corte era dead code allí; en la rama por-id, en cambio,
+    // truncaría el diagnóstico de una cuenta ELEGIDA desactivada: el usuario
+    // pidió el estado de esa fila concreta y merece el estado real de sus
+    // credenciales, no un "vuelve a activarla" que no explica nada.
+    if account_id.is_none() && is_active == 0 {
         return Ok(ServiceAuthStatus {
             service: svc_name,
             account_id: Some(id),
+            is_active: is_active != 0,
             status: "requires_auth".to_string(),
             is_authenticated: false,
             credentials_valid: false,
@@ -471,6 +663,7 @@ pub async fn perform_get_service_auth_status(
         return Ok(ServiceAuthStatus {
             service: svc_name,
             account_id: Some(id),
+            is_active: is_active != 0,
             status: "requires_auth".to_string(),
             is_authenticated: false,
             credentials_valid: false,
@@ -496,6 +689,7 @@ pub async fn perform_get_service_auth_status(
             return Ok(ServiceAuthStatus {
                 service: svc_name,
                 account_id: Some(id),
+                is_active: is_active != 0,
                 status: "requires_auth".to_string(),
                 is_authenticated: false,
                 credentials_valid: false,
@@ -520,6 +714,7 @@ pub async fn perform_get_service_auth_status(
             return Ok(ServiceAuthStatus {
                 service: svc_name,
                 account_id: Some(id),
+                is_active: is_active != 0,
                 status: "requires_auth".to_string(),
                 is_authenticated: false,
                 credentials_valid: false,
@@ -547,6 +742,7 @@ pub async fn perform_get_service_auth_status(
             return Ok(ServiceAuthStatus {
                 service: svc_name,
                 account_id: Some(id),
+                is_active: is_active != 0,
                 status: "error".to_string(),
                 is_authenticated: false,
                 credentials_valid: false,
@@ -589,6 +785,7 @@ pub async fn perform_get_service_auth_status(
                             return Ok(ServiceAuthStatus {
                                 service: svc_name,
                                 account_id: Some(id),
+                                is_active: is_active != 0,
                                 status: "expired".to_string(),
                                 is_authenticated: false,
                                 credentials_valid: false,
@@ -611,6 +808,7 @@ pub async fn perform_get_service_auth_status(
                     Ok(ServiceAuthStatus {
                         service: svc_name,
                         account_id: Some(id),
+                        is_active: is_active != 0,
                         status: "connected_valid".to_string(),
                         is_authenticated: true,
                         credentials_valid: true,
@@ -634,6 +832,7 @@ pub async fn perform_get_service_auth_status(
                         Ok(ServiceAuthStatus {
                             service: svc_name,
                             account_id: Some(id),
+                            is_active: is_active != 0,
                             status: "connected_valid".to_string(),
                             is_authenticated: true,
                             credentials_valid: true,
@@ -653,6 +852,7 @@ pub async fn perform_get_service_auth_status(
                         Ok(ServiceAuthStatus {
                             service: svc_name,
                             account_id: Some(id),
+                            is_active: is_active != 0,
                             status: "requires_auth".to_string(),
                             is_authenticated: false,
                             credentials_valid: false,
@@ -679,6 +879,7 @@ pub async fn perform_get_service_auth_status(
                 return Ok(ServiceAuthStatus {
                     service: svc_name,
                     account_id: Some(id),
+                    is_active: is_active != 0,
                     status: "requires_auth".to_string(),
                     is_authenticated: false,
                     credentials_valid: false,
@@ -702,6 +903,7 @@ pub async fn perform_get_service_auth_status(
                     return Ok(ServiceAuthStatus {
                         service: svc_name,
                         account_id: Some(id),
+                        is_active: is_active != 0,
                         status: "expired".to_string(),
                         is_authenticated: false,
                         credentials_valid: false,
@@ -725,6 +927,7 @@ pub async fn perform_get_service_auth_status(
             Ok(ServiceAuthStatus {
                 service: svc_name,
                 account_id: Some(id),
+                is_active: is_active != 0,
                 status: "connected_valid".to_string(),
                 is_authenticated: true,
                 credentials_valid: true,
@@ -748,6 +951,7 @@ pub async fn perform_get_service_auth_status(
                 return Ok(ServiceAuthStatus {
                     service: svc_name,
                     account_id: Some(id),
+                    is_active: is_active != 0,
                     status: "requires_auth".to_string(),
                     is_authenticated: false,
                     credentials_valid: false,
@@ -771,6 +975,7 @@ pub async fn perform_get_service_auth_status(
                     return Ok(ServiceAuthStatus {
                         service: svc_name,
                         account_id: Some(id),
+                        is_active: is_active != 0,
                         status: "expired".to_string(),
                         is_authenticated: false,
                         credentials_valid: false,
@@ -791,6 +996,7 @@ pub async fn perform_get_service_auth_status(
             Ok(ServiceAuthStatus {
                 service: svc_name,
                 account_id: Some(id),
+                is_active: is_active != 0,
                 status: "connected_valid".to_string(),
                 is_authenticated: true,
                 credentials_valid: true,
@@ -816,6 +1022,7 @@ pub async fn perform_get_service_auth_status(
                 return Ok(ServiceAuthStatus {
                     service: svc_name,
                     account_id: Some(id),
+                    is_active: is_active != 0,
                     status: "requires_auth".to_string(),
                     is_authenticated: false,
                     credentials_valid: false,
@@ -837,6 +1044,7 @@ pub async fn perform_get_service_auth_status(
             Ok(ServiceAuthStatus {
                 service: svc_name,
                 account_id: Some(id),
+                is_active: is_active != 0,
                 status: "connected_valid".to_string(),
                 is_authenticated: true,
                 credentials_valid: true,
@@ -866,6 +1074,7 @@ pub async fn perform_get_service_auth_status(
                 Ok(ServiceAuthStatus {
                     service: svc_name,
                     account_id: Some(id),
+                    is_active: is_active != 0,
                     status: "connected_valid".to_string(),
                     is_authenticated: true,
                     credentials_valid: true,
@@ -885,6 +1094,7 @@ pub async fn perform_get_service_auth_status(
                 Ok(ServiceAuthStatus {
                     service: svc_name,
                     account_id: Some(id),
+                    is_active: is_active != 0,
                     status: "requires_auth".to_string(),
                     is_authenticated: false,
                     credentials_valid: false,
@@ -916,6 +1126,7 @@ pub async fn perform_get_service_auth_status(
                 None => return Ok(ServiceAuthStatus {
                     service: svc_name,
                     account_id: Some(id),
+                    is_active: is_active != 0,
                     status: "requires_auth".to_string(),
                     is_authenticated: false,
                     credentials_valid: false,
@@ -941,6 +1152,7 @@ pub async fn perform_get_service_auth_status(
                 Ok(user) => Ok(ServiceAuthStatus {
                     service: svc_name,
                     account_id: Some(id),
+                    is_active: is_active != 0,
                     status: "connected_valid".to_string(),
                     is_authenticated: true,
                     credentials_valid: true,
@@ -966,6 +1178,7 @@ pub async fn perform_get_service_auth_status(
                     Ok(ServiceAuthStatus {
                         service: svc_name,
                         account_id: Some(id),
+                        is_active: is_active != 0,
                         status: if rejected {
                             "requires_auth".to_string()
                         } else {
@@ -1001,6 +1214,7 @@ pub async fn perform_get_service_auth_status(
                 Ok(ServiceAuthStatus {
                     service: svc_name,
                     account_id: Some(id),
+                    is_active: is_active != 0,
                     status: "connected_valid".to_string(),
                     is_authenticated: true,
                     credentials_valid: true,
@@ -1020,6 +1234,7 @@ pub async fn perform_get_service_auth_status(
                 Ok(ServiceAuthStatus {
                     service: svc_name.clone(),
                     account_id: Some(id),
+                    is_active: is_active != 0,
                     status: "requires_auth".to_string(),
                     is_authenticated: false,
                     credentials_valid: false,
@@ -1060,46 +1275,84 @@ pub async fn get_service_auth_status(
 /// is flagged before returning a RequiresAuth error to the caller.
 /// Does NOT delete any library data or cascade.
 ///
-/// Returns the number of rows updated (0 if no active account was found).
+/// Multi-cuenta: `account_id` acota la invalidación a la cuenta QUE FALLÓ.
+/// `Some(id)` marca esa fila concreta (verificando además que pertenezca al
+/// servicio); `None` conserva el comportamiento histórico —marcar las filas
+/// ACTIVAS del servicio—, que es lo correcto mientras el sync va anclado a la
+/// cuenta activa.
+///
+/// Returns the number of rows updated (0 if no account matched).
 pub async fn mark_account_credentials_invalid(
     db: &sqlx::SqlitePool,
     service_name: &str,
     reason: &str,
+    account_id: Option<i64>,
 ) -> Result<u64, String> {
-    let rows_affected = sqlx::query(
-        r#"
-        UPDATE accounts
-        SET credentials_invalid = 1,
-            invalid_reason      = ?,
-            last_auth_error     = ?,
-            last_auth_error_at  = ?
-        WHERE service_id = (SELECT id FROM services WHERE name = ? LIMIT 1)
-          AND is_active = 1
-        "#,
-    )
-    .bind(reason)
-    .bind(reason)
-    // A-4: el latch se autocura por antigüedad (orchestrator.rs), y para eso
-    // necesita saber CUÁNDO se marcó. Sin esta columna el veredicto no tiene
-    // edad y el servicio quedaba bloqueado para siempre.
-    .bind(chrono::Utc::now().to_rfc3339())
-    .bind(service_name)
-    .execute(db)
-    .await
-    .map_err(|e| format!("Failed to mark {} credentials invalid: {}", service_name, e))?
-    .rows_affected();
+    let rows_affected = match account_id {
+        Some(aid) => {
+            sqlx::query(
+                r#"
+                UPDATE accounts
+                SET credentials_invalid = 1,
+                    invalid_reason      = ?,
+                    last_auth_error     = ?,
+                    last_auth_error_at  = ?
+                WHERE id = ?
+                  AND service_id = (SELECT id FROM services WHERE name = ? LIMIT 1)
+                "#,
+            )
+            .bind(reason)
+            .bind(reason)
+            // A-4: el latch se autocura por antigüedad (orchestrator.rs), y para eso
+            // necesita saber CUÁNDO se marcó. Sin esta columna el veredicto no tiene
+            // edad y el servicio quedaba bloqueado para siempre.
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(aid)
+            .bind(service_name)
+            .execute(db)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to mark {} account {} credentials invalid: {}",
+                    service_name, aid, e
+                )
+            })?
+            .rows_affected()
+        }
+        None => sqlx::query(
+            r#"
+            UPDATE accounts
+            SET credentials_invalid = 1,
+                invalid_reason      = ?,
+                last_auth_error     = ?,
+                last_auth_error_at  = ?
+            WHERE service_id = (SELECT id FROM services WHERE name = ? LIMIT 1)
+              AND is_active = 1
+            "#,
+        )
+        .bind(reason)
+        .bind(reason)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(service_name)
+        .execute(db)
+        .await
+        .map_err(|e| format!("Failed to mark {} credentials invalid: {}", service_name, e))?
+        .rows_affected(),
+    };
 
     if rows_affected > 0 {
         tracing::warn!(
-            "[Auth] Marked {} account credentials invalid. Reason: {}",
+            "[Auth] Marked {} account credentials invalid (account_id={:?}). Reason: {}",
             service_name,
+            account_id,
             reason
         );
-        emit_auth_state_updated(service_name, "invalidated", Some(reason));
+        emit_auth_state_updated_for_account(service_name, "invalidated", account_id, Some(reason));
     } else {
         tracing::warn!(
-            "[Auth] mark_account_credentials_invalid called for {} but no active account found",
-            service_name
+            "[Auth] mark_account_credentials_invalid called for {} (account_id={:?}) but no matching account found",
+            service_name,
+            account_id
         );
     }
 
@@ -1109,6 +1362,7 @@ pub async fn mark_account_credentials_invalid(
 #[cfg(test)]
 mod accounts_tests {
 
+    use super::{activate_account_exclusive, insert_account_exclusive};
     use sqlx::sqlite::SqlitePoolOptions;
 
     /// Create an in-memory test database with schema
@@ -1426,5 +1680,138 @@ mod accounts_tests {
             .expect("Failed to count accounts");
 
         assert_eq!(count.0, 2);
+
+        // Multi-cuenta: varias filas por servicio SÍ, pero exactamente UNA activa.
+        // El seed las deja a las dos activas a propósito (el estado que el upsert,
+        // add_account y set_active_account ya no producen) y se comprueba que
+        // activar una de ellas deja el invariante entero.
+        let (first_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM accounts WHERE service_id = 1 ORDER BY id LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to read first account");
+        let (second_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM accounts WHERE service_id = 1 ORDER BY id DESC LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to read second account");
+
+        let active_before: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE service_id = 1 AND is_active = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to count active accounts");
+        assert_eq!(
+            active_before.0, 2,
+            "el seed parte de dos activas (estado que la app ya no produce)"
+        );
+
+        activate_account_exclusive(&pool, first_id)
+            .await
+            .expect("set_active_account must succeed");
+
+        let (active_after,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE service_id = 1 AND is_active = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to count active accounts");
+        assert_eq!(
+            active_after, 1,
+            "activar una cuenta deja exactamente UNA activa por servicio"
+        );
+
+        let (which_active,): (i64,) =
+            sqlx::query_as("SELECT id FROM accounts WHERE service_id = 1 AND is_active = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to read the active account");
+        assert_eq!(which_active, first_id);
+        let (still_there,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE service_id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to count accounts");
+        assert_eq!(still_there, 2, "activar NO borra ninguna fila del servicio");
+
+        // Volver a la segunda la deja activa; el servicio nunca queda con dos.
+        activate_account_exclusive(&pool, second_id)
+            .await
+            .expect("switching back must succeed");
+        let (active_after2,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE service_id = 1 AND is_active = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to count active accounts");
+        assert_eq!(active_after2, 1);
+    }
+
+    /// Multi-cuenta: `add_account` inserta la fila activa y desactiva a sus
+    /// hermanas en la MISMA transacción. Antes las dos quedaban activas y el
+    /// resolvedor `is_active = 1 ORDER BY id DESC LIMIT 1` saltaba entre ellas.
+    #[tokio::test]
+    async fn test_add_account_deactivates_sibling_accounts() {
+        let pool = setup_test_db().await;
+
+        let (service_id,): (i64,) = sqlx::query_as("SELECT id FROM services WHERE name = 'qobuz'")
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to get qobuz id");
+
+        let first = insert_account_exclusive(
+            &pool,
+            service_id,
+            "enc_1",
+            Some("One"),
+            Some("one@test.com"),
+        )
+        .await
+        .expect("first account insert");
+        let second = insert_account_exclusive(
+            &pool,
+            service_id,
+            "enc_2",
+            Some("Two"),
+            Some("two@test.com"),
+        )
+        .await
+        .expect("second account insert");
+
+        let (active_count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE service_id = ? AND is_active = 1")
+                .bind(service_id)
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to count active accounts");
+        assert_eq!(
+            active_count, 1,
+            "añadir una cuenta no puede dejar dos activas"
+        );
+
+        let (active_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM accounts WHERE service_id = ? AND is_active = 1")
+                .bind(service_id)
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to read active account");
+        assert_eq!(active_id, second, "la cuenta recién añadida es la activa");
+
+        let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE service_id = ?")
+            .bind(service_id)
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to count accounts");
+        assert_eq!(total, 2, "la cuenta previa se conserva");
+
+        // Y la cuenta anterior se puede volver a activar.
+        activate_account_exclusive(&pool, first)
+            .await
+            .expect("re-activate");
+        let (back,): (i64,) =
+            sqlx::query_as("SELECT id FROM accounts WHERE service_id = ? AND is_active = 1")
+                .bind(service_id)
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to read active account");
+        assert_eq!(back, first);
     }
 }

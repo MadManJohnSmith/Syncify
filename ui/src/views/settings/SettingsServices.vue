@@ -16,27 +16,30 @@
          <span class="text-sm">Loading services...</span>
        </div>
        <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <ServiceCard 
-            v-for="service in services" 
-            :key="service.name"
-            :id="service.id"
-            :serviceId="service.name"
-            :name="getServiceConfig(service.name).displayName" 
-            :icon="getServiceConfig(service.name).icon" 
-            :color="getServiceConfig(service.name).color" 
-            :isConnected="isServiceConnected(service.name)"
-            :user="getAccountsForService(service.name)[0]?.display_name"
-            :status="getServiceStatusText(service.name)"
-            :statusType="getServiceStatusType(service.name)"
-            :isIconText="getServiceConfig(service.name).isIconText"
-            :enabled="isServiceDownloadEnabled(service.name)"
-            :autoImport="isServiceAutoImportEnabled(service.name)"
-            @connect="handleConnect(service.id)"
-            @disconnect="handleDisconnect(service.id)"
-            @reauth="handleReauth(service.id)"
-            @toggle-enabled="handleToggleEnabled"
-            @toggle-auto-import="handleToggleAutoImport"
-          />
+          <div v-for="service in services" :key="service.name" class="space-y-2">
+            <ServiceCard :id="service.id" :serviceId="service.name"
+              :name="getServiceConfig(service.name).displayName"
+              :icon="getServiceConfig(service.name).icon"
+              :color="getServiceConfig(service.name).color"
+              :isConnected="isServiceConnected(service.name)"
+              :hasAccount="getAccountsForService(service.name).length > 0"
+              :user="getCurrentAccount(service.name)?.display_name ?? undefined"
+              :status="getServiceStatusText(service.name)"
+              :statusType="getServiceStatusType(service.name)"
+              :isIconText="getServiceConfig(service.name).isIconText"
+              :enabled="isServiceDownloadEnabled(service.name)"
+              :autoImport="isServiceAutoImportEnabled(service.name)"
+              @connect="handleConnect(service.id)" @disconnect="handleDisconnect(service.id)"
+              @reauth="handleReauth(service.id)" @toggle-enabled="handleToggleEnabled"
+              @toggle-auto-import="handleToggleAutoImport" />
+            <div v-for="acct in getAccountsForService(service.name)" :key="acct.id" class="flex flex-wrap gap-2 items-center text-xs p-2 rounded border border-gray-200 dark:border-border-dark">
+              <span class="grow truncate">{{ acct.display_name || acct.email || `Cuenta ${acct.id}` }} <span v-if="acct.is_active" class="text-success">(activa)</span></span>
+              <span v-if="acct.credentials_invalid" class="text-error">Requiere autenticación</span>
+              <button v-if="!acct.is_active" class="text-primary" @click="activateAccount(acct.id)">Usar esta cuenta</button>
+              <button class="text-text-secondary" @click="handleDisconnect(service.id, acct.id)">Desconectar</button>
+              <button class="text-error" @click="deleteAccount(acct.id)">Eliminar cuenta</button>
+            </div>
+          </div>
        </div>
     </section>
 
@@ -109,6 +112,7 @@ import {
   logoutService,
   removeAccount,
   toggleAccountActive,
+  setActiveAccount,
 } from '@/api/accounts'
 import type { Service, Account, ServiceStatus } from '@/api/types'
 import ServiceConnectionModal from '@/components/ServiceConnectionModal.vue'
@@ -152,6 +156,11 @@ function getAccountsForService(serviceName: string): Account[] {
   return accounts.value.filter(a => a.service_id === service.id);
 }
 
+function getCurrentAccount(serviceName: string): Account | undefined {
+  const matches = getAccountsForService(serviceName)
+  return matches.find(a => a.is_active) ?? matches[0]
+}
+
 function getServiceStatus(serviceName: string): ServiceStatus | undefined {
   if (!Array.isArray(serviceStatuses.value)) return undefined;
   return serviceStatuses.value.find(s => s?.name?.toLowerCase() === serviceName?.toLowerCase())
@@ -160,16 +169,16 @@ function getServiceStatus(serviceName: string): ServiceStatus | undefined {
 function isServiceConnected(serviceName: string): boolean {
   const status = getServiceStatus(serviceName)
   if (status) return status.connected || status.credentials_invalid
-  return getAccountsForService(serviceName).length > 0
+  return getCurrentAccount(serviceName)?.is_active === true
 }
 
 function getServiceStatusText(serviceName: string): string {
   const status = getServiceStatus(serviceName)
   if (status?.credentials_invalid) return 'Token Expired / Re-auth Required'
   if (status?.connected) return 'Connected'
-  const acct = getAccountsForService(serviceName)[0]
+  const acct = getCurrentAccount(serviceName)
   if (acct?.credentials_invalid) return 'Token Expired / Re-auth Required'
-  if (acct) return 'Connected'
+  if (acct?.is_active) return 'Connected'
   return 'Not Connected'
 }
 
@@ -177,9 +186,9 @@ function getServiceStatusType(serviceName: string): 'success' | 'warning' | 'err
   const status = getServiceStatus(serviceName)
   if (status?.credentials_invalid) return 'error'
   if (status?.connected) return 'success'
-  const acct = getAccountsForService(serviceName)[0]
+  const acct = getCurrentAccount(serviceName)
   if (acct?.credentials_invalid) return 'error'
-  if (acct) return 'success'
+  if (acct?.is_active) return 'success'
   return 'warning'
 }
 
@@ -196,7 +205,7 @@ function isServiceDownloadEnabled(serviceName: string): boolean {
   if (serviceDownloadEnabled.value[name] !== undefined) {
     return serviceDownloadEnabled.value[name]
   }
-  const acct = getAccountsForService(name)[0]
+  const acct = getCurrentAccount(name)
   return acct ? acct.is_active : true
 }
 
@@ -219,6 +228,7 @@ async function loadServicesAndAccounts() {
     services.value = Array.isArray(servicesData) ? servicesData : [];
     accounts.value = Array.isArray(accountsData) ? accountsData : [];
     serviceStatuses.value = Array.isArray(statusesData) ? statusesData : [];
+    serviceDownloadEnabled.value = {};
   } catch (err) {
     console.error('Failed to load accounts:', err)
   } finally {
@@ -245,18 +255,36 @@ async function handleConnect(serviceIdOrName?: string | number) {
   }
 }
 
-async function handleDisconnect(serviceIdOrName?: string | number) {
+async function handleDisconnect(serviceIdOrName?: string | number, accountId?: number) {
   const name = resolveServiceName(serviceIdOrName)
   if (!name) return
+  const id = accountId ?? getCurrentAccount(name)?.id
+  if (id == null) return
   try {
-    await logoutService(name)
-    const serviceAccounts = getAccountsForService(name)
-    for (const acct of serviceAccounts) {
-      await removeAccount(acct.id)
-    }
+    // Desconectar retains the account and its library; deletion is separate.
+    await logoutService(name, id)
     await loadServicesAndAccounts()
   } catch (err) {
     console.error(`Failed to disconnect ${name}:`, err)
+  }
+}
+
+async function activateAccount(accountId: number) {
+  try {
+    await setActiveAccount(accountId)
+    await loadServicesAndAccounts()
+  } catch (err) {
+    console.error('Failed to activate account:', err)
+  }
+}
+
+async function deleteAccount(accountId: number) {
+  if (!window.confirm('¿Eliminar esta cuenta y sus datos de biblioteca y playlists? Esta acción no se puede deshacer.')) return
+  try {
+    await removeAccount(accountId)
+    await loadServicesAndAccounts()
+  } catch (err) {
+    console.error('Failed to delete account:', err)
   }
 }
 
@@ -280,15 +308,14 @@ async function handleToggleEnabled(serviceIdOrName: string | number, enabled: bo
   const name = resolveServiceName(serviceIdOrName)
   if (!name) return
 
-  serviceDownloadEnabled.value[name] = enabled
-  const serviceAccounts = getAccountsForService(name)
-  for (const acct of serviceAccounts) {
-    acct.is_active = enabled
-    try {
-      await toggleAccountActive(acct.id, enabled)
-    } catch (err) {
-      console.error(`Failed to toggle account active for ${name}:`, err)
-    }
+  const acct = getCurrentAccount(name)
+  if (!acct) return
+  try {
+    if (enabled) await setActiveAccount(acct.id)
+    else await toggleAccountActive(acct.id, false)
+    await loadServicesAndAccounts()
+  } catch (err) {
+    console.error(`Failed to toggle account active for ${name}:`, err)
   }
 }
 

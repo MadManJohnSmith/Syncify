@@ -47,7 +47,7 @@ async fn test_mark_account_credentials_invalid_flips_flag_and_runs() {
 
     // Call mark_account_credentials_invalid
     let affected =
-        mark_account_credentials_invalid(&pool, "qobuz", "HTTP 401: Invalid session token")
+        mark_account_credentials_invalid(&pool, "qobuz", "HTTP 401: Invalid session token", None)
             .await
             .expect("Should mark credentials invalid");
 

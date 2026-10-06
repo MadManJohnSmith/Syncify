@@ -47,6 +47,17 @@ describe('ServiceCard.vue - Component Unit Tests', () => {
     expect(autoImportCheckbox.element.checked).toBe(true)
   })
 
+  it('keeps the downloads toggle available for a retained inactive account', async () => {
+    const wrapper = mount(ServiceCard, {
+      props: { name: 'Tidal', icon: 'T', color: '#fff', isConnected: false, hasAccount: true, enabled: false },
+    })
+    const checkbox = wrapper.find<HTMLInputElement>('[data-testid="service-card-enabled"]')
+    expect(checkbox.exists()).toBe(true)
+    expect(checkbox.element.checked).toBe(false)
+    await checkbox.setValue(true)
+    expect(wrapper.emitted('update:enabled')?.[0]).toEqual([true])
+  })
+
   it('renders disconnected state correctly without checkboxes and only Connect button', () => {
     const wrapper = mount(ServiceCard, {
       props: {
@@ -343,7 +354,7 @@ describe('SettingsServices.vue - Integration with ServiceCard Events', () => {
     expect(authCall?.args).toEqual({ service: 'qobuz' })
   })
 
-  it('handles disconnect event from ServiceCard and invokes logout_service and remove_account', async () => {
+  it('handles disconnect without deleting account data', async () => {
     const wrapper = mount(SettingsServices)
     await flushPromises()
 
@@ -359,11 +370,10 @@ describe('SettingsServices.vue - Integration with ServiceCard Events', () => {
 
     const logoutCall = invokedCommands.find(c => c.command === 'logout_service')
     expect(logoutCall).toBeDefined()
-    expect(logoutCall?.args).toEqual({ service: 'spotify' })
+    expect(logoutCall?.args).toEqual({ service: 'spotify', accountId: 101 })
 
     const removeCall = invokedCommands.find(c => c.command === 'remove_account')
-    expect(removeCall).toBeDefined()
-    expect(removeCall?.args).toEqual({ accountId: 101 })
+    expect(removeCall).toBeUndefined()
   })
 
   it('handles reauth event from ServiceCard and triggers start_auth_and_save', async () => {
@@ -396,6 +406,21 @@ describe('SettingsServices.vue - Integration with ServiceCard Events', () => {
     const toggleActiveCall = invokedCommands.find(c => c.command === 'toggle_account_active')
     expect(toggleActiveCall).toBeDefined()
     expect(toggleActiveCall?.args).toEqual({ accountId: 101, isActive: false })
+  })
+
+  it('activates one account via set_active_account, never bulk toggle', async () => {
+    mockAccounts[0].is_active = false
+    mockAccounts.push({ ...mockAccounts[0], id: 102, display_name: 'Other', is_active: false })
+    const wrapper = mount(SettingsServices)
+    await flushPromises()
+    const spotifyCard = wrapper.findAllComponents(ServiceCard)[0]
+    const enabledCheckbox = spotifyCard.find<HTMLInputElement>('[data-testid="service-card-enabled"]')
+    await enabledCheckbox.setValue(true)
+    await flushPromises()
+    expect(invokedCommands.filter(c => c.command === 'set_active_account')).toEqual([
+      { command: 'set_active_account', args: { accountId: 101 } },
+    ])
+    expect(invokedCommands.some(c => c.command === 'toggle_account_active' && c.args?.isActive === true)).toBe(false)
   })
 
   it('handles toggleAutoImport event from ServiceCard and invokes update_service_preference', async () => {

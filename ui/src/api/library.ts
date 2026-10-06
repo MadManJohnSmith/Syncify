@@ -378,8 +378,8 @@ export async function getFavoritesArtists(service?: string, offset?: number, lim
 /**
  * Sync favorites from a service
  */
-export async function syncFavorites(service: string, favType?: string): Promise<FavoritesSyncResult> {
-    const raw = await invokeCommand<unknown>('sync_favorites', { service, favType });
+export async function syncFavorites(service: string, favType?: string, accountId?: number | null): Promise<FavoritesSyncResult> {
+    const raw = await invokeCommand<unknown>('sync_favorites', { service, favType, accountId: accountId ?? null });
     return {
         service: asString(pick(raw, ['service'])),
         item_type: asString(pick(raw, ['item_type', 'itemType'])),

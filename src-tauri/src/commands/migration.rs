@@ -115,7 +115,7 @@ pub async fn get_migration_history(
     sqlx::query_as::<_, MigrationJob>(
         r#"SELECT id, source_service, destination_service, source_playlist_ids, options, status,
             total_items, completed_items, failed_items, skipped_items, started_at, completed_at,
-            error_message, created_at FROM migration_jobs ORDER BY created_at DESC LIMIT ?"#,
+            error_message, created_at, source_account_id, destination_account_id FROM migration_jobs ORDER BY created_at DESC LIMIT ?"#,
     )
     .bind(limit)
     .fetch_all(&state.db)
@@ -176,19 +176,40 @@ pub async fn preview_migration(
     destination_service: String,
     playlist_ids: Option<Vec<String>>,
     options: MigrationOptions,
+    source_account_id: Option<i64>,
+    destination_account_id: Option<i64>,
 ) -> Result<MigrationPreviewResult, String> {
-    let clients = DestinationClients::for_destination(&state.db, &destination_service).await;
+    validate_migration_account_pair(
+        &source_service,
+        &destination_service,
+        source_account_id,
+        destination_account_id,
+    )?;
+    resolve_migration_account(&state.db, &source_service, source_account_id).await?;
+    let effective_destination =
+        resolve_migration_account(&state.db, &destination_service, destination_account_id).await?;
+    let clients =
+        DestinationClients::for_destination(&state.db, &destination_service, effective_destination)
+            .await;
     if !clients.available() {
         // Without a destination account no real match count exists; refusing
-        // beats reporting a fabricated estimate.
-        return Err(format!(
-            "No connected {} account is available to preview matches; connect the destination service first",
-            destination_service
-        ));
+        // beats reporting a fabricated estimate. An explicitly chosen account
+        // can exist but have expired/missing credentials, so name it on failure.
+        return Err(match destination_account_id {
+            Some(id) => format!(
+                "No usable {destination_service} destination account {id} is available to preview matches"
+            ),
+            None => format!("No connected {destination_service} account is available to preview matches"),
+        });
     }
 
-    let tracks =
-        fetch_migration_source_tracks(&state.db, &source_service, playlist_ids.as_deref()).await?;
+    let tracks = fetch_migration_source_tracks(
+        &state.db,
+        &source_service,
+        playlist_ids.as_deref(),
+        source_account_id,
+    )
+    .await?;
 
     let mut matched_tracks = 0i64;
     // Per-playlist aggregation: (external id, real name, track_count, matched_count)
@@ -383,6 +404,7 @@ pub async fn fetch_migration_source_tracks(
     db: &sqlx::SqlitePool,
     source_service: &str,
     playlist_ids: Option<&[String]>,
+    source_account_id: Option<i64>,
 ) -> Result<Vec<MigrationSourceTrack>, String> {
     let playlist_scoped = playlist_ids.is_some();
     let ids: &[String] = playlist_ids.unwrap_or(&[]);
@@ -409,6 +431,9 @@ pub async fn fetch_migration_source_tracks(
             query.push_bind(source_service);
             query.push(" AND p.source_service = ");
             query.push_bind(source_service);
+            if let Some(account_id) = source_account_id {
+                query.push(" AND p.account_id = ").push_bind(account_id);
+            }
             query.push(" AND p.external_id IN (");
             let mut separated = query.separated(", ");
             for id in ids {
@@ -461,8 +486,17 @@ pub async fn fetch_migration_source_tracks(
                    JOIN services s ON s.id = ts.service_id
                    WHERE s.name = "#,
             );
+            query.push_bind(source_service);
+            // library_items and track_sources are a service-wide mirror. For an
+            // explicit account only library_entries identifies its own tracks.
+            // Tracks without an entry deliberately disappear; None preserves
+            // the legacy full-mirror read.
+            if let Some(account_id) = source_account_id {
+                query.push(" AND EXISTS (SELECT 1 FROM library_entries le WHERE le.track_id = li.id AND le.is_liked = 1 AND le.account_id = ")
+                    .push_bind(account_id)
+                    .push(")");
+            }
             query
-                .push_bind(source_service)
                 // `track_sources` is UNIQUE on (service_id, service_track_id),
                 // so the service_track_id order is already a total order.
                 .push(" ORDER BY ts.service_track_id LIMIT ")
@@ -548,6 +582,8 @@ pub const MIGRATION_DESTINATION_SERVICES: &[&str] = &[
 /// and a usable account exists; `for_destination` mirrors exactly what
 /// `start_migration` used to build inline.
 struct DestinationClients {
+    // Resolved account, including when the caller chose the active default.
+    account_id: Option<i64>,
     qobuz: Option<crate::services::QobuzClient>,
     tidal: Option<crate::services::TidalClient>,
     spotify: Option<crate::services::SpotifyClient>,
@@ -567,19 +603,43 @@ impl DestinationClients {
             || self.apple_music.is_some()
     }
 
-    /// Build the clients for `destination_service` from the account stored in
-    /// the database (code moved verbatim from start_migration).
-    async fn for_destination(db: &sqlx::SqlitePool, destination_service: &str) -> Self {
+    /// An explicitly chosen account may be inactive: credentials, not is_active,
+    /// determine whether the migration can use it. Keep all tokens and identity
+    /// fields from one row (in particular Tidal's token and user_id).
+    async fn for_destination(
+        db: &sqlx::SqlitePool,
+        destination_service: &str,
+        destination_account_id: Option<i64>,
+    ) -> Self {
         let service = destination_service.to_lowercase();
-
-        let qobuz: Option<crate::services::QobuzClient> = if service == "qobuz" {
-            let creds: Option<(String,)> = sqlx::query_as(
-                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'qobuz' AND a.is_active = 1",
+        let account_row: Option<(i64, Option<String>)> = if let Some(id) = destination_account_id {
+            sqlx::query_as(
+                "SELECT a.id, a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE a.id = ? AND s.name = ?",
             )
+            .bind(id)
+            .bind(&service)
             .fetch_optional(db)
             .await
             .ok()
-            .flatten();
+            .flatten()
+        } else {
+            sqlx::query_as(
+                "SELECT a.id, a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = ? AND a.is_active = 1 ORDER BY a.id DESC LIMIT 1",
+            )
+            .bind(&service)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+        };
+        let account_id = account_row.as_ref().map(|(id, _)| *id);
+        // After logout the row can remain while its credentials are NULL. It
+        // is not a usable client, even if the account was explicitly chosen.
+
+        let qobuz: Option<crate::services::QobuzClient> = if service == "qobuz" {
+            let creds: Option<(String,)> = account_row
+                .as_ref()
+                .and_then(|(_, json)| json.clone().map(|json| (json,)));
 
             if let Some((creds_json,)) = creds {
                 let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
@@ -607,13 +667,9 @@ impl DestinationClients {
         };
 
         let tidal: Option<crate::services::TidalClient> = if service == "tidal" {
-            let creds: Option<(String,)> = sqlx::query_as(
-                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'tidal' AND a.is_active = 1",
-            )
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
+            let creds: Option<(String,)> = account_row
+                .as_ref()
+                .and_then(|(_, json)| json.clone().map(|json| (json,)));
 
             if let Some((creds_json,)) = creds {
                 let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
@@ -644,13 +700,9 @@ impl DestinationClients {
         };
 
         let spotify: Option<crate::services::SpotifyClient> = if service == "spotify" {
-            let creds: Option<(String,)> = sqlx::query_as(
-                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'spotify' AND a.is_active = 1",
-            )
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
+            let creds: Option<(String,)> = account_row
+                .as_ref()
+                .and_then(|(_, json)| json.clone().map(|json| (json,)));
 
             if let Some((creds_json,)) = creds {
                 let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
@@ -659,7 +711,21 @@ impl DestinationClients {
                         .get("access_token")
                         .and_then(|v| v.as_str())
                         .map(|token| {
-                            crate::services::SpotifyClient::new(token.to_string(), None, 0)
+                            // SpotifyClient::new's third argument is token expiry,
+                            // NOT account_id. Its refresh write-back receives the
+                            // account id separately in ensure_token_valid; migration
+                            // only calls search/favorites and never invokes refresh.
+                            crate::services::SpotifyClient::new(
+                                token.to_string(),
+                                creds
+                                    .get("refresh_token")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_owned),
+                                creds
+                                    .get("expires_at")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0),
+                            )
                         })
                 } else {
                     None
@@ -672,13 +738,9 @@ impl DestinationClients {
         };
 
         let deezer: Option<crate::services::DeezerClient> = if service == "deezer" {
-            let creds: Option<(String,)> = sqlx::query_as(
-                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'deezer' AND a.is_active = 1",
-            )
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
+            let creds: Option<(String,)> = account_row
+                .as_ref()
+                .and_then(|(_, json)| json.clone().map(|json| (json,)));
 
             if let Some((creds_json,)) = creds {
                 let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
@@ -705,13 +767,9 @@ impl DestinationClients {
         };
 
         let soundcloud: Option<crate::services::SoundCloudClient> = if service == "soundcloud" {
-            let creds: Option<(String,)> = sqlx::query_as(
-                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'soundcloud' AND a.is_active = 1",
-            )
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
+            let creds: Option<(String,)> = account_row
+                .as_ref()
+                .and_then(|(_, json)| json.clone().map(|json| (json,)));
 
             if let Some((creds_json,)) = creds {
                 let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
@@ -738,13 +796,9 @@ impl DestinationClients {
         };
 
         let apple_music: Option<crate::services::AppleMusicClient> = if service == "apple_music" {
-            let creds: Option<(String,)> = sqlx::query_as(
-                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'apple_music' AND a.is_active = 1",
-            )
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
+            let creds: Option<(String,)> = account_row
+                .as_ref()
+                .and_then(|(_, json)| json.clone().map(|json| (json,)));
 
             if let Some((creds_json,)) = creds {
                 let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
@@ -781,6 +835,7 @@ impl DestinationClients {
         };
 
         Self {
+            account_id,
             qobuz,
             tidal,
             spotify,
@@ -945,8 +1000,10 @@ impl DestinationClients {
                 "simulated",
                 None,
                 Some(
-                    "Destination service client unavailable; the track could not be transferred"
-                        .to_string(),
+                    format!(
+                        "Destination account {:?} client unavailable; the track could not be transferred",
+                        self.account_id
+                    ),
                 ),
             )
         }
@@ -968,10 +1025,10 @@ impl DestinationClients {
         } else if let Some(ref client) = self.apple_music {
             client.add_to_favorites(dest_track_id).await
         } else {
-            Err(
-                "Destination service client unavailable; the track could not be transferred"
-                    .to_string(),
-            )
+            Err(format!(
+                "Destination account {:?} client unavailable; the track could not be transferred",
+                self.account_id
+            ))
         }
     }
 
@@ -1062,14 +1119,15 @@ impl DestinationClients {
     }
 }
 
-/// Most recent match a user attached by hand to this source track on any
-/// previous migration job toward the same destination service. Reviewed
-/// matches must be effective: the next run applies them instead of silently
-/// recomputing (and possibly undoing) the user's decision.
+/// Most recent match a user attached by hand to this source track on a
+/// previous migration job toward the exact destination account. Legacy NULL
+/// jobs only match a NULL destination; a concrete account must not inherit
+/// an unscoped choice made by a different user.
 pub async fn find_manual_match(
     db: &sqlx::SqlitePool,
     source_track_id: &str,
     destination_service: &str,
+    destination_account_id: Option<i64>,
 ) -> Result<Option<String>, String> {
     let row: Option<(String,)> = sqlx::query_as(
         r#"SELECT mi.destination_track_id
@@ -1079,11 +1137,13 @@ pub async fn find_manual_match(
              AND mi.match_method = 'manual'
              AND mi.destination_track_id IS NOT NULL
              AND mj.destination_service = ?
+             AND mj.destination_account_id IS ?
            ORDER BY mi.id DESC
            LIMIT 1"#,
     )
     .bind(source_track_id)
     .bind(destination_service)
+    .bind(destination_account_id)
     .fetch_optional(db)
     .await
     .map_err(|e| format!("Failed to look up manual matches: {}", e))?;
@@ -1153,6 +1213,11 @@ async fn fetch_job_destination_playlists(
            WHERE mi.job_id = ?
              AND mi.status = 'transferred'
              AND mi.destination_track_id IS NOT NULL
+             AND (mj.source_account_id IS NULL OR p.account_id = mj.source_account_id)
+             AND EXISTS (
+                 SELECT 1 FROM json_each(mj.source_playlist_ids) selected
+                 WHERE selected.value = COALESCE(p.external_id, CAST(p.id AS TEXT))
+             )
            ORDER BY p.name COLLATE NOCASE, pt.position"#,
     )
     .bind(job_id)
@@ -1186,6 +1251,57 @@ async fn fetch_job_destination_playlists(
         .collect())
 }
 
+/// Same-service transfers cannot use the service-wide source mirror: it mixes
+/// accounts, including their playlists, so both ends must be explicit and distinct.
+fn validate_migration_account_pair(
+    source_service: &str,
+    destination_service: &str,
+    source_account_id: Option<i64>,
+    destination_account_id: Option<i64>,
+) -> Result<(), String> {
+    if source_service.eq_ignore_ascii_case(destination_service)
+        && (source_account_id.is_none()
+            || destination_account_id.is_none()
+            || source_account_id == destination_account_id)
+    {
+        return Err(
+            "Same-service migration requires two explicitly selected, different accounts".into(),
+        );
+    }
+    Ok(())
+}
+
+/// Validate explicit ownership and resolve the default active account.
+/// The default is only for destination credentials; a None source reads the
+/// full legacy service mirror and is deliberately persisted as NULL.
+async fn resolve_migration_account(
+    db: &sqlx::SqlitePool,
+    service: &str,
+    account_id: Option<i64>,
+) -> Result<Option<i64>, String> {
+    if let Some(id) = account_id {
+        let belongs: Option<(i64,)> = sqlx::query_as(
+            "SELECT a.id FROM accounts a JOIN services s ON s.id = a.service_id WHERE a.id = ? AND s.name = ?",
+        )
+        .bind(id)
+        .bind(service)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| format!("Failed to validate account {id}: {e}"))?;
+        return belongs
+            .map(|(id,)| Some(id))
+            .ok_or_else(|| format!("Account {id} does not belong to {service}"));
+    }
+    sqlx::query_as::<_, (i64,)>(
+        "SELECT a.id FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = ? AND a.is_active = 1 ORDER BY a.id DESC LIMIT 1",
+    )
+    .bind(service)
+    .fetch_optional(db)
+    .await
+    .map(|row| row.map(|(id,)| id))
+    .map_err(|e| format!("Failed to resolve active account for {service}: {e}"))
+}
+
 /// Start a new migration
 #[tauri::command]
 pub async fn start_migration<R: tauri::Runtime>(
@@ -1195,7 +1311,19 @@ pub async fn start_migration<R: tauri::Runtime>(
     destination_service: String,
     playlist_ids: Option<Vec<String>>,
     options: MigrationOptions,
+    source_account_id: Option<i64>,
+    destination_account_id: Option<i64>,
 ) -> Result<String, String> {
+    // An explicit inactive account is eligible; its credentials may still work.
+    validate_migration_account_pair(
+        &source_service,
+        &destination_service,
+        source_account_id,
+        destination_account_id,
+    )?;
+    resolve_migration_account(&state.db, &source_service, source_account_id).await?;
+    let effective_destination =
+        resolve_migration_account(&state.db, &destination_service, destination_account_id).await?;
     let job_id = uuid::Uuid::new_v4().to_string();
     let options_json = serde_json::to_string(&options).map_err(|e| e.to_string())?;
     let playlist_ids_json = playlist_ids
@@ -1204,14 +1332,18 @@ pub async fn start_migration<R: tauri::Runtime>(
 
     // Create migration job
     sqlx::query(
-        r#"INSERT INTO migration_jobs (id, source_service, destination_service, source_playlist_ids, options, status)
-           VALUES (?, ?, ?, ?, ?, 'pending')"#
+        r#"INSERT INTO migration_jobs (id, source_service, destination_service, source_playlist_ids, options, status, source_account_id, destination_account_id)
+           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)"#
     )
     .bind(&job_id)
     .bind(&source_service)
     .bind(&destination_service)
     .bind(&playlist_ids_json)
     .bind(&options_json)
+    // None means the source read is service-wide, not an active-account read.
+    // Keep NULL so playlist reconstruction also retains the legacy scope.
+    .bind(source_account_id)
+    .bind(effective_destination)
     .execute(&state.db)
     .await
     .map_err(|e| format!("Failed to create migration job: {}", e))?;
@@ -1226,6 +1358,8 @@ pub async fn start_migration<R: tauri::Runtime>(
         &state.db,
         &source_service,
         playlist_ids.as_deref(),
+        // None reads the entire legacy service mirror.
+        source_account_id,
     )
     .await
     {
@@ -1293,7 +1427,17 @@ pub async fn start_migration<R: tauri::Runtime>(
 
     // Destination clients for matching/transferring, built from the stored
     // account credentials of the destination service.
-    let clients = DestinationClients::for_destination(&state.db, &destination_service).await;
+    let clients =
+        DestinationClients::for_destination(&state.db, &destination_service, effective_destination)
+            .await;
+    if !clients.available() && !tracks.is_empty() {
+        tracing::warn!(
+            "Migration {} has no usable destination account {:?} for {}",
+            job_id,
+            clients.account_id,
+            destination_service
+        );
+    }
 
     // Process tracks with real matching
     let mut completed = 0i64;
@@ -1337,10 +1481,15 @@ pub async fn start_migration<R: tauri::Runtime>(
         // A match the user attached by hand on a previous run of this route is
         // applied as-is (4.2: reviewed matches are effective); the transfer
         // still runs so the favorite really lands on the destination.
-        let manual_dest_id = find_manual_match(&state.db, ext_id, &destination_service)
-            .await
-            .ok()
-            .flatten();
+        let manual_dest_id = find_manual_match(
+            &state.db,
+            ext_id,
+            &destination_service,
+            effective_destination,
+        )
+        .await
+        .ok()
+        .flatten();
 
         // The fourth tuple element carries the underlying API error when one
         // occurred, so failed items can record a real error_message (BD-7).
@@ -1385,8 +1534,14 @@ pub async fn start_migration<R: tauri::Runtime>(
         // one occurred, a truthful note about the missing match otherwise.
         let error_message = if status == "failed" {
             Some(match match_error {
-                Some(err) => err,
-                None => format!("No match found on {}", destination_service),
+                Some(err) => format!(
+                    "Destination {} account {:?}: {}",
+                    destination_service, effective_destination, err
+                ),
+                None => format!(
+                    "No match found on {} account {:?}",
+                    destination_service, effective_destination
+                ),
             })
         } else {
             None
@@ -1694,17 +1849,29 @@ pub async fn search_destination_track(
     state: State<'_, AppState>,
     service: String,
     query: String,
+    account_id: Option<i64>,
 ) -> Result<Vec<DestinationTrackMatch>, String> {
     // If destination is Qobuz, try real API search first
     if service.to_lowercase() == "qobuz" {
         // Get Qobuz credentials from database
-        let creds: Option<(String,)> = sqlx::query_as(
-            "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'qobuz' AND a.is_active = 1",
-        )
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
+        let creds: Option<(String,)> = if let Some(id) = account_id {
+            sqlx::query_as(
+                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE a.id = ? AND s.name = 'qobuz'",
+            )
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+        } else {
+            sqlx::query_as(
+                "SELECT a.credentials_json FROM accounts a JOIN services s ON s.id = a.service_id WHERE s.name = 'qobuz' AND a.is_active = 1 ORDER BY a.id DESC LIMIT 1",
+            )
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+        };
 
         if let Some((creds_json,)) = creds {
             let decrypted_json = crate::crypto::decrypt(&creds_json).unwrap_or(creds_json);
@@ -1846,6 +2013,215 @@ mod migration_tests {
     }
 
     #[tokio::test]
+    async fn playlist_reconstruction_preserves_global_legacy_scope() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (1, 'spotify')")
+            .execute(&db)
+            .await
+            .unwrap();
+        let a: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, email, is_active) VALUES (1, 'first@test.dev', 1) RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let b: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, email, is_active) VALUES (1, 'second@test.dev', 0) RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let album: i64 =
+            sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Album') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let artist: i64 =
+            sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Artist') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let track: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id) VALUES ('Song', ?) RETURNING id",
+        )
+        .bind(album)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(track)
+        .bind(artist)
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp-song')",
+        )
+        .bind(track)
+        .execute(&db)
+        .await
+        .unwrap();
+        for (account, name) in [(a, "First playlist"), (b, "Second playlist")] {
+            let playlist: i64 = sqlx::query_scalar(
+                "INSERT INTO playlists (account_id, name, source_service) VALUES (?, ?, 'spotify') RETURNING id",
+            )
+            .bind(account)
+            .bind(name)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 1)",
+            )
+            .bind(playlist)
+            .bind(track)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        for (job, account) in [("legacy-global", None), ("explicit-first", Some(a))] {
+            let selected: Vec<String> = sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM playlists WHERE source_service = 'spotify' AND (? IS NULL OR account_id = ?) ORDER BY id",
+            )
+            .bind(account)
+            .bind(account)
+            .fetch_all(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect();
+            sqlx::query(
+                "INSERT INTO migration_jobs (id, source_service, destination_service, options, status, source_account_id, source_playlist_ids) VALUES (?, 'spotify', 'qobuz', '{}', 'running', ?, ?)",
+            )
+            .bind(job)
+            .bind(account)
+            .bind(serde_json::to_string(&selected).unwrap())
+            .execute(&db)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO migration_items (job_id, source_track_id, source_track_title, source_track_artist, status, destination_track_id) VALUES (?, 'sp-song', 'Song', 'Artist', 'transferred', 'qb-song')",
+            )
+            .bind(job)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let all = fetch_job_destination_playlists(&db, "legacy-global")
+            .await
+            .unwrap();
+        assert_eq!(
+            all.len(),
+            2,
+            "NULL reads both playlists, including the inactive account"
+        );
+        assert_eq!(all[0], ("First playlist".into(), vec!["qb-song".into()]));
+        assert_eq!(all[1], ("Second playlist".into(), vec!["qb-song".into()]));
+        let scoped = fetch_job_destination_playlists(&db, "explicit-first")
+            .await
+            .unwrap();
+        assert_eq!(
+            scoped,
+            vec![("First playlist".into(), vec!["qb-song".into()])]
+        );
+        let first_id: i64 =
+            sqlx::query_scalar("SELECT id FROM playlists WHERE name = 'First playlist'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE migration_jobs SET source_playlist_ids = ? WHERE id = 'legacy-global'")
+            .bind(serde_json::json!([first_id.to_string()]).to_string())
+            .execute(&db)
+            .await
+            .unwrap();
+        let selected = fetch_job_destination_playlists(&db, "legacy-global")
+            .await
+            .unwrap();
+        assert_eq!(
+            selected,
+            vec![("First playlist".into(), vec!["qb-song".into()])]
+        );
+    }
+
+    #[tokio::test]
+    async fn chosen_destination_is_from_one_row_even_when_inactive() {
+        let pool = setup_destination_db().await;
+        sqlx::query("INSERT INTO services (id, name) VALUES (1, 'tidal'), (2, 'spotify')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let a: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, credentials_json, is_active) VALUES (1, '{\"access_token\":\"token-a\",\"user_id\":\"user-a\"}', 1) RETURNING id",
+        ).fetch_one(&pool).await.unwrap();
+        let b: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, credentials_json, is_active) VALUES (1, '{\"access_token\":\"token-b\",\"user_id\":\"user-b\"}', 0) RETURNING id",
+        ).fetch_one(&pool).await.unwrap();
+        let spotify: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, credentials_json, is_active) VALUES (2, '{\"access_token\":\"sp-b\",\"expires_at\":123456}', 1) RETURNING id",
+        ).fetch_one(&pool).await.unwrap();
+        let default = DestinationClients::for_destination(&pool, "tidal", None).await;
+        assert!(default.available());
+        assert_eq!(default.account_id, Some(a));
+        let chosen = DestinationClients::for_destination(&pool, "tidal", Some(b)).await;
+        assert!(chosen.available());
+        assert_eq!(chosen.account_id, Some(b));
+        // Exercise the selected client's token + user_id together against a
+        // local listener: a mixed row would point at user-a or use token-a.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = socket.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"{"uuid":"new-playlist"}"#;
+            socket.write_all(format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(), body
+            ).as_bytes()).await.unwrap();
+            request
+        });
+        let playlist = chosen
+            .tidal
+            .unwrap()
+            .with_base_url(base)
+            .create_playlist("selected account", "")
+            .await
+            .unwrap();
+        assert_eq!(playlist, "new-playlist");
+        let request = server.await.unwrap();
+        assert!(
+            request.starts_with("POST /users/user-b/playlists"),
+            "{request}"
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer token-b"),
+            "{request}"
+        );
+        assert!(
+            DestinationClients::for_destination(&pool, "tidal", Some(spotify))
+                .await
+                .tidal
+                .is_none()
+        );
+        let chosen_spotify =
+            DestinationClients::for_destination(&pool, "spotify", Some(spotify)).await;
+        assert_eq!(chosen_spotify.account_id, Some(spotify));
+        assert_eq!(chosen_spotify.spotify.unwrap().expires_at, 123456);
+    }
+
+    #[tokio::test]
     async fn test_apple_music_is_a_migration_destination_and_keeps_its_storefront() {
         assert!(
             MIGRATION_DESTINATION_SERVICES.contains(&"apple_music"),
@@ -1874,7 +2250,7 @@ mod migration_tests {
         .await
         .expect("insert account");
 
-        let clients = DestinationClients::for_destination(&pool, "apple_music").await;
+        let clients = DestinationClients::for_destination(&pool, "apple_music", None).await;
         assert!(clients.available(), "the Apple Music client must be usable");
         let client = clients
             .apple_music
@@ -1904,7 +2280,7 @@ mod migration_tests {
         .await
         .expect("insert account");
 
-        let clients = DestinationClients::for_destination(&pool, "apple_music").await;
+        let clients = DestinationClients::for_destination(&pool, "apple_music", None).await;
         assert!(
             clients.apple_music.is_none(),
             "an account without music_user_token must not produce a client"

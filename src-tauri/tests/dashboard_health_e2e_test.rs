@@ -241,6 +241,14 @@ async fn test_dashboard_system_health_checks() {
 async fn test_dashboard_batch_health_report() {
     let db = create_test_db().await;
     let worker_state = DownloadWorkerState::new(2);
+    // A clean in-memory DB must not inherit orphan files from the user's real
+    // default download directory (other tests can also write there in parallel).
+    let download_root = tempfile::tempdir().expect("isolated download root must be creatable");
+    sqlx::query("UPDATE folder_settings SET base_folder = ? WHERE id = 1")
+        .bind(download_root.path().to_string_lossy().as_ref())
+        .execute(&db)
+        .await
+        .expect("test download root must be configured");
 
     let batch_report = perform_batch_health_check(&db, None, Some(&worker_state))
         .await

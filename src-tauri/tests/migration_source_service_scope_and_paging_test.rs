@@ -155,10 +155,10 @@ async fn test_source_tracks_carry_the_source_services_own_external_id() {
         "fixture setup: the mirror must prefer qobuz for that track"
     );
 
-    let from_spotify = fetch_migration_source_tracks(&pool, "spotify", None)
+    let from_spotify = fetch_migration_source_tracks(&pool, "spotify", None, None)
         .await
         .expect("spotify source read must succeed");
-    let from_qobuz = fetch_migration_source_tracks(&pool, "qobuz", None)
+    let from_qobuz = fetch_migration_source_tracks(&pool, "qobuz", None, None)
         .await
         .expect("qobuz source read must succeed");
 
@@ -199,7 +199,7 @@ async fn test_favorites_scope_pages_past_one_thousand_tracks() {
     let pool = setup_test_db().await;
     seed_mirrored_tracks(&pool, 1237).await;
 
-    let tracks = fetch_migration_source_tracks(&pool, "spotify", None)
+    let tracks = fetch_migration_source_tracks(&pool, "spotify", None, None)
         .await
         .expect("source read must succeed");
 
@@ -252,7 +252,7 @@ async fn test_playlist_scope_pages_past_one_thousand_rows() {
     .unwrap();
 
     let ids = vec!["pl-paged".to_string()];
-    let tracks = fetch_migration_source_tracks(&pool, "spotify", Some(&ids))
+    let tracks = fetch_migration_source_tracks(&pool, "spotify", Some(&ids), None)
         .await
         .expect("playlist source read must succeed");
 
@@ -287,6 +287,8 @@ async fn test_start_migration_fails_the_job_when_the_source_read_fails() {
         "qobuz".to_string(),
         None,
         loose_options(),
+        None,
+        None,
     )
     .await
     .expect_err("BD-4: a failed source read must not start a migration");
@@ -341,6 +343,7 @@ async fn test_destination_search_returns_the_destination_services_own_id() {
         app.state::<AppState>(),
         "spotify".to_string(),
         "Paged 1".to_string(),
+        None,
     )
     .await
     .expect("local fallback search must succeed");

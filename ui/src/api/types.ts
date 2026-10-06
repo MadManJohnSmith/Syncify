@@ -360,11 +360,11 @@ export interface Account {
     id: number;
     service_id: number;
     service_name: string;
-    display_name: string;
+    display_name: string | null;
     email: string | null;
     is_active: boolean;
     last_synced: string | null;
-    created_at: string;
+    created_at: string | null;
     credentials_invalid?: boolean;
     invalid_reason?: string | null;
     last_auth_error?: string | null;
@@ -397,7 +397,7 @@ export interface SessionStatus {
 
 export interface AuthResult {
     success: boolean;
-    data: Record<string, unknown> | null;
+    data: (Record<string, unknown> & { account_id?: number }) | null;
     error: string | null;
 }
 
@@ -977,6 +977,8 @@ export interface MigrationJob {
     id: string;
     source_service: string;
     destination_service: string;
+    source_account_id: number | null;
+    destination_account_id: number | null;
     source_playlist_ids: string | null;
     options: string;
     status: string;
@@ -1141,6 +1143,7 @@ export interface ServiceAuthStatus {
     service: string;
     account_id?: number | null;
     accountId?: number | null;
+    is_active: boolean;
     status: 'connected_valid' | 'requires_auth' | 'expired' | 'missing' | 'error';
     is_authenticated: boolean;
     isAuthenticated?: boolean;

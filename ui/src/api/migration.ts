@@ -52,16 +52,35 @@ export async function getMigrationDestinations(): Promise<string[]> {
     return asArray<string>(raw).map(service => String(service).toLowerCase());
 }
 
+function validateMigrationAccounts(
+    sourceService: string,
+    destinationService: string,
+    sourceAccountId?: number | null,
+    destinationAccountId?: number | null
+): void {
+    if (sourceService.toLowerCase() !== destinationService.toLowerCase()) return;
+    // null is the global legacy source (library_items plus every playlist),
+    // never a safe alias for the active account of this same service.
+    if (sourceAccountId == null || destinationAccountId == null || sourceAccountId === destinationAccountId) {
+        throw new Error('Same-service migration requires two explicit, distinct accounts');
+    }
+}
+
 export async function previewMigration(
     sourceService: string,
     destinationService: string,
     playlistIds?: string[],
-    options?: MigrationOptions
+    options?: MigrationOptions,
+    sourceAccountId?: number | null,
+    destinationAccountId?: number | null
 ): Promise<MigrationPreviewResult> {
+    validateMigrationAccounts(sourceService, destinationService, sourceAccountId, destinationAccountId);
     return invoke('preview_migration', {
         sourceService,
         destinationService,
         playlistIds,
+        sourceAccountId: sourceAccountId ?? null,
+        destinationAccountId: destinationAccountId ?? null,
         options: options || {
             match_threshold: 0.80,
             skip_unmatched: true,
@@ -86,12 +105,17 @@ export async function startMigration(
     sourceService: string,
     destinationService: string,
     playlistIds?: string[],
-    options?: MigrationOptions
+    options?: MigrationOptions,
+    sourceAccountId?: number | null,
+    destinationAccountId?: number | null
 ): Promise<string> {
+    validateMigrationAccounts(sourceService, destinationService, sourceAccountId, destinationAccountId);
     return invoke('start_migration', {
         sourceService,
         destinationService,
         playlistIds,
+        sourceAccountId: sourceAccountId ?? null,
+        destinationAccountId: destinationAccountId ?? null,
         options: options || {
             match_threshold: 0.80,
             skip_unmatched: true,
@@ -150,9 +174,10 @@ export async function useMigrationTemplate(templateId: number): Promise<Migratio
 
 export async function searchDestinationTrack(
     service: string,
-    query: string
+    query: string,
+    accountId?: number | null
 ): Promise<DestinationTrackMatch[]> {
-    const raw = await invoke<unknown>('search_destination_track', { service, query });
+    const raw = await invoke<unknown>('search_destination_track', { service, query, accountId: accountId ?? null });
     return asArray<DestinationTrackMatch>(raw);
 }
 

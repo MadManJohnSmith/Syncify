@@ -18,7 +18,7 @@
        </div>
      </div>
      
-     <div v-if="isConnected" class="mb-3 space-y-2">
+     <div v-if="isConnected || hasAccount" class="mb-3 space-y-2">
         <label class="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
            <input 
              type="checkbox" 
@@ -83,6 +83,7 @@ export interface ServiceCardProps {
   icon: string
   color: string
   isConnected: boolean
+  hasAccount?: boolean
   user?: string
   status?: string
   statusType?: 'success' | 'warning' | 'error'
@@ -95,6 +96,7 @@ const props = withDefaults(defineProps<ServiceCardProps>(), {
   id: undefined,
   serviceId: undefined,
   user: undefined,
+  hasAccount: false,
   status: undefined,
   statusType: 'success',
   isIconText: false,
