@@ -961,6 +961,8 @@ fn main() {
             commands::apply_country_tag_repair,
             // S194: local playback of downloaded tracks
             commands::resolve_playback_source,
+            // Fase 1 del player: estadísticas de reproducción local
+            commands::record_local_play,
             // Downloads
             // Metadata Enrichment
             commands::enrich_metadata,

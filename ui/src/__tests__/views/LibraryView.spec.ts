@@ -638,15 +638,27 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         expect(call?.args).toEqual({ trackId: 301 });
     });
 
-    it('context menu "Add to Queue" enqueues the track for download', async () => {
+    it('context menu "Add to Downloads" enqueues the track for download (fase 1 desambigua la etiqueta)', async () => {
         const { invokeCalls, menu } = await mountWithTrack();
 
-        menuButton(menu, 'Add to Queue').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        menuButton(menu, 'Add to Downloads').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         await flushPromises();
 
         const call = invokeCalls.find(c => c.cmd === 'add_to_queue');
         expect(call).toBeDefined();
         expect(call?.args?.trackId).toBe(301);
+    });
+
+    it('context menu "Add to Play Queue" starts the track in the playback queue', async () => {
+        const { invokeCalls, menu } = await mountWithTrack();
+
+        menuButton(menu, 'Add to Play Queue').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await flushPromises();
+
+        // Player parado: la acción de cola de reproducción arranca la pista.
+        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        expect(call).toBeDefined();
+        expect(call?.args).toEqual({ trackId: 301 });
     });
 
     it('Space with the context menu open and an idle player starts that track', async () => {

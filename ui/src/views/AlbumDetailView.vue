@@ -215,10 +215,9 @@ async function playAlbum() {
   })
 
   try {
-    await player.play(toPlayerTrack(album.value.tracks[0]))
-    for (const track of album.value.tracks.slice(1)) {
-      await player.playNext(toPlayerTrack(track))
-    }
+    // Fase 1: reproduce la primera y encola el resto EN SU ORDEN (playNext
+    // inserta al frente; el encadenado anterior invertía el tracklist).
+    await player.replaceQueueAndPlay(album.value.tracks.map(toPlayerTrack))
     toast.success('Playing album', `${album.value.title} · ${album.value.tracks.length} tracks queued`)
   } catch (err: any) {
     const errStr = String(err?.message || err || '')

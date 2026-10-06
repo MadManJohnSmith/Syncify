@@ -183,7 +183,7 @@
               <span class="material-symbols-outlined text-[16px]">download</span> Download
             </button>
             <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
-              <span class="material-symbols-outlined text-[16px]">queue_music</span> Add to Queue
+              <span class="material-symbols-outlined text-[16px]">download</span> Add to Downloads
             </button>
             <hr class="my-1 border-gray-200 dark:border-border-dark">
             <button @click="handleBulkRemove" class="w-full px-3 py-2 text-left text-xs hover:bg-error/10 transition-colors flex items-center gap-2 text-error">
@@ -263,9 +263,13 @@
             <span class="flex-1 text-left">Play Next</span>
             <span class="text-[10px] text-gray-500">N</span>
           </button>
-          <button @click="handleAddToQueue(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button @click="handleAddToPlayQueue(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
             <span class="material-symbols-outlined text-[16px]">playlist_add</span>
-            <span class="flex-1 text-left">Add to Queue</span>
+            <span class="flex-1 text-left">Add to Play Queue</span>
+          </button>
+          <button @click="handleAddToQueue(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <span class="material-symbols-outlined text-[16px]">download</span>
+            <span class="flex-1 text-left">Add to Downloads</span>
             <span class="text-[10px] text-gray-500">Q</span>
           </button>
           
@@ -388,7 +392,7 @@
               <div class="space-y-3">
                 <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Library</h4>
                 <div class="flex items-center justify-between text-sm">
-                  <span class="text-gray-300">Add to Queue</span>
+                  <span class="text-gray-300">Add to Downloads</span>
                   <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">Q</kbd>
                 </div>
                 <div class="flex items-center justify-between text-sm">
@@ -1604,11 +1608,13 @@ function handleTrackClick(track: Track) {
   selectedCount.value = tracks.value.filter(t => t.isSelected).length;
 }
 
-const { play, playNext, toggle: togglePlayback, current: playerCurrent } = usePlayer();
+const { play, playNext, enqueue, toggle: togglePlayback, current: playerCurrent } = usePlayer();
 
 // S194 residual: double-click plays the LOCAL downloaded file through the
-// syncify-media protocol. Tracks without a local file surface the backend's
-// honest error via the player bar; provider streaming is out of scope.
+// syncify-media protocol. Tracks without a local file fail with the backend's
+// honest error: player.error lo muestra la NowPlayingBar mientras hay pista
+// en curso, y sin current (barra oculta) estos catches lo revelan como toast;
+// provider streaming is out of scope.
 async function handleTrackPlay(track: Track) {
   try {
     await play({
@@ -1618,8 +1624,9 @@ async function handleTrackPlay(track: Track) {
       album: track.album ?? null,
       coverUrl: track.coverUrl ?? null,
     });
-  } catch {
-    // player.error already carries the message for the NowPlayingBar
+  } catch (error: any) {
+    console.error('Failed to play track:', error);
+    surfacePlayFailure(track, error);
   }
 }
 
@@ -1644,13 +1651,49 @@ async function handlePlayNext(track: Track) {
     } else {
       toast.success('Playing Next', `"${track.title}" will play next`);
     }
-  } catch {
-    // player.error already carries the message for the NowPlayingBar
+  } catch (error: any) {
+    console.error('Failed to play next:', error);
+    surfacePlayFailure(track, error);
   }
 }
 
-// "Add to Queue" enqueues the track into the download queue, the app-wide
-// meaning of the queue (QueueView / DownloadsView), same as the D shortcut.
+// Fase 1: "Add to Play Queue" añade la pista al FINAL de la cola de
+// reproducción (playNext inserta al frente); con el player parado la arranca.
+async function handleAddToPlayQueue(track: Track) {
+  closeContextMenu();
+  try {
+    const outcome = await enqueue({
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album ?? null,
+      coverUrl: track.coverUrl ?? null,
+    });
+    if (outcome === 'started') {
+      toast.success(`Now playing "${track.title}"`);
+    } else {
+      toast.success('Added to Play Queue', `"${track.title}" sonará al final de la cola`);
+    }
+  } catch (error: any) {
+    console.error('Failed to add to play queue:', error);
+    surfacePlayFailure(track, error);
+  }
+}
+
+/**
+ * Un fallo de arranque solo toca player.error: sin pista en curso la barra
+ * no se renderiza y el mensaje no llegaría al usuario (antes estos catch
+ * eran silenciosos). Con current la barra ya enseña el error; sin ella, toast.
+ */
+function surfacePlayFailure(track: Track, error: unknown) {
+  if (playerCurrent.value) return;
+  const message = String((error as { message?: string })?.message || error || '');
+  toast.error(`No se pudo reproducir "${track.title}"`, message);
+}
+
+// "Add to Downloads" enqueues the track into the download queue (QueueView /
+// DownloadsView), same as the D shortcut. Etiqueta renombrada en fase 1 para
+// desambiguarla de la cola de reproducción.
 async function handleAddToQueue(track: Track) {
   closeContextMenu();
   await handleDownload(track);
@@ -2332,7 +2375,7 @@ function handleKeydown(event: KeyboardEvent) {
       handleDownload(contextMenu.value.track)
     }
   } else if (event.key === 'q' || event.key === 'Q') {
-    // FE-9: "Add to Queue" — same enqueue path as D (download queue).
+    // FE-9: "Add to Downloads" — same enqueue path as D (download queue).
     if (selectedCount.value > 0) {
       downloadSelectedTracks()
     } else if (contextMenu.value.track) {

@@ -9,10 +9,12 @@ import { mockInvoke, resetMocks } from '../setup';
 
 const mockPlayerPlay = vi.fn().mockResolvedValue(undefined);
 const mockPlayerPlayNext = vi.fn().mockResolvedValue('queued');
+const mockPlayerReplaceQueue = vi.fn().mockResolvedValue(undefined);
 vi.mock('@/composables/usePlayer', () => ({
     usePlayer: () => ({
         play: mockPlayerPlay,
         playNext: mockPlayerPlayNext,
+        replaceQueueAndPlay: mockPlayerReplaceQueue,
     }),
 }));
 
@@ -55,7 +57,7 @@ describe('PlaylistView Player Integration', () => {
         return wrapper;
     }
 
-    it('playAll() invokes player.play with the first track of the playlist', async () => {
+    it('playAll() plays the first track and queues the rest via replaceQueueAndPlay', async () => {
         const wrapper = await setupPlaylistViewWithTracks();
 
         // Find Play All button
@@ -64,31 +66,34 @@ describe('PlaylistView Player Integration', () => {
         await playAllBtn!.trigger('click');
         await flushPromises();
 
-        expect(mockPlayerPlay).toHaveBeenCalledTimes(1);
-        expect(mockPlayerPlay).toHaveBeenCalledWith({
-            id: 301,
-            title: 'Chill Track 1',
-            artist: 'Artist 1',
-            album: 'Album 1',
-            coverUrl: 'http://img1.jpg',
-        });
+        expect(mockPlayerReplaceQueue).toHaveBeenCalledTimes(1);
+        expect(mockPlayerReplaceQueue).toHaveBeenCalledWith([
+            {
+                id: 301,
+                title: 'Chill Track 1',
+                artist: 'Artist 1',
+                album: 'Album 1',
+                coverUrl: 'http://img1.jpg',
+            },
+            {
+                id: 302,
+                title: 'Chill Track 2',
+                artist: 'Artist 2',
+                album: 'Album 2',
+                coverUrl: 'http://img2.jpg',
+            },
+        ]);
     });
 
-    it('playAll() queues the remaining tracks in playlist order (item 25)', async () => {
+    it('playAll() preserves playlist order in the queue (fase 1 corrige la inversión de playNext)', async () => {
         const wrapper = await setupPlaylistViewWithTracks();
 
         const playAllBtn = wrapper.findAll('button').find(b => b.text().includes('Play All'));
         await playAllBtn!.trigger('click');
         await flushPromises();
 
-        expect(mockPlayerPlayNext).toHaveBeenCalledTimes(1);
-        expect(mockPlayerPlayNext).toHaveBeenCalledWith({
-            id: 302,
-            title: 'Chill Track 2',
-            artist: 'Artist 2',
-            album: 'Album 2',
-            coverUrl: 'http://img2.jpg',
-        });
+        const queuedIds = mockPlayerReplaceQueue.mock.calls[0][0].map((t: { id: number }) => t.id);
+        expect(queuedIds).toEqual([301, 302]);
     });
 
     it('clicking track row play button invokes playTrack and calls player.play', async () => {
@@ -129,7 +134,7 @@ describe('PlaylistView Player Integration', () => {
         expect([301, 302]).toContain(calledArg.id);
     });
 
-    it('playPlaylist() loads playlist and plays first track', async () => {
+    it('playPlaylist() loads the playlist and queues it in order via replaceQueueAndPlay', async () => {
         mockInvoke((cmd) => {
             if (cmd === 'get_playlists') return mockPlaylists;
             if (cmd === 'get_local_playlist_tracks') return makePage(mockTracks);
@@ -147,13 +152,8 @@ describe('PlaylistView Player Integration', () => {
         await playlistPlayBtn.trigger('click');
         await flushPromises();
 
-        expect(mockPlayerPlay).toHaveBeenCalledTimes(1);
-        expect(mockPlayerPlay).toHaveBeenCalledWith({
-            id: 301,
-            title: 'Chill Track 1',
-            artist: 'Artist 1',
-            album: 'Album 1',
-            coverUrl: 'http://img1.jpg',
-        });
+        expect(mockPlayerReplaceQueue).toHaveBeenCalledTimes(1);
+        const queuedIds = mockPlayerReplaceQueue.mock.calls[0][0].map((t: { id: number }) => t.id);
+        expect(queuedIds).toEqual([301, 302]);
     });
 });

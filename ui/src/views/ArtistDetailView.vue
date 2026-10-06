@@ -265,10 +265,10 @@ async function shufflePlay() {
   })
 
   try {
-    await player.play(toPlayerTrack(tracks[0]))
-    for (const track of tracks.slice(1)) {
-      await player.playNext(toPlayerTrack(track))
-    }
+    // Fase 1: reproduce la primera y encola el resto en el orden del listado
+    // (ya barajado aquí abajo si viene de «Shuffle Play»); playNext insertaba
+    // al frente y invertía el orden.
+    await player.replaceQueueAndPlay(tracks.map(toPlayerTrack))
   } catch (err: any) {
     const errStr = String(err?.message || err || '')
     toast.error('Playback error', errStr)

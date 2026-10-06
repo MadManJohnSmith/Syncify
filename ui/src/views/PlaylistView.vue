@@ -1242,11 +1242,14 @@ function toPlayerTrack(track: any) {
 async function playAll() {
   if (!playlistTracks.value.length) return
 
-  await playTrack(playlistTracks.value[0])
-
-  // El resto entra en «siguiente» en orden: la escucha sigue la lista sola.
-  for (const track of playlistTracks.value.slice(1)) {
-    await player.playNext(toPlayerTrack(track))
+  // Corrección fase 1: el comentario anterior era falso — playNext inserta al
+  // frente, así que el encadenado slice(1)+playNext invertía el orden de la
+  // playlist. replaceQueueAndPlay reproduce la primera y encola el resto en el
+  // orden real de la lista.
+  try {
+    await player.replaceQueueAndPlay(playlistTracks.value.map(toPlayerTrack))
+  } catch (err) {
+    toast.error('No se pudo reproducir la playlist', String(err))
   }
 }
 
