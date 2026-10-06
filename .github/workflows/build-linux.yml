@@ -303,6 +303,23 @@ jobs:
             fi
           done
 
+          # Las libwayland-* que linuxdeploy arrastra por dependencia de
+          # webkit2gtk (copias de Ubuntu 22.04, wayland 1.20) envenenan el EGL
+          # del anfitrion: dentro del proceso ensombrecen a las del sistema via
+          # LD_LIBRARY_PATH y la Mesa reciente necesita simbolos que 1.20 no
+          # exporta (p.ej. wl_fixes_interface, wayland >= 1.22). El dlopen del
+          # vendor EGL (libEGL_mesa) falla, glvnd responde EGL_BAD_PARAMETER y
+          # el WebKitWebProcess muere con "Could not create default EGL
+          # display: EGL_BAD_PARAMETER. Aborting...", dejando la ventana en
+          # blanco. Reproducido en CachyOS (Mesa 26.2.4): con las copias
+          # empaquetadas aborta siempre (WEBKIT_DISABLE_COMPOSITING_MODE ni
+          # LIBGL_ALWAYS_SOFTWARE lo evitan); sin ellas el WebProcess vive.
+          # Cualquier anfitrion capaz de correr GTK3 tiene libwayland en el
+          # sistema y es retrocompatible con el binario de webkit. El smoke de
+          # arranque del final no puede ver esto: la Mesa del runner si es
+          # compatible con las copias 1.20.
+          rm -f "$WORK/squashfs-root"/usr/lib/libwayland-*.so*
+
           # Reempaquetar con appimagetool (conserva el AppRun y los hooks).
           curl -sL -o "$WORK/appimagetool" \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
