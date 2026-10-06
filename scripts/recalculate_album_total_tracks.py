@@ -2,16 +2,27 @@
 """
 Syncify Album Total Tracks Recalculation & Reconciliation Script (TASK-138)
 ===========================================================================
-Portable maintenance script to reconcile and synchronize `albums.total_tracks`
-with the actual count of tracks in SQLite (`COUNT(tracks.id)`), preserving
+Portable maintenance script to reconcile album track counts, preserving
 documented stub albums (`is_stub == 1`).
+
+BD-5 semantics (migration 0088): `albums.total_tracks` is the total DECLARED by
+the edition and `albums.local_track_count` is how many of those tracks were
+imported here. An album whose `declared_total_tracks` is greater than zero
+therefore diverges from `COUNT(tracks)` ON PURPOSE and its `total_tracks` must
+not be overwritten. Only albums that never declared a total
+(`declared_total_tracks` absent, NULL or 0) derive `total_tracks` from
+`COUNT(*)`. On databases that predate the 0088 migration the script falls back
+to the legacy `total_tracks = COUNT(*)` behaviour.
 
 Features:
 1. Creates a pre-repair safety snapshot using `VACUUM INTO` in /tmp/
    (syncify_backup_pre_repair_TASK-138_<timestamp>.db) with robust fallbacks.
-2. Identifies all non-stub albums with divergent `total_tracks` (excess, deficit,
-   NULL, or zero tracks without stub classification).
-3. Atomically recalculates `albums.total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE is_stub != 1 OR is_stub IS NULL`.
+2. Identifies non-stub albums whose `total_tracks` diverges from their
+   effective total (excess, deficit, NULL, or zero tracks without stub
+   classification), ignoring albums with an authoritative declared total.
+3. Atomically refreshes `albums.local_track_count = COUNT(tracks)` and sets
+   `albums.total_tracks = declared_total_tracks` when declared, `COUNT(*)`
+   otherwise, skipping stub albums.
 4. Installs recurrence-prevention SQLite triggers on `tracks` (INSERT, DELETE, UPDATE of album_id)
    to guarantee ongoing synchronization at the database engine level.
 5. Verifies relational integrity via `PRAGMA foreign_key_check = 0` and `PRAGMA integrity_check = ok`.
@@ -45,7 +56,7 @@ def find_default_db() -> str:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Recalculate albums.total_tracks to match actual COUNT(tracks), preserving stubs (TASK-138)."
+        description="Reconcile albums.local_track_count with COUNT(tracks) and albums.total_tracks with the declared total when there is one (BD-5), preserving stubs (TASK-138)."
     )
     default_db = find_default_db()
     parser.add_argument(
@@ -111,45 +122,71 @@ def create_safety_backup(db_path: str, backup_dir: str) -> str:
     return backup_path
 
 
-def install_recurrence_triggers(cur: sqlite3.Cursor) -> None:
+def install_recurrence_triggers(
+    cur: sqlite3.Cursor, has_declared: bool = False, has_local: bool = False
+) -> None:
     print("[TASK-138] Installing recurrence-prevention SQLite triggers...")
+    # Con las columnas de BD-5 el trigger replica la migracion 0088: el
+    # recuento va a `local_track_count` y `total_tracks` respeta el total
+    # declarado. Sin ellas se instala la variante legacy.
+    local_clause = (
+        "SET local_track_count = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = {ref}),\n"
+        "                total_tracks = CASE WHEN declared_total_tracks > 0\n"
+        "                                    THEN declared_total_tracks\n"
+        "                                    ELSE (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = {ref}) END"
+        if has_local and has_declared
+        else "SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = {ref})"
+    )
     triggers = [
-        """
+        (
+            """
         CREATE TRIGGER IF NOT EXISTS trg_tracks_sync_album_total_tracks_ins
         AFTER INSERT ON tracks
         FOR EACH ROW
         WHEN NEW.album_id IS NOT NULL
         BEGIN
             UPDATE albums
-            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = NEW.album_id)
+            """
+            + local_clause.format(ref="NEW.album_id")
+            + """
             WHERE id = NEW.album_id AND (is_stub != 1 OR is_stub IS NULL);
         END;
-        """,
         """
+        ),
+        (
+            """
         CREATE TRIGGER IF NOT EXISTS trg_tracks_sync_album_total_tracks_del
         AFTER DELETE ON tracks
         FOR EACH ROW
         WHEN OLD.album_id IS NOT NULL
         BEGIN
             UPDATE albums
-            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = OLD.album_id)
+            """
+            + local_clause.format(ref="OLD.album_id")
+            + """
             WHERE id = OLD.album_id AND (is_stub != 1 OR is_stub IS NULL);
         END;
-        """,
         """
+        ),
+        (
+            """
         CREATE TRIGGER IF NOT EXISTS trg_tracks_sync_album_total_tracks_upd
         AFTER UPDATE OF album_id ON tracks
         FOR EACH ROW
         BEGIN
             UPDATE albums
-            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = NEW.album_id)
-            WHERE NEW.album_id IS NOT NULL AND id = NEW.album_id AND (is_stub != 1 OR is_stub IS NULL);
-
+            """
+            + local_clause.format(ref="NEW.album_id")
+            + """
+            WHERE id = NEW.album_id AND (is_stub != 1 OR is_stub IS NULL);
             UPDATE albums
-            SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = OLD.album_id)
-            WHERE OLD.album_id IS NOT NULL AND id = OLD.album_id AND (is_stub != 1 OR is_stub IS NULL);
+            """
+            + local_clause.format(ref="OLD.album_id")
+            + """
+            WHERE id = OLD.album_id AND (is_stub != 1 OR is_stub IS NULL);
         END;
-        """,
+        """
+        ),
     ]
     for trg_sql in triggers:
         cur.execute(trg_sql)
@@ -185,6 +222,11 @@ def run_recalculation(
     # 3. Schema analysis
     has_is_stub = column_exists(cur, "albums", "is_stub")
     stub_filter = "(is_stub != 1 OR is_stub IS NULL)" if has_is_stub else "1=1"
+    # BD-5 (migration 0088): un album con total declarado tiene autoridad sobre
+    # `total_tracks`; divergir de COUNT(*) es lo esperado, no un fallo que Repair.
+    has_declared = column_exists(cur, "albums", "declared_total_tracks")
+    has_local = column_exists(cur, "albums", "local_track_count")
+    declared_filter = "COALESCE(declared_total_tracks, 0) <= 0" if has_declared else "1=1"
 
     total_albums = cur.execute("SELECT COUNT(*) FROM albums;").fetchone()[0]
     total_tracks = cur.execute("SELECT COUNT(*) FROM tracks;").fetchone()[0]
@@ -197,6 +239,7 @@ def run_recalculation(
     div_query = f"""
     SELECT COUNT(*) FROM albums
     WHERE {stub_filter}
+      AND {declared_filter}
       AND (total_tracks IS NULL OR total_tracks != (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id));
     """
     divergent_before = cur.execute(div_query).fetchone()[0]
@@ -204,6 +247,7 @@ def run_recalculation(
     excess_query = f"""
     SELECT COUNT(*) FROM albums
     WHERE {stub_filter}
+      AND {declared_filter}
       AND total_tracks > (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id);
     """
     excess_before = cur.execute(excess_query).fetchone()[0]
@@ -211,6 +255,7 @@ def run_recalculation(
     deficit_query = f"""
     SELECT COUNT(*) FROM albums
     WHERE {stub_filter}
+      AND {declared_filter}
       AND total_tracks IS NOT NULL
       AND total_tracks < (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id);
     """
@@ -226,6 +271,7 @@ def run_recalculation(
     ghost_query = f"""
     SELECT COUNT(*) FROM albums
     WHERE {stub_filter}
+      AND {declared_filter}
       AND total_tracks > 0
       AND (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) = 0;
     """
@@ -264,18 +310,35 @@ def run_recalculation(
 
     # 4. Perform atomic update
     print(f"[TASK-138] Executing atomic total_tracks synchronization...")
-    update_sql = f"""
-    UPDATE albums
-    SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
-    WHERE {stub_filter};
-    """
+    if has_local:
+        cur.execute(
+            """
+            UPDATE albums
+            SET local_track_count = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id);
+            """
+        )
+    if has_declared:
+        update_sql = f"""
+        UPDATE albums
+        SET total_tracks = CASE
+                              WHEN declared_total_tracks > 0 THEN declared_total_tracks
+                              ELSE (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
+                            END
+        WHERE {stub_filter};
+        """
+    else:
+        update_sql = f"""
+        UPDATE albums
+        SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)
+        WHERE {stub_filter};
+        """
     cur.execute(update_sql)
     updated_rows = cur.rowcount
     print(f"[TASK-138] Successfully updated {updated_rows} albums.")
 
     # 5. Install recurrence prevention triggers
     if install_triggers and has_is_stub:
-        install_recurrence_triggers(cur)
+        install_recurrence_triggers(cur, has_declared=has_declared, has_local=has_local)
 
     # 6. Integrity and foreign key assertions
     print("[TASK-138] Validating database integrity and foreign key constraints...")
