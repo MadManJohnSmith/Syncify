@@ -548,8 +548,13 @@ async fn test_python_script_execution_and_assertions() {
         .expect("Failed to apply migrations on temp disk DB");
 
     // Seed divergent albums and stubs
+    // Album 1: album SIN total declarado (NULL) y con 2 pistas: es justo el
+    // caso que el script reconcilia a COUNT(*). Cualquier total > 0 a mano
+    // seria capturado como declaracion por el trigger trg_albums_capture_
+    // declared_total_tracks_upd de la migracion 0088, asi que la divergencia
+    // se crea con NULL.
     let alb1_id: i64 = sqlx::query_scalar(
-        "INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Python Test Album 1', 10, 0) RETURNING id",
+        "INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Python Test Album 1', NULL, 0) RETURNING id",
     )
     .fetch_one(&pool)
     .await
@@ -562,9 +567,9 @@ async fn test_python_script_execution_and_assertions() {
         .await
         .unwrap();
 
-    // The 0085 triggers already recounted to 2 on insert; re-create the legacy
-    // divergence the maintenance script exists to repair.
-    sqlx::query("UPDATE albums SET total_tracks = 10 WHERE id = ?")
+    // Los triggers de 0088 ya reconcilian a COUNT(*) al insertar; forzamos un
+    // total NULL para que el script tenga algo que reparar en este album.
+    sqlx::query("UPDATE albums SET total_tracks = NULL WHERE id = ?")
         .bind(alb1_id)
         .execute(&pool)
         .await
@@ -576,6 +581,32 @@ async fn test_python_script_execution_and_assertions() {
     .fetch_one(&pool)
     .await
     .unwrap();
+
+    // BD-5: album con total DECLARADO (10) del que solo se importaron 2
+    // pistas. El trigger de 0088 captura el 10 como declaracion al insertar
+    // el album; para el script este album no es divergente: su total declarado
+    // manda y el recuento local se refleja en local_track_count.
+    let alb_decl_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, total_tracks, is_stub) VALUES ('Declared Album', 10, 0) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query("INSERT INTO tracks (title, album_id) VALUES ('D1', ?), ('D2', ?)")
+        .bind(alb_decl_id)
+        .bind(alb_decl_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Dejamos local_track_count desactualizado (0) a proposito: el script debe
+    // reconciliar el recuento local sin tocar el total declarado.
+    sqlx::query("UPDATE albums SET local_track_count = 0 WHERE id = ?")
+        .bind(alb_decl_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Close pool so Python script can open the file without locks
     pool.close().await;
@@ -673,6 +704,49 @@ async fn test_python_script_execution_and_assertions() {
     assert_eq!(
         stub_tt, 15,
         "Stub album must preserve declared total_tracks = 15"
+    );
+
+    // BD-5: el album con total declarado conserva 10 en total_tracks y queda
+    // con local_track_count = 2 (las pistas realmente importadas).
+    let (decl_tt, decl_local) = sqlx::query_as::<_, (Option<i32>, i32)>(
+        "SELECT total_tracks, local_track_count FROM albums WHERE id = ?",
+    )
+    .bind(alb_decl_id)
+    .fetch_one(&check_pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        decl_tt,
+        Some(10),
+        "Album with declared total must keep declared_total_tracks = 10, not COUNT(*)"
+    );
+    assert_eq!(
+        decl_local, 2,
+        "local_track_count must reflect the tracks actually imported (2)"
+    );
+
+    // El trigger que instala el script tambien respeta el declarado: al
+    // insertar una pista sube el recuento local y total_tracks sigue en 10.
+    sqlx::query("INSERT INTO tracks (title, album_id) VALUES ('D3', ?)")
+        .bind(alb_decl_id)
+        .execute(&check_pool)
+        .await
+        .unwrap();
+    let (decl_tt_after, decl_local_after) = sqlx::query_as::<_, (Option<i32>, i32)>(
+        "SELECT total_tracks, local_track_count FROM albums WHERE id = ?",
+    )
+    .bind(alb_decl_id)
+    .fetch_one(&check_pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        decl_tt_after,
+        Some(10),
+        "Trigger must not overwrite the declared total when a track is added"
+    );
+    assert_eq!(
+        decl_local_after, 3,
+        "Trigger must refresh local_track_count on insert"
     );
 
     check_pool.close().await;
