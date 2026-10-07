@@ -115,16 +115,10 @@ export function useAccounts() {
         authLoading.value = true;
 
         try {
-            await accountsApi.logoutService(serviceName);
-
-            // Find and remove account
-            const account = accounts.value.find(
-                a => services.value.find(s => s.id === a.service_id)?.name === serviceName
-            );
-
-            if (account) {
-                await accountsApi.removeAccount(account.id);
-            }
+            const account = accounts.value.find(a => a.is_active &&
+                services.value.find(s => s.id === a.service_id)?.name === serviceName);
+            // Logout only invalidates this account. Removal is a separate explicit action.
+            await accountsApi.logoutService(serviceName, account?.id ?? null);
 
             // Refresh accounts
             await fetchAccounts();

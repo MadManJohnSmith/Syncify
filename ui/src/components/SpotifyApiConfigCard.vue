@@ -142,8 +142,8 @@
           :class="[
             'px-4 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center gap-2',
             saving || !canSave
-              ? 'bg-primary/50 text-white/70 cursor-not-allowed'
-              : 'bg-primary text-white hover:bg-primary-hover shadow-sm'
+              ? 'bg-primary/50 text-on-accent/70 cursor-not-allowed'
+              : 'bg-primary text-on-accent hover:bg-primary-hover shadow-sm'
           ]"
         >
           <span v-if="saving" class="material-symbols-outlined text-[18px] animate-spin">sync</span>

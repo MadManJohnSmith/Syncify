@@ -1,7 +1,7 @@
 <template>
   <div class="h-full flex flex-col bg-background-light dark:bg-background-dark overflow-hidden">
     <!-- Header -->
-    <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex flex-wrap items-center justify-between gap-4 bg-white dark:bg-[#101723] shrink-0">
+    <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex flex-wrap items-center justify-between gap-4 bg-white dark:bg-shell shrink-0">
       <div class="flex items-center gap-4 flex-wrap">
         <h1 class="text-lg font-bold tracking-tight text-gray-900 dark:text-white">Audit & System Logs</h1>
         
@@ -11,8 +11,8 @@
             {{ enrichmentStatus.is_paused ? 'Enrichment Paused' : 'Enrichment Active' }}
           </span>
           <span class="text-text-secondary">
-            Pending: <strong class="text-white">{{ enrichmentStatus.pending_count }}</strong> |
-            Done: <strong class="text-white">{{ enrichmentStatus.completed_count }}</strong>
+            Pending: <strong class="text-ink">{{ enrichmentStatus.pending_count }}</strong> |
+            Done: <strong class="text-ink">{{ enrichmentStatus.completed_count }}</strong>
           </span>
         </div>
 
@@ -26,7 +26,7 @@
           <button 
             v-if="loggingStatus.is_development && loggingStatus.active_log_file_path"
             @click="copyLogPath" 
-            class="px-2 py-0.5 rounded bg-gray-100 dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-[11px] text-gray-400 hover:text-white flex items-center gap-1 font-mono transition-colors"
+            class="px-2 py-0.5 rounded bg-gray-100 dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-[11px] text-gray-400 hover:text-ink flex items-center gap-1 font-mono transition-colors"
             title="Click to copy active log file path to clipboard"
           >
             <span class="material-symbols-outlined text-[13px]">description</span>
@@ -84,7 +84,7 @@
         <button
           @click="loadHistoryPage(true)"
           :disabled="historyLoading"
-          class="px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition-colors border-gray-300 dark:border-border-dark text-gray-500 hover:text-white hover:bg-primary/10 disabled:opacity-50 disabled:cursor-wait"
+          class="px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition-colors border-gray-300 dark:border-border-dark text-gray-500 hover:text-ink hover:bg-primary/10 disabled:opacity-50 disabled:cursor-wait"
           title="Load the log history stored on disk for the current filters"
         >
           <span class="material-symbols-outlined text-[16px]">history</span>
@@ -96,7 +96,7 @@
           v-if="historyHasMore"
           @click="loadHistoryPage(false)"
           :disabled="historyLoading"
-          class="px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition-colors border-gray-300 dark:border-border-dark text-gray-500 hover:text-white hover:bg-primary/10 disabled:opacity-50 disabled:cursor-wait"
+          class="px-3 py-1.5 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition-colors border-gray-300 dark:border-border-dark text-gray-500 hover:text-ink hover:bg-primary/10 disabled:opacity-50 disabled:cursor-wait"
           :title="`Load older history (${historyShownCount} of ${historyTotal} loaded)`"
         >
           <span class="material-symbols-outlined text-[16px]">unfold_more</span>
@@ -183,7 +183,7 @@
     <div 
       ref="logContainerRef" 
       @scroll="handleScroll"
-      class="flex-1 overflow-y-auto custom-scrollbar p-6 bg-[#0d121c] font-mono text-sm"
+      class="flex-1 overflow-y-auto custom-scrollbar p-6 bg-shell font-mono text-sm"
     >
       <!-- Initial Loading State -->
       <div v-if="isLoadingLogs" class="flex flex-col items-center justify-center py-20 gap-3 select-none">
@@ -191,15 +191,15 @@
           <div class="absolute inset-0 rounded-full border-4 border-primary/20"></div>
           <div class="absolute inset-0 rounded-full border-4 border-primary border-t-transparent animate-spin"></div>
         </div>
-        <p class="text-sm text-gray-400 font-sans">Loading system logs...</p>
+        <p class="text-sm text-ink-2 font-sans">Loading system logs...</p>
       </div>
 
       <!-- Honest Empty State -->
-      <div v-else-if="filteredLogs.length === 0" class="text-gray-500 text-center py-16 flex flex-col items-center justify-center gap-3 select-none">
-        <span class="material-symbols-outlined text-5xl text-gray-600">terminal</span>
-        <p v-if="logs.length === 0" class="text-base text-gray-400 font-sans">No system logs recorded</p>
-        <p v-else class="text-sm text-gray-400 font-sans">No audit logs match the current filter or search criteria.</p>
-        <span v-if="logs.length === 0" class="text-xs text-gray-600 max-w-sm text-center">
+      <div v-else-if="filteredLogs.length === 0" class="text-ink-3 text-center py-16 flex flex-col items-center justify-center gap-3 select-none">
+        <span class="material-symbols-outlined text-5xl text-ink-3">terminal</span>
+        <p v-if="logs.length === 0" class="text-base text-ink-2 font-sans">No system logs recorded</p>
+        <p v-else class="text-sm text-ink-2 font-sans">No audit logs match the current filter or search criteria.</p>
+        <span v-if="logs.length === 0" class="text-xs text-ink-3 max-w-sm text-center">
           Native events and operations will appear here in real-time.
         </span>
       </div>
@@ -213,7 +213,7 @@
         >
           <div class="flex items-start gap-3.5">
             <!-- Timestamp -->
-            <span class="text-gray-500 shrink-0 w-20 text-xs select-none">{{ log.time }}</span>
+            <span class="text-ink-3 shrink-0 w-20 text-xs select-none">{{ log.time }}</span>
 
             <!-- Level Badge -->
             <span 
@@ -237,7 +237,7 @@
             </span>
 
             <!-- Message -->
-            <span class="text-gray-300 group-hover:text-white flex-1 break-all leading-relaxed">
+            <span class="text-ink-2 group-hover:text-ink flex-1 break-all leading-relaxed">
               {{ log.message }}
             </span>
 
@@ -496,13 +496,13 @@ onMounted(async () => {
   width: 8px;
 }
 .custom-scrollbar::-webkit-scrollbar-track {
-  background: #0d121c;
+  background: var(--bg-shell);
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: var(--surface-1);
   border-radius: 4px;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: var(--surface-2);
 }
 </style>

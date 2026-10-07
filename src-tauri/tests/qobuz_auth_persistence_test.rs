@@ -110,10 +110,14 @@ async fn test_401_marks_credentials_invalid_and_requires_auth() {
     assert_eq!(before.status, "connected_valid");
 
     // Simulate HTTP 401 received mid-flight
-    let rows =
-        mark_account_credentials_invalid(&pool, "qobuz", "HTTP 401: User authentication required")
-            .await
-            .expect("marking invalid must not fail");
+    let rows = mark_account_credentials_invalid(
+        &pool,
+        "qobuz",
+        "HTTP 401: User authentication required",
+        None,
+    )
+    .await
+    .expect("marking invalid must not fail");
     assert_eq!(rows, 1, "exactly one row should have been updated");
 
     // Auth status must now be requires_auth
@@ -138,9 +142,14 @@ async fn test_relogin_after_401_restores_connected_valid() {
     let account_id = insert_qobuz_account_with_token(&pool, initial_token, "ReLogin User").await;
 
     // Simulate 401
-    mark_account_credentials_invalid(&pool, "qobuz", "HTTP 401: User authentication required")
-        .await
-        .unwrap();
+    mark_account_credentials_invalid(
+        &pool,
+        "qobuz",
+        "HTTP 401: User authentication required",
+        None,
+    )
+    .await
+    .unwrap();
 
     // Simulate re-login: write new token and clear credentials_invalid
     let new_token = "d1e2f3a4b5c6d1e2f3a4b5c6d1e2f3a4";
@@ -232,10 +241,14 @@ async fn test_mark_invalid_with_no_account_returns_zero_rows() {
     let pool = setup_test_db().await;
     // No account inserted — should return 0, not an Err
 
-    let rows =
-        mark_account_credentials_invalid(&pool, "qobuz", "HTTP 401: User authentication required")
-            .await
-            .expect("should not error even when no account exists");
+    let rows = mark_account_credentials_invalid(
+        &pool,
+        "qobuz",
+        "HTTP 401: User authentication required",
+        None,
+    )
+    .await
+    .expect("should not error even when no account exists");
 
     assert_eq!(rows, 0, "no rows updated when no active account exists");
 }
@@ -275,9 +288,14 @@ async fn test_mark_invalid_does_not_affect_other_services() {
     insert_qobuz_account_with_token(&pool, "f1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4", "Qobuz User").await;
 
     // Mark only Qobuz invalid
-    mark_account_credentials_invalid(&pool, "qobuz", "HTTP 401: User authentication required")
-        .await
-        .unwrap();
+    mark_account_credentials_invalid(
+        &pool,
+        "qobuz",
+        "HTTP 401: User authentication required",
+        None,
+    )
+    .await
+    .unwrap();
 
     // Spotify account must remain untouched
     let spotify_invalid: i64 = sqlx::query_scalar(

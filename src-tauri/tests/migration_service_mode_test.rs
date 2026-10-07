@@ -140,6 +140,8 @@ async fn test_preview_migration_refuses_without_destination_account_instead_of_e
         "qobuz".to_string(),
         None,
         options(),
+        None,
+        None,
     )
     .await;
 
@@ -184,6 +186,8 @@ async fn test_preview_migration_reports_real_totals_from_the_source_library() {
         "qobuz".to_string(),
         None,
         options(),
+        None,
+        None,
     )
     .await
     .expect("preview with a destination account must succeed");
@@ -248,14 +252,14 @@ async fn test_find_manual_match_returns_the_latest_match_for_the_route() {
     let pool = setup_test_db().await;
     seed_job_with_manual_match(&pool, "job-old", "qobuz", "sp-mode-one", "qb-old").await;
 
-    let found = find_manual_match(&pool, "sp-mode-one", "qobuz")
+    let found = find_manual_match(&pool, "sp-mode-one", "qobuz", None)
         .await
         .expect("lookup succeeds");
     assert_eq!(found.as_deref(), Some("qb-old"));
 
     // A newer manual match on the same route wins.
     seed_job_with_manual_match(&pool, "job-new", "qobuz", "sp-mode-one", "qb-new").await;
-    let latest = find_manual_match(&pool, "sp-mode-one", "qobuz")
+    let latest = find_manual_match(&pool, "sp-mode-one", "qobuz", None)
         .await
         .expect("lookup succeeds");
     assert_eq!(
@@ -265,7 +269,7 @@ async fn test_find_manual_match_returns_the_latest_match_for_the_route() {
     );
 
     // A different destination route does not inherit the match.
-    let other_route = find_manual_match(&pool, "sp-mode-one", "tidal")
+    let other_route = find_manual_match(&pool, "sp-mode-one", "tidal", None)
         .await
         .expect("lookup succeeds");
     assert_eq!(
@@ -274,7 +278,7 @@ async fn test_find_manual_match_returns_the_latest_match_for_the_route() {
     );
 
     // A track never manually matched finds nothing.
-    let unmatched_track = find_manual_match(&pool, "sp-mode-two", "qobuz")
+    let unmatched_track = find_manual_match(&pool, "sp-mode-two", "qobuz", None)
         .await
         .expect("lookup succeeds");
     assert_eq!(unmatched_track, None);
@@ -298,6 +302,8 @@ async fn test_start_migration_applies_manual_match_without_fabricating_a_transfe
         "qobuz".to_string(),
         None,
         options(),
+        None,
+        None,
     )
     .await
     .expect("start_migration must succeed");
@@ -475,6 +481,8 @@ async fn test_start_migration_stays_cancelled_instead_of_reporting_completion() 
             "qobuz".to_string(),
             None,
             options(),
+            None,
+            None
         ),
         cancel_when_running,
     );
@@ -499,5 +507,250 @@ async fn test_start_migration_stays_cancelled_instead_of_reporting_completion() 
     assert!(
         completed_items < total_items,
         "the loop stopped early, so not every queued item was processed"
+    );
+}
+
+#[tokio::test]
+async fn manual_matches_are_isolated_by_destination_account() {
+    let pool = setup_test_db().await;
+    sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (2, 'qobuz')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let account_a: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts (service_id, email, is_active) VALUES (2, 'a@q.test', 1) RETURNING id",
+    ).fetch_one(&pool).await.unwrap();
+    let account_b: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts (service_id, email, is_active) VALUES (2, 'b@q.test', 0) RETURNING id",
+    ).fetch_one(&pool).await.unwrap();
+    seed_job_with_manual_match(&pool, "account-a-job", "qobuz", "sp-mode-one", "qb-a").await;
+    sqlx::query("UPDATE migration_jobs SET destination_account_id = ? WHERE id = 'account-a-job'")
+        .bind(account_a)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        find_manual_match(&pool, "sp-mode-one", "qobuz", Some(account_a))
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("qb-a")
+    );
+    assert_eq!(
+        find_manual_match(&pool, "sp-mode-one", "qobuz", Some(account_b))
+            .await
+            .unwrap(),
+        None
+    );
+    seed_job_with_manual_match(
+        &pool,
+        "legacy-unscoped-job",
+        "qobuz",
+        "sp-mode-two",
+        "qb-legacy",
+    )
+    .await;
+    assert_eq!(
+        find_manual_match(&pool, "sp-mode-two", "qobuz", Some(account_a))
+            .await
+            .unwrap(),
+        None,
+        "an unscoped historical choice cannot migrate into account A"
+    );
+    assert_eq!(
+        find_manual_match(&pool, "sp-mode-two", "qobuz", Some(account_b))
+            .await
+            .unwrap(),
+        None,
+        "nor into account B"
+    );
+    assert_eq!(
+        find_manual_match(&pool, "sp-mode-two", "qobuz", None)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("qb-legacy")
+    );
+}
+
+#[tokio::test]
+async fn migration_rejects_identical_pair_and_accepts_distinct_inactive_account() {
+    let pool = setup_test_db().await;
+    sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (2, 'qobuz')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let a: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts (service_id, email, credentials_json, is_active) VALUES (2, 'a@q.test', '{}', 1) RETURNING id",
+    ).fetch_one(&pool).await.unwrap();
+    let b: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts (service_id, email, credentials_json, is_active) VALUES (2, 'b@q.test', '{}', 0) RETURNING id",
+    ).fetch_one(&pool).await.unwrap();
+    let app = test_app(pool.clone());
+    // A global mirror is not a safe source for transfers within one service,
+    // even when the destination is an explicit different account.
+    for (source, destination) in [
+        (None, None),
+        (None, Some(b)),
+        (Some(a), None),
+        (Some(a), Some(a)),
+    ] {
+        let preview = preview_migration(
+            app.state::<AppState>(),
+            "qobuz".into(),
+            "qobuz".into(),
+            Some(vec![]),
+            options(),
+            source,
+            destination,
+        )
+        .await;
+        assert!(
+            preview
+                .unwrap_err()
+                .contains("explicitly selected, different accounts"),
+            "preview must reject non-explicit or identical same-service pairs"
+        );
+    }
+    let case_variant = preview_migration(
+        app.state::<AppState>(),
+        "QOBUZ".into(),
+        "qobuz".into(),
+        Some(vec![]),
+        options(),
+        None,
+        Some(b),
+    )
+    .await;
+    assert!(case_variant
+        .unwrap_err()
+        .contains("explicitly selected, different accounts"));
+    let valid_preview = preview_migration(
+        app.state::<AppState>(),
+        "qobuz".into(),
+        "qobuz".into(),
+        Some(vec![]),
+        options(),
+        Some(a),
+        Some(b),
+    )
+    .await;
+    // Both account ids pass validation. These fixture credentials are empty,
+    // so the expected error is client availability, not same-service scope.
+    assert!(valid_preview.unwrap_err().contains(&format!("account {b}")));
+    let identical = start_migration(
+        app.handle().clone(),
+        app.state::<AppState>(),
+        "qobuz".into(),
+        "qobuz".into(),
+        Some(vec![]),
+        options(),
+        None,
+        Some(a),
+    )
+    .await;
+    assert!(identical.unwrap_err().contains("different accounts"));
+    for (source, destination) in [(Some(a), None), (Some(a), Some(a))] {
+        let result = start_migration(
+            app.handle().clone(),
+            app.state::<AppState>(),
+            "qobuz".into(),
+            "qobuz".into(),
+            Some(vec![]),
+            options(),
+            source,
+            destination,
+        )
+        .await;
+        assert!(result
+            .unwrap_err()
+            .contains("explicitly selected, different accounts"));
+    }
+    let jobs_before_valid: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM migration_jobs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(jobs_before_valid, 0, "invalid pairs must not create jobs");
+    let foreign = start_migration(
+        app.handle().clone(),
+        app.state::<AppState>(),
+        "qobuz".into(),
+        "spotify".into(),
+        Some(vec![]),
+        options(),
+        Some(a),
+        Some(b),
+    )
+    .await;
+    assert!(foreign.unwrap_err().contains("does not belong"));
+    let job = start_migration(
+        app.handle().clone(),
+        app.state::<AppState>(),
+        "qobuz".into(),
+        "qobuz".into(),
+        Some(vec![]),
+        options(),
+        Some(a),
+        Some(b),
+    )
+    .await
+    .unwrap();
+    let stored: (Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT source_account_id, destination_account_id FROM migration_jobs WHERE id = ?",
+    )
+    .bind(&job)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        stored,
+        (Some(a), Some(b)),
+        "inactive destination is explicitly allowed"
+    );
+}
+
+#[tokio::test]
+async fn historical_job_accounts_are_nullable_and_detach_on_account_removal() {
+    let pool = setup_test_db().await;
+    sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (2, 'qobuz')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let account: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts (service_id, email) VALUES (2, 'history@q.test') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO migration_jobs (id, source_service, destination_service, options) VALUES ('old-job', 'spotify', 'qobuz', '{}')")
+        .execute(&pool).await.unwrap();
+    let app = test_app(pool.clone());
+    let history = syncify_tauri_lib::commands::migration::get_migration_history(
+        app.state::<AppState>(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(history[0].source_account_id, None);
+    assert_eq!(history[0].destination_account_id, None);
+    sqlx::query("UPDATE migration_jobs SET destination_account_id = ? WHERE id = 'old-job'")
+        .bind(account)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM accounts WHERE id = ?")
+        .bind(account)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let job = syncify_tauri_lib::commands::migration::get_migration_details(
+        app.state::<AppState>(),
+        "old-job".into(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        job.destination_account_id, None,
+        "ON DELETE SET NULL preserves history"
     );
 }

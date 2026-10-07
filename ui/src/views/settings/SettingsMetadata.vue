@@ -195,7 +195,7 @@
           :class="[
             'flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all text-center',
             enrichment.selectedMode.value === 'incomplete_only'
-              ? 'bg-primary text-white shadow-sm'
+              ? 'bg-primary text-on-accent shadow-sm'
               : 'text-text-secondary hover:text-gray-900 dark:hover:text-white'
           ]"
         >
@@ -207,7 +207,7 @@
           :class="[
             'flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all text-center',
             enrichment.selectedMode.value === 'revalidate_all'
-              ? 'bg-primary text-white shadow-sm'
+              ? 'bg-primary text-on-accent shadow-sm'
               : 'text-text-secondary hover:text-gray-900 dark:hover:text-white'
           ]"
         >
@@ -219,7 +219,7 @@
           :class="[
             'flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all text-center',
             enrichment.selectedMode.value === 'selection'
-              ? 'bg-primary text-white shadow-sm'
+              ? 'bg-primary text-on-accent shadow-sm'
               : 'text-text-secondary hover:text-gray-900 dark:hover:text-white'
           ]"
         >
@@ -289,7 +289,7 @@
           type="button"
           @click="enrichment.startEnrichment()"
           :disabled="enrichment.isRunning.value || enrichment.isPreviewLoading.value"
-          class="px-4 py-2 bg-primary hover:bg-primary/90 text-white rounded-xl text-xs font-semibold shadow-sm transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          class="px-4 py-2 bg-primary hover:bg-primary/90 text-on-accent rounded-xl text-xs font-semibold shadow-sm transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <span :class="['material-symbols-outlined text-[16px]', enrichment.isRunning.value && 'animate-spin']">
             {{ enrichment.isRunning.value ? 'progress_activity' : 'play_arrow' }}
@@ -368,7 +368,7 @@
           </button>
           <button
             @click="showTidalRepairModal = true"
-            class="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+            class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
           >
             <span class="material-symbols-outlined text-[16px]">build_circle</span>
             Review Repair Plan
@@ -389,7 +389,7 @@
         </div>
         <button
           @click="showDisambiguationRepairModal = true"
-          class="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shrink-0 shadow-xs"
+          class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shrink-0 shadow-xs"
         >
           <span class="material-symbols-outlined text-[16px]">drive_file_rename_outline</span>
           Review Renames
@@ -476,7 +476,7 @@
           <button
             v-else
             @click="tempo.startAnalysis()"
-            class="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+            class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
           >
             <span class="material-symbols-outlined text-[16px]">graphic_eq</span>
             Analyze Library BPM

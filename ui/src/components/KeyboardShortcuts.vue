@@ -9,24 +9,24 @@
           @click.self="showHelpModal = false"
           @keydown.escape="showHelpModal = false"
         >
-          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-hidden shadow-2xl flex flex-col">
+          <div class="bg-surface rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-hidden shadow-2xl flex flex-col">
             <!-- Header -->
-            <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between shrink-0">
-              <h2 class="text-xl font-bold text-gray-900 dark:text-white">Keyboard Shortcuts</h2>
-              <button @click="showHelpModal = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors">
-                <span class="material-symbols-outlined text-gray-400">close</span>
+            <div class="px-6 py-4 border-b border-line flex items-center justify-between shrink-0">
+              <h2 class="text-xl font-bold text-ink">Keyboard Shortcuts</h2>
+              <button @click="showHelpModal = false" class="p-2 hover:bg-elevated rounded-lg transition-colors">
+                <span class="material-symbols-outlined text-ink-2">close</span>
               </button>
             </div>
-            
+
             <!-- Search -->
-            <div class="print-hidden px-6 py-4 border-b border-gray-200 dark:border-border-dark shrink-0">
+            <div class="print-hidden px-6 py-4 border-b border-line shrink-0">
               <div class="relative">
-                <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[20px]">search</span>
+                <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 text-[20px]">search</span>
                 <input
                   v-model="searchQuery"
                   type="text"
                   placeholder="Search shortcuts..."
-                  class="shortcut-search w-full pl-10 pr-4 py-2.5 bg-gray-100 dark:bg-surface-highlight rounded-xl text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  class="shortcut-search w-full pl-10 pr-4 py-2.5 bg-elevated rounded-xl text-ink placeholder:text-ink-3 focus:outline-none focus:ring-2 focus:ring-accent/50"
                   @keydown.escape.stop="searchQuery = ''"
                 >
               </div>
@@ -40,8 +40,8 @@
                   @click="toggleSection(section.name)"
                   class="w-full flex items-center justify-between py-2 group"
                 >
-                  <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">{{ section.name }}</h3>
-                  <span class="material-symbols-outlined text-gray-400 transition-transform" :class="{ 'rotate-180': !collapsedSections.includes(section.name) }">
+                  <h3 class="text-sm font-semibold text-ink-2 uppercase tracking-wide">{{ section.name }}</h3>
+                  <span class="material-symbols-outlined text-ink-3 transition-transform" :class="{ 'rotate-180': !collapsedSections.includes(section.name) }">
                     expand_more
                   </span>
                 </button>
@@ -52,12 +52,12 @@
                     <div 
                       v-for="shortcut in section.shortcuts" 
                       :key="shortcut.action"
-                      class="shortcut-row flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
+                      class="shortcut-row flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-elevated transition-colors"
                     >
-                      <span class="text-sm text-gray-700 dark:text-gray-300" v-html="highlightMatch(shortcut.action)"></span>
+                      <span class="text-sm text-ink-2" v-html="highlightMatch(shortcut.action)"></span>
                       <div class="flex items-center gap-1">
                         <template v-for="(key, index) in shortcut.keys" :key="index">
-                          <span v-if="index > 0" class="text-gray-400 text-xs">+</span>
+                          <span v-if="index > 0" class="text-ink-3 text-xs">+</span>
                           <kbd class="keyboard-key">{{ key }}</kbd>
                         </template>
                       </div>
@@ -68,17 +68,17 @@
               
               <!-- No Results -->
               <div v-if="filteredSections.length === 0" class="text-center py-12">
-                <span class="material-symbols-outlined text-4xl text-gray-300 dark:text-gray-600 mb-2 block">search_off</span>
-                <p class="text-gray-500">No shortcuts found for "{{ searchQuery }}"</p>
+                <span class="material-symbols-outlined text-4xl text-ink-3 mb-2 block">search_off</span>
+                <p class="text-ink-2">No shortcuts found for "{{ searchQuery }}"</p>
               </div>
             </div>
-            
+
             <!-- Footer -->
-            <div class="print-hidden px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-end shrink-0">
+            <div class="print-hidden px-6 py-4 border-t border-line flex items-center justify-end shrink-0">
               <!-- FE-12: real print support for the cheat sheet. The
                    "Customize Shortcuts" button was removed: the shortcut
                    registry has no rebinding support, so the button was dead. -->
-              <button @click="printCheatSheet" class="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors">
+              <button @click="printCheatSheet" class="flex items-center gap-2 text-sm text-ink-2 hover:text-ink transition-colors">
                 <span class="material-symbols-outlined text-[18px]">print</span>
                 Print Cheat Sheet
               </button>
@@ -92,14 +92,14 @@
     <Transition name="fade">
       <div 
         v-if="showFirstTimeHint && !hasSeenHint"
-        class="fixed bottom-20 right-6 z-50 bg-primary text-white px-4 py-3 rounded-xl shadow-xl max-w-xs"
+        class="fixed bottom-20 right-6 z-50 bg-accent text-on-accent px-4 py-3 rounded-xl shadow-xl max-w-xs"
       >
-        <button @click="dismissHint" class="absolute -top-2 -right-2 w-6 h-6 bg-white text-gray-500 rounded-full shadow flex items-center justify-center hover:bg-gray-100">
+        <button @click="dismissHint" class="absolute -top-2 -right-2 w-6 h-6 bg-surface text-ink-2 rounded-full shadow flex items-center justify-center hover:bg-elevated">
           <span class="material-symbols-outlined text-[14px]">close</span>
         </button>
         <p class="text-sm font-medium mb-1">💡 Pro tip</p>
-        <p class="text-xs text-white/80">Press <kbd class="keyboard-key keyboard-key-sm">?</kbd> anytime to see all keyboard shortcuts</p>
-        <div class="absolute -bottom-2 right-8 w-4 h-4 bg-primary transform rotate-45"></div>
+        <p class="text-xs text-on-accent/80">Press <kbd class="keyboard-key keyboard-key-sm">?</kbd> anytime to see all keyboard shortcuts</p>
+        <div class="absolute -bottom-2 right-8 w-4 h-4 bg-accent transform rotate-45"></div>
       </div>
     </Transition>
   </div>
@@ -317,7 +317,8 @@ defineExpose({
 </script>
 
 <style scoped>
-/* Keyboard Key Styling */
+/* Keyboard Key Styling — tokens de tema (la variante .dark anterior estaba
+   muerta: el tema vive en data-theme, no en una clase). */
 .keyboard-key {
   display: inline-flex;
   align-items: center;
@@ -325,22 +326,15 @@ defineExpose({
   min-width: 24px;
   height: 24px;
   padding: 0 8px;
-  background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
-  border: 1px solid #ced4da;
+  background: linear-gradient(180deg, var(--surface-1) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
-  box-shadow: 0 2px 0 #adb5bd, inset 0 -1px 0 #dee2e6;
+  box-shadow: 0 2px 0 var(--border-strong), inset 0 -1px 0 var(--border);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
   font-weight: 600;
-  color: #495057;
+  color: var(--text-2);
   text-transform: capitalize;
-}
-
-.dark .keyboard-key {
-  background: linear-gradient(180deg, #3a3f44 0%, #2d3136 100%);
-  border-color: #4a5057;
-  box-shadow: 0 2px 0 #1a1d20, inset 0 -1px 0 #4a5057;
-  color: #e9ecef;
 }
 
 .keyboard-key-sm {
@@ -389,31 +383,23 @@ defineExpose({
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--border);
   border-radius: 3px;
 }
 
-.dark .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-}
-
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.2);
-}
-
-.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--border-strong);
 }
 
 /* Focus visible for accessibility */
 :deep(.focus-visible) {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 button:focus-visible,
 input:focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 </style>

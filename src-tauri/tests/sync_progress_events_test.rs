@@ -163,9 +163,14 @@ async fn test_401_marks_credentials_invalid_and_emits_requires_auth() {
     .unwrap();
 
     // Mark credentials invalid as happens on 401
-    mark_account_credentials_invalid(&pool, "qobuz", "HTTP 401: User authentication required")
-        .await
-        .unwrap();
+    mark_account_credentials_invalid(
+        &pool,
+        "qobuz",
+        "HTTP 401: User authentication required",
+        None,
+    )
+    .await
+    .unwrap();
 
     let err =
         perform_sync_service_with_emitter(&pool, "qobuz", Some(account_id), None, Some(&collector))

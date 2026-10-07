@@ -13,10 +13,12 @@ import { mockInvoke, resetMocks } from '../setup';
 
 const mockPlayerPlay = vi.fn().mockResolvedValue(undefined);
 const mockPlayerPlayNext = vi.fn().mockResolvedValue('queued');
+const mockPlayerReplaceQueue = vi.fn().mockResolvedValue(undefined);
 vi.mock('@/composables/usePlayer', () => ({
     usePlayer: () => ({
         play: mockPlayerPlay,
         playNext: mockPlayerPlayNext,
+        replaceQueueAndPlay: mockPlayerReplaceQueue,
     }),
 }));
 
@@ -89,15 +91,23 @@ describe('TASK-24: Album & Artist Detail interactive actions', () => {
             await playBtn!.trigger('click');
             await flushPromises();
 
-            expect(mockPlayerPlay).toHaveBeenCalledTimes(1);
-            expect(mockPlayerPlay.mock.calls[0][0]).toMatchObject({
-                id: 201,
-                title: 'Come Together',
-                album: 'Abbey Road',
-                coverUrl: 'https://cdn.test/abbey.jpg',
-            });
-            expect(mockPlayerPlayNext).toHaveBeenCalledTimes(1);
-            expect(mockPlayerPlayNext.mock.calls[0][0]).toMatchObject({ id: 202, title: 'Something' });
+            expect(mockPlayerReplaceQueue).toHaveBeenCalledTimes(1);
+            expect(mockPlayerReplaceQueue.mock.calls[0][0]).toEqual([
+                {
+                    id: 201,
+                    title: 'Come Together',
+                    artist: 'The Beatles',
+                    album: 'Abbey Road',
+                    coverUrl: 'https://cdn.test/abbey.jpg',
+                },
+                {
+                    id: 202,
+                    title: 'Something',
+                    artist: 'The Beatles',
+                    album: 'Abbey Road',
+                    coverUrl: 'https://cdn.test/abbey.jpg',
+                },
+            ]);
             // Reproducir no es descargar: el botón no debe encolar descargas.
             expect(invokeCalls.find(c => c.cmd === 'add_batch_to_queue')).toBeUndefined();
         });
@@ -118,8 +128,8 @@ describe('TASK-24: Album & Artist Detail interactive actions', () => {
             await playBtn!.trigger('click');
             await flushPromises();
 
+            expect(mockPlayerReplaceQueue).not.toHaveBeenCalled();
             expect(mockPlayerPlay).not.toHaveBeenCalled();
-            expect(mockPlayerPlayNext).not.toHaveBeenCalled();
         });
 
         it('"Download All" still calls add_batch_to_queue with track IDs', async () => {
@@ -150,7 +160,7 @@ describe('TASK-24: Album & Artist Detail interactive actions', () => {
     });
 
     describe('ArtistDetailView - Shuffle Play', () => {
-        it('clicking "Shuffle Play" invokes player.play with an artist track', async () => {
+        it('clicking "Shuffle Play" queues the artist tracks via replaceQueueAndPlay', async () => {
             mockInvoke((cmd) => {
                 if (cmd === 'get_artist') return mockArtist;
                 return null;
@@ -165,16 +175,18 @@ describe('TASK-24: Album & Artist Detail interactive actions', () => {
             await shuffleBtn!.trigger('click');
             await flushPromises();
 
-            expect(mockPlayerPlay).toHaveBeenCalledTimes(1);
-            const playArg = mockPlayerPlay.mock.calls[0][0];
-            expect([201, 202]).toContain(playArg.id);
-            expect(['Come Together', 'Something']).toContain(playArg.title);
-            expect(playArg.artist).toBe('The Beatles');
-            expect(playArg.album).toBe('Abbey Road');
-            expect(playArg.coverUrl).toBeNull();
+            expect(mockPlayerReplaceQueue).toHaveBeenCalledTimes(1);
+            const queued = mockPlayerReplaceQueue.mock.calls[0][0] as Array<{ id: number; title: string; artist: string; album: string; coverUrl: string | null }>;
+            expect(queued.map(t => t.id).sort()).toEqual([201, 202]);
+            for (const t of queued) {
+                expect(['Come Together', 'Something']).toContain(t.title);
+                expect(t.artist).toBe('The Beatles');
+                expect(t.album).toBe('Abbey Road');
+                expect(t.coverUrl).toBeNull();
+            }
         });
 
-        it('does not invoke player.play if top_tracks is empty', async () => {
+        it('does not queue anything if top_tracks is empty', async () => {
             const emptyArtist = { ...mockArtist, top_tracks: [] };
             mockInvoke((cmd) => {
                 if (cmd === 'get_artist') return emptyArtist;
@@ -190,7 +202,7 @@ describe('TASK-24: Album & Artist Detail interactive actions', () => {
             await shuffleBtn!.trigger('click');
             await flushPromises();
 
-            expect(mockPlayerPlay).not.toHaveBeenCalled();
+            expect(mockPlayerReplaceQueue).not.toHaveBeenCalled();
         });
     });
 });

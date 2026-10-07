@@ -4,42 +4,42 @@
     <Teleport to="body">
       <Transition name="slide">
         <div v-if="isOpen" class="help-panel-overlay fixed inset-0 z-[150]" @click.self="close">
-          <div class="help-panel absolute right-0 top-0 bottom-0 w-[400px] bg-white dark:bg-surface-dark shadow-2xl flex flex-col">
+          <div class="help-panel absolute right-0 top-0 bottom-0 w-[400px] bg-surface shadow-2xl flex flex-col">
             
             <!-- Header -->
-            <div class="help-header px-5 py-4 border-b border-gray-200 dark:border-border-dark shrink-0">
+            <div class="help-header px-5 py-4 border-b border-line shrink-0">
               <div class="flex items-center justify-between mb-4">
-                <h2 class="text-lg font-bold text-gray-900 dark:text-white">Help & Support</h2>
-                <button @click="close" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors">
-                  <span class="material-symbols-outlined text-gray-400">close</span>
+                <h2 class="text-lg font-bold text-ink">Help & Support</h2>
+                <button @click="close" class="p-2 hover:bg-elevated rounded-lg transition-colors">
+                  <span class="material-symbols-outlined text-ink-3">close</span>
                 </button>
               </div>
               
               <!-- Search -->
               <div class="relative">
-                <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[20px]">search</span>
+                <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-ink-3 text-[20px]">search</span>
                 <input 
                   v-model="searchQuery"
                   type="text"
                   placeholder="Search help articles..."
-                  class="w-full pl-10 pr-4 py-2.5 bg-gray-100 dark:bg-surface-highlight rounded-xl text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  class="w-full pl-10 pr-4 py-2.5 bg-elevated rounded-xl text-ink placeholder:text-ink-3 focus:outline-none focus:ring-2 focus:ring-accent/50"
                 >
               </div>
             </div>
             
             <!-- Tabs -->
-            <div class="help-tabs flex border-b border-gray-200 dark:border-border-dark shrink-0">
+            <div class="help-tabs flex border-b border-line shrink-0">
               <button 
                 v-for="tab in tabs" 
                 :key="tab.id"
                 @click="activeTab = tab.id"
                 :class="[
                   'flex-1 py-3 text-sm font-medium transition-colors relative',
-                  activeTab === tab.id ? 'text-primary' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                  activeTab === tab.id ? 'text-accent' : 'text-ink-2 hover:text-ink'
                 ]"
               >
                 {{ tab.label }}
-                <div v-if="activeTab === tab.id" class="absolute bottom-0 left-0 right-0 h-0.5 bg-primary"></div>
+                <div v-if="activeTab === tab.id" class="absolute bottom-0 left-0 right-0 h-0.5 bg-accent"></div>
               </button>
             </div>
             
@@ -49,15 +49,15 @@
               <div v-if="activeTab === 'articles' && !selectedArticle" class="help-articles p-4">
                 <!-- Search Results -->
                 <div v-if="searchQuery && searchResults.length > 0" class="space-y-2">
-                  <p class="text-xs text-gray-400 mb-3">{{ searchResults.length }} results for "{{ searchQuery }}"</p>
+                  <p class="text-xs text-ink-3 mb-3">{{ searchResults.length }} results for "{{ searchQuery }}"</p>
                   <div 
                     v-for="result in searchResults" 
                     :key="result.id"
                     @click="openArticle(result)"
-                    class="p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    class="p-3 bg-elevated rounded-lg cursor-pointer hover:bg-accent-soft transition-colors"
                   >
-                    <p class="text-sm font-medium text-gray-900 dark:text-white" v-html="highlightMatch(result.title)"></p>
-                    <p class="text-xs text-gray-500 mt-1">{{ result.category }}</p>
+                    <p class="text-sm font-medium text-ink" v-html="highlightMatch(result.title)"></p>
+                    <p class="text-xs text-ink-2 mt-1">{{ result.category }}</p>
                   </div>
                 </div>
                 
@@ -68,8 +68,8 @@
                       @click="toggleCategory(category.name)"
                       class="w-full flex items-center justify-between py-2"
                     >
-                      <span class="text-sm font-semibold text-gray-700 dark:text-gray-300">{{ category.name }}</span>
-                      <span class="material-symbols-outlined text-gray-400 text-lg transition-transform" :class="{ 'rotate-180': !collapsedCategories.includes(category.name) }">
+                      <span class="text-sm font-semibold text-ink-2">{{ category.name }}</span>
+                      <span class="material-symbols-outlined text-ink-3 text-lg transition-transform" :class="{ 'rotate-180': !collapsedCategories.includes(category.name) }">
                         expand_more
                       </span>
                     </button>
@@ -80,10 +80,10 @@
                           v-for="article in category.articles" 
                           :key="article.id"
                           @click="openArticle(article)"
-                          class="p-3 hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg cursor-pointer transition-colors flex items-center gap-3"
+                          class="p-3 hover:bg-elevated rounded-lg cursor-pointer transition-colors flex items-center gap-3"
                         >
-                          <span class="material-symbols-outlined text-gray-400 text-lg">article</span>
-                          <span class="text-sm text-gray-600 dark:text-gray-400">{{ article.title }}</span>
+                          <span class="material-symbols-outlined text-ink-3 text-lg">article</span>
+                          <span class="text-sm text-ink-2">{{ article.title }}</span>
                         </div>
                       </div>
                     </Transition>
@@ -93,12 +93,12 @@
               
               <!-- Article View -->
               <div v-if="activeTab === 'articles' && selectedArticle" class="article-view">
-                <div class="p-4 border-b border-gray-200 dark:border-border-dark">
-                  <button @click="selectedArticle = null" class="flex items-center gap-2 text-sm text-primary hover:underline mb-3">
+                <div class="p-4 border-b border-line">
+                  <button @click="selectedArticle = null" class="flex items-center gap-2 text-sm text-accent hover:underline mb-3">
                     <span class="material-symbols-outlined text-[18px]">arrow_back</span>
                     Back to articles
                   </button>
-                  <h3 class="text-xl font-bold text-gray-900 dark:text-white">{{ selectedArticle.title }}</h3>
+                  <h3 class="text-xl font-bold text-ink">{{ selectedArticle.title }}</h3>
                 </div>
                 
                 <div class="p-5 prose prose-sm dark:prose-invert max-w-none">
@@ -106,13 +106,13 @@
                 </div>
                 
                 <!-- Feedback -->
-                <div class="p-4 border-t border-gray-200 dark:border-border-dark">
-                  <p class="text-sm text-gray-500 mb-3">Was this helpful?</p>
+                <div class="p-4 border-t border-line">
+                  <p class="text-sm text-ink-2 mb-3">Was this helpful?</p>
                   <div v-if="articleFeedbackSent === null" class="flex gap-2">
                     <button
                       @click="submitArticleFeedback(true)"
                       :disabled="articleFeedbackSubmitting"
-                      class="flex items-center gap-2 px-4 py-2 bg-green-500/10 text-green-600 hover:bg-green-500/20 rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="flex items-center gap-2 px-4 py-2 bg-ok/10 text-ok hover:bg-ok/20 rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <span class="material-symbols-outlined text-lg">thumb_up</span>
                       Yes
@@ -120,13 +120,13 @@
                     <button
                       @click="submitArticleFeedback(false)"
                       :disabled="articleFeedbackSubmitting"
-                      class="flex items-center gap-2 px-4 py-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="flex items-center gap-2 px-4 py-2 bg-error/10 text-error hover:bg-error/20 rounded-lg text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <span class="material-symbols-outlined text-lg">thumb_down</span>
                       No
                     </button>
                   </div>
-                  <p v-else class="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                  <p v-else class="text-sm text-ok flex items-center gap-1">
                     <span class="material-symbols-outlined text-lg">check_circle</span>
                     Thanks for your feedback!
                   </p>
@@ -137,16 +137,16 @@
               <div v-if="activeTab === 'tutorials'" class="help-tutorials p-4 space-y-4">
                 <!-- Video Tutorials -->
                 <div>
-                  <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Video Tutorials</h4>
+                  <h4 class="text-sm font-semibold text-ink-2 mb-3">Video Tutorials</h4>
                   <div class="space-y-3">
-                    <div v-for="video in tutorials" :key="video.id" class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-xl">
+                    <div v-for="video in tutorials" :key="video.id" class="p-4 bg-elevated rounded-xl">
                       <div class="flex items-center gap-3">
-                        <div class="w-16 h-10 rounded bg-gray-200 dark:bg-gray-700 flex items-center justify-center shrink-0">
-                          <span class="material-symbols-outlined text-gray-400">play_circle</span>
+                        <div class="w-16 h-10 rounded bg-elevated flex items-center justify-center shrink-0">
+                          <span class="material-symbols-outlined text-ink-3">play_circle</span>
                         </div>
                         <div class="flex-1 min-w-0">
-                          <p class="text-sm font-medium text-gray-900 dark:text-white">{{ video.title }}</p>
-                          <p class="text-xs text-gray-500">{{ video.duration }}</p>
+                          <p class="text-sm font-medium text-ink">{{ video.title }}</p>
+                          <p class="text-xs text-ink-2">{{ video.duration }}</p>
                         </div>
                       </div>
                     </div>
@@ -155,15 +155,15 @@
                 
                 <!-- Interactive Tutorials -->
                 <div>
-                  <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Interactive Guides</h4>
-                  <button @click="startGuidedTour" class="w-full p-4 bg-primary/10 border border-primary/20 rounded-xl text-left hover:bg-primary/20 transition-colors">
+                  <h4 class="text-sm font-semibold text-ink-2 mb-3">Interactive Guides</h4>
+                  <button @click="startGuidedTour" class="w-full p-4 bg-accent/10 border border-accent/20 rounded-xl text-left hover:bg-accent/20 transition-colors">
                     <div class="flex items-center gap-3">
-                      <div class="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center">
-                        <span class="material-symbols-outlined text-primary">tour</span>
+                      <div class="w-10 h-10 rounded-lg bg-accent/20 flex items-center justify-center">
+                        <span class="material-symbols-outlined text-accent">tour</span>
                       </div>
                       <div>
-                        <p class="text-sm font-medium text-gray-900 dark:text-white">Take a Guided Tour</p>
-                        <p class="text-xs text-gray-500">Walk through key features step-by-step</p>
+                        <p class="text-sm font-medium text-ink">Take a Guided Tour</p>
+                        <p class="text-xs text-ink-2">Walk through key features step-by-step</p>
                       </div>
                     </div>
                   </button>
@@ -172,19 +172,19 @@
               
               <!-- FAQ Tab -->
               <div v-if="activeTab === 'faq'" class="help-faq p-4 space-y-2">
-                <div v-for="faq in filteredFaqs" :key="faq.id" class="border border-gray-200 dark:border-border-dark rounded-xl overflow-hidden">
+                <div v-for="faq in filteredFaqs" :key="faq.id" class="border border-line rounded-xl overflow-hidden">
                   <button 
                     @click="toggleFaq(faq.id)"
-                    class="w-full p-4 text-left flex items-center justify-between hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
+                    class="w-full p-4 text-left flex items-center justify-between hover:bg-elevated transition-colors"
                   >
-                    <span class="text-sm font-medium text-gray-900 dark:text-white pr-4" v-html="highlightMatch(faq.question)"></span>
-                    <span class="material-symbols-outlined text-gray-400 shrink-0 transition-transform" :class="{ 'rotate-180': expandedFaqs.includes(faq.id) }">
+                    <span class="text-sm font-medium text-ink pr-4" v-html="highlightMatch(faq.question)"></span>
+                    <span class="material-symbols-outlined text-ink-3 shrink-0 transition-transform" :class="{ 'rotate-180': expandedFaqs.includes(faq.id) }">
                       expand_more
                     </span>
                   </button>
                   <Transition name="accordion">
                     <div v-if="expandedFaqs.includes(faq.id)" class="px-4 pb-4">
-                      <p class="text-sm text-gray-600 dark:text-gray-400">{{ faq.answer }}</p>
+                      <p class="text-sm text-ink-2">{{ faq.answer }}</p>
                     </div>
                   </Transition>
                 </div>
@@ -194,48 +194,48 @@
               <div v-if="activeTab === 'contact'" class="help-contact p-4 space-y-4">
                 <!-- Support Options -->
                 <div class="grid grid-cols-2 gap-3">
-                  <button @click="openBugReport" class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left">
-                    <span class="material-symbols-outlined text-red-500 text-2xl mb-2 block">bug_report</span>
-                    <p class="text-sm font-medium text-gray-900 dark:text-white">Report a Bug</p>
-                    <p class="text-xs text-gray-500 mt-1">Found an issue?</p>
+                  <button @click="openBugReport" class="p-4 bg-elevated rounded-xl hover:bg-accent-soft transition-colors text-left">
+                    <span class="material-symbols-outlined text-error text-2xl mb-2 block">bug_report</span>
+                    <p class="text-sm font-medium text-ink">Report a Bug</p>
+                    <p class="text-xs text-ink-2 mt-1">Found an issue?</p>
                   </button>
 
-                  <button @click="openFeedback" class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-left">
-                    <span class="material-symbols-outlined text-blue-500 text-2xl mb-2 block">chat</span>
-                    <p class="text-sm font-medium text-gray-900 dark:text-white">Send Feedback</p>
-                    <p class="text-xs text-gray-500 mt-1">Share your thoughts</p>
+                  <button @click="openFeedback" class="p-4 bg-elevated rounded-xl hover:bg-accent-soft transition-colors text-left">
+                    <span class="material-symbols-outlined text-info text-2xl mb-2 block">chat</span>
+                    <p class="text-sm font-medium text-ink">Send Feedback</p>
+                    <p class="text-xs text-ink-2 mt-1">Share your thoughts</p>
                   </button>
                 </div>
                 
                 <!-- Report destination -->
-                <p class="text-xs text-gray-500 dark:text-gray-400">
+                <p class="text-xs text-ink-2">
                   Reports and feedback are written as files under your Syncify reports folder;
                   the path is shown as soon as the file is saved.
                 </p>
                 
                 <!-- System Info -->
                 <div class="mt-4">
-                  <button @click="showSystemInfo = !showSystemInfo" class="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                  <button @click="showSystemInfo = !showSystemInfo" class="flex items-center gap-2 text-sm text-ink-2 hover:text-ink">
                     <span class="material-symbols-outlined text-lg">{{ showSystemInfo ? 'expand_less' : 'expand_more' }}</span>
                     System Information
                   </button>
                   <Transition name="accordion">
-                    <div v-if="showSystemInfo" class="mt-3 p-4 bg-gray-50 dark:bg-surface-highlight rounded-xl">
+                    <div v-if="showSystemInfo" class="mt-3 p-4 bg-elevated rounded-xl">
                       <div class="space-y-2 text-xs font-mono">
                         <div class="flex justify-between">
-                          <span class="text-gray-500">App Version</span>
-                          <span class="text-gray-700 dark:text-gray-300">{{ systemInfo.appVersion }}</span>
+                          <span class="text-ink-2">App Version</span>
+                          <span class="text-ink-2">{{ systemInfo.appVersion }}</span>
                         </div>
                         <div class="flex justify-between">
-                          <span class="text-gray-500">OS</span>
-                          <span class="text-gray-700 dark:text-gray-300">{{ systemInfo.os }}</span>
+                          <span class="text-ink-2">OS</span>
+                          <span class="text-ink-2">{{ systemInfo.os }}</span>
                         </div>
                         <div class="flex justify-between">
-                          <span class="text-gray-500">Services</span>
-                          <span class="text-gray-700 dark:text-gray-300">{{ systemInfo.connectedServices }}</span>
+                          <span class="text-ink-2">Services</span>
+                          <span class="text-ink-2">{{ systemInfo.connectedServices }}</span>
                         </div>
                       </div>
-                      <button @click="copySystemInfo" class="mt-3 text-xs text-primary hover:underline flex items-center gap-1">
+                      <button @click="copySystemInfo" class="mt-3 text-xs text-accent hover:underline flex items-center gap-1">
                         <span class="material-symbols-outlined text-[14px]">{{ systemInfoCopied ? 'check' : 'content_copy' }}</span>
                         {{ systemInfoCopied ? 'Copied!' : 'Copy info' }}
                       </button>
@@ -244,12 +244,12 @@
                 </div>
                 
                 <!-- What's New -->
-                <button @click="showWhatsNew = true" class="w-full p-4 bg-primary/10 border border-primary/20 rounded-xl text-left hover:bg-primary/20 transition-colors mt-4">
+                <button @click="showWhatsNew = true" class="w-full p-4 bg-accent/10 border border-accent/20 rounded-xl text-left hover:bg-accent/20 transition-colors mt-4">
                   <div class="flex items-center gap-3">
-                    <span class="material-symbols-outlined text-primary">new_releases</span>
+                    <span class="material-symbols-outlined text-accent">new_releases</span>
                     <div>
-                      <p class="text-sm font-medium text-gray-900 dark:text-white">What's New in {{ systemInfo.appVersion }}</p>
-                      <p class="text-xs text-gray-500">See the latest features</p>
+                      <p class="text-sm font-medium text-ink">What's New in {{ systemInfo.appVersion }}</p>
+                      <p class="text-xs text-ink-2">See the latest features</p>
                     </div>
                   </div>
                 </button>
@@ -264,44 +264,44 @@
     <Teleport to="body">
       <Transition name="fade">
         <div v-if="showBugReport" class="fixed inset-0 bg-black/50 flex items-center justify-center z-[200] p-8" @click.self="showBugReport = false">
-          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
-            <div class="px-5 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
-              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Report a Bug</h3>
-              <button @click="showBugReport = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg">
-                <span class="material-symbols-outlined text-gray-400">close</span>
+          <div class="bg-surface rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div class="px-5 py-4 border-b border-line flex items-center justify-between">
+              <h3 class="text-lg font-semibold text-ink">Report a Bug</h3>
+              <button @click="showBugReport = false" class="p-2 hover:bg-elevated rounded-lg">
+                <span class="material-symbols-outlined text-ink-3">close</span>
               </button>
             </div>
             <div v-if="bugSavedPath" class="p-5">
-              <div class="flex items-start gap-3 p-4 bg-green-500/10 border border-green-500/30 rounded-xl">
-                <span class="material-symbols-outlined text-green-500">check_circle</span>
+              <div class="flex items-start gap-3 p-4 bg-ok/10 border border-ok/30 rounded-xl">
+                <span class="material-symbols-outlined text-ok">check_circle</span>
                 <div class="min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white">Bug report saved</p>
-                  <p class="text-xs text-gray-500 mt-1 break-all">{{ bugSavedPath }}</p>
+                  <p class="text-sm font-medium text-ink">Bug report saved</p>
+                  <p class="text-xs text-ink-2 mt-1 break-all">{{ bugSavedPath }}</p>
                 </div>
               </div>
             </div>
             <div v-else class="p-5 space-y-4">
               <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Description</label>
-                <textarea v-model="bugDescription" rows="4" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="Describe the bug..."></textarea>
+                <label class="block text-sm font-medium text-ink-2 mb-1">Description</label>
+                <textarea v-model="bugDescription" rows="4" class="w-full px-3 py-2 bg-elevated rounded-lg text-ink focus:outline-none focus:ring-2 focus:ring-accent/50" placeholder="Describe the bug..."></textarea>
               </div>
               <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Steps to Reproduce</label>
-                <textarea v-model="bugSteps" rows="3" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="1. Go to..."></textarea>
+                <label class="block text-sm font-medium text-ink-2 mb-1">Steps to Reproduce</label>
+                <textarea v-model="bugSteps" rows="3" class="w-full px-3 py-2 bg-elevated rounded-lg text-ink focus:outline-none focus:ring-2 focus:ring-accent/50" placeholder="1. Go to..."></textarea>
               </div>
               <label class="flex items-center gap-2 cursor-pointer">
-                <input v-model="bugAttachLogs" type="checkbox" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                <span class="text-sm text-gray-600 dark:text-gray-400">Attach system logs</span>
+                <input v-model="bugAttachLogs" type="checkbox" class="w-4 h-4 rounded border-line-strong text-accent focus:ring-accent">
+                <span class="text-sm text-ink-2">Attach system logs</span>
               </label>
-              <p v-if="bugError" class="text-sm text-red-500">{{ bugError }}</p>
+              <p v-if="bugError" class="text-sm text-error">{{ bugError }}</p>
             </div>
-            <div class="px-5 py-4 border-t border-gray-200 dark:border-border-dark flex justify-end gap-3">
-              <button @click="showBugReport = false" class="px-4 py-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg">Cancel</button>
+            <div class="px-5 py-4 border-t border-line flex justify-end gap-3">
+              <button @click="showBugReport = false" class="px-4 py-2 text-ink-2 hover:bg-elevated rounded-lg">Cancel</button>
               <button
                 v-if="!bugSavedPath"
                 @click="submitBugReport"
                 :disabled="bugSubmitting"
-                class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-4 py-2 bg-accent hover:bg-accent-hover text-on-accent rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {{ bugSubmitting ? 'Saving...' : 'Submit Report' }}
               </button>
@@ -315,44 +315,44 @@
     <Teleport to="body">
       <Transition name="fade">
         <div v-if="showFeedback" class="fixed inset-0 bg-black/50 flex items-center justify-center z-[200] p-8" @click.self="showFeedback = false">
-          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
-            <div class="px-5 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
-              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Send Feedback</h3>
-              <button @click="showFeedback = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg">
-                <span class="material-symbols-outlined text-gray-400">close</span>
+          <div class="bg-surface rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div class="px-5 py-4 border-b border-line flex items-center justify-between">
+              <h3 class="text-lg font-semibold text-ink">Send Feedback</h3>
+              <button @click="showFeedback = false" class="p-2 hover:bg-elevated rounded-lg">
+                <span class="material-symbols-outlined text-ink-3">close</span>
               </button>
             </div>
             <div v-if="feedbackSavedPath" class="p-5">
-              <div class="flex items-start gap-3 p-4 bg-green-500/10 border border-green-500/30 rounded-xl">
-                <span class="material-symbols-outlined text-green-500">check_circle</span>
+              <div class="flex items-start gap-3 p-4 bg-ok/10 border border-ok/30 rounded-xl">
+                <span class="material-symbols-outlined text-ok">check_circle</span>
                 <div class="min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white">Feedback saved</p>
-                  <p class="text-xs text-gray-500 mt-1 break-all">{{ feedbackSavedPath }}</p>
+                  <p class="text-sm font-medium text-ink">Feedback saved</p>
+                  <p class="text-xs text-ink-2 mt-1 break-all">{{ feedbackSavedPath }}</p>
                 </div>
               </div>
             </div>
             <div v-else class="p-5 space-y-4">
               <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Type</label>
-                <select v-model="feedbackType" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50">
+                <label class="block text-sm font-medium text-ink-2 mb-1">Type</label>
+                <select v-model="feedbackType" class="w-full px-3 py-2 bg-elevated rounded-lg text-ink focus:outline-none focus:ring-2 focus:ring-accent/50">
                   <option>Bug Report</option>
                   <option>Feature Request</option>
                   <option>General Feedback</option>
                 </select>
               </div>
               <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Message</label>
-                <textarea v-model="feedbackMessage" rows="4" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50" placeholder="Your feedback..."></textarea>
+                <label class="block text-sm font-medium text-ink-2 mb-1">Message</label>
+                <textarea v-model="feedbackMessage" rows="4" class="w-full px-3 py-2 bg-elevated rounded-lg text-ink focus:outline-none focus:ring-2 focus:ring-accent/50" placeholder="Your feedback..."></textarea>
               </div>
-              <p v-if="feedbackError" class="text-sm text-red-500">{{ feedbackError }}</p>
+              <p v-if="feedbackError" class="text-sm text-error">{{ feedbackError }}</p>
             </div>
-            <div class="px-5 py-4 border-t border-gray-200 dark:border-border-dark flex justify-end gap-3">
-              <button @click="showFeedback = false" class="px-4 py-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg">Cancel</button>
+            <div class="px-5 py-4 border-t border-line flex justify-end gap-3">
+              <button @click="showFeedback = false" class="px-4 py-2 text-ink-2 hover:bg-elevated rounded-lg">Cancel</button>
               <button
                 v-if="!feedbackSavedPath"
                 @click="submitFeedback"
                 :disabled="feedbackSubmitting"
-                class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-4 py-2 bg-accent hover:bg-accent-hover text-on-accent rounded-lg font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {{ feedbackSubmitting ? 'Saving...' : 'Send Feedback' }}
               </button>
@@ -366,65 +366,65 @@
     <Teleport to="body">
       <Transition name="fade">
         <div v-if="showWhatsNew" class="whats-new fixed inset-0 bg-black/50 flex items-center justify-center z-[200] p-8" @click.self="showWhatsNew = false">
-          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
-            <div class="px-5 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
+          <div class="bg-surface rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
+            <div class="px-5 py-4 border-b border-line flex items-center justify-between">
               <div>
-                <h3 class="text-lg font-semibold text-gray-900 dark:text-white">What's New</h3>
-                <p class="text-sm text-gray-500">Version {{ systemInfo.appVersion }}</p>
+                <h3 class="text-lg font-semibold text-ink">What's New</h3>
+                <p class="text-sm text-ink-2">Version {{ systemInfo.appVersion }}</p>
               </div>
-              <button @click="showWhatsNew = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg">
-                <span class="material-symbols-outlined text-gray-400">close</span>
+              <button @click="showWhatsNew = false" class="p-2 hover:bg-elevated rounded-lg">
+                <span class="material-symbols-outlined text-ink-3">close</span>
               </button>
             </div>
             <div class="p-5 max-h-96 overflow-y-auto space-y-4">
               <div>
-                <h4 class="text-sm font-semibold text-green-600 mb-2 flex items-center gap-2">
+                <h4 class="text-sm font-semibold text-ok mb-2 flex items-center gap-2">
                   <span class="material-symbols-outlined text-lg">add_circle</span>
                   New Features
                 </h4>
                 <ul class="space-y-2">
-                  <li class="text-sm text-gray-600 dark:text-gray-400 flex items-start gap-2">
-                    <span class="text-green-500 mt-1">•</span>
+                  <li class="text-sm text-ink-2 flex items-start gap-2">
+                    <span class="text-ok mt-1">•</span>
                     Advanced lyrics sync editor with waveform display
                   </li>
-                  <li class="text-sm text-gray-600 dark:text-gray-400 flex items-start gap-2">
-                    <span class="text-green-500 mt-1">•</span>
+                  <li class="text-sm text-ink-2 flex items-start gap-2">
+                    <span class="text-ok mt-1">•</span>
                     Command palette for quick navigation (Ctrl+K)
                   </li>
-                  <li class="text-sm text-gray-600 dark:text-gray-400 flex items-start gap-2">
-                    <span class="text-green-500 mt-1">•</span>
+                  <li class="text-sm text-ink-2 flex items-start gap-2">
+                    <span class="text-ok mt-1">•</span>
                     Keyboard shortcuts help modal
                   </li>
                 </ul>
               </div>
               <div>
-                <h4 class="text-sm font-semibold text-blue-600 mb-2 flex items-center gap-2">
+                <h4 class="text-sm font-semibold text-info mb-2 flex items-center gap-2">
                   <span class="material-symbols-outlined text-lg">upgrade</span>
                   Improvements
                 </h4>
                 <ul class="space-y-2">
-                  <li class="text-sm text-gray-600 dark:text-gray-400 flex items-start gap-2">
-                    <span class="text-blue-500 mt-1">•</span>
+                  <li class="text-sm text-ink-2 flex items-start gap-2">
+                    <span class="text-info mt-1">•</span>
                     Faster library loading with virtual scrolling
                   </li>
-                  <li class="text-sm text-gray-600 dark:text-gray-400 flex items-start gap-2">
-                    <span class="text-blue-500 mt-1">•</span>
+                  <li class="text-sm text-ink-2 flex items-start gap-2">
+                    <span class="text-info mt-1">•</span>
                     Improved metadata matching accuracy
                   </li>
                 </ul>
               </div>
               <div>
-                <h4 class="text-sm font-semibold text-amber-600 mb-2 flex items-center gap-2">
+                <h4 class="text-sm font-semibold text-warn mb-2 flex items-center gap-2">
                   <span class="material-symbols-outlined text-lg">bug_report</span>
                   Bug Fixes
                 </h4>
                 <ul class="space-y-2">
-                  <li class="text-sm text-gray-600 dark:text-gray-400 flex items-start gap-2">
-                    <span class="text-amber-500 mt-1">•</span>
+                  <li class="text-sm text-ink-2 flex items-start gap-2">
+                    <span class="text-warn mt-1">•</span>
                     Fixed download resume issues
                   </li>
-                  <li class="text-sm text-gray-600 dark:text-gray-400 flex items-start gap-2">
-                    <span class="text-amber-500 mt-1">•</span>
+                  <li class="text-sm text-ink-2 flex items-start gap-2">
+                    <span class="text-warn mt-1">•</span>
                     Resolved memory leak in library view
                   </li>
                 </ul>

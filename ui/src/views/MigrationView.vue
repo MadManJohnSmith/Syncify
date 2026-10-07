@@ -4,7 +4,7 @@
     <!-- Page Header -->
     <div class="px-8 pt-8 pb-6 flex items-center justify-between shrink-0">
       <div class="flex items-center gap-4">
-        <div class="h-12 w-12 rounded-full bg-gradient-to-br from-primary to-blue-400 text-white flex items-center justify-center">
+        <div class="h-12 w-12 rounded-full bg-gradient-to-br from-primary to-blue-400 text-on-accent flex items-center justify-center">
           <span class="material-symbols-outlined text-[28px]">swap_horiz</span>
         </div>
         <div>
@@ -84,7 +84,7 @@
                 :disabled="migration.isStartingMigration.value || transferStarted || svcStarted"
                 :class="[
                   'px-4 py-2 rounded-md text-sm font-medium transition-all disabled:opacity-50',
-                  assistantMode === 'service' ? 'bg-primary text-white shadow' : 'text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-surface-dark'
+                  assistantMode === 'service' ? 'bg-primary text-on-accent shadow' : 'text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-surface-dark'
                 ]"
               >
                 <span class="flex items-center gap-2">
@@ -98,7 +98,7 @@
                 :disabled="migration.isStartingMigration.value || transferStarted || svcStarted"
                 :class="[
                   'px-4 py-2 rounded-md text-sm font-medium transition-all disabled:opacity-50',
-                  assistantMode === 'transfer' ? 'bg-primary text-white shadow' : 'text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-surface-dark'
+                  assistantMode === 'transfer' ? 'bg-primary text-on-accent shadow' : 'text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-surface-dark'
                 ]"
               >
                 <span class="flex items-center gap-2">
@@ -124,7 +124,7 @@
                   :class="[
                     'w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold transition-all duration-300',
                     activeStepIndex > index ? 'bg-success text-white' :
-                    activeStepIndex === index ? 'bg-primary text-white ring-4 ring-primary/20' :
+                    activeStepIndex === index ? 'bg-primary text-on-accent ring-4 ring-primary/20' :
                     'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
                   ]"
                 >
@@ -150,7 +150,7 @@
                     v-for="service in sourceServices"
                     :key="service.id"
                     :data-service-id="service.id"
-                    @click="isConnected(service.id) && (svcSource = service.id)"
+                    @click="selectSvcSource(service.id)"
                     :disabled="!isConnected(service.id)"
                     :class="[
                       'service-card relative p-6 rounded-xl border-2 transition-all text-center',
@@ -170,12 +170,18 @@
                       </span>
                     </div>
                     <!-- Selected Indicator -->
-                    <div v-if="svcSource === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center">
+                    <div v-if="svcSource === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-on-accent flex items-center justify-center">
                       <span class="material-symbols-outlined text-[16px]">check</span>
                     </div>
                   </button>
                 </div>
 
+                <label v-if="svcSource && accountsForService(svcSource).length > 1" class="block mt-4 text-sm">
+                  Cuenta origen
+                  <select v-model.number="svcSourceAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="svc-source-account">
+                    <option v-for="a in accountsForService(svcSource)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
+                  </select>
+                </label>
                 <div v-if="sourceServices.length === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center">
                   <span class="material-symbols-outlined text-4xl text-gray-400 mb-2">cloud_off</span>
                   <p class="text-sm text-text-secondary">No services available. Connect a music service in the Accounts tab first.</p>
@@ -192,11 +198,11 @@
                     v-for="service in destinationChoices"
                     :key="service.id"
                     :data-service-id="service.id"
-                    @click="svcDestination = service.id"
-                    :disabled="!isConnected(service.id) || service.id === svcSource"
+                    @click="selectSvcDestination(service.id)"
+                    :disabled="!isConnected(service.id) || (service.id === svcSource && (!selectedAccountExists(service.id, svcSourceAccount) || accountsForService(service.id).length <= 1))"
                     :class="[
                       'service-card relative p-6 rounded-xl border-2 transition-all text-center',
-                      service.id === svcSource ? 'opacity-30 cursor-not-allowed border-gray-200 dark:border-border-dark' :
+                      service.id === svcSource && (!selectedAccountExists(service.id, svcSourceAccount) || accountsForService(service.id).length <= 1) ? 'opacity-30 cursor-not-allowed border-gray-200 dark:border-border-dark' :
                       !isConnected(service.id) ? 'opacity-50 cursor-not-allowed border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30' :
                       svcDestination === service.id ? 'border-primary bg-primary/5 shadow-lg shadow-primary/10' :
                       'border-gray-200 dark:border-border-dark hover:border-primary/50 hover:bg-gray-50 dark:hover:bg-surface-highlight/50'
@@ -216,12 +222,18 @@
                       </template>
                     </div>
                     <!-- Selected Indicator -->
-                    <div v-if="svcDestination === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center">
+                    <div v-if="svcDestination === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-on-accent flex items-center justify-center">
                       <span class="material-symbols-outlined text-[16px]">check</span>
                     </div>
                   </button>
                 </div>
 
+                <label v-if="svcDestination && accountsForService(svcDestination).length > 1" class="block mt-4 text-sm">
+                  Cuenta destino
+                  <select v-model.number="svcDestinationAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="svc-destination-account">
+                    <option v-for="a in accountsForService(svcDestination)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
+                  </select>
+                </label>
                 <div v-if="destinationChoices.length === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center">
                   <span class="material-symbols-outlined text-4xl text-gray-400 mb-2">cloud_off</span>
                   <p class="text-sm text-text-secondary">No supported destination services available. The migration engine lists its destinations; connect one of them to continue.</p>
@@ -243,7 +255,7 @@
                 <div v-else-if="svcPreviewError" data-testid="svc-preview-error" class="rounded-xl border border-error/30 bg-error/5 p-6 text-center">
                   <span class="material-symbols-outlined text-error text-3xl mb-2">error</span>
                   <p class="text-sm text-error mb-4">{{ svcPreviewError }}</p>
-                  <button @click="loadServicePreview" data-testid="svc-retry-preview" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+                  <button @click="loadServicePreview" data-testid="svc-retry-preview" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
                     Retry
                   </button>
                 </div>
@@ -302,7 +314,7 @@
                         @click="matchFilter = filter.id"
                         :class="[
                           'px-4 py-2 rounded-full text-sm font-medium transition-all',
-                          matchFilter === filter.id ? 'bg-primary text-white' : 'bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                          matchFilter === filter.id ? 'bg-primary text-on-accent' : 'bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
                         ]"
                       >
                         {{ filter.label }}
@@ -339,7 +351,7 @@
                             {{ item.status }}
                           </span>
                           <button
-                            v-if="!item.destination_track_id && (item.status === 'skipped' || item.status === 'failed')"
+                            v-if="reviewJob.destination_account_id !== null && !item.destination_track_id && (item.status === 'skipped' || item.status === 'failed')"
                             @click="openManualMatch(item, reviewJob.destination_service)"
                             class="px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-medium transition-colors"
                           >
@@ -368,7 +380,7 @@
                   <button
                     @click="svcSkipNotFound = !svcSkipNotFound"
                     data-testid="svc-skip-not-found-toggle"
-                    :class="['w-5 h-5 rounded border-2 flex items-center justify-center transition-colors', svcSkipNotFound ? 'bg-primary border-primary text-white' : 'border-gray-300 dark:border-gray-600']"
+                    :class="['w-5 h-5 rounded border-2 flex items-center justify-center transition-colors', svcSkipNotFound ? 'bg-primary border-primary text-on-accent' : 'border-gray-300 dark:border-gray-600']"
                   >
                     <span v-if="svcSkipNotFound" class="material-symbols-outlined text-[14px]">check</span>
                   </button>
@@ -405,7 +417,7 @@
                     v-for="service in sourceServices"
                     :key="service.id"
                     :data-service-id="service.id"
-                    @click="isConnected(service.id) && (sourceService = service.id)"
+                    @click="selectTransferSource(service.id)"
                     :disabled="!isConnected(service.id)"
                     :class="[
                       'service-card relative p-6 rounded-xl border-2 transition-all text-center',
@@ -425,11 +437,17 @@
                       </span>
                     </div>
                     <!-- Selected Indicator -->
-                    <div v-if="sourceService === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center">
+                    <div v-if="sourceService === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-on-accent flex items-center justify-center">
                       <span class="material-symbols-outlined text-[16px]">check</span>
                     </div>
                   </button>
                 </div>
+                <label v-if="sourceService && accountsForService(sourceService).length > 1" class="block mt-4 text-sm">
+                  Cuenta origen
+                  <select v-model.number="sourceAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="transfer-source-account">
+                    <option v-for="a in accountsForService(sourceService)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
+                  </select>
+                </label>
               </div>
 
               <!-- STEP 2: Choose Content to Transfer -->
@@ -461,7 +479,7 @@
                     <!-- Checkbox -->
                     <div v-if="!content.disabled" :class="[
                       'absolute top-4 right-4 w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all',
-                      selectedContent.includes(content.id) ? 'bg-primary border-primary text-white' : 'border-gray-300 dark:border-gray-600'
+                      selectedContent.includes(content.id) ? 'bg-primary border-primary text-on-accent' : 'border-gray-300 dark:border-gray-600'
                     ]">
                       <span v-if="selectedContent.includes(content.id)" class="material-symbols-outlined text-[16px]">check</span>
                     </div>
@@ -480,10 +498,10 @@
                     :key="service.id"
                     :data-service-id="service.id"
                     @click="toggleDestination(service.id)"
-                    :disabled="!isConnected(service.id) || service.id === sourceService"
+                    :disabled="!isConnected(service.id) || (service.id === sourceService && (!selectedAccountExists(service.id, sourceAccount) || accountsForService(service.id).length <= 1))"
                     :class="[
                       'service-card relative p-6 rounded-xl border-2 transition-all text-center',
-                      service.id === sourceService ? 'opacity-30 cursor-not-allowed border-gray-200 dark:border-border-dark' :
+                      service.id === sourceService && (!selectedAccountExists(service.id, sourceAccount) || accountsForService(service.id).length <= 1) ? 'opacity-30 cursor-not-allowed border-gray-200 dark:border-border-dark' :
                       !isConnected(service.id) ? 'opacity-50 cursor-not-allowed border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30' :
                       destinationServices.includes(service.id) ? 'border-primary bg-primary/5 shadow-lg shadow-primary/10' :
                       'border-gray-200 dark:border-border-dark hover:border-primary/50 hover:bg-gray-50 dark:hover:bg-surface-highlight/50'
@@ -503,12 +521,18 @@
                       </template>
                     </div>
                     <!-- Checkbox indicator -->
-                    <div v-if="destinationServices.includes(service.id)" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center">
+                    <div v-if="destinationServices.includes(service.id)" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-on-accent flex items-center justify-center">
                       <span class="material-symbols-outlined text-[16px]">check</span>
                     </div>
                   </button>
                 </div>
 
+                <label v-for="dest in destinationServices.filter(id => accountsForService(id).length > 1)" :key="dest" class="block mt-4 text-sm">
+                  Cuenta destino ({{ dest }})
+                  <select v-model.number="destinationAccounts[dest]" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" :data-testid="`transfer-destination-account-${dest}`">
+                    <option v-for="a in accountsForService(dest)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
+                  </select>
+                </label>
                 <div v-if="destinationChoices.length === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center">
                   <span class="material-symbols-outlined text-4xl text-gray-400 mb-2">cloud_off</span>
                   <p class="text-sm text-text-secondary">The migration engine does not support any of your connected services as a destination yet.</p>
@@ -530,7 +554,7 @@
                 <div v-else-if="previewError" data-testid="preview-error" class="rounded-xl border border-error/30 bg-error/5 p-6 text-center">
                   <span class="material-symbols-outlined text-error text-3xl mb-2">error</span>
                   <p class="text-sm text-error mb-4">{{ previewError }}</p>
-                  <button @click="loadPreview" data-testid="retry-preview" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+                  <button @click="loadPreview" data-testid="retry-preview" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
                     Retry
                   </button>
                 </div>
@@ -596,7 +620,7 @@
                       @click="matchFilter = filter.id"
                       :class="[
                         'px-4 py-2 rounded-full text-sm font-medium transition-all',
-                        matchFilter === filter.id ? 'bg-primary text-white' : 'bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                        matchFilter === filter.id ? 'bg-primary text-on-accent' : 'bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
                       ]"
                     >
                       {{ filter.label }}
@@ -640,7 +664,7 @@
                             {{ item.status }}
                           </span>
                           <button
-                            v-if="!item.destination_track_id && (item.status === 'skipped' || item.status === 'failed')"
+                            v-if="reviewJob.destination_account_id !== null && !item.destination_track_id && (item.status === 'skipped' || item.status === 'failed')"
                             @click="openManualMatch(item, reviewJob.destination_service)"
                             class="px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-medium transition-colors"
                           >
@@ -669,7 +693,7 @@
                   <button
                     @click="skipNotFound = !skipNotFound"
                     data-testid="skip-not-found-toggle"
-                    :class="['w-5 h-5 rounded border-2 flex items-center justify-center transition-colors', skipNotFound ? 'bg-primary border-primary text-white' : 'border-gray-300 dark:border-gray-600']"
+                    :class="['w-5 h-5 rounded border-2 flex items-center justify-center transition-colors', skipNotFound ? 'bg-primary border-primary text-on-accent' : 'border-gray-300 dark:border-gray-600']"
                   >
                     <span v-if="skipNotFound" class="material-symbols-outlined text-[14px]">check</span>
                   </button>
@@ -716,7 +740,7 @@
               :disabled="!canProceed"
               :class="[
                 'flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold transition-all',
-                canProceed ? 'bg-primary hover:bg-primary-hover text-white shadow-lg shadow-primary/20' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 cursor-not-allowed'
+                canProceed ? 'bg-primary hover:bg-primary-hover text-on-accent shadow-lg shadow-primary/20' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 cursor-not-allowed'
               ]"
             >
               Next
@@ -940,7 +964,7 @@
                       <p class="text-xs text-text-secondary">{{ track.source_track_artist }}</p>
                       <p class="text-xs text-error mt-1">{{ track.error_message || 'Transfer failed' }}</p>
                     </div>
-                    <button @click="openManualMatch(track, selectedMigration?.dest || destinationServices[0])" class="shrink-0 ml-3 px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-medium transition-colors">
+                    <button @click="openManualMatch(track, selectedMigration?.dest || destinationServices[0])" :disabled="!selectedMigration?.destination_account_id" class="shrink-0 ml-3 px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-medium transition-colors">
                       Search Manually
                     </button>
                   </div>
@@ -960,7 +984,7 @@
                       <p class="text-xs text-text-secondary">{{ track.source_track_artist }}</p>
                       <p class="text-xs text-amber-500 mt-1">{{ track.error_message || 'No match found on the destination service' }}</p>
                     </div>
-                    <button @click="openManualMatch(track, selectedMigration?.dest || destinationServices[0])" class="shrink-0 ml-3 px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-medium transition-colors">
+                    <button @click="openManualMatch(track, selectedMigration?.dest || destinationServices[0])" :disabled="!selectedMigration?.destination_account_id" class="shrink-0 ml-3 px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-medium transition-colors">
                       Search Manually
                     </button>
                   </div>
@@ -970,7 +994,7 @@
 
             <!-- Modal Footer -->
             <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-end">
-              <button @click="showDetailsModal = false" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+              <button @click="showDetailsModal = false" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
                 Close
               </button>
             </div>
@@ -1010,7 +1034,7 @@
                   @click="runManualSearch"
                   :disabled="!manualSearchQuery.trim() || migration.isSearching.value"
                   data-testid="manual-match-search-btn"
-                  class="px-4 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {{ migration.isSearching.value ? 'Searching...' : 'Search' }}
                 </button>
@@ -1094,7 +1118,7 @@
               <button @click="showSaveTemplateModal = false" class="px-5 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium transition-colors">
                 Cancel
               </button>
-              <button @click="saveTemplate" :disabled="!sourceService || destinationServices.length === 0 || !newTemplateName.trim() || isSavingTemplate" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <button @click="saveTemplate" :disabled="!sourceService || destinationServices.length === 0 || !newTemplateName.trim() || isSavingTemplate" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 {{ isSavingTemplate ? 'Saving...' : 'Save Template' }}
               </button>
             </div>
@@ -1113,7 +1137,7 @@ import { useToast, confirm } from '../composables/useToast'
 import { accountsApi } from '../api/accounts'
 import { getMigrationItemsByStatus } from '../api/migration'
 import MigrationTransferPanel, { type MigrationActivityEntry, type MigrationProgressDisplay } from '../components/MigrationTransferPanel.vue'
-import type { MigrationItem, MigrationOptions, MigrationTemplate, ServiceStatus, DestinationTrackMatch } from '../api/types'
+import type { MigrationItem, MigrationOptions, MigrationTemplate, ServiceStatus, Account, DestinationTrackMatch } from '../api/types'
 
 // Initialize migration composable for backend integration
 const migration = useMigration()
@@ -1127,6 +1151,7 @@ onMounted(async () => {
     migration.loadTemplates(),
     migration.loadSupportedDestinations(),
     loadServiceStatuses(),
+    loadAccounts(),
   ])
   await migration.setupProgressListener()
 })
@@ -1138,6 +1163,33 @@ onUnmounted(() => {
 
 /** Real auth status of every service, from the backend accounts DB. */
 const serviceStatuses = ref<ServiceStatus[]>([])
+const migrationAccounts = ref<Account[]>([])
+async function loadAccounts(): Promise<void> {
+  try { migrationAccounts.value = await accountsApi.getAccounts() }
+  catch (e) { console.error('Failed to load accounts for migration:', e) }
+}
+
+function accountsForService(service: string): Account[] {
+  return migrationAccounts.value.filter(a => a.service_name?.toLowerCase() === service.toLowerCase())
+}
+function defaultAccount(service: string): number | null {
+  const matches = accountsForService(service)
+  return (matches.find(a => a.is_active && !a.credentials_invalid)
+    ?? matches.find(a => !a.credentials_invalid))?.id ?? null
+}
+function selectedAccountExists(service: string, id: number | null): boolean {
+  return typeof id === 'number' && accountsForService(service).some(account => account.id === id)
+}
+function accountSelectionValid(service: string, id: number | null): boolean {
+  const accounts = accountsForService(service)
+  return accounts.length === 0 || accounts.some(account => account.id === id && !account.credentials_invalid)
+}
+function unsafeSameServicePair(destination: string, source: string, sourceId: number | null, destinationId: number | null): boolean {
+  // A null source reads the whole service mirror, including playlists. Never
+  // treat it as the active account for a same-service transfer or preview.
+  return destination === source && (!selectedAccountExists(source, sourceId) || !selectedAccountExists(destination, destinationId) || sourceId === destinationId)
+}
+
 
 async function loadServiceStatuses(): Promise<void> {
   try {
@@ -1147,7 +1199,7 @@ async function loadServiceStatuses(): Promise<void> {
   }
 }
 
-/** A service is usable as source/destination only when the backend reports a connected, valid account. */
+/** Legacy service-level status fallback when the account list has no rows. */
 const connectedServiceIds = computed(() => {
   return new Set(
     serviceStatuses.value
@@ -1157,6 +1209,10 @@ const connectedServiceIds = computed(() => {
 })
 
 function isConnected(serviceId: string): boolean {
+  const accounts = accountsForService(serviceId)
+  // When accounts exist, the selected row (not the service-wide active status)
+  // determines whether this service can be used in the wizard.
+  if (accounts.length > 0) return accounts.some(a => !a.credentials_invalid)
   return connectedServiceIds.value.has(serviceId)
 }
 
@@ -1268,6 +1324,8 @@ interface MigrationDetailsCard {
   id: string | number
   source: string
   dest: string
+  source_account_id: number | null
+  destination_account_id: number | null
   date: string
   totalCount: number
   successCount: number
@@ -1305,6 +1363,8 @@ function openCurrentJobDetails(expandFailed: boolean): void {
     id: jobId,
     source,
     dest,
+    source_account_id: assistantMode.value === 'service' ? svcSourceAccount.value : sourceAccount.value,
+    destination_account_id: assistantMode.value === 'service' ? svcDestinationAccount.value : (destinationAccounts.value[dest] ?? null),
     date: new Date().toLocaleString(),
     totalCount: realProgress.value.total,
     successCount: realProgress.value.transferred,
@@ -1371,6 +1431,8 @@ const assistantModeDescription = computed(() =>
 const svcStep = ref(0)
 const svcSource = ref('')
 const svcDestination = ref('')
+const svcSourceAccount = ref<number | null>(null)
+const svcDestinationAccount = ref<number | null>(null)
 const svcSkipNotFound = ref(false)
 const svcPreviewError = ref<string | null>(null)
 const svcStarted = ref(false)
@@ -1451,6 +1513,8 @@ const destinationChoices = computed<ServiceCard[]>(() =>
 
 const sourceService = ref<string>('')
 const destinationServices = ref<string[]>([])
+const sourceAccount = ref<number | null>(null)
+const destinationAccounts = ref<Record<string, number | null>>({})
 
 // Content types: honest descriptions; the engine only transfers saved tracks
 const contentTypes = [
@@ -1466,15 +1530,15 @@ const selectedContent = ref<string[]>(['favorites'])
 const canProceed = computed(() => {
   if (assistantMode.value === 'service') {
     switch (svcStep.value) {
-      case 0: return svcSource.value !== ''
-      case 1: return svcDestination.value !== ''
+      case 0: return svcSource.value !== '' && accountSelectionValid(svcSource.value, svcSourceAccount.value)
+      case 1: return svcDestination.value !== '' && accountSelectionValid(svcDestination.value, svcDestinationAccount.value) && !unsafeSameServicePair(svcDestination.value, svcSource.value, svcSourceAccount.value, svcDestinationAccount.value)
       default: return true
     }
   }
   switch (currentStep.value) {
-    case 0: return sourceService.value !== ''
+    case 0: return sourceService.value !== '' && accountSelectionValid(sourceService.value, sourceAccount.value)
     case 1: return selectedContent.value.length > 0
-    case 2: return destinationServices.value.length > 0
+    case 2: return destinationServices.value.length > 0 && destinationServices.value.every(id => accountSelectionValid(id, destinationAccounts.value[id] ?? null)) && !destinationServices.value.some(id => unsafeSameServicePair(id, sourceService.value, sourceAccount.value, destinationAccounts.value[id] ?? null))
     default: return true
   }
 })
@@ -1533,14 +1597,43 @@ function toggleContentType(id: string) {
   }
 }
 
+function selectSvcSource(id: string) {
+  if (!isConnected(id)) return
+  svcSource.value = id
+  svcSourceAccount.value = defaultAccount(id)
+  svcDestination.value = ''
+  svcDestinationAccount.value = null
+}
+function selectSvcDestination(id: string) {
+  if (!isConnected(id) || (id === svcSource.value && (!selectedAccountExists(id, svcSourceAccount.value) || accountsForService(id).length <= 1))) return
+  svcDestination.value = id
+  svcDestinationAccount.value = defaultAccount(id)
+  // Same-service transfers require two explicitly selected, distinct accounts.
+  if (id === svcSource.value && svcDestinationAccount.value === svcSourceAccount.value) {
+    svcDestinationAccount.value = accountsForService(id).find(a => a.id !== svcSourceAccount.value)?.id ?? null
+  }
+}
+function selectTransferSource(id: string) {
+  if (!isConnected(id)) return
+  sourceService.value = id
+  sourceAccount.value = defaultAccount(id)
+  destinationServices.value = []
+  destinationAccounts.value = {}
+}
+
 function toggleDestination(id: string) {
-  if (id === sourceService.value) return
+  if (id === sourceService.value && (!selectedAccountExists(id, sourceAccount.value) || accountsForService(id).length <= 1)) return
   if (!isConnected(id)) return
   const idx = destinationServices.value.indexOf(id)
   if (idx >= 0) {
     destinationServices.value.splice(idx, 1)
+    delete destinationAccounts.value[id]
   } else {
     destinationServices.value.push(id)
+    destinationAccounts.value[id] = defaultAccount(id)
+    if (id === sourceService.value && destinationAccounts.value[id] === sourceAccount.value) {
+      destinationAccounts.value[id] = accountsForService(id).find(a => a.id !== sourceAccount.value)?.id ?? null
+    }
   }
 }
 
@@ -1622,7 +1715,13 @@ const previewDescription = computed(() => {
 async function loadPreview(): Promise<void> {
   previewError.value = null
   const destination = destinationServices.value[0] || ''
-  const result = await migration.preview(sourceService.value, destination)
+  if (!accountSelectionValid(sourceService.value, sourceAccount.value) ||
+      !accountSelectionValid(destination, destinationAccounts.value[destination] ?? null) ||
+      unsafeSameServicePair(destination, sourceService.value, sourceAccount.value, destinationAccounts.value[destination] ?? null)) {
+    previewError.value = 'Choose valid accounts; same-service migrations require two explicit, distinct accounts.'
+    return
+  }
+  const result = await migration.preview(sourceService.value, destination, undefined, migration.defaultOptions, sourceAccount.value, destinationAccounts.value[destination] ?? null)
   if (!result) {
     previewError.value = 'Could not load the match preview. Check that the destination service is connected and try again.'
     return
@@ -1633,7 +1732,13 @@ async function loadPreview(): Promise<void> {
 /** Load the real preview for the service → service mode's review step. */
 async function loadServicePreview(): Promise<void> {
   svcPreviewError.value = null
-  const result = await migration.preview(svcSource.value, svcDestination.value)
+  if (!accountSelectionValid(svcSource.value, svcSourceAccount.value) ||
+      !accountSelectionValid(svcDestination.value, svcDestinationAccount.value) ||
+      unsafeSameServicePair(svcDestination.value, svcSource.value, svcSourceAccount.value, svcDestinationAccount.value)) {
+    svcPreviewError.value = 'Choose valid accounts; same-service migrations require two explicit, distinct accounts.'
+    return
+  }
+  const result = await migration.preview(svcSource.value, svcDestination.value, undefined, migration.defaultOptions, svcSourceAccount.value, svcDestinationAccount.value)
   if (!result) {
     svcPreviewError.value = 'Could not load the match preview. Check that the destination service is connected and try again.'
     return
@@ -1647,20 +1752,24 @@ async function loadServicePreview(): Promise<void> {
  * only when a job runs, so this surfaces the last run's real matches instead
  * of inventing pre-start rows. Shared by both assistant modes.
  */
-const reviewJob = ref<{ id: string; source_service: string; destination_service: string } | null>(null)
+const reviewJob = ref<{ id: string; source_service: string; destination_service: string; source_account_id: number | null; destination_account_id: number | null } | null>(null)
 const reviewItems = ref<MigrationItem[]>([])
 
 async function loadReviewItems(source: string, destination: string): Promise<void> {
   reviewJob.value = null
   reviewItems.value = []
   visibleReviewCount.value = 25
+  const sourceId = assistantMode.value === 'service' ? svcSourceAccount.value : sourceAccount.value
+  const destinationId = assistantMode.value === 'service' ? svcDestinationAccount.value : (destinationAccounts.value[destination] ?? null)
   const job = migration.history.value.find(
     j => j.source_service === source && j.destination_service === destination
+      && j.source_account_id === sourceId && j.destination_account_id === destinationId
   )
   if (!job) return
   try {
     const items = await getMigrationItemsByStatus(job.id)
-    reviewJob.value = { id: job.id, source_service: job.source_service, destination_service: job.destination_service }
+    reviewJob.value = { id: job.id, source_service: job.source_service, destination_service: job.destination_service,
+      source_account_id: job.source_account_id, destination_account_id: job.destination_account_id }
     reviewItems.value = items
   } catch (e) {
     console.error('Failed to load review items:', e)
@@ -1708,7 +1817,8 @@ const readyTrackCount = computed(() => {
 })
 
 async function startTransfer(): Promise<void> {
-  if (!sourceService.value || destinationServices.value.length === 0) return
+  if (!sourceService.value || !accountSelectionValid(sourceService.value, sourceAccount.value) || destinationServices.value.length === 0 ||
+      destinationServices.value.some(id => !accountSelectionValid(id, destinationAccounts.value[id] ?? null) || unsafeSameServicePair(id, sourceService.value, sourceAccount.value, destinationAccounts.value[id] ?? null))) return
 
   transferError.value = null
   transferComplete.value = false
@@ -1726,7 +1836,7 @@ async function startTransfer(): Promise<void> {
   const failedDestinations: string[] = []
   for (const dest of destinationServices.value) {
     if (migration.progress.status === 'cancelled') break
-    const jobId = await migration.start(sourceService.value, dest, undefined, options)
+    const jobId = await migration.start(sourceService.value, dest, undefined, options, sourceAccount.value, destinationAccounts.value[dest] ?? null)
     if (jobId) {
       completedJobIds.value.push(jobId)
     } else {
@@ -1767,7 +1877,9 @@ async function cancelTransfer(): Promise<void> {
 // ========================
 
 async function startServiceMigration(): Promise<void> {
-  if (!svcSource.value || !svcDestination.value) return
+  if (!svcSource.value || !svcDestination.value || !accountSelectionValid(svcSource.value, svcSourceAccount.value) ||
+      !accountSelectionValid(svcDestination.value, svcDestinationAccount.value) ||
+      unsafeSameServicePair(svcDestination.value, svcSource.value, svcSourceAccount.value, svcDestinationAccount.value)) return
 
   svcError.value = null
   svcComplete.value = false
@@ -1783,7 +1895,7 @@ async function startServiceMigration(): Promise<void> {
     create_playlists: false,
   }
 
-  const jobId = await migration.start(svcSource.value, svcDestination.value, undefined, options)
+  const jobId = await migration.start(svcSource.value, svcDestination.value, undefined, options, svcSourceAccount.value, svcDestinationAccount.value)
 
   if (migration.progress.status === 'cancelled') {
     // The user cancelled while the job ran; do not show a completed screen.
@@ -1817,6 +1929,8 @@ function resetServiceMode(): void {
   svcStep.value = 0
   svcSource.value = ''
   svcDestination.value = ''
+  svcSourceAccount.value = null
+  svcDestinationAccount.value = null
   svcSkipNotFound.value = false
   svcPreviewError.value = null
   svcStarted.value = false
@@ -1835,6 +1949,8 @@ function resetWizard() {
   stepDirection.value = 'slide-left'
   sourceService.value = ''
   destinationServices.value = []
+  sourceAccount.value = null
+  destinationAccounts.value = {}
   selectedContent.value = ['favorites']
   transferStarted.value = false
   transferComplete.value = false
@@ -1854,6 +1970,7 @@ function resetWizard() {
 
 const showManualMatchModal = ref(false)
 const manualMatchTarget = ref<MigrationItem | null>(null)
+const manualMatchAccountId = ref<number | null>(null)
 const manualMatchService = ref('')
 const manualSearchQuery = ref('')
 const manualSearchPerformed = ref(false)
@@ -1862,6 +1979,11 @@ const manualMatchMessage = ref<string | null>(null)
 const manualMatchOk = ref(false)
 
 function openManualMatch(item: MigrationItem, service: string): void {
+  const job = migration.history.value.find(j => j.id === item.job_id)
+    ?? (migration.selectedJob.value?.id === item.job_id ? migration.selectedJob.value : null)
+  // Never search or attach a match without the owning job's destination scope.
+  if (!job || job.destination_service !== service || job.destination_account_id === null) return
+  manualMatchAccountId.value = job.destination_account_id
   manualMatchTarget.value = item
   manualMatchService.value = service || destinationServices.value[0] || ''
   manualSearchQuery.value = [item.source_track_title, item.source_track_artist].filter(Boolean).join(' ')
@@ -1874,17 +1996,25 @@ function openManualMatch(item: MigrationItem, service: string): void {
 function closeManualMatch(): void {
   showManualMatchModal.value = false
   manualMatchTarget.value = null
+  manualMatchAccountId.value = null
   migration.searchResults.value = []
 }
 
 async function runManualSearch(): Promise<void> {
   if (!manualSearchQuery.value.trim() || !manualMatchService.value) return
   manualSearchPerformed.value = true
-  await migration.searchTracks(manualMatchService.value, manualSearchQuery.value)
+  // A historical item must never be searched with today's selected account.
+  await migration.searchTracks(manualMatchService.value, manualSearchQuery.value, manualMatchAccountId.value)
 }
 
 async function applyManualMatch(result: DestinationTrackMatch): Promise<void> {
-  if (!manualMatchTarget.value) return
+  if (!manualMatchTarget.value || !migration.history.value.some(j =>
+    j.id === manualMatchTarget.value?.job_id && j.destination_service === manualMatchService.value
+      && j.destination_account_id !== null && j.destination_account_id === manualMatchAccountId.value
+  ) && !(migration.selectedJob.value?.id === manualMatchTarget.value.job_id
+    && migration.selectedJob.value.destination_service === manualMatchService.value
+    && migration.selectedJob.value.destination_account_id !== null
+    && migration.selectedJob.value.destination_account_id === manualMatchAccountId.value)) return
   manualMatchBusy.value = true
   manualMatchMessage.value = null
   const ok = await migration.matchItem(manualMatchTarget.value.id, result.track_id)
@@ -1896,7 +2026,7 @@ async function applyManualMatch(result: DestinationTrackMatch): Promise<void> {
     toast.success('Track matched', `"${result.title}" attached to "${manualMatchTarget.value.source_track_title}"`)
     // Refresh the real item lists so the new match shows up
     if (reviewJob.value) {
-      await loadReviewItems(reviewJob.value.source_service, reviewJob.value.destination_service)
+      reviewItems.value = await getMigrationItemsByStatus(reviewJob.value.id)
     }
     if (showDetailsModal.value && selectedMigration.value?.id) {
       await migration.loadJobDetails(String(selectedMigration.value.id))
@@ -1930,6 +2060,11 @@ function openSaveTemplateModal(): void {
 function useTemplate(template: MigrationTemplate): void {
   sourceService.value = template.source_service.toLowerCase()
   destinationServices.value = [template.destination_service.toLowerCase()]
+  sourceAccount.value = defaultAccount(sourceService.value)
+  destinationAccounts.value = { [destinationServices.value[0]]: defaultAccount(destinationServices.value[0]) }
+  if (sourceService.value === destinationServices.value[0] && destinationAccounts.value[sourceService.value] === sourceAccount.value) {
+    destinationAccounts.value[sourceService.value] = accountsForService(sourceService.value).find(a => a.id !== sourceAccount.value)?.id ?? null
+  }
   let options: Partial<MigrationOptions> = {}
   try {
     options = JSON.parse(template.options) || {}

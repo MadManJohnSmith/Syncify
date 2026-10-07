@@ -22,7 +22,7 @@
           :placeholder="placeholder || 'Select directory...'"
           :disabled="disabled"
           :class="[
-            'w-full px-3 py-2 bg-gray-50 dark:bg-[#121b29]/50 border rounded-lg text-sm text-gray-900 dark:text-white font-mono placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 outline-none transition-all disabled:opacity-60 disabled:cursor-not-allowed',
+            'w-full px-3 py-2 bg-gray-50 dark:bg-shell/50 border rounded-lg text-sm text-gray-900 dark:text-white font-mono placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 outline-none transition-all disabled:opacity-60 disabled:cursor-not-allowed',
             validationStatus && !validationStatus.valid 
               ? 'border-amber-500 dark:border-amber-500 focus:ring-amber-500 focus:border-amber-500' 
               : 'border-gray-300 dark:border-gray-600 focus:ring-primary focus:border-primary'

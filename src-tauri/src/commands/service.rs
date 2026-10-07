@@ -36,6 +36,91 @@ pub(crate) async fn load_service_credentials(
     Ok((account.0, creds))
 }
 
+/// Multi-cuenta: credenciales de UNA cuenta concreta, validando que pertenezca al
+/// servicio pedido.
+///
+/// `load_service_credentials` sigue siendo 'la activa gobierna por defecto' para
+/// los flujos legacy (import_*, worker, tray). Este es el camino explícito: un
+/// `account_id` de otro servicio NO puede responder por este (mismo control de
+/// pertenencia que `perform_get_service_auth_status`), y una cuenta
+/// desactivada con credenciales sanas SÍ se puede sincronizar ('cuenta elegida').
+pub(crate) async fn load_service_credentials_for_account(
+    db: &sqlx::SqlitePool,
+    service_name: &str,
+    account_id: i64,
+) -> Result<(i64, serde_json::Value), String> {
+    let account: (i64, String, Option<i64>) = sqlx::query_as(
+        "SELECT a.id, a.credentials_json, a.credentials_invalid FROM accounts a
+         JOIN services s ON s.id = a.service_id
+         WHERE a.id = ? AND LOWER(s.name) = LOWER(?)",
+    )
+    .bind(account_id)
+    .bind(service_name)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| {
+        format!(
+            "{} account {} does not exist or belongs to another service",
+            service_name, account_id
+        )
+    })?;
+
+    if account.2.unwrap_or(0) != 0 {
+        return Err(format!(
+            "RequiresAuth: {} account {} credentials marked invalid. Please reconnect in Settings > Accounts.",
+            service_name, account_id
+        ));
+    }
+
+    let decrypted = crate::crypto::decrypt(&account.1)?;
+    let creds: serde_json::Value =
+        serde_json::from_str(&decrypted).map_err(|e| format!("Invalid credentials: {}", e))?;
+
+    Ok((account.0, creds))
+}
+
+/// Resolve the account a sync will run against BEFORE taking the writer lock.
+///
+/// Multi-cuenta: `None` significa "la cuenta activa" para toda la pila (App.vue
+/// handleSyncAll, CommandPalette, bandeja, import_qobuz_library/purchases y el
+/// wrapper perform_sync_service). Si la clave del lock usara el id efectivo sin
+/// resolver, un sync-all (`None` → clave `sync-<svc>-0`) y un sync por cuenta
+/// (`Some(id)` de esa misma activa) correrían en PARALELO sobre el mismo
+/// servicio. Resolviendo aquí, `None` y `Some(id)` de la misma cuenta comparten
+/// clave y se serializan.
+///
+/// TOCTOU conocido: `perform_get_service_auth_status` vuelve a resolver la
+/// cuenta activa después del lock. Si la activa cambia en esa ventana, la clave
+/// del lock pertenece a la cuenta anterior a la que se sincroniza; el efecto es
+/// un sync serializado con la cuenta equivocada, no corrupción (ambas fases
+/// escriben por `account_id`).
+pub(crate) async fn resolve_effective_account_id(
+    db: &sqlx::SqlitePool,
+    service_name: &str,
+    account_id_opt: Option<i64>,
+) -> Result<i64, String> {
+    if let Some(aid) = account_id_opt {
+        return Ok(aid);
+    }
+
+    let active: Option<i64> = sqlx::query_scalar(
+        "SELECT a.id FROM accounts a
+         JOIN services s ON s.id = a.service_id
+         WHERE LOWER(s.name) = LOWER(?) AND a.is_active = 1
+         ORDER BY a.id DESC LIMIT 1",
+    )
+    .bind(service_name)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to resolve the active account: {}", e))?;
+
+    // 0 keeps the pre-multi-account behavior for services with no active row:
+    // every caller still serializes on the same key instead of degenerating into
+    // "no lock".
+    Ok(active.unwrap_or(0))
+}
+
 /// Upsert or reuse playlist by (account_id, service_playlist_id) strictly when remote ID is provided,
 /// or by (account_id, LOWER(TRIM(name))) only when service_playlist_id is null/empty (manual local playlists).
 /// Registers/updates its entry in `playlist_sources` (TASK-78: decoupling collisions).
@@ -509,16 +594,28 @@ pub async fn spotify_auth_callback(
 
     let encrypted = crate::crypto::encrypt(&credentials)?;
 
-    sqlx::query(
-        "INSERT OR REPLACE INTO accounts (service_id, display_name, email, credentials_json, is_active) VALUES (?, ?, ?, ?, 1)"
+    // Multi-cuenta: el `INSERT OR REPLACE` anterior sustituía la fila cuyo
+    // (service_id, email) coincidía —REPLACE borra la fila y, con ella, por
+    // CASCADE, su biblioteca y sus playlists— y con email NULL dejaba pasar
+    // otra cuenta activa. Se resuelve por identidad con el mismo upsert del
+    // login: email + el `id` de Spotify como external_user_id.
+    let final_display_name = user.display_name.clone().unwrap_or_else(|| user.id.clone());
+
+    let account_id = upsert_service_account(
+        &state.db,
+        spotify_service_id.0,
+        &final_display_name,
+        user.email.as_deref(),
+        Some(user.id.as_str()),
+        &encrypted,
     )
-    .bind(spotify_service_id.0)
-    .bind(&user.display_name)
-    .bind(&user.email)
-    .bind(&encrypted)
-    .execute(&state.db)
-    .await
-    .map_err(|e| format!("Failed to save account: {}", e))?;
+    .await?;
+
+    tracing::info!(
+        "Spotify OAuth: saved account {} for {}",
+        account_id,
+        final_display_name
+    );
 
     Ok(format!(
         "Connected as {}",
@@ -1139,7 +1236,16 @@ pub async fn get_service_statuses(
             a.invalid_reason,
             a.last_auth_error
         FROM services s
-        LEFT JOIN accounts a ON a.service_id = s.id AND a.is_active = 1
+        -- Multi-cuenta: el LEFT JOIN plano se multiplicaba en una fila por
+        -- cuenta activa y devolvía tarjetas duplicadas. Se acota a LA cuenta
+        -- activa con la misma regla determinista que el resto de resolvedores
+        -- (is_active = 1 ORDER BY id DESC LIMIT 1); con una sola cuenta el
+        -- resultado es idéntico.
+        LEFT JOIN accounts a ON a.id = (
+            SELECT acc.id FROM accounts acc
+            WHERE acc.service_id = s.id AND acc.is_active = 1
+            ORDER BY acc.id DESC LIMIT 1
+        )
         ORDER BY s.id
         "#
     )
@@ -2539,9 +2645,7 @@ pub async fn resolve_tidal_import_credentials(
                 .await
                 .map_err(|e| e.to_string())?;
 
-        let id: i64 = sqlx::query_scalar("INSERT OR REPLACE INTO accounts (service_id, display_name, is_active) VALUES (?, 'Tidal User', 1) RETURNING id")
-            .bind(tidal_service_id.0)
-            .fetch_one(db).await.map_err(|e| e.to_string())?;
+        let id: i64 = insert_synthetic_account(db, tidal_service_id.0, "Tidal User").await?;
 
         let uid = std::env::var("TIDAL_USER_ID")
             .ok()
@@ -2561,6 +2665,53 @@ pub async fn resolve_tidal_import_credentials(
     } else {
         Err("No active account found for service tidal".to_string())
     }
+}
+
+/// Inserta la cuenta SINTÉTICA de un fallback por variables de entorno
+/// (tidal/qobuz/deezer) y devuelve su id.
+///
+/// Multi-cuenta: antes cada uno de esos brazos hacía
+/// `INSERT OR REPLACE … (service_id, display_name, is_active) VALUES (?, 'X User', 1)`.
+/// Con `email` NULL la UNIQUE(service_id, email) de 0002 no bloquea nada, así que
+/// la sentencia insertaba una fila nueva en cada importación y dejaba VARIAS
+/// cuentas activas del mismo servicio (el resolvedor `is_active = 1 ORDER BY id
+/// DESC` empezaba a saltar entre ellas).
+///
+/// Se mantiene la creación de una fila nueva —no se pasa por
+/// `upsert_service_account` a propósito: estas filas son sintéticas y NO tienen
+/// credenciales propias, así que revivir una fila real del mismo servicio
+/// sobrescribiría sus credenciales con un blob sintético— pero dentro de una
+/// transacción que desactiva a las hermanas, que es lo que el upsert del login
+/// garantiza para las cuentas reales.
+async fn insert_synthetic_account(
+    db: &sqlx::SqlitePool,
+    service_id: i64,
+    display_name: &str,
+) -> Result<i64, String> {
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to begin synthetic account insert: {}", e))?;
+
+    let account_id: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts (service_id, display_name, is_active, created_at)
+         VALUES (?, ?, 1, CURRENT_TIMESTAMP) RETURNING id",
+    )
+    .bind(service_id)
+    .bind(display_name)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    sqlx::query("UPDATE accounts SET is_active = 0 WHERE service_id = ? AND id != ?")
+        .bind(service_id)
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(account_id)
 }
 
 #[tauri::command]
@@ -2599,9 +2750,8 @@ pub async fn import_service(
                     .await
                     .map_err(|e| e.to_string())?;
 
-            let account_id: i64 = sqlx::query_scalar("INSERT OR REPLACE INTO accounts (service_id, display_name, is_active) VALUES (?, 'Qobuz User', 1) RETURNING id")
-                .bind(qobuz_service_id.0)
-                .fetch_one(&state.db).await.map_err(|e| e.to_string())?;
+            let account_id: i64 =
+                insert_synthetic_account(&state.db, qobuz_service_id.0, "Qobuz User").await?;
 
             // Create client with token and import — reuse already-validated app_id/app_secret
             let authed_client =
@@ -2640,9 +2790,8 @@ pub async fn import_service(
                     .await
                     .map_err(|e| e.to_string())?;
 
-            let account_id: i64 = sqlx::query_scalar("INSERT OR REPLACE INTO accounts (service_id, display_name, is_active) VALUES (?, 'Deezer User', 1) RETURNING id")
-                .bind(deezer_service_id.0)
-                .fetch_one(&state.db).await.map_err(|e| e.to_string())?;
+            let account_id: i64 =
+                insert_synthetic_account(&state.db, deezer_service_id.0, "Deezer User").await?;
 
             let mut client = crate::services::DeezerClient::new(arl);
             let result = client.import_library(&state.db, account_id).await?;
@@ -2700,14 +2849,16 @@ pub async fn perform_sync_service(
 /// intenta UNA vez un refresh forzado. `Some(nuevo_token)` ⇒ el 401 era
 /// recuperable (skew, rotación en vuelo, TTL justo); `None` ⇒ el propio
 /// refresh fue rechazado / no hay refresh-token y procede invalidar la cuenta.
-async fn tidal_force_refresh_after_401(db: &sqlx::SqlitePool) -> Option<String> {
+async fn tidal_force_refresh_after_401(db: &sqlx::SqlitePool, account_id: i64) -> Option<String> {
     let http_client = crate::download::http_client::create_http_client();
-    let (creds_opt, _) = crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials_opts(
-        db,
-        &http_client,
-        true,
-    )
-    .await;
+    let (creds_opt, _) =
+        crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials_for_account(
+            db,
+            &http_client,
+            Some(account_id),
+            true,
+        )
+        .await;
     creds_opt.map(|c| c.access_token)
 }
 
@@ -2844,7 +2995,15 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     // S195-fix: lock de escritor POR servicio+cuenta (flock multi-proceso).
     // Permite sincronizar servicios distintos en paralelo; bloquea solo el
     // mismo servicio+cuenta duplicado (doble clic u otra instancia de la app).
-    let effective_account = account_id_opt.unwrap_or(0);
+    //
+    // La cuenta se resuelve ANTES de tomar el lock (no `account_id_opt.unwrap_or(0)`):
+    // con None —el contrato de todos los llamadores legacy: App.vue handleSyncAll,
+    // CommandPalette, bandeja, import_qobuz_library/purchases y el wrapper
+    // perform_sync_service— la clave debe ser la de la cuenta activa REAL, para
+    // que un sync-all y un sync por cuenta de esa misma cuenta no corran en
+    // paralelo. Ver `resolve_effective_account_id` para el TOCTOU documentado.
+    let effective_account =
+        resolve_effective_account_id(db, &service_normalized, account_id_opt).await?;
     let _sync_writer_guard =
         crate::db::SyncWriterLock::acquire(db, &service_normalized, effective_account).await?;
 
@@ -3313,6 +3472,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     db,
                                     "qobuz",
                                     "HTTP 401: User authentication required",
+                                    Some(account_id),
                                 )
                                 .await;
                                 let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorites: {}", e);
@@ -3576,6 +3736,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     db,
                                     "qobuz",
                                     "HTTP 401: User authentication required",
+                                    Some(account_id),
                                 )
                                 .await;
                                 let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorite albums: {}", e);
@@ -3830,6 +3991,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     db,
                                     "qobuz",
                                     "HTTP 401: User authentication required",
+                                    Some(account_id),
                                 )
                                 .await;
                                 let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching purchases: {}", e);
@@ -4137,6 +4299,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     db,
                                     "qobuz",
                                     "HTTP 401: User authentication required",
+                                    Some(account_id),
                                 )
                                 .await;
                                 let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching playlists: {}", e);
@@ -4215,6 +4378,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     db,
                                     "qobuz",
                                     "HTTP 401: User authentication required",
+                                    Some(account_id),
                                 )
                                 .await;
                                 let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorite artists: {}", e);
@@ -4254,9 +4418,11 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             // cuenta en el primer sync.
             let http_client = crate::download::http_client::create_http_client();
             let (resolved_tidal_creds, _) =
-                crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials(
+                crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials_for_account(
                     db,
                     &http_client,
+                    Some(account_id),
+                    false,
                 )
                 .await;
             let resolved_tidal_creds = match resolved_tidal_creds {
@@ -4461,7 +4627,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 // intenta UN refresh forzado; si el proveedor emite token fresco, la
                                 // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
                                 // queda registrado como warning para re-ejecutar el sync.
-                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db).await {
+                                if let Some(fresh_tok) =
+                                    tidal_force_refresh_after_401(db, account_id).await
+                                {
                                     client.set_access_token(fresh_tok);
                                     warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
                                     break;
@@ -4470,6 +4638,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     db,
                                     "tidal",
                                     "HTTP 401: Tidal session unauthorized or expired",
+                                    Some(account_id),
                                 )
                                 .await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorites: {}", e);
@@ -4772,12 +4941,18 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                                 // intenta UN refresh forzado; si el proveedor emite token fresco, la
                                                 // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
                                                 // queda registrado como warning para re-ejecutar el sync.
-                                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db).await {
+                                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db, account_id).await {
                                                     client.set_access_token(fresh_tok);
                                                     warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 expandiendo álbum {} — vuelve a ejecutar el sync para completarlo", album.tidal_id));
                                                     break;
                                                 }
-                                                let _ = mark_account_credentials_invalid(db, "tidal", "HTTP 401: Tidal session unauthorized or expired").await;
+                                                let _ = mark_account_credentials_invalid(
+                                                    db,
+                                                    "tidal",
+                                                    "HTTP 401: Tidal session unauthorized or expired",
+                                                    Some(account_id),
+                                                )
+                                                .await;
                                                 emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
                                                 return Err(err_msg);
                                             }
@@ -4819,7 +4994,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 // intenta UN refresh forzado; si el proveedor emite token fresco, la
                                 // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
                                 // queda registrado como warning para re-ejecutar el sync.
-                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db).await {
+                                if let Some(fresh_tok) =
+                                    tidal_force_refresh_after_401(db, account_id).await
+                                {
                                     client.set_access_token(fresh_tok);
                                     warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
                                     break;
@@ -4828,6 +5005,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     db,
                                     "tidal",
                                     "HTTP 401: Tidal session unauthorized or expired",
+                                    Some(account_id),
                                 )
                                 .await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite albums: {}", e);
@@ -5163,7 +5341,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 // intenta UN refresh forzado; si el proveedor emite token fresco, la
                                 // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
                                 // queda registrado como warning para re-ejecutar el sync.
-                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db).await {
+                                if let Some(fresh_tok) =
+                                    tidal_force_refresh_after_401(db, account_id).await
+                                {
                                     client.set_access_token(fresh_tok);
                                     warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
                                     break;
@@ -5172,6 +5352,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     db,
                                     "tidal",
                                     "HTTP 401: Tidal session unauthorized or expired",
+                                    Some(account_id),
                                 )
                                 .await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching playlists: {}", e);
@@ -5259,7 +5440,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 // intenta UN refresh forzado; si el proveedor emite token fresco, la
                                 // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
                                 // queda registrado como warning para re-ejecutar el sync.
-                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db).await {
+                                if let Some(fresh_tok) =
+                                    tidal_force_refresh_after_401(db, account_id).await
+                                {
                                     client.set_access_token(fresh_tok);
                                     warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
                                     break;
@@ -5268,6 +5451,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     db,
                                     "tidal",
                                     "HTTP 401: Tidal session unauthorized or expired",
+                                    Some(account_id),
                                 )
                                 .await;
                                 let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite artists: {}", e);
@@ -6163,7 +6347,13 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 // volvería a mostrar la sesión como caída aunque la BD esté
                 // intacta. Un fallo transitorio solo aborta esta sincronización.
                 let err_msg = if verdict.invalidates_session() {
-                    let _ = mark_account_credentials_invalid(db, "deezer", e.message()).await;
+                    let _ = mark_account_credentials_invalid(
+                        db,
+                        "deezer",
+                        e.message(),
+                        Some(account_id),
+                    )
+                    .await;
                     let err_msg = format!("RequiresAuth: Deezer session rejected ({})", e);
                     emit(SyncProgressEvent::requires_auth(
                         &service_normalized,
@@ -6841,6 +7031,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             db,
                             "soundcloud",
                             "HTTP 401: SoundCloud OAuth token rejected or expired",
+                            Some(account_id),
                         )
                         .await;
                         let err_msg = format!(
@@ -6941,6 +7132,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             db,
                             "soundcloud",
                             "HTTP 401: SoundCloud OAuth token rejected or expired",
+                            Some(account_id),
                         )
                         .await;
                         let err_msg = format!(

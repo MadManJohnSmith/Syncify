@@ -62,7 +62,7 @@
                 <button 
                   @click="search"
                   :disabled="isSearching"
-                  class="w-full mt-2 px-4 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                  class="w-full mt-2 px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
                 >
                   <span v-if="isSearching" class="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
                   {{ isSearching ? 'Searching...' : 'Search MusicBrainz' }}
@@ -165,7 +165,7 @@
                       <button 
                         @click="applyMatch(result)"
                         :disabled="isApplying"
-                        class="shrink-0 px-4 py-2 bg-primary/10 text-primary hover:bg-primary hover:text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed group-hover:bg-primary group-hover:text-white"
+                        class="shrink-0 px-4 py-2 bg-primary/10 text-primary hover:bg-primary hover:text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed group-hover:bg-primary group-hover:text-on-accent"
                       >
                          {{ isApplying && selectedResult?.recording_id === result.recording_id ? 'Applying...' : 'Apply Match' }}
                       </button>

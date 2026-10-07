@@ -33,6 +33,8 @@ const reviewJob: MigrationJob = {
   id: 'svc-job-1',
   source_service: 'spotify',
   destination_service: 'qobuz',
+    source_account_id: 11,
+    destination_account_id: 20,
   source_playlist_ids: null,
   options: '{}',
   status: 'completed',
@@ -112,6 +114,91 @@ describe('MigrationView service → service mode (post-audit 4.2)', () => {
   beforeEach(() => {
     resetMocks()
     vi.clearAllMocks()
+  })
+
+  it('selects active and single accounts explicitly for migration', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    const accounts = [
+      { id: 11, service_id: 1, service_name: 'spotify', display_name: 'Old', email: 'old@x', is_active: false },
+      { id: 12, service_id: 1, service_name: 'spotify', display_name: 'Active', email: 'new@x', is_active: true },
+      { id: 20, service_id: 2, service_name: 'qobuz', display_name: 'Only', email: 'only@x', is_active: true },
+    ]
+    backend({ get_accounts: accounts, preview_migration: { total_tracks: 0, matched_tracks: 0, unmatched_tracks: 0, playlists: [] } }, calls)
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await wrapper.find('[data-service-id="spotify"]').trigger('click')
+    expect((wrapper.find('[data-testid="svc-source-account"]').element as HTMLSelectElement).value).toBe('12')
+    await clickNext(wrapper)
+    expect(wrapper.find('[data-testid="svc-destination-account"]').exists()).toBe(false)
+    await wrapper.find('[data-service-id="qobuz"]').trigger('click')
+    await clickNext(wrapper)
+    expect(calls.find(c => c.cmd === 'preview_migration')?.args).toMatchObject({ sourceAccountId: 12, destinationAccountId: 20 })
+  })
+
+  it('keeps a single-account source scoped to its own library', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    backend({
+      get_accounts: [
+        { id: 1, service_id: 1, service_name: 'spotify', display_name: 'Only source', is_active: true },
+        { id: 2, service_id: 2, service_name: 'qobuz', display_name: 'Only destination', is_active: true },
+      ],
+      preview_migration: { total_tracks: 0, matched_tracks: 0, unmatched_tracks: 0, playlists: [] },
+    }, calls)
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await wrapper.find('[data-service-id="spotify"]').trigger('click')
+    expect(wrapper.find('[data-testid="svc-source-account"]').exists()).toBe(false)
+    await clickNext(wrapper)
+    await wrapper.find('[data-service-id="qobuz"]').trigger('click')
+    await clickNext(wrapper)
+    expect(calls.find(c => c.cmd === 'preview_migration')?.args).toMatchObject({ sourceAccountId: 1, destinationAccountId: 2 })
+    wrapper.unmount()
+  })
+
+  it('allows same-service transfer only between distinct selected accounts', async () => {
+    const accounts = [
+      { id: 11, service_id: 1, service_name: 'spotify', display_name: 'A', is_active: true },
+      { id: 12, service_id: 1, service_name: 'spotify', display_name: 'B', is_active: false },
+    ]
+    backend({ get_accounts: accounts }, undefined, ['spotify'])
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await wrapper.find('[data-service-id="spotify"]').trigger('click')
+    await clickNext(wrapper)
+    const destination = wrapper.find('[data-service-id="spotify"]')
+    expect(destination.attributes('disabled')).toBeUndefined()
+    await destination.trigger('click')
+    const selector = wrapper.find('[data-testid="svc-destination-account"]')
+    expect((selector.element as HTMLSelectElement).value).toBe('12')
+    await selector.setValue('11')
+    expect(wrapper.findAll('button').find(b => b.text().includes('Next'))?.attributes('disabled')).toBeDefined()
+  })
+
+  it('requires explicit source and destination for same-service preview, even with multiple accounts', async () => {
+    const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
+    const accounts = [
+      { id: 11, service_id: 1, service_name: 'spotify', display_name: 'A', is_active: true },
+      { id: 12, service_id: 1, service_name: 'spotify', display_name: 'B', is_active: false },
+    ]
+    backend({ get_accounts: accounts, preview_migration: { total_tracks: 0, matched_tracks: 0, unmatched_tracks: 0, playlists: [] } }, calls, ['spotify'])
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await wrapper.find('[data-service-id="spotify"]').trigger('click')
+    const source = wrapper.find('[data-testid="svc-source-account"]')
+    // A missing source must not silently mean the active account: it would read
+    // the entire legacy service mirror, including playlists.
+    await source.setValue('')
+    expect(wrapper.findAll('button').find(b => b.text().includes('Next'))?.attributes('disabled')).toBeDefined()
+    await source.setValue('11')
+    await clickNext(wrapper)
+    await wrapper.find('[data-service-id="spotify"]').trigger('click')
+    await clickNext(wrapper)
+    expect(calls.find(c => c.cmd === 'preview_migration')?.args).toMatchObject({ sourceAccountId: 11, destinationAccountId: 12 })
+    wrapper.unmount()
   })
 
   it('exposes the service → service mode next to the transfer wizard and keeps their selections independent', async () => {
@@ -234,6 +321,10 @@ describe('MigrationView service → service mode (post-audit 4.2)', () => {
     const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
     backend(
       {
+        get_accounts: [
+          { id: 11, service_id: 1, service_name: 'spotify', display_name: 'Source', is_active: true },
+          { id: 20, service_id: 2, service_name: 'qobuz', display_name: 'Destination', is_active: true },
+        ],
         get_migration_history: [reviewJob],
         get_migration_items_by_status: [reviewItem],
         preview_migration: { total_tracks: 1, matched_tracks: 0, unmatched_tracks: 1, playlists: [] },
@@ -286,6 +377,46 @@ describe('MigrationView service → service mode (post-audit 4.2)', () => {
     const itemCalls = calls.filter(c => c.cmd === 'get_migration_items_by_status')
     expect(itemCalls.length).toBeGreaterThanOrEqual(2)
     expect(wrapper.find('[data-testid="manual-match-modal"]').exists()).toBe(false)
+  })
+
+  it('allows a valid inactive account when the service active status is invalid', async () => {
+    const statuses = connectedStatuses.map(s => s.name === 'spotify'
+      ? { ...s, connected: false, credentials_invalid: true } : s)
+    const accounts = [
+      { id: 11, service_id: 1, service_name: 'spotify', display_name: 'Expired', is_active: true, credentials_invalid: true },
+      { id: 12, service_id: 1, service_name: 'spotify', display_name: 'Valid', is_active: false, credentials_invalid: false },
+      { id: 20, service_id: 2, service_name: 'qobuz', display_name: 'Only', is_active: true },
+    ]
+    backend({ get_accounts: accounts, get_service_statuses: statuses,
+      preview_migration: { total_tracks: 0, matched_tracks: 0, unmatched_tracks: 0, playlists: [] } })
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    const source = wrapper.find('[data-service-id="spotify"]')
+    expect(source.attributes('disabled')).toBeUndefined()
+    await source.trigger('click')
+    expect((wrapper.find('[data-testid="svc-source-account"]').element as HTMLSelectElement).value).toBe('12')
+    wrapper.unmount()
+  })
+
+  it('does not surface a historical job from another account in review', async () => {
+    const accounts = [
+      { id: 11, service_id: 1, service_name: 'spotify', display_name: 'Source A', is_active: true },
+      { id: 12, service_id: 1, service_name: 'spotify', display_name: 'Source B', is_active: false },
+      { id: 20, service_id: 2, service_name: 'qobuz', display_name: 'Destination', is_active: true },
+    ]
+    backend({ get_accounts: accounts, get_migration_history: [reviewJob], get_migration_items_by_status: [reviewItem],
+      preview_migration: { total_tracks: 0, matched_tracks: 0, unmatched_tracks: 0, playlists: [] } })
+    const wrapper = mount(MigrationView, { global: { stubs } })
+    await flushPromises()
+    await enterServiceMode(wrapper)
+    await wrapper.find('[data-service-id="spotify"]').trigger('click')
+    await wrapper.find('[data-testid="svc-source-account"]').setValue('12')
+    await clickNext(wrapper)
+    await wrapper.find('[data-service-id="qobuz"]').trigger('click')
+    await clickNext(wrapper)
+    expect(wrapper.find('[data-testid="svc-review-item-row"]').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('starts one real migration with the mode selection and renders progress from migration-progress events', async () => {
@@ -643,6 +774,10 @@ describe('MigrationView service → service mode (post-audit 4.2)', () => {
       calls.push({ cmd, args })
       if (cmd === 'start_migration') return new Promise((resolve) => { startResolve = resolve })
       if (cmd === 'get_service_statuses') return connectedStatuses
+      if (cmd === 'get_accounts') return [
+        { id: 11, service_id: 1, service_name: 'spotify', is_active: true },
+        { id: 20, service_id: 2, service_name: 'qobuz', is_active: true },
+      ]
       if (cmd === 'get_migration_destinations') return engineDestinations
       if (cmd === 'preview_migration') return { total_tracks: 1, matched_tracks: 1, unmatched_tracks: 0, playlists: [] }
       // The job only exists once it has run: history starts empty.

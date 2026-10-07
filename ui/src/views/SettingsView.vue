@@ -13,7 +13,7 @@
           :class="[
             'w-full flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors',
             activeCategory === item.id 
-              ? 'bg-primary text-white shadow-lg shadow-primary/20' 
+              ? 'bg-accent-soft text-accent' 
               : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5 hover:text-gray-900 dark:hover:text-white'
           ]"
         >
@@ -22,11 +22,11 @@
         </button>
       </nav>
       <!-- Bottom Actions -->
-      <div class="p-4 border-t border-gray-200 dark:border-border-dark bg-gray-50/50 dark:bg-[#0f1520]/50 space-y-3">
+      <div class="p-4 border-t border-gray-200 dark:border-border-dark bg-gray-50/50 dark:bg-shell/50 space-y-3">
         <button 
           @click="handleSaveChanges"
           :disabled="savingSettings || isLoading"
-          class="w-full py-2 px-4 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium shadow-lg shadow-primary/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+          class="w-full py-2 px-4 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium shadow-lg shadow-primary/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
           <span v-if="savingSettings" class="material-symbols-outlined text-sm animate-spin">sync</span>
           {{ savingSettings ? 'Saving...' : 'Save Changes' }}
         </button>
@@ -64,6 +64,7 @@
         <!-- Settings Content (v-else) -->
         <template v-else>
           <SettingsGeneral v-if="activeCategory === 'general'" />
+          <SettingsAppearance v-if="activeCategory === 'appearance'" />
           <SettingsServices v-if="activeCategory === 'services'" />
           <SettingsQuality v-if="activeCategory === 'quality'" />
           <SettingsMetadata v-if="activeCategory === 'metadata'" />
@@ -98,6 +99,7 @@ import SettingsSync from './settings/SettingsSync.vue'
 import SettingsDownloads from './settings/SettingsDownloads.vue'
 import SettingsQuality from './settings/SettingsQuality.vue'
 import SettingsGeneral from './settings/SettingsGeneral.vue'
+import SettingsAppearance from './settings/SettingsAppearance.vue'
 import SettingsServices from './settings/SettingsServices.vue'
 import SettingsLyrics from './settings/SettingsLyrics.vue'
 import SettingsDuplicates from './settings/SettingsDuplicates.vue'
@@ -296,6 +298,7 @@ async function resetCategoryDefaults() {
 
 const settingsCategories = [
   { id: 'general', name: 'General', icon: 'tune', desc: 'Application behavior and storage paths' },
+  { id: 'appearance', name: 'Apariencia', icon: 'palette', desc: 'Temas de color y tinte de la interfaz' },
   { id: 'services', name: 'Services & Priorities', icon: 'hub', desc: 'Manage connections and download order' },
   { id: 'quality', name: 'Audio Quality', icon: 'high_quality', desc: 'Format preferences and limits' },
   { id: 'metadata', name: 'Metadata & Tags', icon: 'tag', desc: 'Tagging sources and rules' },

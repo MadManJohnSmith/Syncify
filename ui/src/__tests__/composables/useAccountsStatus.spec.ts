@@ -219,4 +219,18 @@ describe('useAccountsStatus Composable (TASK-16)', () => {
     const now = new Date().toISOString()
     expect(formatTimeAgo(now)).toBe('Just now')
   })
+  it('prefers the active account and lists all accounts for its service', async () => {
+    const state = useAccountsStatus(mockToast as never)
+    vi.spyOn(accountsApi, 'getServices').mockResolvedValue(sampleServices)
+    vi.spyOn(accountsApi, 'getAccounts').mockResolvedValue([
+      { ...sampleAccounts[0], id: 3, is_active: false },
+      { ...sampleAccounts[0], id: 4, is_active: true },
+    ])
+    vi.spyOn(accountsApi, 'getServiceStatuses').mockResolvedValue(sampleStatuses)
+    await state.fetchData()
+    expect(state.findAccountForService('spotify')?.id).toBe(4)
+    expect(state.accountsForService('spotify').map(a => a.id)).toEqual([3, 4])
+    expect(state.services.value[0].accounts.map(a => a.id)).toEqual([3, 4])
+  })
+
 })

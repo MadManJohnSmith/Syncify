@@ -94,6 +94,10 @@ export async function toggleAccountActive(id: number, isActive: boolean): Promis
 /**
  * Update account sync time
  */
+export async function setActiveAccount(id: number): Promise<void> {
+    return invokeCommand<void>('set_active_account', { accountId: id });
+}
+
 export async function updateAccountSyncTime(id: number): Promise<void> {
     return invokeCommand<void>('update_account_sync_time', { accountId: id });
 }
@@ -133,8 +137,8 @@ export async function checkAuthStatus(service: string): Promise<AuthResult> {
 /**
  * Logout from a service
  */
-export async function logoutService(service: string): Promise<AuthResult> {
-    return invokeCommand<AuthResult>('logout_service', { service });
+export async function logoutService(service: string, accountId?: number | null): Promise<AuthResult> {
+    return invokeCommand<AuthResult>('logout_service', { service, accountId: accountId ?? null });
 }
 
 /**
@@ -396,6 +400,7 @@ export async function getServiceAuthStatus(
         credentials_valid: rec?.credentials_valid === true,
         credentials_expired: rec?.credentials_expired === true,
         credentials_invalid: rec?.credentials_invalid === true,
+        is_active: rec?.is_active === true,
         sync_available: rec?.sync_available === true,
         download_entitled: rec?.download_entitled === true,
         download_auth_failed: rec?.download_auth_failed === true,
@@ -430,6 +435,7 @@ export const accountsApi = {
     addAccount,
     removeAccount,
     toggleAccountActive,
+    setActiveAccount,
     updateAccountSyncTime,
     // Auth
     startAuthAndSave,

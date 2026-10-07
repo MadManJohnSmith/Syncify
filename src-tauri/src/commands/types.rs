@@ -428,6 +428,15 @@ pub struct ServiceAuthStatus {
     pub service: String,
     #[serde(alias = "account_id")]
     pub account_id: Option<i64>,
+    /// Multi-cuenta: si la fila consultada es la CUENTA ACTIVA del servicio.
+    ///
+    /// Se serializa en `snake_case` (`is_active`, igual que `AccountInfo`) para
+    /// que el normalizador de la UI pueda leerlo directamente; `isActive` se
+    /// acepta en deserialización por si alguien lo built/cached en camelCase.
+    /// Con varias cuentas del servicio es la única señal de si el estado
+    /// devuelto es el de "la cuenta activa" o el de una elegida/desactivada.
+    #[serde(rename = "is_active", alias = "isActive", default)]
+    pub is_active: bool,
     pub status: String, // "connected_valid" | "requires_auth" | "expired" | "missing" | "error"
     #[serde(alias = "is_authenticated")]
     pub is_authenticated: bool,

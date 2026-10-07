@@ -1,42 +1,183 @@
 @import "tailwindcss";
 
-@theme {
-  /* Colors */
-  --color-primary: #3c83f6;
-  --color-primary-hover: #2563eb;
-  --color-background-light: #f5f7f8;
-  --color-background-dark: #101722;
-  --color-surface-dark: #1e293b;
-  --color-surface-light: #1a2332;
-  --color-border-dark: #314668;
-  --color-text-secondary: #90a7cb;
-  --color-success: #10b981;
-  --color-error: #ef4444;
-  --color-warning: #f59e0b;
-  --color-info: #0ea5e9;
-  --color-purple: #8b5cf6;
+/* ==========================================================================
+   Syncify — sistema de temas en runtime
+   Una capa de tokens semánticos + 4 skins. Cambiar data-theme en <html>
+   re-tematiza la app al vuelo: los colores van con @theme inline y las
+   utilidades referencian variables, no valores.
+   Temas: camaleon (default) · tinta · consola · riso
+   ========================================================================== */
 
+/* dark: sigue al tema de la app (los 3 oscuros), no al sistema operativo */
+@custom-variant dark (&:where([data-theme="camaleon"] *, [data-theme="tinta"] *, [data-theme="consola"] *));
+
+/* ---------- Camaleón (default): se tiñe con la carátula en reproducción ---------- */
+:root,
+[data-theme="camaleon"] {
+  color-scheme: dark;
+  --tint-h: 340;
+  --tint-k: 1;
+  --bg-base: oklch(0.16 calc(0.022 * var(--tint-k)) var(--tint-h));
+  --bg-shell: oklch(0.145 calc(0.02 * var(--tint-k)) var(--tint-h));
+  --surface-1: oklch(0.205 calc(0.032 * var(--tint-k)) var(--tint-h));
+  --surface-2: oklch(0.265 calc(0.05 * var(--tint-k)) var(--tint-h));
+  --border: oklch(0.33 calc(0.045 * var(--tint-k)) var(--tint-h) / 55%);
+  --border-strong: oklch(0.4 calc(0.05 * var(--tint-k)) var(--tint-h) / 80%);
+  --text-1: oklch(0.95 0.012 var(--tint-h));
+  --text-2: oklch(0.72 0.03 var(--tint-h));
+  --text-3: oklch(0.5 0.025 var(--tint-h));
+  --accent: oklch(0.66 calc(0.2 * var(--tint-k)) var(--tint-h));
+  --accent-hover: oklch(0.71 calc(0.19 * var(--tint-k)) var(--tint-h));
+  --accent-soft: oklch(0.66 calc(0.2 * var(--tint-k)) var(--tint-h) / 14%);
+  --on-accent: #ffffff;
+  --ok: #34d399;
+  --warn: #e8b23c;
+  --error: #f87171;
+  --info: #38bdf8;
+  --heart: oklch(0.7 calc(0.18 * var(--tint-k)) var(--tint-h));
+  --aura: linear-gradient(90deg, #f43f5e, #8b5cf6 55%, #0ea5e9);
+  --glow: 0 -22px 58px oklch(0.6 calc(0.15 * var(--tint-k)) var(--tint-h) / 14%);
+  --prog: linear-gradient(90deg, oklch(0.62 calc(0.2 * var(--tint-k)) var(--tint-h)), oklch(0.72 calc(0.16 * var(--tint-k)) calc(var(--tint-h) + 40)));
+  --font-display: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.5);
+}
+
+/* ---------- Tinta: monocromo, el color llega del arte ---------- */
+[data-theme="tinta"] {
+  color-scheme: dark;
+  --bg-base: #0a0a0b;
+  --bg-shell: #0a0a0b;
+  --surface-1: #141417;
+  --surface-2: #1c1c21;
+  --border: rgba(255, 255, 255, 0.075);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --text-1: #f4f4f5;
+  --text-2: #8e8e96;
+  --text-3: #56565f;
+  --accent: #f4f4f5;
+  --accent-hover: #ffffff;
+  --accent-soft: rgba(255, 255, 255, 0.1);
+  --on-accent: #0a0a0b;
+  --ok: #34d399;
+  --warn: #e8b23c;
+  --error: #f87171;
+  --info: #38bdf8;
+  --heart: #f43f5e;
+  --aura: linear-gradient(90deg, #f43f5e, #8b5cf6 55%, #0ea5e9);
+  --glow: 0 -20px 50px rgba(244, 63, 142, 0.07);
+  --prog: #f4f4f5;
+  --font-display: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+
+/* ---------- Consola: ámbar sobre carbón neutro ---------- */
+[data-theme="consola"] {
+  color-scheme: dark;
+  --bg-base: #0c0c0f;
+  --bg-shell: #0c0c0f;
+  --surface-1: rgba(255, 255, 255, 0.045);
+  --surface-2: rgba(255, 255, 255, 0.09);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text-1: #f2f2f4;
+  --text-2: #9c9ca7;
+  --text-3: #5e5e69;
+  --accent: #ffb224;
+  --accent-hover: #ffc24d;
+  --accent-soft: rgba(255, 178, 36, 0.13);
+  --on-accent: #221503;
+  --ok: #34d399;
+  --warn: #e8b23c;
+  --error: #f87171;
+  --info: #38bdf8;
+  --heart: #ffb224;
+  --aura: linear-gradient(90deg, transparent, transparent);
+  --glow: none;
+  --prog: #ffb224;
+  --font-display: "Geist", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+
+/* ---------- Riso: papel frío, dos tintas (azul interactivo / rosa suena) ---------- */
+[data-theme="riso"] {
+  color-scheme: light;
+  --bg-base: #f1f2f0;
+  --bg-shell: #f1f2f0;
+  --surface-1: #ffffff;
+  --surface-2: #e7e9e5;
+  --border: #d5d8d3;
+  --border-strong: rgba(20, 22, 26, 0.35);
+  --text-1: #14161a;
+  --text-2: #5c625e;
+  --text-3: #9ba19c;
+  --accent: #2b3ff2;
+  --accent-hover: #1f2fd0;
+  --accent-soft: rgba(43, 63, 242, 0.09);
+  --on-accent: #ffffff;
+  --ok: #0a7f4f;
+  --warn: #c2410c;
+  --error: #dc2626;
+  --info: #2563eb;
+  --heart: #ff48b0;
+  --aura: linear-gradient(90deg, #2b3ff2, #ff48b0);
+  --glow: none;
+  --prog: #ff48b0;
+  --font-display: "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --shadow-card: 0 2px 0 rgba(20, 22, 26, 0.08);
+  --shadow-pop: 0 16px 40px rgba(20, 22, 26, 0.16);
+}
+
+/* ---------- puente Tailwind: utilidades de color → variables ---------- */
+@theme inline {
+  --color-base: var(--bg-base);
+  --color-shell: var(--bg-shell);
+  --color-surface: var(--surface-1);
+  --color-elevated: var(--surface-2);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text-1);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-heart: var(--heart);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-error: var(--error);
+  --color-info: var(--info);
+  /* alias legacy: los usos existentes siguen vivos y ahora teman */
+  --color-primary: var(--accent);
+  --color-primary-hover: var(--accent-hover);
+  --color-background-light: var(--bg-base);
+  --color-background-dark: var(--bg-base);
+  --color-surface-dark: var(--surface-1);
+  --color-surface-light: var(--surface-1);
+  --color-surface-highlight: var(--surface-2);
+  --color-border-dark: var(--border);
+  --color-sidebar: var(--bg-shell);
+  --color-text-secondary: var(--text-2);
+  --color-success: var(--ok);
+  --color-warning: var(--warn);
+  --color-purple: #8b5cf6;
   --color-quality-gold: #fbbf24;
   --color-quality-silver: #e2e8f0;
   --color-quality-gray: #64748b;
+}
 
-  --color-sidebar: #0d121c;
-  --color-surface: #1e293b;
-  --color-surface-highlight: #2d3b55;
-
-  /* Fonts */
-  --font-display: "Inter", sans-serif;
+@theme {
+  --font-display: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "monospace";
-
-  /* Border Radius */
-  --radius-lg: 0.5rem;
-  --radius-xl: 0.75rem;
-  --radius-2xl: 1rem;
-
-  /* Shadows */
-  --shadow-glow: 0 0 20px rgba(60, 131, 246, 0.15);
-
-  /* Animations */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.25rem;
+  --shadow-glow: 0 0 20px color-mix(in srgb, var(--accent) 22%, transparent);
   --animate-shimmer: shimmer 2s infinite linear;
 
   @keyframes shimmer {
@@ -47,58 +188,50 @@
 }
 
 @layer base {
+  body {
+    background-color: var(--bg-base);
+    color: var(--text-1);
+    /* Fusionado de la base preexistente: tipografía y sin scroll de página
+       (el shell de App.vue gestiona su propio overflow). */
+    font-family: var(--font-display);
+    overflow: hidden;
+  }
 
-  /* Custom Scrollbar from Design */
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
-
   ::-webkit-scrollbar-track {
-    background: #101722;
+    background: var(--bg-base);
   }
-
   ::-webkit-scrollbar-thumb {
-    background: #314668;
-    border-radius: 4px;
+    background: var(--surface-2);
+    border-radius: 8px;
   }
-
   ::-webkit-scrollbar-thumb:hover {
-    background: #3c83f6;
-  }
-
-  body {
-    @apply bg-background-light dark:bg-background-dark text-gray-900 dark:text-white font-display overflow-hidden;
+    background: var(--accent);
   }
 
   /* El desplegable de un <select> lo pinta el tema del SISTEMA (WebKitGTK en
-     Linux, WebView2 en Windows), no la página: sin `color-scheme` salía fondo
-     blanco mientras el propio <select> heredaba el texto blanco del tema
-     oscuro, es decir blanco sobre blanco. Los 37 <select> de la app (y sus
-     <option>, que no llevan clases) quedan cubiertos por estas reglas. */
-  :root {
-    color-scheme: light dark;
-  }
-
+     Linux, WebView2 en Windows): la paleta nativa sale de `color-scheme`, que
+     ahora fija cada bloque de tema (los 3 oscuros + riso claro), de modo que
+     el popup sigue al tema de la APP y no al del SO. Los 37 <select> de la app
+     (y sus <option>, que no llevan clases) quedan cubiertos por esta regla
+     tokenizada; la antigua pareja claro/`prefers-color-scheme: dark` se
+     retiró porque un tema claro sobre un SO oscuro (y viceversa) la rompía. */
   select,
   select option {
-    @apply bg-white text-gray-900;
+    @apply bg-surface text-ink;
   }
 
-  @media (prefers-color-scheme: dark) {
-    select,
-    select option {
-      @apply bg-surface-dark text-white;
-    }
+  .glass-panel {
+    background: color-mix(in srgb, var(--surface-1) 72%, transparent);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(20px);
   }
-}
 
-/* Material Symbols filled variant helper */
-.material-symbols-filled {
-  font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
-}
-
-.glass-panel {
-  background: rgba(30, 41, 59, 0.7);
-  backdrop-filter: blur(10px);
+  /* Fusionado de la base preexistente: variante rellena de Material Symbols */
+  .material-symbols-filled {
+    font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
 }

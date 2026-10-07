@@ -148,7 +148,7 @@
           @click="selectTrack(track)"
           :class="[
             'track-row flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors border-l-2',
-            selectedTracks.includes(track.id) ? 'bg-primary/10 border-l-primary' : 
+            selectedTracks.includes(track.id) ? 'bg-accent-soft border-l-primary' :
             track.issues > 0 ? 'border-l-amber-500 hover:bg-gray-50 dark:hover:bg-surface-highlight/50' : 
             'border-l-transparent hover:bg-gray-50 dark:hover:bg-surface-highlight/50'
           ]"
@@ -445,7 +445,7 @@
             <button 
               @click="saveBatchEdits"
               :disabled="isBatchSaving || !Object.values(batchFields).some(v => v)"
-              class="flex-1 px-4 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              class="flex-1 px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <span v-if="isBatchSaving" class="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>
               {{ isBatchSaving ? 'Saving...' : `Save to All ${selectedTracks.length} Tracks` }}
@@ -864,7 +864,7 @@
                   <input v-model="editableFileTags.bpm" type="number" min="0" class="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 dark:border-border-dark bg-transparent text-gray-900 dark:text-white focus:ring-1 focus:ring-primary outline-none" />
                 </label>
               </div>
-              <button @click="writeTrackFileTags" :disabled="isWritingFileTags || !currentTrack" class="mb-4 px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex items-center gap-2">
+              <button @click="writeTrackFileTags" :disabled="isWritingFileTags || !currentTrack" class="mb-4 px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex items-center gap-2">
                 <span v-if="isWritingFileTags" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
                 {{ isWritingFileTags ? 'Escribiendo y verificando…' : 'Escribir en archivo (roundtrip)' }}
               </button>
@@ -889,7 +889,7 @@
             <button 
               @click="saveTrackMetadata"
               :disabled="isSaving"
-              class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               <span v-if="isSaving" class="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>
               {{ isSaving ? 'Saving...' : 'Save Changes' }}
@@ -966,7 +966,7 @@
               <button
                 @click="applyAlbumArt"
                 :disabled="isApplyingArt || artPreviewFailed || !isValidArtUrl"
-                class="mt-6 w-full py-3 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                class="mt-6 w-full py-3 bg-primary hover:bg-primary-hover text-on-accent rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {{ isApplyingArt ? 'Saving…' : 'Use This Image' }}
               </button>
@@ -1160,7 +1160,7 @@
             <!-- Footer -->
             <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex justify-between items-center gap-3 shrink-0">
               <p class="text-xs text-text-secondary">Clic en una fila para adoptar el valor del archivo en el formulario · las filas resaltadas difieren</p>
-              <button @click="showComparison = false; notifyComparisonHint()" class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium transition-colors shrink-0">
+              <button @click="showComparison = false; notifyComparisonHint()" class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg font-medium transition-colors shrink-0">
                 Listo
               </button>
             </div>
@@ -2642,7 +2642,7 @@ function getToastClasses(type: string): string {
     case 'success': return 'bg-success text-white'
     case 'error': return 'bg-error text-white'
     case 'warning': return 'bg-amber-500 text-white'
-    default: return 'bg-primary text-white'
+    default: return 'bg-primary text-on-accent'
   }
 }
 

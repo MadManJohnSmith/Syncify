@@ -4,7 +4,7 @@
     <!-- Page Header -->
     <div class="library-header px-8 pt-8 pb-2 shrink-0">
       <div class="flex items-baseline gap-4">
-        <h1 class="text-3xl font-bold tracking-tight text-gray-900 dark:text-white">Library</h1>
+        <h1 class="text-3xl font-bold tracking-tight text-ink">Library</h1>
         <span class="text-lg text-text-secondary font-medium">{{ totalTracks.toLocaleString() }} Tracks</span>
       </div>
       <p class="text-text-secondary mt-1">Your unified music collection from all services</p>
@@ -20,7 +20,7 @@
           'filter-pill px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-2 whitespace-nowrap transition-all cursor-pointer',
           activeFilters.includes(filter.id) 
             ? 'bg-primary/15 border border-primary/40 text-primary font-bold shadow-xs' 
-            : 'bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-text-secondary hover:text-gray-900 dark:hover:text-white hover:border-gray-300 dark:hover:border-gray-600'
+            : 'bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-text-secondary hover:text-ink hover:border-gray-300 dark:hover:border-gray-600'
         ]"
       >
         <span v-if="activeFilters.includes(filter.id)" class="w-1.5 h-1.5 rounded-full bg-primary"></span>
@@ -43,7 +43,7 @@
           v-model="searchQuery"
           type="text" 
           placeholder="Filter by title, artist, album, genre..." 
-          class="w-full pl-10 pr-10 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all hover:border-gray-300 dark:hover:border-gray-600"
+          class="w-full pl-10 pr-10 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl text-sm text-ink focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent transition-all hover:border-gray-300 dark:hover:border-gray-600"
         >
         <button 
           v-if="searchQuery" 
@@ -60,14 +60,14 @@
         <div class="view-toggle flex items-center bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg p-1">
           <button 
             @click="viewMode = 'list'"
-            :class="['p-1.5 rounded-md transition-all', viewMode === 'list' ? 'bg-primary text-white shadow-sm' : 'text-gray-400 hover:text-gray-900 dark:hover:text-white']"
+            :class="['p-1.5 rounded-md transition-all', viewMode === 'list' ? 'bg-primary text-on-accent shadow-sm' : 'text-gray-400 hover:text-ink']"
             title="List View"
           >
             <span class="material-symbols-outlined text-[20px]">view_list</span>
           </button>
           <button 
             @click="viewMode = 'grid'"
-            :class="['p-1.5 rounded-md transition-all', viewMode === 'grid' ? 'bg-primary text-white shadow-sm' : 'text-gray-400 hover:text-gray-900 dark:hover:text-white']"
+            :class="['p-1.5 rounded-md transition-all', viewMode === 'grid' ? 'bg-primary text-on-accent shadow-sm' : 'text-gray-400 hover:text-ink']"
             title="Grid View"
           >
             <span class="material-symbols-outlined text-[20px]">grid_view</span>
@@ -130,7 +130,7 @@
         <!-- Reset Columns Button -->
         <button 
           @click="resetColumnsOrder"
-          class="p-2 text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-all"
+          class="p-2 text-gray-400 hover:text-ink hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-all"
           title="Reset Columns Order"
         >
           <span class="material-symbols-outlined text-[18px]">view_column</span>
@@ -139,7 +139,7 @@
         <!-- Keyboard Shortcuts Help -->
         <button 
           @click="showShortcutsModal = true"
-          class="p-2 text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-all"
+          class="p-2 text-gray-400 hover:text-ink hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-all"
           title="Keyboard Shortcuts"
         >
           <span class="material-symbols-outlined text-[18px]">keyboard</span>
@@ -172,7 +172,7 @@
         <div v-if="selectedCount > 0" class="flex items-center gap-2">
           <button 
             @click="showBulkMenu = !showBulkMenu"
-            class="flex items-center gap-2 px-3 py-2 bg-primary text-white rounded-lg text-xs font-semibold shadow-lg shadow-primary/20 hover:bg-primary-hover transition-colors relative"
+            class="flex items-center gap-2 px-3 py-2 bg-primary text-on-accent rounded-lg text-xs font-semibold shadow-lg shadow-primary/20 hover:bg-primary-hover transition-colors relative"
           >
             <span class="material-symbols-outlined text-[16px]">checklist</span>
             <span>{{ selectedCount }} selected</span>
@@ -183,7 +183,7 @@
               <span class="material-symbols-outlined text-[16px]">download</span> Download
             </button>
             <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
-              <span class="material-symbols-outlined text-[16px]">queue_music</span> Add to Queue
+              <span class="material-symbols-outlined text-[16px]">download</span> Add to Downloads
             </button>
             <hr class="my-1 border-gray-200 dark:border-border-dark">
             <button @click="handleBulkRemove" class="w-full px-3 py-2 text-left text-xs hover:bg-error/10 transition-colors flex items-center gap-2 text-error">
@@ -221,10 +221,10 @@
 
     <!-- Batch Selection Bar (appears when items selected) -->
     <Transition name="slide-down">
-      <div v-if="selectedCount > 0" class="batch-bar mx-8 mb-4 flex items-center gap-4 px-6 py-3.5 bg-[#1e3a5f] rounded-xl shrink-0 shadow-lg">
-        <span class="text-white font-bold text-sm">{{ selectedCount }} track{{ selectedCount !== 1 ? 's' : '' }} selected</span>
+      <div v-if="selectedCount > 0" class="batch-bar mx-8 mb-4 flex items-center gap-4 px-6 py-3.5 bg-accent-soft rounded-xl shrink-0 shadow-lg">
+        <span class="text-accent font-bold text-sm">{{ selectedCount }} track{{ selectedCount !== 1 ? 's' : '' }} selected</span>
         <div class="flex-1 flex items-center justify-center gap-3 flex-wrap">
-          <button @click="downloadSelectedTracks" class="px-3.5 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs font-semibold shadow-md transition-all flex items-center gap-1.5">
+          <button @click="downloadSelectedTracks" class="px-3.5 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs font-semibold shadow-md transition-all flex items-center gap-1.5">
             <span class="material-symbols-outlined text-[16px]">download</span>
             Download
           </button>
@@ -237,7 +237,7 @@
             Remove
           </button>
         </div>
-        <button @click="clearSelection" class="text-white/70 hover:text-white text-xs transition-colors cursor-pointer">
+        <button @click="clearSelection" class="text-ink-2 hover:text-ink text-xs transition-colors cursor-pointer">
           Clear Selection
         </button>
       </div>
@@ -248,63 +248,67 @@
       <Transition name="fade">
         <div 
           v-if="contextMenu.visible" 
-          class="context-menu fixed z-50 w-56 bg-[#2a2a2a] border border-[#404040] rounded-xl shadow-2xl py-1 overflow-hidden"
+          class="context-menu fixed z-50 w-56 bg-elevated border border-line rounded-xl shadow-2xl py-1 overflow-hidden"
           :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"
           @click.stop
         >
           <!-- Play actions -->
-          <button @click="handlePlayNow(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button @click="handlePlayNow(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="material-symbols-outlined text-[16px]">play_arrow</span>
             <span class="flex-1 text-left">Play Now</span>
             <span class="text-[10px] text-gray-500">Space</span>
           </button>
-          <button @click="handlePlayNext(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button @click="handlePlayNext(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="material-symbols-outlined text-[16px]">queue_play_next</span>
             <span class="flex-1 text-left">Play Next</span>
             <span class="text-[10px] text-gray-500">N</span>
           </button>
-          <button @click="handleAddToQueue(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button @click="handleAddToPlayQueue(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="material-symbols-outlined text-[16px]">playlist_add</span>
-            <span class="flex-1 text-left">Add to Queue</span>
+            <span class="flex-1 text-left">Add to Play Queue</span>
+          </button>
+          <button @click="handleAddToQueue(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
+            <span class="material-symbols-outlined text-[16px]">download</span>
+            <span class="flex-1 text-left">Add to Downloads</span>
             <span class="text-[10px] text-gray-500">Q</span>
           </button>
           
-          <div class="menu-separator h-px bg-[#404040] my-1"></div>
+          <div class="menu-separator h-px bg-line my-1"></div>
           
           <!-- Download submenu -->
           <div class="menu-item-submenu relative group">
-            <button class="w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <button class="w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
               <span class="material-symbols-outlined text-[16px]">download</span>
               <span class="flex-1 text-left">Download</span>
               <span class="text-[10px] text-gray-500 mr-1">D</span>
               <span class="material-symbols-outlined text-[14px] text-gray-400">chevron_right</span>
             </button>
-            <div class="absolute left-full top-0 ml-1 w-48 bg-[#2a2a2a] border border-[#404040] rounded-xl shadow-2xl py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
-              <button @click="handleDownloadBestQuality(contextMenu.track!)" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">Best Quality</button>
-              <button v-if="contextMenu.track?.services.includes('Qobuz')" @click="handleDownloadFromService(contextMenu.track!, 'qobuz')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">From Qobuz (24/96)</button>
-              <button v-if="contextMenu.track?.services.includes('Tidal')" @click="handleDownloadFromService(contextMenu.track!, 'tidal')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">From Tidal (16/44.1)</button>
-              <button v-if="contextMenu.track?.services.includes('Deezer')" @click="handleDownloadFromService(contextMenu.track!, 'deezer')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">From Deezer (FLAC)</button>
+            <div class="absolute left-full top-0 ml-1 w-48 bg-elevated border border-line rounded-xl shadow-2xl py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+              <button @click="handleDownloadBestQuality(contextMenu.track!)" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">Best Quality</button>
+              <button v-if="contextMenu.track?.services.includes('Qobuz')" @click="handleDownloadFromService(contextMenu.track!, 'qobuz')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">From Qobuz (24/96)</button>
+              <button v-if="contextMenu.track?.services.includes('Tidal')" @click="handleDownloadFromService(contextMenu.track!, 'tidal')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">From Tidal (16/44.1)</button>
+              <button v-if="contextMenu.track?.services.includes('Deezer')" @click="handleDownloadFromService(contextMenu.track!, 'deezer')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">From Deezer (FLAC)</button>
             </div>
           </div>
           
-          <div class="menu-separator h-px bg-[#404040] my-1"></div>
+          <div class="menu-separator h-px bg-line my-1"></div>
           
           <!-- Playlist actions -->
           <div class="menu-item-submenu relative group">
-            <button class="w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+            <button class="w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
               <span class="material-symbols-outlined text-[16px]">playlist_add</span>
               <span class="flex-1 text-left">Add to Playlist</span>
               <span class="material-symbols-outlined text-[14px] text-gray-400">chevron_right</span>
             </button>
-            <div class="absolute left-full top-0 ml-1 w-48 bg-[#2a2a2a] border border-[#404040] rounded-xl shadow-2xl py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
-              <button class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors flex items-center gap-2" @click="libraryApi.createPlaylist(1, 'New Playlist'); loadPlaylists()">
+            <div class="absolute left-full top-0 ml-1 w-48 bg-elevated border border-line rounded-xl shadow-2xl py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+              <button class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors flex items-center gap-2" @click="libraryApi.createPlaylist(1, 'New Playlist'); loadPlaylists()">
                 <span class="material-symbols-outlined text-[14px]">add</span> New Playlist...
               </button>
-              <div class="h-px bg-[#404040] my-1"></div>
+              <div class="h-px bg-line my-1"></div>
               <button 
                 v-for="playlist in playlists" 
                 :key="playlist.id" 
-                class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors"
+                class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors"
                 @click="addTrackToPlaylist(playlist.id, contextMenu.track?.id ?? 0)"
               >📋 {{ playlist.name }}</button>
               <p v-if="!playlists || playlists.length === 0" class="px-4 py-2 text-xs text-gray-400 italic">No playlists yet</p>
@@ -312,43 +316,43 @@
           </div>
 
           <!-- Favorite -->
-          <button @click="handleToggleFavorite(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button @click="handleToggleFavorite(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span :class="['material-symbols-outlined text-[16px]', contextMenu.track?.isFavorite ? 'text-red-500 material-symbols-filled' : '']">{{ contextMenu.track?.isFavorite ? 'favorite' : 'favorite_border' }}</span>
             <span class="flex-1 text-left">{{ contextMenu.track?.isFavorite ? 'Remove from Favorites' : 'Add to Favorites' }}</span>
             <span class="text-[10px] text-gray-500">F</span>
           </button>
           
-          <div class="menu-separator h-px bg-[#404040] my-1"></div>
+          <div class="menu-separator h-px bg-line my-1"></div>
           
           <!-- External links -->
-          <button v-if="contextMenu.track?.services.includes('Spotify')" @click="handleViewOnSpotify(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button v-if="contextMenu.track?.services.includes('Spotify')" @click="handleViewOnSpotify(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="w-3.5 h-3.5 rounded-full bg-[#1ed760] flex items-center justify-center text-[8px] font-bold text-black">S</span>
             <span class="flex-1 text-left">View on Spotify</span>
             <span class="material-symbols-outlined text-[14px] text-gray-400">open_in_new</span>
           </button>
-          <button v-if="contextMenu.track?.services.includes('Qobuz')" @click="handleViewOnQobuz(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button v-if="contextMenu.track?.services.includes('Qobuz')" @click="handleViewOnQobuz(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="w-3.5 h-3.5 rounded-full bg-[#1a8fe3] flex items-center justify-center text-[8px] font-bold text-white">Q</span>
             <span class="flex-1 text-left">View on Qobuz</span>
             <span class="material-symbols-outlined text-[14px] text-gray-400">open_in_new</span>
           </button>
           
-          <div class="menu-separator h-px bg-[#404040] my-1"></div>
+          <div class="menu-separator h-px bg-line my-1"></div>
           
           <!-- Metadata actions -->
-          <button @click="handleCheckAvailability(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button @click="handleCheckAvailability(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="material-symbols-outlined text-[16px]">verified</span>
             <span class="flex-1 text-left">Check Availability</span>
           </button>
-          <button @click="handleShowMetadata(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button @click="handleShowMetadata(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="material-symbols-outlined text-[16px]">info</span>
             <span class="flex-1 text-left">Show Metadata</span>
           </button>
-          <button v-if="contextMenu.track?.downloadStatus === 'downloaded'" @click="handleShowInFolder(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-[#1e3a5f] transition-colors">
+          <button v-if="contextMenu.track?.downloadStatus === 'downloaded'" @click="handleShowInFolder(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="material-symbols-outlined text-[16px]">folder</span>
             <span class="flex-1 text-left">Show in Folder</span>
           </button>
           
-          <div class="menu-separator h-px bg-[#404040] my-1"></div>
+          <div class="menu-separator h-px bg-line my-1"></div>
           
           <!-- Remove -->
           <button @click="handleRemoveFromLibrary(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-error hover:bg-error/20 transition-colors">
@@ -363,13 +367,13 @@
     <Teleport to="body">
       <Transition name="fade">
         <div v-if="showShortcutsModal" class="shortcut-modal fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" @click="showShortcutsModal = false">
-          <div class="bg-[#2a2a2a] border border-[#404040] rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" @click.stop>
-            <div class="flex items-center justify-between px-6 py-4 border-b border-[#404040]">
-              <h3 class="text-lg font-bold text-white flex items-center gap-2">
+          <div class="bg-elevated border border-line rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" @click.stop>
+            <div class="flex items-center justify-between px-6 py-4 border-b border-line">
+              <h3 class="text-lg font-bold text-ink flex items-center gap-2">
                 <span class="material-symbols-outlined">keyboard</span>
                 Keyboard Shortcuts
               </h3>
-              <button @click="showShortcutsModal = false" class="text-gray-400 hover:text-white transition-colors">
+              <button @click="showShortcutsModal = false" class="text-gray-400 hover:text-ink transition-colors">
                 <span class="material-symbols-outlined">close</span>
               </button>
             </div>
@@ -378,26 +382,26 @@
                 <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Playback</h4>
                 <div class="flex items-center justify-between text-sm">
                   <span class="text-gray-300">Play / Pause</span>
-                  <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">Space</kbd>
+                  <kbd class="px-2 py-1 bg-base border border-line rounded text-xs text-gray-300 font-mono">Space</kbd>
                 </div>
                 <div class="flex items-center justify-between text-sm">
                   <span class="text-gray-300">Play Next</span>
-                  <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">N</kbd>
+                  <kbd class="px-2 py-1 bg-base border border-line rounded text-xs text-gray-300 font-mono">N</kbd>
                 </div>
               </div>
               <div class="space-y-3">
                 <h4 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Library</h4>
                 <div class="flex items-center justify-between text-sm">
-                  <span class="text-gray-300">Add to Queue</span>
-                  <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">Q</kbd>
+                  <span class="text-gray-300">Add to Downloads</span>
+                  <kbd class="px-2 py-1 bg-base border border-line rounded text-xs text-gray-300 font-mono">Q</kbd>
                 </div>
                 <div class="flex items-center justify-between text-sm">
                   <span class="text-gray-300">Download Track</span>
-                  <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">D</kbd>
+                  <kbd class="px-2 py-1 bg-base border border-line rounded text-xs text-gray-300 font-mono">D</kbd>
                 </div>
                 <div class="flex items-center justify-between text-sm">
                   <span class="text-gray-300">Toggle Favorite</span>
-                  <kbd class="px-2 py-1 bg-[#1a1a1a] border border-[#404040] rounded text-xs text-gray-300 font-mono">F</kbd>
+                  <kbd class="px-2 py-1 bg-base border border-line rounded text-xs text-gray-300 font-mono">F</kbd>
                 </div>
               </div>
             </div>
@@ -412,12 +416,12 @@
 <!-- ERROR STATE: un fallo de carga no es una biblioteca vacía -->
       <div v-if="loadError && !isLoading" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16" data-testid="library-load-error">
         <span class="material-symbols-outlined text-[80px] text-error mb-6">error</span>
-        <h3 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Could not load your library</h3>
+        <h3 class="text-2xl font-bold text-ink mb-2">Could not load your library</h3>
         <p class="text-text-secondary mb-2 max-w-md">Your tracks are still there — the app could not read them just now.</p>
         <p class="text-xs text-text-secondary mb-8 max-w-md break-words">{{ loadError }}</p>
         <button
           @click="loadLibrary"
-          class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium shadow-lg shadow-primary/20 transition-all cursor-pointer flex items-center gap-2"
+          class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-xl font-medium shadow-lg shadow-primary/20 transition-all cursor-pointer flex items-center gap-2"
         >
           <span class="material-symbols-outlined text-[18px]">refresh</span>
           Try Again
@@ -427,7 +431,7 @@
       <!-- EMPTY STATE: Syncing in Progress -->
       <div v-else-if="tracks.length === 0 && !isLoading && hasSyncingTask" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
         <span class="material-symbols-outlined text-[80px] text-primary mb-6 animate-spin">sync</span>
-        <h3 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Syncing your music collection...</h3>
+        <h3 class="text-2xl font-bold text-ink mb-2">Syncing your music collection...</h3>
         <p class="text-text-secondary mb-8 max-w-md">Importing albums, playlists, and favorites from your connected services. Your tracks and albums will appear here automatically when sync completes.</p>
         <button
           @click="loadLibrary"
@@ -441,12 +445,12 @@
       <!-- EMPTY STATE: No Tracks -->
       <div v-else-if="tracks.length === 0 && !isLoading" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
         <span class="material-symbols-outlined text-[80px] text-gray-400 dark:text-gray-600 mb-6">library_music</span>
-        <h3 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Your library is empty</h3>
+        <h3 class="text-2xl font-bold text-ink mb-2">Your library is empty</h3>
         <p class="text-text-secondary mb-8 max-w-md">Import music from streaming services or scan local files to get started</p>
         <div class="flex gap-4">
           <button 
             @click="router.push('/accounts')"
-            class="px-6 py-3 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium shadow-lg shadow-primary/20 transition-all cursor-pointer"
+            class="px-6 py-3 bg-primary hover:bg-primary-hover text-on-accent rounded-xl font-medium shadow-lg shadow-primary/20 transition-all cursor-pointer"
           >
             Connect Services
           </button>
@@ -462,7 +466,7 @@
       <!-- EMPTY STATE: No Filter Results -->
       <div v-else-if="filteredTracks.length === 0 && !isSearching" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
         <span class="material-symbols-outlined text-[60px] text-gray-400 dark:text-gray-600 mb-6">filter_list_off</span>
-        <h3 class="text-xl font-bold text-gray-900 dark:text-white mb-2">No tracks match your filters</h3>
+        <h3 class="text-xl font-bold text-ink mb-2">No tracks match your filters</h3>
         <p class="text-text-secondary mb-6">Try adjusting your search or filters</p>
         <button @click="clearAllFilters" class="px-5 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-xl font-medium transition-all cursor-pointer">
           Clear All Filters
@@ -472,14 +476,14 @@
       <!-- SEARCHING STATE -->
       <div v-else-if="isSearching && searchQuery" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
         <span class="material-symbols-outlined text-[60px] text-primary mb-6 animate-spin">progress_activity</span>
-        <h3 class="text-xl font-bold text-gray-900 dark:text-white mb-2">Searching...</h3>
+        <h3 class="text-xl font-bold text-ink mb-2">Searching...</h3>
         <p class="text-text-secondary">Searching your entire library for "{{ searchQuery }}"</p>
       </div>
 
       <!-- LIST VIEW (Customizable Columns with Drag & Drop) -->
       <template v-else-if="viewMode === 'list' && groupBy === 'none'">
         <!-- Header Row -->
-        <div class="track-list flex items-center gap-2 px-3 py-3 border-b border-gray-200 dark:border-border-dark text-[11px] font-bold text-text-secondary uppercase tracking-wider shrink-0 bg-gray-50/50 dark:bg-[#121b29]/50 rounded-t-xl backdrop-blur-sm sticky top-0 z-10 select-none">
+        <div class="track-list flex items-center gap-2 px-3 py-3 border-b border-gray-200 dark:border-border-dark text-[11px] font-bold text-text-secondary uppercase tracking-wider shrink-0 bg-shell/50 rounded-t-xl backdrop-blur-sm sticky top-0 z-10 select-none">
           <!-- Selection Checkbox -->
           <div class="w-10 text-center shrink-0">
             <input type="checkbox" @change="toggleSelectAll" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
@@ -494,7 +498,7 @@
               @drop="onColDrop(colIdx, $event)"
               @dragend="onColDragEnd"
               :class="[
-                'column-header flex items-center gap-1 cursor-grab active:cursor-grabbing hover:text-gray-900 dark:hover:text-white transition-all',
+                'column-header flex items-center gap-1 cursor-grab active:cursor-grabbing hover:text-ink transition-all',
                 col.widthClass,
                 col.hideBreakpoint || '',
                 col.align === 'center' ? 'justify-center text-center' : col.align === 'right' ? 'justify-end text-right' : 'justify-start text-left',
@@ -523,8 +527,8 @@
             :class="[
               'track-row flex items-center gap-2 px-3 py-2 border-b border-gray-100 dark:border-border-dark/50 last:border-0 transition-all group cursor-pointer',
               track.isPlaying ? 'bg-primary/5 border-l-4 border-l-primary' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight/30',
-              track.isSelected ? 'bg-blue-500/10' : '',
-              index % 2 === 1 ? 'bg-gray-50/30 dark:bg-[#1e2938]/30' : '',
+              track.isSelected ? 'bg-accent-soft' : '',
+              index % 2 === 1 ? 'bg-surface/30' : '',
               highlightedTrackId === track.id ? 'bg-primary/10 ring-1 ring-inset ring-primary' : ''
             ]"
           >
@@ -554,7 +558,7 @@
                   size-class="h-10 w-10 rounded-md"
                 />
                 <div class="flex flex-col gap-0.5 overflow-hidden min-w-0">
-                  <span class="font-medium text-gray-900 dark:text-white truncate text-sm">{{ track.title }}</span>
+                  <span class="font-medium text-ink truncate text-sm">{{ track.title }}</span>
                   <div class="flex items-center gap-1.5 text-xs text-text-secondary truncate">
                     <span class="truncate">{{ track.artist }} · {{ track.album }}</span>
                     <span v-if="track.bpm" class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0" :title="'BPM: ' + Math.round(track.bpm)">{{ Math.round(track.bpm) }} BPM</span>
@@ -659,7 +663,7 @@
                 </span>
               </button>
               <button v-if="track.downloadStatus !== 'downloaded'" @click.stop="handleDownload(track)" class="p-1 text-gray-400 opacity-60 hover:text-primary hover:opacity-100 transition-all" title="Download"><span class="material-symbols-outlined text-[18px]">download</span></button>
-              <button @click.stop="openContextMenu($event, track)" class="p-1 text-gray-400 opacity-60 hover:text-gray-900 dark:hover:text-white hover:opacity-100 transition-all" title="More options"><span class="material-symbols-outlined text-[18px]">more_vert</span></button>
+              <button @click.stop="openContextMenu($event, track)" class="p-1 text-gray-400 opacity-60 hover:text-ink hover:opacity-100 transition-all" title="More options"><span class="material-symbols-outlined text-[18px]">more_vert</span></button>
             </div>
           </div>
           
@@ -718,7 +722,7 @@
                 
                 <!-- Hover Overlay -->
                 <div class="tile-overlay absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-all duration-300 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100">
-                  <button @click.stop="handleAlbumPlay(album)" class="w-14 h-14 rounded-full bg-primary text-white flex items-center justify-center shadow-xl transform scale-75 group-hover:scale-100 transition-transform duration-300" title="Play album">
+                  <button @click.stop="handleAlbumPlay(album)" class="w-14 h-14 rounded-full bg-primary text-on-accent flex items-center justify-center shadow-xl transform scale-75 group-hover:scale-100 transition-transform duration-300" title="Play album">
                     <span class="material-symbols-outlined text-[28px]">play_arrow</span>
                   </button>
                   <span class="absolute bottom-3 text-white text-xs font-medium">{{ album.trackCount }} track{{ album.trackCount !== 1 ? 's' : '' }}</span>
@@ -727,7 +731,7 @@
               
               <!-- Info Area -->
               <div class="tile-info p-3 space-y-1">
-                <h4 class="text-sm font-semibold text-gray-900 dark:text-white line-clamp-2 leading-tight">{{ album.title }}</h4>
+                <h4 class="text-sm font-semibold text-ink line-clamp-2 leading-tight">{{ album.title }}</h4>
                 <p class="text-xs text-text-secondary truncate">{{ album.artist }}</p>
                 <div class="flex items-center justify-between pt-1">
                   <div class="flex items-center gap-1">
@@ -750,13 +754,13 @@
             <!-- Group Header -->
             <div 
               @click="toggleGroupExpand(artistGroup.artist)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-[#1e1e1e] dark:bg-[#1a2332] border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-[#252525] dark:hover:bg-[#1e2838] transition-colors rounded-t-lg"
+              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
             >
               <div class="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-purple-500 flex items-center justify-center text-white font-bold text-lg shrink-0">
                 {{ artistGroup.artist.charAt(0) }}
               </div>
               <div class="flex-1 min-w-0">
-                <h3 class="text-lg font-bold text-white truncate">{{ artistGroup.artist }}</h3>
+                <h3 class="text-lg font-bold text-ink truncate">{{ artistGroup.artist }}</h3>
                 <p class="text-xs text-text-secondary">{{ artistGroup.tracks.length }} tracks</p>
               </div>
               <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(artistGroup.artist) ? 'rotate-180' : '']">expand_more</span>
@@ -782,7 +786,7 @@
                   rounded="rounded"
                 />
                 <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
                   <p class="text-xs text-text-secondary truncate">{{ track.album }}</p>
                 </div>
                 <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
@@ -800,14 +804,14 @@
             <!-- Group Header -->
             <div 
               @click="toggleGroupExpand(albumGroup.title)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-[#1e1e1e] dark:bg-[#1a2332] border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-[#252525] dark:hover:bg-[#1e2838] transition-colors rounded-t-lg"
+              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
             >
               <div :class="['w-12 h-12 rounded-lg shrink-0 overflow-hidden', !albumGroup.coverUrl && albumGroup.artGradient]">
                 <img v-if="albumGroup.coverUrl" :src="albumGroup.coverUrl" :alt="albumGroup.title" class="w-full h-full object-cover" loading="lazy" />
               </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
-                  <h3 class="text-base font-bold text-white truncate">{{ albumGroup.title }}</h3>
+                  <h3 class="text-base font-bold text-ink truncate">{{ albumGroup.title }}</h3>
                   <button 
                     v-if="albumGroup.albumId"
                     @click.stop="handleAlbumClick(albumGroup.albumId)"
@@ -837,7 +841,7 @@
               >
                 <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
                 <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
                 </div>
                 <div class="flex items-center gap-1">
                   <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
@@ -856,13 +860,13 @@
             <!-- Group Header -->
             <div 
               @click="toggleGroupExpand(genreGroup.genre)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-[#1e1e1e] dark:bg-[#1a2332] border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-[#252525] dark:hover:bg-[#1e2838] transition-colors rounded-t-lg"
+              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
             >
               <div class="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold shrink-0">
                 <span class="material-symbols-outlined text-[22px]">category</span>
               </div>
               <div class="flex-1 min-w-0">
-                <h3 class="text-lg font-bold text-white truncate">{{ genreGroup.genre }}</h3>
+                <h3 class="text-lg font-bold text-ink truncate">{{ genreGroup.genre }}</h3>
                 <p class="text-xs text-text-secondary">{{ genreGroup.tracks.length }} track{{ genreGroup.tracks.length !== 1 ? 's' : '' }}</p>
               </div>
               <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(genreGroup.genre) ? 'rotate-180' : '']">expand_more</span>
@@ -888,7 +892,7 @@
                   rounded="rounded"
                 />
                 <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
                   <p class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</p>
                 </div>
                 <div class="flex items-center gap-1">
@@ -908,13 +912,13 @@
             <!-- Group Header -->
             <div 
               @click="toggleGroupExpand(qualityGroup.quality)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-[#1e1e1e] dark:bg-[#1a2332] border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-[#252525] dark:hover:bg-[#1e2838] transition-colors rounded-t-lg"
+              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
             >
               <div :class="['w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-[10px] shrink-0', getQualityStyle(qualityGroup.quality)]">
                 {{ qualityGroup.quality }}
               </div>
               <div class="flex-1 min-w-0">
-                <h3 class="text-lg font-bold text-white truncate">{{ qualityGroup.quality }}</h3>
+                <h3 class="text-lg font-bold text-ink truncate">{{ qualityGroup.quality }}</h3>
                 <p class="text-xs text-text-secondary">{{ qualityGroup.tracks.length }} tracks</p>
               </div>
               <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(qualityGroup.quality) ? 'rotate-180' : '']">expand_more</span>
@@ -940,7 +944,7 @@
                   rounded="rounded"
                 />
                 <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
                   <p class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</p>
                 </div>
                 <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
@@ -1604,11 +1608,13 @@ function handleTrackClick(track: Track) {
   selectedCount.value = tracks.value.filter(t => t.isSelected).length;
 }
 
-const { play, playNext, toggle: togglePlayback, current: playerCurrent } = usePlayer();
+const { play, playNext, enqueue, toggle: togglePlayback, current: playerCurrent } = usePlayer();
 
 // S194 residual: double-click plays the LOCAL downloaded file through the
-// syncify-media protocol. Tracks without a local file surface the backend's
-// honest error via the player bar; provider streaming is out of scope.
+// syncify-media protocol. Tracks without a local file fail with the backend's
+// honest error: player.error lo muestra la NowPlayingBar mientras hay pista
+// en curso, y sin current (barra oculta) estos catches lo revelan como toast;
+// provider streaming is out of scope.
 async function handleTrackPlay(track: Track) {
   try {
     await play({
@@ -1618,8 +1624,9 @@ async function handleTrackPlay(track: Track) {
       album: track.album ?? null,
       coverUrl: track.coverUrl ?? null,
     });
-  } catch {
-    // player.error already carries the message for the NowPlayingBar
+  } catch (error: any) {
+    console.error('Failed to play track:', error);
+    surfacePlayFailure(track, error);
   }
 }
 
@@ -1644,13 +1651,49 @@ async function handlePlayNext(track: Track) {
     } else {
       toast.success('Playing Next', `"${track.title}" will play next`);
     }
-  } catch {
-    // player.error already carries the message for the NowPlayingBar
+  } catch (error: any) {
+    console.error('Failed to play next:', error);
+    surfacePlayFailure(track, error);
   }
 }
 
-// "Add to Queue" enqueues the track into the download queue, the app-wide
-// meaning of the queue (QueueView / DownloadsView), same as the D shortcut.
+// Fase 1: "Add to Play Queue" añade la pista al FINAL de la cola de
+// reproducción (playNext inserta al frente); con el player parado la arranca.
+async function handleAddToPlayQueue(track: Track) {
+  closeContextMenu();
+  try {
+    const outcome = await enqueue({
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album ?? null,
+      coverUrl: track.coverUrl ?? null,
+    });
+    if (outcome === 'started') {
+      toast.success(`Now playing "${track.title}"`);
+    } else {
+      toast.success('Added to Play Queue', `"${track.title}" sonará al final de la cola`);
+    }
+  } catch (error: any) {
+    console.error('Failed to add to play queue:', error);
+    surfacePlayFailure(track, error);
+  }
+}
+
+/**
+ * Un fallo de arranque solo toca player.error: sin pista en curso la barra
+ * no se renderiza y el mensaje no llegaría al usuario (antes estos catch
+ * eran silenciosos). Con current la barra ya enseña el error; sin ella, toast.
+ */
+function surfacePlayFailure(track: Track, error: unknown) {
+  if (playerCurrent.value) return;
+  const message = String((error as { message?: string })?.message || error || '');
+  toast.error(`No se pudo reproducir "${track.title}"`, message);
+}
+
+// "Add to Downloads" enqueues the track into the download queue (QueueView /
+// DownloadsView), same as the D shortcut. Etiqueta renombrada en fase 1 para
+// desambiguarla de la cola de reproducción.
 async function handleAddToQueue(track: Track) {
   closeContextMenu();
   await handleDownload(track);
@@ -2332,7 +2375,7 @@ function handleKeydown(event: KeyboardEvent) {
       handleDownload(contextMenu.value.track)
     }
   } else if (event.key === 'q' || event.key === 'Q') {
-    // FE-9: "Add to Queue" — same enqueue path as D (download queue).
+    // FE-9: "Add to Downloads" — same enqueue path as D (download queue).
     if (selectedCount.value > 0) {
       downloadSelectedTracks()
     } else if (contextMenu.value.track) {
@@ -2510,12 +2553,12 @@ onUnmounted(() => {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(128, 128, 128, 0.3);
+  background: var(--surface-2);
   border-radius: 3px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(128, 128, 128, 0.5);
+  background: var(--accent);
 }
 
 .filter-pills::-webkit-scrollbar {

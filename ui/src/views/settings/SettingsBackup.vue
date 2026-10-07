@@ -16,7 +16,7 @@
         <button 
           @click="handleExport"
           :disabled="isExporting"
-          class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium shadow-md shadow-primary/20 transition-all disabled:opacity-50 flex items-center gap-2"
+          class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium shadow-md shadow-primary/20 transition-all disabled:opacity-50 flex items-center gap-2"
         >
           <span class="material-symbols-outlined text-[18px]" :class="{ 'animate-spin': isExporting }">upload</span>
           {{ isExporting ? 'Exporting...' : 'Export Backup File' }}
@@ -103,7 +103,7 @@
             </button>
             <button
               @click="reconcileOptions.dryRun = false"
-              :class="['flex-1 py-1.5 text-xs font-medium rounded-md transition-all', !reconcileOptions.dryRun ? 'bg-amber-600 text-white shadow-xs' : 'text-text-secondary hover:text-white']"
+              :class="['flex-1 py-1.5 text-xs font-medium rounded-md transition-all', !reconcileOptions.dryRun ? 'bg-amber-600 text-white shadow-xs' : 'text-text-secondary hover:text-ink']"
             >
               Apply (Execute)
             </button>
@@ -176,7 +176,7 @@
           :class="[
             'px-5 py-2.5 rounded-lg text-sm font-medium transition-all disabled:opacity-50 flex items-center gap-2 shadow-sm',
             reconcileOptions.dryRun 
-              ? 'bg-primary hover:bg-primary-hover text-white shadow-primary/20' 
+              ? 'bg-primary hover:bg-primary-hover text-on-accent shadow-primary/20'
               : 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/20'
           ]"
         >

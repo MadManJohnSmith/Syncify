@@ -18,7 +18,7 @@
        </div>
      </div>
      
-     <div v-if="isConnected" class="mb-3 space-y-2">
+     <div v-if="isConnected || hasAccount" class="mb-3 space-y-2">
         <label class="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
            <input 
              type="checkbox" 
@@ -47,7 +47,7 @@
           type="button"
           @click="onReauth"
           data-testid="service-card-reauth"
-          class="flex-1 py-1.5 bg-gray-100 dark:bg-surface-highlight rounded hover:bg-gray-200 dark:hover:bg-[#384866] transition-colors text-gray-700 dark:text-gray-300"
+          class="flex-1 py-1.5 bg-gray-100 dark:bg-surface-highlight rounded hover:bg-gray-200 dark:hover:bg-white/10 transition-colors text-gray-700 dark:text-gray-300"
         >
           Re-authenticate
         </button>
@@ -83,6 +83,7 @@ export interface ServiceCardProps {
   icon: string
   color: string
   isConnected: boolean
+  hasAccount?: boolean
   user?: string
   status?: string
   statusType?: 'success' | 'warning' | 'error'
@@ -95,6 +96,7 @@ const props = withDefaults(defineProps<ServiceCardProps>(), {
   id: undefined,
   serviceId: undefined,
   user: undefined,
+  hasAccount: false,
   status: undefined,
   statusType: 'success',
   isIconText: false,

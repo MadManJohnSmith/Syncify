@@ -1424,14 +1424,20 @@ const APPLE_MUSIC_FAV_PAGE: i32 = 100;
 
 /// Synchronize favorites from a streaming service (Tidal, Qobuz, Spotify,
 /// Deezer, SoundCloud, Apple Music) into SQLite
+///
+/// Multi-cuenta: `account_id` elige QUÉ cuenta se sincroniza. `None` conserva el
+/// contrato histórico ("la cuenta activa"), que es lo que usan los llamadores
+/// que no tienen contexto de cuenta.
 #[tauri::command]
 pub async fn sync_favorites(
     state: State<'_, AppState>,
     window: tauri::Window,
     service: String,
     fav_type: Option<String>,
+    account_id: Option<i64>,
 ) -> Result<FavoritesSyncResult, String> {
-    let result = perform_sync_favorites(&state.db, &service, fav_type.as_deref()).await?;
+    let result =
+        perform_sync_favorites(&state.db, &service, fav_type.as_deref(), account_id).await?;
 
     let _ = window.emit(
         "syncify:favorites_sync_completed",
@@ -1446,26 +1452,36 @@ pub async fn sync_favorites(
     Ok(result)
 }
 
-/// Provider half of [`sync_favorites`]: resolve the active account, walk the
-/// liked collections the service actually exposes and persist them.
+/// Provider half of [`sync_favorites`]: resolve the account, walk the liked
+/// collections the service actually exposes and persist them.
 ///
 /// Split from the command so each per-service arm is reachable without a Tauri
 /// window; `db` is all the state these arms need.
+///
+/// Multi-cuenta: `account_id` = Some(id) resuelve las credenciales de ESA cuenta
+/// (validando que pertenezca al servicio); None = la cuenta activa, como antes.
+/// Sin este parámetro el `accountId` que pase la UI se ignoraría y el sync de
+/// favoritos seguiría anclado a la activa.
 pub async fn perform_sync_favorites(
     db: &sqlx::Pool<sqlx::Sqlite>,
     service: &str,
     fav_type: Option<&str>,
+    account_id: Option<i64>,
 ) -> Result<FavoritesSyncResult, String> {
     let service_lower = service.to_lowercase();
     let type_filter = fav_type.unwrap_or("all").to_lowercase();
 
     tracing::info!(
-        "sync_favorites called for service '{}', type '{}'",
+        "sync_favorites called for service '{}', type '{}', account {:?}",
         service_lower,
-        type_filter
+        type_filter,
+        account_id
     );
 
-    let (account_id, creds) = load_service_credentials(db, &service_lower).await?;
+    let (account_id, creds) = match account_id {
+        Some(aid) => load_service_credentials_for_account(db, &service_lower, aid).await?,
+        None => load_service_credentials(db, &service_lower).await?,
+    };
     let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
         .bind(&service_lower)
         .fetch_one(db)

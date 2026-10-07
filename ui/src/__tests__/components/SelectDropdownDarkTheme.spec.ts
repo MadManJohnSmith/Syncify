@@ -13,6 +13,13 @@ import BaseSelect from '@/components/settings/BaseSelect.vue'
  * oscuro: blanco sobre blanco. Los 170 <option> de la app no llevan clase
  * propia, así que la corrección tiene que venir de la capa base global, no de
  * cada componente.
+ *
+ * Rediseño de temas (runtime): la app ya no sigue al tema del SISTEMA sino al
+ * de la APP vía data-theme en <html>. Ahora es cada bloque de tema el que fija
+ * `color-scheme` (3 oscuros + riso claro), y la regla global de select/option
+ * se tokeniza (bg-surface + text-ink) para contrastar en los 4 temas. La
+ * antigua pareja claro/`prefers-color-scheme: dark` se retiró: un tema claro
+ * sobre un SO oscuro (y viceversa) la rompía.
  */
 const css = fs.readFileSync(path.resolve(__dirname, '../../styles/main.css'), 'utf-8')
 
@@ -54,32 +61,28 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
 }
 
 describe('Desplegables de la app en tema oscuro (R8)', () => {
-  it('declara color-scheme en :root para que el popup siga al tema del sistema', () => {
-    const rootRules = ruleBodies(css, /:root\s*\{/)
-    expect(rootRules.length).toBeGreaterThan(0)
-    const declarations = rootRules.map((rule) => rule.replace(/\{|\}/g, '')).join(' ')
-    expect(declarations).toMatch(/color-scheme:\s*light\s+dark/)
+  it('cada tema declara color-scheme para que el popup nativo siga al tema de la app', () => {
+    // Camaleón, tinta y consola son oscuros; riso es claro.
+    const darkCount = (css.match(/color-scheme:\s*dark/g) ?? []).length
+    expect(darkCount, 'los 3 temas oscuros deben declarar color-scheme: dark').toBeGreaterThanOrEqual(3)
+    const risoIndex = css.indexOf('[data-theme="riso"]')
+    expect(risoIndex).toBeGreaterThan(-1)
+    const risoBlock = blockAt(css, css.indexOf('{', risoIndex))
+    expect(risoBlock).toMatch(/color-scheme:\s*light/)
   })
 
-  it('da fondo y color propios a select y a sus option en claro', () => {
+  it('da fondo y color propios a select y a sus option con tokens del tema activo', () => {
     const bodies = ruleBodies(css, /select,\s*select option\s*\{/).filter((rule) =>
-      /bg-white/.test(rule)
+      /bg-surface/.test(rule)
     )
     expect(bodies.length).toBeGreaterThan(0)
-    const rule = bodies[0]
-    expect(rule).toMatch(/text-gray-900/)
+    // Tokens, no hex: la misma regla contrasta en los 4 temas.
+    expect(bodies[0]).toMatch(/text-ink/)
+    expect(bodies[0]).not.toMatch(/bg-white|text-white|text-gray-900/)
   })
 
-  it('repite el fondo de select y option en prefers-color-scheme: dark', () => {
-    const mediaIndex = css.indexOf('@media (prefers-color-scheme: dark)')
-    expect(mediaIndex, 'main.css debe tener un bloque para el tema oscuro del sistema').toBeGreaterThan(-1)
-    const media = blockAt(css, css.indexOf('{', mediaIndex))
-    const darkRules = ruleBodies(media, /select,\s*select option\s*\{/)
-    expect(darkRules.length).toBeGreaterThan(0)
-    // El texto del option sigue siendo el de la app: sin este fondo, el popup
-    // sale con la paleta blanca del sistema y el texto blanco desaparece.
-    expect(darkRules[0]).toMatch(/bg-surface-dark/)
-    expect(darkRules[0]).toMatch(/text-white/)
+  it('ya no depende de prefers-color-scheme: el tema manda, no el SO', () => {
+    expect(css.includes('@media (prefers-color-scheme'), 'los selects no deben colgarse del tema del SO').toBe(false)
   })
 
   it('ningún <option> de la app se salta la regla global con su propio fondo o color de texto', () => {

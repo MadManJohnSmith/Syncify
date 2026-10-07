@@ -1,99 +1,99 @@
 <template>
-  <div v-if="!isCollapsed" :class="['status-bar fixed bottom-0 left-0 right-0 h-8 bg-[#1e1e1e] border-t border-gray-800 flex items-center px-3 text-xs', (showSyncPopover || showNetworkPopover || showStoragePopover) ? 'z-[160]' : 'z-[50]']">
+  <div v-if="!isCollapsed" :class="['status-bar fixed bottom-0 left-0 right-0 h-8 bg-shell border-t border-line flex items-center px-3 text-xs', (showSyncPopover || showNetworkPopover || showStoragePopover) ? 'z-[160]' : 'z-[50]']">
     <!-- Left Section: Sync Status -->
     <div 
-      class="status-section sync-status flex items-center gap-2 px-3 py-1 rounded hover:bg-white/5 cursor-pointer transition-colors"
+      class="status-section sync-status flex items-center gap-2 px-3 py-1 rounded hover:bg-elevated cursor-pointer transition-colors"
       @click="toggleSyncPopover"
       :title="syncTooltip"
     >
       <!-- Syncing -->
       <template v-if="syncState === 'syncing'">
-        <span class="material-symbols-outlined text-blue-400 text-sm animate-spin">sync</span>
-        <span class="text-blue-400">
+        <span class="material-symbols-outlined text-info text-sm animate-spin">sync</span>
+        <span class="text-info">
           <template v-if="activeTasks.length > 1">{{ activeTasks.length }} tasks</template>
           <template v-else>Syncing {{ syncService }}...</template>
         </span>
-        <span v-if="hasDeterminateProgress" class="text-blue-300">{{ syncProgress }}%</span>
+        <span v-if="hasDeterminateProgress" class="text-info/80">{{ syncProgress }}%</span>
       </template>
       
       <!-- Idle -->
       <template v-else-if="syncState === 'idle'">
-        <span class="material-symbols-outlined text-green-400 text-sm">check_circle</span>
-        <span class="text-gray-400">All synced</span>
+        <span class="material-symbols-outlined text-ok text-sm">check_circle</span>
+        <span class="text-ink-2">All synced</span>
       </template>
       
       <!-- Error -->
       <template v-else-if="syncState === 'error'">
-        <span class="material-symbols-outlined text-red-400 text-sm">warning</span>
-        <span class="text-red-400">Sync failed</span>
+        <span class="material-symbols-outlined text-error text-sm">warning</span>
+        <span class="text-error">Sync failed</span>
       </template>
       
       <!-- Paused -->
       <template v-else-if="syncState === 'paused'">
-        <span class="material-symbols-outlined text-amber-400 text-sm">pause_circle</span>
-        <span class="text-amber-400">Sync paused</span>
+        <span class="material-symbols-outlined text-warn text-sm">pause_circle</span>
+        <span class="text-warn">Sync paused</span>
       </template>
     </div>
     
     <!-- Sync Popover -->
     <Transition name="slide-up">
-      <div v-if="showSyncPopover" :class="['status-popover absolute z-[160] left-3 w-64 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-4', current ? 'bottom-26' : 'bottom-10']">
+      <div v-if="showSyncPopover" :class="['status-popover absolute z-[160] left-3 w-64 bg-surface border border-line rounded-xl shadow-xl p-4', current ? 'bottom-26' : 'bottom-10']">
         <div class="flex items-center justify-between mb-3">
-          <span class="font-medium text-white">Sync Details</span>
-          <button @click="showSyncPopover = false" class="p-1 hover:bg-gray-700 rounded">
-            <span class="material-symbols-outlined text-gray-400 text-sm">close</span>
+          <span class="font-medium text-ink">Sync Details</span>
+          <button @click="showSyncPopover = false" class="p-1 hover:bg-elevated rounded">
+            <span class="material-symbols-outlined text-ink-2 text-sm">close</span>
           </button>
         </div>
         
 <div v-if="syncState === 'syncing'" class="space-y-2">
           <div class="flex items-center gap-2">
-            <span class="material-symbols-outlined text-blue-400 text-lg animate-spin">sync</span>
-            <span class="text-gray-300">{{ syncService }}</span>
+            <span class="material-symbols-outlined text-info text-lg animate-spin">sync</span>
+            <span class="text-ink-2">{{ syncService }}</span>
           </div>
-          <div v-if="taskProgressRows.length > 1" class="text-xs text-gray-500">
+          <div v-if="taskProgressRows.length > 1" class="text-xs text-ink-3">
             {{ taskProgressRows.length }} tasks in progress
           </div>
           <div v-for="row in taskProgressRows" :key="row.id" class="space-y-1">
             <div class="flex items-center justify-between gap-2">
-              <span class="text-gray-300 text-xs truncate">{{ row.name }}</span>
-              <span class="text-gray-400 text-[11px] font-mono shrink-0">
+              <span class="text-ink-2 text-xs truncate">{{ row.name }}</span>
+              <span class="text-ink-2 text-[11px] font-mono shrink-0">
                 <template v-if="row.determinate">{{ row.detail }} · {{ Math.round(row.progress) }}%</template>
                 <template v-else>{{ row.detail }}</template>
               </span>
             </div>
-            <div v-if="row.determinate" class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-              <div class="h-full bg-blue-500 rounded-full transition-all" :style="{ width: row.progress + '%' }"></div>
+            <div v-if="row.determinate" class="h-1.5 bg-elevated rounded-full overflow-hidden">
+              <div class="h-full bg-info rounded-full transition-all" :style="{ width: row.progress + '%' }"></div>
             </div>
-            <div v-else class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-              <div class="h-full w-1/3 bg-blue-500/60 rounded-full animate-pulse"></div>
+            <div v-else class="h-1.5 bg-elevated rounded-full overflow-hidden">
+              <div class="h-full w-1/3 bg-info/60 rounded-full animate-pulse"></div>
             </div>
           </div>
-          <div v-if="syncETA" class="text-xs text-gray-500">ETA: ~{{ syncETA }}</div>
-          <button @click="cancelSync" class="w-full mt-2 py-1.5 text-red-400 hover:bg-red-500/10 rounded-lg text-sm">
+          <div v-if="syncETA" class="text-xs text-ink-3">ETA: ~{{ syncETA }}</div>
+          <button @click="cancelSync" class="w-full mt-2 py-1.5 text-error hover:bg-error/10 rounded-lg text-sm">
             Cancel Sync
           </button>
         </div>
         
-        <div v-else-if="syncState === 'idle'" class="text-sm text-gray-400">
+        <div v-else-if="syncState === 'idle'" class="text-sm text-ink-2">
           <p>Last synced: {{ lastSyncTime }}</p>
-          <button @click="syncAll" class="w-full mt-3 py-1.5 bg-primary/20 text-primary hover:bg-primary/30 rounded-lg text-sm">
+          <button @click="syncAll" class="w-full mt-3 py-1.5 bg-accent-soft text-accent hover:bg-accent/30 rounded-lg text-sm">
             Sync All Services
           </button>
         </div>
         
         <div v-else-if="syncState === 'error'" class="text-sm">
-          <p class="text-red-400 mb-2">{{ syncErrorMessage }}</p>
-          <button @click="retrySync" class="w-full py-1.5 bg-primary/20 text-primary hover:bg-primary/30 rounded-lg text-sm">
+          <p class="text-error mb-2">{{ syncErrorMessage }}</p>
+          <button @click="retrySync" class="w-full py-1.5 bg-accent-soft text-accent hover:bg-accent/30 rounded-lg text-sm">
             Retry Sync
           </button>
         </div>
 
         <div v-else-if="syncState === 'paused'" class="text-sm">
-          <p class="text-amber-400 mb-2 flex items-center gap-2">
+          <p class="text-warn mb-2 flex items-center gap-2">
             <span class="material-symbols-outlined">pause_circle</span>
             Sync paused
           </p>
-          <button @click="goToDownloads" class="w-full py-1.5 bg-primary/20 text-primary hover:bg-primary/30 rounded-lg text-sm">
+          <button @click="goToDownloads" class="w-full py-1.5 bg-accent-soft text-accent hover:bg-accent/30 rounded-lg text-sm">
             Manage in Downloads
           </button>
         </div>
@@ -104,24 +104,24 @@
     <div class="flex-1 flex items-center justify-center gap-6">
       <!-- Network Status -->
       <div 
-        class="status-section network-status flex items-center gap-2 px-3 py-1 rounded hover:bg-white/5 cursor-pointer transition-colors"
+        class="status-section network-status flex items-center gap-2 px-3 py-1 rounded hover:bg-elevated cursor-pointer transition-colors"
         @click="toggleNetworkPopover"
         title="Network status"
       >
-        <span :class="['w-2 h-2 rounded-full', isOnline ? 'bg-green-400' : 'bg-red-400']"></span>
-        <span :class="isOnline ? 'text-gray-400' : 'text-red-400'">{{ isOnline ? 'Online' : 'Offline' }}</span>
+        <span :class="['w-2 h-2 rounded-full', isOnline ? 'bg-ok' : 'bg-error']"></span>
+        <span :class="isOnline ? 'text-ink-2' : 'text-error'">{{ isOnline ? 'Online' : 'Offline' }}</span>
       </div>
       
       <!-- Global Progress: covers every active task at once -->
-      <div v-if="activeTasks.length > 0" class="flex items-center gap-3 text-gray-400">
+      <div v-if="activeTasks.length > 0" class="flex items-center gap-3 text-ink-2">
         <span class="material-symbols-outlined text-sm animate-pulse">pending</span>
         <div class="w-44">
           <div class="flex items-center justify-between gap-2 mb-0.5">
-            <span class="text-gray-300 text-[11px] truncate max-w-[120px]">{{ activeOperations[0] }}</span>
-            <span class="text-gray-500 text-[11px] shrink-0">{{ activeTasks.length }} {{ activeTasks.length === 1 ? 'task' : 'tasks' }}</span>
+            <span class="text-ink-2 text-[11px] truncate max-w-[120px]">{{ activeOperations[0] }}</span>
+            <span class="text-ink-3 text-[11px] shrink-0">{{ activeTasks.length }} {{ activeTasks.length === 1 ? 'task' : 'tasks' }}</span>
           </div>
           <div
-            class="h-1 bg-gray-700 rounded-full overflow-hidden"
+            class="h-1 bg-elevated rounded-full overflow-hidden"
             role="progressbar"
             aria-valuemin="0"
             aria-valuemax="100"
@@ -130,42 +130,42 @@
           >
             <div
               v-if="hasDeterminateProgress"
-              class="h-full bg-blue-500 rounded-full transition-all"
+              class="h-full bg-info rounded-full transition-all"
               :style="{ width: syncProgress + '%' }"
             ></div>
-            <div v-else class="h-full w-1/3 bg-blue-500/60 rounded-full animate-pulse"></div>
+            <div v-else class="h-full w-1/3 bg-info/60 rounded-full animate-pulse"></div>
           </div>
         </div>
-        <span v-if="hasDeterminateProgress" class="text-gray-400 text-[11px] font-mono">{{ syncProgress }}%</span>
+        <span v-if="hasDeterminateProgress" class="text-ink-2 text-[11px] font-mono">{{ syncProgress }}%</span>
       </div>
     </div>
     
     <!-- Network Popover -->
     <Transition name="slide-up">
-      <div v-if="showNetworkPopover" :class="['status-popover absolute z-[160] left-1/2 -translate-x-1/2 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-4', current ? 'bottom-26' : 'bottom-10']">
+      <div v-if="showNetworkPopover" :class="['status-popover absolute z-[160] left-1/2 -translate-x-1/2 w-72 bg-surface border border-line rounded-xl shadow-xl p-4', current ? 'bottom-26' : 'bottom-10']">
         <div class="flex items-center justify-between mb-3">
-          <span class="font-medium text-white">Network Status</span>
-          <button @click="showNetworkPopover = false" class="p-1 hover:bg-gray-700 rounded">
-            <span class="material-symbols-outlined text-gray-400 text-sm">close</span>
+          <span class="font-medium text-ink">Network Status</span>
+          <button @click="showNetworkPopover = false" class="p-1 hover:bg-elevated rounded">
+            <span class="material-symbols-outlined text-ink-2 text-sm">close</span>
           </button>
         </div>
         
         <div class="space-y-3 text-sm">
           <div class="flex items-center justify-between">
-            <span class="text-gray-400">Download Speed</span>
-            <span class="text-gray-200">{{ downloadSpeed }}</span>
+            <span class="text-ink-2">Download Speed</span>
+            <span class="text-ink">{{ downloadSpeed }}</span>
           </div>
           
-          <div class="border-t border-gray-700 pt-3 mt-3">
-            <p class="text-gray-400 mb-2">Services</p>
+          <div class="border-t border-line pt-3 mt-3">
+            <p class="text-ink-2 mb-2">Services</p>
             <div class="space-y-1.5">
               <div v-for="service in services" :key="service.name" class="flex items-center justify-between">
-                <span class="text-gray-300">{{ service.name }}</span>
-                <span v-if="service.online" class="text-green-400 flex items-center gap-1">
+                <span class="text-ink-2">{{ service.name }}</span>
+                <span v-if="service.online" class="text-ok flex items-center gap-1">
                   <span class="material-symbols-outlined text-sm">check</span>
                   Connected
                 </span>
-                <span v-else class="text-red-400 flex items-center gap-1">
+                <span v-else class="text-error flex items-center gap-1">
                   <span class="material-symbols-outlined text-sm">close</span>
                   Offline
                 </span>
@@ -178,16 +178,16 @@
     
     <!-- Right Section: Storage Info -->
     <div 
-      class="status-section storage-info flex items-center gap-3 px-3 py-1 rounded hover:bg-white/5 cursor-pointer transition-colors"
+      class="status-section storage-info flex items-center gap-3 px-3 py-1 rounded hover:bg-elevated cursor-pointer transition-colors"
       @click="toggleStoragePopover"
       @contextmenu.prevent="showStorageMenu"
       title="Storage usage"
     >
-      <span class="material-symbols-outlined text-gray-400 text-sm">hard_drive_2</span>
-      <span class="text-gray-400">{{ storageUsed }} / {{ storageTotal }}</span>
+      <span class="material-symbols-outlined text-ink-2 text-sm">hard_drive_2</span>
+      <span class="text-ink-2">{{ storageUsed }} / {{ storageTotal }}</span>
       
       <!-- Mini Progress Bar -->
-      <div class="mini-progress-bar w-10 h-1 bg-gray-700 rounded-full overflow-hidden">
+      <div class="mini-progress-bar w-10 h-1 bg-elevated rounded-full overflow-hidden">
         <div 
           :class="['h-full rounded-full transition-all', storageProgressColor]"
           :style="{ width: storagePercent + '%' }"
@@ -197,42 +197,42 @@
     
     <!-- Storage Popover -->
     <Transition name="slide-up">
-      <div v-if="showStoragePopover" :class="['status-popover absolute z-[160] right-3 w-72 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-4', current ? 'bottom-26' : 'bottom-10']">
+      <div v-if="showStoragePopover" :class="['status-popover absolute z-[160] right-3 w-72 bg-surface border border-line rounded-xl shadow-xl p-4', current ? 'bottom-26' : 'bottom-10']">
         <div class="flex items-center justify-between mb-3">
-          <span class="font-medium text-white">Storage Details</span>
-          <button @click="showStoragePopover = false" class="p-1 hover:bg-gray-700 rounded">
-            <span class="material-symbols-outlined text-gray-400 text-sm">close</span>
+          <span class="font-medium text-ink">Storage Details</span>
+          <button @click="showStoragePopover = false" class="p-1 hover:bg-elevated rounded">
+            <span class="material-symbols-outlined text-ink-2 text-sm">close</span>
           </button>
         </div>
         
         <div class="space-y-3 text-sm">
           <div class="flex items-center justify-between">
-            <span class="text-gray-400">Library Size</span>
-            <span class="text-gray-200">{{ storageUsed }}</span>
+            <span class="text-ink-2">Library Size</span>
+            <span class="text-ink">{{ storageUsed }}</span>
           </div>
           <div class="flex items-center justify-between">
-            <span class="text-gray-400">Available Space</span>
-            <span class="text-gray-200">{{ storageAvailable }}</span>
+            <span class="text-ink-2">Available Space</span>
+            <span class="text-ink">{{ storageAvailable }}</span>
           </div>
           
-          <div class="h-2 bg-gray-700 rounded-full overflow-hidden">
+          <div class="h-2 bg-elevated rounded-full overflow-hidden">
             <div 
               :class="['h-full rounded-full transition-all', storageProgressColor]"
               :style="{ width: storagePercent + '%' }"
             ></div>
           </div>
           
-          <div class="border-t border-gray-700 pt-3 space-y-1.5">
-            <p class="text-gray-400 mb-2">Breakdown</p>
+          <div class="border-t border-line pt-3 space-y-1.5">
+            <p class="text-ink-2 mb-2">Breakdown</p>
             <div v-for="format in storageBreakdown" :key="format.name" class="flex items-center justify-between">
-              <span class="text-gray-300">{{ format.name }}</span>
-              <span class="text-gray-400">{{ format.size }} ({{ format.percent }}%)</span>
+              <span class="text-ink-2">{{ format.name }}</span>
+              <span class="text-ink-2">{{ format.size }} ({{ format.percent }}%)</span>
             </div>
           </div>
           
           <div class="pt-2">
-            <p class="text-gray-500 text-xs truncate mb-2">{{ storagePath }}</p>
-            <button @click="changeLocation" class="w-full py-1.5 bg-primary/20 text-primary hover:bg-primary/30 rounded-lg text-sm">
+            <p class="text-ink-3 text-xs truncate mb-2">{{ storagePath }}</p>
+            <button @click="changeLocation" class="w-full py-1.5 bg-accent-soft text-accent hover:bg-accent/30 rounded-lg text-sm">
               Change Location
             </button>
           </div>
@@ -243,10 +243,10 @@
     <!-- Collapse Button -->
     <button 
       @click="collapse" 
-      class="ml-3 p-1 hover:bg-white/5 rounded transition-colors"
+      class="ml-3 p-1 hover:bg-elevated rounded transition-colors"
       title="Collapse status bar"
     >
-      <span class="material-symbols-outlined text-gray-500 text-sm">keyboard_arrow_down</span>
+      <span class="material-symbols-outlined text-ink-3 text-sm">keyboard_arrow_down</span>
     </button>
   </div>
   
@@ -255,10 +255,10 @@
     <button 
       v-if="isCollapsed"
       @click="expand"
-      class="status-collapsed fixed bottom-4 right-4 w-10 h-10 bg-gray-800 border border-gray-700 rounded-full shadow-lg flex items-center justify-center hover:bg-gray-700 transition-colors z-[50]"
+      class="status-collapsed fixed bottom-4 right-4 w-10 h-10 bg-surface border border-line rounded-full shadow-lg flex items-center justify-center hover:bg-elevated transition-colors z-[50]"
       title="Show status bar"
     >
-      <span class="material-symbols-outlined text-gray-400">keyboard_arrow_up</span>
+      <span class="material-symbols-outlined text-ink-2">keyboard_arrow_up</span>
     </button>
   </Transition>
 </template>
@@ -412,9 +412,9 @@ function formatBytes(bytes: number, decimals = 2) {
 }
 
 const storageProgressColor = computed(() => {
-  if (storagePercent.value > 90) return 'bg-red-500'
-  if (storagePercent.value > 70) return 'bg-amber-500'
-  return 'bg-green-500'
+  if (storagePercent.value > 90) return 'bg-error'
+  if (storagePercent.value > 70) return 'bg-warn'
+  return 'bg-ok'
 })
 
 // Methods

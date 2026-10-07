@@ -261,44 +261,244 @@ pub async fn get_auth_status(service: String) -> Result<AuthResult, String> {
     start_auth(service, "status".to_string()).await
 }
 
-/// Logout from a service
+/// Logout from a service.
+///
+/// Multi-cuenta: `account_id` selecciona QUÉ cuenta se cierra sesión. `None`
+/// conserva el contrato histórico ("la cuenta activa del servicio"). Ninguna
+/// rama borra la fila: solo `remove_account` elimina cuentas y sus datos CASCADE.
+///
+/// Limitación conocida del puente: `scripts/auth_bridge.py` guarda UN solo
+/// archivo de sesión POR SERVICIO (p.ej. `scripts/services/tidal_auth.py`), así
+/// que el logout del puente solo se ejecuta cuando no queda ninguna otra cuenta
+/// del servicio en BD. Con cuentas coexistentes se limpian las credenciales de la
+/// fila afectada y el archivo compartido se deja intacto.
 #[tauri::command]
 pub async fn logout_service(
     service: String,
+    account_id: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<AuthResult, String> {
-    if service == "spotify" {
-        tracing::info!("Spotify native logout: cleaning up database");
-
-        // Find Spotify service ID
-        let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'spotify'")
+    // Resolve the row to act on: explicit account_id (validated to belong to this
+    // service) or the active one.
+    let service_id: i64 =
+        sqlx::query_scalar("SELECT id FROM services WHERE LOWER(name) = LOWER(?)")
+            .bind(&service)
             .fetch_one(&state.db)
             .await
-            .map_err(|e| format!("Failed to find spotify service: {}", e))?;
+            .map_err(|e| format!("Failed to find {} service: {}", service, e))?;
 
-        // Delete all Spotify accounts
-        sqlx::query("DELETE FROM accounts WHERE service_id = ?")
+    let target_id: Option<i64> = match account_id {
+        Some(aid) => {
+            let owned: Option<i64> =
+                sqlx::query_scalar("SELECT id FROM accounts WHERE id = ? AND service_id = ?")
+                    .bind(aid)
+                    .bind(service_id)
+                    .fetch_optional(&state.db)
+                    .await
+                    .map_err(|e| format!("Failed to resolve account: {}", e))?;
+            Some(owned.ok_or_else(|| {
+                format!("Account {} does not belong to the {} service", aid, service)
+            })?)
+        }
+        None => sqlx::query_scalar(
+            r#"SELECT id FROM accounts
+               WHERE service_id = ? AND is_active = 1
+               ORDER BY id DESC LIMIT 1"#,
+        )
+        .bind(service_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| format!("Failed to resolve active account: {}", e))?,
+    };
+
+    // "Desconectar" NO borra la cuenta: limpia las credenciales/flags de ESA
+    // fila y conserva la fila con su biblioteca y sus playlists (eliminar la fila
+    // dispara CASCADE sobre library_entries/playlists y es una acción separada,
+    // `remove_account`). Antes, la rama spotify borraba TODAS las filas del
+    // servicio y las demás solo llamaban al puente, dejando la fila con unas
+    // credenciales que el puente ya había invalidado.
+    let Some(target_id) = target_id else {
+        // Retained library rows do not keep a bridge session alive. Only
+        // credentialed accounts can still use the shared provider session.
+        let row_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE service_id = ? AND credentials_json IS NOT NULL AND IFNULL(credentials_invalid, 0) = 0")
+                .bind(service_id)
+                .fetch_one(&state.db)
+                .await
+                .map_err(|e| format!("Failed to count {} accounts: {}", service, e))?;
+        if row_count > 0 {
+            return Ok(AuthResult {
+                success: true,
+                data: Some(serde_json::json!({
+                    "account_id": null,
+                    "remaining_accounts": row_count,
+                    "bridge_logout_skipped": true,
+                })),
+                error: None,
+            });
+        }
+        if service.eq_ignore_ascii_case("spotify") {
+            return Ok(AuthResult {
+                success: true,
+                data: Some(serde_json::json!({ "account_id": null, "remaining_accounts": 0 })),
+                error: None,
+            });
+        }
+        return bridge_logout(&service).await;
+    };
+
+    // Clearing credentials, deactivating this row and handing over the active
+    // slot (if a viable sister exists) happen in ONE transaction. With no
+    // credentialed successor, the service has zero active accounts after logout.
+    let mut tx = state
+        .db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to begin logout for {}: {}", service, e))?;
+
+    let was_active: Option<i64> = sqlx::query_scalar("SELECT is_active FROM accounts WHERE id = ?")
+        .bind(target_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to read account {}: {}", target_id, e))?;
+
+    sqlx::query(
+        r#"
+        UPDATE accounts
+        SET credentials_json = NULL,
+            credentials = NULL,
+            credentials_invalid = 1,
+            invalid_reason = 'logged_out',
+            last_auth_error = 'Session closed by the user',
+            last_auth_error_at = ?,
+            is_active = 0
+        WHERE id = ?
+        "#,
+    )
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(target_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to clear {} account credentials: {}", service, e))?;
+
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE service_id = ? AND id != ? AND credentials_json IS NOT NULL AND IFNULL(credentials_invalid, 0) = 0")
             .bind(service_id)
-            .execute(&state.db)
+            .bind(target_id)
+            .fetch_one(&mut *tx)
             .await
-            .map_err(|e| format!("Failed to delete spotify accounts: {}", e))?;
+            .map_err(|e| format!("Failed to count remaining accounts: {}", e))?;
 
-        crate::commands::emit_auth_state_updated(&service, "logout", None);
+    // A previously logged-out sister remains in the database for its library,
+    // but must NEVER be resurrected as the active account by a later logout.
+    // Choose only a sister with stored, non-invalidated credentials. If none
+    // exists, the service has zero active accounts until a new login/activation.
+    let viable_successor: Option<i64> = if remaining > 0 && was_active.unwrap_or(0) != 0 {
+        sqlx::query_scalar(
+            "SELECT id FROM accounts
+             WHERE service_id = ? AND id != ?
+               AND credentials_json IS NOT NULL
+               AND IFNULL(credentials_invalid, 0) = 0
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(service_id)
+        .bind(target_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to pick the next {} account: {}", service, e))?
+    } else {
+        None
+    };
+    let successor: Option<i64> = if let Some(successor) = viable_successor {
+        // Deactivate every other row and then activate the successor, so the
+        // service never keeps two active rows even if it arrived with residues.
+        sqlx::query("UPDATE accounts SET is_active = 0 WHERE service_id = ? AND id != ?")
+            .bind(service_id)
+            .bind(successor)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to deactivate sibling accounts: {}", e))?;
 
+        sqlx::query("UPDATE accounts SET is_active = 1 WHERE id = ?")
+            .bind(successor)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to activate account {}: {}", successor, e))?;
+
+        tracing::info!(
+            "[Auth] {} account {} logged out; account {} is now the active one",
+            service,
+            target_id,
+            successor
+        );
+
+        Some(successor)
+    } else {
+        None
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit logout for {}: {}", service, e))?;
+
+    crate::commands::emit_auth_state_updated_for_account(&service, "logout", Some(target_id), None);
+
+    if remaining > 0 {
+        // At least one other authenticated account can still use the shared
+        // bridge session. Retained but disconnected library rows do not count.
         return Ok(AuthResult {
             success: true,
-            data: None,
+            data: Some(serde_json::json!({
+                "account_id": target_id,
+                "remaining_accounts": remaining,
+                "new_active_account_id": successor,
+                "bridge_logout_skipped": true,
+            })),
             error: None,
         });
     }
 
-    let res = start_auth(service.clone(), "logout".to_string()).await;
+    if service.eq_ignore_ascii_case("spotify") {
+        tracing::info!("Spotify native logout: credentials cleared, no bridge session to drop");
+
+        return Ok(AuthResult {
+            success: true,
+            data: Some(serde_json::json!({
+                "account_id": target_id,
+                "remaining_accounts": remaining,
+            })),
+            error: None,
+        });
+    }
+
+    let res = bridge_logout(&service).await;
     if let Ok(ref r) = res {
         if r.success {
-            crate::commands::emit_auth_state_updated(&service, "logout", None);
+            crate::commands::emit_auth_state_updated_for_account(
+                &service,
+                "logout_bridge",
+                Some(target_id),
+                None,
+            );
         }
     }
     res
+}
+
+/// Drop the bridge session file of a service.
+///
+/// Only safe when no other account has usable stored credentials: the bridge
+/// keeps ONE session per service (`scripts/auth_bridge.py`). Retained library
+/// rows without credentials do not need that session.
+async fn bridge_logout(service: &str) -> Result<AuthResult, String> {
+    start_auth(service.to_string(), "logout".to_string()).await
+}
+
+/// Cached secrets may only supplement a bridge response for the SAME Qobuz user.
+/// An absent username is not evidence of identity, even when just one row exists.
+fn qobuz_cache_matches_login(bridge_username: Option<&str>, cached_username: Option<&str>) -> bool {
+    bridge_username
+        .is_some_and(|name| cached_username.is_some_and(|cached| cached.eq_ignore_ascii_case(name)))
 }
 
 /// Validate that a Qobuz auth token is usable (defensive filter against storage artifacts).
@@ -316,11 +516,34 @@ pub fn is_viable_qobuz_token_auth(token: &str) -> bool {
     !t.chars().any(|c| c.is_whitespace())
 }
 
+/// Check whether a service has one retained row. This alone does not prove
+/// the bridge login belongs to that row: callers must compare identities before
+/// inheriting authentication secrets.
+pub async fn service_has_exactly_one_account(db: &sqlx::SqlitePool, service_name: &str) -> bool {
+    let count: Option<i64> = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM accounts a JOIN services s ON s.id = a.service_id
+         WHERE LOWER(s.name) = LOWER(?)",
+    )
+    .bind(service_name)
+    .fetch_one(db)
+    .await
+    .ok();
+
+    count == Some(1)
+}
+
 /// Load Qobuz fallback auth data from the canonical encrypted SQLite database (AES-256-GCM).
 /// Returns (token, username/email, password) when available from an existing active account.
+///
+/// Returns data only for a single active row; login callers must also check
+/// that the bridge's authenticated username agrees before reusing secrets.
 pub async fn load_qobuz_db_fallback_auth(
     db: &sqlx::SqlitePool,
 ) -> (Option<String>, Option<String>, Option<String>) {
+    if !service_has_exactly_one_account(db, "qobuz").await {
+        return (None, None, None);
+    }
+
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT a.credentials_json FROM accounts a
          JOIN services s ON s.id = a.service_id
@@ -396,7 +619,15 @@ pub fn is_plausible_qobuz_credential_value(value: &str) -> bool {
 }
 
 /// S185: Read tidal.token_expiry (epoch seconds) from the encrypted SQLite database if available.
+///
+/// Multi-account: only when Tidal has exactly one row (see
+/// [`service_has_exactly_one_account`]); with two or more rows the expiry would
+/// belong to another user's session.
 pub async fn load_tidal_db_cached_token_expiry(db: &sqlx::SqlitePool) -> Option<f64> {
+    if !service_has_exactly_one_account(db, "tidal").await {
+        return None;
+    }
+
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT a.credentials_json FROM accounts a
          JOIN services s ON s.id = a.service_id
@@ -498,6 +729,18 @@ pub async fn start_auth_and_save(
     if service.eq_ignore_ascii_case("qobuz") {
         let (cache_token, cache_username, cache_password) =
             load_qobuz_db_fallback_auth(&state.db).await;
+        // A single existing row is not proof of identity. Never attach its
+        // token or password to a newly authenticated bridge username.
+        let bridge_username = data
+            .get("username")
+            .or_else(|| data.get("email"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let same_identity = qobuz_cache_matches_login(bridge_username, cache_username.as_deref());
+        let cache_token = if same_identity { cache_token } else { None };
+        let cache_password = if same_identity { cache_password } else { None };
+        let cache_username = if same_identity { cache_username } else { None };
 
         let token = data
             .get("user_auth_token")
@@ -584,6 +827,12 @@ pub async fn start_auth_and_save(
             .or_else(|| v.as_i64().map(|n| n.to_string()))
     });
 
+    // The Qobuz bridge sometimes reports the literal "browser_session" when
+    // it could not discover a real user id. That is a shared placeholder, NOT
+    // an identity: treating it as external_user_id would upsert every Qobuz
+    // login into the same row, even when the captured usernames differ.
+    let external_user_id = login_external_user_id(&service, &data, user_id.as_deref());
+
     // Step 3: Look up service ID
     let service_row: Option<(i64,)> = sqlx::query_as("SELECT id FROM services WHERE name = ?")
         .bind(&service)
@@ -599,21 +848,35 @@ pub async fn start_auth_and_save(
     let credentials_json = credentials_payload.to_string();
     let encrypted = crate::crypto::encrypt(&credentials_json)?;
 
-    // Step 5: Upsert account — preserve existing row to avoid CASCADE deleting library_entries/playlists
+    // Step 5: Upsert account — resolve by identity (email and/or external_user_id)
+    // and keep every other row of the service so its CASCADE-linked library data
+    // survives a re-login or a second account of the same service.
     let final_display_name = display_name
         .or(user_id.clone())
         .unwrap_or_else(|| format!("{} User", service));
 
-    upsert_service_account(
+    let account_id = upsert_service_account(
         &state.db,
         service_id,
         &final_display_name,
         email.as_deref(),
+        external_user_id.as_deref(),
         &encrypted,
     )
     .await?;
 
-    tracing::info!("Saved {} account: {}", service, final_display_name);
+    tracing::info!(
+        "Saved {} account: {} (account_id={})",
+        service,
+        final_display_name,
+        account_id
+    );
+
+    // Re-queue de descargas: por SERVICIO, no por cuenta — download_queue no
+    // tiene dimensión de cuenta en esta iteración, así que las descargas
+    // pendientes de otra cuenta del mismo servicio también vuelven a la cola.
+    // Es correcto para el caso mayoritario (un 401 por servicio), pero un
+    // re-login de la cuenta A puede re-encolar descargas que eran de la B.
 
     // Auto-retry downloads stuck in requires_auth / failed for this service
     let re_queued = sqlx::query(
@@ -653,94 +916,201 @@ pub async fn start_auth_and_save(
             "display_name": final_display_name,
             "email": email,
             "user_id": user_id,
+            "account_id": account_id,
             "requeued_downloads": re_queued,
         })),
         error: None,
     })
 }
 
-/// S185: Stable per-service account upsert used by login flows.
+/// S185 + multi-cuenta: upsert de cuenta por IDENTIDAD, no pisacuentas.
 ///
-/// Guarantees the post-login invariant the download pipeline relies on — exactly
-/// ONE clean active row for the service, selectable with
-/// `WHERE is_active = 1 ORDER BY id DESC LIMIT 1` — while preserving every row so
-/// CASCADE-linked library data survives re-login:
-///   1. Target row = the service row matching the new email, else the newest row.
-///   2. Target row gets the fresh encrypted credentials, clean flags, is_active = 1.
-///   3. Every OTHER row of the service gets its stale invalidation flags cleared and
-///      is deactivated, so no leftover poisoned row can shadow the fresh login.
+/// Garantiza el invariante que la UI y el pipeline siguen esperando — exactamente
+/// UNA cuenta activa por servicio, seleccionable con
+/// `WHERE is_active = 1 ORDER BY id DESC LIMIT 1` — conservando TODAS las filas,
+/// de modo que la biblioteca CASCADE de cada cuenta sobrevive a un re-login:
 ///
-/// The previous implementation ran one blanket `UPDATE … WHERE service_id = ?` that
-/// (a) collided with the UNIQUE(service_id, email) schema constraint whenever two
-/// rows existed for the service — failing the whole login with a SQL error — and
-/// (b) left multiple active rows behind.
+///   1. La fila destino se resuelve por identidad, no por fecha:
+///      `LOWER(TRIM(email))` y/o `external_user_id`. Antes, un email que no
+///      coincidía con ninguna fila tomaba la MÁS NUEVA del servicio y le
+///      sobrescribía email y credenciales, destruyendo por CASCADE la biblioteca
+///      de la cuenta anterior. Ahora, una identidad nueva (email o user_id) que
+///      no casa con ninguna fila INSERTA una cuenta nueva.
+///   2. Si email y user_id apuntan a filas DISTINTAS gana `user_match`: el user_id
+///      es la identidad estable del proveedor y sobrevive a un cambio de email.
+///      Además elimina por construcción el conflicto con el índice parcial
+///      `idx_accounts_service_external_user`.
+///   3. Sin ninguna identidad (login sin email ni user_id — deezer, soundcloud)
+///      se conserva el comportamiento histórico: reutilizar la fila más nueva.
+///   4. `ORDER BY id DESC LIMIT 1` en las dos consultas NO es cosmético: la
+///      pasada de normalización de 0089 no puede fusionar parejas de email
+///      case-variantes que una BD trajera ya, y ambas casan igual por
+///      `LOWER(TRIM(email))`. Sin el ORDER BY, `fetch_optional` devolvería una
+///      fila arbitraria y podría revivir la hermana equivocada.
+///   5. La fila destino recibe credenciales limpias, `is_active = 1` y su
+///      `external_user_id`. Si reescribir el email choca con
+///      UNIQUE(service_id, email) (hermana case-variante) se reintenta SIN tocar
+///      la columna email: la identidad ya casó case-insensitive.
+///   6. Las hermanas SOLO se desactivan (`is_active = 0`). Ya no se les borran
+///      `credentials_invalid`/`last_auth_error`: una cuenta desactivada
+///      conserva su estado `requires_auth` histórico para cuando vuelva a
+///      activarse.
+///
+/// Devuelve el `account_id` de la fila insertada o actualizada.
 pub async fn upsert_service_account(
     db: &sqlx::SqlitePool,
     service_id: i64,
     display_name: &str,
     email: Option<&str>,
+    external_user_id: Option<&str>,
     encrypted_credentials: &str,
-) -> Result<(), String> {
+) -> Result<i64, String> {
     let mut tx = db
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to begin account upsert: {}", e))?;
 
-    // 1) Pick the target row: prefer matching email, else the newest row.
-    let email_match: Option<i64> = sqlx::query_scalar(
-        r#"
-        SELECT id FROM accounts
-        WHERE service_id = ? AND email IS ?
-        ORDER BY id DESC LIMIT 1
-        "#,
-    )
-    .bind(service_id)
-    .bind(email)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| format!("Failed to look up account: {}", e))?;
+    // 1) Normalize the identity coming from the login. `email` is user-typed, so
+    //    'A@X.com ' and 'a@x.com' are the same account; `external_user_id` is an
+    //    opaque provider id, so only whitespace is trimmed.
+    let email_norm = email
+        .map(|e| e.trim().to_lowercase())
+        .filter(|e| !e.is_empty());
+    let email_ref = email_norm.as_deref();
+    let user_norm = external_user_id
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+    let user_ref = user_norm.as_deref();
 
-    let newest_row: Option<i64> = if email_match.is_some() {
-        None
-    } else {
+    // SoundCloud profile failures return user_id=0. With no other identity,
+    // treating the login as a relogin of the newest row overwrites a stranger's
+    // credentials, so create a distinct row until the provider identifies it.
+    let anonymous_soundcloud: bool =
+        sqlx::query_scalar::<_, String>("SELECT name FROM services WHERE id = ?")
+            .bind(service_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to inspect account service: {e}"))?
+            .is_some_and(|name| name.eq_ignore_ascii_case("soundcloud"))
+            && email_ref.is_none()
+            && user_ref.is_none();
+
+    // 2) Resolve the target row by identity. Both lookups are evaluated whenever
+    //    the login carries the corresponding value: an account that changed its
+    //    email at the provider still has a stable user_id, and falling back to
+    //    "newest row" for it would be the pisacuentas regression again.
+    let email_match: Option<i64> = if email_ref.is_some() {
         sqlx::query_scalar(
             r#"
             SELECT id FROM accounts
-            WHERE service_id = ?
+            WHERE service_id = ? AND LOWER(TRIM(email)) = ?
             ORDER BY id DESC LIMIT 1
             "#,
         )
         .bind(service_id)
+        .bind(email_ref)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| format!("Failed to look up account: {}", e))?
+        .map_err(|e| format!("Failed to look up account by email: {}", e))?
+    } else {
+        None
     };
 
-    // 0 = no existing row for this service at all → INSERT path below.
-    let target_id = email_match.or(newest_row).unwrap_or(0);
-
-    if target_id == 0 {
-        // Fresh connect: INSERT a clean, active row.
-        sqlx::query(
+    let user_match: Option<i64> = if user_ref.is_some() {
+        sqlx::query_scalar(
             r#"
-            INSERT INTO accounts (service_id, display_name, email, credentials_json, credentials_invalid, invalid_reason, last_auth_error, is_active, last_synced, created_at)
-            VALUES (?, ?, ?, ?, 0, NULL, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            SELECT id FROM accounts
+            WHERE service_id = ? AND external_user_id = ?
+            ORDER BY id DESC LIMIT 1
+            "#,
+        )
+        .bind(service_id)
+        .bind(user_ref)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to look up account by user_id: {}", e))?
+    } else {
+        None
+    };
+
+    // 3) Reconciliation of both identities.
+    //    * both hit the same row            → that row.
+    //    * both hit DIFFERENT rows          → user_id wins (stable identity; the
+    //      email of that row is refreshed below). This is also what makes the
+    //      partial index collision impossible by construction.
+    //    * only one hit                      → that row.
+    //    * identity present but NOTHING matched → 0 (INSERT): un email o un
+    //      user_id que no casan con ninguna fila son una cuenta NUEVA. falling
+    //      back to "the newest row" here would overwrite an unrelated account
+    //      (the pisacuentas regression) and, with services that return no email,
+    //      would grow the table on every login.
+    //    * no identity at all (no email AND no user_id) → newest row for legacy
+    //      services such as Deezer. SoundCloud's user_id=0 means profile lookup
+    //      failed, so each such login must insert rather than overwrite.
+    let target_id = match (email_match, user_match) {
+        (Some(email_id), Some(user_id)) if email_id != user_id => user_id,
+        (Some(email_id), _) => email_id,
+        (None, Some(user_id)) => user_id,
+        (None, None) if email_ref.is_none() && user_ref.is_none() && !anonymous_soundcloud => {
+            sqlx::query_scalar(
+                r#"
+                SELECT id FROM accounts
+                WHERE service_id = ?
+                ORDER BY id DESC LIMIT 1
+                "#,
+            )
+            .bind(service_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to look up account: {}", e))?
+            .unwrap_or(0)
+        }
+        (None, None) => 0,
+    };
+
+    // 0 = identity that matches nothing → a genuinely new account (multi-account).
+    let resolved_id = if target_id == 0 {
+        let inserted: i64 = sqlx::query_scalar(
+            r#"
+            INSERT INTO accounts (service_id, display_name, email, external_user_id, credentials_json, credentials_invalid, invalid_reason, last_auth_error, is_active, last_synced, created_at)
+            VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
             "#,
         )
         .bind(service_id)
         .bind(display_name)
-        .bind(email)
+        .bind(email_ref)
+        .bind(user_ref)
         .bind(encrypted_credentials)
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(|e| format!("Failed to save account: {}", e))?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("UNIQUE constraint failed") {
+                format!(
+                    "Could not create the account: another row of this service already uses \
+                     that email or user id ({}). Try reconnecting, or remove the duplicate account.",
+                    msg
+                )
+            } else {
+                format!("Failed to save account: {}", msg)
+            }
+        })?;
+
+        tracing::info!(
+            "New account row {} created for service_id={} (multi-account login)",
+            inserted,
+            service_id
+        );
+        inserted
     } else {
-        // 2) Activate and clean ONLY the target row (preserves its CASCADE-linked data).
-        sqlx::query(
+        // 4) Activate and clean ONLY the target row (preserves its CASCADE-linked data).
+        let full_update = sqlx::query(
             r#"
             UPDATE accounts
             SET display_name = ?,
                 email = ?,
+                external_user_id = ?,
                 credentials_json = ?,
                 credentials_invalid = 0,
                 invalid_reason = NULL,
@@ -751,36 +1121,117 @@ pub async fn upsert_service_account(
             "#,
         )
         .bind(display_name)
-        .bind(email)
+        .bind(email_ref)
+        .bind(user_ref)
         .bind(encrypted_credentials)
         .bind(target_id)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to update account: {}", e))?;
+        .await;
 
-        // 3) Clear stale flags on sibling rows and deactivate them.
-        sqlx::query(
-            r#"
-            UPDATE accounts
-            SET credentials_invalid = 0,
-                invalid_reason = NULL,
-                last_auth_error = NULL,
-                is_active = 0
-            WHERE service_id = ? AND id != ?
-            "#,
-        )
-        .bind(service_id)
-        .bind(target_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to clean sibling accounts: {}", e))?;
-    }
+        match full_update {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("accounts.service_id") && msg.contains("accounts.email") {
+                    // Case-variant sibling: the identity already matched
+                    // case-insensitively, so rewriting the column would only
+                    // collide with the binary UNIQUE of 0002. Retry keeping the
+                    // stored email untouched.
+                    tracing::warn!(
+                        "Account {} keeps its stored email (case-variant sibling present): {}",
+                        target_id,
+                        msg
+                    );
+                    sqlx::query(
+                        r#"
+                        UPDATE accounts
+                        SET display_name = ?,
+                            external_user_id = ?,
+                            credentials_json = ?,
+                            credentials_invalid = 0,
+                            invalid_reason = NULL,
+                            last_auth_error = NULL,
+                            is_active = 1,
+                            last_synced = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        "#,
+                    )
+                    .bind(display_name)
+                    .bind(user_ref)
+                    .bind(encrypted_credentials)
+                    .bind(target_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Failed to update account: {}", e))?;
+                } else if msg.contains("external_user_id") {
+                    return Err(format!(
+                        "Another account of this service already uses that provider user id. \
+                         Remove it before logging in again ({})",
+                        msg
+                    ));
+                } else {
+                    return Err(format!("Failed to update account: {}", msg));
+                }
+            }
+        }
+
+        target_id
+    };
+
+    // 5) Exclusividad: la cuenta conectada queda como la ÚNICA activa del
+    //    servicio, tanto si se reutilizó una fila como si se insertó una nueva.
+    //    Los flags de las hermanas no se tocan a propósito: una cuenta
+    //    desactivada conserva su estado requires_auth histórico para cuando
+    //    vuelva a activarse.
+    sqlx::query(
+        r#"
+        UPDATE accounts
+        SET is_active = 0
+        WHERE service_id = ? AND id != ?
+        "#,
+    )
+    .bind(service_id)
+    .bind(resolved_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to deactivate sibling accounts: {}", e))?;
 
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit account upsert: {}", e))?;
 
-    Ok(())
+    Ok(resolved_id)
+}
+
+/// Resolve a provider identity without confusing a bridge session marker with
+/// a user. The Qobuz browser bridge returns `browser_session` if its user/get
+/// probe found no id; use the captured username instead when present. Keep the
+/// provider's real id case-sensitive, and do not borrow a cached username from
+/// another account (only the raw bridge payload is consulted here).
+fn login_external_user_id(
+    service: &str,
+    data: &serde_json::Value,
+    user_id: Option<&str>,
+) -> Option<String> {
+    let provider_id = user_id.map(str::trim).filter(|s| !s.is_empty());
+    if service.eq_ignore_ascii_case("soundcloud") && provider_id == Some("0") {
+        // The bridge uses 0 when the profile request fails, not a user ID.
+        return None;
+    }
+    if !service.eq_ignore_ascii_case("qobuz") {
+        return provider_id.map(str::to_string);
+    }
+
+    provider_id
+        .filter(|id| *id != "browser_session")
+        .map(str::to_string)
+        .or_else(|| {
+            data.get("username")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
 }
 
 /// Session status for a single service
@@ -807,6 +1258,14 @@ pub struct SessionStatus {
 /// - `connected: false` → el proveedor la rechazó explícitamente.
 /// - `valid: false` + mensaje de comprobación → no verificable; la UI debe
 ///   ofrecer reintentar, no re-loguear.
+///
+/// Multi-cuenta: `validate_all_sessions` ya no lo usa —el veredicto por cuenta
+/// sale de `perform_get_service_auth_status`, porque el probe del puente describe
+/// la sesión compartida del servicio, no una fila concreta— y el flujo de login
+/// (`get_auth_status`) devuelve el `AuthResult` crudo a la UI sin traducirlo.
+/// Sus únicos usos restantes son sus propias pruebas unitarias, de ahí el
+/// `cfg(test)` (sin él, `cargo clippy -- -D warnings` lo marcaría dead_code).
+#[cfg(test)]
 fn session_status_from_probe(result: Result<AuthResult, String>) -> SessionStatus {
     match result {
         Ok(res) if res.success => {
@@ -855,20 +1314,30 @@ fn session_status_from_probe(result: Result<AuthResult, String>) -> SessionStatu
     }
 }
 
-/// Validate all connected service sessions
+/// Validate all connected service sessions.
+///
+/// Multi-cuenta: el veredicto sale de la BD por cuenta
+/// ([`perform_get_service_auth_status`]), NO del probe del puente. El puente
+/// tiene UN archivo de sesión por servicio, así que su "Session valid/invalid"
+/// describe la última sesión de navegador del servicio, no la fila A o la fila B:
+/// con dos cuentas conectadas ya no puede afirmar nada por cuenta. El probe del
+/// puente sigue siendo la fuente del flujo de login (`get_auth_status`), donde
+/// solo hay una sesión en curso.
 #[tauri::command]
 pub async fn validate_all_sessions(
     state: State<'_, AppState>,
 ) -> Result<Vec<SessionStatus>, String> {
     tracing::info!("validate_all_sessions called");
 
-    // Get all connected accounts
+    // Get all connected accounts (active ones: an inactive account is not a
+    // session the app is using).
     let accounts: Vec<(i64, String, String)> = sqlx::query_as(
         r#"
-        SELECT a.id, s.name, a.display_name
+        SELECT a.id, s.name, IFNULL(a.display_name, a.email)
         FROM accounts a
         JOIN services s ON s.id = a.service_id
         WHERE a.is_active = 1
+        ORDER BY s.name, a.id DESC
         "#,
     )
     .fetch_all(&state.db)
@@ -877,19 +1346,33 @@ pub async fn validate_all_sessions(
 
     let mut statuses = Vec::new();
 
-    for (_account_id, service_name, display_name) in accounts {
-        // Call Python bridge to check status
-        let status_result = start_auth(service_name.clone(), "status".to_string()).await;
+    for (account_id, service_name, display_name) in accounts {
+        let verdict =
+            match perform_get_service_auth_status(&state.db, &service_name, Some(account_id)).await
+            {
+                Ok(status) => SessionStatus {
+                    service: service_name.clone(),
+                    connected: status.account_id.is_some(),
+                    valid: status.is_authenticated && status.credentials_valid,
+                    message: status
+                        .error_message
+                        .unwrap_or_else(|| format!("status: {}", status.status)),
+                    user_info: Some(display_name),
+                },
+                Err(e) => SessionStatus {
+                    service: service_name.clone(),
+                    connected: true,
+                    valid: false,
+                    message: format!("Could not read account state (check failed: {})", e),
+                    user_info: Some(display_name),
+                },
+            };
 
-        statuses.push(SessionStatus {
-            service: service_name,
-            user_info: Some(display_name),
-            ..session_status_from_probe(status_result)
-        });
+        statuses.push(verdict);
     }
 
     tracing::info!(
-        "Session validation complete: {} services checked",
+        "Session validation complete: {} accounts checked",
         statuses.len()
     );
     Ok(statuses)
@@ -1326,7 +1809,10 @@ pub async fn spotify_auth_webview(
 
     let encrypted = crate::crypto::encrypt(&credentials.to_string())?;
 
-    // Upsert: UPDATE first to preserve CASCADE data, INSERT if no row
+    // Multi-cuenta: mismo upsert por identidad que el resto de servicios.
+    // El UPDATE masivo anterior (`WHERE service_id = ?`) escribía el email en
+    // TODAS las filas spotify: con dos cuentas violaba UNIQUE(service_id, email)
+    // y fallaba el login entero, y con una sola le pisaba el email.
     let final_display_name = if display_name.is_empty() {
         user_id
             .clone()
@@ -1335,47 +1821,19 @@ pub async fn spotify_auth_webview(
         display_name.clone()
     };
 
-    let update_result = sqlx::query(
-        r#"
-        UPDATE accounts
-        SET display_name = ?,
-            email = ?,
-            credentials_json = ?,
-            credentials_invalid = 0,
-            invalid_reason = NULL,
-            last_auth_error = NULL,
-            is_active = 1,
-            last_synced = CURRENT_TIMESTAMP
-        WHERE service_id = ?
-        "#,
+    let account_id = upsert_service_account(
+        &state.db,
+        service_id,
+        &final_display_name,
+        email.as_deref(),
+        user_id.as_deref(),
+        &encrypted,
     )
-    .bind(&final_display_name)
-    .bind(&email)
-    .bind(&encrypted)
-    .bind(service_id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| format!("Failed to update account: {}", e))?;
-
-    if update_result.rows_affected() == 0 {
-        sqlx::query(
-            r#"
-            INSERT INTO accounts (service_id, display_name, email, credentials_json,
-                                  credentials_invalid, invalid_reason, last_auth_error, is_active, last_synced, created_at)
-            VALUES (?, ?, ?, ?, 0, NULL, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            "#,
-        )
-        .bind(service_id)
-        .bind(&final_display_name)
-        .bind(&email)
-        .bind(&encrypted)
-        .execute(&state.db)
-        .await
-        .map_err(|e| format!("Failed to save account: {}", e))?;
-    }
+    .await?;
 
     tracing::info!(
-        "Spotify PKCE auth: saved account for {}",
+        "Spotify PKCE auth: saved account {} for {}",
+        account_id,
         final_display_name
     );
 
@@ -1421,6 +1879,58 @@ pub async fn spotify_auth_webview(
 #[cfg(test)]
 mod auth_security_tests {
     use super::*;
+
+    #[test]
+    fn test_qobuz_browser_session_marker_is_not_an_account_identity() {
+        let first = serde_json::json!({"username": "first@qobuz.test"});
+        let second = serde_json::json!({"username": "second@qobuz.test"});
+        assert_eq!(
+            login_external_user_id("qobuz", &first, Some("browser_session")),
+            Some("first@qobuz.test".to_string())
+        );
+        assert_eq!(
+            login_external_user_id("qobuz", &second, Some("browser_session")),
+            Some("second@qobuz.test".to_string())
+        );
+        assert_eq!(
+            login_external_user_id("qobuz", &first, Some("stable-id")),
+            Some("stable-id".to_string())
+        );
+        assert_eq!(
+            login_external_user_id("qobuz", &serde_json::json!({}), Some("browser_session")),
+            None
+        );
+        assert_eq!(
+            login_external_user_id("tidal", &first, Some("tidal-id")),
+            Some("tidal-id".to_string())
+        );
+    }
+
+    #[test]
+    fn qobuz_fallback_secrets_require_a_matching_login_identity() {
+        assert!(qobuz_cache_matches_login(
+            Some("alice@example.org"),
+            Some("ALICE@example.org")
+        ));
+        assert!(!qobuz_cache_matches_login(
+            Some("bob@example.org"),
+            Some("alice@example.org")
+        ));
+        assert!(!qobuz_cache_matches_login(Some("bob@example.org"), None));
+        assert!(!qobuz_cache_matches_login(None, Some("alice@example.org")));
+    }
+
+    #[test]
+    fn soundcloud_zero_is_a_placeholder_not_an_identity() {
+        assert_eq!(
+            login_external_user_id("soundcloud", &serde_json::json!({}), Some("0")),
+            None
+        );
+        assert_eq!(
+            login_external_user_id("soundcloud", &serde_json::json!({}), Some("42")),
+            Some("42".to_string())
+        );
+    }
 
     #[test]
     fn test_auth_response_and_logs_never_leak_tokens() {

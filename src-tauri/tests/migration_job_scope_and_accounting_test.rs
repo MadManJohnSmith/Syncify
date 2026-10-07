@@ -212,6 +212,8 @@ async fn test_start_migration_migrates_only_the_selected_playlists() {
         "qobuz".to_string(),
         Some(vec!["pl-scope-a".to_string()]),
         loose_options(),
+        None,
+        None,
     )
     .await
     .expect("start_migration must succeed");
@@ -279,6 +281,8 @@ async fn test_start_migration_with_other_selection_and_favorites_scope() {
         "qobuz".to_string(),
         Some(vec!["pl-scope-b".to_string()]),
         loose_options(),
+        None,
+        None,
     )
     .await
     .expect("start_migration must succeed");
@@ -301,6 +305,8 @@ async fn test_start_migration_with_other_selection_and_favorites_scope() {
         "qobuz".to_string(),
         None,
         loose_options(),
+        None,
+        None,
     )
     .await
     .expect("start_migration must succeed");
@@ -321,6 +327,8 @@ async fn test_start_migration_with_other_selection_and_favorites_scope() {
         "qobuz".to_string(),
         Some(vec![]),
         loose_options(),
+        None,
+        None,
     )
     .await
     .expect("start_migration must succeed");
@@ -344,6 +352,8 @@ async fn test_start_migration_writes_playlist_attribution_and_error_messages() {
         "qobuz".to_string(),
         Some(vec!["pl-scope-a".to_string()]),
         loose_options(),
+        None,
+        None,
     )
     .await
     .expect("start_migration must succeed");
@@ -506,9 +516,10 @@ async fn test_fetch_migration_source_tracks_scopes_and_deduplicates() {
     let pool = setup_test_db().await;
     let (_t1, _pl_a, _pl_b) = seed_scope_fixture(&pool).await;
 
-    let scoped = fetch_migration_source_tracks(&pool, "spotify", Some(&["pl-scope-a".to_string()]))
-        .await
-        .expect("fetch scoped");
+    let scoped =
+        fetch_migration_source_tracks(&pool, "spotify", Some(&["pl-scope-a".to_string()]), None)
+            .await
+            .expect("fetch scoped");
     assert_eq!(scoped.len(), 2);
     assert!(scoped
         .iter()
@@ -517,9 +528,10 @@ async fn test_fetch_migration_source_tracks_scopes_and_deduplicates() {
     assert!(scoped.iter().all(|t| t.external_id.starts_with("sp-")));
 
     // Song One sits twice in Scope B — one item only.
-    let dup = fetch_migration_source_tracks(&pool, "spotify", Some(&["pl-scope-b".to_string()]))
-        .await
-        .expect("fetch dup playlist");
+    let dup =
+        fetch_migration_source_tracks(&pool, "spotify", Some(&["pl-scope-b".to_string()]), None)
+            .await
+            .expect("fetch dup playlist");
     assert_eq!(dup.len(), 1);
     assert_eq!(dup[0].external_id, "sp-one");
 
@@ -528,6 +540,7 @@ async fn test_fetch_migration_source_tracks_scopes_and_deduplicates() {
         &pool,
         "spotify",
         Some(&["pl-scope-a".to_string(), "pl-scope-b".to_string()]),
+        None,
     )
     .await
     .expect("fetch both playlists");
@@ -545,14 +558,15 @@ async fn test_fetch_migration_source_tracks_scopes_and_deduplicates() {
         .any(|t| t.playlist_id.as_deref() == Some("pl-scope-b")));
 
     // Unknown selection: nothing.
-    let unknown = fetch_migration_source_tracks(&pool, "spotify", Some(&["pl-nope".to_string()]))
-        .await
-        .expect("fetch unknown");
+    let unknown =
+        fetch_migration_source_tracks(&pool, "spotify", Some(&["pl-nope".to_string()]), None)
+            .await
+            .expect("fetch unknown");
     assert!(unknown.is_empty());
 
     // Favorites scope: every spotify item, no playlist attribution, and the
     // qobuz-only track stays out.
-    let favorites = fetch_migration_source_tracks(&pool, "spotify", None)
+    let favorites = fetch_migration_source_tracks(&pool, "spotify", None, None)
         .await
         .expect("fetch favorites");
     assert_eq!(favorites.len(), 2);
@@ -562,7 +576,7 @@ async fn test_fetch_migration_source_tracks_scopes_and_deduplicates() {
     assert!(favorites.iter().all(|t| t.external_id != "qb-three"));
 
     // Empty selection: nothing.
-    let empty = fetch_migration_source_tracks(&pool, "spotify", Some(&[]))
+    let empty = fetch_migration_source_tracks(&pool, "spotify", Some(&[]), None)
         .await
         .expect("fetch empty");
     assert!(empty.is_empty());
@@ -610,4 +624,167 @@ async fn test_job_items_row_helper_reflects_written_accounting() {
     .unwrap();
     assert_eq!(raw.0, "Helper Song");
     assert_eq!(raw.1.as_deref(), Some("Helper Album"));
+}
+
+#[tokio::test]
+async fn chosen_source_account_filters_favorites_and_homonymous_playlists() {
+    let pool = setup_test_db().await;
+    let (first_track, first_playlist, _) = seed_scope_fixture(&pool).await;
+    let account_a: i64 =
+        sqlx::query_scalar("SELECT id FROM accounts WHERE email = 'scope@test.dev'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let account_b: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts (service_id, email, credentials_json, is_active) VALUES (1, 'other@test.dev', '{}', 0) RETURNING id",
+    ).fetch_one(&pool).await.unwrap();
+    let second_track: i64 = sqlx::query_scalar(
+        "SELECT track_id FROM track_sources WHERE service_id = 1 AND service_track_id = 'sp-two'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO library_entries (account_id, track_id) VALUES (?, ?), (?, ?)")
+        .bind(account_a)
+        .bind(first_track)
+        .bind(account_b)
+        .bind(second_track)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let other_playlist: i64 = sqlx::query_scalar(
+        "INSERT INTO playlists (account_id, external_id, name, source_service) VALUES (?, 'pl-scope-a', 'Other Scope', 'spotify') RETURNING id",
+    ).bind(account_b).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 1)")
+        .bind(other_playlist)
+        .bind(second_track)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Removing a favorite retains its library_entries row but excludes it
+    // from explicit-account migrations.
+    sqlx::query("UPDATE library_entries SET is_liked = 0 WHERE account_id = ? AND track_id = ?")
+        .bind(account_b)
+        .bind(second_track)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let removed = fetch_migration_source_tracks(&pool, "spotify", None, Some(account_b))
+        .await
+        .unwrap();
+    assert!(
+        removed.is_empty(),
+        "unliked tracks do not migrate as favorites"
+    );
+    sqlx::query("UPDATE library_entries SET is_liked = 1 WHERE account_id = ? AND track_id = ?")
+        .bind(account_b)
+        .bind(second_track)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let a_favorites = fetch_migration_source_tracks(&pool, "spotify", None, Some(account_a))
+        .await
+        .unwrap();
+    let b_favorites = fetch_migration_source_tracks(&pool, "spotify", None, Some(account_b))
+        .await
+        .unwrap();
+    assert_eq!(
+        a_favorites
+            .iter()
+            .map(|t| t.external_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["sp-one"]
+    );
+    assert_eq!(
+        b_favorites
+            .iter()
+            .map(|t| t.external_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["sp-two"]
+    );
+    let unscoped = fetch_migration_source_tracks(&pool, "spotify", None, None)
+        .await
+        .unwrap();
+    assert_eq!(unscoped.len(), 2, "None reads the full service mirror");
+    // None must not silently become the active account, even with two rows.
+    // The playlist path has the same legacy service-wide contract.
+    let all_playlists =
+        fetch_migration_source_tracks(&pool, "spotify", Some(&["pl-scope-a".to_string()]), None)
+            .await
+            .unwrap();
+    assert_eq!(all_playlists.len(), 3);
+    assert!(all_playlists
+        .iter()
+        .any(|track| track.playlist_name.as_deref() == Some("Other Scope")));
+
+    let ids = ["pl-scope-a".to_string()];
+    let a_playlist = fetch_migration_source_tracks(&pool, "spotify", Some(&ids), Some(account_a))
+        .await
+        .unwrap();
+    let b_playlist = fetch_migration_source_tracks(&pool, "spotify", Some(&ids), Some(account_b))
+        .await
+        .unwrap();
+    assert_eq!(a_playlist.len(), 2);
+    assert_eq!(b_playlist.len(), 1);
+    assert_eq!(b_playlist[0].external_id, "sp-two");
+    assert_eq!(b_playlist[0].playlist_name.as_deref(), Some("Other Scope"));
+    assert_ne!(first_playlist, other_playlist);
+}
+
+#[tokio::test]
+async fn legacy_job_keeps_null_source_and_reconstructs_all_service_playlists() {
+    let pool = setup_test_db().await;
+    let (first_track, _, _) = seed_scope_fixture(&pool).await;
+    let account_b: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts (service_id, email, credentials_json, is_active) VALUES (1, 'second-legacy@test.dev', '{}', 0) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let playlist_b: i64 = sqlx::query_scalar(
+        "INSERT INTO playlists (account_id, external_id, name, source_service) VALUES (?, 'pl-legacy-b', 'Legacy B', 'spotify') RETURNING id",
+    )
+    .bind(account_b)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 1)")
+        .bind(playlist_b)
+        .bind(first_track)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let app = test_app(pool.clone());
+    let job_id = start_migration(
+        app.handle().clone(),
+        app.state::<AppState>(),
+        "spotify".into(),
+        "qobuz".into(),
+        Some(vec!["pl-legacy-b".into()]),
+        loose_options(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let source_account: Option<i64> =
+        sqlx::query_scalar("SELECT source_account_id FROM migration_jobs WHERE id = ?")
+            .bind(&job_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        source_account, None,
+        "a service-wide read must stay NULL in history"
+    );
+    let items = job_items(&pool, &job_id).await;
+    assert_eq!(
+        items.len(),
+        1,
+        "playlist of the inactive account must enter the global job"
+    );
+    assert_eq!(items[0].2.as_deref(), Some("pl-legacy-b"));
 }

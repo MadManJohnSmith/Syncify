@@ -143,7 +143,9 @@ export function useMigration() {
         sourceService: string,
         destinationService: string,
         playlistIds?: string[],
-        options: MigrationOptions = defaultOptions
+        options: MigrationOptions = defaultOptions,
+        sourceAccountId?: number | null,
+        destinationAccountId?: number | null
     ): Promise<MigrationPreviewResult | null> {
         isPreviewing.value = true;
         try {
@@ -151,7 +153,9 @@ export function useMigration() {
                 sourceService,
                 destinationService,
                 playlistIds,
-                options
+                options,
+                sourceAccountId,
+                destinationAccountId
             );
             return previewResult.value;
         } catch (e) {
@@ -186,7 +190,9 @@ export function useMigration() {
         sourceService: string,
         destinationService: string,
         playlistIds?: string[],
-        options: MigrationOptions = defaultOptions
+        options: MigrationOptions = defaultOptions,
+        sourceAccountId?: number | null,
+        destinationAccountId?: number | null
     ): Promise<string | null> {
         isStartingMigration.value = true;
         resetProgress();
@@ -195,7 +201,9 @@ export function useMigration() {
                 sourceService,
                 destinationService,
                 playlistIds,
-                options
+                options,
+                sourceAccountId,
+                destinationAccountId
             );
             currentJobId.value = jobId;
             // start_migration resolves only when the job is over: from here on
@@ -300,14 +308,14 @@ export function useMigration() {
     // MANUAL MATCHING
     // ========================
 
-    async function searchTracks(service: string, query: string): Promise<void> {
+    async function searchTracks(service: string, query: string, accountId?: number | null): Promise<void> {
         if (!query.trim()) {
             searchResults.value = [];
             return;
         }
         isSearching.value = true;
         try {
-            searchResults.value = await searchDestinationTrack(service, query);
+            searchResults.value = await searchDestinationTrack(service, query, accountId);
         } catch (e) {
             console.error('Failed to search tracks:', e);
         } finally {
@@ -381,6 +389,8 @@ export function useMigration() {
             date: new Date(job.created_at).toLocaleString(),
             source: job.source_service,
             dest: job.destination_service,
+            source_account_id: job.source_account_id,
+            destination_account_id: job.destination_account_id,
             status: job.status,
             successRate,
             successCount: job.completed_items,

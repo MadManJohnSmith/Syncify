@@ -482,16 +482,15 @@ pub async fn resolve_and_refresh_gui_credentials(
     db: &DbPool,
     http_client: &reqwest::Client,
 ) -> (Option<TidalGuiCredentials>, Option<String>) {
-    resolve_and_refresh_gui_credentials_opts(db, http_client, false).await
+    resolve_and_refresh_gui_credentials_for_account(db, http_client, None, false).await
 }
 
-/// Igual que `resolve_and_refresh_gui_credentials` pero permite FORCAR el
-/// refresh aunque el expiry almacenado diga vigente. Se usa tras un 401 en
-/// vivo (clock skew, revocación media-sesión, carrera de rotación) antes de
-/// condenar la cuenta a `credentials_invalid`.
-pub async fn resolve_and_refresh_gui_credentials_opts(
+/// Resolve credentials for a specific account (including inactive accounts).
+/// `None` retains the active-account behavior for callers without a selection.
+pub async fn resolve_and_refresh_gui_credentials_for_account(
     db: &DbPool,
     http_client: &reqwest::Client,
+    account_id: Option<i64>,
     force_refresh: bool,
 ) -> (Option<TidalGuiCredentials>, Option<String>) {
     let row: Option<(i64, Option<String>, Option<i64>, Option<String>)> = sqlx::query_as(
@@ -499,11 +498,14 @@ pub async fn resolve_and_refresh_gui_credentials_opts(
         SELECT a.id, a.credentials_json, a.credentials_invalid, COALESCE(a.display_name, a.email, 'tidal_user') as account_name
         FROM accounts a
         JOIN services s ON s.id = a.service_id
-        WHERE LOWER(s.name) = 'tidal' AND a.is_active = 1
+        WHERE LOWER(s.name) = 'tidal' AND ((? IS NOT NULL AND a.id = ?) OR (? IS NULL AND a.is_active = 1))
         ORDER BY a.id DESC
         LIMIT 1
         "#
     )
+    .bind(account_id)
+    .bind(account_id)
+    .bind(account_id)
     .fetch_optional(db)
     .await
     .unwrap_or_else(|e| {

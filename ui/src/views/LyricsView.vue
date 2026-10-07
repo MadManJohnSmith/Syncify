@@ -284,7 +284,7 @@
             <div class="flex items-center gap-1 shrink-0">
               <button @click="startEditing" :class="[
                 'p-2 rounded-lg transition-colors',
-                isEditing ? 'bg-primary text-white' : 'hover:bg-gray-200 dark:hover:bg-surface-highlight text-gray-600 dark:text-gray-400'
+                isEditing ? 'bg-primary text-on-accent' : 'hover:bg-gray-200 dark:hover:bg-surface-highlight text-gray-600 dark:text-gray-400'
               ]" title="Edit">
                 <span class="material-symbols-outlined text-[18px]">edit</span>
               </button>
@@ -340,7 +340,7 @@
             <button @click="isEditing = false" class="px-4 py-1.5 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
               Cancel
             </button>
-            <button @click="saveLyricsEdit" :disabled="isSavingEdit || !editableLyrics.trim()" class="px-4 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5">
+            <button @click="saveLyricsEdit" :disabled="isSavingEdit || !editableLyrics.trim()" class="px-4 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5">
               <span :class="['material-symbols-outlined text-[14px]', isSavingEdit && 'animate-spin']">{{ isSavingEdit ? 'progress_activity' : 'check' }}</span>
               {{ isSavingEdit ? 'Saving…' : 'Save Changes' }}
             </button>
@@ -373,7 +373,7 @@
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">No Lyrics Available</h3>
             <p class="text-text-secondary mb-4">This track doesn't have any lyrics yet</p>
             <div class="flex items-center gap-3">
-              <button @click="runAutoFetch" :disabled="isFetching" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50">
+              <button @click="runAutoFetch" :disabled="isFetching" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50">
                 <span :class="['material-symbols-outlined text-[18px]', isFetching && 'animate-spin']">{{ isFetching ? 'progress_activity' : 'search' }}</span>
                 {{ isFetching ? 'Buscando…' : 'Search for Lyrics' }}
               </button>
@@ -417,7 +417,7 @@
           <!-- Playback Controls (for synced lyrics) -->
           <div v-if="currentTrack?.lyricsStatus === 'synced'" class="shrink-0 px-6 py-4 border-t border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30">
             <div class="flex items-center gap-4">
-              <button @click="togglePlayback" class="p-2 bg-primary hover:bg-primary-hover text-white rounded-full transition-colors" title="Reproducir la pista descargada">
+              <button @click="togglePlayback" class="p-2 bg-primary hover:bg-primary-hover text-on-accent rounded-full transition-colors" title="Reproducir la pista descargada">
                 <span class="material-symbols-outlined text-[20px]">{{ isPlayingAudio ? 'pause' : 'play_arrow' }}</span>
               </button>
               <div class="flex-1">
@@ -789,7 +789,7 @@
               <button @click="showProviderSettings = false" class="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg font-medium transition-colors">
                 Cancel
               </button>
-              <button @click="saveProviderSettings" :disabled="isSavingProviders || !providerForm" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5">
+              <button @click="saveProviderSettings" :disabled="isSavingProviders || !providerForm" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5">
                 <span :class="['material-symbols-outlined text-[14px]', isSavingProviders && 'animate-spin']">{{ isSavingProviders ? 'progress_activity' : 'done' }}</span>
                 {{ isSavingProviders ? 'Guardando…' : 'Save Settings' }}
               </button>
@@ -813,7 +813,7 @@
               <button @click="showSyncEditor = false" class="px-4 py-2 text-gray-300 hover:bg-gray-800 rounded-lg font-medium transition-colors">
                 Cancel
               </button>
-              <button @click="saveSyncEditor" :disabled="isSavingSync" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5">
+              <button @click="saveSyncEditor" :disabled="isSavingSync" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5">
                 <span :class="['material-symbols-outlined text-[14px]', isSavingSync && 'animate-spin']">{{ isSavingSync ? 'progress_activity' : 'save' }}</span>
                 Save &amp; Close
               </button>
@@ -934,7 +934,7 @@
           
           <!-- Playback Controls -->
           <div class="px-6 py-4 border-t border-gray-700 bg-gray-900 flex items-center gap-4">
-            <button @click="togglePlayback" class="p-3 bg-primary hover:bg-primary-hover text-white rounded-full transition-colors">
+            <button @click="togglePlayback" class="p-3 bg-primary hover:bg-primary-hover text-on-accent rounded-full transition-colors">
               <span class="material-symbols-outlined text-[24px]">{{ isPlayingAudio ? 'pause' : 'play_arrow' }}</span>
             </button>
             <div class="flex-1">
@@ -942,7 +942,7 @@
             </div>
             <span class="text-sm font-mono text-gray-400 w-24 text-right">{{ currentTimeLabel }} / {{ totalTimeLabel }}</span>
             <div class="flex items-center gap-2">
-              <button v-for="r in [0.5, 1, 1.5]" :key="r" :class="['px-2 py-1 rounded text-xs font-medium transition-colors', playbackRateValue === r ? 'bg-primary text-white' : 'text-gray-400 hover:text-white']" @click="player.setRate(r)">{{ r }}x</button>
+              <button v-for="r in [0.5, 1, 1.5]" :key="r" :class="['px-2 py-1 rounded text-xs font-medium transition-colors', playbackRateValue === r ? 'bg-primary text-on-accent' : 'text-gray-400 hover:text-white']" @click="player.setRate(r)">{{ r }}x</button>
             </div>
           </div>
         </div>
@@ -1045,7 +1045,7 @@
               <button v-if="isKaraokeRunning" @click="cancelKaraokeRefetchAction" class="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors text-gray-700 dark:text-gray-300">
                 Cancelar proceso
               </button>
-              <button v-if="!isKaraokeRunning" @click="runKaraokeRefetch" data-testid="karaoke-run" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+              <button v-if="!isKaraokeRunning" @click="runKaraokeRefetch" data-testid="karaoke-run" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
                 {{ karaokeResult ? 'Repetir re-chequeo' : 'Ejecutar' }}
               </button>
             </div>
@@ -1104,7 +1104,7 @@
               <button v-if="isCoverSweepRunning" @click="cancelCoverSweepAction" class="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors text-gray-700 dark:text-gray-300">
                 Cancelar proceso
               </button>
-              <button v-if="!isCoverSweepRunning" @click="runCoverSweep" data-testid="cover-sweep-run" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+              <button v-if="!isCoverSweepRunning" @click="runCoverSweep" data-testid="cover-sweep-run" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
                 {{ coverSweepResult ? 'Repetir barrido' : 'Ejecutar' }}
               </button>
             </div>

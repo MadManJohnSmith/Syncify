@@ -33,10 +33,10 @@
           <Transition name="fade">
             <div 
               v-if="hoveredAction === action.id"
-              class="fab-tooltip absolute right-14 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-gray-900 text-white text-xs font-medium rounded-lg whitespace-nowrap shadow-lg"
+              class="fab-tooltip absolute right-14 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-surface text-ink text-xs font-medium rounded-lg whitespace-nowrap shadow-lg"
             >
               {{ action.label }}
-              <span v-if="action.shortcut" class="ml-2 text-gray-400">{{ action.shortcut }}</span>
+              <span v-if="action.shortcut" class="ml-2 text-ink-2">{{ action.shortcut }}</span>
             </div>
           </Transition>
         </div>
@@ -49,21 +49,21 @@
       :class="[
         'quick-actions-fab fixed right-6 w-14 h-14 rounded-full flex items-center justify-center shadow-xl z-[90] transition-all',
         current ? 'bottom-28' : 'bottom-6',
-        isOpen ? 'bg-gray-700 rotate-45' : 'bg-primary hover:bg-primary-hover hover:scale-110',
-        feedbackState === 'success' && 'bg-green-500',
-        feedbackState === 'error' && 'bg-red-500 animate-shake',
-        feedbackState === 'loading' && 'bg-primary'
+        isOpen ? 'bg-elevated rotate-45' : 'bg-accent hover:bg-accent-hover hover:scale-110',
+        feedbackState === 'success' && 'bg-ok',
+        feedbackState === 'error' && 'bg-error animate-shake',
+        feedbackState === 'loading' && 'bg-accent'
       ]"
       :title="isOpen ? 'Close menu' : 'Quick actions'"
     >
       <span v-if="feedbackState === 'loading'" class="animate-spin">
-        <svg class="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none">
+        <svg class="w-6 h-6 text-on-accent" viewBox="0 0 24 24" fill="none">
           <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity="0.25"></circle>
           <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>
         </svg>
       </span>
       <span v-else-if="feedbackState === 'success'" class="material-symbols-outlined text-white text-2xl">check</span>
-      <span v-else class="material-symbols-outlined text-white text-2xl transition-transform">
+      <span v-else class="material-symbols-outlined text-2xl transition-transform" :class="isOpen ? 'text-ink' : 'text-on-accent'">
         {{ isOpen ? 'close' : 'bolt' }}
       </span>
     </button>
@@ -72,10 +72,10 @@
     <Transition name="fade">
       <div 
         v-if="isOpen" 
-        :class="['fixed right-6 z-[85] text-xs text-gray-400 text-right', current ? 'bottom-46' : 'bottom-24']"
+        :class="['fixed right-6 z-[85] text-xs text-ink-2 text-right', current ? 'bottom-46' : 'bottom-24']"
       >
-        <p>Press <kbd class="px-1.5 py-0.5 bg-gray-700 rounded text-gray-300">1</kbd>-<kbd class="px-1.5 py-0.5 bg-gray-700 rounded text-gray-300">{{ visibleActions.length }}</kbd> to select</p>
-        <p>Press <kbd class="px-1.5 py-0.5 bg-gray-700 rounded text-gray-300">Esc</kbd> to close</p>
+        <p>Press <kbd class="px-1.5 py-0.5 bg-elevated rounded text-ink-2">1</kbd>-<kbd class="px-1.5 py-0.5 bg-elevated rounded text-ink-2">{{ visibleActions.length }}</kbd> to select</p>
+        <p>Press <kbd class="px-1.5 py-0.5 bg-elevated rounded text-ink-2">Esc</kbd> to close</p>
       </div>
     </Transition>
   </div>
@@ -389,7 +389,7 @@ defineExpose({
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
 }
 
-/* Tooltip arrow */
+/* Tooltip arrow: mismo color que la superficie del tooltip */
 .fab-tooltip::after {
   content: '';
   position: absolute;
@@ -397,7 +397,7 @@ defineExpose({
   top: 50%;
   transform: translateY(-50%);
   border: 4px solid transparent;
-  border-left-color: #111827;
+  border-left-color: var(--surface-1);
 }
 
 .bottom-46 {

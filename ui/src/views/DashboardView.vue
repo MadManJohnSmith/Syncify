@@ -3,7 +3,7 @@
     <!-- Header -->
     <div class="shrink-0 px-4 py-2.5 border-b border-border-dark flex items-center justify-between gap-4">
       <div class="flex items-baseline gap-3 min-w-0">
-        <h1 class="text-lg font-bold text-white">Dashboard</h1>
+        <h1 class="text-lg font-bold text-ink">Dashboard</h1>
         <p class="text-xs text-gray-500 truncate">Library statistics and analytics</p>
       </div>
       <div class="flex items-center gap-2 shrink-0">
@@ -12,7 +12,7 @@
           <span class="material-symbols-outlined text-base" :class="{ 'animate-spin': isRefreshing }">refresh</span>
           Refresh
         </button>
-        <button @click="exportReport" class="px-3 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs flex items-center gap-1.5">
+        <button @click="exportReport" class="px-3 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs flex items-center gap-1.5">
           <span class="material-symbols-outlined text-base">download</span>
           Export Report
         </button>
@@ -28,9 +28,9 @@
     <!-- Error state -->
     <div v-else-if="error" class="flex-1 min-h-0 flex flex-col items-center justify-center px-6 text-center">
       <span class="material-symbols-outlined text-4xl text-red-500 mb-3">error</span>
-      <h3 class="text-base font-semibold text-white mb-1">Failed to load dashboard</h3>
+      <h3 class="text-base font-semibold text-ink mb-1">Failed to load dashboard</h3>
       <p class="text-sm text-gray-400 max-w-md mb-4">{{ error }}</p>
-      <button @click="fetchData" class="px-4 py-1.5 bg-surface-highlight hover:bg-surface-highlight/80 text-white rounded-lg text-sm">
+      <button @click="fetchData" class="px-4 py-1.5 bg-surface-highlight hover:bg-surface-highlight/80 text-ink rounded-lg text-sm">
         Try Again
       </button>
     </div>
@@ -40,10 +40,10 @@
       <div class="xl:h-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-3 xl:grid-rows-3 auto-rows-fr">
         <!-- Library Overview -->
         <div class="stat-card library-overview xl:col-span-4 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Library Overview</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Library Overview</h3>
           <div class="flex-1 min-h-0 grid grid-cols-3 gap-2 content-start">
             <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
-              <p class="text-lg font-bold text-white leading-tight">{{ stats.totalTracks.toLocaleString() }}</p>
+              <p class="text-lg font-bold text-ink leading-tight">{{ stats.totalTracks.toLocaleString() }}</p>
               <p class="text-[11px] text-gray-500">Tracks</p>
             </div>
             <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
@@ -76,7 +76,7 @@
         <!-- Library Growth -->
         <div class="stat-card growth-chart xl:col-span-5 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <div class="flex items-center justify-between mb-2 shrink-0 gap-2">
-            <h3 class="text-xs font-semibold text-white">Library Growth</h3>
+            <h3 class="text-xs font-semibold text-ink">Library Growth</h3>
             <select v-model="timeRange" class="px-2 py-1 bg-surface-highlight border border-border-dark rounded text-[11px] text-gray-300 focus:outline-none">
               <option value="7d">Last 7 days</option>
               <option value="30d">Last 30 days</option>
@@ -115,8 +115,8 @@
 
         <!-- Storage Usage -->
         <div class="stat-card storage-usage xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Storage Usage</h3>
-          <p class="text-xl font-bold text-white shrink-0">{{ stats.storageUsed }}</p>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Storage Usage</h3>
+          <p class="text-xl font-bold text-ink shrink-0">{{ stats.storageUsed }}</p>
 
           <div class="h-2 bg-gray-700 rounded-full overflow-hidden flex mt-2 mb-2 shrink-0">
             <template v-if="storageData">
@@ -148,7 +148,7 @@
 
         <!-- Quality Distribution -->
         <div class="stat-card quality-distribution xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Audio Quality</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Audio Quality</h3>
           <div v-if="qualityData.length > 0" class="flex-1 min-h-0 space-y-2 overflow-hidden">
             <div v-for="(item, i) in qualityData" :key="item.label" @click="handleQualityClick(item.label)" class="cursor-pointer hover:bg-white/5 rounded-lg px-1 -mx-1 py-0.5 transition-colors">
               <div class="flex justify-between text-[11px] mb-0.5">
@@ -171,11 +171,11 @@
 
         <!-- Service Distribution -->
         <div class="stat-card service-distribution xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Sources</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Sources</h3>
           <div class="flex-1 min-h-0 space-y-2 overflow-hidden">
             <div v-for="service in stats.services" :key="service.name">
               <div class="flex justify-between text-[11px] mb-0.5">
-                <span class="text-white truncate pr-2">{{ service.name }}</span>
+                <span class="text-ink truncate pr-2">{{ service.name }}</span>
                 <span class="text-gray-500 shrink-0">{{ service.percent }}%</span>
               </div>
               <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
@@ -187,7 +187,7 @@
 
         <!-- Download Queue -->
         <div class="stat-card queue-stats xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Download Queue</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Download Queue</h3>
           <div v-if="queueStats" class="flex-1 min-h-0 space-y-1.5 text-[11px] overflow-hidden">
             <div class="flex justify-between">
               <span class="text-gray-400">Queued</span>
@@ -216,14 +216,14 @@
 
         <!-- Recent Activity -->
         <div class="stat-card recent-activity xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Recent Activity</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Recent Activity</h3>
           <div v-if="recentActivity.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-hidden">
             <div v-for="activity in recentActivity" :key="activity.id" class="flex items-center gap-2">
               <div :class="['w-6 h-6 rounded-full flex items-center justify-center shrink-0', activity.color]">
                 <span class="material-symbols-outlined text-xs">{{ activity.icon }}</span>
               </div>
               <div class="min-w-0 flex-1">
-                <p class="text-[11px] text-white truncate">{{ activity.text }}</p>
+                <p class="text-[11px] text-ink truncate">{{ activity.text }}</p>
                 <p class="text-[10px] text-gray-500">{{ activity.time }}</p>
               </div>
             </div>
@@ -240,7 +240,7 @@
 
         <!-- System Diagnostics -->
         <div class="stat-card system-diagnostics xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">System Diagnostics</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">System Diagnostics</h3>
           <div class="flex-1 min-h-0 space-y-1.5 text-[11px] overflow-hidden">
             <div class="flex items-center justify-between bg-surface-highlight rounded-lg px-2 py-1.5">
               <span class="flex items-center gap-1.5 text-gray-200">
@@ -265,16 +265,16 @@
 
         <!-- Metadata Quality -->
         <div class="stat-card metadata-quality xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Metadata Quality</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Metadata Quality</h3>
           <div v-if="metadataStats" class="flex-1 min-h-0 flex gap-3 overflow-hidden">
             <div class="w-16 h-16 relative shrink-0 self-start">
               <svg viewBox="0 0 100 100" class="transform -rotate-90 w-full h-full">
-                <circle cx="50" cy="50" r="40" fill="none" stroke="#374151" stroke-width="10" />
-                <circle cx="50" cy="50" r="40" fill="none" stroke="#6366f1" stroke-width="10" stroke-linecap="round"
+                <circle cx="50" cy="50" r="40" fill="none" style="stroke: var(--surface-2)" stroke-width="10" />
+                <circle cx="50" cy="50" r="40" fill="none" style="stroke: var(--accent)" stroke-width="10" stroke-linecap="round"
                   :stroke-dasharray="`${(metadataStats?.average_completeness || 0) * 2.51} 251`" />
               </svg>
               <div class="absolute inset-0 flex items-center justify-center">
-                <p class="text-xs font-bold text-indigo-500">{{ Math.round(metadataStats?.average_completeness || 0) }}%</p>
+                <p class="text-xs font-bold text-accent">{{ Math.round(metadataStats?.average_completeness || 0) }}%</p>
               </div>
             </div>
             <div class="flex-1 min-w-0 space-y-1 text-[11px]">
@@ -301,10 +301,10 @@
 
         <!-- Lyrics Coverage -->
         <div class="stat-card lyrics-coverage xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Lyrics Coverage</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Lyrics Coverage</h3>
           <div v-if="lyricsStats" class="flex-1 min-h-0 flex flex-col overflow-hidden">
             <div class="shrink-0 flex items-baseline gap-2 mb-2">
-              <span class="text-xl font-bold text-white">{{ lyricsStats.total_tracks > 0 ? Math.round((lyricsStats.with_lyrics / lyricsStats.total_tracks) * 100) : 0 }}%</span>
+              <span class="text-xl font-bold text-ink">{{ lyricsStats.total_tracks > 0 ? Math.round((lyricsStats.with_lyrics / lyricsStats.total_tracks) * 100) : 0 }}%</span>
               <span class="text-[11px] text-gray-500">{{ lyricsStats.with_lyrics }} / {{ lyricsStats.total_tracks }} tracks</span>
             </div>
             <div class="shrink-0 h-1.5 bg-gray-700 rounded-full overflow-hidden mb-2">
@@ -331,11 +331,11 @@
 
         <!-- Top Artists -->
         <div class="stat-card top-artists xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Top Artists</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Top Artists</h3>
           <div v-if="stats.topArtists.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-hidden">
             <div v-for="artist in stats.topArtists" :key="artist.name">
               <div class="flex justify-between text-[11px] mb-0.5">
-                <span class="text-white truncate pr-2">{{ artist.name }}</span>
+                <span class="text-ink truncate pr-2">{{ artist.name }}</span>
                 <span class="text-gray-500 shrink-0">{{ artist.tracks }} tracks</span>
               </div>
               <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
@@ -351,11 +351,11 @@
 
         <!-- Top Genres -->
         <div class="stat-card top-genres xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Top Genres</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Top Genres</h3>
           <div v-if="stats.topGenres.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-hidden">
             <div v-for="genre in stats.topGenres" :key="genre.name">
               <div class="flex justify-between text-[11px] mb-0.5">
-                <span class="text-white truncate pr-2">{{ genre.name }}</span>
+                <span class="text-ink truncate pr-2">{{ genre.name }}</span>
                 <span class="text-gray-500 shrink-0">{{ genre.tracks }} tracks</span>
               </div>
               <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
@@ -371,14 +371,14 @@
 
         <!-- Duplicates -->
         <div class="stat-card duplicates xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden" :class="{ 'opacity-60': duplicateStats === null }">
-          <h3 class="text-xs font-semibold text-white mb-2 shrink-0">Duplicates</h3>
+          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Duplicates</h3>
           <div class="flex-1 min-h-0 flex flex-col items-center justify-center">
             <p class="text-2xl font-bold text-gray-600 mb-0.5" :class="{ 'text-warning': duplicateStats && duplicateStats > 0 }">{{ duplicateStats ?? '—' }}</p>
             <p class="text-[11px] text-gray-500 text-center">{{ duplicateStats === null ? 'Scanning...' : 'Extra tracks detected' }}</p>
           </div>
           <div class="shrink-0 flex gap-1.5 mt-2">
             <button :disabled="!duplicateStats" @click="goToDuplicates" :class="[duplicateStats ? 'bg-primary/20 text-primary hover:bg-primary/30 cursor-pointer' : 'bg-primary/5 text-primary/40 cursor-not-allowed']" class="flex-1 py-1 text-[11px] rounded-lg transition-colors">Review</button>
-            <button @click="handleAutoResolveDuplicates" :disabled="isAutoResolving || !duplicateStats" title="Auto-resolve duplicates by keeping highest quality" class="flex-1 py-1 text-[11px] border border-border-dark text-gray-400 hover:text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            <button @click="handleAutoResolveDuplicates" :disabled="isAutoResolving || !duplicateStats" title="Auto-resolve duplicates by keeping highest quality" class="flex-1 py-1 text-[11px] border border-border-dark text-gray-400 hover:text-ink rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
               <span v-if="isAutoResolving" class="material-symbols-outlined text-xs animate-spin mr-1">sync</span>
               Auto-resolve
             </button>

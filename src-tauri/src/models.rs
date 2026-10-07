@@ -275,6 +275,8 @@ pub struct MigrationJob {
     pub id: String,
     pub source_service: String,
     pub destination_service: String,
+    pub source_account_id: Option<i64>,
+    pub destination_account_id: Option<i64>,
     pub source_playlist_ids: Option<String>, // JSON array
     pub options: String,                     // JSON MigrationOptions
     pub status: String,

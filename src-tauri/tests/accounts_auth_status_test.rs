@@ -143,7 +143,7 @@ async fn test_qobuz_account_with_valid_token_returns_connected_valid() {
 }
 
 #[tokio::test]
-async fn test_disabled_account_and_credentials_invalid_returns_requires_auth() {
+async fn test_disabled_account_keeps_its_real_status_and_invalid_still_requires_auth() {
     let pool = setup_test_db().await;
 
     let tidal_svc_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'tidal'")
@@ -157,7 +157,12 @@ async fn test_disabled_account_and_credentials_invalid_returns_requires_auth() {
     .to_string();
     let encrypted = crypto::encrypt(&creds).unwrap();
 
-    // 1. Inactive account
+    // 1. Inactive account, queried BY ID.
+    //    Multi-cuenta: desactivarse ya NO es un problema de credenciales. El
+    //    corte `is_active == 0 → requires_auth` solo aplica al camino SIN id
+    //    (además dead code allí: su consulta solo trae filas activas), así que la
+    //    cuenta ELEGIDA se evalúa con sus credenciales reales y `is_active` en el
+    //    DTO dice que no es la activa del servicio.
     let aid_inactive: i64 = sqlx::query_scalar(
         r#"INSERT INTO accounts (service_id, display_name, credentials_json, is_active, credentials_invalid)
            VALUES (?, 'Inactive Account', ?, 0, 0) RETURNING id"#
@@ -171,10 +176,22 @@ async fn test_disabled_account_and_credentials_invalid_returns_requires_auth() {
     let status_inactive = perform_get_service_auth_status(&pool, "tidal", Some(aid_inactive))
         .await
         .unwrap();
-    assert_eq!(status_inactive.status, "requires_auth");
-    assert!(!status_inactive.is_authenticated);
+    assert_eq!(status_inactive.status, "connected_valid");
+    assert!(status_inactive.is_authenticated);
+    assert!(
+        !status_inactive.is_active,
+        "el estado distingue 'credenciales sanas' de 'cuenta activa'"
+    );
 
-    // 2. credentials_invalid = 1
+    // Y el camino SIN id sigue sin devolver esa cuenta (su consulta filtra
+    // is_active = 1): sin cuenta activa el servicio no está conectado.
+    let status_no_id = perform_get_service_auth_status(&pool, "tidal", None)
+        .await
+        .unwrap();
+    assert_eq!(status_no_id.status, "missing");
+    assert!(status_no_id.account_id.is_none());
+
+    // 2. credentials_invalid = 1 — sigue siendo requires_auth por credenciales.
     let aid_invalid: i64 = sqlx::query_scalar(
         r#"INSERT INTO accounts (service_id, display_name, credentials_json, is_active, credentials_invalid, invalid_reason)
            VALUES (?, 'Invalid Account', ?, 1, 1, 'HTTP 401 Unauthorized') RETURNING id"#
@@ -190,6 +207,7 @@ async fn test_disabled_account_and_credentials_invalid_returns_requires_auth() {
         .unwrap();
     assert_eq!(status_invalid.status, "requires_auth");
     assert!(!status_invalid.is_authenticated);
+    assert!(status_invalid.is_active);
     assert!(status_invalid.error_message.unwrap().contains("HTTP 401"));
 }
 

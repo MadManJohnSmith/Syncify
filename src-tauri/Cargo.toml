@@ -1,6 +1,6 @@
 [package]
 name = "syncify-tauri"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2021"
 description = "Syncify Tauri application"
 default-run = "syncify-tauri"

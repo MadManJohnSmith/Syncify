@@ -378,8 +378,8 @@ export async function getFavoritesArtists(service?: string, offset?: number, lim
 /**
  * Sync favorites from a service
  */
-export async function syncFavorites(service: string, favType?: string): Promise<FavoritesSyncResult> {
-    const raw = await invokeCommand<unknown>('sync_favorites', { service, favType });
+export async function syncFavorites(service: string, favType?: string, accountId?: number | null): Promise<FavoritesSyncResult> {
+    const raw = await invokeCommand<unknown>('sync_favorites', { service, favType, accountId: accountId ?? null });
     return {
         service: asString(pick(raw, ['service'])),
         item_type: asString(pick(raw, ['item_type', 'itemType'])),
@@ -1154,6 +1154,25 @@ function normalizeTrackMetadata(raw: unknown): TrackMetadataWithSources {
 export async function getTrackMetadata(trackId: number): Promise<TrackMetadataWithSources> {
     const raw = await invokeCommand<unknown>('get_track_metadata', { trackId });
     return normalizeTrackMetadata(raw);
+}
+
+/** Resultado de `record_local_play` (espejo del struct Rust `PlayStats`). */
+export interface PlayStats {
+    track_id: number;
+    play_count: number;
+    last_played: string | null;
+    counted: boolean;
+}
+
+/**
+ * Fase 1 del player: acredita una escucha completada (≥ 30 s de reproducción
+ * real) para una pista. Idempotente por `listen_session_id` en el backend:
+ * reenviar el mismo token tras una respuesta perdida devuelve `counted: false`
+ * sin duplicar el conteo. Contrato: migración 0091 + `record_local_play` en
+ * `src-tauri/src/commands/playback.rs`.
+ */
+export async function recordLocalPlay(trackId: number, listenSessionId: string): Promise<PlayStats> {
+    return invokeCommand<PlayStats>('record_local_play', { trackId, listenSessionId });
 }
 
 /**

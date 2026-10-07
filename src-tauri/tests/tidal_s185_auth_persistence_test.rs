@@ -14,13 +14,17 @@
 //! 2. Error de TRANSPORTE durante refresco NO escribe invalidación persistente.
 //! 3. Expiración real sin refresh_token sí marca inválida (fin de línea genuino).
 //! 4. El upsert de login deja exactamente el estado limpio que el pipeline selecciona.
+//!    Multi-cuenta: la identidad nueva INSERTA su fila y las anteriores se conservan
+//!    intactas (solo se desactivan), en vez de ser sobrescritas por la fila más nueva.
 //! 5. El payload Tidal sin expiración recibe la del cache o un fallback conservador.
 //! 6. La clasificación del worker no amplifica mensajes genéricos RequiresAuth.
 
 use sqlx::sqlite::SqlitePoolOptions;
 use syncify_tauri_lib::commands::{inject_tidal_expiry, upsert_service_account};
 use syncify_tauri_lib::crypto;
-use syncify_tauri_lib::services::tidal_pipeline::resolve_and_refresh_gui_credentials;
+use syncify_tauri_lib::services::tidal_pipeline::{
+    resolve_and_refresh_gui_credentials, resolve_and_refresh_gui_credentials_for_account,
+};
 use syncify_tauri_lib::worker::classify_session_auth_failure;
 
 fn now_secs() -> f64 {
@@ -132,6 +136,57 @@ async fn test_s185_valid_active_credentials_resolve_without_invalidation() {
 }
 
 #[tokio::test]
+async fn selected_inactive_tidal_account_never_uses_the_active_token() {
+    let pool = setup_test_db().await;
+    let make_creds = |token: &str| {
+        serde_json::json!({
+            "access_token": token,
+            "refresh_token": "unused_refresh_token",
+            "user_id": "123",
+            "token_expiry": now_secs() + 3600.0,
+            "expires_at": now_secs() + 3600.0,
+            "country_code": "US",
+        })
+        .to_string()
+    };
+    let inactive = insert_tidal_account(
+        &pool,
+        "inactive@test.example",
+        &make_creds("token_a"),
+        false,
+        None,
+    )
+    .await;
+    let active = insert_tidal_account(
+        &pool,
+        "active@test.example",
+        &make_creds("token_b"),
+        false,
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE accounts SET is_active = 0 WHERE id = ?")
+        .bind(inactive)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let (chosen, _) =
+        resolve_and_refresh_gui_credentials_for_account(&pool, &client, Some(inactive), false)
+            .await;
+    let (default, _) = resolve_and_refresh_gui_credentials(&pool, &client).await;
+    assert_eq!(chosen.unwrap().access_token, "token_a");
+    assert_eq!(default.unwrap().access_token, "token_b");
+    let (nonexistent, _) =
+        resolve_and_refresh_gui_credentials_for_account(&pool, &client, Some(active + 1000), false)
+            .await;
+    assert!(
+        nonexistent.is_none(),
+        "no fallback to the active account for unknown IDs"
+    );
+}
+
+#[tokio::test]
 async fn test_s185_transport_error_during_refresh_does_not_persist_invalidation() {
     let pool = setup_test_db().await;
 
@@ -200,7 +255,7 @@ async fn test_s185_expired_token_without_refresh_marks_invalid() {
 }
 
 #[tokio::test]
-async fn test_s185_login_upsert_cleans_stale_rows_pipeline_selects_clean_row() {
+async fn test_s185_login_upsert_keeps_sibling_rows_and_pipeline_selects_clean_row() {
     let pool = setup_test_db().await;
 
     // Estado previo al re-login: filas Tidal envenenadas (como la fila real id=2).
@@ -242,29 +297,49 @@ async fn test_s185_login_upsert_cleans_stale_rows_pipeline_selects_clean_row() {
         tidal_service_id(&pool).await,
         "Owner",
         Some("owner@test.example"),
+        None,
         &encrypted,
     )
     .await
     .expect("upsert succeeds");
 
-    // Exactamente las mismas filas (preserva CASCADE data), TODAS limpias y
-    // exactamente UNA activa — la que el pipeline selecciona.
-    let rows: Vec<(i64, i64, Option<String>, i64)> = sqlx::query_as(
-        "SELECT a.id, COALESCE(a.credentials_invalid, 0), a.invalid_reason, a.is_active FROM accounts a JOIN services s ON s.id=a.service_id WHERE s.name='tidal'",
+    // Multi-cuenta: una identidad que no casa con ninguna fila INSERTA su cuenta
+    // y deja las anteriores INTACTAS (email y credenciales propios). Lo único que
+    // cambia en las hermanas es `is_active = 0`: una cuenta desactivada conserva
+    // su estado requires_auth histórico para cuando vuelva a activarse.
+    let rows: Vec<(i64, i64, Option<String>, i64, Option<String>)> = sqlx::query_as(
+        "SELECT a.id, COALESCE(a.credentials_invalid, 0), a.invalid_reason, a.is_active, a.email
+         FROM accounts a JOIN services s ON s.id=a.service_id
+         WHERE s.name='tidal' ORDER BY a.id",
     )
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(rows.len(), 2, "el upsert preserva filas existentes");
-    let active_count = rows.iter().filter(|(_, _, _, a)| *a == 1).count();
+    assert_eq!(rows.len(), 3, "una identidad nueva crea su propia fila");
+    let active_count = rows.iter().filter(|(_, _, _, a, _)| *a == 1).count();
     assert_eq!(
         active_count, 1,
         "S185: tras el login debe quedar exactamente UNA fila activa"
     );
-    for (_id, inv, reason, _active) in &rows {
-        assert_eq!(*inv, 0, "todo flag obsoleto queda limpio tras el login");
-        assert!(reason.is_none());
+    let mut connected_seen = 0;
+    for (_id, inv, reason, active, email) in &rows {
+        if email.as_deref() == Some("owner@test.example") {
+            connected_seen += 1;
+            assert_eq!(*inv, 0, "la fila recién conectada queda limpia");
+            assert!(reason.is_none());
+            assert_eq!(*active, 1, "la fila recién conectada es la activa");
+        } else {
+            assert_eq!(
+                *inv, 1,
+                "las hermanas conservan su requires_auth histórico (solo se desactivan)"
+            );
+            assert_eq!(
+                *active, 0,
+                "las hermanas quedan desactivadas, nunca eliminadas"
+            );
+        }
     }
+    assert_eq!(connected_seen, 1);
 
     // El pipeline selecciona una fila limpia utilizable sin pasos extra.
     let http_client = reqwest::Client::new();
@@ -285,6 +360,7 @@ async fn test_s185_login_upsert_cleans_stale_rows_pipeline_selects_clean_row() {
         &pool,
         tidal_service_id(&pool).await,
         "Fresh",
+        None,
         None,
         &encrypted,
     )
@@ -333,6 +409,7 @@ async fn test_s185_relogin_with_different_email_survives_unique_constraint() {
         service_id,
         "Owner B",
         Some("account_b@test.example"),
+        None,
         &fresh,
     )
     .await
@@ -347,17 +424,20 @@ async fn test_s185_relogin_with_different_email_survives_unique_constraint() {
     assert_eq!((inv, active), (0, 1));
     assert!(reason.is_none());
 
-    // 2) Re-login con un email NUEVO: toma la fila más reciente, cambia su email,
-    //    activa solo esa; ninguna violación de unicidad.
+    // 2) Re-login con un email NUEVO: crea su propia fila y deja la de B INTACTA.
+    //    Antes esta aserción fijaba el comportamiento contrario (la fila más
+    //    reciente perdía su email y sus credenciales); con varias cuentas por
+    //    servicio eso destruía por CASCADE la biblioteca de la cuenta anterior.
     upsert_service_account(
         &pool,
         service_id,
         "Owner C",
         Some("brand_new@test.example"),
+        None,
         &fresh,
     )
     .await
-    .expect("re-login con email nuevo no debe chocar con UNIQUE");
+    .expect("re-login con email nuevo crea una cuenta nueva");
 
     let actives: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE service_id = ? AND is_active = 1")
@@ -374,6 +454,30 @@ async fn test_s185_relogin_with_different_email_survives_unique_constraint() {
             .await
             .unwrap();
     assert_eq!(email_now.as_deref(), Some("brand_new@test.example"));
+
+    // La cuenta anterior sobrevive con su email y sus credenciales, desactivada.
+    let (b_email, b_creds, b_active): (Option<String>, Option<String>, i64) =
+        sqlx::query_as("SELECT email, credentials_json, is_active FROM accounts WHERE id = ?")
+            .bind(row_b)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(b_email.as_deref(), Some("account_b@test.example"));
+    assert_eq!(
+        crypto::decrypt(b_creds.as_deref().expect("credenciales preservadas")).unwrap(),
+        r#"{"access_token":"relogin_access","refresh_token":"relogin_refresh","token_expiry":4102444800}"#
+    );
+    assert_eq!(
+        b_active, 0,
+        "la cuenta anterior queda desactivada, no borrada"
+    );
+
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE service_id = ?")
+        .bind(service_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(total, 3, "A + B + la cuenta nueva siguen existiendo");
 }
 
 #[tokio::test]

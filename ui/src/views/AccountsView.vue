@@ -15,7 +15,7 @@
       
       <button 
         @click="showServiceModal = true"
-        class="flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-semibold transition-colors shadow-lg shadow-primary/20"
+        class="flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-semibold transition-colors shadow-lg shadow-primary/20"
       >
         <span class="material-symbols-outlined text-[20px]">add</span>
         Add Connection
@@ -124,6 +124,25 @@
               </div>
             </div>
             
+            <details v-if="service.accounts.length" class="mb-4 text-sm">
+              <summary class="cursor-pointer text-text-secondary">Cuentas ({{ service.accounts.length }})</summary>
+              <div v-for="account in service.accounts" :key="account.id" :class="['mt-2 rounded border p-2 transition-colors hover:bg-elevated', highlightedAccountId === account.id ? 'border-primary' : 'border-gray-200 dark:border-border-dark']">
+                <div class="font-medium truncate">{{ account.display_name || account.email || `Cuenta ${account.id}` }}</div>
+                <div class="text-xs text-text-secondary truncate">{{ account.email }}</div>
+                <span v-if="account.is_active" class="text-xs text-success">Activa</span>
+                <span v-if="account.credentials_invalid" class="ml-2 text-xs text-error">Requiere autenticación</span>
+                <div class="flex flex-wrap gap-2 mt-2">
+                  <button v-if="!account.is_active" @click="activateAccount(account.id)" class="text-primary">Usar esta cuenta</button>
+                  <button @click="disconnectService(service.id, account.id)" class="text-text-secondary">Desconectar</button>
+                  <button @click="deleteAccount(account.id)" class="text-error">Eliminar cuenta</button>
+                </div>
+              </div>
+            </details>
+
+            <button @click="connectServiceFromCard(service.id)" :disabled="authLoading !== null" class="mb-3 text-xs text-primary hover:underline">
+              Añadir cuenta
+            </button>
+
             <!-- Actions -->
             <div class="flex items-center gap-2">
               <template v-if="service.status === 'connected'">
@@ -134,8 +153,8 @@
                   :class="[
                     'flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
                     syncingServices[service.id]
-                      ? 'bg-primary/50 text-white/70 cursor-wait'
-                      : 'bg-primary text-white hover:bg-primary-hover shadow-sm'
+                      ? 'bg-primary/50 text-on-accent/70 cursor-wait'
+                      : 'bg-primary text-on-accent hover:bg-primary-hover shadow-sm'
                   ]"
                 >
                   <span v-if="syncingServices[service.id]" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
@@ -178,11 +197,11 @@
                 <button 
                   @click="connectServiceFromCard(service.id)"
                   :disabled="authLoading !== null"
-                  class="flex-1 px-4 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                  class="flex-1 px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
                 >
                   <span v-if="authLoading === service.id" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
                   <span v-else class="material-symbols-outlined text-[18px]">link</span>
-                  {{ authLoading === service.id ? 'Connecting...' : 'Connect' }}
+                  {{ authLoading === service.id ? 'Connecting...' : 'Añadir cuenta' }}
                 </button>
               </template>
             </div>
@@ -236,7 +255,7 @@
                   :class="[
                     'px-5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2', 
                     importUrl && !importUrlLoading 
-                      ? 'bg-primary hover:bg-primary-hover text-white' 
+                      ? 'bg-primary hover:bg-primary-hover text-on-accent' 
                       : 'bg-gray-200 dark:bg-gray-700 text-gray-500 cursor-not-allowed'
                   ]"
                 >
@@ -336,7 +355,7 @@
           </div>
           
           <!-- Add Path Button -->
-          <div class="p-4 bg-gray-50 dark:bg-[#121b29]/50">
+          <div class="p-4 bg-gray-50 dark:bg-shell/50">
             <button @click="showScanDialog = true" class="w-full py-4 border-2 border-dashed border-gray-300 dark:border-border-dark rounded-xl text-gray-500 dark:text-gray-400 hover:border-primary hover:text-primary hover:bg-primary/5 transition-all flex items-center justify-center gap-2 text-sm font-medium">
               <span class="material-symbols-outlined text-[20px]">add</span>
               Add Library Path
@@ -552,7 +571,7 @@
               <button 
                 @click="saveServicePreferences" 
                 :disabled="savingServicePreferences"
-                class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
               >
                 <span v-if="savingServicePreferences" class="material-symbols-outlined text-[16px] animate-spin">sync</span>
                 {{ savingServicePreferences ? 'Saving...' : 'Save Changes' }}
@@ -650,7 +669,7 @@
                 :disabled="isScanning"
                 :class="[
                   'px-5 py-2 rounded-lg text-sm font-medium transition-colors',
-                  isScanning ? 'bg-primary/50 text-white cursor-not-allowed' : 'bg-primary hover:bg-primary-hover text-white'
+                  isScanning ? 'bg-primary/50 text-on-accent cursor-not-allowed' : 'bg-primary hover:bg-primary-hover text-on-accent'
                 ]"
               >
                 {{ isScanning ? 'Scanning…' : 'Start Scan' }}
@@ -687,6 +706,7 @@ const globalTasks = useGlobalTasks()
 const syncSettings = useSyncSettings()
 const downloadSettings = useDownloadSettings()
 const { services, rawServices, rawAccounts, fetchData, findAccountForService } = useAccountsStatus()
+const highlightedAccountId = ref<number | null>(null)
 
 const showServiceModal = ref(false)
 const authLoading = ref<string | null>(null)
@@ -753,6 +773,7 @@ async function connectService(service: { id: string; name: string }) {
 
     if (result.success) {
       await fetchData()
+      highlightedAccountId.value = typeof result.data?.account_id === 'number' ? result.data.account_id : null
     } else {
       showToast(`Auth failed: ${result.error || 'Unknown error'}`, 'error')
       if (service.id === 'spotify' && result.error && isSpotifyCredentialsError(result.error)) {
@@ -785,6 +806,7 @@ async function connectServiceFromCard(serviceId: string) {
 
     if (result.success) {
       await fetchData()
+      highlightedAccountId.value = typeof result.data?.account_id === 'number' ? result.data.account_id : null
       showToast(`Connected to ${serviceId} successfully!`, 'success')
     } else {
       showToast(`Failed to connect: ${result.error || 'Unknown error'}`, 'error')
@@ -805,27 +827,40 @@ async function connectServiceFromCard(serviceId: string) {
 }
 
 // Disconnect service
-async function disconnectService(serviceId: string) {
+async function disconnectService(serviceId: string, accountId?: number) {
+  const id = accountId ?? findAccountForService(serviceId)?.id
+  if (id == null) return
   authLoading.value = serviceId
-  
   try {
-    // First logout via Python bridge (clears session files)
-    await accountsApi.logoutService(serviceId)
-    
-    // Find the account for this service and remove it from database
-    const account = findAccountForService(serviceId)
-    
-    if (account) {
-      await accountsApi.removeAccount(account.id)
-    }
-    
-    // Always refresh data
+    // Desconectar never deletes the account or its library/playlists, including Spotify.
+    await accountsApi.logoutService(serviceId, id)
     await fetchData()
     showToast(`Disconnected from ${serviceId}`, 'success')
   } catch (e) {
-    showToast(`Disconnect error: ${e}`, 'error')
+    showToast(`Failed to disconnect: ${e}`, 'error')
   } finally {
     authLoading.value = null
+  }
+}
+
+async function activateAccount(accountId: number) {
+  try {
+    await accountsApi.setActiveAccount(accountId)
+    highlightedAccountId.value = accountId
+    await fetchData()
+  } catch (e) {
+    showToast(`Failed to activate account: ${e}`, 'error')
+  }
+}
+
+async function deleteAccount(accountId: number) {
+  if (!window.confirm('¿Eliminar esta cuenta? Se borrarán también su biblioteca y playlists. Esta acción no se puede deshacer.')) return
+  try {
+    await accountsApi.removeAccount(accountId)
+    if (highlightedAccountId.value === accountId) highlightedAccountId.value = null
+    await fetchData()
+  } catch (e) {
+    showToast(`Failed to delete account: ${e}`, 'error')
   }
 }
 
@@ -873,7 +908,7 @@ async function syncFavoritesOnly(serviceName: string) {
   syncingServices[serviceKey] = true
   showToast(`Syncing ${serviceName} favorites...`, 'info')
   try {
-    const res = await libraryApi.syncFavorites(serviceKey, 'all')
+    const res = await libraryApi.syncFavorites(serviceKey, 'all', findAccountForService(serviceKey)?.id)
     const count = (res as any)?.imported ?? (res as any)?.imported_count ?? 'all'
     showToast(`Favorites synced from ${serviceName} (${count} items)`, 'success')
     await fetchData()
@@ -923,7 +958,7 @@ async function importFromService(serviceName: string) {
   showToast(`Syncing ${serviceName}...`, 'info')
   
   try {
-    const syncRes = await accountsApi.syncService(serviceKey)
+    const syncRes = await accountsApi.syncService(serviceKey, findAccountForService(serviceKey)?.id)
     
     // Check if result has errors indicating authentication is required
     const isAuthFailure = !syncRes.success && syncRes.errors?.some(e =>
