@@ -15,7 +15,7 @@
       
       <button 
         @click="showServiceModal = true"
-        class="flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-semibold transition-colors shadow-lg shadow-primary/20"
+        class="flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-semibold transition-colors shadow-lg shadow-primary/20"
       >
         <span class="material-symbols-outlined text-[20px]">add</span>
         Add Connection
@@ -126,7 +126,7 @@
             
             <details v-if="service.accounts.length" class="mb-4 text-sm">
               <summary class="cursor-pointer text-text-secondary">Cuentas ({{ service.accounts.length }})</summary>
-              <div v-for="account in service.accounts" :key="account.id" :class="['mt-2 rounded border p-2', highlightedAccountId === account.id ? 'border-primary' : 'border-gray-200 dark:border-border-dark']">
+              <div v-for="account in service.accounts" :key="account.id" :class="['mt-2 rounded border p-2 transition-colors hover:bg-elevated', highlightedAccountId === account.id ? 'border-primary' : 'border-gray-200 dark:border-border-dark']">
                 <div class="font-medium truncate">{{ account.display_name || account.email || `Cuenta ${account.id}` }}</div>
                 <div class="text-xs text-text-secondary truncate">{{ account.email }}</div>
                 <span v-if="account.is_active" class="text-xs text-success">Activa</span>
@@ -153,8 +153,8 @@
                   :class="[
                     'flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2',
                     syncingServices[service.id]
-                      ? 'bg-primary/50 text-white/70 cursor-wait'
-                      : 'bg-primary text-white hover:bg-primary-hover shadow-sm'
+                      ? 'bg-primary/50 text-on-accent/70 cursor-wait'
+                      : 'bg-primary text-on-accent hover:bg-primary-hover shadow-sm'
                   ]"
                 >
                   <span v-if="syncingServices[service.id]" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
@@ -197,7 +197,7 @@
                 <button 
                   @click="connectServiceFromCard(service.id)"
                   :disabled="authLoading !== null"
-                  class="flex-1 px-4 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                  class="flex-1 px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
                 >
                   <span v-if="authLoading === service.id" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
                   <span v-else class="material-symbols-outlined text-[18px]">link</span>
@@ -255,7 +255,7 @@
                   :class="[
                     'px-5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2', 
                     importUrl && !importUrlLoading 
-                      ? 'bg-primary hover:bg-primary-hover text-white' 
+                      ? 'bg-primary hover:bg-primary-hover text-on-accent' 
                       : 'bg-gray-200 dark:bg-gray-700 text-gray-500 cursor-not-allowed'
                   ]"
                 >
@@ -355,7 +355,7 @@
           </div>
           
           <!-- Add Path Button -->
-          <div class="p-4 bg-gray-50 dark:bg-[#121b29]/50">
+          <div class="p-4 bg-gray-50 dark:bg-shell/50">
             <button @click="showScanDialog = true" class="w-full py-4 border-2 border-dashed border-gray-300 dark:border-border-dark rounded-xl text-gray-500 dark:text-gray-400 hover:border-primary hover:text-primary hover:bg-primary/5 transition-all flex items-center justify-center gap-2 text-sm font-medium">
               <span class="material-symbols-outlined text-[20px]">add</span>
               Add Library Path
@@ -571,7 +571,7 @@
               <button 
                 @click="saveServicePreferences" 
                 :disabled="savingServicePreferences"
-                class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
               >
                 <span v-if="savingServicePreferences" class="material-symbols-outlined text-[16px] animate-spin">sync</span>
                 {{ savingServicePreferences ? 'Saving...' : 'Save Changes' }}
@@ -669,7 +669,7 @@
                 :disabled="isScanning"
                 :class="[
                   'px-5 py-2 rounded-lg text-sm font-medium transition-colors',
-                  isScanning ? 'bg-primary/50 text-white cursor-not-allowed' : 'bg-primary hover:bg-primary-hover text-white'
+                  isScanning ? 'bg-primary/50 text-on-accent cursor-not-allowed' : 'bg-primary hover:bg-primary-hover text-on-accent'
                 ]"
               >
                 {{ isScanning ? 'Scanning…' : 'Start Scan' }}

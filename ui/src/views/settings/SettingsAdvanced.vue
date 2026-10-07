@@ -113,7 +113,7 @@
          </div>
 
          <div class="flex gap-3 mt-4">
-           <button @click="advancedSettings.runDiagnostics()" class="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">Run Diagnostics</button>
+           <button @click="advancedSettings.runDiagnostics()" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">Run Diagnostics</button>
            <button @click="runBatchHealthCheck" :disabled="advancedSettings.isRunningBatchHealthCheck.value" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-200 dark:hover:bg-surface-highlight/80 transition-colors disabled:opacity-50">Batch Health Check</button>
            <button @click="confirmVacuum" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-200 dark:hover:bg-surface-highlight/80 transition-colors">Vacuum Database</button>
            <button @click="confirmResetAdvanced" class="px-4 py-2 border border-error/50 bg-error/5 text-error rounded-lg text-sm font-medium hover:bg-error/10 transition-colors">Reset Defaults</button>

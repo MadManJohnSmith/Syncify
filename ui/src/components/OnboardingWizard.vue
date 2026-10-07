@@ -1141,7 +1141,7 @@ defineExpose({
 /* Spotlight Effect */
 .spotlight-effect {
   position: absolute;
-  border: 3px solid #6366f1;
+  border: 3px solid var(--accent);
   border-radius: 8px;
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.8);
   pointer-events: none;

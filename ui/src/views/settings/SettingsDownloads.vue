@@ -41,7 +41,7 @@
           <button 
             type="button"
             @click="handleBrowseFolder"
-            class="px-4 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium shadow-md shadow-primary/20 flex items-center gap-1.5 transition-all cursor-pointer"
+            class="px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium shadow-md shadow-primary/20 flex items-center gap-1.5 transition-all cursor-pointer"
             title="Browse folder with native dialog"
           >
             <span class="material-symbols-outlined text-[18px]">folder</span>
@@ -286,7 +286,7 @@
             :class="[
               'px-3.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer',
               currentThreads === threads 
-                ? 'bg-primary text-white shadow-sm' 
+                ? 'bg-primary text-on-accent shadow-sm'
                 : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-white/50 dark:hover:bg-white/10'
             ]"
             :title="`Set ${threads} concurrent download thread${threads > 1 ? 's' : ''}`"
@@ -430,7 +430,7 @@
         type="button"
         @click="handleManualSave"
         :disabled="isSaving"
-        class="px-6 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-semibold shadow-lg shadow-primary/20 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        class="px-6 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-semibold shadow-lg shadow-primary/20 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <span v-if="isSaving" class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
         <span v-else class="material-symbols-outlined text-[18px]">save</span>

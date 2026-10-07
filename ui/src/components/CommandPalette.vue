@@ -7,22 +7,22 @@
         @click.self="close"
         @keydown.escape="close"
       >
-        <div class="w-full max-w-2xl bg-white dark:bg-surface-dark rounded-2xl shadow-2xl overflow-hidden">
+        <div class="w-full max-w-2xl bg-surface rounded-2xl shadow-2xl overflow-hidden">
           <!-- Input Field -->
-          <div class="palette-input relative border-b border-gray-200 dark:border-border-dark">
-            <span class="material-symbols-outlined absolute left-5 top-1/2 -translate-y-1/2 text-gray-400 text-2xl">search</span>
+          <div class="palette-input relative border-b border-line">
+            <span class="material-symbols-outlined absolute left-5 top-1/2 -translate-y-1/2 text-ink-3 text-2xl">search</span>
             <input 
               ref="searchInput"
               v-model="query"
               type="text"
               :placeholder="placeholder"
-              class="w-full h-16 pl-14 pr-12 bg-transparent text-lg text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none"
+              class="w-full h-16 pl-14 pr-12 bg-transparent text-lg text-ink placeholder:text-ink-3 focus:outline-none"
               @keydown="handleKeydown"
             >
             <button 
               v-if="query" 
               @click="clearQuery"
-              class="absolute right-4 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 rounded"
+              class="absolute right-4 top-1/2 -translate-y-1/2 p-1 text-ink-3 hover:text-ink-2 rounded"
             >
               <span class="material-symbols-outlined text-xl">close</span>
             </button>
@@ -31,7 +31,7 @@
           <!-- Results Panel -->
           <div class="palette-results max-h-[500px] overflow-y-auto custom-scrollbar">
             <!-- Hint Bar -->
-            <div v-if="!query" class="px-5 py-3 border-b border-gray-100 dark:border-border-dark flex items-center gap-4 text-xs text-gray-400">
+            <div v-if="!query" class="px-5 py-3 border-b border-line flex items-center gap-4 text-xs text-ink-3">
               <span><kbd class="kbd-hint">/</kbd> Actions</span>
               <span><kbd class="kbd-hint">></kbd> Settings</span>
               <span><kbd class="kbd-hint">@</kbd> Artists</span>
@@ -41,8 +41,8 @@
             <!-- Recent Searches -->
             <div v-if="!query && recentSearches.length > 0" class="result-category">
               <div class="px-5 py-2 flex items-center justify-between">
-                <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Recent</span>
-                <button @click="clearRecent" class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">Clear</button>
+                <span class="text-xs font-semibold text-ink-3 uppercase tracking-wide">Recent</span>
+                <button @click="clearRecent" class="text-xs text-ink-3 text-ink-2">Clear</button>
               </div>
               <div 
                 v-for="(item, index) in recentSearches" 
@@ -50,24 +50,24 @@
                 @click="selectRecent(item)"
                 :class="[
                   'result-item recent-search flex items-center gap-3 px-5 py-2.5 cursor-pointer transition-colors',
-                  selectedIndex === index ? 'bg-primary/10' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight'
+                  selectedIndex === index ? 'bg-accent-soft' : 'hover:bg-elevated'
                 ]"
               >
-                <span class="material-symbols-outlined text-gray-400 text-lg">history</span>
-                <span class="text-sm text-gray-700 dark:text-gray-300">{{ item }}</span>
+                <span class="material-symbols-outlined text-ink-3 text-lg">history</span>
+                <span class="text-sm text-ink-2">{{ item }}</span>
               </div>
             </div>
             
             <!-- Loading State -->
             <div v-if="isSearching && query" class="py-6 text-center">
-              <span class="material-symbols-outlined text-2xl text-primary animate-spin">progress_activity</span>
-              <p class="text-gray-500 text-sm mt-2">Searching...</p>
+              <span class="material-symbols-outlined text-2xl text-accent animate-spin">progress_activity</span>
+              <p class="text-ink-3 text-sm mt-2">Searching...</p>
             </div>
             
             <!-- Tracks Results -->
             <div v-if="!isSearching && filteredTracks.length > 0" class="result-category">
               <div class="px-5 py-2">
-                <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Tracks</span>
+                <span class="text-xs font-semibold text-ink-3 uppercase tracking-wide">Tracks</span>
               </div>
               <div
                 v-for="(track, index) in visibleTracks"
@@ -75,24 +75,24 @@
                 @click="selectTrack(track)"
                 :class="[
                   'result-item result-track flex items-center gap-3 px-5 py-2.5 cursor-pointer transition-colors',
-                  getGlobalIndex('tracks', index) === selectedIndex ? 'bg-primary/10' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight'
+                  getGlobalIndex('tracks', index) === selectedIndex ? 'bg-accent-soft' : 'hover:bg-elevated'
                 ]"
               >
-                <div class="w-10 h-10 rounded bg-gray-200 dark:bg-surface-highlight shrink-0 overflow-hidden">
-                  <div class="w-full h-full bg-gradient-to-br from-primary/20 to-primary/40 flex items-center justify-center">
-                    <span class="material-symbols-outlined text-primary/60 text-lg">music_note</span>
+                <div class="w-10 h-10 rounded bg-elevated shrink-0 overflow-hidden">
+                  <div class="w-full h-full bg-gradient-to-br from-accent/20 to-accent/40 flex items-center justify-center">
+                    <span class="material-symbols-outlined text-accent/60 text-lg">music_note</span>
                   </div>
                 </div>
                 <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white truncate" v-html="highlightMatch(track.title)"></p>
-                  <p class="text-xs text-gray-500 truncate">{{ track.artist }} · {{ track.album }}</p>
+                  <p class="text-sm font-medium text-ink truncate" v-html="highlightMatch(track.title)"></p>
+                  <p class="text-xs text-ink-3 truncate">{{ track.artist }} · {{ track.album }}</p>
                 </div>
                 <div class="flex items-center gap-1.5">
-                  <span v-if="track.service" class="px-1.5 py-0.5 bg-gray-100 dark:bg-surface-highlight text-[10px] text-gray-500 rounded">{{ track.service }}</span>
+                  <span v-if="track.service" class="px-1.5 py-0.5 bg-elevated text-[10px] text-ink-3 rounded">{{ track.service }}</span>
                   <span v-if="track.quality" class="px-1.5 py-0.5 bg-purple-500/10 text-purple-500 text-[10px] font-medium rounded">{{ track.quality }}</span>
                 </div>
               </div>
-              <button @click="showMoreTracks" v-if="filteredTracks.length > visibleTrackCount" class="w-full px-5 py-2 text-xs text-primary hover:underline text-left">
+              <button @click="showMoreTracks" v-if="filteredTracks.length > visibleTrackCount" class="w-full px-5 py-2 text-xs text-accent hover:underline text-left">
                 Show {{ Math.min(TRACKS_PAGE_SIZE, filteredTracks.length - visibleTrackCount) }} more tracks...
               </button>
             </div>
@@ -100,7 +100,7 @@
             <!-- Actions Results -->
             <div v-if="filteredActions.length > 0" class="result-category">
               <div class="px-5 py-2">
-                <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Actions</span>
+                <span class="text-xs font-semibold text-ink-3 uppercase tracking-wide">Actions</span>
               </div>
               <div 
                 v-for="(action, index) in filteredActions" 
@@ -108,24 +108,24 @@
                 @click="executeAction(action)"
                 :class="[
                   'result-item result-action flex items-center gap-3 px-5 py-2.5 cursor-pointer transition-colors',
-                  getGlobalIndex('actions', index) === selectedIndex ? 'bg-primary/10' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight'
+                  getGlobalIndex('actions', index) === selectedIndex ? 'bg-accent-soft' : 'hover:bg-elevated'
                 ]"
               >
-                <div class="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center shrink-0">
-                  <span class="material-symbols-outlined text-blue-500 text-lg">{{ action.icon }}</span>
+                <div class="w-8 h-8 rounded-lg bg-accent-soft flex items-center justify-center shrink-0">
+                  <span class="material-symbols-outlined text-accent text-lg">{{ action.icon }}</span>
                 </div>
                 <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white" v-html="highlightMatch(action.name)"></p>
-                  <p class="text-xs text-gray-500">{{ action.description }}</p>
+                  <p class="text-sm font-medium text-ink" v-html="highlightMatch(action.name)"></p>
+                  <p class="text-xs text-ink-3">{{ action.description }}</p>
                 </div>
-                <span class="material-symbols-outlined text-gray-300 text-lg">arrow_forward</span>
+                <span class="material-symbols-outlined text-ink-3 text-lg">arrow_forward</span>
               </div>
             </div>
             
             <!-- Settings Results -->
             <div v-if="filteredSettings.length > 0" class="result-category">
               <div class="px-5 py-2">
-                <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Settings</span>
+                <span class="text-xs font-semibold text-ink-3 uppercase tracking-wide">Settings</span>
               </div>
               <div 
                 v-for="(setting, index) in filteredSettings" 
@@ -133,15 +133,15 @@
                 @click="openSetting(setting)"
                 :class="[
                   'result-item result-setting flex items-center gap-3 px-5 py-2.5 cursor-pointer transition-colors',
-                  getGlobalIndex('settings', index) === selectedIndex ? 'bg-primary/10' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight'
+                  getGlobalIndex('settings', index) === selectedIndex ? 'bg-accent-soft' : 'hover:bg-elevated'
                 ]"
               >
-                <div class="w-8 h-8 rounded-lg bg-gray-500/10 flex items-center justify-center shrink-0">
-                  <span class="material-symbols-outlined text-gray-500 text-lg">settings</span>
+                <div class="w-8 h-8 rounded-lg bg-elevated flex items-center justify-center shrink-0">
+                  <span class="material-symbols-outlined text-ink-3 text-lg">settings</span>
                 </div>
                 <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white" v-html="highlightMatch(setting.name)"></p>
-                  <p class="text-xs text-gray-500">{{ setting.path }}</p>
+                  <p class="text-sm font-medium text-ink" v-html="highlightMatch(setting.name)"></p>
+                  <p class="text-xs text-ink-3">{{ setting.path }}</p>
                 </div>
               </div>
             </div>
@@ -149,7 +149,7 @@
             <!-- Navigation Results -->
             <div v-if="filteredNav.length > 0" class="result-category">
               <div class="px-5 py-2">
-                <span class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Navigation</span>
+                <span class="text-xs font-semibold text-ink-3 uppercase tracking-wide">Navigation</span>
               </div>
               <div 
                 v-for="(nav, index) in filteredNav" 
@@ -157,14 +157,14 @@
                 @click="navigate(nav)"
                 :class="[
                   'result-item result-nav flex items-center gap-3 px-5 py-2.5 cursor-pointer transition-colors',
-                  getGlobalIndex('nav', index) === selectedIndex ? 'bg-primary/10' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight'
+                  getGlobalIndex('nav', index) === selectedIndex ? 'bg-accent-soft' : 'hover:bg-elevated'
                 ]"
               >
-                <div class="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center shrink-0">
-                  <span class="material-symbols-outlined text-green-500 text-lg">{{ nav.icon }}</span>
+                <div class="w-8 h-8 rounded-lg bg-ok/10 flex items-center justify-center shrink-0">
+                  <span class="material-symbols-outlined text-ok text-lg">{{ nav.icon }}</span>
                 </div>
                 <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white" v-html="highlightMatch(nav.name)"></p>
+                  <p class="text-sm font-medium text-ink" v-html="highlightMatch(nav.name)"></p>
                 </div>
                 <kbd class="kbd-hint">{{ nav.shortcut }}</kbd>
               </div>
@@ -172,21 +172,21 @@
             
             <!-- No Results -->
             <div v-if="query && !hasResults && !isSearching" class="no-results py-12 text-center">
-              <span class="material-symbols-outlined text-4xl text-gray-300 dark:text-gray-600 mb-3 block">search_off</span>
-              <p class="text-gray-500 mb-2">No results found</p>
-              <p class="text-xs text-gray-400">Try different keywords, or use <kbd class="kbd-hint">/</kbd> for actions, <kbd class="kbd-hint">></kbd> for settings</p>
+              <span class="material-symbols-outlined text-4xl text-ink-3 mb-3 block">search_off</span>
+              <p class="text-ink-3 mb-2">No results found</p>
+              <p class="text-xs text-ink-3">Try different keywords, or use <kbd class="kbd-hint">/</kbd> for actions, <kbd class="kbd-hint">></kbd> for settings</p>
             </div>
             
             <!-- Empty State (when no query and no recent) -->
             <div v-if="!query && recentSearches.length === 0" class="py-12 text-center">
-              <span class="material-symbols-outlined text-4xl text-gray-300 dark:text-gray-600 mb-3 block">search</span>
-              <p class="text-gray-500 mb-2">Search for tracks, actions, or settings</p>
-              <p class="text-xs text-gray-400">Start typing or use prefixes for specific categories</p>
+              <span class="material-symbols-outlined text-4xl text-ink-3 mb-3 block">search</span>
+              <p class="text-ink-3 mb-2">Search for tracks, actions, or settings</p>
+              <p class="text-xs text-ink-3">Start typing or use prefixes for specific categories</p>
             </div>
           </div>
           
           <!-- Footer -->
-          <div class="px-5 py-3 border-t border-gray-100 dark:border-border-dark flex items-center justify-between text-xs text-gray-400">
+          <div class="px-5 py-3 border-t border-line flex items-center justify-between text-xs text-ink-3">
             <div class="flex items-center gap-4">
               <span><kbd class="kbd-hint">↑↓</kbd> navigate</span>
               <span><kbd class="kbd-hint">↵</kbd> select</span>
@@ -744,17 +744,12 @@ defineExpose({ open, close, isOpen })
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--surface-2);
   border-radius: 3px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 10px;
   font-weight: 500;
-  color: #6b7280;
-}
-
-.dark .kbd-hint {
-  background: rgba(255, 255, 255, 0.1);
-  color: #9ca3af;
+  color: var(--text-2);
 }
 
 /* Modal transition */
@@ -768,8 +763,7 @@ defineExpose({ open, close, isOpen })
   opacity: 0;
 }
 
-.fade-enter-active .bg-white,
-.fade-enter-active .bg-surface-dark {
+.fade-enter-active .bg-surface {
   animation: slideUp 0.15s ease;
 }
 
@@ -794,22 +788,14 @@ defineExpose({ open, close, isOpen })
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--border);
   border-radius: 3px;
-}
-
-.dark .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
 }
 
 /* Result category spacing */
 .result-category:not(:last-child) {
-  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  border-bottom: 1px solid var(--border);
   padding-bottom: 8px;
   margin-bottom: 8px;
-}
-
-.dark .result-category:not(:last-child) {
-  border-bottom-color: rgba(255, 255, 255, 0.05);
 }
 </style>

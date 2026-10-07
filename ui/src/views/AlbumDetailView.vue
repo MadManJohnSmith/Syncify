@@ -10,7 +10,7 @@
           <span class="material-symbols-outlined text-gray-600 dark:text-gray-400">arrow_back</span>
         </button>
         <div>
-          <h1 class="text-xl font-semibold text-gray-900 dark:text-white">{{ album?.title || 'Album' }}</h1>
+          <h1 class="text-xl font-semibold text-ink">{{ album?.title || 'Album' }}</h1>
           <p class="text-sm text-text-secondary">{{ album?.artist_name }}</p>
         </div>
       </div>
@@ -29,9 +29,9 @@
       <!-- Error state -->
       <div v-else-if="error" class="flex flex-col items-center justify-center h-64 text-center px-6">
         <span class="material-symbols-outlined text-4xl text-error mb-3">error</span>
-        <h2 class="text-lg font-medium text-gray-900 dark:text-white mb-1">Failed to load album</h2>
+        <h2 class="text-lg font-medium text-ink mb-1">Failed to load album</h2>
         <p class="text-sm text-text-secondary mb-4">{{ error }}</p>
-        <button @click="loadAlbum" class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors">
+        <button @click="loadAlbum" class="px-4 py-2 bg-primary text-on-accent rounded-lg hover:bg-primary-hover transition-colors">
           Try Again
         </button>
       </div>
@@ -52,7 +52,7 @@
           <!-- Album info -->
           <div class="flex-1 flex flex-col justify-center">
             <span class="text-sm font-medium text-primary uppercase tracking-wide mb-1">Album</span>
-            <h2 class="text-3xl font-bold text-gray-900 dark:text-white mb-2">{{ album.title }}</h2>
+            <h2 class="text-3xl font-bold text-ink mb-2">{{ album.title }}</h2>
             <p class="text-lg text-gray-600 dark:text-gray-300 mb-4">{{ album.artist_name }}</p>
             
             <div class="flex items-center gap-4 text-sm text-text-secondary">
@@ -77,7 +77,7 @@
             <div class="flex gap-3 mt-4 items-center">
               <button 
                 @click="downloadAlbum" 
-                class="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+                class="flex items-center gap-2 px-4 py-2 bg-primary text-on-accent rounded-lg hover:bg-primary-hover transition-colors"
               >
                 <span class="material-symbols-outlined text-[18px]">download</span>
                 Download All
@@ -107,11 +107,11 @@
         
         <!-- Track list -->
         <section>
-          <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Tracks</h3>
+          <h3 class="text-lg font-semibold text-ink mb-4">Tracks</h3>
           
           <div v-if="!album.tracks || album.tracks.length === 0" class="text-center py-12 px-6 bg-white dark:bg-surface-dark rounded-xl border border-gray-200 dark:border-border-dark space-y-3">
             <span class="material-symbols-outlined text-4xl text-gray-400">album</span>
-            <h4 class="text-base font-semibold text-gray-900 dark:text-white">No tracks indexed for this album yet</h4>
+            <h4 class="text-base font-semibold text-ink">No tracks indexed for this album yet</h4>
             <p class="text-sm text-text-secondary max-w-md mx-auto">
               This album was imported from your library catalog, but its tracklist may still be synchronizing or expanding from the streaming provider.
             </p>
@@ -141,7 +141,7 @@
                 size-class="w-9 h-9"
               />
               <div class="flex-1 min-w-0">
-                <p class="font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                <p class="font-medium text-ink truncate">{{ track.title }}</p>
                 <p class="text-sm text-text-secondary truncate">{{ track.artist_name }}</p>
               </div>
               <span class="text-sm text-text-secondary">{{ formatTrackDuration(track.duration_ms) }}</span>

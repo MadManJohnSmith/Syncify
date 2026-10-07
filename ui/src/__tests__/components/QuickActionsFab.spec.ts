@@ -22,7 +22,7 @@ describe('QuickActionsFab.vue (TASK-20)', () => {
 
     const button = wrapper.find('button.quick-actions-fab')
     expect(button.exists()).toBe(true)
-    expect(button.classes()).toContain('bg-primary')
+    expect(button.classes()).toContain('bg-accent')
     expect(wrapper.vm.feedbackState).toBe('idle')
   })
 
@@ -120,7 +120,7 @@ describe('QuickActionsFab.vue (TASK-20)', () => {
 
     // Verify error state
     expect(wrapper.vm.feedbackState).toBe('error')
-    expect(wrapper.find('button.quick-actions-fab').classes()).toContain('bg-red-500')
+    expect(wrapper.find('button.quick-actions-fab').classes()).toContain('bg-error')
 
     // Resets to idle after error duration
     await vi.advanceTimersByTimeAsync(2000)
@@ -246,7 +246,7 @@ describe('QuickActionsFab.vue (TASK-20)', () => {
     // CRITICAL CHECK: with no handler bound the FAB must report an error,
     // never the old fake 'success'.
     expect(wrapper.vm.feedbackState).toBe('error')
-    expect(wrapper.find('button.quick-actions-fab').classes()).toContain('bg-red-500')
+    expect(wrapper.find('button.quick-actions-fab').classes()).toContain('bg-error')
 
     // Resets to idle after the error duration
     await vi.advanceTimersByTimeAsync(2000)
@@ -644,7 +644,7 @@ describe('QuickActionsFab real backend commands (IN-3)', () => {
     await fab.vm.executeAction(actionById(fab, 'fetch-lyrics'))
 
     expect(fab.vm.feedbackState).toBe('error')
-    expect(fab.find('button.quick-actions-fab').classes()).toContain('bg-red-500')
+    expect(fab.find('button.quick-actions-fab').classes()).toContain('bg-error')
   })
 })
 

@@ -1,0 +1,919 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Syncify — Propuestas de rediseño (mockups)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ============ base ============ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body{
+  font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  font-size:14px;line-height:1.45;
+  background:var(--page);color:var(--page-ink);
+  min-height:100vh;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+a{color:inherit;text-decoration:none}
+svg.ic{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+
+/* ============ variables por dirección (A por defecto) ============ */
+body{
+  --page:#060809; --page-ink:#8b95a3;
+  --bg:#0B0D10; --bg-titlebar:#0B0D10;
+  --rail:#0B0D10;
+  --surface:#15181D; --surface-2:#1E232B;
+  --border:#262C36; --border-soft:#1c2129;
+  --text-1:#F2F4F7; --text-2:#9AA4B2; --text-3:#5E6975;
+  --accent:#1ED760; --accent-2:#3BE477; --accent-soft:rgba(30,215,96,.12);
+  --on-accent:#07130B;
+  --ok:#10B981; --warn:#F59E0B;
+  --shadow-1:0 1px 2px rgba(0,0,0,.35);
+  --shadow-2:0 18px 44px rgba(0,0,0,.5);
+  --frame-shadow:0 24px 80px rgba(0,0,0,.55);
+  --np-glow:0 -14px 48px rgba(30,215,96,.07);
+  --num:"Inter";
+}
+body:has(#dir-b:checked){
+  --page:#0f0f17; --page-ink:#8f94ab;
+  --bg:#1E1E2E; --bg-titlebar:#1E1E2E;
+  --rail:#181825;
+  --surface:#181825; --surface-2:#313244;
+  --border:#373a52; --border-soft:#2a2c40;
+  --text-1:#CDD6F4; --text-2:#A6ADC8; --text-3:#7f849c;
+  --accent:#CBA6F7; --accent-2:#B4BEFE; --accent-soft:rgba(203,166,247,.14);
+  --on-accent:#1E1E2E;
+  --shadow-2:0 18px 44px rgba(0,0,0,.45);
+  --frame-shadow:0 24px 80px rgba(0,0,0,.5);
+  --np-glow:0 -14px 48px rgba(203,166,247,.08);
+}
+body:has(#dir-c:checked){
+  --page:
+    radial-gradient(1100px 700px at 12% -5%, rgba(34,211,238,.13), transparent 55%),
+    radial-gradient(1000px 750px at 88% 105%, rgba(139,92,246,.16), transparent 55%),
+    #07070d;
+  --page-ink:#98a1b3;
+  --bg:rgba(16,19,27,.62); --bg-titlebar:rgba(16,19,27,.45);
+  --rail:rgba(13,16,23,.55);
+  --surface:rgba(255,255,255,.045); --surface-2:rgba(255,255,255,.09);
+  --border:rgba(255,255,255,.11); --border-soft:rgba(255,255,255,.06);
+  --text-1:#F4F6FA; --text-2:#A7B0C0; --text-3:#6b7484;
+  --accent:#22D3EE; --accent-2:#67E3F4; --accent-soft:rgba(34,211,238,.14);
+  --on-accent:#04222B;
+  --np-glow:0 -14px 48px rgba(34,211,238,.10);
+}
+body:has(#dir-d:checked){
+  --page:#E8E8E4; --page-ink:#4d5560;
+  --bg:#FAFAF8; --bg-titlebar:#FAFAF8;
+  --rail:#F1F1ED;
+  --surface:#FFFFFF; --surface-2:#F2F2EE;
+  --border:#E7E5E0; --border-soft:#EFEDE8;
+  --text-1:#1A1A1A; --text-2:#6B7280; --text-3:#9CA3AF;
+  --accent:#E11D48; --accent-2:#BE123C; --accent-soft:rgba(225,29,72,.08);
+  --on-accent:#FFFFFF;
+  --ok:#059669; --warn:#D97706;
+  --shadow-1:0 1px 3px rgba(17,24,39,.06);
+  --shadow-2:0 16px 36px rgba(17,24,39,.12);
+  --frame-shadow:0 30px 90px rgba(17,24,39,.18);
+  --np-glow:0 -10px 40px rgba(17,24,39,.06);
+}
+
+/* ============ cabecera de página + conmutador ============ */
+.mockhead{
+  position:sticky;top:0;z-index:50;
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  padding:14px 28px;
+  background:color-mix(in srgb, var(--page) 82%, transparent);
+  backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--border-soft);
+}
+.mockhead .name{font-weight:700;font-size:14px;color:var(--page-ink)}
+.mockhead .note{font-size:12px;color:var(--page-ink);opacity:.75}
+.switcher{display:flex;gap:6px;margin-left:auto;padding:4px;border:1px solid var(--border-soft);border-radius:12px;background:rgba(127,127,127,.06)}
+.switcher label{
+  padding:7px 14px;border-radius:9px;font-size:12.5px;font-weight:600;
+  color:var(--page-ink);cursor:pointer;white-space:nowrap;transition:background .15s,color .15s;
+}
+.switcher label:hover{background:rgba(127,127,127,.12)}
+.switcher label .star{color:#eab308;margin-right:4px}
+body:has(#dir-a:checked) label[for=dir-a],
+body:has(#dir-b:checked) label[for=dir-b],
+body:has(#dir-c:checked) label[for=dir-c],
+body:has(#dir-d:checked) label[for=dir-d]{
+  background:var(--surface-2);color:var(--text-1);
+  box-shadow:var(--shadow-1);
+}
+.dir-input{position:absolute;opacity:0;pointer-events:none}
+
+/* ============ ficha de paleta ============ */
+.wrap{max-width:1560px;margin:0 auto;padding:0 28px}
+.spec{display:none;flex-direction:column;gap:10px;padding:26px 0 6px}
+body:has(#dir-a:checked) .spec-a,
+body:has(#dir-b:checked) .spec-b,
+body:has(#dir-c:checked) .spec-c,
+body:has(#dir-d:checked) .spec-d{display:flex}
+.spec h2{font-size:16px;font-weight:700;color:var(--page-ink);letter-spacing:-.01em}
+.spec h2 small{font-weight:500;font-size:12.5px;opacity:.7;margin-left:8px}
+.swatches{display:flex;gap:14px;flex-wrap:wrap}
+.swatch{display:flex;align-items:center;gap:7px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;color:var(--page-ink)}
+.swatch i{width:16px;height:16px;border-radius:6px;border:1px solid rgba(127,127,127,.35)}
+.spec ul{list-style:none;display:flex;gap:22px;flex-wrap:wrap}
+.spec li{font-size:12.5px;color:var(--page-ink);display:flex;gap:8px;align-items:baseline}
+.spec li::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent);flex:none;transform:translateY(-2px)}
+
+/* ============ escenario ============ */
+.caption{font-size:12.5px;color:var(--page-ink);margin:26px 0 10px;font-weight:600}
+.app-frame{
+  background:var(--bg);color:var(--text-1);
+  border:1px solid var(--border-soft);border-radius:18px;overflow:hidden;
+  box-shadow:var(--frame-shadow);
+}
+body:has(#dir-c:checked) .app-frame{backdrop-filter:blur(26px) saturate(150%)}
+.titlebar{
+  height:44px;display:flex;align-items:center;gap:10px;padding:0 16px;
+  border-bottom:1px solid var(--border-soft);background:var(--bg-titlebar);
+}
+.logo{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,var(--accent),#8b5cf6);display:grid;place-items:center;color:#fff}
+.logo svg{width:11px;height:11px}
+.titlebar .t{font-size:13px;font-weight:600}
+.win-dots{margin-left:auto;display:flex;gap:7px}
+.win-dots i{width:11px;height:11px;border-radius:50%;background:var(--surface-2);border:1px solid var(--border-soft)}
+
+.app-body{display:flex;min-height:640px}
+
+/* ============ rail lateral icónica ============ */
+.rail{
+  width:64px;flex:none;background:var(--rail);
+  border-right:1px solid var(--border-soft);
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+  padding:14px 0;
+}
+.ritem{
+  position:relative;width:42px;height:42px;border-radius:12px;
+  display:grid;place-items:center;color:var(--text-2);
+  transition:background .15s,color .15s;
+}
+.ritem:hover{background:var(--surface-2);color:var(--text-1)}
+.ritem.active{background:var(--accent-soft);color:var(--accent)}
+.ritem.active::before{
+  content:"";position:absolute;left:-11px;top:11px;bottom:11px;width:3px;border-radius:3px;background:var(--accent);
+}
+.ritem svg{width:20px;height:20px}
+.rail-sep{width:26px;height:1px;background:var(--border-soft);margin:8px 0}
+.rail .spacer{flex:1}
+
+/* ============ topbar de la app ============ */
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{
+  height:60px;flex:none;display:flex;align-items:center;gap:14px;padding:0 26px;
+  border-bottom:1px solid var(--border-soft);
+}
+.search{
+  flex:0 1 380px;display:flex;align-items:center;gap:10px;
+  height:38px;padding:0 12px;border-radius:11px;
+  background:var(--surface-2);border:1px solid var(--border-soft);
+  color:var(--text-3);font-size:13px;
+}
+.search svg{width:16px;height:16px}
+.search span{flex:1;color:var(--text-3)}
+kbd{
+  font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--text-3);
+  border:1px solid var(--border);border-radius:6px;padding:2px 5px;background:var(--bg);
+}
+.top-actions{margin-left:auto;display:flex;align-items:center;gap:10px}
+.sync-chip{
+  display:flex;align-items:center;gap:7px;height:32px;padding:0 12px;border-radius:999px;
+  border:1px solid var(--border-soft);font-size:12px;color:var(--text-2);background:var(--surface);
+}
+.dot-ok{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 18%, transparent)}
+.iconbtn{
+  position:relative;width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:var(--text-2);
+  transition:background .15s,color .15s;
+}
+.iconbtn:hover{background:var(--surface-2);color:var(--text-1)}
+.iconbtn svg{width:18px;height:18px}
+.iconbtn .ndot{position:absolute;top:7px;right:8px;width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.avatar{
+  width:30px;height:30px;border-radius:50%;display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--accent),#8b5cf6);color:#fff;font-size:11px;font-weight:700;
+}
+
+/* ============ contenido ============ */
+.content{padding:26px 30px 30px;flex:1}
+.page-head{display:flex;align-items:flex-end;gap:16px;margin-bottom:18px}
+.page-head h1{font-size:26px;font-weight:800;letter-spacing:-.02em}
+.page-head .sub{font-size:12.5px;color:var(--text-2);margin-top:3px}
+.head-actions{margin-left:auto;display:flex;align-items:center;gap:10px}
+.select{
+  display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;border-radius:10px;
+  border:1px solid var(--border);font-size:12.5px;color:var(--text-2);background:var(--surface);
+}
+.select svg{width:14px;height:14px}
+.seg{display:flex;gap:2px;padding:3px;border-radius:10px;background:var(--surface-2);border:1px solid var(--border-soft)}
+.seg button{width:30px;height:28px;border-radius:8px;display:grid;place-items:center;color:var(--text-3)}
+.seg button.on{background:var(--bg);color:var(--accent);box-shadow:var(--shadow-1)}
+.seg svg{width:15px;height:15px}
+.btn-primary{
+  display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px;border-radius:10px;
+  background:var(--accent);color:var(--on-accent);font-size:13px;font-weight:600;
+  transition:background .15s, transform .15s;
+}
+.btn-primary:hover{background:var(--accent-2)}
+.btn-primary svg{width:15px;height:15px}
+.btn-ghost{
+  display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px;border-radius:10px;
+  border:1px solid var(--border);font-size:13px;font-weight:600;color:var(--text-1);background:var(--surface);
+}
+.btn-ghost svg{width:15px;height:15px}
+
+.chips{display:flex;gap:8px;margin-bottom:22px}
+.chip{
+  height:32px;padding:0 14px;border-radius:999px;font-size:12.5px;font-weight:500;
+  color:var(--text-2);border:1px solid var(--border-soft);background:var(--surface);
+  transition:background .15s,color .15s;
+}
+.chip:hover{color:var(--text-1)}
+.chip.on{background:var(--accent-soft);color:var(--accent);border-color:transparent;font-weight:600}
+
+/* biblioteca: rejilla de álbumes */
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:20px 18px}
+.card{min-width:0}
+.card .cover{
+  position:relative;aspect-ratio:1;border-radius:14px;overflow:hidden;
+  border:1px solid var(--border-soft);box-shadow:var(--shadow-1);
+}
+.cover::after{
+  content:"";position:absolute;inset:0;
+  background:radial-gradient(120% 120% at 22% 8%, rgba(255,255,255,.22), transparent 46%);
+}
+.cover.g1{background:linear-gradient(135deg,#f43f5e,#8b5cf6)}
+.cover.g2{background:linear-gradient(135deg,#0ea5e9,#22d3ee)}
+.cover.g3{background:linear-gradient(135deg,#f59e0b,#ef4444)}
+.cover.g4{background:linear-gradient(135deg,#6366f1,#c084fc)}
+.cover.g5{background:linear-gradient(135deg,#10b981,#047857)}
+.cover.g6{background:linear-gradient(135deg,#ec4899,#f97316)}
+.cover.g7{background:linear-gradient(135deg,#334155,#94a3b8)}
+.cover.g8{background:linear-gradient(135deg,#14b8a6,#7c3aed)}
+.cover.sm{position:relative;width:52px;height:52px;border-radius:10px;aspect-ratio:auto;flex:none}
+.cover-play{
+  position:absolute;right:10px;bottom:10px;z-index:2;
+  width:40px;height:40px;border-radius:50%;display:grid;place-items:center;
+  background:var(--accent);color:var(--on-accent);
+  box-shadow:0 10px 24px rgba(0,0,0,.4);
+  opacity:0;transform:translateY(6px);transition:opacity .18s,transform .18s;
+}
+.cover-play svg{width:17px;height:17px}
+.card .t{font-size:13.5px;font-weight:600;margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .a{font-size:12px;color:var(--text-2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card.is-hover{transform:translateY(-4px);transition:transform .18s}
+.card.is-hover .cover{box-shadow:var(--shadow-2);border-color:var(--border)}
+.card.is-hover .cover-play{opacity:1;transform:translateY(0)}
+
+/* ============ barra de reproducción ============ */
+.npbar{
+  flex:none;display:grid;grid-template-columns:1fr minmax(420px,560px) 1fr;align-items:center;gap:18px;
+  height:86px;padding:0 22px;border-top:1px solid var(--border-soft);
+  background:var(--bg-titlebar);box-shadow:var(--np-glow);
+}
+body:has(#dir-c:checked) .npbar{background:rgba(13,16,23,.5);backdrop-filter:blur(24px)}
+.np-left{display:flex;align-items:center;gap:12px;min-width:0}
+.np-t{font-size:13px;font-weight:600;white-space:nowrap}
+.np-a{font-size:11.5px;color:var(--text-2);margin-top:1px}
+.np-left .iconbtn{margin-left:2px;color:var(--text-3)}
+.np-left .iconbtn.liked{color:var(--accent)}
+.np-controls{display:flex;align-items:center;justify-content:center;gap:14px;color:var(--text-2)}
+.np-controls .iconbtn{width:30px;height:30px}
+.np-controls .iconbtn.on{color:var(--accent)}
+.play-btn{
+  width:38px;height:38px;border-radius:50%;display:grid;place-items:center;
+  background:var(--accent);color:var(--on-accent);
+  box-shadow:0 6px 20px color-mix(in srgb, var(--accent) 35%, transparent);
+  transition:background .15s, transform .12s;
+}
+.play-btn:hover{background:var(--accent-2);transform:scale(1.04)}
+.play-btn svg{width:16px;height:16px}
+.np-progress{display:flex;align-items:center;gap:10px;margin-top:7px}
+.np-progress time{font-size:10.5px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.track{flex:1;height:4px;border-radius:999px;background:var(--surface-2)}
+.track .fill{height:100%;border-radius:999px;background:var(--accent);position:relative}
+.np-right{display:flex;align-items:center;justify-content:flex-end;gap:8px;color:var(--text-2)}
+.vol{width:78px;height:4px;border-radius:999px;background:var(--surface-2);position:relative;margin:0 4px}
+.vol i{position:absolute;left:0;top:0;bottom:0;width:70%;border-radius:999px;background:var(--text-2)}
+.vol b{position:absolute;left:70%;top:50%;width:10px;height:10px;border-radius:50%;background:var(--text-1);transform:translate(-50%,-50%)}
+
+/* ============ dashboard ============ */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:26px}
+.stat{
+  background:var(--surface);border:1px solid var(--border-soft);border-radius:16px;
+  padding:18px 20px;box-shadow:var(--shadow-1);
+}
+.stat .l{font-size:12px;color:var(--text-2);font-weight:500}
+.stat .v{font-size:27px;font-weight:800;letter-spacing:-.02em;margin-top:6px;font-variant-numeric:tabular-nums}
+.stat .v small{font-size:13px;font-weight:600;color:var(--text-2)}
+.stat-foot{display:flex;align-items:center;gap:10px;margin-top:10px}
+.delta{
+  font-size:11px;font-weight:600;padding:3px 8px;border-radius:999px;
+  color:var(--ok);background:color-mix(in srgb, var(--ok) 13%, transparent);
+}
+.delta.muted{color:var(--text-2);background:var(--surface-2)}
+.spark{margin-left:auto;color:var(--accent)}
+.spark polyline{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.bar{flex:1;height:5px;border-radius:999px;background:var(--surface-2);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:999px;background:var(--accent)}
+.bar-note{font-size:11px;color:var(--text-3);white-space:nowrap}
+
+.sec-head{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.sec-head h3{font-size:15px;font-weight:700;letter-spacing:-.01em}
+.sec-head .link{margin-left:auto;font-size:12.5px;font-weight:600;color:var(--accent)}
+.cont-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:28px}
+.cont-card{
+  display:flex;align-items:center;gap:13px;padding:12px;border-radius:14px;
+  background:var(--surface);border:1px solid var(--border-soft);box-shadow:var(--shadow-1);
+  transition:transform .15s;
+}
+.cont-card.is-hover{transform:translateY(-3px);box-shadow:var(--shadow-2)}
+.cont-meta{min-width:0;flex:1}
+.cont-meta .t{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cont-meta .a{font-size:11.5px;color:var(--text-2);margin-top:1px}
+.cont-meta .bar{margin-top:9px}
+.cont-card .pc{font-size:10.5px;color:var(--text-3);align-self:flex-start;margin-top:2px;font-variant-numeric:tabular-nums}
+
+.dash-lower{display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start}
+.panel{background:var(--surface);border:1px solid var(--border-soft);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow-1)}
+.panel .sec-head{margin-bottom:14px}
+.row{display:flex;align-items:center;gap:13px;padding:10px 0;border-top:1px solid var(--border-soft)}
+.row:first-of-type{border-top:0;padding-top:0}
+.row:last-child{padding-bottom:0}
+.tile{
+  width:38px;height:38px;border-radius:11px;display:grid;place-items:center;flex:none;
+  background:var(--surface-2);color:var(--text-2);
+}
+.tile svg{width:17px;height:17px}
+.tile.ok{color:var(--ok);background:color-mix(in srgb, var(--ok) 12%, transparent)}
+.row .tx{min-width:0;flex:1}
+.row .tx .t{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .tx .s{font-size:11.5px;color:var(--text-2);margin-top:1px}
+.row time{font-size:11px;color:var(--text-3);white-space:nowrap;font-variant-numeric:tabular-nums}
+.col{display:flex;flex-direction:column;gap:16px}
+.svc .row{padding:11px 0}
+.brand-dot{width:10px;height:10px;border-radius:50%;flex:none;margin:0 14px 0 10px}
+.chip-ok,.chip-warn{
+  font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;
+}
+.chip-ok{color:var(--ok);background:color-mix(in srgb, var(--ok) 12%, transparent)}
+.chip-warn{color:var(--warn);background:color-mix(in srgb, var(--warn) 13%, transparent)}
+.sysv{margin-left:auto;font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text-1)}
+
+/* ============ ambiente glass ============ */
+.ambient{display:none;position:fixed;inset:0;z-index:-1;pointer-events:none}
+body:has(#dir-c:checked) .ambient{display:block}
+.ambient i{position:absolute;border-radius:50%;filter:blur(90px);opacity:.5}
+.ambient i:nth-child(1){width:520px;height:520px;left:-120px;top:8%;background:rgba(34,211,238,.16)}
+.ambient i:nth-child(2){width:620px;height:620px;right:-160px;bottom:4%;background:rgba(139,92,246,.18)}
+</style>
+</head>
+<body>
+
+<input class="dir-input" type="radio" name="dir" id="dir-a" checked>
+<input class="dir-input" type="radio" name="dir" id="dir-b">
+<input class="dir-input" type="radio" name="dir" id="dir-c">
+<input class="dir-input" type="radio" name="dir" id="dir-d">
+
+<div class="ambient" aria-hidden="true"><i></i><i></i></div>
+
+<!-- sprite de iconos -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="18.5" cy="16" r="2.5" fill="currentColor"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.8 12 3l9 7.8"/><path d="M5 9.5V21h14V9.5"/></symbol>
+  <symbol id="i-disc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/></symbol>
+  <symbol id="i-playlist" viewBox="0 0 24 24"><path d="M3 6h12M3 11h12M3 16h7"/><path d="M18 6.5V16"/><circle cx="15.5" cy="16.5" r="2.5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v11"/><path d="m7 10 5 5 5-5"/><path d="M4 20h16"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 7h13"/><path d="m13.5 3.5 3.5 3.5-3.5 3.5"/><path d="M20 17H7"/><path d="m10.5 13.5-3.5 3.5 3.5 3.5"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.5"/><path d="M3.5 20c0-3.1 2.4-5 5.5-5s5.5 1.9 5.5 5"/><path d="M15.5 5.4a3.5 3.5 0 0 1 0 6.2"/><path d="M17.5 15.4c1.9.8 3 2.4 3 4.6"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 3h8.5L21 12.5 12.5 21 3 11.5V3z"/><circle cx="7.8" cy="7.8" r="1.4"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3.5"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.6M12 18.9v2.6M21.5 12h-2.6M5.1 12H2.5M18.7 5.3l-1.9 1.9M7.2 16.8l-1.9 1.9M18.7 18.7l-1.9-1.9M7.2 7.2 5.3 5.3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.2-4.2"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 9a6 6 0 1 0-12 0c0 6.2-2.5 8-2.5 8h17S18 15.2 18 9z"/><path d="M13.7 20.5a2 2 0 0 1-3.4 0"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.4 9.2a2.7 2.7 0 0 1 5.2.9c0 1.8-2.5 2.1-2.5 3.5"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20.5C7.2 16.4 3.5 13.4 3.5 9.7A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 8.5 2.1c0 3.7-3.7 6.7-8.5 10.8z"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 3.5h4.5V8"/><path d="M3.5 20.5 20.5 3.5"/><path d="M20.5 16v4.5H16"/><path d="m14.5 14.5 6 6"/><path d="m3.5 3.5 6 6"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M6.5 5v14"/><path d="M18 6.2v11.6L8.8 12 18 6.2z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M17.5 5v14"/><path d="M6 6.2v11.6L15.2 12 6 6.2z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13L19 12 8 5.5z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path d="m17 2.5 3.5 3.5L17 9.5"/><path d="M3.5 11.5v-1a4.5 4.5 0 0 1 4.5-4.5h12.5"/><path d="m7 21.5-3.5-3.5L7 14.5"/><path d="M20.5 12.5v1a4.5 4.5 0 0 1-4.5 4.5H3.5"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11.5 4.5 6.5 8.5H3v7h3.5l5 4v-15z"/><path d="M15.5 8.7a5 5 0 0 1 0 6.6"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8.5 6h12M8.5 12h12M8.5 18h12"/><path d="M3.7 6h.01M3.7 12h.01M3.7 18h.01"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m4.5 12.5 5 5 10-11"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 1.9"/></symbol>
+  <symbol id="i-drive" viewBox="0 0 24 24"><path d="M21 12H3"/><path d="M5.5 4.5h13L21.5 12v6a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2v-6l2.5-7.5z"/><path d="M7.5 16.5h.01M11 16.5h.01"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 18.5a4.5 4.5 0 0 0 .3-9A7 7 0 0 0 4.2 11.7 4.2 4.2 0 0 0 6.5 18.5h11z"/><path d="m9.5 13 2 2 3.5-3.8"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 1 1-2.7-6.2"/><path d="M20.5 3.5V8H16"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5 2.8 19.5h18.4L12 3.5z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/></symbol>
+</svg>
+
+<header class="mockhead">
+  <span class="name">Syncify — propuestas de rediseño</span>
+  <span class="note">mockups estáticos con datos de ejemplo; nada de esto toca todavía la app</span>
+  <div class="switcher" role="tablist">
+    <label for="dir-a"><span class="star">★</span>A · Noir + esmeralda</label>
+    <label for="dir-b">B · Catppuccin</label>
+    <label for="dir-c">C · Glass &amp; ambient</label>
+    <label for="dir-d">D · Claro editorial</label>
+  </div>
+</header>
+
+<!-- ================= FICHA A ================= -->
+<div class="wrap">
+<section class="spec spec-a">
+  <h2>Dirección A — Noir neutro + acento esmeralda <small>recomendada</small></h2>
+  <div class="swatches">
+    <span class="swatch"><i style="background:#0B0D10"></i>#0B0D10</span>
+    <span class="swatch"><i style="background:#15181D"></i>#15181D</span>
+    <span class="swatch"><i style="background:#1E232B"></i>#1E232B</span>
+    <span class="swatch"><i style="background:#262C36"></i>#262C36</span>
+    <span class="swatch"><i style="background:#F2F4F7"></i>#F2F4F7</span>
+    <span class="swatch"><i style="background:#9AA4B2"></i>#9AA4B2</span>
+    <span class="swatch"><i style="background:#1ED760"></i>#1ED760</span>
+  </div>
+  <ul>
+    <li>Superficies neutras casi negras (adiós al tinte azul-marino)</li>
+    <li>Un solo acento protagonista; los colores de marca de servicios se conservan</li>
+    <li>Sidebar icónica colapsable y búsqueda en la topbar</li>
+    <li>Glow ambiental sutil del color de la carátula en la barra de reproducción</li>
+  </ul>
+</section>
+<!-- ================= FICHA B ================= -->
+<section class="spec spec-b">
+  <h2>Dirección B — Pastel dev (Catppuccin Mocha)</h2>
+  <div class="swatches">
+    <span class="swatch"><i style="background:#1E1E2E"></i>#1E1E2E</span>
+    <span class="swatch"><i style="background:#181825"></i>#181825</span>
+    <span class="swatch"><i style="background:#313244"></i>#313244</span>
+    <span class="swatch"><i style="background:#45475A"></i>#45475A</span>
+    <span class="swatch"><i style="background:#CDD6F4"></i>#CDD6F4</span>
+    <span class="swatch"><i style="background:#A6ADC8"></i>#A6ADC8</span>
+    <span class="swatch"><i style="background:#CBA6F7"></i>#CBA6F7</span>
+    <span class="swatch"><i style="background:#89B4FA"></i>#89B4FA</span>
+  </div>
+  <ul>
+    <li>La paleta favorita de la comunidad developer en 2025</li>
+    <li>Acento mauve con apoyos azul y verde pastel</li>
+    <li>Superficies índigo cálidas, sin negros puros</li>
+  </ul>
+</section>
+<!-- ================= FICHA C ================= -->
+<section class="spec spec-c">
+  <h2>Dirección C — Glass &amp; ambient</h2>
+  <div class="swatches">
+    <span class="swatch"><i style="background:rgba(16,19,27,.62)"></i>bg 62%</span>
+    <span class="swatch"><i style="background:rgba(255,255,255,.09)"></i>capa 9%</span>
+    <span class="swatch"><i style="background:#22D3EE"></i>#22D3EE</span>
+    <span class="swatch"><i style="background:rgba(139,92,246,.18)"></i>ambiental</span>
+  </div>
+  <ul>
+    <li>Paneles translúcidos con blur (la app ya tiene .glass-panel)</li>
+    <li>Degradado ambiental que reacciona al color de la carátula</li>
+    <li>La más vistosa y la más cara de mantener legible</li>
+  </ul>
+</section>
+<!-- ================= FICHA D ================= -->
+<section class="spec spec-d">
+  <h2>Dirección D — Claro minimal editorial</h2>
+  <div class="swatches">
+    <span class="swatch"><i style="background:#FAFAF8"></i>#FAFAF8</span>
+    <span class="swatch"><i style="background:#FFFFFF"></i>#FFFFFF</span>
+    <span class="swatch"><i style="background:#E7E5E0"></i>#E7E5E0</span>
+    <span class="swatch"><i style="background:#1A1A1A"></i>#1A1A1A</span>
+    <span class="swatch"><i style="background:#6B7280"></i>#6B7280</span>
+    <span class="swatch"><i style="background:#E11D48"></i>#E11D48</span>
+  </div>
+  <ul>
+    <li>Blanco cálido con acento frambuesa, estilo Apple Music</li>
+    <li>Tipografía protagonista, sombras suaves, mucho aire</li>
+    <li>La que más trabajo implica: el chrome actual es 100% oscuro</li>
+  </ul>
+</section>
+</div>
+
+<main class="wrap" id="mockups">
+
+  <!-- ============================================================ -->
+  <!-- FRAME 1 · BIBLIOTECA                                          -->
+  <!-- ============================================================ -->
+  <p class="caption">Vista — Biblioteca</p>
+  <div class="app-frame">
+    <div class="titlebar">
+      <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+      <span class="t">Syncify</span>
+      <span class="win-dots"><i></i><i></i><i></i></span>
+    </div>
+    <div class="app-body">
+      <nav class="rail">
+        <a class="ritem" href="#" title="Inicio"><svg class="ic"><use href="#i-home"/></svg></a>
+        <a class="ritem active" href="#" title="Biblioteca"><svg class="ic"><use href="#i-disc"/></svg></a>
+        <a class="ritem" href="#" title="Playlists"><svg class="ic"><use href="#i-playlist"/></svg></a>
+        <a class="ritem" href="#" title="Descargas"><svg class="ic"><use href="#i-download"/></svg></a>
+        <a class="ritem" href="#" title="Migrar"><svg class="ic"><use href="#i-swap"/></svg></a>
+        <a class="ritem" href="#" title="Cuentas"><svg class="ic"><use href="#i-users"/></svg></a>
+        <a class="ritem" href="#" title="Metadatos"><svg class="ic"><use href="#i-tag"/></svg></a>
+        <a class="ritem" href="#" title="Letras"><svg class="ic"><use href="#i-mic"/></svg></a>
+        <div class="rail-sep"></div>
+        <span class="spacer"></span>
+        <a class="ritem" href="#" title="Registros"><svg class="ic"><use href="#i-file"/></svg></a>
+        <a class="ritem" href="#" title="Ajustes"><svg class="ic"><use href="#i-gear"/></svg></a>
+      </nav>
+      <div class="main">
+        <header class="topbar">
+          <div class="search">
+            <svg class="ic"><use href="#i-search"/></svg>
+            <span>Buscar pistas, álbumes, artistas</span>
+            <kbd>Ctrl K</kbd>
+          </div>
+          <div class="top-actions">
+            <span class="sync-chip"><span class="dot-ok"></span>Sincronizado</span>
+            <button class="iconbtn"><svg class="ic"><use href="#i-bell"/></svg><i class="ndot"></i></button>
+            <button class="iconbtn"><svg class="ic"><use href="#i-help"/></svg></button>
+            <span class="avatar">MS</span>
+          </div>
+        </header>
+        <div class="content">
+          <div class="page-head">
+            <div>
+              <h1>Biblioteca</h1>
+              <p class="sub">3.284 pistas en 246 álbumes de 87 artistas</p>
+            </div>
+            <div class="head-actions">
+              <button class="select">Añadidos recientemente <svg class="ic"><use href="#i-chevron"/></svg></button>
+              <div class="seg">
+                <button class="on" title="Cuadrícula"><svg class="ic"><use href="#i-grid"/></svg></button>
+                <button title="Lista"><svg class="ic"><use href="#i-list"/></svg></button>
+              </div>
+              <button class="btn-primary"><svg class="ic"><use href="#i-plus"/></svg>Añadir música</button>
+            </div>
+          </div>
+          <div class="chips">
+            <button class="chip">Todo</button>
+            <button class="chip on">Álbumes</button>
+            <button class="chip">Artistas</button>
+            <button class="chip">Géneros</button>
+            <button class="chip">Recientes</button>
+          </div>
+          <div class="grid">
+            <div class="card is-hover">
+              <div class="cover g1"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Ceniza Neón</p><p class="a">Alba Ferrer</p>
+            </div>
+            <div class="card">
+              <div class="cover g2"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Marea Intermedia</p><p class="a">Delta Costa</p>
+            </div>
+            <div class="card">
+              <div class="cover g3"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Nocturno 4:44</p><p class="a">Vela</p>
+            </div>
+            <div class="card">
+              <div class="cover g4"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Horizonte de Sal</p><p class="a">Marina Lomas</p>
+            </div>
+            <div class="card">
+              <div class="cover g5"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Ruido Blanco</p><p class="a">Kaján</p>
+            </div>
+            <div class="card">
+              <div class="cover g6"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Páramo</p><p class="a">Sol Beltrán</p>
+            </div>
+            <div class="card">
+              <div class="cover g7"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Última Señal</p><p class="a">Nova Ríos</p>
+            </div>
+            <div class="card">
+              <div class="cover g8"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Trópico Seco</p><p class="a">Caldera</p>
+            </div>
+            <div class="card">
+              <div class="cover g2"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Vértigo Lento</p><p class="a">Índigo Club</p>
+            </div>
+            <div class="card">
+              <div class="cover g4"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Faro</p><p class="a">Alba Ferrer</p>
+            </div>
+            <div class="card">
+              <div class="cover g6"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Cassette 92</p><p class="a">Los Delfines</p>
+            </div>
+            <div class="card">
+              <div class="cover g8"><button class="cover-play"><svg class="ic"><use href="#i-play"/></svg></button></div>
+              <p class="t">Mirage</p><p class="a">Delta Costa</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <footer class="npbar">
+      <div class="np-left">
+        <div class="cover sm g1"></div>
+        <div style="min-width:0">
+          <p class="np-t">Ceniza Neón</p>
+          <p class="np-a">Alba Ferrer</p>
+        </div>
+        <button class="iconbtn liked"><svg class="ic"><use href="#i-heart"/></svg></button>
+      </div>
+      <div class="np-center">
+        <div class="np-controls">
+          <button class="iconbtn" title="Aleatorio"><svg class="ic"><use href="#i-shuffle"/></svg></button>
+          <button class="iconbtn" title="Anterior"><svg class="ic"><use href="#i-prev"/></svg></button>
+          <button class="play-btn" title="Reproducir"><svg class="ic"><use href="#i-play"/></svg></button>
+          <button class="iconbtn" title="Siguiente"><svg class="ic"><use href="#i-next"/></svg></button>
+          <button class="iconbtn on" title="Repetir"><svg class="ic"><use href="#i-repeat"/></svg></button>
+        </div>
+        <div class="np-progress">
+          <time>1:47</time>
+          <div class="track"><div class="fill" style="width:45%"></div></div>
+          <time>3:52</time>
+        </div>
+      </div>
+      <div class="np-right">
+        <button class="iconbtn" title="Letras"><svg class="ic"><use href="#i-mic"/></svg></button>
+        <button class="iconbtn" title="Cola"><svg class="ic"><use href="#i-list"/></svg></button>
+        <button class="iconbtn" title="Volumen"><svg class="ic"><use href="#i-volume"/></svg></button>
+        <span class="vol"><i></i><b></b></span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- FRAME 2 · DASHBOARD                                           -->
+  <!-- ============================================================ -->
+  <p class="caption">Vista — Dashboard</p>
+  <div class="app-frame">
+    <div class="titlebar">
+      <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+      <span class="t">Syncify</span>
+      <span class="win-dots"><i></i><i></i><i></i></span>
+    </div>
+    <div class="app-body">
+      <nav class="rail">
+        <a class="ritem active" href="#" title="Inicio"><svg class="ic"><use href="#i-home"/></svg></a>
+        <a class="ritem" href="#" title="Biblioteca"><svg class="ic"><use href="#i-disc"/></svg></a>
+        <a class="ritem" href="#" title="Playlists"><svg class="ic"><use href="#i-playlist"/></svg></a>
+        <a class="ritem" href="#" title="Descargas"><svg class="ic"><use href="#i-download"/></svg></a>
+        <a class="ritem" href="#" title="Migrar"><svg class="ic"><use href="#i-swap"/></svg></a>
+        <a class="ritem" href="#" title="Cuentas"><svg class="ic"><use href="#i-users"/></svg></a>
+        <a class="ritem" href="#" title="Metadatos"><svg class="ic"><use href="#i-tag"/></svg></a>
+        <a class="ritem" href="#" title="Letras"><svg class="ic"><use href="#i-mic"/></svg></a>
+        <div class="rail-sep"></div>
+        <span class="spacer"></span>
+        <a class="ritem" href="#" title="Registros"><svg class="ic"><use href="#i-file"/></svg></a>
+        <a class="ritem" href="#" title="Ajustes"><svg class="ic"><use href="#i-gear"/></svg></a>
+      </nav>
+      <div class="main">
+        <header class="topbar">
+          <div class="search">
+            <svg class="ic"><use href="#i-search"/></svg>
+            <span>Buscar pistas, álbumes, artistas</span>
+            <kbd>Ctrl K</kbd>
+          </div>
+          <div class="top-actions">
+            <span class="sync-chip"><span class="dot-ok"></span>Sincronizado</span>
+            <button class="iconbtn"><svg class="ic"><use href="#i-bell"/></svg><i class="ndot"></i></button>
+            <button class="iconbtn"><svg class="ic"><use href="#i-help"/></svg></button>
+            <span class="avatar">MS</span>
+          </div>
+        </header>
+        <div class="content">
+          <div class="page-head">
+            <div>
+              <h1>Buenas tardes</h1>
+              <p class="sub">Domingo, 6 de octubre de 2026</p>
+            </div>
+            <div class="head-actions">
+              <button class="btn-ghost"><svg class="ic"><use href="#i-download"/></svg>Importar</button>
+              <button class="btn-primary"><svg class="ic"><use href="#i-refresh"/></svg>Sincronizar ahora</button>
+            </div>
+          </div>
+
+          <div class="stats">
+            <div class="stat">
+              <p class="l">Pistas</p>
+              <p class="v">3.284</p>
+              <div class="stat-foot"><span class="delta">+48 esta semana</span></div>
+            </div>
+            <div class="stat">
+              <p class="l">Horas escuchadas</p>
+              <p class="v">412</p>
+              <div class="stat-foot">
+                <span class="delta muted">últimos 30 días</span>
+                <svg class="spark" width="88" height="26" viewBox="0 0 96 28"><polyline points="0,22 14,18 28,20 42,12 56,15 70,8 84,12 96,4"/></svg>
+              </div>
+            </div>
+            <div class="stat">
+              <p class="l">Álbumes</p>
+              <p class="v">246</p>
+              <div class="stat-foot"><span class="delta">+6 esta semana</span></div>
+            </div>
+            <div class="stat">
+              <p class="l">Almacenamiento</p>
+              <p class="v">128 <small>GB</small></p>
+              <div class="stat-foot">
+                <span class="bar"><i style="width:25%"></i></span>
+                <span class="bar-note">de 512 GB</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="sec-head">
+            <h3>Continuar escuchando</h3>
+            <a class="link" href="#">Ver historial</a>
+          </div>
+          <div class="cont-grid">
+            <div class="cont-card is-hover">
+              <div class="cover sm g2"></div>
+              <div class="cont-meta">
+                <p class="t">Marea Intermedia</p>
+                <p class="a">Delta Costa</p>
+                <span class="bar"><i style="width:62%"></i></span>
+              </div>
+              <span class="pc">62%</span>
+            </div>
+            <div class="cont-card">
+              <div class="cover sm g6"></div>
+              <div class="cont-meta">
+                <p class="t">Páramo</p>
+                <p class="a">Sol Beltrán</p>
+                <span class="bar"><i style="width:35%"></i></span>
+              </div>
+              <span class="pc">35%</span>
+            </div>
+            <div class="cont-card">
+              <div class="cover sm g8"></div>
+              <div class="cont-meta">
+                <p class="t">Trópico Seco</p>
+                <p class="a">Caldera</p>
+                <span class="bar"><i style="width:80%"></i></span>
+              </div>
+              <span class="pc">80%</span>
+            </div>
+            <div class="cont-card">
+              <div class="cover sm g7"></div>
+              <div class="cont-meta">
+                <p class="t">Última Señal</p>
+                <p class="a">Nova Ríos</p>
+                <span class="bar"><i style="width:12%"></i></span>
+              </div>
+              <span class="pc">12%</span>
+            </div>
+          </div>
+
+          <div class="dash-lower">
+            <div class="panel">
+              <div class="sec-head"><h3>Actividad reciente</h3></div>
+              <div class="row">
+                <span class="tile ok"><svg class="ic"><use href="#i-check"/></svg></span>
+                <div class="tx">
+                  <p class="t">Descarga completada — álbum «Ceniza Neón»</p>
+                  <p class="s">11 pistas en FLAC</p>
+                </div>
+                <time>hace 4 min</time>
+              </div>
+              <div class="row">
+                <span class="tile"><svg class="ic"><use href="#i-cloud"/></svg></span>
+                <div class="tx">
+                  <p class="t">Sincronización con Spotify</p>
+                  <p class="s">214 pistas actualizadas</p>
+                </div>
+                <time>hace 1 h</time>
+              </div>
+              <div class="row">
+                <span class="tile"><svg class="ic"><use href="#i-tag"/></svg></span>
+                <div class="tx">
+                  <p class="t">Metadatos corregidos automáticamente</p>
+                  <p class="s">12 pistas de «Cassette 92»</p>
+                </div>
+                <time>hace 3 h</time>
+              </div>
+              <div class="row">
+                <span class="tile"><svg class="ic"><use href="#i-swap"/></svg></span>
+                <div class="tx">
+                  <p class="t">Migración Tidal a Spotify finalizada</p>
+                  <p class="s">1.842 pistas, 32 playlists</p>
+                </div>
+                <time>ayer</time>
+              </div>
+              <div class="row">
+                <span class="tile"><svg class="ic"><use href="#i-drive"/></svg></span>
+                <div class="tx">
+                  <p class="t">Copia de seguridad de la biblioteca</p>
+                  <p class="s">128 GB verificados</p>
+                </div>
+                <time>ayer, 23:04</time>
+              </div>
+            </div>
+            <div class="col">
+              <div class="panel svc">
+                <div class="sec-head"><h3>Servicios conectados</h3></div>
+                <div class="row">
+                  <span class="brand-dot" style="background:#1DB954;margin-left:0"></span>
+                  <div class="tx">
+                    <p class="t">Spotify</p>
+                    <p class="s">2 cuentas, sync hace 25 min</p>
+                  </div>
+                  <span class="chip-ok">Al día</span>
+                </div>
+                <div class="row">
+                  <span class="brand-dot" style="background:#e5e7eb;margin-left:0"></span>
+                  <div class="tx">
+                    <p class="t">Tidal</p>
+                    <p class="s">1 cuenta, sync hace 2 h</p>
+                  </div>
+                  <span class="chip-ok">Al día</span>
+                </div>
+                <div class="row">
+                  <span class="brand-dot" style="background:#ff5500;margin-left:0"></span>
+                  <div class="tx">
+                    <p class="t">SoundCloud</p>
+                    <p class="s">1 cuenta, 3 favoritos sin resolver</p>
+                  </div>
+                  <span class="chip-warn">Revisar</span>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="sec-head"><h3>Sistema</h3></div>
+                <div class="row">
+                  <span class="tile"><svg class="ic"><use href="#i-download"/></svg></span>
+                  <div class="tx"><p class="t">Cola de descargas</p></div>
+                  <span class="sysv">5</span>
+                </div>
+                <div class="row">
+                  <span class="tile"><svg class="ic"><use href="#i-clock"/></svg></span>
+                  <div class="tx"><p class="t">Sincronizaciones pendientes</p></div>
+                  <span class="sysv">2</span>
+                </div>
+                <div class="row">
+                  <span class="tile"><svg class="ic"><use href="#i-drive"/></svg></span>
+                  <div class="tx"><p class="t">Última copia de seguridad</p></div>
+                  <span class="sysv">Ayer, 23:04</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <footer class="npbar">
+      <div class="np-left">
+        <div class="cover sm g1"></div>
+        <div style="min-width:0">
+          <p class="np-t">Ceniza Neón</p>
+          <p class="np-a">Alba Ferrer</p>
+        </div>
+        <button class="iconbtn liked"><svg class="ic"><use href="#i-heart"/></svg></button>
+      </div>
+      <div class="np-center">
+        <div class="np-controls">
+          <button class="iconbtn" title="Aleatorio"><svg class="ic"><use href="#i-shuffle"/></svg></button>
+          <button class="iconbtn" title="Anterior"><svg class="ic"><use href="#i-prev"/></svg></button>
+          <button class="play-btn" title="Reproducir"><svg class="ic"><use href="#i-play"/></svg></button>
+          <button class="iconbtn" title="Siguiente"><svg class="ic"><use href="#i-next"/></svg></button>
+          <button class="iconbtn on" title="Repetir"><svg class="ic"><use href="#i-repeat"/></svg></button>
+        </div>
+        <div class="np-progress">
+          <time>1:47</time>
+          <div class="track"><div class="fill" style="width:45%"></div></div>
+          <time>3:52</time>
+        </div>
+      </div>
+      <div class="np-right">
+        <button class="iconbtn" title="Letras"><svg class="ic"><use href="#i-mic"/></svg></button>
+        <button class="iconbtn" title="Cola"><svg class="ic"><use href="#i-list"/></svg></button>
+        <button class="iconbtn" title="Volumen"><svg class="ic"><use href="#i-volume"/></svg></button>
+        <span class="vol"><i></i><b></b></span>
+      </div>
+    </footer>
+  </div>
+
+  <p class="note" style="font-size:11.5px;opacity:.6;margin:26px 0 40px">
+    Mockups de exploración — Syncify. Generados el 06/10/2026. Si eliges una dirección, estos tokens se trasladan a ui/src/styles/main.css y al design system del proyecto.
+  </p>
+</main>
+
+<script>
+const d = new URLSearchParams(location.search).get("dir");
+if (d && ["a","b","c","d"].includes(d)) document.getElementById("dir-" + d).checked = true;
+</script>
+</body>
+</html>

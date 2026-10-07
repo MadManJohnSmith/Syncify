@@ -70,7 +70,7 @@
             :class="[
               'w-5 h-5 rounded text-[10px] font-bold transition-all flex items-center justify-center',
               currentConcurrency === t 
-                ? 'bg-primary text-white shadow-xs' 
+                ? 'bg-primary text-on-accent shadow-xs' 
                 : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-surface-highlight'
             ]"
           >
@@ -172,25 +172,25 @@
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-[10px] font-bold text-text-secondary uppercase tracking-wider mr-1">Generated Artifacts:</span>
           
-          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-[#1a2333] border border-gray-200 dark:border-border-dark/70 text-xs" title="Audio Tracks Generated (FLAC/MP3)">
+          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Audio Tracks Generated (FLAC/MP3)">
             <span class="material-symbols-outlined text-[14px] text-primary">audiotrack</span>
             <span class="text-text-secondary text-[11px]">Audio</span>
             <span class="font-bold font-mono text-primary text-[11px]">{{ artifactCounters.audio }}</span>
           </div>
 
-          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-[#1a2333] border border-gray-200 dark:border-border-dark/70 text-xs" title="Synced Lyrics Sidecars (.lrc)">
+          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Synced Lyrics Sidecars (.lrc)">
             <span class="material-symbols-outlined text-[14px] text-amber-500">lyrics</span>
             <span class="text-text-secondary text-[11px]">LRC</span>
             <span class="font-bold font-mono text-amber-500 text-[11px]">{{ artifactCounters.lrc }}</span>
           </div>
 
-          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-[#1a2333] border border-gray-200 dark:border-border-dark/70 text-xs" title="Album Artwork Portadas">
+          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Album Artwork Portadas">
             <span class="material-symbols-outlined text-[14px] text-pink-500">image</span>
             <span class="text-text-secondary text-[11px]">Covers</span>
             <span class="font-bold font-mono text-pink-500 text-[11px]">{{ artifactCounters.covers }}</span>
           </div>
 
-          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-[#1a2333] border border-gray-200 dark:border-border-dark/70 text-xs" title="Digital Booklets Sidecars (.pdf)">
+          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Digital Booklets Sidecars (.pdf)">
             <span class="material-symbols-outlined text-[14px] text-cyan-500">menu_book</span>
             <span class="text-text-secondary text-[11px]">Booklets</span>
             <span class="font-bold font-mono text-cyan-500 text-[11px]">{{ artifactCounters.booklets }}</span>
@@ -346,13 +346,13 @@
             :class="[
               'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all',
               viewFilter === tab.value 
-                ? 'bg-primary text-white shadow-xs' 
+                ? 'bg-primary text-on-accent shadow-xs' 
                 : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-white dark:hover:bg-surface-dark'
             ]"
           >
             <span class="material-symbols-outlined text-[15px]">{{ tab.icon }}</span>
             <span>{{ tab.label }}</span>
-            <span :class="['px-1.5 py-0.2 rounded-full text-[10px] font-bold', viewFilter === tab.value ? 'bg-white/20 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300']">
+            <span :class="['px-1.5 py-0.2 rounded-full text-[10px] font-bold', viewFilter === tab.value ? 'bg-white/20 text-on-accent' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300']">
               {{ tab.count }}
             </span>
           </button>
@@ -989,7 +989,7 @@
                 <button 
                   v-else
                   @click="retryItem(item.id)" 
-                  class="flex items-center justify-center gap-1 px-3 py-1.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                  class="flex items-center justify-center gap-1 px-3 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs font-semibold transition-colors shadow-xs"
                   title="Retry download"
                 >
                   <span class="material-symbols-outlined text-[14px]">refresh</span>
@@ -1144,7 +1144,7 @@
           <button @click="showSettingsPanel = false" :disabled="isProcessing" class="px-5 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
             Close
           </button>
-          <button @click="saveSettings" :disabled="isProcessing" class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <button @click="saveSettings" :disabled="isProcessing" class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             <span v-if="isProcessing">Saving...</span>
             <span v-else>Save Preferences</span>
           </button>

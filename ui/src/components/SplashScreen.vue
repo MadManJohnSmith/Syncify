@@ -1,21 +1,21 @@
 <template>
-  <div class="splash-screen fixed inset-0 z-[500] bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex flex-col items-center justify-center select-none">
+  <div class="splash-screen fixed inset-0 z-[500] bg-gradient-to-br from-shell via-base to-shell flex flex-col items-center justify-center select-none">
     <!-- Logo -->
     <div class="logo-container mb-8">
-      <div class="w-28 h-28 rounded-3xl bg-gradient-to-br from-primary to-primary-600 flex items-center justify-center shadow-2xl shadow-primary/30">
-        <span class="material-symbols-outlined text-white text-6xl">music_note</span>
+      <div class="w-28 h-28 rounded-3xl bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center shadow-2xl shadow-primary/30">
+        <span class="material-symbols-outlined text-on-accent text-6xl">music_note</span>
       </div>
     </div>
-    
+
     <!-- App Name -->
     <div class="text-center">
-      <h1 class="text-4xl font-bold text-white mb-2">Syncify</h1>
-      <p class="text-gray-400 text-lg">Your Unified Music Library</p>
+      <h1 class="text-4xl font-bold text-ink mb-2">Syncify</h1>
+      <p class="text-ink-2 text-lg">Your Unified Music Library</p>
     </div>
     
     <!-- Error State -->
     <div v-if="error" class="mt-8 text-center max-w-md px-6 flex flex-col items-center" data-testid="splash-error">
-      <div class="flex items-center gap-2 text-rose-400 bg-rose-500/10 border border-rose-500/20 px-4 py-2.5 rounded-xl mb-4 text-sm font-medium">
+      <div class="flex items-center gap-2 text-error bg-error/10 border border-error/20 px-4 py-2.5 rounded-xl mb-4 text-sm font-medium">
         <span class="material-symbols-outlined text-xl shrink-0">error</span>
         <span class="text-left">{{ error }}</span>
       </div>
@@ -23,7 +23,7 @@
         @click="emit('retry')"
         type="button"
         data-testid="splash-retry-btn"
-        class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-primary/20 flex items-center gap-2 cursor-pointer"
+        class="px-5 py-2.5 bg-accent hover:bg-accent-hover text-on-accent rounded-xl text-sm font-semibold transition-all shadow-lg shadow-primary/20 flex items-center gap-2 cursor-pointer"
       >
         <span class="material-symbols-outlined text-lg">refresh</span>
         <span>Retry Initialization</span>
@@ -33,19 +33,19 @@
     <!-- Normal Loading Indicator -->
     <div v-else class="mt-12 w-64 text-center" data-testid="splash-loading">
       <!-- Progress Bar -->
-      <div class="h-1.5 bg-gray-700/60 rounded-full overflow-hidden mb-3">
-        <div 
-          class="h-full bg-primary rounded-full transition-all duration-300 ease-out"
+      <div class="h-1.5 bg-elevated rounded-full overflow-hidden mb-3">
+        <div
+          class="h-full bg-accent rounded-full transition-all duration-300 ease-out"
           :style="{ width: displayProgress + '%' }"
         ></div>
       </div>
-      
+
       <!-- Status Text -->
-      <p class="text-sm text-gray-400 font-medium" data-testid="splash-status">{{ displayStatusText }}</p>
+      <p class="text-sm text-ink-2 font-medium" data-testid="splash-status">{{ displayStatusText }}</p>
     </div>
-    
+
     <!-- Version -->
-    <p class="absolute bottom-6 text-xs text-gray-600">v2.1.0</p>
+    <p class="absolute bottom-6 text-xs text-ink-3">v2.1.0</p>
   </div>
 </template>
 

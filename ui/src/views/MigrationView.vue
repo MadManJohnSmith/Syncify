@@ -4,7 +4,7 @@
     <!-- Page Header -->
     <div class="px-8 pt-8 pb-6 flex items-center justify-between shrink-0">
       <div class="flex items-center gap-4">
-        <div class="h-12 w-12 rounded-full bg-gradient-to-br from-primary to-blue-400 text-white flex items-center justify-center">
+        <div class="h-12 w-12 rounded-full bg-gradient-to-br from-primary to-blue-400 text-on-accent flex items-center justify-center">
           <span class="material-symbols-outlined text-[28px]">swap_horiz</span>
         </div>
         <div>
@@ -84,7 +84,7 @@
                 :disabled="migration.isStartingMigration.value || transferStarted || svcStarted"
                 :class="[
                   'px-4 py-2 rounded-md text-sm font-medium transition-all disabled:opacity-50',
-                  assistantMode === 'service' ? 'bg-primary text-white shadow' : 'text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-surface-dark'
+                  assistantMode === 'service' ? 'bg-primary text-on-accent shadow' : 'text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-surface-dark'
                 ]"
               >
                 <span class="flex items-center gap-2">
@@ -98,7 +98,7 @@
                 :disabled="migration.isStartingMigration.value || transferStarted || svcStarted"
                 :class="[
                   'px-4 py-2 rounded-md text-sm font-medium transition-all disabled:opacity-50',
-                  assistantMode === 'transfer' ? 'bg-primary text-white shadow' : 'text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-surface-dark'
+                  assistantMode === 'transfer' ? 'bg-primary text-on-accent shadow' : 'text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-surface-dark'
                 ]"
               >
                 <span class="flex items-center gap-2">
@@ -124,7 +124,7 @@
                   :class="[
                     'w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold transition-all duration-300',
                     activeStepIndex > index ? 'bg-success text-white' :
-                    activeStepIndex === index ? 'bg-primary text-white ring-4 ring-primary/20' :
+                    activeStepIndex === index ? 'bg-primary text-on-accent ring-4 ring-primary/20' :
                     'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
                   ]"
                 >
@@ -170,7 +170,7 @@
                       </span>
                     </div>
                     <!-- Selected Indicator -->
-                    <div v-if="svcSource === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center">
+                    <div v-if="svcSource === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-on-accent flex items-center justify-center">
                       <span class="material-symbols-outlined text-[16px]">check</span>
                     </div>
                   </button>
@@ -178,7 +178,7 @@
 
                 <label v-if="svcSource && accountsForService(svcSource).length > 1" class="block mt-4 text-sm">
                   Cuenta origen
-                  <select v-model.number="svcSourceAccount" class="block w-full mt-1 rounded border p-2 bg-white dark:bg-surface-dark" data-testid="svc-source-account">
+                  <select v-model.number="svcSourceAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="svc-source-account">
                     <option v-for="a in accountsForService(svcSource)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
                   </select>
                 </label>
@@ -222,7 +222,7 @@
                       </template>
                     </div>
                     <!-- Selected Indicator -->
-                    <div v-if="svcDestination === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center">
+                    <div v-if="svcDestination === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-on-accent flex items-center justify-center">
                       <span class="material-symbols-outlined text-[16px]">check</span>
                     </div>
                   </button>
@@ -230,7 +230,7 @@
 
                 <label v-if="svcDestination && accountsForService(svcDestination).length > 1" class="block mt-4 text-sm">
                   Cuenta destino
-                  <select v-model.number="svcDestinationAccount" class="block w-full mt-1 rounded border p-2 bg-white dark:bg-surface-dark" data-testid="svc-destination-account">
+                  <select v-model.number="svcDestinationAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="svc-destination-account">
                     <option v-for="a in accountsForService(svcDestination)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
                   </select>
                 </label>
@@ -255,7 +255,7 @@
                 <div v-else-if="svcPreviewError" data-testid="svc-preview-error" class="rounded-xl border border-error/30 bg-error/5 p-6 text-center">
                   <span class="material-symbols-outlined text-error text-3xl mb-2">error</span>
                   <p class="text-sm text-error mb-4">{{ svcPreviewError }}</p>
-                  <button @click="loadServicePreview" data-testid="svc-retry-preview" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+                  <button @click="loadServicePreview" data-testid="svc-retry-preview" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
                     Retry
                   </button>
                 </div>
@@ -314,7 +314,7 @@
                         @click="matchFilter = filter.id"
                         :class="[
                           'px-4 py-2 rounded-full text-sm font-medium transition-all',
-                          matchFilter === filter.id ? 'bg-primary text-white' : 'bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                          matchFilter === filter.id ? 'bg-primary text-on-accent' : 'bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
                         ]"
                       >
                         {{ filter.label }}
@@ -380,7 +380,7 @@
                   <button
                     @click="svcSkipNotFound = !svcSkipNotFound"
                     data-testid="svc-skip-not-found-toggle"
-                    :class="['w-5 h-5 rounded border-2 flex items-center justify-center transition-colors', svcSkipNotFound ? 'bg-primary border-primary text-white' : 'border-gray-300 dark:border-gray-600']"
+                    :class="['w-5 h-5 rounded border-2 flex items-center justify-center transition-colors', svcSkipNotFound ? 'bg-primary border-primary text-on-accent' : 'border-gray-300 dark:border-gray-600']"
                   >
                     <span v-if="svcSkipNotFound" class="material-symbols-outlined text-[14px]">check</span>
                   </button>
@@ -437,14 +437,14 @@
                       </span>
                     </div>
                     <!-- Selected Indicator -->
-                    <div v-if="sourceService === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center">
+                    <div v-if="sourceService === service.id" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-on-accent flex items-center justify-center">
                       <span class="material-symbols-outlined text-[16px]">check</span>
                     </div>
                   </button>
                 </div>
                 <label v-if="sourceService && accountsForService(sourceService).length > 1" class="block mt-4 text-sm">
                   Cuenta origen
-                  <select v-model.number="sourceAccount" class="block w-full mt-1 rounded border p-2 bg-white dark:bg-surface-dark" data-testid="transfer-source-account">
+                  <select v-model.number="sourceAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="transfer-source-account">
                     <option v-for="a in accountsForService(sourceService)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
                   </select>
                 </label>
@@ -479,7 +479,7 @@
                     <!-- Checkbox -->
                     <div v-if="!content.disabled" :class="[
                       'absolute top-4 right-4 w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all',
-                      selectedContent.includes(content.id) ? 'bg-primary border-primary text-white' : 'border-gray-300 dark:border-gray-600'
+                      selectedContent.includes(content.id) ? 'bg-primary border-primary text-on-accent' : 'border-gray-300 dark:border-gray-600'
                     ]">
                       <span v-if="selectedContent.includes(content.id)" class="material-symbols-outlined text-[16px]">check</span>
                     </div>
@@ -521,7 +521,7 @@
                       </template>
                     </div>
                     <!-- Checkbox indicator -->
-                    <div v-if="destinationServices.includes(service.id)" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center">
+                    <div v-if="destinationServices.includes(service.id)" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-primary text-on-accent flex items-center justify-center">
                       <span class="material-symbols-outlined text-[16px]">check</span>
                     </div>
                   </button>
@@ -529,7 +529,7 @@
 
                 <label v-for="dest in destinationServices.filter(id => accountsForService(id).length > 1)" :key="dest" class="block mt-4 text-sm">
                   Cuenta destino ({{ dest }})
-                  <select v-model.number="destinationAccounts[dest]" class="block w-full mt-1 rounded border p-2 bg-white dark:bg-surface-dark" :data-testid="`transfer-destination-account-${dest}`">
+                  <select v-model.number="destinationAccounts[dest]" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" :data-testid="`transfer-destination-account-${dest}`">
                     <option v-for="a in accountsForService(dest)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
                   </select>
                 </label>
@@ -554,7 +554,7 @@
                 <div v-else-if="previewError" data-testid="preview-error" class="rounded-xl border border-error/30 bg-error/5 p-6 text-center">
                   <span class="material-symbols-outlined text-error text-3xl mb-2">error</span>
                   <p class="text-sm text-error mb-4">{{ previewError }}</p>
-                  <button @click="loadPreview" data-testid="retry-preview" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+                  <button @click="loadPreview" data-testid="retry-preview" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
                     Retry
                   </button>
                 </div>
@@ -620,7 +620,7 @@
                       @click="matchFilter = filter.id"
                       :class="[
                         'px-4 py-2 rounded-full text-sm font-medium transition-all',
-                        matchFilter === filter.id ? 'bg-primary text-white' : 'bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                        matchFilter === filter.id ? 'bg-primary text-on-accent' : 'bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
                       ]"
                     >
                       {{ filter.label }}
@@ -693,7 +693,7 @@
                   <button
                     @click="skipNotFound = !skipNotFound"
                     data-testid="skip-not-found-toggle"
-                    :class="['w-5 h-5 rounded border-2 flex items-center justify-center transition-colors', skipNotFound ? 'bg-primary border-primary text-white' : 'border-gray-300 dark:border-gray-600']"
+                    :class="['w-5 h-5 rounded border-2 flex items-center justify-center transition-colors', skipNotFound ? 'bg-primary border-primary text-on-accent' : 'border-gray-300 dark:border-gray-600']"
                   >
                     <span v-if="skipNotFound" class="material-symbols-outlined text-[14px]">check</span>
                   </button>
@@ -740,7 +740,7 @@
               :disabled="!canProceed"
               :class="[
                 'flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold transition-all',
-                canProceed ? 'bg-primary hover:bg-primary-hover text-white shadow-lg shadow-primary/20' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 cursor-not-allowed'
+                canProceed ? 'bg-primary hover:bg-primary-hover text-on-accent shadow-lg shadow-primary/20' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 cursor-not-allowed'
               ]"
             >
               Next
@@ -994,7 +994,7 @@
 
             <!-- Modal Footer -->
             <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-end">
-              <button @click="showDetailsModal = false" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+              <button @click="showDetailsModal = false" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
                 Close
               </button>
             </div>
@@ -1034,7 +1034,7 @@
                   @click="runManualSearch"
                   :disabled="!manualSearchQuery.trim() || migration.isSearching.value"
                   data-testid="manual-match-search-btn"
-                  class="px-4 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {{ migration.isSearching.value ? 'Searching...' : 'Search' }}
                 </button>
@@ -1118,7 +1118,7 @@
               <button @click="showSaveTemplateModal = false" class="px-5 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium transition-colors">
                 Cancel
               </button>
-              <button @click="saveTemplate" :disabled="!sourceService || destinationServices.length === 0 || !newTemplateName.trim() || isSavingTemplate" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              <button @click="saveTemplate" :disabled="!sourceService || destinationServices.length === 0 || !newTemplateName.trim() || isSavingTemplate" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                 {{ isSavingTemplate ? 'Saving...' : 'Save Template' }}
               </button>
             </div>

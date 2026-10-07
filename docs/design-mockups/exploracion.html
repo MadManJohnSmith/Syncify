@@ -1,0 +1,1582 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Syncify — Exploración 3 · actual, innovador, minimalista</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============ base ============ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body{
+  font-family:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  font-size:14px;line-height:1.45;
+  background:var(--page);color:var(--page-ink);
+  min-height:100vh;
+}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+a{color:inherit;text-decoration:none}
+svg.ic{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+:focus-visible{outline:2px solid var(--accent,#fff);outline-offset:2px;border-radius:6px}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+
+/* ============ variables por dirección ============ */
+/* E · Tinta */
+body{
+  --page:#050506; --page-ink:#7c7c86;
+  --bg:#0A0A0B; --bg-titlebar:#0A0A0B;
+  --surface:#141417; --surface-2:#1C1C21;
+  --border:rgba(255,255,255,.075); --border-soft:rgba(255,255,255,.05);
+  --frame-border:rgba(255,255,255,.09);
+  --t1:#F4F4F5; --t2:#8E8E96; --t3:#56565F;
+  --accent:#F4F4F5; --on-accent:#0A0A0B;
+  --ok:#30C48D; --warn:#E8B23C;
+  --frame-shadow:0 24px 80px rgba(0,0,0,.6);
+  --aura:linear-gradient(90deg,#f43f5e,#8b5cf6 55%,#0ea5e9);
+  --np-glow:0 -20px 50px rgba(244,63,142,.07);
+  --hot-ring:0 0 0 1.5px rgba(244,63,142,.85),0 18px 44px rgba(0,0,0,.55);
+  --play-bg:#FFFFFF; --play-fg:#0A0A0B;
+  --btn-bg:#F4F4F5; --btn-fg:#0A0A0B;
+  --fl-line:#F4F4F5;
+  --heart:#F43F5E;
+  --prog:#F4F4F5;
+}
+/* F · Brasa */
+body:has(#dir-f:checked){
+  --page:#0B0909; --page-ink:#8d8178;
+  --bg:#121010; --bg-titlebar:#121010;
+  --surface:#1A1717; --surface-2:#241F1F;
+  --border:rgba(255,240,230,.08); --border-soft:rgba(255,240,230,.05);
+  --frame-border:rgba(255,240,230,.1);
+  --t1:#F5EFEA; --t2:#A89C94; --t3:#6E6259;
+  --accent:#FF6B4A; --accent-2:#FF8566; --accent-soft:rgba(255,107,74,.13);
+  --on-accent:#FFFFFF;
+  --ok:#34D399; --warn:#E8B23C;
+  --frame-shadow:0 24px 80px rgba(0,0,0,.55);
+  --aura:linear-gradient(90deg,rgba(255,107,74,0),rgba(255,107,74,.55),rgba(255,107,74,0));
+  --np-glow:0 -18px 48px rgba(255,107,74,.09);
+  --hot-ring:0 0 0 1.5px rgba(255,107,74,.45),0 18px 44px rgba(0,0,0,.5);
+  --play-bg:#FF6B4A; --play-fg:#FFFFFF;
+  --btn-bg:#FF6B4A; --btn-fg:#FFFFFF;
+  --fl-line:#FF6B4A;
+  --heart:#FF6B4A;
+  --prog:#FF6B4A;
+}
+/* G · Consola flotante */
+body:has(#dir-g:checked){
+  --page:#08080B; --page-ink:#74747f;
+  --bg:#0C0C0F; --bg-titlebar:#0C0C0F;
+  --surface:rgba(255,255,255,.04); --surface-2:rgba(255,255,255,.08);
+  --border:rgba(255,255,255,.09); --border-soft:rgba(255,255,255,.06);
+  --frame-border:rgba(255,255,255,.1);
+  --t1:#F2F2F4; --t2:#9C9CA7; --t3:#5E5E69;
+  --accent:#FFB224; --on-accent:#221503;
+  --ok:#30C48D; --warn:#E8B23C;
+  --frame-shadow:0 24px 80px rgba(0,0,0,.6);
+}
+/* H · Camaleón (tinte del disco: aquí congelado en rosa por «Ceniza Neón») */
+body:has(#dir-h:checked){
+  --page:#08060A; --page-ink:#8a7a88;
+  --bg:#0F0B10; --bg-titlebar:#0F0B10;
+  --surface:#181019; --surface-2:#221826;
+  --border:rgba(244,180,220,.09); --border-soft:rgba(244,180,220,.06);
+  --frame-border:rgba(244,180,220,.11);
+  --t1:#F6EFF4; --t2:#AB97A9; --t3:#6E5F6E;
+  --accent:#E9408C; --on-accent:#FFFFFF;
+  --ok:#30C48D; --warn:#E8B23C;
+  --frame-shadow:0 24px 80px rgba(0,0,0,.6);
+  --aura:linear-gradient(90deg,#f43f5e,#8b5cf6 55%,#0ea5e9);
+  --np-glow:0 -22px 58px rgba(244,63,142,.14);
+  --hot-ring:0 0 0 1.5px rgba(240,80,152,.9),0 20px 48px rgba(0,0,0,.55);
+  --play-bg:#E9408C; --play-fg:#FFFFFF;
+  --btn-bg:#E9408C; --btn-fg:#FFFFFF;
+  --fl-line:#E9408C;
+  --heart:#F05098;
+  --prog:linear-gradient(90deg,#f43f5e,#8b5cf6);
+}
+/* I · Riso */
+body:has(#dir-i:checked){
+  --page:#E2E4E0; --page-ink:#565b56;
+  --bg:#F1F2F0; --bg-titlebar:#F1F2F0;
+  --surface:#FFFFFF; --surface-2:#E7E9E5;
+  --border:#D9DCD8; --border-soft:#E2E4E0;
+  --frame-border:#14161A;
+  --t1:#14161A; --t2:#5C625E; --t3:#9BA19C;
+  --accent:#2B3FF2; --accent-2:#1F2FD0;
+  --pink:#FF48B0;
+  --on-accent:#FFFFFF;
+  --ok:#0A7F4F; --warn:#C2410C;
+  --frame-shadow:0 20px 56px rgba(20,22,26,.16);
+}
+
+/* ============ cabecera de página ============ */
+.mockhead{
+  position:sticky;top:0;z-index:50;
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+  padding:14px 28px;
+  background:color-mix(in srgb, var(--page) 85%, transparent);
+  backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--border-soft);
+}
+.mockhead .name{font-weight:700;font-size:14px;color:var(--page-ink)}
+.mockhead .note{font-size:12px;color:var(--page-ink);opacity:.75}
+.switcher{display:flex;gap:6px;margin-left:auto;padding:4px;border:1px solid var(--border-soft);border-radius:12px;background:rgba(127,127,127,.06);flex-wrap:wrap}
+.switcher label{
+  padding:7px 14px;border-radius:9px;font-size:12.5px;font-weight:600;
+  color:var(--page-ink);cursor:pointer;white-space:nowrap;transition:background .15s,color .15s;
+}
+.switcher label:hover{background:rgba(127,127,127,.12)}
+body:has(#dir-e:checked) label[for=dir-e],
+body:has(#dir-f:checked) label[for=dir-f],
+body:has(#dir-g:checked) label[for=dir-g],
+body:has(#dir-h:checked) label[for=dir-h],
+body:has(#dir-i:checked) label[for=dir-i]{
+  background:var(--surface-2);color:var(--t1);box-shadow:0 1px 2px rgba(0,0,0,.2);
+}
+.dir-input{position:absolute;opacity:0;pointer-events:none}
+.view{display:none}
+body:has(#dir-e:checked) .view-e,
+body:has(#dir-f:checked) .view-f,
+body:has(#dir-g:checked) .view-g,
+body:has(#dir-h:checked) .view-h,
+body:has(#dir-i:checked) .view-i{display:block}
+
+/* ============ fichas ============ */
+.wrap{max-width:1560px;margin:0 auto;padding:0 28px}
+.spec{display:none;flex-direction:column;gap:10px;padding:26px 0 6px}
+body:has(#dir-e:checked) .spec-e,
+body:has(#dir-f:checked) .spec-f,
+body:has(#dir-g:checked) .spec-g,
+body:has(#dir-h:checked) .spec-h,
+body:has(#dir-i:checked) .spec-i{display:flex}
+.spec h2{font-size:16px;font-weight:700;color:var(--page-ink);letter-spacing:-.01em}
+.spec h2 small{font-weight:500;font-size:12.5px;opacity:.7;margin-left:8px}
+.swatches{display:flex;gap:14px;flex-wrap:wrap}
+.swatch{display:flex;align-items:center;gap:7px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;color:var(--page-ink)}
+.swatch i{width:16px;height:16px;border-radius:6px;border:1px solid rgba(127,127,127,.35)}
+.spec ul{list-style:none;display:flex;gap:22px;flex-wrap:wrap}
+.spec li{font-size:12.5px;color:var(--page-ink);display:flex;gap:8px;align-items:baseline}
+.spec li::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent);flex:none;transform:translateY(-2px)}
+
+/* ============ escenario / frame ============ */
+.caption{font-size:12.5px;color:var(--page-ink);margin:26px 0 10px;font-weight:600}
+.app-frame{
+  background:var(--bg);color:var(--t1);
+  border:1px solid var(--frame-border);border-radius:18px;overflow:hidden;
+  box-shadow:var(--frame-shadow);
+}
+.titlebar{
+  height:44px;display:flex;align-items:center;gap:10px;padding:0 16px;
+  border-bottom:1px solid var(--border-soft);background:var(--bg-titlebar);
+}
+.logo{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;color:#fff}
+body:has(#dir-e:checked) .logo{background:#F4F4F5;color:#0A0A0B}
+body:has(#dir-f:checked) .logo{background:#FF6B4A}
+body:has(#dir-g:checked) .logo{background:linear-gradient(135deg,#FFB224,#8b5cf6)}
+body:has(#dir-h:checked) .logo{background:linear-gradient(135deg,#f43f5e,#8b5cf6)}
+body:has(#dir-i:checked) .logo{background:#2B3FF2;border:2px solid #14161A}
+.logo svg{width:11px;height:11px}
+.titlebar .t{font-size:13px;font-weight:600}
+.win-dots{margin-left:auto;display:flex;gap:7px}
+.win-dots i{width:11px;height:11px;border-radius:50%;background:var(--surface-2);border:1px solid var(--border-soft)}
+
+.cover{position:relative;overflow:hidden}
+.cover::after{
+  content:"";position:absolute;inset:0;
+  background:radial-gradient(120% 120% at 22% 8%, rgba(255,255,255,.20), transparent 46%);
+}
+.cover.g1{background:linear-gradient(135deg,#f43f5e,#8b5cf6)}
+.cover.g2{background:linear-gradient(135deg,#0ea5e9,#22d3ee)}
+.cover.g3{background:linear-gradient(135deg,#f59e0b,#ef4444)}
+.cover.g4{background:linear-gradient(135deg,#6366f1,#c084fc)}
+.cover.g5{background:linear-gradient(135deg,#10b981,#047857)}
+.cover.g6{background:linear-gradient(135deg,#ec4899,#f97316)}
+.cover.g7{background:linear-gradient(135deg,#334155,#94a3b8)}
+.cover.g8{background:linear-gradient(135deg,#14b8a6,#7c3aed)}
+
+/* ================================================================ */
+/* COMPONENTES COMPARTIDOS E/F/H (todos driven por variables)        */
+/* ================================================================ */
+.e-body{display:flex;min-height:620px}
+.e-rail{
+  width:64px;flex:none;border-right:1px solid var(--border-soft);
+  display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 0;
+}
+.e-rail .ritem{position:relative;width:42px;height:42px;border-radius:11px;display:grid;place-items:center;color:var(--t3)}
+.e-rail .ritem svg{width:20px;height:20px}
+.e-rail .ritem:hover{color:var(--t1)}
+.e-rail .on{color:var(--t1)}
+.e-rail .on::after{content:"";position:absolute;bottom:1px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--t1)}
+.e-rail .sep{width:26px;height:1px;background:var(--border-soft);margin:8px 0}
+.e-rail .spacer{flex:1}
+/* F · Brasa: sidebar de texto */
+.f2-side{
+  width:214px;flex:none;border-right:1px solid var(--border-soft);
+  padding:16px 12px;display:flex;flex-direction:column;gap:2px;
+}
+.f2-side .sitem{display:flex;align-items:center;padding:8px 12px;border-radius:9px;font-size:13.5px;color:var(--t2)}
+.f2-side .sitem:hover{color:var(--t1);background:var(--surface-2)}
+.f2-side .on{color:var(--t1);font-weight:600}
+.f2-side .on::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--accent);margin-right:9px}
+.f2-side .sep{height:1px;background:var(--border-soft);margin:10px 8px}
+.f2-side .spacer{flex:1}
+.e-main{flex:1;display:flex;flex-direction:column;min-width:0}
+.e-top{height:58px;display:flex;align-items:center;gap:12px;padding:0 26px;border-bottom:1px solid var(--border-soft)}
+.e-search{
+  flex:0 1 360px;display:flex;align-items:center;gap:10px;height:36px;padding:0 12px;
+  border:1px solid var(--border);border-radius:10px;color:var(--t3);font-size:13px;
+}
+.e-search svg{width:15px;height:15px}
+.e-search span{flex:1}
+kbd{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;color:var(--t3);border:1px solid var(--border);border-radius:6px;padding:2px 5px}
+.e-status{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:12px;color:var(--t2)}
+.e-status .dot{width:6px;height:6px;border-radius:50%;background:var(--ok)}
+.e-status .icb{position:relative;width:32px;height:32px;border-radius:9px;display:grid;place-items:center;color:var(--t2)}
+.e-status .icb svg{width:17px;height:17px}
+.e-status .icb .ndot{position:absolute;top:6px;right:7px;width:5px;height:5px;border-radius:50%;background:var(--t1)}
+.e-ava{width:28px;height:28px;border-radius:50%;background:var(--btn-bg);color:var(--btn-fg);display:grid;place-items:center;font-size:10.5px;font-weight:700}
+.e-content{padding:26px 30px 30px;flex:1}
+.e-head{display:flex;align-items:flex-end;gap:14px;margin-bottom:20px}
+.e-head h1{font-size:25px;font-weight:700;letter-spacing:-.03em}
+.e-head .sub{font-size:12.5px;color:var(--t3);margin-top:4px}
+.e-head .acts{margin-left:auto;display:flex;align-items:center;gap:12px}
+.e-sort{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--t2)}
+.e-sort svg{width:13px;height:13px}
+.e-seg{display:flex;gap:2px;padding:3px;border:1px solid var(--border);border-radius:9px}
+.e-seg button{width:28px;height:26px;border-radius:7px;display:grid;place-items:center;color:var(--t3)}
+.e-seg button.on{background:var(--surface-2);color:var(--t1)}
+.e-seg svg{width:14px;height:14px}
+.e-add{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 14px;border-radius:9px;background:var(--btn-bg);color:var(--btn-fg);font-size:12.5px;font-weight:600}
+.e-add svg{width:14px;height:14px}
+.e-filters{display:flex;gap:20px;margin-bottom:24px}
+.e-fl{font-size:13px;color:var(--t3);padding-bottom:4px}
+.e-fl.on{color:var(--t1);font-weight:600;box-shadow:inset 0 -1.5px 0 var(--fl-line)}
+.e-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:24px 18px}
+.e-card .cover{aspect-ratio:1;border-radius:10px}
+.e-card .cover svg{position:absolute;right:10px;bottom:10px;z-index:2;width:36px;height:36px;border-radius:50%;background:var(--play-bg);color:var(--play-fg);display:grid;place-items:center;opacity:0;transform:translateY(6px);transition:.18s}
+.e-card .cover svg path{stroke:var(--play-fg);fill:var(--play-fg)}
+.e-card .t{font-size:13.5px;font-weight:600;margin-top:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.e-card .a{font-size:12px;color:var(--t2);margin-top:2px}
+.e-card.hot .cover{box-shadow:var(--hot-ring)}
+.e-card.hot .cover svg{opacity:1;transform:translateY(0)}
+.e-np{
+  position:relative;flex:none;display:grid;grid-template-columns:1fr minmax(420px,560px) 1fr;align-items:center;gap:18px;
+  height:84px;padding:0 22px;border-top:1px solid var(--border-soft);background:var(--bg-titlebar);
+  box-shadow:var(--np-glow);
+}
+.e-np::before{content:"";position:absolute;top:-1px;left:0;right:0;height:2px;background:var(--aura);opacity:.85}
+.e-np .l{display:flex;align-items:center;gap:12px;min-width:0}
+.e-np .cover{width:50px;height:50px;border-radius:9px;flex:none}
+.e-np .tt{font-size:13px;font-weight:600}
+.e-np .aa{font-size:11.5px;color:var(--t2);margin-top:1px}
+.e-np .heart{color:var(--heart);width:32px;height:32px;border-radius:9px;display:grid;place-items:center}
+.e-np .heart svg{width:17px;height:17px}
+.e-ctl{display:flex;align-items:center;justify-content:center;gap:14px;color:var(--t2)}
+.e-ctl .ib{width:30px;height:30px;border-radius:8px;display:grid;place-items:center}
+.e-ctl .ib svg{width:17px;height:17px}
+.e-ctl .ib.on{color:var(--t1)}
+.e-play{width:38px;height:38px;border-radius:50%;background:var(--btn-bg);color:var(--btn-fg);display:grid;place-items:center}
+.e-play svg{width:15px;height:15px}
+.e-prog{display:flex;align-items:center;gap:10px;margin-top:8px}
+.e-prog time{font-size:10.5px;color:var(--t3);font-variant-numeric:tabular-nums}
+.e-bar{flex:1;height:3px;border-radius:99px;background:var(--surface-2)}
+.e-bar i{display:block;height:100%;width:45%;border-radius:99px;background:var(--prog)}
+.e-right{display:flex;align-items:center;justify-content:flex-end;gap:8px;color:var(--t2)}
+.e-right .ib{width:30px;height:30px;border-radius:8px;display:grid;place-items:center}
+.e-right .ib svg{width:17px;height:17px}
+.e-vol{width:74px;height:3px;border-radius:99px;background:var(--surface-2);position:relative}
+.e-vol i{position:absolute;inset:0 30% 0 0;background:var(--t2);border-radius:99px}
+/* H: indicador y control de tinte */
+.tintdot{width:18px;height:18px;border-radius:50%;background:linear-gradient(135deg,#f43f5e,#8b5cf6);margin:4px 0 6px;border:1px solid var(--border)}
+.tint{display:flex;align-items:center;gap:7px}
+.tint .tdot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,#f43f5e,#8b5cf6)}
+.tint .e-vol{width:52px}
+/* dashboard compartido E/F/H */
+.e-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:26px}
+.e-stat{background:var(--surface);border:1px solid var(--border-soft);border-radius:14px;padding:17px 19px}
+.e-stat .l{font-size:12px;color:var(--t2)}
+.e-stat .v{font-size:26px;font-weight:700;letter-spacing:-.03em;margin-top:6px;font-variant-numeric:tabular-nums}
+.e-stat .v small{font-size:12.5px;font-weight:600;color:var(--t2)}
+.e-stat .f{display:flex;align-items:center;gap:10px;margin-top:10px}
+.e-delta{font-size:11px;font-weight:600;padding:3px 8px;border-radius:99px;color:var(--ok);background:rgba(48,196,141,.1)}
+.e-delta.m{color:var(--t2);background:var(--surface-2)}
+.e-spark{margin-left:auto}
+.e-spark polyline{fill:none;stroke:var(--t1);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.e-sbar{flex:1;height:3px;border-radius:99px;background:var(--surface-2)}
+.e-sbar i{display:block;height:100%;width:25%;border-radius:99px;background:var(--prog)}
+.e-note{font-size:11px;color:var(--t3)}
+.e-sechead{display:flex;align-items:center;margin-bottom:12px}
+.e-sechead h3{font-size:14.5px;font-weight:700;letter-spacing:-.01em}
+.e-sechead a{margin-left:auto;font-size:12.5px;color:var(--t2)}
+.e-cont{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:26px}
+.e-cont .it{display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:12px;border:1px solid var(--border-soft)}
+.e-cont .cover{width:44px;height:44px;border-radius:8px;flex:none}
+.e-cont .t{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.e-cont .a{font-size:11px;color:var(--t2);margin-top:1px}
+.e-cont .b{height:2.5px;border-radius:99px;background:var(--surface-2);margin-top:8px}
+.e-cont .b i{display:block;height:100%;border-radius:99px;background:var(--prog)}
+.e-cont .pc{font-size:10.5px;color:var(--t3);font-variant-numeric:tabular-nums}
+.e-lower{display:grid;grid-template-columns:1.55fr 1fr;gap:14px;align-items:start}
+.e-panel{background:var(--surface);border:1px solid var(--border-soft);border-radius:14px;padding:6px 18px}
+.e-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--border-soft)}
+.e-row:first-child{border-top:0}
+.e-row .tile{width:34px;height:34px;border-radius:9px;background:var(--surface-2);color:var(--t2);display:grid;place-items:center;flex:none}
+.e-row .tile svg{width:16px;height:16px}
+.e-row .tile.ok{color:var(--ok)}
+.e-row .tx{min-width:0;flex:1}
+.e-row .t{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.e-row .s{font-size:11px;color:var(--t2);margin-top:1px}
+.e-row time{font-size:10.5px;color:var(--t3);font-variant-numeric:tabular-nums}
+.e-col{display:flex;flex-direction:column;gap:14px}
+.e-bdot{width:9px;height:9px;border-radius:50%;flex:none;margin:0 12px 0 2px}
+.e-chip{font-size:10.5px;font-weight:600;padding:3px 8px;border-radius:99px}
+.e-chip.ok{color:var(--ok);background:rgba(48,196,141,.1)}
+.e-chip.w{color:var(--warn);background:rgba(232,178,60,.1)}
+.e-sysv{margin-left:auto;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+
+/* ================================================================ */
+/* G · CONSOLA FLOTANTE                                              */
+/* ================================================================ */
+.g-body{position:relative;font-family:"Geist","Inter",system-ui,sans-serif;padding-bottom:118px}
+.g-top{display:flex;align-items:center;gap:14px;height:58px;padding:0 40px}
+.g-brand{font-size:13.5px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:center;gap:7px}
+.g-brand i{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.g-top .r{margin-left:auto;display:flex;align-items:center;gap:10px}
+.g-cmdbtn{display:flex;align-items:center;gap:8px;height:30px;padding:0 12px;border:1px solid var(--border);border-radius:999px;font-size:12px;color:var(--t2);background:var(--surface)}
+.g-cmdbtn .mono{font-family:"Geist Mono",ui-monospace,monospace;font-size:11px}
+.g-status{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--t2)}
+.g-status i{width:6px;height:6px;border-radius:50%;background:var(--ok)}
+.g-ava{width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#FFB224,#8b5cf6);color:#fff;display:grid;place-items:center;font-size:10px;font-weight:700}
+.g-content{padding:18px 40px 0}
+.g-head{display:flex;align-items:flex-end;margin-bottom:22px}
+.g-head h1{font-size:23px;font-weight:700;letter-spacing:-.025em}
+.g-head .sub{font-size:12.5px;color:var(--t3);margin-top:4px}
+.g-head .acts{margin-left:auto;display:flex;align-items:center;gap:10px}
+.g-ghost{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 13px;border:1px solid var(--border);border-radius:9px;font-size:12.5px;color:var(--t2);background:var(--surface)}
+.g-ghost svg{width:14px;height:14px}
+.g-add{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 14px;border-radius:9px;background:var(--accent);color:var(--on-accent);font-size:12.5px;font-weight:600}
+.g-add svg{width:14px;height:14px}
+.g-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:26px 18px}
+.g-card .cover{aspect-ratio:1;border-radius:12px}
+.g-card .cover svg{position:absolute;right:10px;bottom:10px;z-index:2;width:34px;height:34px;border-radius:50%;background:var(--accent);color:var(--on-accent);display:grid;place-items:center;opacity:0;transform:translateY(6px);transition:.18s}
+.g-card .cover svg path{stroke:var(--on-accent);fill:var(--on-accent)}
+.g-card .t{font-size:13px;font-weight:600;margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.g-card .a{font-size:11.5px;color:var(--t3);margin-top:1px}
+.g-card.hot .cover{filter:brightness(1.08)}
+.g-card.hot .cover svg{opacity:1;transform:translateY(0)}
+.g-dock{
+  position:absolute;left:50%;bottom:26px;transform:translateX(-50%);z-index:10;
+  display:flex;align-items:center;gap:4px;padding:7px;border-radius:999px;
+  background:rgba(17,17,23,.74);border:1px solid rgba(255,255,255,.1);
+  backdrop-filter:blur(24px);box-shadow:0 20px 60px rgba(0,0,0,.55);
+}
+.g-dock .it{position:relative;width:40px;height:40px;border-radius:999px;display:grid;place-items:center;color:var(--t2)}
+.g-dock .it svg{width:18px;height:18px}
+.g-dock .it:hover{color:var(--t1);background:var(--surface-2)}
+.g-dock .it.on{color:var(--t1);background:var(--surface-2)}
+.g-dock .it.on::after{content:"";position:absolute;bottom:3px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--accent)}
+.g-dock .div{width:1px;height:22px;background:rgba(255,255,255,.1);margin:0 5px}
+.g-capsule{
+  position:absolute;right:30px;bottom:26px;z-index:10;
+  display:flex;align-items:center;gap:11px;padding:9px 15px 9px 9px;border-radius:999px;
+  background:rgba(17,17,23,.74);border:1px solid rgba(255,255,255,.1);
+  backdrop-filter:blur(24px);box-shadow:0 20px 60px rgba(0,0,0,.55);
+}
+.g-capsule .cover{width:38px;height:38px;border-radius:50%;flex:none}
+.g-capsule .tx .t{font-size:12.5px;font-weight:600;white-space:nowrap}
+.g-capsule .tx .a{font-size:10.5px;color:var(--t3);margin-top:0}
+.g-ring{position:relative;width:36px;height:36px;flex:none}
+.g-ring svg{position:absolute;inset:0;transform:rotate(-90deg)}
+.g-ring .tr{fill:none;stroke:rgba(255,255,255,.14);stroke-width:2.6}
+.g-ring .fl{fill:none;stroke:var(--accent);stroke-width:2.6;stroke-linecap:round;stroke-dasharray:101.8;stroke-dashoffset:56}
+.g-ring .pb{position:absolute;inset:0;margin:auto;width:12px;height:12px;color:var(--accent)}
+.g-ring .pb path{stroke:var(--accent);fill:var(--accent)}
+.g-home{max-width:760px;margin:0 auto;padding:34px 0 0}
+.g-greet{display:flex;align-items:baseline;margin-bottom:34px}
+.g-greet h1{font-size:21px;font-weight:700;letter-spacing:-.025em}
+.g-greet .d{margin-left:auto;font-size:12.5px;color:var(--t3)}
+.g-cmdbox{border:1px solid var(--border);border-radius:15px;background:var(--surface);overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.4)}
+.g-cmd{display:flex;align-items:center;gap:12px;height:54px;padding:0 18px;border-bottom:1px solid var(--border-soft)}
+.g-cmd svg{width:17px;height:17px;color:var(--t3)}
+.g-cmd .ph{font-family:"Geist Mono",ui-monospace,monospace;font-size:13px;color:var(--t2)}
+.g-caret{width:1.5px;height:18px;background:var(--accent);margin-left:2px}
+.g-cmd kbd{margin-left:auto;font-family:"Geist Mono",ui-monospace,monospace;border:0;background:none;font-size:11px;color:var(--t3)}
+.g-sug{display:flex;align-items:center;gap:12px;height:44px;padding:0 18px;font-size:13px;color:var(--t2);border-bottom:1px solid var(--border-soft)}
+.g-sug:last-child{border-bottom:0}
+.g-sug svg{width:15px;height:15px;color:var(--t3)}
+.g-sug.act{background:rgba(255,255,255,.045);color:var(--t1)}
+.g-sug.act svg{color:var(--accent)}
+.g-sug .hint{margin-left:auto;font-family:"Geist Mono",ui-monospace,monospace;font-size:10.5px;color:var(--t3)}
+.g-statline{display:flex;justify-content:center;gap:0;margin:36px 0 34px}
+.g-statline .st{padding:0 30px;border-left:1px solid var(--border);text-align:center}
+.g-statline .st:first-child{border-left:0}
+.g-statline .v{font-size:21px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.g-statline .v small{font-size:11.5px;font-weight:600;color:var(--t3)}
+.g-statline .l{font-size:11px;color:var(--t3);margin-top:3px}
+.g-act{margin-bottom:26px}
+.g-act h4{font-size:12px;color:var(--t3);font-weight:600;margin-bottom:6px}
+.g-arow{display:flex;align-items:center;gap:12px;padding:10px 2px;border-bottom:1px solid var(--border-soft)}
+.g-arow:last-child{border-bottom:0}
+.g-arow svg{width:15px;height:15px;color:var(--t3);flex:none}
+.g-arow .t{font-size:12.5px;color:var(--t1);flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.g-arow time{font-size:10.5px;color:var(--t3);font-variant-numeric:tabular-nums}
+.g-svc{display:flex;gap:8px;flex-wrap:wrap}
+.g-svc .pill{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 11px;border:1px solid var(--border);border-radius:999px;font-size:11.5px;color:var(--t2);background:var(--surface)}
+.g-svc .pill i{width:7px;height:7px;border-radius:50%}
+.g-svc .pill b{font-weight:600;color:var(--t1)}
+
+/* ================================================================ */
+/* I · RISO — papel frío, dos tintas, sombras duras                  */
+/* ================================================================ */
+.i-app{font-family:"Space Grotesk","Inter",sans-serif}
+.i-top{height:58px;display:flex;align-items:stretch;border-bottom:2px solid var(--t1)}
+.i-brand{display:flex;align-items:center;gap:10px;padding:0 20px;border-right:2px solid var(--t1)}
+.i-brand .sq{width:20px;height:20px;background:var(--accent);border:2px solid var(--t1);border-radius:6px;display:grid;place-items:center;color:#fff}
+.i-brand .sq svg{width:10px;height:10px}
+.i-brand b{font-size:14.5px;font-weight:700;letter-spacing:-.01em}
+.i-tab{display:flex;align-items:center;padding:0 17px;font-size:13px;font-weight:600;color:var(--t2);border-right:2px solid var(--t1)}
+.i-tab:hover{color:var(--t1)}
+.i-tab.on{background:var(--accent);color:#fff}
+.i-top .r{margin-left:auto;display:flex;align-items:center;gap:12px;padding:0 20px}
+.i-status{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--t2)}
+.i-status i{width:7px;height:7px;border-radius:50%;background:var(--accent);border:1.5px solid var(--t1)}
+.i-ava{width:28px;height:28px;border-radius:50%;background:#fff;border:2px solid var(--t1);color:var(--t1);display:grid;place-items:center;font-size:10.5px;font-weight:700}
+.i-content{padding:26px 30px 30px}
+.i-head{display:flex;align-items:flex-end;gap:14px;margin-bottom:20px}
+.i-head h1{font-size:33px;font-weight:700;letter-spacing:-.02em}
+.i-head .sub{font-size:12.5px;color:var(--t2);margin-top:5px}
+.i-head .acts{margin-left:auto;display:flex;align-items:center;gap:12px}
+.i-sort{font-size:12.5px;font-weight:600;color:var(--t2)}
+.i-add{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 15px;border-radius:8px;background:var(--accent);color:#fff;border:2px solid var(--t1);box-shadow:3px 3px 0 var(--t1);font-size:12.5px;font-weight:600}
+.i-add svg{width:14px;height:14px}
+.i-chips{display:flex;gap:10px;margin-bottom:24px}
+.i-chip{height:30px;padding:0 13px;border-radius:999px;border:2px solid var(--t1);font-size:12px;font-weight:600;color:var(--t1);display:inline-flex;align-items:center}
+.i-chip.on{background:var(--accent);color:#fff;box-shadow:3px 3px 0 var(--t1)}
+.i-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:20px 16px}
+.i-card{background:var(--surface);border:2px solid var(--t1);border-radius:10px;padding:8px 8px 10px;transition:transform .12s,box-shadow .12s}
+.i-card .cover{aspect-ratio:1;border-radius:6px;border:1.5px solid var(--t1);filter:saturate(.9) contrast(1.04)}
+.view-i .cover::after{display:none}
+.view-i .cover::before{
+  content:"";position:absolute;inset:0;z-index:1;
+  background-image:radial-gradient(rgba(20,22,26,.26) 1px, transparent 1.3px);
+  background-size:5px 5px;mix-blend-mode:multiply;
+}
+.i-card .cover svg{position:absolute;right:7px;bottom:7px;z-index:2;width:32px;height:32px;border-radius:50%;background:var(--pink);color:#fff;border:2px solid var(--t1);display:grid;place-items:center;opacity:0;transform:translateY(5px);transition:.15s}
+.i-card .cover svg path{stroke:#fff;fill:#fff}
+.i-card .t{font-size:13px;font-weight:700;margin-top:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.i-card .a{font-size:11.5px;color:var(--t2);margin-top:1px}
+.i-card.hot{transform:translate(-2px,-2px);box-shadow:5px 5px 0 var(--t1)}
+.i-card.hot .cover svg{opacity:1;transform:translateY(0)}
+.i-np{
+  flex:none;display:grid;grid-template-columns:1fr minmax(400px,540px) 1fr;align-items:center;gap:18px;
+  height:82px;padding:0 22px;border-top:2px solid var(--t1);background:var(--bg-titlebar);
+}
+.i-np .l{display:flex;align-items:center;gap:12px;min-width:0}
+.i-np .cover{width:46px;height:46px;border-radius:6px;border:2px solid var(--t1);flex:none}
+.i-np .tt{font-size:13.5px;font-weight:700}
+.i-np .aa{font-size:11.5px;color:var(--t2);margin-top:1px}
+.i-np .heart{color:var(--pink);width:32px;height:32px;display:grid;place-items:center}
+.i-np .heart svg{width:17px;height:17px}
+.i-ctl{display:flex;align-items:center;justify-content:center;gap:14px;color:var(--t1)}
+.i-ctl .ib{width:30px;height:30px;display:grid;place-items:center}
+.i-ctl .ib svg{width:17px;height:17px}
+.i-ctl .ib.on{color:var(--accent)}
+.i-fplay{width:38px;height:38px;border-radius:50%;background:var(--accent);color:#fff;border:2px solid var(--t1);box-shadow:2.5px 2.5px 0 var(--t1);display:grid;place-items:center}
+.i-fplay svg{width:15px;height:15px}
+.i-prog{display:flex;align-items:center;gap:10px;margin-top:8px}
+.i-prog time{font-size:10.5px;color:var(--t2);font-variant-numeric:tabular-nums}
+.i-bar{flex:1;height:8px;border-radius:99px;border:1.5px solid var(--t1);background:#fff;overflow:hidden}
+.i-bar i{display:block;height:100%;width:45%;background:var(--pink)}
+.i-np .r{display:flex;align-items:center;justify-content:flex-end;gap:10px;color:var(--t1)}
+.i-np .r .ib{width:30px;height:30px;display:grid;place-items:center}
+.i-np .r .ib svg{width:17px;height:17px}
+.i-vol{width:72px;height:6px;border-radius:99px;border:1.5px solid var(--t1);background:#fff;position:relative}
+.i-vol i{position:absolute;inset:0 30% 0 0;background:var(--t1)}
+/* dashboard I */
+.i-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:28px}
+.i-stat{background:var(--surface);border:2px solid var(--t1);border-radius:10px;padding:16px 18px;box-shadow:4px 4px 0 var(--t1)}
+.i-stat .l{font-size:12px;font-weight:600;color:var(--t2)}
+.i-stat .v{font-size:27px;font-weight:700;letter-spacing:-.02em;margin-top:5px;font-variant-numeric:tabular-nums}
+.i-stat .v small{font-size:12.5px;font-weight:600;color:var(--t2)}
+.i-stat .f{display:flex;align-items:center;gap:10px;margin-top:10px}
+.i-delta{font-size:11px;font-weight:700;color:var(--pink)}
+.i-delta.m{color:var(--t3)}
+.i-spark{margin-left:auto}
+.i-spark polyline{fill:none;stroke:var(--accent);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.i-sbar{flex:1;height:8px;border-radius:99px;border:1.5px solid var(--t1);background:#fff;overflow:hidden}
+.i-sbar i{display:block;height:100%;width:25%;background:var(--accent)}
+.i-note{font-size:11px;color:var(--t3)}
+.i-sechead{display:flex;align-items:center;margin-bottom:12px}
+.i-sechead h3{font-size:16px;font-weight:700;letter-spacing:-.01em}
+.i-sechead a{margin-left:auto;font-size:12.5px;font-weight:600;color:var(--t2);text-decoration:underline;text-underline-offset:3px}
+.i-cont{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:28px}
+.i-cont .it{display:flex;align-items:center;gap:12px;padding:10px 12px;border:2px solid var(--t1);border-radius:10px;background:var(--surface)}
+.i-cont .cover{width:42px;height:42px;border-radius:6px;border:1.5px solid var(--t1);flex:none}
+.i-cont .t{font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.i-cont .a{font-size:11px;color:var(--t2);margin-top:1px}
+.i-cont .b{height:6px;border-radius:99px;border:1.5px solid var(--t1);background:#fff;margin-top:8px;overflow:hidden}
+.i-cont .b i{display:block;height:100%;background:var(--pink)}
+.i-cont .pc{font-size:10.5px;color:var(--t3);font-variant-numeric:tabular-nums}
+.i-lower{display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start}
+.i-panel{background:var(--surface);border:2px solid var(--t1);border-radius:10px;padding:8px 18px;box-shadow:4px 4px 0 var(--t1)}
+.i-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1.5px solid var(--border)}
+.i-row:first-child{border-top:0}
+.i-row svg{width:16px;height:16px;color:var(--t1);flex:none}
+.i-row .tx{min-width:0;flex:1}
+.i-row .t{font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.i-row .s{font-size:11px;color:var(--t2);margin-top:1px}
+.i-row time{font-size:10.5px;color:var(--t3);font-variant-numeric:tabular-nums}
+.i-col{display:flex;flex-direction:column;gap:16px}
+.i-bdot{width:10px;height:10px;border-radius:50%;flex:none;margin:0 12px 0 2px;border:1.5px solid var(--t1)}
+.i-chipx{font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:999px;border:1.5px solid var(--t1);color:var(--t1);background:#fff}
+.i-chipx.w{background:var(--pink);color:#fff}
+.i-sysv{margin-left:auto;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+
+<input class="dir-input" type="radio" name="dir" id="dir-e" checked>
+<input class="dir-input" type="radio" name="dir" id="dir-g">
+<input class="dir-input" type="radio" name="dir" id="dir-f">
+<input class="dir-input" type="radio" name="dir" id="dir-h">
+<input class="dir-input" type="radio" name="dir" id="dir-i">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-note" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="18.5" cy="16" r="2.5" fill="currentColor"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.8 12 3l9 7.8"/><path d="M5 9.5V21h14V9.5"/></symbol>
+  <symbol id="i-disc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/></symbol>
+  <symbol id="i-playlist" viewBox="0 0 24 24"><path d="M3 6h12M3 11h12M3 16h7"/><path d="M18 6.5V16"/><circle cx="15.5" cy="16.5" r="2.5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v11"/><path d="m7 10 5 5 5-5"/><path d="M4 20h16"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 7h13"/><path d="m13.5 3.5 3.5 3.5-3.5 3.5"/><path d="M20 17H7"/><path d="m10.5 13.5-3.5 3.5 3.5 3.5"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.5"/><path d="M3.5 20c0-3.1 2.4-5 5.5-5s5.5 1.9 5.5 5"/><path d="M15.5 5.4a3.5 3.5 0 0 1 0 6.2"/><path d="M17.5 15.4c1.9.8 3 2.4 3 4.6"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 3h8.5L21 12.5 12.5 21 3 11.5V3z"/><circle cx="7.8" cy="7.8" r="1.4"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3.5"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.6M12 18.9v2.6M21.5 12h-2.6M5.1 12H2.5M18.7 5.3l-1.9 1.9M7.2 16.8l-1.9 1.9M18.7 18.7l-1.9-1.9M7.2 7.2 5.3 5.3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.2-4.2"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 9a6 6 0 1 0-12 0c0 6.2-2.5 8-2.5 8h17S18 15.2 18 9z"/><path d="M13.7 20.5a2 2 0 0 1-3.4 0"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.4 9.2a2.7 2.7 0 0 1 5.2.9c0 1.8-2.5 2.1-2.5 3.5"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20.5C7.2 16.4 3.5 13.4 3.5 9.7A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 8.5 2.1c0 3.7-3.7 6.7-8.5 10.8z"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M16 3.5h4.5V8"/><path d="M3.5 20.5 20.5 3.5"/><path d="M20.5 16v4.5H16"/><path d="m14.5 14.5 6 6"/><path d="m3.5 3.5 6 6"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M6.5 5v14"/><path d="M18 6.2v11.6L8.8 12 18 6.2z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M17.5 5v14"/><path d="M6 6.2v11.6L15.2 12 6 6.2z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13L19 12 8 5.5z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path d="m17 2.5 3.5 3.5L17 9.5"/><path d="M3.5 11.5v-1a4.5 4.5 0 0 1 4.5-4.5h12.5"/><path d="m7 21.5-3.5-3.5L7 14.5"/><path d="M20.5 12.5v1a4.5 4.5 0 0 1-4.5 4.5H3.5"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M11.5 4.5 6.5 8.5H3v7h3.5l5 4v-15z"/><path d="M15.5 8.7a5 5 0 0 1 0 6.6"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8.5 6h12M8.5 12h12M8.5 18h12"/><path d="M3.7 6h.01M3.7 12h.01M3.7 18h.01"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m4.5 12.5 5 5 10-11"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 1.9"/></symbol>
+  <symbol id="i-drive" viewBox="0 0 24 24"><path d="M21 12H3"/><path d="M5.5 4.5h13L21.5 12v6a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2v-6l2.5-7.5z"/><path d="M7.5 16.5h.01M11 16.5h.01"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 18.5a4.5 4.5 0 0 0 .3-9A7 7 0 0 0 4.2 11.7 4.2 4.2 0 0 0 6.5 18.5h11z"/><path d="m9.5 13 2 2 3.5-3.8"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 1 1-2.7-6.2"/><path d="M20.5 3.5V8H16"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+</svg>
+
+<header class="mockhead">
+  <span class="name">Syncify — exploración 3</span>
+  <span class="note">E y G se quedan · F editorial retirada · tres propuestas nuevas (F, H, I)</span>
+  <div class="switcher" role="tablist">
+    <label for="dir-e">E · Tinta</label>
+    <label for="dir-g">G · Consola</label>
+    <label for="dir-f">F · Brasa</label>
+    <label for="dir-h">H · Camaleón</label>
+    <label for="dir-i">I · Riso</label>
+  </div>
+</header>
+
+<div class="wrap">
+
+<section class="spec spec-e">
+  <h2>E — Tinta <small>monocromo: el disco pone el color</small></h2>
+  <div class="swatches">
+    <span class="swatch"><i style="background:#0A0A0B"></i>#0A0A0B</span>
+    <span class="swatch"><i style="background:#141417"></i>#141417</span>
+    <span class="swatch"><i style="background:#1C1C21"></i>#1C1C21</span>
+    <span class="swatch"><i style="background:rgba(255,255,255,.08)"></i>hairline 8%</span>
+    <span class="swatch"><i style="background:#F4F4F5"></i>#F4F4F5</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#f43f5e,#8b5cf6)"></i>arte = color</span>
+  </div>
+  <ul>
+    <li>Cero color decorativo: todo en grises, hairlines y tipografía</li>
+    <li>El único color llega del arte: aura de la barra, favoritos, hover de tarjetas</li>
+    <li>Sin cajas innecesarias: superficies planas, jerarquía por peso y espacio</li>
+  </ul>
+</section>
+
+<section class="spec spec-g">
+  <h2>G — Consola flotante <small>sin sidebar, comandos primero</small></h2>
+  <div class="swatches">
+    <span class="swatch"><i style="background:#0C0C0F"></i>#0C0C0F</span>
+    <span class="swatch"><i style="background:rgba(255,255,255,.09)"></i>glass 9%</span>
+    <span class="swatch"><i style="background:#FFB224"></i>#FFB224</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#FFB224,#8b5cf6)"></i>identidad</span>
+  </div>
+  <ul>
+    <li>Sin sidebar: dock flotante + paleta de comandos como navegación principal</li>
+    <li>Reproductor como cápsula flotante con anillo de progreso</li>
+    <li>El Dashboard se reimagina como consola de comandos</li>
+  </ul>
+</section>
+
+<section class="spec spec-f">
+  <h2>F — Brasa <small>carbón cálido + coral</small></h2>
+  <div class="swatches">
+    <span class="swatch"><i style="background:#121010"></i>#121010</span>
+    <span class="swatch"><i style="background:#1A1717"></i>#1A1717</span>
+    <span class="swatch"><i style="background:#241F1F"></i>#241F1F</span>
+    <span class="swatch"><i style="background:#F5EFEA"></i>#F5EFEA</span>
+    <span class="swatch"><i style="background:#A89C94"></i>#A89C94</span>
+    <span class="swatch"><i style="background:#FF6B4A"></i>#FF6B4A</span>
+  </div>
+  <ul>
+    <li>Un oscuro que abriga: carbón con matiz terracota, sin nada de azul</li>
+    <li>Coral solo donde hay vida: play, progreso, activos, favoritos</li>
+    <li>Sidebar de texto en vez del rail de iconos: más calma, más sala de escucha</li>
+  </ul>
+</section>
+
+<section class="spec spec-h">
+  <h2>H — Camaleón <small>el tema se tiñe con el disco</small></h2>
+  <div class="swatches">
+    <span class="swatch"><i style="background:#0F0B10"></i>#0F0B10</span>
+    <span class="swatch"><i style="background:#181019"></i>#181019</span>
+    <span class="swatch"><i style="background:#221826"></i>#221826</span>
+    <span class="swatch"><i style="background:#F6EFF4"></i>#F6EFF4</span>
+    <span class="swatch"><i style="background:linear-gradient(135deg,#f43f5e,#8b5cf6)"></i>tinte del álbum</span>
+  </div>
+  <ul>
+    <li>Toda la paleta se tiñe con la carátula en reproducción — aquí congelada en la rosa de «Ceniza Neón»</li>
+    <li>Intensidad del tinte ajustable (deslizador junto al volumen)</li>
+    <li>El punto del rail y el aura muestran el tinte activo; artGradient ya calcula el color por disco</li>
+  </ul>
+</section>
+
+<section class="spec spec-i">
+  <h2>I — Riso <small>papel frío, dos tintas, imprenta</small></h2>
+  <div class="swatches">
+    <span class="swatch"><i style="background:#F1F2F0"></i>#F1F2F0</span>
+    <span class="swatch"><i style="background:#14161A"></i>#14161A</span>
+    <span class="swatch"><i style="background:#2B3FF2"></i>#2B3FF2</span>
+    <span class="swatch"><i style="background:#FF48B0"></i>#FF48B0</span>
+  </div>
+  <ul>
+    <li>Duotono risográfico: azul para interactuar, rosa para «ahora suena»</li>
+    <li>Sombras duras de imprenta y halftone en las portadas; cero blur, cero degradados de fondo</li>
+    <li>Navegación por pestañas superiores; display en Space Grotesk</li>
+  </ul>
+</section>
+</div>
+
+<main class="wrap">
+
+<!-- ================================================================ -->
+<!-- E · TINTA — BIBLIOTECA                                            -->
+<!-- ================================================================ -->
+<div class="view view-e">
+<p class="caption">E · Vista — Biblioteca</p>
+<div class="app-frame">
+  <div class="titlebar">
+    <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+    <span class="t">Syncify</span>
+    <span class="win-dots"><i></i><i></i><i></i></span>
+  </div>
+  <div class="e-body">
+    <nav class="e-rail">
+      <a class="ritem" title="Inicio"><svg class="ic"><use href="#i-home"/></svg></a>
+      <a class="ritem on" title="Biblioteca"><svg class="ic"><use href="#i-disc"/></svg></a>
+      <a class="ritem" title="Playlists"><svg class="ic"><use href="#i-playlist"/></svg></a>
+      <a class="ritem" title="Descargas"><svg class="ic"><use href="#i-download"/></svg></a>
+      <a class="ritem" title="Migrar"><svg class="ic"><use href="#i-swap"/></svg></a>
+      <a class="ritem" title="Cuentas"><svg class="ic"><use href="#i-users"/></svg></a>
+      <a class="ritem" title="Metadatos"><svg class="ic"><use href="#i-tag"/></svg></a>
+      <a class="ritem" title="Letras"><svg class="ic"><use href="#i-mic"/></svg></a>
+      <span class="sep"></span><span class="spacer"></span>
+      <a class="ritem" title="Registros"><svg class="ic"><use href="#i-file"/></svg></a>
+      <a class="ritem" title="Ajustes"><svg class="ic"><use href="#i-gear"/></svg></a>
+    </nav>
+    <div class="e-main">
+      <header class="e-top">
+        <div class="e-search"><svg class="ic"><use href="#i-search"/></svg><span>Buscar</span><kbd>⌘K</kbd></div>
+        <div class="e-status">
+          <span style="display:flex;align-items:center;gap:7px"><i class="dot"></i>Sincronizado</span>
+          <span class="icb"><svg class="ic"><use href="#i-bell"/></svg><i class="ndot"></i></span>
+          <span class="icb"><svg class="ic"><use href="#i-help"/></svg></span>
+          <span class="e-ava">MS</span>
+        </div>
+      </header>
+      <div class="e-content">
+        <div class="e-head">
+          <div><h1>Biblioteca</h1><p class="sub">3.284 pistas en 246 álbumes de 87 artistas</p></div>
+          <div class="acts">
+            <span class="e-sort">Añadidos recientemente <svg class="ic"><use href="#i-chevron"/></svg></span>
+            <div class="e-seg"><button class="on"><svg class="ic"><use href="#i-grid"/></svg></button><button><svg class="ic"><use href="#i-list"/></svg></button></div>
+            <button class="e-add"><svg class="ic"><use href="#i-plus"/></svg>Añadir</button>
+          </div>
+        </div>
+        <div class="e-filters">
+          <span class="e-fl">Todo</span><span class="e-fl on">Álbumes</span><span class="e-fl">Artistas</span><span class="e-fl">Géneros</span><span class="e-fl">Recientes</span>
+        </div>
+        <div class="e-grid">
+          <div class="e-card hot"><div class="cover g1"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Ceniza Neón</p><p class="a">Alba Ferrer</p></div>
+          <div class="e-card"><div class="cover g2"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Marea Intermedia</p><p class="a">Delta Costa</p></div>
+          <div class="e-card"><div class="cover g3"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Nocturno 4:44</p><p class="a">Vela</p></div>
+          <div class="e-card"><div class="cover g4"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Horizonte de Sal</p><p class="a">Marina Lomas</p></div>
+          <div class="e-card"><div class="cover g5"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Ruido Blanco</p><p class="a">Kaján</p></div>
+          <div class="e-card"><div class="cover g6"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Páramo</p><p class="a">Sol Beltrán</p></div>
+          <div class="e-card"><div class="cover g7"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Última Señal</p><p class="a">Nova Ríos</p></div>
+          <div class="e-card"><div class="cover g8"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Trópico Seco</p><p class="a">Caldera</p></div>
+          <div class="e-card"><div class="cover g2"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Vértigo Lento</p><p class="a">Índigo Club</p></div>
+          <div class="e-card"><div class="cover g4"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Faro</p><p class="a">Alba Ferrer</p></div>
+          <div class="e-card"><div class="cover g6"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Cassette 92</p><p class="a">Los Delfines</p></div>
+          <div class="e-card"><div class="cover g8"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Mirage</p><p class="a">Delta Costa</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="e-np">
+    <div class="l">
+      <div class="cover g1"></div>
+      <div style="min-width:0"><p class="tt">Ceniza Neón</p><p class="aa">Alba Ferrer</p></div>
+      <span class="heart"><svg class="ic"><use href="#i-heart"/></svg></span>
+    </div>
+    <div>
+      <div class="e-ctl">
+        <span class="ib"><svg class="ic"><use href="#i-shuffle"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-prev"/></svg></span>
+        <span class="e-play"><svg class="ic"><use href="#i-play"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-next"/></svg></span>
+        <span class="ib on"><svg class="ic"><use href="#i-repeat"/></svg></span>
+      </div>
+      <div class="e-prog"><time>1:47</time><span class="e-bar"><i></i></span><time>3:52</time></div>
+    </div>
+    <div class="e-right">
+      <span class="ib"><svg class="ic"><use href="#i-mic"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-list"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-volume"/></svg></span>
+      <span class="e-vol"><i></i></span>
+    </div>
+  </footer>
+</div>
+
+<!-- E · DASHBOARD -->
+<p class="caption">E · Vista — Dashboard</p>
+<div class="app-frame">
+  <div class="titlebar">
+    <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+    <span class="t">Syncify</span>
+    <span class="win-dots"><i></i><i></i><i></i></span>
+  </div>
+  <div class="e-body">
+    <nav class="e-rail">
+      <a class="ritem on" title="Inicio"><svg class="ic"><use href="#i-home"/></svg></a>
+      <a class="ritem" title="Biblioteca"><svg class="ic"><use href="#i-disc"/></svg></a>
+      <a class="ritem" title="Playlists"><svg class="ic"><use href="#i-playlist"/></svg></a>
+      <a class="ritem" title="Descargas"><svg class="ic"><use href="#i-download"/></svg></a>
+      <a class="ritem" title="Migrar"><svg class="ic"><use href="#i-swap"/></svg></a>
+      <a class="ritem" title="Cuentas"><svg class="ic"><use href="#i-users"/></svg></a>
+      <a class="ritem" title="Metadatos"><svg class="ic"><use href="#i-tag"/></svg></a>
+      <a class="ritem" title="Letras"><svg class="ic"><use href="#i-mic"/></svg></a>
+      <span class="sep"></span><span class="spacer"></span>
+      <a class="ritem" title="Registros"><svg class="ic"><use href="#i-file"/></svg></a>
+      <a class="ritem" title="Ajustes"><svg class="ic"><use href="#i-gear"/></svg></a>
+    </nav>
+    <div class="e-main">
+      <header class="e-top">
+        <div class="e-search"><svg class="ic"><use href="#i-search"/></svg><span>Buscar</span><kbd>⌘K</kbd></div>
+        <div class="e-status">
+          <span style="display:flex;align-items:center;gap:7px"><i class="dot"></i>Sincronizado</span>
+          <span class="icb"><svg class="ic"><use href="#i-bell"/></svg><i class="ndot"></i></span>
+          <span class="icb"><svg class="ic"><use href="#i-help"/></svg></span>
+          <span class="e-ava">MS</span>
+        </div>
+      </header>
+      <div class="e-content">
+        <div class="e-head">
+          <div><h1>Buenas tardes</h1><p class="sub">Domingo, 6 de octubre de 2026</p></div>
+          <div class="acts">
+            <span class="e-sort" style="border:1px solid var(--border);border-radius:9px;padding:8px 13px">Importar</span>
+            <button class="e-add"><svg class="ic"><use href="#i-refresh"/></svg>Sincronizar ahora</button>
+          </div>
+        </div>
+        <div class="e-stats">
+          <div class="e-stat"><p class="l">Pistas</p><p class="v">3.284</p><div class="f"><span class="e-delta">+48 esta semana</span></div></div>
+          <div class="e-stat"><p class="l">Horas escuchadas</p><p class="v">412</p><div class="f"><span class="e-delta m">últimos 30 días</span>
+            <svg class="e-spark" width="84" height="24" viewBox="0 0 96 28"><polyline points="0,22 14,18 28,20 42,12 56,15 70,8 84,12 96,4"/></svg></div></div>
+          <div class="e-stat"><p class="l">Álbumes</p><p class="v">246</p><div class="f"><span class="e-delta">+6 esta semana</span></div></div>
+          <div class="e-stat"><p class="l">Almacenamiento</p><p class="v">128 <small>GB</small></p><div class="f"><span class="e-sbar"><i></i></span><span class="e-note">de 512 GB</span></div></div>
+        </div>
+        <div class="e-sechead"><h3>Continuar escuchando</h3><a>Ver historial</a></div>
+        <div class="e-cont">
+          <div class="it"><div class="cover g2"></div><div style="flex:1;min-width:0"><p class="t">Marea Intermedia</p><p class="a">Delta Costa</p><span class="b"><i style="width:62%"></i></span></div><span class="pc">62%</span></div>
+          <div class="it"><div class="cover g6"></div><div style="flex:1;min-width:0"><p class="t">Páramo</p><p class="a">Sol Beltrán</p><span class="b"><i style="width:35%"></i></span></div><span class="pc">35%</span></div>
+          <div class="it"><div class="cover g8"></div><div style="flex:1;min-width:0"><p class="t">Trópico Seco</p><p class="a">Caldera</p><span class="b"><i style="width:80%"></i></span></div><span class="pc">80%</span></div>
+          <div class="it"><div class="cover g7"></div><div style="flex:1;min-width:0"><p class="t">Última Señal</p><p class="a">Nova Ríos</p><span class="b"><i style="width:12%"></i></span></div><span class="pc">12%</span></div>
+        </div>
+        <div class="e-lower">
+          <div class="e-panel">
+            <div class="e-row"><span class="tile ok"><svg class="ic"><use href="#i-check"/></svg></span><div class="tx"><p class="t">Descarga completada — álbum «Ceniza Neón»</p><p class="s">11 pistas en FLAC</p></div><time>hace 4 min</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-cloud"/></svg></span><div class="tx"><p class="t">Sincronización con Spotify</p><p class="s">214 pistas actualizadas</p></div><time>hace 1 h</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-tag"/></svg></span><div class="tx"><p class="t">Metadatos corregidos automáticamente</p><p class="s">12 pistas de «Cassette 92»</p></div><time>hace 3 h</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-swap"/></svg></span><div class="tx"><p class="t">Migración Tidal a Spotify finalizada</p><p class="s">1.842 pistas, 32 playlists</p></div><time>ayer</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-drive"/></svg></span><div class="tx"><p class="t">Copia de seguridad de la biblioteca</p><p class="s">128 GB verificados</p></div><time>ayer, 23:04</time></div>
+          </div>
+          <div class="e-col">
+            <div class="e-panel">
+              <div class="e-row"><span class="e-bdot" style="background:#1DB954;margin-left:0"></span><div class="tx"><p class="t">Spotify</p><p class="s">2 cuentas, sync hace 25 min</p></div><span class="e-chip ok">Al día</span></div>
+              <div class="e-row"><span class="e-bdot" style="background:#e5e7eb;margin-left:0"></span><div class="tx"><p class="t">Tidal</p><p class="s">1 cuenta, sync hace 2 h</p></div><span class="e-chip ok">Al día</span></div>
+              <div class="e-row"><span class="e-bdot" style="background:#ff5500;margin-left:0"></span><div class="tx"><p class="t">SoundCloud</p><p class="s">3 favoritos sin resolver</p></div><span class="e-chip w">Revisar</span></div>
+            </div>
+            <div class="e-panel">
+              <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-download"/></svg></span><div class="tx"><p class="t">Cola de descargas</p></div><span class="e-sysv">5</span></div>
+              <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-clock"/></svg></span><div class="tx"><p class="t">Sincronizaciones pendientes</p></div><span class="e-sysv">2</span></div>
+              <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-drive"/></svg></span><div class="tx"><p class="t">Última copia de seguridad</p></div><span class="e-sysv">Ayer, 23:04</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="e-np">
+    <div class="l">
+      <div class="cover g1"></div>
+      <div style="min-width:0"><p class="tt">Ceniza Neón</p><p class="aa">Alba Ferrer</p></div>
+      <span class="heart"><svg class="ic"><use href="#i-heart"/></svg></span>
+    </div>
+    <div>
+      <div class="e-ctl">
+        <span class="ib"><svg class="ic"><use href="#i-shuffle"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-prev"/></svg></span>
+        <span class="e-play"><svg class="ic"><use href="#i-play"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-next"/></svg></span>
+        <span class="ib on"><svg class="ic"><use href="#i-repeat"/></svg></span>
+      </div>
+      <div class="e-prog"><time>1:47</time><span class="e-bar"><i></i></span><time>3:52</time></div>
+    </div>
+    <div class="e-right">
+      <span class="ib"><svg class="ic"><use href="#i-mic"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-list"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-volume"/></svg></span>
+      <span class="e-vol"><i></i></span>
+    </div>
+  </footer>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<!-- G · CONSOLA FLOTANTE — BIBLIOTECA                                 -->
+<!-- ================================================================ -->
+<div class="view view-g">
+<p class="caption">G · Vista — Biblioteca (dock flotante + cápsula de reproducción)</p>
+<div class="app-frame">
+  <div class="titlebar">
+    <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+    <span class="t">Syncify</span>
+    <span class="win-dots"><i></i><i></i><i></i></span>
+  </div>
+  <div class="g-body">
+    <header class="g-top">
+      <span class="g-brand">syncify<i></i></span>
+      <div class="r">
+        <span class="g-cmdbtn">Comandos <span class="mono">⌘K</span></span>
+        <span class="g-status"><i></i>Sincronizado</span>
+        <span class="g-ava">MS</span>
+      </div>
+    </header>
+    <div class="g-content">
+      <div class="g-head">
+        <div><h1>Biblioteca</h1><p class="sub">3.284 pistas en 246 álbumes de 87 artistas</p></div>
+        <div class="acts">
+          <span class="g-ghost">Añadidos recientemente <svg class="ic"><use href="#i-chevron"/></svg></span>
+          <button class="g-add"><svg class="ic"><use href="#i-plus"/></svg>Añadir</button>
+        </div>
+      </div>
+      <div class="g-grid">
+        <div class="g-card hot"><div class="cover g1"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Ceniza Neón</p><p class="a">Alba Ferrer</p></div>
+        <div class="g-card"><div class="cover g2"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Marea Intermedia</p><p class="a">Delta Costa</p></div>
+        <div class="g-card"><div class="cover g3"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Nocturno 4:44</p><p class="a">Vela</p></div>
+        <div class="g-card"><div class="cover g4"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Horizonte de Sal</p><p class="a">Marina Lomas</p></div>
+        <div class="g-card"><div class="cover g5"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Ruido Blanco</p><p class="a">Kaján</p></div>
+        <div class="g-card"><div class="cover g6"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Páramo</p><p class="a">Sol Beltrán</p></div>
+        <div class="g-card"><div class="cover g7"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Última Señal</p><p class="a">Nova Ríos</p></div>
+        <div class="g-card"><div class="cover g8"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Trópico Seco</p><p class="a">Caldera</p></div>
+        <div class="g-card"><div class="cover g2"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Vértigo Lento</p><p class="a">Índigo Club</p></div>
+        <div class="g-card"><div class="cover g4"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Faro</p><p class="a">Alba Ferrer</p></div>
+        <div class="g-card"><div class="cover g6"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Cassette 92</p><p class="a">Los Delfines</p></div>
+        <div class="g-card"><div class="cover g8"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Mirage</p><p class="a">Delta Costa</p></div>
+      </div>
+    </div>
+    <div class="g-dock">
+      <span class="it" title="Inicio"><svg class="ic"><use href="#i-home"/></svg></span>
+      <span class="it on" title="Biblioteca"><svg class="ic"><use href="#i-disc"/></svg></span>
+      <span class="it" title="Playlists"><svg class="ic"><use href="#i-playlist"/></svg></span>
+      <span class="it" title="Descargas"><svg class="ic"><use href="#i-download"/></svg></span>
+      <span class="it" title="Migrar"><svg class="ic"><use href="#i-swap"/></svg></span>
+      <span class="div"></span>
+      <span class="it" title="Notificaciones"><svg class="ic"><use href="#i-bell"/></svg></span>
+      <span class="it" title="Ajustes"><svg class="ic"><use href="#i-gear"/></svg></span>
+    </div>
+    <div class="g-capsule">
+      <div class="cover g1"></div>
+      <div class="tx"><p class="t">Ceniza Neón</p><p class="a">Alba Ferrer</p></div>
+      <span class="g-ring">
+        <svg width="36" height="36" viewBox="0 0 36 36"><circle class="tr" cx="18" cy="18" r="16.2"/><circle class="fl" cx="18" cy="18" r="16.2"/></svg>
+        <svg class="pb" viewBox="0 0 24 24"><path d="M8 5.5v13L19 12 8 5.5z"/></svg>
+      </span>
+    </div>
+  </div>
+</div>
+
+<!-- G · DASHBOARD = CONSOLA DE COMANDOS -->
+<p class="caption">G · Vista — Inicio, reimaginada como consola de comandos</p>
+<div class="app-frame">
+  <div class="titlebar">
+    <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+    <span class="t">Syncify</span>
+    <span class="win-dots"><i></i><i></i><i></i></span>
+  </div>
+  <div class="g-body">
+    <header class="g-top">
+      <span class="g-brand">syncify<i></i></span>
+      <div class="r">
+        <span class="g-cmdbtn">Comandos <span class="mono">⌘K</span></span>
+        <span class="g-status"><i></i>Sincronizado</span>
+        <span class="g-ava">MS</span>
+      </div>
+    </header>
+    <div class="g-home">
+      <div class="g-greet"><h1>Buenas tardes</h1><span class="d">domingo, 6 de octubre de 2026</span></div>
+      <div class="g-cmdbox">
+        <div class="g-cmd">
+          <svg class="ic"><use href="#i-search"/></svg>
+          <span class="ph">Escribe un comando o busca</span><span class="g-caret"></span>
+          <kbd>⏎ ejecutar</kbd>
+        </div>
+        <div class="g-sug act"><svg class="ic"><use href="#i-play"/></svg>Reproducir «Ceniza Neón» de Alba Ferrer<span class="hint">intro</span></div>
+        <div class="g-sug"><svg class="ic"><use href="#i-refresh"/></svg>Sincronizar Spotify ahora<span class="hint">sync</span></div>
+        <div class="g-sug"><svg class="ic"><use href="#i-download"/></svg>Descargar favoritos de Tidal<span class="hint">42 pistas</span></div>
+        <div class="g-sug"><svg class="ic"><use href="#i-clock"/></svg>¿Qué escuché esta semana?<span class="hint">informe</span></div>
+      </div>
+      <div class="g-statline">
+        <span class="st"><p class="v">3.284</p><p class="l">pistas</p></span>
+        <span class="st"><p class="v">412 <small>h</small></p><p class="l">escuchadas</p></span>
+        <span class="st"><p class="v">246</p><p class="l">álbumes</p></span>
+        <span class="st"><p class="v">128 <small>/ 512 GB</small></p><p class="l">almacenamiento</p></span>
+      </div>
+      <div class="g-act">
+        <h4>Actividad</h4>
+        <div class="g-arow"><svg class="ic"><use href="#i-check"/></svg><span class="t">Descarga completada — álbum «Ceniza Neón», 11 pistas en FLAC</span><time>hace 4 min</time></div>
+        <div class="g-arow"><svg class="ic"><use href="#i-cloud"/></svg><span class="t">Sincronización con Spotify — 214 pistas actualizadas</span><time>hace 1 h</time></div>
+        <div class="g-arow"><svg class="ic"><use href="#i-swap"/></svg><span class="t">Migración Tidal a Spotify finalizada — 1.842 pistas</span><time>ayer</time></div>
+        <div class="g-arow"><svg class="ic"><use href="#i-drive"/></svg><span class="t">Copia de seguridad verificada — 128 GB</span><time>ayer, 23:04</time></div>
+      </div>
+      <div class="g-svc">
+        <span class="pill"><i style="background:#1DB954"></i><b>Spotify</b> al día</span>
+        <span class="pill"><i style="background:#94a3b8"></i><b>Tidal</b> al día</span>
+        <span class="pill"><i style="background:#ff5500"></i><b>SoundCloud</b> revisar</span>
+        <span class="pill"><i style="background:var(--warn)"></i>2 sincronizaciones pendientes</span>
+      </div>
+    </div>
+    <div class="g-dock">
+      <span class="it on" title="Inicio"><svg class="ic"><use href="#i-home"/></svg></span>
+      <span class="it" title="Biblioteca"><svg class="ic"><use href="#i-disc"/></svg></span>
+      <span class="it" title="Playlists"><svg class="ic"><use href="#i-playlist"/></svg></span>
+      <span class="it" title="Descargas"><svg class="ic"><use href="#i-download"/></svg></span>
+      <span class="it" title="Migrar"><svg class="ic"><use href="#i-swap"/></svg></span>
+      <span class="div"></span>
+      <span class="it" title="Notificaciones"><svg class="ic"><use href="#i-bell"/></svg></span>
+      <span class="it" title="Ajustes"><svg class="ic"><use href="#i-gear"/></svg></span>
+    </div>
+    <div class="g-capsule">
+      <div class="cover g1"></div>
+      <div class="tx"><p class="t">Ceniza Neón</p><p class="a">Alba Ferrer</p></div>
+      <span class="g-ring">
+        <svg width="36" height="36" viewBox="0 0 36 36"><circle class="tr" cx="18" cy="18" r="16.2"/><circle class="fl" cx="18" cy="18" r="16.2"/></svg>
+        <svg class="pb" viewBox="0 0 24 24"><path d="M8 5.5v13L19 12 8 5.5z"/></svg>
+      </span>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<!-- F · BRASA — BIBLIOTECA (sidebar de texto, carbón cálido)          -->
+<!-- ================================================================ -->
+<div class="view view-f">
+<p class="caption">F · Vista — Biblioteca (sidebar de texto, tonos cálidos)</p>
+<div class="app-frame">
+  <div class="titlebar">
+    <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+    <span class="t">Syncify</span>
+    <span class="win-dots"><i></i><i></i><i></i></span>
+  </div>
+  <div class="e-body">
+    <nav class="f2-side">
+      <a class="sitem">Inicio</a>
+      <a class="sitem on">Biblioteca</a>
+      <a class="sitem">Playlists</a>
+      <a class="sitem">Descargas</a>
+      <a class="sitem">Migrar</a>
+      <a class="sitem">Cuentas</a>
+      <a class="sitem">Metadatos</a>
+      <a class="sitem">Letras</a>
+      <span class="sep"></span><span class="spacer"></span>
+      <a class="sitem">Registros</a>
+      <a class="sitem">Ajustes</a>
+    </nav>
+    <div class="e-main">
+      <header class="e-top">
+        <div class="e-search"><svg class="ic"><use href="#i-search"/></svg><span>Buscar</span><kbd>⌘K</kbd></div>
+        <div class="e-status">
+          <span style="display:flex;align-items:center;gap:7px"><i class="dot"></i>Sincronizado</span>
+          <span class="icb"><svg class="ic"><use href="#i-bell"/></svg><i class="ndot"></i></span>
+          <span class="icb"><svg class="ic"><use href="#i-help"/></svg></span>
+          <span class="e-ava">MS</span>
+        </div>
+      </header>
+      <div class="e-content">
+        <div class="e-head">
+          <div><h1>Biblioteca</h1><p class="sub">3.284 pistas en 246 álbumes de 87 artistas</p></div>
+          <div class="acts">
+            <span class="e-sort">Añadidos recientemente <svg class="ic"><use href="#i-chevron"/></svg></span>
+            <div class="e-seg"><button class="on"><svg class="ic"><use href="#i-grid"/></svg></button><button><svg class="ic"><use href="#i-list"/></svg></button></div>
+            <button class="e-add"><svg class="ic"><use href="#i-plus"/></svg>Añadir</button>
+          </div>
+        </div>
+        <div class="e-filters">
+          <span class="e-fl">Todo</span><span class="e-fl on">Álbumes</span><span class="e-fl">Artistas</span><span class="e-fl">Géneros</span><span class="e-fl">Recientes</span>
+        </div>
+        <div class="e-grid">
+          <div class="e-card hot"><div class="cover g1"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Ceniza Neón</p><p class="a">Alba Ferrer</p></div>
+          <div class="e-card"><div class="cover g2"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Marea Intermedia</p><p class="a">Delta Costa</p></div>
+          <div class="e-card"><div class="cover g3"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Nocturno 4:44</p><p class="a">Vela</p></div>
+          <div class="e-card"><div class="cover g4"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Horizonte de Sal</p><p class="a">Marina Lomas</p></div>
+          <div class="e-card"><div class="cover g5"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Ruido Blanco</p><p class="a">Kaján</p></div>
+          <div class="e-card"><div class="cover g6"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Páramo</p><p class="a">Sol Beltrán</p></div>
+          <div class="e-card"><div class="cover g7"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Última Señal</p><p class="a">Nova Ríos</p></div>
+          <div class="e-card"><div class="cover g8"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Trópico Seco</p><p class="a">Caldera</p></div>
+          <div class="e-card"><div class="cover g2"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Vértigo Lento</p><p class="a">Índigo Club</p></div>
+          <div class="e-card"><div class="cover g4"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Faro</p><p class="a">Alba Ferrer</p></div>
+          <div class="e-card"><div class="cover g6"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Cassette 92</p><p class="a">Los Delfines</p></div>
+          <div class="e-card"><div class="cover g8"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Mirage</p><p class="a">Delta Costa</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="e-np">
+    <div class="l">
+      <div class="cover g1"></div>
+      <div style="min-width:0"><p class="tt">Ceniza Neón</p><p class="aa">Alba Ferrer</p></div>
+      <span class="heart"><svg class="ic"><use href="#i-heart"/></svg></span>
+    </div>
+    <div>
+      <div class="e-ctl">
+        <span class="ib"><svg class="ic"><use href="#i-shuffle"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-prev"/></svg></span>
+        <span class="e-play"><svg class="ic"><use href="#i-play"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-next"/></svg></span>
+        <span class="ib on"><svg class="ic"><use href="#i-repeat"/></svg></span>
+      </div>
+      <div class="e-prog"><time>1:47</time><span class="e-bar"><i></i></span><time>3:52</time></div>
+    </div>
+    <div class="e-right">
+      <span class="ib"><svg class="ic"><use href="#i-mic"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-list"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-volume"/></svg></span>
+      <span class="e-vol"><i></i></span>
+    </div>
+  </footer>
+</div>
+
+<!-- F · DASHBOARD -->
+<p class="caption">F · Vista — Dashboard</p>
+<div class="app-frame">
+  <div class="titlebar">
+    <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+    <span class="t">Syncify</span>
+    <span class="win-dots"><i></i><i></i><i></i></span>
+  </div>
+  <div class="e-body">
+    <nav class="f2-side">
+      <a class="sitem on">Inicio</a>
+      <a class="sitem">Biblioteca</a>
+      <a class="sitem">Playlists</a>
+      <a class="sitem">Descargas</a>
+      <a class="sitem">Migrar</a>
+      <a class="sitem">Cuentas</a>
+      <a class="sitem">Metadatos</a>
+      <a class="sitem">Letras</a>
+      <span class="sep"></span><span class="spacer"></span>
+      <a class="sitem">Registros</a>
+      <a class="sitem">Ajustes</a>
+    </nav>
+    <div class="e-main">
+      <header class="e-top">
+        <div class="e-search"><svg class="ic"><use href="#i-search"/></svg><span>Buscar</span><kbd>⌘K</kbd></div>
+        <div class="e-status">
+          <span style="display:flex;align-items:center;gap:7px"><i class="dot"></i>Sincronizado</span>
+          <span class="icb"><svg class="ic"><use href="#i-bell"/></svg><i class="ndot"></i></span>
+          <span class="icb"><svg class="ic"><use href="#i-help"/></svg></span>
+          <span class="e-ava">MS</span>
+        </div>
+      </header>
+      <div class="e-content">
+        <div class="e-head">
+          <div><h1>Buenas tardes</h1><p class="sub">Domingo, 6 de octubre de 2026</p></div>
+          <div class="acts">
+            <span class="e-sort" style="border:1px solid var(--border);border-radius:9px;padding:8px 13px">Importar</span>
+            <button class="e-add"><svg class="ic"><use href="#i-refresh"/></svg>Sincronizar ahora</button>
+          </div>
+        </div>
+        <div class="e-stats">
+          <div class="e-stat"><p class="l">Pistas</p><p class="v">3.284</p><div class="f"><span class="e-delta">+48 esta semana</span></div></div>
+          <div class="e-stat"><p class="l">Horas escuchadas</p><p class="v">412</p><div class="f"><span class="e-delta m">últimos 30 días</span>
+            <svg class="e-spark" width="84" height="24" viewBox="0 0 96 28"><polyline points="0,22 14,18 28,20 42,12 56,15 70,8 84,12 96,4"/></svg></div></div>
+          <div class="e-stat"><p class="l">Álbumes</p><p class="v">246</p><div class="f"><span class="e-delta">+6 esta semana</span></div></div>
+          <div class="e-stat"><p class="l">Almacenamiento</p><p class="v">128 <small>GB</small></p><div class="f"><span class="e-sbar"><i></i></span><span class="e-note">de 512 GB</span></div></div>
+        </div>
+        <div class="e-sechead"><h3>Continuar escuchando</h3><a>Ver historial</a></div>
+        <div class="e-cont">
+          <div class="it"><div class="cover g2"></div><div style="flex:1;min-width:0"><p class="t">Marea Intermedia</p><p class="a">Delta Costa</p><span class="b"><i style="width:62%"></i></span></div><span class="pc">62%</span></div>
+          <div class="it"><div class="cover g6"></div><div style="flex:1;min-width:0"><p class="t">Páramo</p><p class="a">Sol Beltrán</p><span class="b"><i style="width:35%"></i></span></div><span class="pc">35%</span></div>
+          <div class="it"><div class="cover g8"></div><div style="flex:1;min-width:0"><p class="t">Trópico Seco</p><p class="a">Caldera</p><span class="b"><i style="width:80%"></i></span></div><span class="pc">80%</span></div>
+          <div class="it"><div class="cover g7"></div><div style="flex:1;min-width:0"><p class="t">Última Señal</p><p class="a">Nova Ríos</p><span class="b"><i style="width:12%"></i></span></div><span class="pc">12%</span></div>
+        </div>
+        <div class="e-lower">
+          <div class="e-panel">
+            <div class="e-row"><span class="tile ok"><svg class="ic"><use href="#i-check"/></svg></span><div class="tx"><p class="t">Descarga completada — álbum «Ceniza Neón»</p><p class="s">11 pistas en FLAC</p></div><time>hace 4 min</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-cloud"/></svg></span><div class="tx"><p class="t">Sincronización con Spotify</p><p class="s">214 pistas actualizadas</p></div><time>hace 1 h</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-tag"/></svg></span><div class="tx"><p class="t">Metadatos corregidos automáticamente</p><p class="s">12 pistas de «Cassette 92»</p></div><time>hace 3 h</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-swap"/></svg></span><div class="tx"><p class="t">Migración Tidal a Spotify finalizada</p><p class="s">1.842 pistas, 32 playlists</p></div><time>ayer</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-drive"/></svg></span><div class="tx"><p class="t">Copia de seguridad de la biblioteca</p><p class="s">128 GB verificados</p></div><time>ayer, 23:04</time></div>
+          </div>
+          <div class="e-col">
+            <div class="e-panel">
+              <div class="e-row"><span class="e-bdot" style="background:#1DB954;margin-left:0"></span><div class="tx"><p class="t">Spotify</p><p class="s">2 cuentas, sync hace 25 min</p></div><span class="e-chip ok">Al día</span></div>
+              <div class="e-row"><span class="e-bdot" style="background:#e5e7eb;margin-left:0"></span><div class="tx"><p class="t">Tidal</p><p class="s">1 cuenta, sync hace 2 h</p></div><span class="e-chip ok">Al día</span></div>
+              <div class="e-row"><span class="e-bdot" style="background:#ff5500;margin-left:0"></span><div class="tx"><p class="t">SoundCloud</p><p class="s">3 favoritos sin resolver</p></div><span class="e-chip w">Revisar</span></div>
+            </div>
+            <div class="e-panel">
+              <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-download"/></svg></span><div class="tx"><p class="t">Cola de descargas</p></div><span class="e-sysv">5</span></div>
+              <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-clock"/></svg></span><div class="tx"><p class="t">Sincronizaciones pendientes</p></div><span class="e-sysv">2</span></div>
+              <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-drive"/></svg></span><div class="tx"><p class="t">Última copia de seguridad</p></div><span class="e-sysv">Ayer, 23:04</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="e-np">
+    <div class="l">
+      <div class="cover g1"></div>
+      <div style="min-width:0"><p class="tt">Ceniza Neón</p><p class="aa">Alba Ferrer</p></div>
+      <span class="heart"><svg class="ic"><use href="#i-heart"/></svg></span>
+    </div>
+    <div>
+      <div class="e-ctl">
+        <span class="ib"><svg class="ic"><use href="#i-shuffle"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-prev"/></svg></span>
+        <span class="e-play"><svg class="ic"><use href="#i-play"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-next"/></svg></span>
+        <span class="ib on"><svg class="ic"><use href="#i-repeat"/></svg></span>
+      </div>
+      <div class="e-prog"><time>1:47</time><span class="e-bar"><i></i></span><time>3:52</time></div>
+    </div>
+    <div class="e-right">
+      <span class="ib"><svg class="ic"><use href="#i-mic"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-list"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-volume"/></svg></span>
+      <span class="e-vol"><i></i></span>
+    </div>
+  </footer>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<!-- H · CAMALEÓN — BIBLIOTECA (tinte rosa congelado)                  -->
+<!-- ================================================================ -->
+<div class="view view-h">
+<p class="caption">H · Vista — Biblioteca (tinte congelado con la rosa de «Ceniza Neón»)</p>
+<div class="app-frame">
+  <div class="titlebar">
+    <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+    <span class="t">Syncify</span>
+    <span class="win-dots"><i></i><i></i><i></i></span>
+  </div>
+  <div class="e-body">
+    <nav class="e-rail">
+      <a class="ritem" title="Inicio"><svg class="ic"><use href="#i-home"/></svg></a>
+      <a class="ritem on" title="Biblioteca"><svg class="ic"><use href="#i-disc"/></svg></a>
+      <a class="ritem" title="Playlists"><svg class="ic"><use href="#i-playlist"/></svg></a>
+      <a class="ritem" title="Descargas"><svg class="ic"><use href="#i-download"/></svg></a>
+      <a class="ritem" title="Migrar"><svg class="ic"><use href="#i-swap"/></svg></a>
+      <a class="ritem" title="Cuentas"><svg class="ic"><use href="#i-users"/></svg></a>
+      <a class="ritem" title="Metadatos"><svg class="ic"><use href="#i-tag"/></svg></a>
+      <a class="ritem" title="Letras"><svg class="ic"><use href="#i-mic"/></svg></a>
+      <span class="tintdot" title="Tinte actual"></span>
+      <span class="sep"></span><span class="spacer"></span>
+      <a class="ritem" title="Registros"><svg class="ic"><use href="#i-file"/></svg></a>
+      <a class="ritem" title="Ajustes"><svg class="ic"><use href="#i-gear"/></svg></a>
+    </nav>
+    <div class="e-main">
+      <header class="e-top">
+        <div class="e-search"><svg class="ic"><use href="#i-search"/></svg><span>Buscar</span><kbd>⌘K</kbd></div>
+        <div class="e-status">
+          <span style="display:flex;align-items:center;gap:7px"><i class="dot"></i>Sincronizado</span>
+          <span class="icb"><svg class="ic"><use href="#i-bell"/></svg><i class="ndot"></i></span>
+          <span class="icb"><svg class="ic"><use href="#i-help"/></svg></span>
+          <span class="e-ava">MS</span>
+        </div>
+      </header>
+      <div class="e-content">
+        <div class="e-head">
+          <div><h1>Biblioteca</h1><p class="sub">3.284 pistas en 246 álbumes de 87 artistas</p></div>
+          <div class="acts">
+            <span class="e-sort">Añadidos recientemente <svg class="ic"><use href="#i-chevron"/></svg></span>
+            <div class="e-seg"><button class="on"><svg class="ic"><use href="#i-grid"/></svg></button><button><svg class="ic"><use href="#i-list"/></svg></button></div>
+            <button class="e-add"><svg class="ic"><use href="#i-plus"/></svg>Añadir</button>
+          </div>
+        </div>
+        <div class="e-filters">
+          <span class="e-fl">Todo</span><span class="e-fl on">Álbumes</span><span class="e-fl">Artistas</span><span class="e-fl">Géneros</span><span class="e-fl">Recientes</span>
+        </div>
+        <div class="e-grid">
+          <div class="e-card hot"><div class="cover g1"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Ceniza Neón</p><p class="a">Alba Ferrer</p></div>
+          <div class="e-card"><div class="cover g2"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Marea Intermedia</p><p class="a">Delta Costa</p></div>
+          <div class="e-card"><div class="cover g3"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Nocturno 4:44</p><p class="a">Vela</p></div>
+          <div class="e-card"><div class="cover g4"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Horizonte de Sal</p><p class="a">Marina Lomas</p></div>
+          <div class="e-card"><div class="cover g5"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Ruido Blanco</p><p class="a">Kaján</p></div>
+          <div class="e-card"><div class="cover g6"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Páramo</p><p class="a">Sol Beltrán</p></div>
+          <div class="e-card"><div class="cover g7"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Última Señal</p><p class="a">Nova Ríos</p></div>
+          <div class="e-card"><div class="cover g8"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Trópico Seco</p><p class="a">Caldera</p></div>
+          <div class="e-card"><div class="cover g2"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Vértigo Lento</p><p class="a">Índigo Club</p></div>
+          <div class="e-card"><div class="cover g4"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Faro</p><p class="a">Alba Ferrer</p></div>
+          <div class="e-card"><div class="cover g6"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Cassette 92</p><p class="a">Los Delfines</p></div>
+          <div class="e-card"><div class="cover g8"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Mirage</p><p class="a">Delta Costa</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="e-np">
+    <div class="l">
+      <div class="cover g1"></div>
+      <div style="min-width:0"><p class="tt">Ceniza Neón</p><p class="aa">Alba Ferrer</p></div>
+      <span class="heart"><svg class="ic"><use href="#i-heart"/></svg></span>
+    </div>
+    <div>
+      <div class="e-ctl">
+        <span class="ib"><svg class="ic"><use href="#i-shuffle"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-prev"/></svg></span>
+        <span class="e-play"><svg class="ic"><use href="#i-play"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-next"/></svg></span>
+        <span class="ib on"><svg class="ic"><use href="#i-repeat"/></svg></span>
+      </div>
+      <div class="e-prog"><time>1:47</time><span class="e-bar"><i></i></span><time>3:52</time></div>
+    </div>
+    <div class="e-right">
+      <span class="tint" title="Intensidad del tinte"><i class="tdot"></i><span class="e-vol"><i></i></span></span>
+      <span class="ib"><svg class="ic"><use href="#i-mic"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-list"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-volume"/></svg></span>
+      <span class="e-vol"><i></i></span>
+    </div>
+  </footer>
+</div>
+
+<!-- H · DASHBOARD -->
+<p class="caption">H · Vista — Dashboard (el tinte sigue a «Ceniza Neón»)</p>
+<div class="app-frame">
+  <div class="titlebar">
+    <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+    <span class="t">Syncify</span>
+    <span class="win-dots"><i></i><i></i><i></i></span>
+  </div>
+  <div class="e-body">
+    <nav class="e-rail">
+      <a class="ritem on" title="Inicio"><svg class="ic"><use href="#i-home"/></svg></a>
+      <a class="ritem" title="Biblioteca"><svg class="ic"><use href="#i-disc"/></svg></a>
+      <a class="ritem" title="Playlists"><svg class="ic"><use href="#i-playlist"/></svg></a>
+      <a class="ritem" title="Descargas"><svg class="ic"><use href="#i-download"/></svg></a>
+      <a class="ritem" title="Migrar"><svg class="ic"><use href="#i-swap"/></svg></a>
+      <a class="ritem" title="Cuentas"><svg class="ic"><use href="#i-users"/></svg></a>
+      <a class="ritem" title="Metadatos"><svg class="ic"><use href="#i-tag"/></svg></a>
+      <a class="ritem" title="Letras"><svg class="ic"><use href="#i-mic"/></svg></a>
+      <span class="tintdot" title="Tinte actual"></span>
+      <span class="sep"></span><span class="spacer"></span>
+      <a class="ritem" title="Registros"><svg class="ic"><use href="#i-file"/></svg></a>
+      <a class="ritem" title="Ajustes"><svg class="ic"><use href="#i-gear"/></svg></a>
+    </nav>
+    <div class="e-main">
+      <header class="e-top">
+        <div class="e-search"><svg class="ic"><use href="#i-search"/></svg><span>Buscar</span><kbd>⌘K</kbd></div>
+        <div class="e-status">
+          <span style="display:flex;align-items:center;gap:7px"><i class="dot"></i>Sincronizado</span>
+          <span class="icb"><svg class="ic"><use href="#i-bell"/></svg><i class="ndot"></i></span>
+          <span class="icb"><svg class="ic"><use href="#i-help"/></svg></span>
+          <span class="e-ava">MS</span>
+        </div>
+      </header>
+      <div class="e-content">
+        <div class="e-head">
+          <div><h1>Buenas tardes</h1><p class="sub">Domingo, 6 de octubre de 2026</p></div>
+          <div class="acts">
+            <span class="e-sort" style="border:1px solid var(--border);border-radius:9px;padding:8px 13px">Importar</span>
+            <button class="e-add"><svg class="ic"><use href="#i-refresh"/></svg>Sincronizar ahora</button>
+          </div>
+        </div>
+        <div class="e-stats">
+          <div class="e-stat"><p class="l">Pistas</p><p class="v">3.284</p><div class="f"><span class="e-delta">+48 esta semana</span></div></div>
+          <div class="e-stat"><p class="l">Horas escuchadas</p><p class="v">412</p><div class="f"><span class="e-delta m">últimos 30 días</span>
+            <svg class="e-spark" width="84" height="24" viewBox="0 0 96 28"><polyline points="0,22 14,18 28,20 42,12 56,15 70,8 84,12 96,4"/></svg></div></div>
+          <div class="e-stat"><p class="l">Álbumes</p><p class="v">246</p><div class="f"><span class="e-delta">+6 esta semana</span></div></div>
+          <div class="e-stat"><p class="l">Almacenamiento</p><p class="v">128 <small>GB</small></p><div class="f"><span class="e-sbar"><i></i></span><span class="e-note">de 512 GB</span></div></div>
+        </div>
+        <div class="e-sechead"><h3>Continuar escuchando</h3><a>Ver historial</a></div>
+        <div class="e-cont">
+          <div class="it"><div class="cover g2"></div><div style="flex:1;min-width:0"><p class="t">Marea Intermedia</p><p class="a">Delta Costa</p><span class="b"><i style="width:62%"></i></span></div><span class="pc">62%</span></div>
+          <div class="it"><div class="cover g6"></div><div style="flex:1;min-width:0"><p class="t">Páramo</p><p class="a">Sol Beltrán</p><span class="b"><i style="width:35%"></i></span></div><span class="pc">35%</span></div>
+          <div class="it"><div class="cover g8"></div><div style="flex:1;min-width:0"><p class="t">Trópico Seco</p><p class="a">Caldera</p><span class="b"><i style="width:80%"></i></span></div><span class="pc">80%</span></div>
+          <div class="it"><div class="cover g7"></div><div style="flex:1;min-width:0"><p class="t">Última Señal</p><p class="a">Nova Ríos</p><span class="b"><i style="width:12%"></i></span></div><span class="pc">12%</span></div>
+        </div>
+        <div class="e-lower">
+          <div class="e-panel">
+            <div class="e-row"><span class="tile ok"><svg class="ic"><use href="#i-check"/></svg></span><div class="tx"><p class="t">Descarga completada — álbum «Ceniza Neón»</p><p class="s">11 pistas en FLAC</p></div><time>hace 4 min</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-cloud"/></svg></span><div class="tx"><p class="t">Sincronización con Spotify</p><p class="s">214 pistas actualizadas</p></div><time>hace 1 h</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-tag"/></svg></span><div class="tx"><p class="t">Metadatos corregidos automáticamente</p><p class="s">12 pistas de «Cassette 92»</p></div><time>hace 3 h</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-swap"/></svg></span><div class="tx"><p class="t">Migración Tidal a Spotify finalizada</p><p class="s">1.842 pistas, 32 playlists</p></div><time>ayer</time></div>
+            <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-drive"/></svg></span><div class="tx"><p class="t">Copia de seguridad de la biblioteca</p><p class="s">128 GB verificados</p></div><time>ayer, 23:04</time></div>
+          </div>
+          <div class="e-col">
+            <div class="e-panel">
+              <div class="e-row"><span class="e-bdot" style="background:#1DB954;margin-left:0"></span><div class="tx"><p class="t">Spotify</p><p class="s">2 cuentas, sync hace 25 min</p></div><span class="e-chip ok">Al día</span></div>
+              <div class="e-row"><span class="e-bdot" style="background:#e5e7eb;margin-left:0"></span><div class="tx"><p class="t">Tidal</p><p class="s">1 cuenta, sync hace 2 h</p></div><span class="e-chip ok">Al día</span></div>
+              <div class="e-row"><span class="e-bdot" style="background:#ff5500;margin-left:0"></span><div class="tx"><p class="t">SoundCloud</p><p class="s">3 favoritos sin resolver</p></div><span class="e-chip w">Revisar</span></div>
+            </div>
+            <div class="e-panel">
+              <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-download"/></svg></span><div class="tx"><p class="t">Cola de descargas</p></div><span class="e-sysv">5</span></div>
+              <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-clock"/></svg></span><div class="tx"><p class="t">Sincronizaciones pendientes</p></div><span class="e-sysv">2</span></div>
+              <div class="e-row"><span class="tile"><svg class="ic"><use href="#i-drive"/></svg></span><div class="tx"><p class="t">Última copia de seguridad</p></div><span class="e-sysv">Ayer, 23:04</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="e-np">
+    <div class="l">
+      <div class="cover g1"></div>
+      <div style="min-width:0"><p class="tt">Ceniza Neón</p><p class="aa">Alba Ferrer</p></div>
+      <span class="heart"><svg class="ic"><use href="#i-heart"/></svg></span>
+    </div>
+    <div>
+      <div class="e-ctl">
+        <span class="ib"><svg class="ic"><use href="#i-shuffle"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-prev"/></svg></span>
+        <span class="e-play"><svg class="ic"><use href="#i-play"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-next"/></svg></span>
+        <span class="ib on"><svg class="ic"><use href="#i-repeat"/></svg></span>
+      </div>
+      <div class="e-prog"><time>1:47</time><span class="e-bar"><i></i></span><time>3:52</time></div>
+    </div>
+    <div class="e-right">
+      <span class="tint" title="Intensidad del tinte"><i class="tdot"></i><span class="e-vol"><i></i></span></span>
+      <span class="ib"><svg class="ic"><use href="#i-mic"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-list"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-volume"/></svg></span>
+      <span class="e-vol"><i></i></span>
+    </div>
+  </footer>
+</div>
+</div>
+
+<!-- ================================================================ -->
+<!-- I · RISO — BIBLIOTECA (pestañas, dos tintas, sombras duras)       -->
+<!-- ================================================================ -->
+<div class="view view-i">
+<p class="caption">I · Vista — Biblioteca (pestañas superiores, duotono azul/rosa)</p>
+<div class="app-frame">
+  <div class="titlebar">
+    <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+    <span class="t">Syncify</span>
+    <span class="win-dots"><i></i><i></i><i></i></span>
+  </div>
+  <div class="i-app">
+    <header class="i-top">
+      <span class="i-brand"><span class="sq"><svg class="ic"><use href="#i-note"/></svg></span><b>Syncify</b></span>
+      <a class="i-tab">Inicio</a>
+      <a class="i-tab on">Biblioteca</a>
+      <a class="i-tab">Playlists</a>
+      <a class="i-tab">Descargas</a>
+      <a class="i-tab">Migrar</a>
+      <a class="i-tab">Cuentas</a>
+      <a class="i-tab">Metadatos</a>
+      <a class="i-tab">Letras</a>
+      <div class="r">
+        <span class="i-status"><i></i>Sincronizado</span>
+        <span class="i-ava">MS</span>
+      </div>
+    </header>
+    <div class="i-content">
+      <div class="i-head">
+        <div><h1>Biblioteca</h1><p class="sub">3.284 pistas en 246 álbumes de 87 artistas</p></div>
+        <div class="acts">
+          <span class="i-sort">Añadidos recientemente</span>
+          <button class="i-add"><svg class="ic"><use href="#i-plus"/></svg>Añadir</button>
+        </div>
+      </div>
+      <div class="i-chips">
+        <span class="i-chip">Todo</span><span class="i-chip on">Álbumes</span><span class="i-chip">Artistas</span><span class="i-chip">Géneros</span><span class="i-chip">Recientes</span>
+      </div>
+      <div class="i-grid">
+        <div class="i-card hot"><div class="cover g1"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Ceniza Neón</p><p class="a">Alba Ferrer</p></div>
+        <div class="i-card"><div class="cover g2"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Marea Intermedia</p><p class="a">Delta Costa</p></div>
+        <div class="i-card"><div class="cover g3"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Nocturno 4:44</p><p class="a">Vela</p></div>
+        <div class="i-card"><div class="cover g4"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Horizonte de Sal</p><p class="a">Marina Lomas</p></div>
+        <div class="i-card"><div class="cover g5"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Ruido Blanco</p><p class="a">Kaján</p></div>
+        <div class="i-card"><div class="cover g6"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Páramo</p><p class="a">Sol Beltrán</p></div>
+        <div class="i-card"><div class="cover g7"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Última Señal</p><p class="a">Nova Ríos</p></div>
+        <div class="i-card"><div class="cover g8"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Trópico Seco</p><p class="a">Caldera</p></div>
+        <div class="i-card"><div class="cover g2"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Vértigo Lento</p><p class="a">Índigo Club</p></div>
+        <div class="i-card"><div class="cover g4"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Faro</p><p class="a">Alba Ferrer</p></div>
+        <div class="i-card"><div class="cover g6"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Cassette 92</p><p class="a">Los Delfines</p></div>
+        <div class="i-card"><div class="cover g8"><svg viewBox="0 0 24 24" class="ic"><use href="#i-play"/></svg></div><p class="t">Mirage</p><p class="a">Delta Costa</p></div>
+      </div>
+    </div>
+  </div>
+  <footer class="i-np">
+    <div class="l">
+      <div class="cover g1"></div>
+      <div style="min-width:0"><p class="tt">Ceniza Neón</p><p class="aa">Alba Ferrer</p></div>
+      <span class="heart"><svg class="ic"><use href="#i-heart"/></svg></span>
+    </div>
+    <div>
+      <div class="i-ctl">
+        <span class="ib"><svg class="ic"><use href="#i-shuffle"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-prev"/></svg></span>
+        <span class="i-fplay"><svg class="ic"><use href="#i-play"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-next"/></svg></span>
+        <span class="ib on"><svg class="ic"><use href="#i-repeat"/></svg></span>
+      </div>
+      <div class="i-prog"><time>1:47</time><span class="i-bar"><i></i></span><time>3:52</time></div>
+    </div>
+    <div class="r">
+      <span class="ib"><svg class="ic"><use href="#i-mic"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-list"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-volume"/></svg></span>
+      <span class="i-vol"><i></i></span>
+    </div>
+  </footer>
+</div>
+
+<!-- I · DASHBOARD -->
+<p class="caption">I · Vista — Dashboard</p>
+<div class="app-frame">
+  <div class="titlebar">
+    <span class="logo"><svg class="ic"><use href="#i-note"/></svg></span>
+    <span class="t">Syncify</span>
+    <span class="win-dots"><i></i><i></i><i></i></span>
+  </div>
+  <div class="i-app">
+    <header class="i-top">
+      <span class="i-brand"><span class="sq"><svg class="ic"><use href="#i-note"/></svg></span><b>Syncify</b></span>
+      <a class="i-tab on">Inicio</a>
+      <a class="i-tab">Biblioteca</a>
+      <a class="i-tab">Playlists</a>
+      <a class="i-tab">Descargas</a>
+      <a class="i-tab">Migrar</a>
+      <a class="i-tab">Cuentas</a>
+      <a class="i-tab">Metadatos</a>
+      <a class="i-tab">Letras</a>
+      <div class="r">
+        <span class="i-status"><i></i>Sincronizado</span>
+        <span class="i-ava">MS</span>
+      </div>
+    </header>
+    <div class="i-content">
+      <div class="i-head">
+        <div><h1>Buenas tardes</h1><p class="sub">Domingo, 6 de octubre de 2026</p></div>
+        <div class="acts">
+          <span class="i-sort" style="border:2px solid var(--t1);border-radius:8px;padding:8px 13px;background:var(--surface)">Importar</span>
+          <button class="i-add"><svg class="ic"><use href="#i-refresh"/></svg>Sincronizar ahora</button>
+        </div>
+      </div>
+      <div class="i-stats">
+        <div class="i-stat"><p class="l">Pistas</p><p class="v">3.284</p><div class="f"><span class="i-delta">+48 esta semana</span></div></div>
+        <div class="i-stat"><p class="l">Horas escuchadas</p><p class="v">412</p><div class="f"><span class="i-delta m">últimos 30 días</span>
+          <svg class="i-spark" width="84" height="24" viewBox="0 0 96 28"><polyline points="0,22 14,18 28,20 42,12 56,15 70,8 84,12 96,4"/></svg></div></div>
+        <div class="i-stat"><p class="l">Álbumes</p><p class="v">246</p><div class="f"><span class="i-delta">+6 esta semana</span></div></div>
+        <div class="i-stat"><p class="l">Almacenamiento</p><p class="v">128 <small>GB</small></p><div class="f"><span class="i-sbar"><i></i></span><span class="i-note">de 512 GB</span></div></div>
+      </div>
+      <div class="i-sechead"><h3>Continuar escuchando</h3><a>Ver historial</a></div>
+      <div class="i-cont">
+        <div class="it"><div class="cover g2"></div><div style="flex:1;min-width:0"><p class="t">Marea Intermedia</p><p class="a">Delta Costa</p><span class="b"><i style="width:62%"></i></span></div><span class="pc">62%</span></div>
+        <div class="it"><div class="cover g6"></div><div style="flex:1;min-width:0"><p class="t">Páramo</p><p class="a">Sol Beltrán</p><span class="b"><i style="width:35%"></i></span></div><span class="pc">35%</span></div>
+        <div class="it"><div class="cover g8"></div><div style="flex:1;min-width:0"><p class="t">Trópico Seco</p><p class="a">Caldera</p><span class="b"><i style="width:80%"></i></span></div><span class="pc">80%</span></div>
+        <div class="it"><div class="cover g7"></div><div style="flex:1;min-width:0"><p class="t">Última Señal</p><p class="a">Nova Ríos</p><span class="b"><i style="width:12%"></i></span></div><span class="pc">12%</span></div>
+      </div>
+      <div class="i-lower">
+        <div class="i-panel">
+          <div class="i-row"><svg class="ic" style="color:var(--ok)"><use href="#i-check"/></svg><div class="tx"><p class="t">Descarga completada — álbum «Ceniza Neón»</p><p class="s">11 pistas en FLAC</p></div><time>hace 4 min</time></div>
+          <div class="i-row"><svg class="ic"><use href="#i-cloud"/></svg><div class="tx"><p class="t">Sincronización con Spotify</p><p class="s">214 pistas actualizadas</p></div><time>hace 1 h</time></div>
+          <div class="i-row"><svg class="ic"><use href="#i-tag"/></svg><div class="tx"><p class="t">Metadatos corregidos automáticamente</p><p class="s">12 pistas de «Cassette 92»</p></div><time>hace 3 h</time></div>
+          <div class="i-row"><svg class="ic"><use href="#i-swap"/></svg><div class="tx"><p class="t">Migración Tidal a Spotify finalizada</p><p class="s">1.842 pistas, 32 playlists</p></div><time>ayer</time></div>
+          <div class="i-row"><svg class="ic"><use href="#i-drive"/></svg><div class="tx"><p class="t">Copia de seguridad de la biblioteca</p><p class="s">128 GB verificados</p></div><time>ayer, 23:04</time></div>
+        </div>
+        <div class="i-col">
+          <div class="i-panel">
+            <div class="i-row"><span class="i-bdot" style="background:#1DB954;margin-left:0"></span><div class="tx"><p class="t">Spotify</p><p class="s">2 cuentas, sync hace 25 min</p></div><span class="i-chipx">Al día</span></div>
+            <div class="i-row"><span class="i-bdot" style="background:#e5e7eb;margin-left:0"></span><div class="tx"><p class="t">Tidal</p><p class="s">1 cuenta, sync hace 2 h</p></div><span class="i-chipx">Al día</span></div>
+            <div class="i-row"><span class="i-bdot" style="background:#ff5500;margin-left:0"></span><div class="tx"><p class="t">SoundCloud</p><p class="s">3 favoritos sin resolver</p></div><span class="i-chipx w">Revisar</span></div>
+          </div>
+          <div class="i-panel">
+            <div class="i-row"><svg class="ic"><use href="#i-download"/></svg><div class="tx"><p class="t">Cola de descargas</p></div><span class="i-sysv">5</span></div>
+            <div class="i-row"><svg class="ic"><use href="#i-clock"/></svg><div class="tx"><p class="t">Sincronizaciones pendientes</p></div><span class="i-sysv">2</span></div>
+            <div class="i-row"><svg class="ic"><use href="#i-drive"/></svg><div class="tx"><p class="t">Última copia de seguridad</p></div><span class="i-sysv">Ayer, 23:04</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="i-np">
+    <div class="l">
+      <div class="cover g1"></div>
+      <div style="min-width:0"><p class="tt">Ceniza Neón</p><p class="aa">Alba Ferrer</p></div>
+      <span class="heart"><svg class="ic"><use href="#i-heart"/></svg></span>
+    </div>
+    <div>
+      <div class="i-ctl">
+        <span class="ib"><svg class="ic"><use href="#i-shuffle"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-prev"/></svg></span>
+        <span class="i-fplay"><svg class="ic"><use href="#i-play"/></svg></span>
+        <span class="ib"><svg class="ic"><use href="#i-next"/></svg></span>
+        <span class="ib on"><svg class="ic"><use href="#i-repeat"/></svg></span>
+      </div>
+      <div class="i-prog"><time>1:47</time><span class="i-bar"><i></i></span><time>3:52</time></div>
+    </div>
+    <div class="r">
+      <span class="ib"><svg class="ic"><use href="#i-mic"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-list"/></svg></span>
+      <span class="ib"><svg class="ic"><use href="#i-volume"/></svg></span>
+      <span class="i-vol"><i></i></span>
+    </div>
+  </footer>
+</div>
+</div>
+
+  <p style="font-size:11.5px;opacity:.6;margin:26px 0 40px">
+    Exploración 3 — Syncify. Generada el 06/10/2026. Direcciones anteriores: A–D en docs/design-mockups/index.html · F editorial (retirada) sigue disponible en el historial de git de este archivo.
+  </p>
+</main>
+
+<script>
+const d = new URLSearchParams(location.search).get("dir");
+if (d && ["e","f","g","h","i"].includes(d)) document.getElementById("dir-" + d).checked = true;
+</script>
+</body>
+</html>

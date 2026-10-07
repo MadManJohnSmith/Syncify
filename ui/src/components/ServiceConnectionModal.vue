@@ -131,7 +131,7 @@
       </div>
 
       <!-- Footer Action -->
-      <div class="bg-gray-50 dark:bg-[#121b29]/50 border-t border-gray-100 dark:border-border-dark px-6 py-4 flex justify-end gap-3">
+      <div class="bg-gray-50 dark:bg-shell/50 border-t border-gray-100 dark:border-border-dark px-6 py-4 flex justify-end gap-3">
         <button 
           @click="handleClose"
           :disabled="isConnecting"
@@ -173,7 +173,7 @@ watch(
 );
 
 // Button class helper
-const baseButtonClass = 'group relative flex flex-col items-center justify-center gap-4 rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-[#121b29] p-6 transition-all duration-200 hover:border-primary hover:bg-white dark:hover:bg-[#1a2639] hover:shadow-glow focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 dark:focus:ring-offset-surface-dark';
+const baseButtonClass = 'group relative flex flex-col items-center justify-center gap-4 rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-shell p-6 transition-all duration-200 hover:border-primary hover:bg-white dark:hover:bg-elevated hover:shadow-glow focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 dark:focus:ring-offset-surface-dark';
 
 function getButtonClass(service: string): string {
   if (isConnecting.value && connectingService.value !== service) {

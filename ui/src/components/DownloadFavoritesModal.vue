@@ -62,31 +62,31 @@
             <p class="text-xs opacity-90 mb-2">{{ result.message }}</p>
 
             <div v-if="result.total_candidates > 0" class="grid grid-cols-7 gap-2 mt-2 pt-2 border-t border-current/10 text-xs">
-              <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
+              <div class="bg-black/5 dark:bg-white/5 rounded-lg p-2 text-center">
                 <div class="font-bold text-sm text-gray-700 dark:text-gray-200">{{ result.total_candidates }}</div>
                 <div class="text-gray-500 dark:text-gray-400">Requested</div>
               </div>
-              <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
+              <div class="bg-black/5 dark:bg-white/5 rounded-lg p-2 text-center">
                 <div class="font-bold text-sm text-primary">{{ result.ready_exact ?? result.enqueued }}</div>
                 <div class="text-gray-500 dark:text-gray-400">Ready Exact</div>
               </div>
-              <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
+              <div class="bg-black/5 dark:bg-white/5 rounded-lg p-2 text-center">
                 <div class="font-bold text-sm text-emerald-600 dark:text-emerald-400">{{ result.ready_fallback ?? 0 }}</div>
                 <div class="text-gray-500 dark:text-gray-400">Fallback</div>
               </div>
-              <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
+              <div class="bg-black/5 dark:bg-white/5 rounded-lg p-2 text-center">
                 <div class="font-bold text-sm text-blue-600 dark:text-blue-400">{{ result.already_downloaded }}</div>
                 <div class="text-gray-500 dark:text-gray-400">Downloaded</div>
               </div>
-              <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
+              <div class="bg-black/5 dark:bg-white/5 rounded-lg p-2 text-center">
                 <div class="font-bold text-sm text-purple-600 dark:text-purple-400">{{ result.already_queued }}</div>
                 <div class="text-gray-500 dark:text-gray-400">In Queue</div>
               </div>
-              <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
+              <div class="bg-black/5 dark:bg-white/5 rounded-lg p-2 text-center">
                 <div class="font-bold text-sm text-gray-500 dark:text-gray-400">{{ result.no_download_provider ?? result.unresolved_sources ?? 0 }}</div>
                 <div class="text-gray-500 dark:text-gray-400">No Provider</div>
               </div>
-              <div class="bg-black/5 dark:bg-white/5 rounded p-2 text-center">
+              <div class="bg-black/5 dark:bg-white/5 rounded-lg p-2 text-center">
                 <div class="font-bold text-sm text-amber-500">{{ (result.ambiguous_sources || 0) + (result.stale_sources || 0) }}</div>
                 <div class="text-gray-500 dark:text-gray-400">Excluded</div>
               </div>
@@ -120,7 +120,7 @@
               :class="[
                 'flex flex-col items-center justify-center p-3 rounded-xl border text-xs font-medium transition-all gap-1.5',
                 selectedService === svc.value 
-                  ? 'bg-primary/10 border-primary text-primary shadow-sm font-semibold' 
+                  ? 'bg-accent-soft border-accent text-accent shadow-sm font-semibold' 
                   : 'bg-gray-50 dark:bg-surface-highlight/50 border-gray-200 dark:border-border-dark text-gray-700 dark:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600'
               ]"
             >
@@ -144,7 +144,7 @@
               :class="[
                 'flex flex-col items-center justify-center p-2.5 rounded-xl border text-xs font-medium transition-all gap-1',
                 selectedType === item.value 
-                  ? 'bg-primary/10 border-primary text-primary shadow-sm font-semibold' 
+                  ? 'bg-accent-soft border-accent text-accent shadow-sm font-semibold' 
                   : 'bg-gray-50 dark:bg-surface-highlight/50 border-gray-200 dark:border-border-dark text-gray-700 dark:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600'
               ]"
             >
@@ -168,7 +168,7 @@
               :class="[
                 'flex flex-col p-3 rounded-xl border text-left transition-all gap-1',
                 selectedQuality === q.value 
-                  ? 'bg-primary/10 border-primary text-primary shadow-sm' 
+                  ? 'bg-accent-soft border-accent text-accent shadow-sm' 
                   : 'bg-gray-50 dark:bg-surface-highlight/50 border-gray-200 dark:border-border-dark text-gray-700 dark:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600'
               ]"
             >
@@ -195,7 +195,7 @@
               :class="[
                 'flex flex-col items-center justify-center p-2 rounded-xl border text-xs font-medium transition-all gap-0.5',
                 selectedLimit === lim.value 
-                  ? 'bg-primary/10 border-primary text-primary shadow-sm font-semibold' 
+                  ? 'bg-accent-soft border-accent text-accent shadow-sm font-semibold' 
                   : 'bg-gray-50 dark:bg-surface-highlight/50 border-gray-200 dark:border-border-dark text-gray-700 dark:text-gray-300 hover:border-gray-300 dark:hover:border-gray-600'
               ]"
             >
@@ -257,7 +257,7 @@
           type="button" 
           @click="executeDownloadFavorites(false)"
           :disabled="isProcessing"
-          class="flex items-center gap-2 px-5 py-2 text-sm font-semibold text-white bg-primary hover:bg-primary-hover rounded-lg shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          class="flex items-center gap-2 px-5 py-2 text-sm font-semibold text-on-accent bg-primary hover:bg-primary-hover rounded-lg shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <span v-if="isProcessing" class="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
           <span v-else class="material-symbols-outlined text-[18px]">{{ selectedLimit === undefined ? 'visibility' : 'download' }}</span>
@@ -282,7 +282,7 @@
           v-else
           type="button" 
           @click="handleClose"
-          class="px-5 py-2 text-sm font-semibold text-white bg-primary hover:bg-primary-hover rounded-lg shadow-sm transition-all"
+          class="px-5 py-2 text-sm font-semibold text-on-accent bg-primary hover:bg-primary-hover rounded-lg shadow-sm transition-all"
         >
           Done
         </button>

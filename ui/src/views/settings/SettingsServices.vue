@@ -5,7 +5,7 @@
          <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Service Accounts</h3>
          <button 
            @click="showServiceModal = true"
-           class="flex items-center gap-2 px-3 py-1.5 bg-primary hover:bg-primary-hover text-white text-sm font-medium rounded-lg transition-colors"
+           class="flex items-center gap-2 px-3 py-1.5 bg-primary hover:bg-primary-hover text-on-accent text-sm font-medium rounded-lg transition-colors"
          >
            <span class="material-symbols-outlined text-[18px]">add</span>
            Add Service

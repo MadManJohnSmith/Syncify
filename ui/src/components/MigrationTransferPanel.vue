@@ -14,7 +14,7 @@
         {{ error }}
       </div>
 
-      <button @click="$emit('start')" data-testid="start-transfer-btn" :disabled="starting" class="px-8 py-4 bg-primary hover:bg-primary-hover text-white rounded-xl text-lg font-semibold transition-colors shadow-lg shadow-primary/30 disabled:opacity-50 disabled:cursor-not-allowed">
+      <button @click="$emit('start')" data-testid="start-transfer-btn" :disabled="starting" class="px-8 py-4 bg-primary hover:bg-primary-hover text-on-accent rounded-xl text-lg font-semibold transition-colors shadow-lg shadow-primary/30 disabled:opacity-50 disabled:cursor-not-allowed">
         <span class="flex items-center gap-3">
           <span class="material-symbols-outlined text-[24px]">play_arrow</span>
           {{ startLabel }}
@@ -129,7 +129,7 @@
         <button @click="$emit('reset')" class="px-5 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
           New Migration
         </button>
-        <button @click="$emit('reset')" class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium transition-colors">
+        <button @click="$emit('reset')" class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
           Done
         </button>
       </div>
@@ -243,24 +243,24 @@ defineEmits<{
   }
 }
 
-.confetti-1 { left: 5%; background: #3b82f6; animation-delay: 0s; }
-.confetti-2 { left: 10%; background: #10b981; animation-delay: 0.1s; }
-.confetti-3 { left: 15%; background: #f59e0b; animation-delay: 0.2s; }
-.confetti-4 { left: 20%; background: #ef4444; animation-delay: 0.3s; }
+.confetti-1 { left: 5%; background: var(--accent); animation-delay: 0s; }
+.confetti-2 { left: 10%; background: var(--ok); animation-delay: 0.1s; }
+.confetti-3 { left: 15%; background: var(--warn); animation-delay: 0.2s; }
+.confetti-4 { left: 20%; background: var(--error); animation-delay: 0.3s; }
 .confetti-5 { left: 25%; background: #8b5cf6; animation-delay: 0.4s; }
-.confetti-6 { left: 30%; background: #ec4899; animation-delay: 0.5s; }
-.confetti-7 { left: 35%; background: #3b82f6; animation-delay: 0.1s; }
-.confetti-8 { left: 40%; background: #10b981; animation-delay: 0.2s; }
-.confetti-9 { left: 45%; background: #f59e0b; animation-delay: 0.3s; }
-.confetti-10 { left: 50%; background: #ef4444; animation-delay: 0.4s; }
+.confetti-6 { left: 30%; background: var(--heart); animation-delay: 0.5s; }
+.confetti-7 { left: 35%; background: var(--accent); animation-delay: 0.1s; }
+.confetti-8 { left: 40%; background: var(--ok); animation-delay: 0.2s; }
+.confetti-9 { left: 45%; background: var(--warn); animation-delay: 0.3s; }
+.confetti-10 { left: 50%; background: var(--error); animation-delay: 0.4s; }
 .confetti-11 { left: 55%; background: #8b5cf6; animation-delay: 0s; }
-.confetti-12 { left: 60%; background: #ec4899; animation-delay: 0.1s; }
-.confetti-13 { left: 65%; background: #3b82f6; animation-delay: 0.2s; }
-.confetti-14 { left: 70%; background: #10b981; animation-delay: 0.3s; }
-.confetti-15 { left: 75%; background: #f59e0b; animation-delay: 0.4s; }
-.confetti-16 { left: 80%; background: #ef4444; animation-delay: 0.5s; }
+.confetti-12 { left: 60%; background: var(--heart); animation-delay: 0.1s; }
+.confetti-13 { left: 65%; background: var(--accent); animation-delay: 0.2s; }
+.confetti-14 { left: 70%; background: var(--ok); animation-delay: 0.3s; }
+.confetti-15 { left: 75%; background: var(--warn); animation-delay: 0.4s; }
+.confetti-16 { left: 80%; background: var(--error); animation-delay: 0.5s; }
 .confetti-17 { left: 85%; background: #8b5cf6; animation-delay: 0s; }
-.confetti-18 { left: 90%; background: #ef4444; animation-delay: 0.1s; }
-.confetti-19 { left: 92%; background: #3b82f6; animation-delay: 0.2s; }
-.confetti-20 { left: 95%; background: #10b981; animation-delay: 0.3s; }
+.confetti-18 { left: 90%; background: var(--error); animation-delay: 0.1s; }
+.confetti-19 { left: 92%; background: var(--accent); animation-delay: 0.2s; }
+.confetti-20 { left: 95%; background: var(--ok); animation-delay: 0.3s; }
 </style>

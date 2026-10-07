@@ -34,7 +34,7 @@
           </button>
           <button
             @click="close"
-            class="px-2 py-0.5 rounded bg-gray-100 dark:bg-surface-highlight text-xs text-text-secondary hover:text-white transition-colors shrink-0"
+            class="px-2 py-0.5 rounded bg-gray-100 dark:bg-surface-highlight text-xs text-text-secondary hover:text-ink transition-colors shrink-0"
             aria-label="Close search"
           >
             Esc
@@ -64,7 +64,7 @@
             <button
               v-if="searchQuery"
               @click="performSearch(searchQuery)"
-              class="px-3 py-1.5 bg-primary text-white rounded-lg text-sm"
+              class="px-3 py-1.5 bg-primary text-on-accent rounded-lg text-sm"
             >
               Try Again
             </button>

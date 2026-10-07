@@ -10,7 +10,7 @@
           <span class="material-symbols-outlined text-gray-600 dark:text-gray-400">arrow_back</span>
         </button>
         <div>
-          <h1 class="text-xl font-semibold text-gray-900 dark:text-white">{{ artist?.name || 'Artist' }}</h1>
+          <h1 class="text-xl font-semibold text-ink">{{ artist?.name || 'Artist' }}</h1>
           <p class="text-sm text-text-secondary">Artist</p>
         </div>
       </div>
@@ -29,9 +29,9 @@
       <!-- Error state -->
       <div v-else-if="error" class="flex flex-col items-center justify-center h-64 text-center px-6">
         <span class="material-symbols-outlined text-4xl text-error mb-3">error</span>
-        <h2 class="text-lg font-medium text-gray-900 dark:text-white mb-1">Failed to load artist</h2>
+        <h2 class="text-lg font-medium text-ink mb-1">Failed to load artist</h2>
         <p class="text-sm text-text-secondary mb-4">{{ error }}</p>
-        <button @click="loadArtist" class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors">
+        <button @click="loadArtist" class="px-4 py-2 bg-primary text-on-accent rounded-lg hover:bg-primary-hover transition-colors">
           Try Again
         </button>
       </div>
@@ -52,7 +52,7 @@
           <!-- Artist info -->
           <div class="flex-1 flex flex-col justify-center">
             <span class="text-sm font-medium text-purple-500 uppercase tracking-wide mb-1">Artist</span>
-            <h2 class="text-3xl font-bold text-gray-900 dark:text-white mb-4">{{ artist.name }}</h2>
+            <h2 class="text-3xl font-bold text-ink mb-4">{{ artist.name }}</h2>
             
             <div class="flex items-center gap-6 text-sm text-text-secondary">
               <span class="flex items-center gap-1">
@@ -69,7 +69,7 @@
             <div class="flex gap-3 mt-4 items-center">
               <button 
                 @click="downloadArtistTracks" 
-                class="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-hover transition-colors"
+                class="flex items-center gap-2 px-4 py-2 bg-primary text-on-accent rounded-lg hover:bg-primary-hover transition-colors"
               >
                 <span class="material-symbols-outlined text-[18px]">download</span>
                 Download All
@@ -106,7 +106,7 @@
                 'pb-3 text-sm font-medium border-b-2 transition-colors',
                 activeTab === 'albums' 
                   ? 'border-primary text-primary' 
-                  : 'border-transparent text-text-secondary hover:text-gray-900 dark:hover:text-white'
+                  : 'border-transparent text-text-secondary hover:text-ink'
               ]"
             >
               Albums ({{ artist.album_count }})
@@ -117,7 +117,7 @@
                 'pb-3 text-sm font-medium border-b-2 transition-colors',
                 activeTab === 'tracks' 
                   ? 'border-primary text-primary' 
-                  : 'border-transparent text-text-secondary hover:text-gray-900 dark:hover:text-white'
+                  : 'border-transparent text-text-secondary hover:text-ink'
               ]"
             >
               All Tracks ({{ artist.track_count }})
@@ -147,7 +147,7 @@
                 rounded="rounded-lg mb-2"
                 icon="album"
               />
-              <h4 class="font-medium text-gray-900 dark:text-white text-sm truncate group-hover:text-primary transition-colors">{{ album.title }}</h4>
+              <h4 class="font-medium text-ink text-sm truncate group-hover:text-primary transition-colors">{{ album.title }}</h4>
               <p class="text-xs text-text-secondary">
                 {{ album.release_year || 'Unknown' }} • {{ album.track_count }} tracks
               </p>
@@ -176,7 +176,7 @@
                 size-class="w-9 h-9"
               />
               <div class="flex-1 min-w-0">
-                <p class="font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                <p class="font-medium text-ink truncate">{{ track.title }}</p>
                 <p class="text-sm text-text-secondary truncate">{{ track.album }}</p>
               </div>
               <span class="text-sm text-text-secondary">{{ formatTrackDuration(track.duration_ms) }}</span>

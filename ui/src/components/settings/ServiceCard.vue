@@ -47,7 +47,7 @@
           type="button"
           @click="onReauth"
           data-testid="service-card-reauth"
-          class="flex-1 py-1.5 bg-gray-100 dark:bg-surface-highlight rounded hover:bg-gray-200 dark:hover:bg-[#384866] transition-colors text-gray-700 dark:text-gray-300"
+          class="flex-1 py-1.5 bg-gray-100 dark:bg-surface-highlight rounded hover:bg-gray-200 dark:hover:bg-white/10 transition-colors text-gray-700 dark:text-gray-300"
         >
           Re-authenticate
         </button>

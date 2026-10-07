@@ -251,7 +251,7 @@
           <button
             @click="exportRepairPlan"
             :disabled="isLoading || repairItems.length === 0"
-            class="px-4 py-2 bg-primary hover:bg-primary-hover text-white text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50 shadow-sm shadow-primary/20"
+            class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50 shadow-sm shadow-primary/20"
             title="Export JSON plan file"
           >
             <span class="material-symbols-outlined text-[16px]">download</span>

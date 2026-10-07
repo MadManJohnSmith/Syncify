@@ -11,7 +11,7 @@
           </div>
           <button 
             @click="showCreateModal = true"
-            class="px-3 py-1.5 bg-primary hover:bg-primary-hover text-white text-sm font-medium rounded-lg flex items-center gap-1"
+            class="px-3 py-1.5 bg-primary hover:bg-primary-hover text-on-accent text-sm font-medium rounded-lg flex items-center gap-1"
           >
             <span class="material-symbols-outlined text-sm">add</span>
             New
@@ -31,7 +31,7 @@
         
         <!-- Quick Actions -->
         <div class="flex gap-2 mt-3">
-          <button @click="triggerSyncPlaylists" :disabled="isSyncing" class="flex-1 py-1.5 text-xs text-primary dark:text-primary-light bg-primary/10 hover:bg-primary/20 rounded-lg flex items-center justify-center gap-1 disabled:opacity-50 font-medium">
+          <button @click="triggerSyncPlaylists" :disabled="isSyncing" class="flex-1 py-1.5 text-xs text-accent bg-primary/10 hover:bg-primary/20 rounded-lg flex items-center justify-center gap-1 disabled:opacity-50 font-medium">
             <span class="material-symbols-outlined text-sm" :class="{ 'animate-spin': isSyncing }">sync</span>
             {{ isSyncing ? 'Syncing...' : 'Sync All' }}
           </button>
@@ -193,7 +193,7 @@
           </div>
           <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Select a Playlist</h3>
           <p class="text-gray-500 mb-4">Choose a playlist from the sidebar to view its contents</p>
-          <button @click="showCreateModal = true" class="px-4 py-2 bg-primary text-white rounded-lg">
+          <button @click="showCreateModal = true" class="px-4 py-2 bg-primary text-on-accent rounded-lg">
             Create Playlist
           </button>
         </div>
@@ -282,7 +282,7 @@
             
             <!-- Actions -->
             <div class="flex items-center gap-3">
-              <button @click="playAll" class="px-5 py-2 bg-primary hover:bg-primary-hover text-white font-medium rounded-full flex items-center gap-2">
+              <button @click="playAll" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent font-medium rounded-full flex items-center gap-2">
                 <span class="material-symbols-outlined">play_arrow</span>
                 Play All
               </button>
@@ -368,7 +368,7 @@
             </div>
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Could not load tracks</h3>
             <p class="text-gray-500 text-sm mb-4">{{ tracksError }}</p>
-            <button @click="loadPlaylistTracks" class="px-4 py-2 bg-primary text-white rounded-lg text-sm">
+            <button @click="loadPlaylistTracks" class="px-4 py-2 bg-primary text-on-accent rounded-lg text-sm">
               Try Again
             </button>
           </div>
@@ -382,7 +382,7 @@
             </div>
             <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">This playlist is empty</h3>
             <p class="text-gray-500 text-sm mb-4">Drag tracks here or click Add Tracks</p>
-            <button v-if="canMutateSelectedPlaylist" @click="addTracksById" class="px-4 py-2 bg-primary text-white rounded-lg text-sm">
+            <button v-if="canMutateSelectedPlaylist" @click="addTracksById" class="px-4 py-2 bg-primary text-on-accent rounded-lg text-sm">
               Add Tracks
             </button>
           </div>
@@ -497,7 +497,7 @@
               <button @click="showCreateModal = false" class="flex-1 py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 rounded-lg">
                 Cancel
               </button>
-              <button @click="createPlaylist" class="flex-1 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium">
+              <button @click="createPlaylist" class="flex-1 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg font-medium">
                 Create
               </button>
             </div>
@@ -578,7 +578,7 @@
               <button @click="showSmartModal = false" class="flex-1 py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 rounded-lg">
                 Cancel
               </button>
-              <button @click="createSmartPlaylist" class="flex-1 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium">
+              <button @click="createSmartPlaylist" class="flex-1 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg font-medium">
                 Create
               </button>
             </div>
@@ -611,7 +611,7 @@
               <button @click="showImportModal = false" class="flex-1 py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 rounded-lg">
                 Cancel
               </button>
-              <button @click="importPlaylist" :disabled="isImporting" class="flex-1 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg font-medium disabled:opacity-50">
+              <button @click="importPlaylist" :disabled="isImporting" class="flex-1 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg font-medium disabled:opacity-50">
                 {{ isImporting ? 'Importing…' : 'Import' }}
               </button>
             </div>

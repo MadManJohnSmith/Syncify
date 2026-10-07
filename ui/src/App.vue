@@ -15,12 +15,12 @@
   <!-- Main App -->
   <div class="bg-background-light dark:bg-background-dark text-white font-display overflow-hidden h-screen w-full flex">
     <!-- Sidebar -->
-    <aside class="w-64 h-full bg-[#101723] border-r border-border-dark flex flex-col shrink-0 z-20">
+    <aside class="w-64 h-full bg-shell border-r border-border-dark flex flex-col shrink-0 z-20">
       <nav class="flex-1 px-3 py-6 flex flex-col gap-1 overflow-y-auto">
         <router-link 
           to="/dashboard" 
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
+          active-class="bg-elevated !text-white"
         >
           <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/dashboard' }">dashboard</span>
           <span class="text-sm font-medium">Dashboard</span>
@@ -30,7 +30,7 @@
           to="/library"
           data-tour="library"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
+          active-class="bg-elevated !text-white"
         >
           <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/library' }">library_music</span>
           <span class="text-sm font-medium">Library</span>
@@ -39,7 +39,7 @@
         <router-link 
           to="/playlists" 
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
+          active-class="bg-elevated !text-white"
         >
           <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/playlists' }">queue_music</span>
           <span class="text-sm font-medium">Playlists</span>
@@ -49,7 +49,7 @@
           to="/downloads"
           data-tour="downloads"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
+          active-class="bg-elevated !text-white"
         >
           <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/downloads' }">download</span>
           <span class="text-sm font-medium">Downloads</span>
@@ -58,7 +58,7 @@
         <router-link 
           to="/migration" 
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
+          active-class="bg-elevated !text-white"
         >
           <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/migration' }">sync_alt</span>
           <span class="text-sm font-medium">Migrate</span>
@@ -68,7 +68,7 @@
           to="/accounts"
           data-tour="accounts"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
+          active-class="bg-elevated !text-white"
         >
           <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/accounts' }">manage_accounts</span>
           <span class="text-sm font-medium">Accounts</span>
@@ -77,7 +77,7 @@
         <router-link 
           to="/metadata" 
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
+          active-class="bg-elevated !text-white"
         >
           <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/metadata' }">edit_note</span>
           <span class="text-sm font-medium">Metadata</span>
@@ -86,7 +86,7 @@
         <router-link 
           to="/lyrics" 
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
+          active-class="bg-elevated !text-white"
         >
           <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/lyrics' }">lyrics</span>
           <span class="text-sm font-medium">Lyrics</span>
@@ -98,7 +98,7 @@
         <router-link 
           to="/logs" 
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
+          active-class="bg-elevated !text-white"
         >
           <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/logs' }">terminal</span>
           <span class="text-sm font-medium">Logs</span>
@@ -108,7 +108,7 @@
           to="/settings"
           data-tour="settings"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-[#223149] !text-white"
+          active-class="bg-elevated !text-white"
         >
           <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/settings' }">settings</span>
           <span class="text-sm font-medium">Settings</span>
@@ -119,7 +119,7 @@
     <!-- Main Content -->
     <main class="flex-1 flex flex-col h-full overflow-hidden relative">
       <!-- Header -->
-      <header class="h-16 w-full bg-[#101723] border-b border-border-dark flex items-center justify-between px-6 shrink-0 z-30 relative select-none" data-tauri-drag-region>
+      <header class="h-16 w-full bg-shell border-b border-border-dark flex items-center justify-between px-6 shrink-0 z-30 relative select-none" data-tauri-drag-region>
         <div class="flex items-center gap-3">
           <div class="w-8 h-8 bg-gradient-to-br from-primary to-purple-600 rounded-lg flex items-center justify-center shadow-lg shadow-primary/20">
             <span class="material-symbols-outlined text-white text-xl">all_inclusive</span>
@@ -460,7 +460,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 // Global Components
@@ -482,6 +482,7 @@ import { useToast } from './composables/useToast'
 import { useNotificationListener } from './composables/useNotificationListener'
 import { useLogs } from './composables/useLogs'
 import { usePlayer } from './composables/usePlayer'
+import { applyTintFromCover, resetTint } from './composables/useTint'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { TauriEvents } from './api/tauri'
 import { accountsApi } from './api/accounts'
@@ -499,6 +500,22 @@ const { unreadCount, history: notificationHistory, markAsRead, markAllAsRead, cl
 const { startListening: startNotificationListening, stopListening: stopNotificationListening } = useNotificationListener()
 const { initLogListeners } = useLogs()
 const { current } = usePlayer()
+
+// Tinte Camaleón: publica el matiz de la carátula de la pista en reproducción
+// en --tint-h/--tint-k (los tokens del tema camaleon los consumen). `current`
+// es el singleton compartido de usePlayer; sin pista (o sin carátula) el tinte
+// vuelve a su valor por defecto.
+watch(
+  () => current.value?.coverUrl ?? null,
+  (coverUrl) => {
+    if (coverUrl) {
+      void applyTintFromCover(coverUrl)
+    } else {
+      resetTint()
+    }
+  },
+  { immediate: true },
+)
 
 let unlistenPythonDeps: UnlistenFn | null = null
 let unlistenTrayOpenSettings: UnlistenFn | null = null

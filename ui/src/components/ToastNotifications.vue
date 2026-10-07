@@ -96,7 +96,7 @@
         @keydown.esc="cancelDialog"
       >
         <div
-          class="dialog-card w-full max-w-md rounded-2xl shadow-2xl overflow-hidden bg-white dark:bg-surface-dark text-gray-900 dark:text-white"
+          class="dialog-card w-full max-w-md rounded-2xl shadow-2xl overflow-hidden bg-surface text-ink"
           role="alertdialog"
           aria-modal="true"
           :aria-label="activeDialog.title"
@@ -109,7 +109,7 @@
             >{{ dialogIcon }}</span>
             <div class="min-w-0 flex-1">
               <p class="text-base font-semibold">{{ activeDialog.title }}</p>
-              <p v-if="activeDialog.message" class="text-sm text-gray-600 dark:text-gray-300 mt-1 whitespace-pre-line">
+              <p v-if="activeDialog.message" class="text-sm text-ink-2 mt-1 whitespace-pre-line">
                 {{ activeDialog.message }}
               </p>
             </div>
@@ -121,15 +121,15 @@
               v-model="dialogValue"
               type="text"
               :placeholder="activeDialog.placeholder"
-              class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary/50"
+              class="w-full px-3 py-2 bg-elevated rounded-lg text-ink focus:outline-none focus:ring-2 focus:ring-accent/50"
               @keydown.enter.prevent="acceptDialog"
             >
           </div>
 
-          <div class="px-5 py-4 border-t border-gray-200 dark:border-border-dark flex justify-end gap-3">
+          <div class="px-5 py-4 border-t border-line flex justify-end gap-3">
             <button
               v-if="activeDialog.kind !== 'alert'"
-              class="dialog-cancel px-4 py-2 rounded-lg text-sm font-medium border border-gray-300 dark:border-border-dark hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors"
+              class="dialog-cancel px-4 py-2 rounded-lg text-sm font-medium border border-line-strong hover:bg-elevated transition-colors"
               @click="cancelDialog"
             >
               {{ activeDialog.cancelLabel }}
@@ -166,14 +166,14 @@ const dialogIcon = computed(() => {
 })
 
 const dialogIconClass = computed(() => {
-    if (activeDialog.value?.variant === 'danger') return 'text-red-500'
-    if (activeDialog.value?.variant === 'warning') return 'text-amber-500'
-    return 'text-primary'
+    if (activeDialog.value?.variant === 'danger') return 'text-error'
+    if (activeDialog.value?.variant === 'warning') return 'text-warn'
+    return 'text-accent'
 })
 
 const dialogConfirmClass = computed(() => {
-    if (activeDialog.value?.variant === 'danger') return 'bg-red-500 hover:bg-red-600'
-    return 'bg-primary hover:opacity-90'
+    if (activeDialog.value?.variant === 'danger') return 'bg-error hover:bg-error/80'
+    return 'bg-accent hover:opacity-90'
 })
 
 watch(activeDialog, (dialog) => {
@@ -217,25 +217,26 @@ function handleAction(toast: { id: string }, action: { handler: () => void }) {
 </script>
 
 <style scoped>
-/* Toast Types */
+/* Toast Types: color semántico + un paso más oscuro al final del degradado
+   (equivalente al -500 → -600 anterior, ahora en tokens de tema). */
 .toast-success {
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: linear-gradient(135deg, var(--ok), color-mix(in srgb, var(--ok) 70%, black));
 }
 
 .toast-error {
-  background: linear-gradient(135deg, #ef4444, #dc2626);
+  background: linear-gradient(135deg, var(--error), color-mix(in srgb, var(--error) 80%, black));
 }
 
 .toast-warning {
-  background: linear-gradient(135deg, #f59e0b, #d97706);
+  background: linear-gradient(135deg, var(--warn), color-mix(in srgb, var(--warn) 80%, black));
 }
 
 .toast-info {
-  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  background: linear-gradient(135deg, var(--info), color-mix(in srgb, var(--info) 80%, black));
 }
 
 .toast-progress {
-  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 80%, black));
 }
 
 /* Toast Animations */
