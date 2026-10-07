@@ -98,6 +98,10 @@ def chrome_launch_kwargs() -> dict:
 
     Verifica ejecutables reales, descartando dummies de desinstalación.
     """
+    # El navegador que Playwright lance hereda este entorno: sin la limpieza
+    # moriría al cargar por las librerías del paquete (mismo mal que los
+    # abridores de URL).
+    scrub_loader_env()
     is_windows = sys.platform.startswith("win") or os.name == "nt"
     is_mac = sys.platform == "darwin"
 
@@ -161,6 +165,71 @@ def _platform_url_openers():
     return list(_LINUX_URL_OPENERS)
 
 
+def _appdir_prefixes():
+    """Rutas raíz del propio paquete que pueden ensombrecer librerías del sistema."""
+    roots = set()
+    appdir = os.environ.get("APPDIR")
+    if appdir:
+        roots.add(os.path.realpath(appdir))
+    # Runtime AppImage (APPIMAGE apunta al .AppImage montado en /tmp/.mount_XXXX)
+    appimage = os.environ.get("APPIMAGE")
+    if appimage:
+        roots.add(os.path.realpath(os.path.dirname(appimage)))
+    # Extracción manual (--appimage-extract) y ejecutables del bundle
+    for probe in (sys.executable, os.path.dirname(sys.executable)):
+        if probe:
+            roots.add(os.path.realpath(probe))
+    return roots
+
+
+def _is_bundled_path(path: str) -> bool:
+    """True si `path` vive dentro del paquete (AppImage montado o extraído)."""
+    if not path:
+        return False
+    real = os.path.realpath(path)
+    if "/.mount_" in real or "/squashfs-root/" in real:
+        return True
+    for root in _appdir_prefixes():
+        if real == root or real.startswith(root + os.sep):
+            return True
+    return False
+
+
+def scrub_loader_env() -> None:
+    """Quita de LD_LIBRARY_PATH/LD_PRELOAD las rutas de librerías del paquete.
+
+    Dentro del AppImage, el runtime exporta LD_LIBRARY_PATH apuntando a las
+    copias de Ubuntu 22.04 (libssl, glib, etc.). Los abridores de URL del
+    escritorio que este módulo lanza (xdg-open/kde-open, gio) enlazan librerías
+    del anfitrión más nuevas y mueren al cargar: "libssl.so.3: version
+    'OPENSSL_3.5.0' not found", "gio: undefined symbol
+    g_unix_mount_entry_get_options". Peor aún, `webbrowser.open()` lanza el
+    hijo sin esperar su salida y devuelve True, así que el flujo de auth cree
+    que la pestaña se abrió y se queda sondeando hasta el timeout sin que
+    ningún navegador aparezca. Los hijos (abridores y navegadores que
+    Playwright lance) deben resolver TODAS sus librerías en el anfitrión: se
+    limpia el entorno de este subproceso, que es efímero y ya cargó las suyas.
+    """
+    for var in ("LD_LIBRARY_PATH", "LD_PRELOAD"):
+        raw = os.environ.get(var)
+        if not raw:
+            continue
+        if var == "LD_PRELOAD":
+            # LD_PRELOAD separa entradas con espacios, no con ':'
+            entries = raw.split(" ")
+            kept = [e for e in entries if e and not _is_bundled_path(e)]
+        else:
+            entries = raw.split(os.pathsep)
+            kept = [e for e in entries if e and not _is_bundled_path(e)]
+        if kept == entries:
+            continue
+        if kept:
+            sep = " " if var == "LD_PRELOAD" else os.pathsep
+            os.environ[var] = sep.join(kept)
+        else:
+            del os.environ[var]
+
+
 def open_in_system_browser(url: str) -> bool:
     """Abre `url` en el navegador del escritorio. True solo si se lanzó de verdad.
 
@@ -169,6 +238,11 @@ def open_in_system_browser(url: str) -> bool:
     sin esa pestaña, así que el valor de retorno se comprueba y se degradan
     aperturas explícitas por plataforma hasta que una abre la URL.
     """
+    # Antes de lanzar CUALQUIER hijo: dentro del AppImage, xdg-open/gio mueren
+    # al cargar por el LD_LIBRARY_PATH del paquete y webbrowser.open devuelve
+    # True aunque el navegador jamás aparezca (ver scrub_loader_env).
+    scrub_loader_env()
+
     import webbrowser
 
     try:
