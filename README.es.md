@@ -14,10 +14,11 @@ Symfonium, Plexamp o cualquier reproductor que quieras.
 **[⬇ Descarga la última versión](https://github.com/MadManJohnSmith/Syncify/releases/latest)**
 · [Compila desde fuente](#compilar-desde-fuente) · [Documentación](docs/README.md)
 
-> **Estado del traspaso (2026-10-11):** las funciones de abajo describen trabajo
-> sin confirmar, no necesariamente la release etiquetada v0.5.0. Consulta
-> [verificación y limitaciones](#verificación-y-limitaciones) antes de dar este
-> árbol de trabajo por listo para publicar.
+> **Estado del traspaso (2026-10-12):** las funciones de abajo describen la rama
+> `release/v0.6.0`, abierta como pull request #26 contra main, no necesariamente
+> la release etiquetada v0.5.0. Consulta
+> [verificación y limitaciones](#verificacion-y-limitaciones) antes de dar esta
+> rama por lista para publicar.
 
 [![Release](https://img.shields.io/github/v/release/MadManJohnSmith/Syncify?style=flat-square&logo=github)](https://github.com/MadManJohnSmith/Syncify/releases/latest)
 [![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
@@ -258,30 +259,37 @@ ampliar las comprobaciones listadas abajo.
 
 ### Verificación y limitaciones
 
-Este árbol de trabajo automatiza las suites de Rust, UI y Python (última
-corrida el 2026-10-11, en verde). Lo que **no** se ha demostrado aquí y no debe
-anunciarse como funcionando:
+El trabajo está confirmado en la rama `release/v0.6.0` y abierto como pull
+request #26 contra main (commit `31b5f49`). Verificación local el 2026-10-12:
+Rust `cargo test --workspace --all-features` reportó 2452 OK, 0 fallos y 9
+ignorados; Vitest pasó 996 pruebas en 121 archivos; Python reportó 279 OK;
+`cargo clippy --workspace --all-targets --all-features -- -D warnings` y
+`cargo fmt --check` quedaron limpios; el build del frontend y sus comprobaciones
+de tipo pasaron. Lo que **no** se ha demostrado aquí y no debe anunciarse
+como funcionando:
 
-- **La sesión gráfica.** No se ha ejecutado ningún diseño de UI, reproducción de
-  audio, bandeja, MPRIS/D-Bus ni comportamiento en gestor de ventanas en un
-  escritorio real: el frontend gráfico no está construido ni lanzado por estas
-  herramientas.
+- **La sesión gráfica.** El diseño de la UI, la reproducción de audio, la
+  bandeja, MPRIS/D-Bus y el comportamiento en el gestor de ventanas no se han
+  ejercitado en un escritorio real; el build del frontend y su comprobación de
+  tipos no los demuestran.
 - **La red en vivo.** Ningún login de arranque, enriquecimiento con proveedores,
   descarga ni resolución de letras ha corrido contra servicios reales; esas
   partes solo se prueban contra fixtures y mocks.
+- **Tests de Rust ignorados.** Los 9 tests ignorados que necesitan red o
+  credenciales no se han ejercitado.
 - **Windows.** La ruta de build de Windows existe en CI, pero los instaladores
   de Windows y los binarios empaquetados para Windows no se han producido ni
   ejercitado localmente; el target `x86_64-pc-windows-msvc` no se ha comprobado
   en esta máquina.
-- **La release en sí.** El árbol de trabajo está sin confirmar y no se ha cortado
+- **La release en sí.** El pull request #26 no se ha mergeado y no se ha cortado
   release desde él. El enlace de descarga de arriba sigue apuntando a v0.5.0,
   anterior a estos cambios; las insignias `Release` y `CI` describen lo último
   publicado, no este estado.
 
-La próxima publicación requiere, como mínimo, una corrida verde de las
-comprobaciones anteriores sobre la revisión confirmada, más los propios
-requisitos de la puerta de release (un tag `vX.Y.Z` que apunte a una revisión
-cuya corrida de CI haya tenido éxito).
+La próxima publicación requiere, como mínimo, que estas comprobaciones queden
+en verde sobre la revisión mergeada, más los propios requisitos de la puerta de
+release (un tag `vX.Y.Z` que apunte a una revisión cuya corrida de CI haya
+tenido éxito).
 
 ## Compilar desde fuente
 
