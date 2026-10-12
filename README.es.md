@@ -17,7 +17,7 @@ Symfonium, Plexamp o cualquier reproductor que quieras.
 > **Estado del traspaso (2026-10-12):** las funciones de abajo describen la rama
 > `release/v0.6.0`, abierta como pull request #26 contra main, no necesariamente
 > la release etiquetada v0.5.0. Consulta
-> [verificación y limitaciones](#verificacion-y-limitaciones) antes de dar esta
+> [verificación y limitaciones](#verificación-y-limitaciones) antes de dar esta
 > rama por lista para publicar.
 
 [![Release](https://img.shields.io/github/v/release/MadManJohnSmith/Syncify?style=flat-square&logo=github)](https://github.com/MadManJohnSmith/Syncify/releases/latest)
