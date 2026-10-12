@@ -14,11 +14,12 @@ Symfonium, Plexamp o cualquier reproductor que quieras.
 **[⬇ Descarga la última versión](https://github.com/MadManJohnSmith/Syncify/releases/latest)**
 · [Compila desde fuente](#compilar-desde-fuente) · [Documentación](docs/README.md)
 
-> **Estado del traspaso (2026-10-12):** las funciones de abajo describen la rama
-> `release/v0.6.0`, abierta como pull request #26 contra main, no necesariamente
-> la release etiquetada v0.5.0. Consulta
-> [verificación y limitaciones](#verificación-y-limitaciones) antes de dar esta
-> rama por lista para publicar.
+> **Estado de la release (2026-10-12):** las funciones de abajo están
+> publicadas en [Syncify v0.6.0](https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.0)
+> (el PR #26 se fusionó en `main` por squash como `94376b4`). El enlace de
+> descarga de arriba ahora apunta a v0.6.0. Consulta
+> [verificación y limitaciones](#verificación-y-limitaciones) para saber qué no
+> está verificado en un entorno real.
 
 [![Release](https://img.shields.io/github/v/release/MadManJohnSmith/Syncify?style=flat-square&logo=github)](https://github.com/MadManJohnSmith/Syncify/releases/latest)
 [![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
@@ -250,46 +251,40 @@ silencio.
 
 **¿Está terminada la app?**
 
-No, y esta página no lo afirma. Syncify es previo a la 1.0: el trabajo de
-features sigue en curso en esta rama de traspaso y no se ha cortado ninguna
-release desde ella. El tag actual `v0.5.0` es anterior al reproductor a
-pantalla completa, al visor de letras sincronizadas y a la cascada estricta de
-calidad de 320 kbps descritos arriba. La siguiente release necesita antes
-ampliar las comprobaciones listadas abajo.
+No, y esta página no lo afirma. Syncify es previo a la 1.0, y las funciones
+descritas arriba están publicadas en v0.6.0. La release no demuestra el
+comportamiento en entornos reales pendiente de
+[verificación y limitaciones](#verificación-y-limitaciones).
 
 ### Verificación y limitaciones
 
-El trabajo está confirmado en la rama `release/v0.6.0` y abierto como pull
-request #26 contra main (commit `31b5f49`). Verificación local el 2026-10-12:
-Rust `cargo test --workspace --all-features` reportó 2452 OK, 0 fallos y 9
-ignorados; Vitest pasó 996 pruebas en 121 archivos; Python reportó 279 OK;
-`cargo clippy --workspace --all-targets --all-features -- -D warnings` y
-`cargo fmt --check` quedaron limpios; el build del frontend y sus comprobaciones
-de tipo pasaron. Lo que **no** se ha demostrado aquí y no debe anunciarse
-como funcionando:
+El PR #26 se fusionó en `main` por squash como `94376b4`; el cambio de
+documentación de `5dcf4b6` se fusionó por squash como `ed440a9` (PR #27). El
+tag `v0.6.0` apunta exactamente a
+`ed440a96f669c264a7e477e76b791e325e900b7f` y la
+[release de Syncify v0.6.0](https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.0)
+está publicada con cinco artefactos para Linux y Windows. Sus notas provienen
+de [las notas de la versión 0.6.0](docs/RELEASE_NOTES_v0.6.0.md). La CI de
+Rust, frontend y Python, la puerta de release y ambos builds de publicación
+(Linux y Windows) quedaron en verde sobre esa misma revisión. Lo que **no** se
+ha demostrado aquí:
 
 - **La sesión gráfica.** El diseño de la UI, la reproducción de audio, la
   bandeja, MPRIS/D-Bus y el comportamiento en el gestor de ventanas no se han
-  ejercitado en un escritorio real; el build del frontend y su comprobación de
-  tipos no los demuestran.
+  ejercitado en un escritorio real.
 - **La red en vivo.** Ningún login de arranque, enriquecimiento con proveedores,
-  descarga ni resolución de letras ha corrido contra servicios reales; esas
-  partes solo se prueban contra fixtures y mocks.
+  descarga ni resolución de letras ha corrido contra servicios reales.
 - **Tests de Rust ignorados.** Los 9 tests ignorados que necesitan red o
   credenciales no se han ejercitado.
-- **Windows.** La ruta de build de Windows existe en CI, pero los instaladores
-  de Windows y los binarios empaquetados para Windows no se han producido ni
-  ejercitado localmente; el target `x86_64-pc-windows-msvc` no se ha comprobado
-  en esta máquina.
-- **La release en sí.** El pull request #26 no se ha mergeado y no se ha cortado
-  release desde él. El enlace de descarga de arriba sigue apuntando a v0.5.0,
-  anterior a estos cambios; las insignias `Release` y `CI` describen lo último
-  publicado, no este estado.
+- **Windows.** La comprobación cruzada del target `x86_64-pc-windows-msvc` no
+  se ha ejecutado en esta máquina, aunque la CI produjo los instaladores de
+  Windows.
 
-La próxima publicación requiere, como mínimo, que estas comprobaciones queden
-en verde sobre la revisión mergeada, más los propios requisitos de la puerta de
-release (un tag `vX.Y.Z` que apunte a una revisión cuya corrida de CI haya
-tenido éxito).
+Nada de eso lo demuestran ni la release ni la CI en verde, así que nada de eso
+debe anunciarse como funcionando.
+
+Las insignias `Release` y `CI` de arriba no informan sobre los puntos de esta
+lista.
 
 ## Compilar desde fuente
 
