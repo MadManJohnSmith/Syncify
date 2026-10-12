@@ -205,6 +205,30 @@ pub struct AppleMusicEntityImport {
     pub entities: i32,
 }
 
+/// Query Apple Music uses to page through a library collection.
+///
+/// Never appends an `include` parameter: Apple Music answers a collection
+/// request that activates a relationship with the terminal `40005` "tracks
+/// relationship may only be activated with a single resource fetch". Tracks of
+/// each album/playlist are therefore fetched afterwards, one resource at a
+/// time, by [`AppleMusicClient::fetch_all_album_tracks`] /
+/// [`AppleMusicClient::fetch_all_playlist_tracks`].
+fn library_query(resource: &str, offset: i32, limit: i32) -> String {
+    format!("me/library/{}?offset={}&limit={}", resource, offset, limit)
+}
+
+/// Query that reads the `tracks` relationship of ONE library resource (an album
+/// or a playlist) — the only shape Apple Music accepts for that relationship, so
+/// the `40005` the collection dialect triggers never appears here.
+///
+/// `resource` is the library path of the parent, e.g. `albums/my.album.id`.
+fn library_tracks_query(resource: &str, offset: i32, limit: i32) -> String {
+    format!(
+        "me/library/{}/tracks?offset={}&limit={}",
+        resource, offset, limit
+    )
+}
+
 /// Apple Music API client
 pub struct AppleMusicClient {
     client: Client,
@@ -416,30 +440,29 @@ impl AppleMusicClient {
         self.request_json(&path).await
     }
 
-    /// Get user's library albums (paginated)
+    /// Get user's library albums (paginated), without activating any
+    /// relationship: the `include` dialect is a collection request, which Apple
+    /// Music answers with `40005`.
     pub async fn get_library_albums(
         &self,
         offset: i32,
         limit: i32,
     ) -> Result<AppleMusicAlbumsResponse, String> {
-        let path = format!(
-            "me/library/albums?offset={}&limit={}&include=tracks",
-            offset, limit
-        );
-        self.request_json(&path).await
+        self.request_json(&library_query("albums", offset, limit))
+            .await
     }
 
-    /// Get user's library playlists (paginated)
+    /// Get user's library playlists (paginated), without activating any
+    /// relationship (same `40005` reason as [`Self::get_library_albums`]): the
+    /// tracks of each playlist are read afterwards through the single-resource
+    /// [`Self::fetch_all_playlist_tracks`].
     pub async fn get_library_playlists(
         &self,
         offset: i32,
         limit: i32,
     ) -> Result<AppleMusicPlaylistsResponse, String> {
-        let path = format!(
-            "me/library/playlists?offset={}&limit={}&include=tracks",
-            offset, limit
-        );
-        self.request_json(&path).await
+        self.request_json(&library_query("playlists", offset, limit))
+            .await
     }
 
     /// Get playlist tracks (paginated)
@@ -449,11 +472,12 @@ impl AppleMusicClient {
         offset: i32,
         limit: i32,
     ) -> Result<AppleMusicResponse, String> {
-        let path = format!(
-            "me/library/playlists/{}/tracks?offset={}&limit={}",
-            playlist_id, offset, limit
-        );
-        self.request_json(&path).await
+        self.request_json(&library_tracks_query(
+            &format!("playlists/{}", playlist_id),
+            offset,
+            limit,
+        ))
+        .await
     }
 
     /// Get album tracks (paginated)
@@ -463,11 +487,12 @@ impl AppleMusicClient {
         offset: i32,
         limit: i32,
     ) -> Result<AppleMusicResponse, String> {
-        let path = format!(
-            "me/library/albums/{}/tracks?offset={}&limit={}",
-            album_id, offset, limit
-        );
-        self.request_json(&path).await
+        self.request_json(&library_tracks_query(
+            &format!("albums/{}", album_id),
+            offset,
+            limit,
+        ))
+        .await
     }
 
     /// Every track of a library playlist, following the API `next` cursor until
@@ -1402,5 +1427,121 @@ impl AppleMusicClient {
         .map_err(|e| format!("Insert failed: {}", e))?;
 
         Ok(track_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The parameters a library query may carry: nothing else — and above all no
+    /// `include`, in any spelling or case — is valid. Apple Music answers a
+    /// collection request that activates a relationship with the terminal
+    /// `40005` "tracks relationship may only be activated with a single resource
+    /// fetch".
+    fn assert_no_include_parameter(query: &str) {
+        let (_, query_part) = query.split_once('?').expect("query must have parameters");
+        for pair in query_part.split('&').filter(|p| !p.is_empty()) {
+            let key = pair
+                .split('=')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase();
+            assert!(
+                key == "offset" || key == "limit",
+                "unexpected parameter '{}' in '{}'",
+                key,
+                query
+            );
+            assert_ne!(
+                key, "include",
+                "'{}' activates a forbidden relationship parameter (40005)",
+                query
+            );
+        }
+    }
+
+    #[test]
+    fn album_collection_query_carries_no_include_parameter() {
+        for (offset, limit) in [(0, 100), (0, 50), (50, 50), (150, 100)] {
+            let query = library_query("albums", offset, limit);
+            assert_no_include_parameter(&query);
+            assert_eq!(
+                query,
+                format!("me/library/albums?offset={}&limit={}", offset, limit)
+            );
+        }
+    }
+
+    #[test]
+    fn playlist_collection_query_carries_no_include_parameter() {
+        for (offset, limit) in [(0, 100), (0, 50), (50, 50)] {
+            let query = library_query("playlists", offset, limit);
+            assert_no_include_parameter(&query);
+            assert_eq!(
+                query,
+                format!("me/library/playlists?offset={}&limit={}", offset, limit)
+            );
+        }
+    }
+
+    /// The single-resource `tracks` page of one album/playlist is the only
+    /// dialect Apple accepts for reading the relationship, so its query must
+    /// stay `offset`/`limit` too — an `include` there would be equally rejected.
+    #[test]
+    fn single_resource_track_queries_stay_relationship_free() {
+        let album_page = library_tracks_query("albums/album_1", 0, 100);
+        assert_eq!(
+            album_page,
+            "me/library/albums/album_1/tracks?offset=0&limit=100"
+        );
+        assert_no_include_parameter(&album_page);
+
+        let playlist_page = library_tracks_query("playlists/pl_1", 0, 100);
+        assert_eq!(
+            playlist_page,
+            "me/library/playlists/pl_1/tracks?offset=0&limit=100"
+        );
+        assert_no_include_parameter(&playlist_page);
+    }
+
+    #[test]
+    fn complete_relationship_tracks_only_accepts_a_whole_embedded_page() {
+        let whole = AppleMusicResponse {
+            data: Some(vec![AppleMusicTrack {
+                id: "t1".into(),
+                attributes: None,
+            }]),
+            next: None,
+            meta: None,
+        };
+        assert_eq!(
+            AppleMusicClient::complete_relationship_tracks(Some(&whole)).map(|t| t.len()),
+            Some(1)
+        );
+
+        // A cursor on the embedded page means Apple truncated it: the caller
+        // must fall through to the single-resource expansion instead.
+        let truncated = AppleMusicResponse {
+            data: Some(vec![AppleMusicTrack {
+                id: "t1".into(),
+                attributes: None,
+            }]),
+            next: Some("/v1/me/library/albums/album_1/tracks?offset=1&limit=100".into()),
+            meta: None,
+        };
+        assert!(
+            AppleMusicClient::complete_relationship_tracks(Some(&truncated)).is_none(),
+            "a truncated embedded page must never be trusted as complete"
+        );
+
+        let empty = AppleMusicResponse {
+            data: Some(vec![]),
+            next: None,
+            meta: None,
+        };
+        assert!(AppleMusicClient::complete_relationship_tracks(Some(&empty)).is_none());
+        assert!(AppleMusicClient::complete_relationship_tracks(None).is_none());
     }
 }

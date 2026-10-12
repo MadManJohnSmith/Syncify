@@ -185,6 +185,13 @@ impl EnrichmentEngine {
         }
     }
 
+    /// Create an enrichment engine backed by the persistent MusicBrainz cache.
+    pub fn with_db(db: crate::db::DbPool) -> Self {
+        Self {
+            musicbrainz: MusicBrainzClient::with_db(db),
+        }
+    }
+
     /// Resolve enriched metadata for a track following strict precedence rules.
     pub async fn resolve_track_metadata(
         &self,

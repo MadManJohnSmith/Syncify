@@ -1,6 +1,6 @@
 /**
- * R18: la barra de progreso global refleja el avance real de todas las tareas
- * activas, con estado indeterminado cuando ninguna declara total.
+ * R18 + BP-02/BP-03: el panel inferior muestra progreso individual solo de
+ * procesos en segundo plano. La tercera barra de progreso ya no existe.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -20,7 +20,7 @@ async function mountBar() {
   return wrapper
 }
 
-describe('StatusBar: global progress bar (R18)', () => {
+describe('StatusBar: background process detail (R18 + BP-02/BP-03)', () => {
   beforeEach(() => {
     resetMocks()
     resetGlobalTasks()
@@ -32,35 +32,36 @@ describe('StatusBar: global progress bar (R18)', () => {
     useEventBus().offAll()
   })
 
-  it('shows a bar with the weighted progress of every active task', async () => {
+  it('excludes downloads from the background panel and removes the third global bar', async () => {
     const { addTask } = useGlobalTasks()
     addTask({
       id: 'download-1',
       type: 'download',
       name: 'Downloading album',
       status: 'running',
-      progress: 100,
-      current: 10,
+      progress: 80,
+      current: 8,
       total: 10,
     })
     addTask({
-      id: 'download-2',
-      type: 'download',
-      name: 'Downloading singles',
+      id: 'sync-2',
+      type: 'sync',
+      name: 'Syncing Tidal',
       status: 'running',
       progress: 10,
-      current: 100,
-      total: 1000,
+      current: 10,
+      total: 100,
     })
 
     const wrapper = await mountBar()
-
-    const bar = wrapper.find('[role="progressbar"]')
-    expect(bar.exists()).toBe(true)
-    expect(bar.attributes('aria-valuenow')).toBe('11')
-    expect(bar.find('div').attributes('style')).toContain('width: 11%')
-    expect(wrapper.text()).toContain('2 tasks')
-    expect(wrapper.text()).toContain('11%')
+    expect(wrapper.find('[role="progressbar"]').exists()).toBe(false)
+    expect(wrapper.find('.sync-status').text()).toContain('10%')
+    expect(wrapper.find('.sync-status').text()).not.toContain('80%')
+    await wrapper.find('.sync-status').trigger('click')
+    await flushPromises()
+    const popover = wrapper.find('.status-popover')
+    expect(popover.text()).toContain('Syncing Tidal')
+    expect(popover.text()).not.toContain('Downloading album')
   })
 
   it('uses an indeterminate state when no task declares a total', async () => {
@@ -75,12 +76,15 @@ describe('StatusBar: global progress bar (R18)', () => {
 
     const wrapper = await mountBar()
 
-    const bar = wrapper.find('[role="progressbar"]')
-    expect(bar.exists()).toBe(true)
-    expect(bar.attributes('aria-valuenow')).toBeUndefined()
-    expect(bar.find('div').classes()).toContain('animate-pulse')
+    expect(wrapper.find('[role="progressbar"]').exists()).toBe(false)
+    expect(wrapper.find('.sync-status').text()).not.toContain('0%')
+    await wrapper.find('.sync-status').trigger('click')
+    await flushPromises()
+    const popover = wrapper.find('.status-popover')
+    expect(popover.text()).toContain('MusicBrainz')
+    expect(popover.find('.animate-pulse').exists()).toBe(true)
     // With no total, no frozen percentage is invented.
-    expect(wrapper.text()).not.toContain('0%')
+    expect(popover.text()).not.toContain('0%')
   })
 
   it('per-task detail stops summing every task together', async () => {

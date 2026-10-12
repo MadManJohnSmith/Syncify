@@ -16,7 +16,7 @@
  *   tick; nunca `currentTime >= 30`. La posición restaurada no acredita tiempo
  *   previo.
  * - Importar este módulo no dispara invokes ni reproducción: la restauración
- *   es perezosa (`restoreFromPersistence`) y la invoca NowPlayingBar al montar.
+ *   es perezosa (`restoreFromPersistence`) y la invoca el reproductor de la barra de estado al montar.
  */
 import { computed, ref } from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
@@ -168,6 +168,28 @@ const durationSec = ref(0);
 const playbackRate = ref(1);
 const error = ref<string | null>(null);
 const isLoadingSource = ref(false);
+
+// PL-09 / PL-10: Estado y acciones del reproductor de pantalla completa / expandido
+const isFullscreenOpen = ref(false);
+
+function openFullscreen(): void {
+    isFullscreenOpen.value = true;
+}
+
+function closeFullscreen(): void {
+    isFullscreenOpen.value = false;
+}
+
+function toggleFullscreen(): void {
+    isFullscreenOpen.value = !isFullscreenOpen.value;
+}
+
+// PL-10: Escuchar el evento disparado desde el menú lateral (App.vue:483)
+if (typeof window !== 'undefined') {
+    window.addEventListener('syncify:open-fullscreen-player', () => {
+        openFullscreen();
+    });
+}
 
 // Cola (FE-9 extendido): pendientes con identidad propia; `upNext` se mantiene
 // como proyección compatible para consumidores previos.
@@ -1036,7 +1058,7 @@ function waitForLoadedmetadata(el: HTMLMediaElement): Promise<void> {
 }
 
 /**
- * Restaura el estado persistido. Solo se invoca explícitamente (NowPlayingBar
+ * Restaura el estado persistido. Solo se invoca explícitamente (el reproductor de la barra de estado
  * al montar); importar el módulo no toca localStorage ni dispara invokes.
  * Resuelve `resolve_playback_source` de nuevo (jamás reusa concesiones ni
  * URLs), coloca la posición tras `loadedmetadata` y queda PAUSADO: leer el
@@ -1118,5 +1140,7 @@ export function usePlayer() {
         enqueue, replaceQueueAndPlay, clearQueue, removeEntry, moveEntry,
         next, previous, setVolume, setMuted, toggleShuffle, cycleRepeat,
         restoreFromPersistence,
+        // PL-09 / PL-10: Pantalla completa / reproductor expandido
+        isFullscreenOpen, openFullscreen, closeFullscreen, toggleFullscreen,
     };
 }

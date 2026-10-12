@@ -696,6 +696,7 @@ export const settingsApi = {
     // S203: Global max quality ceiling
     getGlobalMaxQuality,
     setGlobalMaxQuality,
+    getAvailableQualitiesForService,
 };
 
 // ==============================================
@@ -840,4 +841,13 @@ export async function setGlobalMaxQuality(value: GlobalMaxQuality): Promise<void
         console.warn('[settings] set_global_max_quality unavailable, writing generic KV row:', err);
         await saveSetting(GLOBAL_MAX_QUALITY_KEY, value);
     }
+}
+
+/**
+ * AQ-05: maximal quality that a specific service can actually deliver, read
+ * from `services.max_quality`. Used to restrict each per-service quality
+ * selector so the UI cannot ask for more than the service offers.
+ */
+export async function getAvailableQualitiesForService(serviceName: string): Promise<string[]> {
+    return invokeCommand<string[]>('get_available_qualities_for_service', { serviceName });
 }

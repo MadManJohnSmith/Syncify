@@ -71,6 +71,7 @@ impl TidalOrchestratorExt for TidalDownloader {
                 // download; hand its id over so the pipeline checkpoints the SAME row
                 // instead of opening a competing second entry.
                 operation_id: request.operation_id.clone(),
+                account_id: None,
             };
 
             let item_id_clone = item_id.clone();
@@ -357,5 +358,140 @@ impl TidalOrchestratorExt for TidalDownloader {
             service: "tidal".to_string(),
             ..Default::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_tidal_single_track_request_account_id_default() {
+        let req = crate::services::tidal_pipeline::TidalSingleTrackRequest {
+            track_id_or_query: "12345".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(req.account_id, None);
+
+        let req_with_acc = crate::services::tidal_pipeline::TidalSingleTrackRequest {
+            track_id_or_query: "12345".to_string(),
+            account_id: Some(99),
+            ..Default::default()
+        };
+        assert_eq!(req_with_acc.account_id, Some(99));
+    }
+
+    #[tokio::test]
+    async fn test_tidal_multi_account_fallback_priority_and_exclusivity() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory db");
+
+        sqlx::query("CREATE TABLE services (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_id INTEGER NOT NULL REFERENCES services(id),
+                display_name TEXT,
+                email TEXT,
+                is_active INTEGER DEFAULT 1,
+                credentials_invalid INTEGER DEFAULT 0,
+                invalid_reason TEXT,
+                last_auth_error TEXT,
+                last_auth_error_at TEXT,
+                credentials_json TEXT,
+                last_synced TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                streaming_entitled INTEGER NOT NULL DEFAULT -1,
+                entitlement_checked_at TEXT
+            );",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("INSERT INTO services (id, name) VALUES (1, 'tidal');")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let _ = crate::crypto::init_crypto([42u8; 32]);
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        // Account 1: Active, but empty access token (invalid)
+        let creds_active =
+            crate::crypto::encrypt(r#"{"access_token":"","token_expiry":0.0}"#).unwrap();
+        // Account 2: Inactive sibling, with valid non-expired access token
+        let future_expiry = now_secs + 3600.0;
+        let creds_sibling_json = format!(
+            r#"{{"access_token":"tidal_valid_token_12345","token_expiry":{},"country_code":"US"}}"#,
+            future_expiry
+        );
+        let creds_sibling = crate::crypto::encrypt(&creds_sibling_json).unwrap();
+
+        sqlx::query(
+            "INSERT INTO accounts (id, service_id, email, is_active, credentials_json) VALUES (1, 1, 'acc1@tidal.com', 1, ?);"
+        )
+        .bind(creds_active)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO accounts (id, service_id, email, is_active, credentials_json) VALUES (2, 1, 'acc2@tidal.com', 0, ?);"
+        )
+        .bind(creds_sibling)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 1. Fallback account order must prioritize active account first, then sibling account
+        let fallback_ids =
+            crate::commands::accounts::get_service_fallback_account_ids(&pool, "tidal", None)
+                .await
+                .expect("fallback ids");
+        assert_eq!(fallback_ids, vec![1, 2]);
+
+        // 2. resolve_and_refresh_gui_credentials_for_account with Some(2) successfully resolves the inactive sibling
+        let http_client = reqwest::Client::new();
+        let (resolved_creds, account_name) =
+            crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials_for_account(
+                &pool,
+                &http_client,
+                Some(2),
+                false,
+            )
+            .await;
+
+        let creds = resolved_creds.expect("sibling credentials must be resolvable");
+        assert_eq!(creds.access_token, "tidal_valid_token_12345");
+        assert_eq!(creds.country_code.as_deref(), Some("US"));
+        assert_eq!(account_name.as_deref(), Some("acc2@tidal.com"));
+
+        // 3. Crucial invariant: is_active in SQLite must NEVER be altered by fallback resolution
+        let (active_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM accounts WHERE service_id = 1 AND is_active = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("active account");
+        assert_eq!(
+            active_id, 1,
+            "is_active exclusivity in SQLite must remain preserved"
+        );
+
+        let (inactive_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM accounts WHERE service_id = 1 AND is_active = 0")
+                .fetch_one(&pool)
+                .await
+                .expect("inactive account");
+        assert_eq!(inactive_id, 2, "sibling account remains inactive in SQLite");
     }
 }

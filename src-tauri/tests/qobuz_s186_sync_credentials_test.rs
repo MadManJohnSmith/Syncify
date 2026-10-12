@@ -322,6 +322,7 @@ async fn test_s186_email_distinct_login_leaves_single_usable_active_row() {
         Some("b@example.com"),
         None,
         &crypto::encrypt(r#"{"user_auth_token":"brand_new_login_token_424242"}"#).unwrap(),
+        None,
     )
     .await
     .expect("upsert succeeds");
@@ -400,6 +401,7 @@ async fn test_s186_email_match_is_case_and_space_insensitive() {
         Some("  B@Example.COM  "),
         None,
         &crypto::encrypt(r#"{"user_auth_token":"revived_same_row_222222"}"#).unwrap(),
+        None,
     )
     .await
     .expect("normalización LOWER/TRIM casa con la fila existente");

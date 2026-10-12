@@ -89,10 +89,35 @@ export function useMigration() {
     // LOAD DATA
     // ========================
 
+    function rehookRunningJobIfAny(): MigrationJob | null {
+        const running = history.value.find(j => j.status === 'running' || j.status === 'pending');
+        if (running) {
+            currentJobId.value = running.id;
+            progress.job_id = running.id;
+            progress.total_items = running.total_items;
+            progress.completed_count = running.completed_items;
+            progress.failed_count = running.failed_items;
+            progress.skipped_count = running.skipped_items;
+            progress.current_item = running.completed_items + running.failed_items + running.skipped_items;
+            progress.status = running.status as MigrationProgress['status'];
+            progress.percent = running.total_items > 0
+                ? Math.round((progress.current_item / running.total_items) * 100)
+                : 0;
+            progress.current_action = `Migrating tracks (${progress.current_item}/${running.total_items})...`;
+            return running;
+        }
+        return null;
+    }
+
+    function getActiveRunningJob(): MigrationJob | null {
+        return history.value.find(j => j.status === 'running' || j.status === 'pending') ?? null;
+    }
+
     async function loadHistory(limit = 50): Promise<void> {
         isLoading.value = true;
         try {
             history.value = await getMigrationHistory(limit);
+            rehookRunningJobIfAny();
         } catch (e) {
             console.error('Failed to load migration history:', e);
         } finally {
@@ -460,6 +485,8 @@ export function useMigration() {
         matchItem,
         setupProgressListener,
         cleanup,
-        formatHistoryItem
+        formatHistoryItem,
+        rehookRunningJobIfAny,
+        getActiveRunningJob
     };
 }

@@ -209,9 +209,11 @@ describe('useAccountsStatus Composable (TASK-16)', () => {
   it('formats time ago and service styles correctly', () => {
     const { formatTimeAgo, getServiceIcon, getServiceBgClass } = useAccountsStatus()
 
-    expect(getServiceIcon('spotify')).toBe('🎵')
-    expect(getServiceIcon('apple')).toBe('🍎')
-    expect(getServiceIcon('unknown_service')).toBe('🎵')
+    // Canonical Material Symbols icons, not arbitrary emoji.
+    expect(getServiceIcon('spotify')).toBe('library_music')
+    expect(getServiceIcon('apple')).toBe('music_note')
+    expect(getServiceIcon('tidal')).toBe('waves')
+    expect(getServiceIcon('unknown_service')).toBe('cloud')
 
     expect(getServiceBgClass('spotify')).toBe('bg-[#1ed760]/10')
     expect(getServiceBgClass('unknown_service')).toBe('bg-gray-500/10')

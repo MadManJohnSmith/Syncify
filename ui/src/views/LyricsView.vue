@@ -64,16 +64,6 @@
             <span :class="['material-symbols-outlined text-[12px]', isKaraokeRunning && 'animate-spin']">{{ isKaraokeRunning ? 'progress_activity' : 'mic' }}</span>
             Re-chequear todo (Karaoke)
           </button>
-          <!-- S202: animated cover sweep over downloaded albums (pipeline contract) -->
-          <button
-            @click="openCoverSweepDialog"
-            :disabled="isCoverSweepRunning"
-            class="ml-2 flex items-center gap-1 px-2 py-0.5 rounded border border-gray-300 dark:border-border-dark hover:border-primary/50 transition-colors disabled:opacity-50"
-            title="Barrido de portadas animadas de Apple Music para los álbumes descargados; escribe cover.webp junto al audio y actualiza el CoverFront del FLAC. Omite álbumes que ya tienen una válida."
-          >
-            <span :class="['material-symbols-outlined text-[12px]', isCoverSweepRunning && 'animate-spin']">{{ isCoverSweepRunning ? 'progress_activity' : 'animation' }}</span>
-            Portadas animadas
-          </button>
           <!-- TASK-111: materialize missing .lrc sidecars for downloaded tracks with lyrics in DB -->
           <button
             @click="materializeLrcSidecars"
@@ -177,55 +167,67 @@
         </div>
       </div>
 
-      <!-- Track List -->
-      <div v-else class="flex-1 overflow-y-auto custom-scrollbar">
+      <!-- Track List: same fixed-row virtual window as DownloadsView -->
+      <div
+        v-else
+        ref="trackListRef"
+        @scroll="onTrackListScroll"
+        class="flex-1 min-h-0 overflow-y-auto custom-scrollbar relative"
+        style="contain: strict;"
+      >
         <p v-if="filteredTracks.length === 0" class="px-4 py-6 text-center text-xs text-text-secondary italic">Sin resultados para este filtro.</p>
-        <div 
-          v-for="track in filteredTracks" 
-          :key="track.id"
-          @click="selectTrack(track)"
-          :class="[
-            'flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors border-l-2',
-            selectedTrackId === track.id ? 'bg-primary/10 border-l-primary' : 
-            (!track.lyrics_type || track.lyrics_type === 'none') ? 'border-l-error/50 hover:bg-gray-50 dark:hover:bg-surface-highlight/50' : 
-            'border-l-transparent hover:bg-gray-50 dark:hover:bg-surface-highlight/50'
-          ]"
-        >
-          <!-- Checkbox -->
-          <input 
-            type="checkbox" 
-            :checked="selectedTracks.includes(track.id)"
-            @click.stop="toggleTrackSelection(track.id)"
-            class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary shrink-0"
-          >
-          
-          <!-- Album Art -->
-          <div class="w-10 h-10 rounded bg-gray-200 dark:bg-surface-highlight shrink-0 overflow-hidden">
-            <img v-if="track.cover_art_url" :src="track.cover_art_url" :alt="track.album_name ?? ''" class="w-full h-full object-cover" loading="lazy">
-            <div v-else class="w-full h-full bg-gradient-to-br from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 flex items-center justify-center">
-              <span class="material-symbols-outlined text-gray-500 dark:text-gray-400 text-[18px]">album</span>
+        <!-- Spacer keeps the full scroll range; only the visible rows are mounted. -->
+        <div v-else :style="{ height: totalTrackHeight + 'px', position: 'relative', width: '100%' }">
+          <div :style="{ transform: `translateY(${trackOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
+            <div
+              v-for="track in visibleTracks"
+              :key="track.id"
+              :style="{ height: TRACK_ROW_HEIGHT + 'px' }"
+              @click="selectTrack(track)"
+              :class="[
+                'flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors border-l-2',
+                selectedTrackId === track.id ? 'bg-primary/10 border-l-primary' :
+                (!track.lyrics_type || track.lyrics_type === 'none') ? 'border-l-error/50 hover:bg-gray-50 dark:hover:bg-surface-highlight/50' :
+                'border-l-transparent hover:bg-gray-50 dark:hover:bg-surface-highlight/50'
+              ]"
+            >
+              <!-- Checkbox -->
+              <input
+                type="checkbox"
+                :checked="selectedTracks.includes(track.id)"
+                @click.stop="toggleTrackSelection(track.id)"
+                class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary shrink-0"
+              >
+
+              <!-- Album Art -->
+              <div class="w-10 h-10 rounded bg-gray-200 dark:bg-surface-highlight shrink-0 overflow-hidden">
+                <img v-if="track.cover_art_url" :src="track.cover_art_url" :alt="track.album_name ?? ''" class="w-full h-full object-cover" loading="lazy">
+                <div v-else class="w-full h-full bg-gradient-to-br from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 flex items-center justify-center">
+                  <span class="material-symbols-outlined text-gray-500 dark:text-gray-400 text-[18px]">album</span>
+                </div>
+              </div>
+
+              <!-- Track Info -->
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                <p class="text-xs text-text-secondary truncate">{{ track.artist_name || 'Unknown Artist' }}</p>
+              </div>
+
+              <!-- Lyrics Status -->
+              <div class="flex flex-col items-end gap-1 shrink-0">
+                <span :class="[
+                  'px-2 py-0.5 text-[10px] font-medium rounded flex items-center gap-1',
+                  mapLyricsType(track.lyrics_type) === 'synced' ? 'bg-blue-500/10 text-blue-500' :
+                  mapLyricsType(track.lyrics_type) === 'unsynced' ? 'bg-gray-500/10 text-gray-500' :
+                  'bg-error/10 text-error'
+                ]">
+                  <span class="material-symbols-outlined text-[12px]">
+                    {{ mapLyricsType(track.lyrics_type) === 'synced' ? 'music_note' : mapLyricsType(track.lyrics_type) === 'unsynced' ? 'notes' : 'remove' }}
+                  </span>
+                  {{ mapLyricsType(track.lyrics_type) === 'synced' ? 'Synced' : mapLyricsType(track.lyrics_type) === 'unsynced' ? 'Unsynced' : 'None' }}
+                </span>
+              </div>
             </div>
-          </div>
-          
-          <!-- Track Info -->
-          <div class="flex-1 min-w-0">
-            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
-            <p class="text-xs text-text-secondary truncate">{{ track.artist_name || 'Unknown Artist' }}</p>
-          </div>
-          
-          <!-- Lyrics Status -->
-          <div class="flex flex-col items-end gap-1 shrink-0">
-            <span :class="[
-              'px-2 py-0.5 text-[10px] font-medium rounded flex items-center gap-1',
-              mapLyricsType(track.lyrics_type) === 'synced' ? 'bg-blue-500/10 text-blue-500' :
-              mapLyricsType(track.lyrics_type) === 'unsynced' ? 'bg-gray-500/10 text-gray-500' :
-              'bg-error/10 text-error'
-            ]">
-              <span class="material-symbols-outlined text-[12px]">
-                {{ mapLyricsType(track.lyrics_type) === 'synced' ? 'music_note' : mapLyricsType(track.lyrics_type) === 'unsynced' ? 'notes' : 'remove' }}
-              </span>
-              {{ mapLyricsType(track.lyrics_type) === 'synced' ? 'Synced' : mapLyricsType(track.lyrics_type) === 'unsynced' ? 'Unsynced' : 'None' }}
-            </span>
           </div>
         </div>
       </div>
@@ -288,6 +290,19 @@
               ]" title="Edit">
                 <span class="material-symbols-outlined text-[18px]">edit</span>
               </button>
+              <!-- LY-01: Toggle timestamps display in listener mode -->
+              <button
+                v-if="currentTrack?.lyricsStatus === 'synced'"
+                @click="showTimestamps = !showTimestamps"
+                :class="[
+                  'p-2 rounded-lg transition-colors',
+                  showTimestamps ? 'bg-primary text-on-accent' : 'hover:bg-gray-200 dark:hover:bg-surface-highlight text-gray-600 dark:text-gray-400'
+                ]"
+                :title="showTimestamps ? 'Ocultar marcas de tiempo' : 'Mostrar marcas de tiempo'"
+                data-testid="toggle-timestamps"
+              >
+                <span class="material-symbols-outlined text-[18px]">schedule</span>
+              </button>
               <button @click="openFetchDialog" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400" title="Buscar letra online">
                 <span :class="['material-symbols-outlined text-[18px]', isFetching && 'animate-spin']">{{ isFetching ? 'progress_activity' : 'download' }}</span>
               </button>
@@ -295,7 +310,13 @@
               <button @click="associateLyricsFile" :disabled="isImportingLyricsFile || !selectedTrackId" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed" title="Asociar archivo .lrc / .txt">
                 <span class="material-symbols-outlined text-[18px]" :class="{ 'animate-spin': isImportingLyricsFile }">{{ isImportingLyricsFile ? 'progress_activity' : 'attach_file' }}</span>
               </button>
-              <button @click="embedSingleLyrics" :disabled="isEmbeddingSingle || !currentLyrics || !currentTrack?.filePath" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed" title="Embeber letra en el archivo FLAC">
+              <!-- LY-09: Embed lyrics disabled if not downloaded -->
+              <button
+                @click="embedSingleLyrics"
+                :disabled="isEmbeddingSingle || !currentLyrics || !currentTrack?.filePath || currentTrack?.download_status !== 'downloaded'"
+                class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                :title="!currentTrack?.filePath || currentTrack?.download_status !== 'downloaded' ? 'La pista debe estar descargada en el disco para embeber la letra' : 'Embeber letra en el archivo FLAC'"
+              >
                 <span :class="['material-symbols-outlined text-[18px]', isEmbeddingSingle && 'animate-spin']">{{ isEmbeddingSingle ? 'progress_activity' : 'album' }}</span>
               </button>
               <button @click="exportCurrentLyrics" :disabled="!currentLyrics" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40" title="Exportar letra en su formato nativo">
@@ -304,7 +325,8 @@
               <button @click="openHistory" :disabled="!selectedTrackId" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40" title="Versiones guardadas de esta letra">
                 <span class="material-symbols-outlined text-[18px]">history</span>
               </button>
-              <button @click="deleteTrackLyrics" :disabled="!currentLyrics" class="p-2 hover:bg-error/10 rounded-lg transition-colors text-error disabled:opacity-40" title="Delete">
+              <!-- LY-12: Delete lyrics with explicit non-destructive confirmation -->
+              <button @click="confirmDeleteTrackLyrics" :disabled="!currentLyrics" class="p-2 hover:bg-error/10 rounded-lg transition-colors text-error disabled:opacity-40" title="Eliminar letra de la pista (conserva el archivo de audio)">
                 <span class="material-symbols-outlined text-[18px]">delete</span>
               </button>
             </div>
@@ -336,6 +358,27 @@
               <span class="material-symbols-outlined text-[16px]">check_circle</span>
               Validate
             </button>
+
+            <!-- LY-06: Intuitive Mode Switcher (Visual line-by-line vs Raw text) -->
+            <div class="flex items-center bg-gray-100 dark:bg-surface-highlight p-0.5 rounded-lg border border-gray-200 dark:border-border-dark">
+              <button
+                type="button"
+                @click="switchEditorMode('visual')"
+                :class="['px-2.5 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1', editorMode === 'visual' ? 'bg-white dark:bg-gray-800 text-primary shadow-sm' : 'text-text-secondary hover:text-gray-900 dark:hover:text-white']"
+              >
+                <span class="material-symbols-outlined text-[14px]">view_list</span>
+                Visual
+              </button>
+              <button
+                type="button"
+                @click="switchEditorMode('text')"
+                :class="['px-2.5 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1', editorMode === 'text' ? 'bg-white dark:bg-gray-800 text-primary shadow-sm' : 'text-text-secondary hover:text-gray-900 dark:hover:text-white']"
+              >
+                <span class="material-symbols-outlined text-[14px]">code</span>
+                Texto LRC
+              </button>
+            </div>
+
             <div class="flex-1"></div>
             <button @click="isEditing = false" class="px-4 py-1.5 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
               Cancel
@@ -351,18 +394,97 @@
             <span class="material-symbols-outlined text-[16px]">{{ validationOk ? 'check_circle' : 'warning' }}</span>
             <span class="whitespace-pre-line">{{ validationMessage }}</span>
           </div>
-          
-          <!-- Editor Textarea -->
-          <div class="flex-1 p-6 pb-3 overflow-hidden">
-            <textarea 
+
+          <!-- Visual Line Editor (LY-06) -->
+          <div v-if="editorMode === 'visual'" class="flex-1 p-6 pb-3 overflow-y-auto custom-scrollbar">
+            <div class="space-y-2 max-w-3xl mx-auto">
+              <div
+                v-for="(line, idx) in visualLines"
+                :key="idx"
+                class="flex items-center gap-2 p-2 bg-gray-50 dark:bg-surface-highlight/40 rounded-xl border border-gray-200 dark:border-border-dark"
+              >
+                <span class="text-xs font-mono text-text-secondary w-6 text-center">{{ idx + 1 }}</span>
+                <input
+                  v-model="line.label"
+                  @change="updateFromVisualLines"
+                  type="text"
+                  placeholder="00:00.00"
+                  class="w-24 px-2 py-1 bg-white dark:bg-surface-dark border border-gray-300 dark:border-border-dark rounded font-mono text-xs text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <button
+                  type="button"
+                  @click="nudgeVisualLine(idx, -0.5)"
+                  class="px-1.5 py-1 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded text-xs text-text-secondary hover:text-primary transition-colors"
+                  title="Restar 0.5s"
+                >
+                  -0.5s
+                </button>
+                <button
+                  type="button"
+                  @click="nudgeVisualLine(idx, 0.5)"
+                  class="px-1.5 py-1 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded text-xs text-text-secondary hover:text-primary transition-colors"
+                  title="Sumar 0.5s"
+                >
+                  +0.5s
+                </button>
+                <button
+                  type="button"
+                  @click="setVisualLineFromPlayer(idx)"
+                  class="p-1 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded text-text-secondary hover:text-primary transition-colors"
+                  title="Fijar desde la posición actual del reproductor"
+                >
+                  <span class="material-symbols-outlined text-[16px]">my_location</span>
+                </button>
+                <input
+                  v-model="line.text"
+                  @input="updateFromVisualLines"
+                  type="text"
+                  placeholder="Texto del verso..."
+                  class="flex-1 px-3 py-1 bg-white dark:bg-surface-dark border border-gray-300 dark:border-border-dark rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <button
+                  type="button"
+                  @click="insertVisualLineAfter(idx)"
+                  class="p-1 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded text-text-secondary hover:text-green-500 transition-colors"
+                  title="Insertar verso debajo"
+                >
+                  <span class="material-symbols-outlined text-[18px]">add</span>
+                </button>
+                <button
+                  type="button"
+                  @click="deleteVisualLine(idx)"
+                  class="p-1 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded text-text-secondary hover:text-error transition-colors"
+                  title="Eliminar verso"
+                >
+                  <span class="material-symbols-outlined text-[18px]">delete</span>
+                </button>
+              </div>
+
+              <div class="pt-2 flex justify-center">
+                <button
+                  type="button"
+                  @click="addVisualLine"
+                  class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
+                >
+                  <span class="material-symbols-outlined text-[16px]">add</span>
+                  Añadir nuevo verso
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Editor Textarea (v-show keeps DOM element present for compatibility) -->
+          <div v-show="editorMode === 'text'" class="flex-1 p-6 pb-3 flex flex-col overflow-hidden">
+            <textarea
               v-model="editableLyrics"
-              class="w-full h-full p-4 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-xl text-sm font-mono text-gray-900 dark:text-white resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
+              @input="onTextareaInput"
+              class="w-full flex-1 p-4 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-xl text-sm font-mono text-gray-900 dark:text-white resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
               placeholder="Enter lyrics here... (usa [mm:ss.xx] para letras sincronizadas — Ctrl+S guarda)"
             ></textarea>
           </div>
           <p class="px-6 pb-4 text-[11px] text-text-secondary">Ctrl+S / Cmd+S guarda los cambios.</p>
         </div>
-        
+
         <!-- Viewer Mode -->
         <div v-else class="lyrics-content flex-1 flex flex-col overflow-hidden">
           <!-- No Lyrics State -->
@@ -383,12 +505,12 @@
               </button>
             </div>
           </div>
-          
+
           <!-- Synced Lyrics Display -->
           <div v-else-if="currentTrack?.lyricsStatus === 'synced'" class="flex-1 overflow-y-auto custom-scrollbar p-6" data-testid="synced-lyrics-container">
             <div class="space-y-1 max-w-2xl mx-auto">
-              <div 
-                v-for="(line, index) in syncedLyrics" 
+              <div
+                v-for="(line, index) in syncedLyrics"
                 :key="index"
                 :data-line-index="index"
                 :ref="el => setLineRef(el, index)"
@@ -398,11 +520,12 @@
                 ]"
                 @click="seekToLine(index)"
               >
-                <span class="timestamp text-xs font-mono text-text-secondary w-16 shrink-0 pt-1">{{ line.label }}</span>
+                <!-- LY-01: Only show timestamps when toggled or in edit mode -->
+                <span v-if="showTimestamps" class="timestamp text-xs font-mono text-text-secondary w-16 shrink-0 pt-1">{{ line.label }}</span>
                 <p :class="[
                   'text-lg transition-colors',
                   activeLineIndex === index ? 'text-primary font-medium' : 'text-gray-700 dark:text-gray-300'
-                ]">{{ line.text || '♪' }}</p>
+                ]">{{ stripWordTimestamps(line.text) || '♪' }}</p>
               </div>
             </div>
           </div>
@@ -757,9 +880,8 @@
                   <div>
                     <label class="block text-xs text-text-secondary mb-1">Formato de almacenamiento</label>
                     <select v-model="providerForm.storage_format" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-900 dark:text-white text-sm rounded-lg border-0 focus:outline-none focus:ring-2 focus:ring-primary/50">
-                      <option value="lrc">LRC</option>
-                      <option value="plain">Plain text</option>
-                      <option value="ttml">TTML</option>
+                      <option value="lrc">LRC (.lrc) - Estándar compatible</option>
+                      <option value="plain">Texto plano (.txt)</option>
                     </select>
                   </div>
                   <div>
@@ -987,14 +1109,14 @@
         </div>
       </Transition>
     </Teleport>
-    <!-- S202: Karaoke refetch dialog -->
+    <!-- S202: Karaoke refetch dialog (LY-03: background-capable) -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="showKaraokeDialog" class="karaoke-dialog fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="!isKaraokeRunning && (showKaraokeDialog = false)">
+        <div v-if="showKaraokeDialog" class="karaoke-dialog fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="showKaraokeDialog = false">
           <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
               <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Re-chequear letras (Karaoke)</h3>
-              <button v-if="!isKaraokeRunning" @click="showKaraokeDialog = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors">
+              <button @click="showKaraokeDialog = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors" title="Cerrar ventana (el proceso continúa si está en curso)">
                 <span class="material-symbols-outlined text-gray-400">close</span>
               </button>
             </div>
@@ -1042,6 +1164,16 @@
             </div>
 
             <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-end gap-3">
+              <button
+                v-if="isKaraokeRunning"
+                type="button"
+                @click="showKaraokeDialog = false"
+                class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
+                title="Continuar en segundo plano"
+              >
+                <span class="material-symbols-outlined text-[16px]">visibility_off</span>
+                Segundo plano
+              </button>
               <button v-if="isKaraokeRunning" @click="cancelKaraokeRefetchAction" class="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors text-gray-700 dark:text-gray-300">
                 Cancelar proceso
               </button>
@@ -1054,64 +1186,43 @@
       </Transition>
     </Teleport>
 
-    <!-- S202: Animated cover sweep dialog -->
+    <!-- LY-12: Delete confirmation modal -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="showCoverSweepDialog" class="cover-sweep-dialog fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="!isCoverSweepRunning && (showCoverSweepDialog = false)">
-          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
-            <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
-              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Portadas animadas</h3>
-              <button v-if="!isCoverSweepRunning" @click="showCoverSweepDialog = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors">
-                <span class="material-symbols-outlined text-gray-400">close</span>
-              </button>
+        <div v-if="showDeleteConfirmModal" class="delete-lyrics-modal fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-6" @click.self="showDeleteConfirmModal = false">
+          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl p-6">
+            <div class="flex items-center gap-3 text-error mb-4">
+              <span class="material-symbols-outlined text-3xl">warning</span>
+              <h3 class="text-lg font-bold text-gray-900 dark:text-white">¿Eliminar letra de la pista?</h3>
             </div>
-
-            <div class="p-6 space-y-4">
-              <p class="text-xs text-text-secondary leading-relaxed">
-                Busca portadas animadas de Apple Music para los álbumes descargados y las escribe junto al audio
-                (cover.webp) actualizando el CoverFront del FLAC, igual que en la descarga.
-                Los álbumes que ya tienen una portada animada válida se omiten.
-              </p>
-
-              <label v-if="!isCoverSweepRunning && !coverSweepResult" class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                <input type="checkbox" v-model="coverSweepForce"> Re-descargar aunque ya exista cover.webp
-              </label>
-
-              <div v-if="isCoverSweepRunning">
-                <div class="flex items-center justify-between mb-2 text-sm">
-                  <span class="text-gray-700 dark:text-gray-300">Progreso</span>
-                  <span class="font-medium text-gray-900 dark:text-white">{{ coverSweepProgress.current }} / {{ coverSweepProgress.total }}</span>
-                </div>
-                <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                  <div class="h-full bg-primary rounded-full transition-all" :style="{ width: coverSweepProgress.total ? (coverSweepProgress.current / coverSweepProgress.total * 100) + '%' : '0%' }"></div>
-                </div>
-                <p class="mt-3 text-sm text-text-secondary truncate">{{ coverSweepProgress.currentAlbum || '—' }}</p>
-                <p v-if="coverSweepProgress.message" class="mt-1 text-xs text-text-secondary">{{ coverSweepProgress.message }}</p>
-              </div>
-
-              <div v-if="coverSweepResult" class="cover-sweep-summary grid grid-cols-2 gap-2 text-xs">
-                <span>Álbumes: <b>{{ coverSweepResult.scanned_albums }}</b></span>
-                <span class="text-success">Ya animadas: <b>{{ coverSweepResult.already_animated }}</b></span>
-                <span class="text-success">Descargadas: <b>{{ coverSweepResult.downloaded }}</b></span>
-                <span>Sin animación disponible: <b>{{ coverSweepResult.not_found }}</b></span>
-                <span>Fuente no disponible: <b>{{ coverSweepResult.source_unavailable }}</b></span>
-                <span class="text-error">Fallos: <b>{{ coverSweepResult.failed }}</b></span>
-                <span v-if="coverSweepResult.cancelled" class="col-span-2 text-warning">Barrido cancelado por el usuario.</span>
-              </div>
+            <p class="text-sm text-gray-600 dark:text-gray-300 mb-2 leading-relaxed">
+              Esta acción eliminará únicamente la letra guardada en la base de datos para <strong class="text-gray-900 dark:text-white">{{ currentTrack?.title }}</strong>.
+            </p>
+            <div class="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl mb-6 text-xs text-blue-400 flex items-center gap-2">
+              <span class="material-symbols-outlined text-[18px] shrink-0">info</span>
+              <span>El archivo de audio descargado y la pista en tu biblioteca <strong>se conservarán intactos</strong>.</span>
             </div>
-
-            <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-end gap-3">
-              <button v-if="isCoverSweepRunning" @click="cancelCoverSweepAction" class="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors text-gray-700 dark:text-gray-300">
-                Cancelar proceso
+            <div class="flex items-center justify-end gap-3">
+              <button
+                @click="showDeleteConfirmModal = false"
+                class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors"
+              >
+                Cancelar
               </button>
-              <button v-if="!isCoverSweepRunning" @click="runCoverSweep" data-testid="cover-sweep-run" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
-                {{ coverSweepResult ? 'Repetir barrido' : 'Ejecutar' }}
+              <button
+                @click="executeDeleteTrackLyrics"
+                class="px-4 py-2 bg-error hover:bg-error/90 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
+                data-testid="confirm-delete-lyrics-btn"
+              >
+                <span class="material-symbols-outlined text-[16px]">delete</span>
+                Eliminar solo letra
               </button>
             </div>
           </div>
         </div>
       </Transition>
     </Teleport>
+
   </div>
 </template>
 
@@ -1120,11 +1231,12 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '../api/library'
-import { lyricsApi, type KaraokeRefetchResult, type AnimatedCoverSweepResult } from '../api/lyrics'
+import { lyricsApi, type KaraokeRefetchResult } from '../api/lyrics'
 import { settingsApi } from '../api/settings'
 import { toolsApi } from '../api/tools'
 import { TauriEvents } from '@/api/tauri'
 import { usePlayer } from '../composables/usePlayer'
+import { useGlobalTasks } from '../composables/useGlobalTasks'
 import type { LibraryTrack, Lyrics, LyricsConfig, LyricsProviderSetting, LyricsSearchResult } from '../api/types'
 
 // ==============================================
@@ -1141,6 +1253,9 @@ const activeListeners = new Set<UnlistenFn>()
 
 // UI State
 const isEditing = ref(false)
+const showTimestamps = ref(false)
+const showDeleteConfirmModal = ref(false)
+const globalTasks = useGlobalTasks()
 const autoScroll = ref(true)
 const showFetchDialog = ref(false)
 // S192: transient error banner for the file-association flow
@@ -1230,6 +1345,17 @@ function formatClock(sec: number): string {
   const whole = Math.floor(rest)
   const cents = Math.round((rest - whole) * 100)
   return `${String(mm).padStart(2, '0')}:${String(whole).padStart(2, '0')}.${String(Math.min(cents, 99)).padStart(2, '0')}`
+}
+
+// Word-level lyrics (enhanced LRC / KRC) keep a `<mm:ss.xx>` stamp glued to
+// every word. Those stamps are timing data, not words: in listening view only
+// the sane line stamp matters, so read them off. Editing keeps line.text
+// untouched — the raw form is what gets serialized back on save.
+const WORD_TIMESTAMP_RE = /<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>/g
+
+function stripWordTimestamps(text: string): string {
+  if (!text || !text.includes('<')) return text
+  return text.replace(WORD_TIMESTAMP_RE, '').replace(/[ \t]{2,}/g, ' ').trim()
 }
 
 function stripTimestamps(content: string): string {
@@ -1328,6 +1454,57 @@ const filteredTracks = computed(() => {
   }
   
   return result
+})
+
+// Same fixed-height spacer/window/overscan pattern as the Downloads queue.
+// A row has 40px album art plus 12px padding on each side.
+const TRACK_ROW_HEIGHT = 64
+const TRACK_OVERSCAN = 10
+const trackListRef = ref<HTMLElement | null>(null)
+const trackScrollTop = ref(0)
+const trackViewportHeight = ref(520)
+
+const totalTrackHeight = computed(() => filteredTracks.value.length * TRACK_ROW_HEIGHT)
+const trackStartIndex = computed(() => Math.max(0, Math.floor(trackScrollTop.value / TRACK_ROW_HEIGHT) - TRACK_OVERSCAN))
+const trackEndIndex = computed(() => Math.min(
+  filteredTracks.value.length,
+  Math.ceil((trackScrollTop.value + trackViewportHeight.value) / TRACK_ROW_HEIGHT) + TRACK_OVERSCAN
+))
+const trackOffsetY = computed(() => trackStartIndex.value * TRACK_ROW_HEIGHT)
+const visibleTracks = computed(() => filteredTracks.value.slice(trackStartIndex.value, trackEndIndex.value))
+
+function onTrackListScroll(e: Event) {
+  const target = e.target as HTMLElement
+  trackScrollTop.value = target.scrollTop
+  trackViewportHeight.value = target.clientHeight || 520
+}
+
+watch(trackListRef, (element, _, onCleanup) => {
+  if (!element) return
+  const measureViewport = () => { trackViewportHeight.value = element.clientHeight || 520 }
+  measureViewport()
+  // Unlike Downloads' fixed max-height queue, this flex panel can resize.
+  if (typeof ResizeObserver !== 'undefined') {
+    const observer = new ResizeObserver(measureViewport)
+    observer.observe(element)
+    onCleanup(() => observer.disconnect())
+  }
+})
+
+watch([searchQuery, filterType], () => {
+  if (trackListRef.value) trackListRef.value.scrollTop = 0
+  trackScrollTop.value = 0
+})
+
+// A refreshed/filter-dependent list may become shorter while scrolled near its end.
+watch(filteredTracks, () => {
+  const element = trackListRef.value
+  if (!element) return
+  const maxScrollTop = Math.max(0, totalTrackHeight.value - (element.clientHeight || trackViewportHeight.value))
+  if (trackScrollTop.value > maxScrollTop) {
+    element.scrollTop = maxScrollTop
+    trackScrollTop.value = maxScrollTop
+  }
 })
 
 // Current track
@@ -1617,7 +1794,9 @@ const karaokeResult = ref<KaraokeRefetchResult | null>(null)
 const karaokeProgress = ref({ current: 0, total: 0, currentTrack: '', message: '' })
 
 function openKaraokeDialog(): void {
-  karaokeResult.value = null
+  if (!isKaraokeRunning.value) {
+    karaokeResult.value = null
+  }
   showKaraokeDialog.value = true
 }
 
@@ -1626,7 +1805,18 @@ async function runKaraokeRefetch(): Promise<void> {
   isKaraokeRunning.value = true
   karaokeResult.value = null
   karaokeProgress.value = { current: 0, total: 0, currentTrack: '', message: '' }
+  globalTasks.addTask({
+    id: 'karaoke-refetch',
+    type: 'lyrics',
+    name: 'Re-chequeo Karaoke',
+    description: 'Re-chequeando letras de biblioteca...',
+    status: 'running',
+    progress: 0,
+    current: 0,
+    total: tracks.value.length || 0,
+  })
   let unlisten: UnlistenFn | null = null
+  let finalResult: KaraokeRefetchResult | null = null
   try {
     unlisten = await listen<{ status: string; current: number; total: number; track: string; message: string }>(
       TauriEvents.KARAOKE_REFETCH_PROGRESS,
@@ -1636,10 +1826,19 @@ async function runKaraokeRefetch(): Promise<void> {
         karaokeProgress.value.total = p.total
         karaokeProgress.value.currentTrack = p.track
         karaokeProgress.value.message = p.message ?? ''
+        const pct = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0
+        globalTasks.updateTaskProgress(
+          'karaoke-refetch',
+          pct,
+          p.current,
+          p.total,
+          p.track ? `${p.track}: ${p.message || 'Verificando'}` : p.message
+        )
       }
     )
     activeListeners.add(unlisten)
     const res = await lyricsApi.refetchKaraokeLyrics({ scope: karaokeScope.value })
+    finalResult = res
     karaokeResult.value = res
     const r = res
     notify(
@@ -1658,6 +1857,13 @@ async function runKaraokeRefetch(): Promise<void> {
       unlisten()
     }
     isKaraokeRunning.value = false
+    if (finalResult && finalResult.cancelled) {
+      globalTasks.completeTask('karaoke-refetch', false, 'Cancelado por el usuario')
+    } else if (finalResult) {
+      globalTasks.completeTask('karaoke-refetch', true)
+    } else {
+      globalTasks.completeTask('karaoke-refetch', false, 'Error durante el re-chequeo')
+    }
   }
 }
 
@@ -1665,65 +1871,6 @@ async function cancelKaraokeRefetchAction(): Promise<void> {
   try {
     await lyricsApi.cancelKaraokeRefetch()
     notify('Cancelando tras la pista actual…', 'info')
-  } catch (err) {
-    console.error('Cancel failed:', err)
-  }
-}
-
-const showCoverSweepDialog = ref(false)
-const isCoverSweepRunning = ref(false)
-const coverSweepForce = ref(false)
-const coverSweepResult = ref<AnimatedCoverSweepResult | null>(null)
-const coverSweepProgress = ref({ current: 0, total: 0, currentAlbum: '', message: '' })
-
-function openCoverSweepDialog(): void {
-  coverSweepResult.value = null
-  showCoverSweepDialog.value = true
-}
-
-async function runCoverSweep(): Promise<void> {
-  if (isCoverSweepRunning.value) return
-  isCoverSweepRunning.value = true
-  coverSweepResult.value = null
-  coverSweepProgress.value = { current: 0, total: 0, currentAlbum: '', message: '' }
-  let unlisten: UnlistenFn | null = null
-  try {
-    unlisten = await listen<{ status: string; current: number; total: number; album: string; message: string }>(
-      TauriEvents.ANIMATED_COVER_SWEEP_PROGRESS,
-      (event) => {
-        const p = event.payload
-        coverSweepProgress.value.current = p.current
-        coverSweepProgress.value.total = p.total
-        coverSweepProgress.value.currentAlbum = p.album
-        coverSweepProgress.value.message = p.message ?? ''
-      }
-    )
-    activeListeners.add(unlisten)
-    const res = await lyricsApi.sweepAnimatedCovers({ force: coverSweepForce.value })
-    coverSweepResult.value = res
-    const r = res
-    notify(
-      r.cancelled
-        ? 'Barrido de portadas cancelado'
-        : `Portadas animadas: ${r.downloaded} descargadas, ${r.already_animated} ya válidas, ${r.not_found} sin animación, ${r.failed} fallos`,
-      r.downloaded > 0 ? 'success' : 'info'
-    )
-  } catch (err) {
-    console.error('Animated cover sweep failed:', err)
-    notify(err instanceof Error ? err.message : String(err), 'error')
-  } finally {
-    if (unlisten) {
-      activeListeners.delete(unlisten)
-      unlisten()
-    }
-    isCoverSweepRunning.value = false
-  }
-}
-
-async function cancelCoverSweepAction(): Promise<void> {
-  try {
-    await lyricsApi.cancelAnimatedCoverSweep()
-    notify('Cancelando tras el álbum actual…', 'info')
   } catch (err) {
     console.error('Cancel failed:', err)
   }
@@ -1805,23 +1952,32 @@ async function exportCurrentLyrics() {
   const track = currentTrack.value
   const lyr = currentLyrics.value
   if (!track || !lyr) return
-  const libTrack = tracks.value.find(t => t.id === track.id)
-  if (!libTrack) return
+  const libTrack = tracks.value.find(t => t.id === track.id) || (track as unknown as LibraryTrack)
   await exportLyricsRecords([{ track: libTrack, lyrics: lyr }], detectExportFormat(lyr.format))
 }
 
-async function deleteTrackLyrics() {
+function confirmDeleteTrackLyrics() {
+  if (!selectedTrackId.value || !currentLyrics.value) return
+  showDeleteConfirmModal.value = true
+}
+
+async function executeDeleteTrackLyrics() {
   if (!selectedTrackId.value) return
+  showDeleteConfirmModal.value = false
   try {
     await lyricsApi.deleteLyrics(selectedTrackId.value)
     currentLyrics.value = null
     editableLyrics.value = ''
     await Promise.all([loadTracks(), loadLyricsStats()])
-    notify('Letra eliminada', 'success')
+    notify('Letra eliminada (el archivo de música y la pista se conservan)', 'success')
   } catch (err) {
     console.error('Failed to delete lyrics:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
   }
+}
+
+async function deleteTrackLyrics() {
+  confirmDeleteTrackLyrics()
 }
 
 // ==============================================
@@ -1833,10 +1989,120 @@ const isSavingEdit = ref(false)
 const validationMessage = ref<string | null>(null)
 const validationOk = ref(false)
 
+interface VisualLine {
+  label: string
+  text: string
+}
+const visualLines = ref<VisualLine[]>([])
+const editorMode = ref<'visual' | 'text'>('visual')
+
+function parseTimestampSec(label: string): number {
+  const clean = label.replace(/[\[\]]/g, '').trim()
+  const match = clean.match(/^(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?$/)
+  if (!match) return 0
+  const m = parseInt(match[1], 10)
+  const s = parseInt(match[2], 10)
+  const cs = match[3] ? parseInt(match[3].padEnd(2, '0').slice(0, 2), 10) : 0
+  return m * 60 + s + cs / 100
+}
+
+function formatTimestampSec(sec: number): string {
+  const clamped = Math.max(0, sec)
+  const m = Math.floor(clamped / 60)
+  const s = Math.floor(clamped % 60)
+  const cs = Math.floor((clamped % 1) * 100)
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`
+}
+
+function parseVisualLines(content: string): VisualLine[] {
+  const parsed = parseLrc(content)
+  if (parsed.length > 0) {
+    return parsed.map(l => ({ label: l.label, text: l.text }))
+  }
+  return (content || '')
+    .split(/\r?\n/)
+    .filter(l => l.trim().length > 0)
+    .map(line => ({ label: '00:00.00', text: line }))
+}
+
+function updateVisualLinesFromText() {
+  visualLines.value = parseVisualLines(editableLyrics.value)
+}
+
+function updateTextFromVisualLines() {
+  if (visualLines.value.length === 0) return
+  editableLyrics.value = visualLines.value
+    .map(l => {
+      const cleanLabel = l.label.replace(/[\[\]]/g, '').trim()
+      return `[${cleanLabel}] ${l.text}`
+    })
+    .join('\n')
+}
+
+function updateFromVisualLines() {
+  updateTextFromVisualLines()
+}
+
+function onTextareaInput() {
+  editorMode.value = 'text'
+}
+
+function switchEditorMode(mode: 'visual' | 'text') {
+  if (mode === 'visual') {
+    updateVisualLinesFromText()
+  } else {
+    updateTextFromVisualLines()
+  }
+  editorMode.value = mode
+}
+
+function nudgeVisualLine(idx: number, delta: number) {
+  const line = visualLines.value[idx]
+  if (!line) return
+  const cur = parseTimestampSec(line.label)
+  line.label = formatTimestampSec(cur + delta)
+  updateTextFromVisualLines()
+}
+
+function setVisualLineFromPlayer(idx: number) {
+  const line = visualLines.value[idx]
+  if (!line) return
+  const t = player.positionSec.value || 0
+  line.label = formatTimestampSec(t)
+  updateTextFromVisualLines()
+}
+
+function insertVisualLineAfter(idx: number) {
+  const prevLine = visualLines.value[idx]
+  const newTime = prevLine ? parseTimestampSec(prevLine.label) + 2.0 : 0
+  visualLines.value.splice(idx + 1, 0, {
+    label: formatTimestampSec(newTime),
+    text: '',
+  })
+  updateTextFromVisualLines()
+}
+
+function deleteVisualLine(idx: number) {
+  visualLines.value.splice(idx, 1)
+  updateTextFromVisualLines()
+}
+
+function addVisualLine() {
+  const last = visualLines.value[visualLines.value.length - 1]
+  const newTime = last ? parseTimestampSec(last.label) + 3.0 : 0
+  visualLines.value.push({
+    label: formatTimestampSec(newTime),
+    text: '',
+  })
+  updateTextFromVisualLines()
+}
+
 const editorFormat = computed<'lrc' | 'plain' | 'ttml'>(() => detectFormat(editableLyrics.value))
 
 function startEditing() {
   validationMessage.value = null
+  updateVisualLinesFromText()
+  editorMode.value = detectFormat(editableLyrics.value) === 'lrc' ? 'visual' : 'text'
   isEditing.value = true
 }
 
@@ -1857,6 +2123,9 @@ function validateEditor() {
 }
 
 async function saveLyricsEdit() {
+  if (editorMode.value === 'visual') {
+    updateTextFromVisualLines()
+  }
   if (!selectedTrackId.value || !editableLyrics.value.trim()) return
   isSavingEdit.value = true
   try {
@@ -2441,7 +2710,12 @@ async function loadProviderSettings() {
     providers.value = []
   }
   try {
-    providerForm.value = { ...defaultConfig(), ...(await settingsApi.getLyricsConfig()) }
+    const cfg = await settingsApi.getLyricsConfig()
+    providerForm.value = {
+      ...defaultConfig(),
+      ...cfg,
+      storage_format: cfg.storage_format === 'ttml' ? 'lrc' : (cfg.storage_format || 'lrc'),
+    }
   } catch (err) {
     console.warn('Lyrics config unavailable, using defaults:', err)
     providerForm.value = defaultConfig()
@@ -2519,11 +2793,25 @@ async function openHistory() {
 }
 
 async function restoreVersion(version: Lyrics) {
-  currentLyrics.value = version
-  editableLyrics.value = version.content
-  isEditing.value = false
-  showLyricsHistory.value = false
-  notify(`Versión ${version.format} de ${version.created_at?.slice(0, 10) ?? 'archivo'} activada`, 'success')
+  try {
+    await lyricsApi.saveLyrics({
+      trackId: version.track_id,
+      format: version.format,
+      content: version.content,
+      syncLevel: version.sync_level ?? undefined,
+      source: version.source ?? undefined,
+      language: version.language ?? undefined,
+    })
+    currentLyrics.value = version
+    editableLyrics.value = version.content
+    isEditing.value = false
+    showLyricsHistory.value = false
+    await Promise.all([loadTracks(), loadLyricsStats()])
+    notify(`Versión ${version.format} de ${version.created_at?.slice(0, 10) ?? 'archivo'} activada y persistida`, 'success')
+  } catch (err) {
+    console.error('Failed to persist restored version:', err)
+    notify('Error al persistir la versión restaurada', 'error')
+  }
 }
 
 // ==============================================

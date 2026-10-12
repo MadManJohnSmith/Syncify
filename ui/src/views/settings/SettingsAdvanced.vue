@@ -29,11 +29,7 @@
         <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark flex items-center gap-2">
           <span class="material-symbols-outlined text-primary">memory</span> Workers
         </h3>
-        <div class="grid grid-cols-3 gap-4">
-          <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-max-downloads">Max Downloads</label>
-            <input type="number" min="1" max="10" id="advanced-max-downloads" :value="advancedSettings.settings.max_concurrent_downloads" @change="updateClamped('max_concurrent_downloads', getEventValue($event), 1, 10)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
-          </div>
+        <div class="grid grid-cols-2 gap-4">
           <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
             <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-max-imports">Max Imports</label>
             <input type="number" min="1" max="5" id="advanced-max-imports" :value="advancedSettings.settings.max_concurrent_imports" @change="updateClamped('max_concurrent_imports', getEventValue($event), 1, 5)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
@@ -115,24 +111,93 @@
          <div class="flex gap-3 mt-4">
            <button @click="advancedSettings.runDiagnostics()" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">Run Diagnostics</button>
            <button @click="runBatchHealthCheck" :disabled="advancedSettings.isRunningBatchHealthCheck.value" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-200 dark:hover:bg-surface-highlight/80 transition-colors disabled:opacity-50">Batch Health Check</button>
-           <button @click="confirmVacuum" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-200 dark:hover:bg-surface-highlight/80 transition-colors">Vacuum Database</button>
+           <button @click="confirmVacuum" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-200 dark:hover:bg-surface-highlight/80 transition-colors disabled:opacity-50">Vacuum Database</button>
            <button @click="confirmResetAdvanced" class="px-4 py-2 border border-error/50 bg-error/5 text-error rounded-lg text-sm font-medium hover:bg-error/10 transition-colors">Reset Defaults</button>
          </div>
        </section>
+
+       <!-- Reports Section: the only entry point to `save_user_report` now that
+            the help panel is gone. Reports land next to the logs configured
+            above, as local files; nothing is uploaded. -->
+       <section class="space-y-4" data-testid="advanced-user-reports">
+         <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark flex items-center gap-2">
+           <span class="material-symbols-outlined text-primary">bug_report</span> Reports &amp; Feedback
+         </h3>
+         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+           <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg flex flex-col items-start gap-3">
+             <div class="flex items-center gap-2">
+               <span class="material-symbols-outlined text-error">bug_report</span>
+               <p class="text-sm font-medium text-gray-900 dark:text-white">Report a bug</p>
+             </div>
+             <p class="text-xs text-text-secondary">
+               Describe what happened, optionally with the steps to reproduce and the system log. Saved locally.
+             </p>
+             <button
+               data-testid="advanced-open-bug-report"
+               class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors"
+               @click="openReportsModal('bug')"
+             >
+               Report a bug
+             </button>
+           </div>
+           <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg flex flex-col items-start gap-3">
+             <div class="flex items-center gap-2">
+               <span class="material-symbols-outlined text-info">chat</span>
+               <p class="text-sm font-medium text-gray-900 dark:text-white">Send feedback</p>
+             </div>
+             <p class="text-xs text-text-secondary">
+               Tell us what to improve, or request a feature. Saved locally, never uploaded.
+             </p>
+             <button
+               data-testid="advanced-open-feedback"
+               class="px-4 py-2 bg-gray-100 dark:bg-surface-dark text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-200 dark:hover:bg-white/5 transition-colors"
+               @click="openReportsModal('feedback')"
+             >
+               Send feedback
+             </button>
+           </div>
+         </div>
+         <p class="text-xs text-text-secondary" data-testid="advanced-reports-destination">
+           Reports and feedback are written as files under your Syncify reports folder, next to the app
+           logs. They are never sent to a server.
+         </p>
+       </section>
     </template>
+
+    <!-- Report / feedback forms. Kept in their own component so both entry
+         points share the same validation, loading state and saved-path
+         confirmation. -->
+    <UserReportsModal v-model="showReportsModal" :initial-mode="reportsInitialMode" @saved="onReportSaved" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { watch, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 // R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
 import { confirm } from '@/composables/useToast'
 import { useAdvancedSettings } from '@/composables/useAdvancedSettings'
 import BaseToggle from '@/components/settings/BaseToggle.vue'
+import UserReportsModal from '@/components/UserReportsModal.vue'
 
 const getEventValue = (e: any) => e.target?.value || ''
 
 const advancedSettings = useAdvancedSettings()
+
+// Reports & feedback modal (the entry point to `save_user_report`)
+const showReportsModal = ref(false)
+const reportsInitialMode = ref<'bug' | 'feedback'>('bug')
+
+function openReportsModal(mode: 'bug' | 'feedback') {
+  reportsInitialMode.value = mode
+  showReportsModal.value = true
+}
+
+/** The modal already shows the backend path; the toast only confirms. */
+function onReportSaved(filePath: string) {
+  if (!filePath) {
+    console.error('User report saved without a file path')
+  }
+}
 
 // Clamp value to [min, max] range — prevents out-of-bounds persistence
 function clampValue(val: number, min: number, max: number): number {

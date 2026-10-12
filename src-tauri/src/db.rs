@@ -2,8 +2,11 @@
 // RECOMPILE_TIMESTAMP: 2026-04-26 15:10
 
 use sqlx::migrate::{MigrateError, Migrator};
-use sqlx::{sqlite::SqlitePoolOptions, Executor, Pool, Sqlite};
-use std::path::PathBuf;
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    Connection, Executor, Pool, Sqlite,
+};
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 /// Database connection pool
@@ -579,6 +582,114 @@ mod tests {
             "Failed to insert artist 'X': column null"
         ));
     }
+
+    #[tokio::test]
+    async fn log04_read_only_persisted_settings_and_fallback() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("syncify.db");
+        let missing = dir.path().join("missing.db");
+        assert_eq!(read_persisted_logging_settings(&missing).await, None);
+        assert!(!missing.exists(), "la lectura no debe crear la BD");
+
+        let options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true);
+        let mut writer = sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .expect("writer");
+        sqlx::query("PRAGMA journal_mode = WAL")
+            .execute(&mut writer)
+            .await
+            .expect("WAL de prueba");
+        assert_eq!(read_persisted_logging_settings(&db_path).await, None);
+        sqlx::query(
+            "CREATE TABLE advanced_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                log_level TEXT NOT NULL DEFAULT 'info',
+                log_to_file INTEGER NOT NULL DEFAULT 1
+            )",
+        )
+        .execute(&mut writer)
+        .await
+        .expect("tabla como migración 0016");
+        assert_eq!(read_persisted_logging_settings(&db_path).await, None);
+
+        sqlx::query(
+            "INSERT INTO advanced_settings (id, log_level, log_to_file) VALUES (1, 'debug', 1)",
+        )
+        .execute(&mut writer)
+        .await
+        .expect("seed true");
+        assert_eq!(
+            read_persisted_logging_settings(&db_path).await,
+            Some((true, "debug".to_string()))
+        );
+
+        sqlx::query(
+            "UPDATE advanced_settings SET log_to_file = 0, log_level = 'warn' WHERE id = 1",
+        )
+        .execute(&mut writer)
+        .await
+        .expect("seed false");
+        assert_eq!(
+            read_persisted_logging_settings(&db_path).await,
+            Some((false, "warn".to_string()))
+        );
+        let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&mut writer)
+            .await
+            .expect("journal mode");
+        assert_eq!(journal_mode, "wal", "la lectura no altera journal_mode");
+        writer.close().await.expect("close writer");
+    }
+
+    #[test]
+    fn log04_native_bd_wins_over_legacy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let native = dir.path().join("native.db");
+        let legacy = dir.path().join("legacy.db");
+        std::fs::File::create(&native).expect("native");
+        std::fs::File::create(&legacy).expect("legacy");
+        assert_eq!(
+            existing_db_path(native.clone(), Some(legacy)),
+            Some(native),
+            "si existe la BD nativa, se lee esa y no la legacy"
+        );
+
+        let missing_native = dir.path().join("nope.db");
+        let legacy = dir.path().join("legacy.db");
+        assert_eq!(
+            existing_db_path(missing_native.clone(), Some(legacy.clone())),
+            Some(legacy),
+            "sin BD nativa se lee la legacy antes de que la migre get_db_path"
+        );
+        assert_eq!(
+            existing_db_path(missing_native, None),
+            None,
+            "sin ninguna BD debe ser None"
+        );
+    }
+
+    #[test]
+    fn log04_existing_db_path_never_creates_dirs_or_files() {
+        // Garantía de no-tocar-disco: `existing_db_path_for_logging` solo
+        // consulta metadatos, nunca crea directorio ni fichero.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("com.syncify.app");
+        let exe = dir.path().join("bin").join("syncify");
+        std::fs::create_dir_all(exe.parent().unwrap()).expect("dir exe");
+
+        assert_eq!(existing_db_path_for_logging(data_dir.clone(), None), None);
+        assert!(!data_dir.exists(), "no debe crearse el directorio de datos");
+
+        // Con BD nativa presente, se devuelve esa ruta.
+        std::fs::create_dir_all(&data_dir).expect("crear data dir");
+        std::fs::File::create(data_dir.join("syncify.db")).expect("BD nativa");
+        assert_eq!(
+            existing_db_path_for_logging(data_dir.clone(), Some(exe)),
+            Some(data_dir.join("syncify.db"))
+        );
+    }
 }
 
 /// Get the database file path, creating directories and migrating if necessary
@@ -628,6 +739,48 @@ pub async fn get_db_path(app_handle: &tauri::AppHandle) -> PathBuf {
     }
 
     new_db_path
+}
+
+/// Localiza la BD a leer ANTES de inicializar el subscriber (LOG-04), sin
+/// crear directorios ni mover ficheros. Misma ruta nativa y misma prioridad
+/// que [`get_db_path`]; si la BD aún no se migró, lee la ruta legacy que
+/// `get_db_path` migrará después de instalar el subscriber.
+pub fn existing_db_path_for_logging(
+    app_local_data_dir: PathBuf,
+    exe_path: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let native_path = app_local_data_dir.join("syncify.db");
+    let legacy_path =
+        exe_path.and_then(|exe| exe.parent().map(|dir| dir.join("data").join("syncify.db")));
+    existing_db_path(native_path, legacy_path)
+}
+
+pub fn existing_db_path(native_path: PathBuf, legacy_path: Option<PathBuf>) -> Option<PathBuf> {
+    if native_path.is_file() {
+        Some(native_path)
+    } else {
+        legacy_path.filter(|path| path.is_file())
+    }
+}
+
+/// Lee `advanced_settings(id=1)` desde un fichero existente en modo SOLO LECTURA.
+/// No ejecuta migraciones, no crea DB, no cambia journal_mode/WAL: SQLx usa
+/// `SQLITE_OPEN_READONLY` sin `PRAGMA journal_mode`. Cualquier error o ausencia
+/// retorna None y preserva el fallback de `init_logging_system(None, None)`.
+pub async fn read_persisted_logging_settings(db_path: &Path) -> Option<(bool, String)> {
+    let options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .read_only(true);
+    let mut connection = sqlx::SqliteConnection::connect_with(&options).await.ok()?;
+    let row = sqlx::query_as::<_, (bool, String)>(
+        "SELECT log_to_file, log_level FROM advanced_settings WHERE id = 1",
+    )
+    .fetch_optional(&mut connection)
+    .await
+    .ok()
+    .flatten();
+    connection.close().await.ok()?;
+    row
 }
 
 /// S195-fix: lock de escritor POR SERVICIO+CUENTA basado en flock del SO.

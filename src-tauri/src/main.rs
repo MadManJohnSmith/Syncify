@@ -80,28 +80,10 @@ fn main() {
         }
     }
 
-    // Initialize unified logging system (rotating file in dev, console, in-memory ring buffer)
-    let log_config = services::logging::init_logging_system(None, None);
-
-    tracing::info!(
-        is_dev = log_config.is_development,
-        log_to_file = log_config.log_to_file,
-        log_level = %log_config.log_level,
-        log_dir = %log_config.log_dir.display(),
-        "Syncify starting..."
-    );
-
-    // Hasta `init_logging_system` no hay subscriber: un `tracing::info!` en el
-    // bloque de arriba se perdía sin llegar al log de arranque.
-    #[cfg(target_os = "linux")]
-    tracing::info!(
-        dmabuf_disabled = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").as_deref() == Ok("1"),
-        compositing_disabled =
-            std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").as_deref() == Ok("1"),
-        "WebKit rendering: EGL-independent path configured"
-    );
-
-    // Create async runtime for database initialization
+    // Initialize unified logging system (rotating file in dev, console, in-memory ring buffer).
+    // El subscriber se instala en `setup`, justo antes de las primeras emisiones
+    // de logs (ver más abajo); aquí solo se crea el runtime que la lectura
+    // previa de ajustes persistidos necesita.
     let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
     // Create worker state (active by default for background queue execution)
@@ -136,6 +118,46 @@ fn main() {
         .setup(move |app| {
             // Initialize database using AppHandle inside setup
             let init_handle = app.handle().clone();
+
+            // ── LOG-04: leer ajustes persistidos de logging ANTES del subscriber ──
+            // El subscriber se instala aquí porque solo `setup` recibe el AppHandle
+            // necesario para resolver la ruta real de la BD (ver `get_db_path`).
+            // La lectura es SOLO LECTURA: no crea la BD, no ejecuta migraciones y
+            // no modifica WAL/journal_mode. Si falta la BD, la fila o hay error,
+            // cae a None,None exactamente como antes (defaults dev/release intactos).
+            // Sin ruta de datos no hay nada que leer: se conserva el fallback
+            // histórico de `init_logging_system(None, None)`.
+            let persisted_logging = init_handle
+                .path()
+                .app_local_data_dir()
+                .ok()
+                .and_then(|data_dir| {
+                    db::existing_db_path_for_logging(data_dir, std::env::current_exe().ok())
+                })
+                .and_then(|path| rt.block_on(db::read_persisted_logging_settings(&path)));
+            let log_config = services::logging::init_logging_system(
+                persisted_logging.as_ref().map(|(to_file, _)| *to_file),
+                persisted_logging.as_ref().map(|(_, level)| level.as_str()),
+            );
+
+            tracing::info!(
+                is_dev = log_config.is_development,
+                log_to_file = log_config.log_to_file,
+                log_level = %log_config.log_level,
+                log_dir = %log_config.log_dir.display(),
+                "Syncify starting..."
+            );
+
+            // Hasta `init_logging_system` no hay subscriber: un `tracing::info!` en
+            // el bloque de arriba se perdía sin llegar al log de arranque.
+            #[cfg(target_os = "linux")]
+            tracing::info!(
+                dmabuf_disabled = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").as_deref() == Ok("1"),
+                compositing_disabled =
+                    std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").as_deref() == Ok("1"),
+                "WebKit rendering: EGL-independent path configured"
+            );
+
             services::logging::get_global_log_buffer().set_app_handle(init_handle.clone());
             commands::set_global_app_handle(init_handle.clone());
 
@@ -382,30 +404,27 @@ fn main() {
                 )
                 .iter()
                 .any(|candidate| candidate == std::path::Path::new(&python_cmd));
-                let recovery_hint = if bundled_python {
-                    "The Python runtime bundled with Syncify is incomplete (spotipy, pyacoustid, mutagen or yarl missing). Nothing to install: reinstall the app, and report it from Help if it persists."
-                } else {
-                    "Missing required Python packages (spotipy, pyacoustid, etc). Install them with: pip install --user --break-system-packages -r requirements.txt (or use a venv)"
-                };
+                let is_venv = std::path::Path::new(&python_cmd)
+                    .starts_with(project_root.join(".venv"))
+                    || python_cmd.contains(".venv");
 
-                // Log if .venv is missing as requested in S73. Solo es un
-                // problema real si get_python_executable cayó al fallback de
-                // PATH: un Python empaquetado (`python/bin/python`) o un venv
-                // ya son instalaciones válidas y no generan ruido.
-                if python_cmd == "python" {
+                // Distinguir honestamente si falta el venv (S73)
+                if python_cmd == "python" || python_cmd == "python3" {
                     let expected_venv = if cfg!(windows) {
                         project_root.join(".venv").join("Scripts").join("python.exe")
                     } else {
                         project_root.join(".venv").join("bin").join("python")
                     };
-                    tracing::warn!("Python venv not found at {:?}. Python features disabled.", expected_venv);
+                    if !expected_venv.exists() {
+                        tracing::warn!(
+                            "Python venv no encontrado en '{}'; usando Python del sistema ({}). Se recomienda crear un .venv.",
+                            expected_venv.display(),
+                            python_cmd
+                        );
+                    }
                 }
 
-                // Run the check with a 5-second timeout. Módulos que los
-                // puentes sí importan: fuzzywuzzy ya no es dependencia
-                // (requirements.txt trae rapidfuzz vía syncedlyrics) y un
-                // import muerto aquí marcaba "deps faltantes" con el bundle
-                // completo instalado.
+                // Run the check with a 5-second timeout.
                 let check_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     crate::cmd_utils::create_tokio_command(&python_cmd)
                         .arg("-c")
@@ -419,10 +438,97 @@ fn main() {
                     Ok(Ok(output)) => {
                         if !output.status.success() {
                             let stderr = String::from_utf8_lossy(&output.stderr);
-                            tracing::warn!("Python dependencies missing: {}. Trying auto-install...", stderr);
+                            tracing::warn!(
+                                "Python dependencies missing: {}. Verificando entorno para auto-instalación...",
+                                stderr.lines().next().unwrap_or("Module import error")
+                            );
 
-                            // requirements.txt en el árbol dev o en los resources
-                            // empaquetados (find_scripts_dir cubre `_up_/scripts`).
+                            if bundled_python {
+                                let bundled_err = "The Python runtime bundled with Syncify is incomplete \
+                                    (spotipy, pyacoustid, mutagen or yarl missing). Reinstall the application.";
+                                tracing::error!("{}", bundled_err);
+                                use tauri::Emitter;
+                                let _ = startup_handle.emit(
+                                    "python_deps_missing",
+                                    serde_json::json!({ "message": bundled_err }),
+                                );
+                                return;
+                            }
+
+                            // 1. Diagnóstico honesto de pip: verificar si pip existe en este intérprete
+                            let mut pip_check_cmd = crate::cmd_utils::create_tokio_command(&python_cmd);
+                            pip_check_cmd.arg("-m").arg("pip").arg("--version");
+                            pip_check_cmd.env_remove("APPIMAGE");
+                            pip_check_cmd.env_remove("APPDIR");
+
+                            let mut has_pip = match pip_check_cmd.output().await {
+                                Ok(res) => res.status.success(),
+                                Err(_) => false,
+                            };
+
+                            // Si es un venv y carece de pip, intentar bootstrapping honesto vía ensurepip
+                            if !has_pip && is_venv {
+                                tracing::warn!(
+                                    "[CRASH-PYTHON] El venv en '{}' carece de pip. Intentando bootstrap con ensurepip...",
+                                    python_cmd
+                                );
+                                let mut ensurepip_cmd = crate::cmd_utils::create_tokio_command(&python_cmd);
+                                ensurepip_cmd.arg("-m").arg("ensurepip").arg("--default-pip");
+                                ensurepip_cmd.env_remove("APPIMAGE");
+                                ensurepip_cmd.env_remove("APPDIR");
+
+                                match ensurepip_cmd.output().await {
+                                    Ok(ep_res) if ep_res.status.success() => {
+                                        tracing::info!("✓ ensurepip instaló pip exitosamente en el .venv");
+                                        has_pip = true;
+                                    }
+                                    Ok(ep_res) => {
+                                        let ep_err = String::from_utf8_lossy(&ep_res.stderr);
+                                        tracing::warn!(
+                                            "ensurepip falló en .venv: {}",
+                                            ep_err.lines().last().unwrap_or("(sin stderr)")
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("ensurepip no pudo ejecutarse: {}", e);
+                                    }
+                                }
+                            }
+
+                            // Si no hay pip tras el diagnóstico / bootstrap:
+                            if !has_pip {
+                                // El texto de recuperacion depende del runtime: al que
+                                // tiene el AppImage/instalador no le sirve un
+                                // `pip install` en su máquina (contrato verificado por
+                                // linux_webkit_startup_and_python_packaging_test).
+                                let recovery_hint = if bundled_python {
+                                    "The Python runtime bundled with Syncify is incomplete (pip missing). Please reinstall the app."
+                                        .to_string()
+                                } else {
+                                    if is_venv {
+                                        "Tu entorno virtual (.venv) no dispone de 'pip'. Ejecuta manualmente en tu terminal: \
+                                             'source .venv/bin/activate && python -m ensurepip --default-pip' \
+                                             (o regenera el entorno con: 'python3 -m venv --upgrade-deps .venv' y luego 'pip install -r requirements.txt')."
+                                            .to_string()
+                                    } else {
+                                        format!(
+                                            "El intérprete de Python del sistema ('{}') no dispone de 'pip'. \
+                                             Instala python-pip en tu sistema o crea un entorno virtual recomendado: \
+                                             'python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'.",
+                                            python_cmd
+                                        )
+                                    }
+                                };
+                                tracing::warn!("{}", recovery_hint);
+                                use tauri::Emitter;
+                                let _ = startup_handle.emit(
+                                    "python_deps_missing",
+                                    serde_json::json!({ "message": recovery_hint.clone() }),
+                                );
+                                return;
+                            }
+
+                            // 2. pip está disponible: proceder a instalar requirements.txt
                             let req_file = [
                                 project_root.join("requirements.txt"),
                                 project_root.join("scripts").join("requirements.txt"),
@@ -431,56 +537,91 @@ fn main() {
                             ]
                             .into_iter()
                             .find(|p| p.exists());
+
                             let mut auto_fixed = false;
+                            let mut failure_hint = String::new();
+
                             if let Some(req_file) = req_file {
-                                // Intento 1: pip normal (solo funciona tal cual en un venv).
-                                let mut install_result = crate::cmd_utils::create_tokio_command(&python_cmd)
+                                tracing::info!("Intentando auto-instalación de requirements.txt mediante pip...");
+                                let mut install_cmd = crate::cmd_utils::create_tokio_command(&python_cmd);
+                                install_cmd
                                     .arg("-m")
                                     .arg("pip")
                                     .arg("install")
                                     .arg("-r")
-                                    .arg(&req_file)
-                                    .output()
-                                    .await;
+                                    .arg(&req_file);
+                                install_cmd.env_remove("APPIMAGE");
+                                install_cmd.env_remove("APPDIR");
 
-                                // Intento 2: Pythons "externally-managed" (PEP 668: Arch,
-                                // Fedora, Debian 12+) rechazan pip global; `--user
-                                // --break-system-packages` instala en el site-packages del
-                                // usuario sin tocar el del sistema. pip antiguo (<23) no
-                                // conoce el flag y fallará igual → evento al frontend.
-                                let first_failed = !install_result
-                                    .as_ref()
-                                    .is_ok_and(|r| r.status.success());
-                                if first_failed {
-                                    tracing::info!(
-                                        "Plain pip install failed; retrying with --user --break-system-packages (PEP 668)"
-                                    );
-                                    install_result = crate::cmd_utils::create_tokio_command(&python_cmd)
-                                        .arg("-m")
-                                        .arg("pip")
-                                        .arg("install")
-                                        .arg("--user")
-                                        .arg("--break-system-packages")
-                                        .arg("-r")
-                                        .arg(&req_file)
-                                        .output()
-                                        .await;
-                                }
+                                let install_result = install_cmd.output().await;
 
                                 match install_result {
                                     Ok(res) if res.status.success() => {
-                                        tracing::info!("Successfully auto-installed Python requirements!");
+                                        tracing::info!("✓ Dependencias de Python instaladas exitosamente con pip!");
                                         auto_fixed = true;
                                     }
                                     Ok(res) => {
                                         let stderr = String::from_utf8_lossy(&res.stderr);
-                                        tracing::warn!(
-                                            "pip auto-install failed: {}",
-                                            stderr.lines().last().unwrap_or("(sin stderr)")
-                                        );
+                                        let is_pep668 = stderr.contains("externally-managed-environment")
+                                            || stderr.contains("PEP 668")
+                                            || stderr.contains("break-system-packages");
+
+                                        if is_pep668 {
+                                            tracing::warn!(
+                                                "pip install falló por PEP 668; reintentando con --break-system-packages"
+                                            );
+                                            let mut user_cmd = crate::cmd_utils::create_tokio_command(&python_cmd);
+                                            user_cmd.arg("-m").arg("pip").arg("install");
+                                            if !is_venv {
+                                                user_cmd.arg("--user");
+                                            }
+                                            user_cmd
+                                                .arg("--break-system-packages")
+                                                .arg("-r")
+                                                .arg(&req_file);
+                                            user_cmd.env_remove("APPIMAGE");
+                                            user_cmd.env_remove("APPDIR");
+
+                                            match user_cmd.output().await {
+                                                Ok(ures) if ures.status.success() => {
+                                                    tracing::info!("✓ Dependencias instaladas con --user --break-system-packages");
+                                                    auto_fixed = true;
+                                                }
+                                                Ok(ures) => {
+                                                    let uerr = String::from_utf8_lossy(&ures.stderr);
+                                                    failure_hint = format!(
+                                                        "Instalación en Python del sistema bloqueada por PEP 668: {}. \
+                                                         Crea un entorno virtual: 'python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'",
+                                                        uerr.lines().last().unwrap_or("error")
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    failure_hint = format!("Error al ejecutar pip: {}", e);
+                                                }
+                                            }
+                                        } else {
+                                            failure_hint = if is_venv {
+                                                format!(
+                                                    "pip install falló en .venv: {}. Ejecuta manualmente: '.venv/bin/pip install -r requirements.txt'",
+                                                    stderr.lines().last().unwrap_or("(sin stderr)")
+                                                )
+                                            } else {
+                                                format!(
+                                                    "pip install falló: {}. Ejecuta manualmente: 'pip install -r requirements.txt'",
+                                                    stderr.lines().last().unwrap_or("(sin stderr)")
+                                                )
+                                            };
+                                            tracing::warn!("pip auto-install failed: {}", stderr.lines().last().unwrap_or("(sin stderr)"));
+                                        }
                                     }
-                                    Err(e) => tracing::warn!("pip auto-install could not run: {}", e),
+                                    Err(e) => {
+                                        failure_hint = format!("pip auto-install could not run: {}", e);
+                                        tracing::warn!("{}", failure_hint);
+                                    }
                                 }
+                            } else {
+                                failure_hint = "No se encontró el archivo requirements.txt en el proyecto.".to_string();
+                                tracing::warn!("{}", failure_hint);
                             }
 
                             if !auto_fixed {
@@ -488,7 +629,7 @@ fn main() {
                                 let _ = startup_handle.emit(
                                     "python_deps_missing",
                                     serde_json::json!({
-                                        "message": recovery_hint,
+                                        "message": failure_hint,
                                     }),
                                 );
                             }
@@ -497,12 +638,13 @@ fn main() {
                         }
                     }
                     Ok(Err(e)) => {
+                        let err_hint = "Fallo al ejecutar chequeo de Python. Crea un entorno virtual con 'python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'";
                         tracing::warn!("Failed to execute python dependency check: {}", e);
                         use tauri::Emitter;
                         let _ = startup_handle.emit(
                             "python_deps_missing",
                             serde_json::json!({
-                                "message": format!("Failed to run python check: {}. {}", e, recovery_hint),
+                                "message": format!("Failed to run python check: {}. {}", e, err_hint),
                             }),
                         );
                     }
@@ -696,7 +838,7 @@ fn main() {
                     let worker_handle = tokio::task::spawn(async move {
                         let worker = worker::DownloadWorker::new(db_clone, state_clone)
                             .with_app_handle(handle_clone);
-                        worker.run().await;
+                        Box::pin(worker.run()).await;
                     });
 
                     match worker_handle.await {
@@ -815,6 +957,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Library
             commands::get_library,
+            commands::sync_local_library_cmd,
             commands::get_library_stats,
             commands::get_dashboard_stats,
             commands::get_health_checks,
@@ -1050,6 +1193,7 @@ fn main() {
             commands::get_duplicate_settings,
             commands::update_duplicate_settings,
             commands::get_audio_processing_settings,
+            commands::get_available_qualities_for_service,
             commands::update_audio_processing_settings,
             commands::get_loudness_stats,
             commands::get_download_settings,

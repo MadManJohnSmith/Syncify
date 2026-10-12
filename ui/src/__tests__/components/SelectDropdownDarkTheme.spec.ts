@@ -65,7 +65,9 @@ describe('Desplegables de la app en tema oscuro (R8)', () => {
     // Camaleón, tinta y consola son oscuros; riso es claro.
     const darkCount = (css.match(/color-scheme:\s*dark/g) ?? []).length
     expect(darkCount, 'los 3 temas oscuros deben declarar color-scheme: dark').toBeGreaterThanOrEqual(3)
-    const risoIndex = css.indexOf('[data-theme="riso"]')
+    // Bloque de tema real: se descarta la mencion dentro de `@custom-variant dark`
+    // (linea 12), que lista los 10 temas pero no es un bloque de tema.
+    const risoIndex = css.search(/^\[data-theme="riso"\]\s*\{/m)
     expect(risoIndex).toBeGreaterThan(-1)
     const risoBlock = blockAt(css, css.indexOf('{', risoIndex))
     expect(risoBlock).toMatch(/color-scheme:\s*light/)

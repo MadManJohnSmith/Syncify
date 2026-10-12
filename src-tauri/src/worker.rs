@@ -640,6 +640,8 @@ impl DownloadWorker {
             r#"
             UPDATE download_queue
             SET status = 'complete',
+                error_message = NULL,
+                last_error = NULL,
                 completed_at = CURRENT_TIMESTAMP,
                 progress_percent = 100.0,
                 origin_service = COALESCE(origin_service, ?),
@@ -868,8 +870,9 @@ impl DownloadWorker {
     /// Mark item as failed (transient, retryable)
     async fn mark_failed(&self, queue_id: i64, error: &str) {
         if let Err(e) = sqlx::query(
-            "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, retry_count = retry_count + 1 WHERE id = ?"
+            "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, decision_reason = COALESCE(?, decision_reason), retry_count = retry_count + 1 WHERE id = ?"
         )
+        .bind(error)
         .bind(error)
         .bind(error)
         .bind(queue_id)
@@ -888,18 +891,21 @@ impl DownloadWorker {
         let is_ambiguous = error.contains("AmbiguousSource")
             || error.contains("SourceIdentityMissing")
             || error.contains("IdentityConflict");
+        let is_auth = error.contains("RequiresAuth")
+            || error.contains("401")
+            || error.contains("403")
+            || error.contains("desconectada")
+            || error.contains("not connected");
         let q_decision = if is_rejected_q {
             Some("RejectedQuality")
         } else if is_ambiguous {
             Some("AmbiguousSource")
+        } else if is_auth {
+            Some("RequiresAuth")
         } else {
             None
         };
-        let dec_reason = if is_rejected_q || is_ambiguous {
-            Some(error)
-        } else {
-            None
-        };
+        let dec_reason = Some(error);
 
         if let Err(e) = sqlx::query(
             "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = 99, quality_decision = COALESCE(?, quality_decision), decision_reason = COALESCE(?, decision_reason) WHERE id = ?"
@@ -973,18 +979,28 @@ impl DownloadWorker {
             .ok()
             .flatten();
             if let Some((mq,)) = svc_row {
-                match crate::commands::service_max_quality_rank(Some(&mq)) {
-                    Some(rank) => {
-                        service_rank = Some(rank);
-                        service_raw_for_log = Some(mq);
-                    }
-                    None => {
-                        tracing::warn!(
-                            queue_id,
-                            service = %svc,
-                            raw_max_quality = %mq,
-                            "Unknown quality_preferences.max_quality vocabulary; ignoring service cap"
-                        );
+                if crate::commands::is_service_quality_inherited(Some(&mq)) {
+                    tracing::info!(
+                        queue_id,
+                        service = %svc,
+                        raw_max_quality = %mq,
+                        "Service inherits global quality ceiling"
+                    );
+                    service_raw_for_log = Some(mq);
+                } else {
+                    match crate::commands::service_max_quality_rank(Some(&mq)) {
+                        Some(rank) => {
+                            service_rank = Some(rank);
+                            service_raw_for_log = Some(mq);
+                        }
+                        None => {
+                            tracing::warn!(
+                                queue_id,
+                                service = %svc,
+                                raw_max_quality = %mq,
+                                "Unknown quality_preferences.max_quality vocabulary; ignoring service cap"
+                            );
+                        }
                     }
                 }
             }
@@ -1090,8 +1106,21 @@ impl DownloadWorker {
         title: &str,
         artist: &str,
     ) {
-        self.process_download_internal(queue_id, track_id, title, artist)
-            .await;
+        Box::pin(self.process_download_internal(queue_id, track_id, title, artist)).await;
+    }
+
+    async fn resolve_embed_preferences(&self) -> Result<(bool, bool), String> {
+        let row: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT embed_lyrics, embed_artwork FROM audio_processing_settings WHERE id = 1",
+        )
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|e| format!("Cannot read audio processing settings: {e}"))?;
+
+        Ok(match row {
+            Some((lyrics, artwork)) => (lyrics != 0, artwork != 0),
+            None => (true, true),
+        })
     }
 
     async fn process_download_internal(
@@ -1101,6 +1130,16 @@ impl DownloadWorker {
         title: &str,
         artist: &str,
     ) {
+        let (embed_lyrics, embed_artwork) = match self.resolve_embed_preferences().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::error!(queue_id, "{error}");
+                self.mark_permanent_failure(queue_id, "failed", &error)
+                    .await;
+                return;
+            }
+        };
+
         // 1. Query full source identity from download_queue row
         let queue_meta: Option<(
             Option<String>, // service_name
@@ -1327,8 +1366,8 @@ impl DownloadWorker {
                 cover_url: None,
                 output_dir: output_dir.clone(),
                 quality: quality.clone(),
-                embed_lyrics: true,
-                embed_artwork: true,
+                embed_lyrics,
+                embed_artwork,
                 smart_studio_origin: is_smart_studio,
                 allow_fallback: is_allowed_fallback,
                 strict_quality: !is_allowed_fallback,
@@ -1346,8 +1385,7 @@ impl DownloadWorker {
             let orchestrator =
                 crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
 
-            orchestrator
-                .download_track(&request)
+            Box::pin(orchestrator.download_track(&request))
                 .await
                 .map_err(|e| e.to_string())
         } else if !effective_title.is_empty() {
@@ -1375,8 +1413,8 @@ impl DownloadWorker {
                 cover_url: None,
                 output_dir: output_dir.clone(),
                 quality,
-                embed_lyrics: true,
-                embed_artwork: true,
+                embed_lyrics,
+                embed_artwork,
                 smart_studio_origin: smart_studio.unwrap_or(0) != 0,
                 allow_fallback: allow_fb.unwrap_or(0) != 0,
                 strict_quality: allow_fb.unwrap_or(0) == 0,
@@ -1393,8 +1431,7 @@ impl DownloadWorker {
             let orchestrator =
                 crate::download::DownloadOrchestrator::new().with_db(self.db.clone());
 
-            orchestrator
-                .download_track(&request)
+            Box::pin(orchestrator.download_track(&request))
                 .await
                 .map_err(|e| e.to_string())
         } else {
@@ -1434,7 +1471,51 @@ impl DownloadWorker {
                     j.checkpoint_persist(Some("writing downloads ledger")).await;
                 }
 
+                // Physical file verification before marking complete: never mark a track as downloaded if not on disk
+                let file_exists_and_valid = match tokio::fs::metadata(&file_path).await {
+                    Ok(m) => m.is_file() && m.len() > 0,
+                    Err(_) => false,
+                };
+                if !file_exists_and_valid {
+                    let err_msg = format!(
+                        "FileVerificationFailed: Downloaded audio file not found on disk or empty at '{}'",
+                        file_path
+                    );
+                    tracing::error!(queue_id, "{}", err_msg);
+                    self.mark_permanent_failure(queue_id, "failed", &err_msg)
+                        .await;
+                    self.emit_progress(DownloadProgressEvent {
+                        queue_id,
+                        track_id,
+                        title: effective_title.clone(),
+                        artist: effective_artist.clone(),
+                        status: "failed".to_string(),
+                        progress_percent: 0.0,
+                        message: Some(err_msg.clone()),
+                        bytes_downloaded: 0,
+                        total_bytes: None,
+                        percent: None,
+                        instant_kbps: 0.0,
+                        average_kbps: 0.0,
+                        phase: "failed".to_string(),
+                        terminal: true,
+                        phase_timings: None,
+                    });
+                    if let Some(ref j) = journal {
+                        j.fail(&err_msg, true).await;
+                    }
+                    return;
+                }
+
                 self.mark_complete(queue_id, &download_result).await;
+
+                // BD-9: cerrar la entrada del journal. Sin esto la operación
+                // quedaba 'persisting' para siempre y el reconcilador la trataba
+                // como interrumpida en el siguiente arranque.
+                if let Some(ref j) = journal {
+                    j.commit(Some("download complete")).await;
+                }
+
                 let file_size = tokio::fs::metadata(&file_path).await.map(|m| m.len()).ok();
                 let manifest_result = crate::services::ManifestWriter::generate_and_save_manifest(
                     &self.db,
@@ -1453,7 +1534,10 @@ impl DownloadWorker {
                         err
                     );
                     if let Some(handle) = &self.app_handle {
-                        let notif = crate::commands::AppNotification::new(
+                        if crate::tray::notification_category_enabled(&self.db, "download", true)
+                            .await
+                        {
+                            let notif = crate::commands::AppNotification::new(
                             crate::commands::NotificationKind::Warning,
                             "Download Manifest Not Written",
                             format!(
@@ -1467,7 +1551,8 @@ impl DownloadWorker {
                                 "error": err.to_string(),
                             })),
                         );
-                        let _ = crate::commands::emit_app_notification(handle, &notif);
+                            let _ = crate::commands::emit_app_notification(handle, &notif);
+                        }
                     }
                 }
                 let is_shortfall = download_result.quality_decision.as_ref()
@@ -1540,63 +1625,26 @@ impl DownloadWorker {
                 }
 
                 if let Some(handle) = &self.app_handle {
-                    let notif = crate::commands::AppNotification::new(
-                        notif_kind,
-                        notif_title,
-                        notif_msg,
-                        crate::commands::NotificationCategory::Download,
-                        Some(serde_json::json!({
-                            "queue_id": queue_id,
-                            "track_id": track_id,
-                            "file_path": file_path,
-                            "service": service,
-                            "bit_depth": bit_depth,
-                            "sample_rate": sample_rate,
-                            "quality_shortfall": is_shortfall,
-                            "quality_fallback": is_fallback
-                        })),
-                    );
-                    let _ = crate::commands::emit_app_notification(handle, &notif);
-                    let service_notif = crate::services::notification::create_service_notification(
-                        &service,
-                        None,
-                        "download",
-                        "completed",
-                        if is_shortfall || is_fallback {
-                            "warning"
-                        } else {
-                            "info"
-                        },
-                        &format!(
-                            "Downloaded {} - {}{}",
-                            artist,
-                            title,
-                            if is_shortfall {
-                                " (Quality Shortfall)"
-                            } else {
-                                ""
-                            }
-                        ),
-                    );
-                    crate::services::notification::emit_service_notification(handle, service_notif);
-                }
-                tracing::info!(
-                    "Downloaded via {}: {} - {} -> {}",
-                    service,
-                    artist,
-                    title,
-                    file_path
-                );
-
-                // BD-9: terminal state of the journal entry — 'committed' is outside
-                // the set `reconcile_startup_operations` scans, so this download is
-                // never reconsidered after a restart.
-                if let Some(ref j) = journal {
-                    j.commit(Some(&format!(
-                        "promoted={} service={} fallback={} shortfall={}",
-                        file_path, service, is_fallback, is_shortfall
-                    )))
-                    .await;
+                    if crate::tray::notification_category_enabled(&self.db, "download", false).await
+                    {
+                        let notif = crate::commands::AppNotification::new(
+                            notif_kind,
+                            notif_title,
+                            notif_msg,
+                            crate::commands::NotificationCategory::Download,
+                            Some(serde_json::json!({
+                                "queue_id": queue_id,
+                                "track_id": track_id,
+                                "file_path": file_path,
+                                "service": service,
+                                "bit_depth": bit_depth,
+                                "sample_rate": sample_rate,
+                                "quality_shortfall": is_shortfall,
+                                "quality_fallback": is_fallback
+                            })),
+                        );
+                        let _ = crate::commands::emit_app_notification(handle, &notif);
+                    }
                 }
             }
             Err(error) => {
@@ -1769,16 +1817,19 @@ impl DownloadWorker {
                     phase_timings: None,
                 });
                 if let Some(handle) = &self.app_handle {
-                    let notif = crate::commands::AppNotification::new(
-                        crate::commands::NotificationKind::Error,
-                        "Download Failed",
-                        format!("{} - {}: {}", artist, title, user_message),
-                        crate::commands::NotificationCategory::Download,
-                        Some(
-                            serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "status": status_str, "error": error }),
-                        ),
-                    );
-                    let _ = crate::commands::emit_app_notification(handle, &notif);
+                    if crate::tray::notification_category_enabled(&self.db, "download", true).await
+                    {
+                        let notif = crate::commands::AppNotification::new(
+                            crate::commands::NotificationKind::Error,
+                            "Download Failed",
+                            format!("{} - {}: {}", artist, title, user_message),
+                            crate::commands::NotificationCategory::Download,
+                            Some(
+                                serde_json::json!({ "queue_id": queue_id, "track_id": track_id, "status": status_str, "error": error }),
+                            ),
+                        );
+                        let _ = crate::commands::emit_app_notification(handle, &notif);
+                    }
                     let service_kind = if is_auth_error {
                         "auth"
                     } else if is_ambiguous {
@@ -1786,14 +1837,15 @@ impl DownloadWorker {
                     } else {
                         "network"
                     };
-                    let service_severity = if is_permanent { "error" } else { "warning" };
-                    let service_name_str = s_name.as_deref().unwrap_or("unknown");
+                    // El evento estructurado mantiene el contrato de servicio para
+                    // consumidores externos; el frontend presenta un solo aviso
+                    // accionable por pista, no dos toasts del mismo fallo.
                     let service_notif = crate::services::notification::create_service_notification(
-                        service_name_str,
+                        s_name.as_deref().unwrap_or("unknown"),
                         None,
                         "download",
                         service_kind,
-                        service_severity,
+                        if is_permanent { "error" } else { "warning" },
                         &format!("Failed {} - {}: {}", artist, title, user_message),
                     );
                     crate::services::notification::emit_service_notification(handle, service_notif);
@@ -1843,6 +1895,21 @@ impl DownloadWorker {
         // Repair legacy queue rows with missing service_track_id
         Self::repair_unresolved_queue_sources(&self.db).await;
 
+        // FS-07: Restore persisted concurrency limit from SQLite on worker startup
+        if let Ok(Some((concurrency_str,))) = sqlx::query_as::<_, (String,)>(
+            "SELECT value FROM settings WHERE key = 'dl_concurrent_downloads' AND value IS NOT NULL AND TRIM(value) != ''"
+        )
+        .fetch_optional(&self.db)
+        .await
+        {
+            if let Ok(threads) = concurrency_str.trim().parse::<usize>() {
+                if (1..=10).contains(&threads) {
+                    self.state.set_max_concurrent(threads);
+                    tracing::info!("[Worker] Restored max_concurrent = {} on startup", threads);
+                }
+            }
+        }
+
         let mut last_timeout_check = tokio::time::Instant::now();
 
         loop {
@@ -1881,8 +1948,7 @@ impl DownloadWorker {
                 let worker = self.clone();
                 tokio::spawn(async move {
                     let _guard = ActiveDownloadGuard(worker.state.clone());
-                    worker
-                        .process_download_claimed(queue_id, track_id, &title, &artist)
+                    Box::pin(worker.process_download_claimed(queue_id, track_id, &title, &artist))
                         .await;
                 });
             } else {
@@ -2176,5 +2242,80 @@ mod session_auth_tests {
                 e
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod embed_preferences_tests {
+    /// La lectura de ajustes alimenta los flags de incrustación de ambos caminos
+    /// de descarga; una fila ausente usa los defaults del esquema.
+    #[tokio::test]
+    async fn embed_preferences_come_from_settings_not_hardcoded() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE audio_processing_settings (
+                id INTEGER PRIMARY KEY,
+                replay_gain_mode TEXT NOT NULL DEFAULT 'off',
+                target_loudness_lufs REAL NOT NULL DEFAULT -14.0,
+                transcode_enabled INTEGER NOT NULL DEFAULT 0,
+                transcode_format TEXT,
+                transcode_bitrate INTEGER,
+                keep_original_after_transcode INTEGER NOT NULL DEFAULT 0,
+                embed_lyrics INTEGER NOT NULL DEFAULT 1,
+                embed_artwork INTEGER NOT NULL DEFAULT 1,
+                artwork_max_size INTEGER,
+                created_at TEXT,
+                updated_at TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let worker = super::DownloadWorker::new(pool.clone(), super::DownloadWorkerState::new(1));
+        assert_eq!(
+            worker.resolve_embed_preferences().await.unwrap(),
+            (true, true)
+        );
+
+        // Sin fila: default del esquema.
+        let sin_fila: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT embed_lyrics, embed_artwork FROM audio_processing_settings WHERE id = 1",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert!(sin_fila.is_none(), "no debe existir fila todavia");
+
+        // Usuario apaga ambas.
+        sqlx::query(
+            "INSERT INTO audio_processing_settings (id, embed_lyrics, embed_artwork) VALUES (1, 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let row: (i64, i64) = sqlx::query_as(
+            "SELECT embed_lyrics, embed_artwork FROM audio_processing_settings WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row,
+            (0, 0),
+            "las preferencias del usuario deben leerse tal cual"
+        );
+
+        assert_eq!((row.0 != 0, row.1 != 0), (false, false));
+        assert_eq!(
+            worker.resolve_embed_preferences().await.unwrap(),
+            (false, false)
+        );
+
+        sqlx::query("DROP TABLE audio_processing_settings")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(worker.resolve_embed_preferences().await.is_err());
     }
 }

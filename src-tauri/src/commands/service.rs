@@ -608,6 +608,7 @@ pub async fn spotify_auth_callback(
         user.email.as_deref(),
         Some(user.id.as_str()),
         &encrypted,
+        None,
     )
     .await?;
 
@@ -1797,7 +1798,7 @@ pub async fn sync_soundcloud_likes_with_engine<F>(
 where
     F: FnMut(&crate::services::enrichment::SyncTrackResult, u64, bool),
 {
-    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::new();
+    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::with_db(db.clone());
     let mut totals = SoundCloudLikesSyncTotals::default();
     let mut next_url: Option<String> = None;
 
@@ -1932,7 +1933,7 @@ pub async fn sync_soundcloud_playlists_with_engine<F>(
 where
     F: FnMut(&crate::services::enrichment::SyncTrackResult, &str, u64, bool),
 {
-    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::new();
+    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::with_db(db.clone());
     let mut totals = SoundCloudPlaylistsSyncTotals::default();
     let mut playlist_next_url: Option<String> = None;
 
@@ -3193,7 +3194,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
         },
     };
 
-    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::new();
+    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::with_db(db.clone());
     let sync_start = std::time::Instant::now();
     let mut api_fetch_ms: u64 = 0;
     let mut entity_expansion_ms: u64 = 0;

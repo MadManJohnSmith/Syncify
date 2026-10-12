@@ -76,6 +76,15 @@ tsc.txt
 src-tauri/check.txt
 src-tauri/check_full.txt
 
+# Registros de ejecucion de esta estacion (misma razon que SYNC-AUD-074):
+# son salida de una maquina, con rutas absolutas del host, y ya estan resumidos
+# en docs/HANDOFF-2026-10-11.md. Versionarlos publicaria rutas personales.
+docs/auditoria/handoff-*.txt
+docs/auditoria/handoff-*.log
+
+# Herramientas locales del agente: no son entregables de la app.
+.zcode/workflows/
+
 # Local sweep output (SYNC-AUD-074): machine logs of a single workstation that
 # were tracked by mistake and travelled in every checkout. Nothing reads them,
 # the build results live in CI, and a frozen log only misleads whoever opens it.

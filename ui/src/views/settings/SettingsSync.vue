@@ -31,18 +31,6 @@
       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Download Scheduling</h3>
 
       <div class="flex items-center justify-between gap-4 p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-        <label for="max-concurrent-downloads" class="font-medium text-gray-900 dark:text-white">Max concurrent downloads</label>
-        <input
-          id="max-concurrent-downloads"
-          type="number"
-          v-model.number="syncSettings.globalSettings.maxConcurrentDownloads"
-          @change="syncSettings.saveGlobalSettings()"
-          min="1" max="10"
-          class="w-16 px-2 py-1 bg-white dark:bg-surface-dark border border-gray-300 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white"
-        >
-      </div>
-
-      <div class="flex items-center justify-between gap-4 p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
         <label for="rate-limit-delay" class="font-medium text-gray-900 dark:text-white">Delay between downloads (ms)</label>
         <input
           id="rate-limit-delay"

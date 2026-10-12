@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark" data-preset="classic">
+<html lang="es" data-theme="dark" data-preset="classic">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="generator" content="archify 3.0.1">
   <meta name="archify-reader-contract" content="declared-wide-v1">
-  <title>Syncify · Arquitectura Diagram</title>
+  <title>Syncify, por dentro · Diagrama</title>
   <script>
     // Resolve the theme before first paint so light-preference users don't
     // see a dark flash. The toolbar script below re-applies with UI state.
@@ -4873,98 +4873,98 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
   <!-- Toolbar: theme, live visual style, trace motion, presentation stage, and export.
        Motion appears only for trace-enabled artifacts and has no shortcut;
        Keyboard: T toggles theme, S cycles style, F toggles the stage, E opens export. -->
-  <div class="toolbar" role="toolbar" aria-label="Diagram actions">
+  <div class="toolbar" role="toolbar" aria-label="Acciones del diagrama">
     <div class="toolbar-group">
     <button id="btn-theme" type="button"
-            title="Toggle theme (T)"
-            aria-label="Toggle color theme"
+            title="Cambiar tema (T)"
+            aria-label="Cambiar tema de color"
             aria-pressed="false">
       <span id="theme-icon" class="toolbar-icon" aria-hidden="true"></span>
-      <span id="theme-label">Dark</span>
+      <span id="theme-label">Oscuro</span>
     </button>
     <div class="preset-wrap">
       <button id="btn-preset" type="button"
-              title="Choose visual style (S cycles)"
-              aria-label="Choose visual style"
+              title="Elegir estilo visual (S alterna)"
+              aria-label="Elegir estilo visual"
               aria-haspopup="menu"
               aria-expanded="false"
               aria-controls="preset-menu"
               aria-keyshortcuts="S">
         <span class="preset-control-mark" aria-hidden="true"></span>
-        <span id="preset-label">Style</span>
+        <span id="preset-label">Estilo</span>
         <span class="toolbar-icon toolbar-chevron" aria-hidden="true"></span>
       </button>
-      <div class="preset-menu" id="preset-menu" role="menu" aria-label="Visual style">
-        <div class="preset-menu-heading" role="presentation"><span>Visual identity</span><span class="preset-menu-shortcut"><kbd>S</kbd>to cycle</span></div>
+      <div class="preset-menu" id="preset-menu" role="menu" aria-label="Estilo visual">
+        <div class="preset-menu-heading" role="presentation"><span>Identidad visual</span><span class="preset-menu-shortcut"><kbd>S</kbd>alterna</span></div>
         <button class="preset-option" data-preset-value="classic" type="button" role="menuitemradio" aria-checked="false" tabindex="-1">
           <span class="preset-option-swatch classic" aria-hidden="true"></span>
-          <span class="preset-option-copy"><strong>Classic</strong><small>Stable technical default</small></span>
+          <span class="preset-option-copy"><strong>Clásico</strong><small>Predeterminado técnico estable</small></span>
           <span class="preset-option-check" aria-hidden="true"></span>
         </button>
         <button class="preset-option" data-preset-value="signal-flow" type="button" role="menuitemradio" aria-checked="false" tabindex="-1">
           <span class="preset-option-swatch signal-flow" aria-hidden="true"></span>
-          <span class="preset-option-copy"><strong>Signal Flow</strong><small>Motion-forward presentation</small></span>
+          <span class="preset-option-copy"><strong>Flujo de señal</strong><small>Presentación con énfasis en el movimiento</small></span>
           <span class="preset-option-check" aria-hidden="true"></span>
         </button>
         <button class="preset-option" data-preset-value="blueprint" type="button" role="menuitemradio" aria-checked="false" tabindex="-1">
           <span class="preset-option-swatch blueprint" aria-hidden="true"></span>
-          <span class="preset-option-copy"><strong>Blueprint</strong><small>Engineering review</small></span>
+          <span class="preset-option-copy"><strong>Plano</strong><small>Revisión de ingeniería</small></span>
           <span class="preset-option-check" aria-hidden="true"></span>
         </button>
         <button class="preset-option" data-preset-value="editorial" type="button" role="menuitemradio" aria-checked="false" tabindex="-1">
           <span class="preset-option-swatch editorial" aria-hidden="true"></span>
-          <span class="preset-option-copy"><strong>Editorial</strong><small>Publication and launch notes</small></span>
+          <span class="preset-option-copy"><strong>Editorial</strong><small>Notas de publicación y lanzamiento</small></span>
           <span class="preset-option-check" aria-hidden="true"></span>
         </button>
       </div>
     </div>
     <button id="btn-motion" type="button" hidden
-            title="Pause motion"
-            aria-label="Pause motion"
+            title="Pausar animación"
+            aria-label="Pausar animación"
             aria-pressed="true">
       <span class="motion-control-dot" aria-hidden="true"></span>
-      <span id="motion-label">Live</span>
+      <span id="motion-label">Activa</span>
     </button>
     <button id="btn-present" type="button"
-            title="Presentation stage (F)"
-            aria-label="Enter presentation stage"
+            title="Modo presentación (F)"
+            aria-label="Entrar al modo presentación"
             aria-pressed="false">
       <span id="present-icon" class="toolbar-icon" aria-hidden="true"></span>
-      <span id="present-label">Present</span>
+      <span id="present-label">Presentar</span>
     </button>
     </div>
     <div class="export-wrap">
       <button id="btn-export" type="button"
-              title="Export diagram (E)"
-              aria-label="Export diagram"
+              title="Exportar diagrama (E)"
+              aria-label="Exportar diagrama"
               aria-haspopup="menu"
               aria-expanded="false"
               aria-controls="export-menu">
-        Export <span class="toolbar-icon toolbar-chevron" aria-hidden="true"></span>
+        Exportar <span class="toolbar-icon toolbar-chevron" aria-hidden="true"></span>
       </button>
-      <div class="export-menu" id="export-menu" role="menu" aria-label="Export">
+      <div class="export-menu" id="export-menu" role="menu" aria-label="Exportar">
         <div class="export-menu-header" role="presentation">
-          <div><strong>Export diagram</strong><span>Portable, clean outputs</span></div>
+          <div><strong>Exportar diagrama</strong><span>Salidas portables y limpias</span></div>
           <kbd>E</kbd>
         </div>
-        <div class="export-menu-section" role="group" aria-label="Share">
-          <span class="export-menu-heading" aria-hidden="true">Share</span>
-          <button data-action="route-share-card" type="button" role="menuitem" tabindex="-1" hidden disabled><span class="export-item-copy"><strong>Route Share Card</strong><small class="hint">1200&times;630 PNG</small></span></button>
-          <button data-action="reach-share-card" type="button" role="menuitem" tabindex="-1" hidden disabled><span class="export-item-copy"><strong>Reach Share Card</strong><small class="hint">1200&times;630 PNG</small></span></button>
-          <button data-action="copy" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>Copy diagram</strong><small class="hint">PNG to clipboard</small></span></button>
+        <div class="export-menu-section" role="group" aria-label="Compartir">
+          <span class="export-menu-heading" aria-hidden="true">Compartir</span>
+          <button data-action="route-share-card" type="button" role="menuitem" tabindex="-1" hidden disabled><span class="export-item-copy"><strong>Tarjeta de ruta para compartir</strong><small class="hint">1200&times;630 PNG</small></span></button>
+          <button data-action="reach-share-card" type="button" role="menuitem" tabindex="-1" hidden disabled><span class="export-item-copy"><strong>Tarjeta de alcance para compartir</strong><small class="hint">1200&times;630 PNG</small></span></button>
+          <button data-action="copy" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>Copiar diagrama</strong><small class="hint">PNG al portapapeles</small></span></button>
         </div>
-        <div class="export-menu-section" role="group" aria-label="Raster images">
-          <span class="export-menu-heading" aria-hidden="true">Image</span>
-          <button data-format="png" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>PNG</strong><small class="hint">Lossless image</small></span></button>
-          <button data-format="jpeg" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>JPEG</strong><small class="hint">Compact image</small></span></button>
-          <button data-format="webp" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>WebP</strong><small class="hint">Modern image</small></span></button>
+        <div class="export-menu-section" role="group" aria-label="Imágenes rasterizadas">
+          <span class="export-menu-heading" aria-hidden="true">Imagen</span>
+          <button data-format="png" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>PNG</strong><small class="hint">Imagen sin pérdida</small></span></button>
+          <button data-format="jpeg" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>JPEG</strong><small class="hint">Imagen compacta</small></span></button>
+          <button data-format="webp" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>WebP</strong><small class="hint">Imagen moderna</small></span></button>
         </div>
-        <div class="export-menu-section" role="group" aria-label="Vector and motion">
-          <span class="export-menu-heading" aria-hidden="true">Vector &amp; motion</span>
-          <button data-format="svg" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>SVG · Auto</strong><small class="hint">Matches host theme</small></span></button>
-          <button data-format="svg-light" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>SVG · Light</strong><small class="hint">Always light</small></span></button>
-          <button data-format="svg-dark" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>SVG · Dark</strong><small class="hint">Always dark</small></span></button>
-          <button data-format="webm" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>WebM</strong><small class="hint">6s motion</small></span></button>
+        <div class="export-menu-section" role="group" aria-label="Vector y movimiento">
+          <span class="export-menu-heading" aria-hidden="true">Vector y movimiento</span>
+          <button data-format="svg" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>SVG · Auto</strong><small class="hint">Coincide con el tema del host</small></span></button>
+          <button data-format="svg-light" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>SVG · Claro</strong><small class="hint">Siempre claro</small></span></button>
+          <button data-format="svg-dark" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>SVG · Oscuro</strong><small class="hint">Siempre oscuro</small></span></button>
+          <button data-format="webm" type="button" role="menuitem" tabindex="-1"><span class="export-item-copy"><strong>WebM</strong><small class="hint">Movimiento de 6 s</small></span></button>
         </div>
       </div>
     </div>
@@ -4974,23 +4974,23 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     <!-- Header -->
     <div class="header">
       <div class="header-row"
-           data-preset-badge-signal-flow="SIGNAL FLOW"
-           data-preset-badge-blueprint="BLUEPRINT / REV 01"
-           data-preset-badge-editorial="EDITORIAL / FIELD NOTE">
+           data-preset-badge-signal-flow="FLUJO DE SEÑAL"
+           data-preset-badge-blueprint="PLANO / REV 01"
+           data-preset-badge-editorial="EDITORIAL / NOTA DE CAMPO">
         <div class="pulse-dot"></div>
-        <h1>Syncify · Arquitectura</h1>
+        <h1>Syncify, por dentro</h1>
       </div>
-      <p class="subtitle">App de escritorio: Vue 3 sobre Tauri 2, SQLite local y credenciales en el keyring del sistema</p>
+      <p class="subtitle">De una cuenta conectada a audio verificado en disco — rastreado en el commit aeb9c54</p>
     </div>
 
-    <script id="archify-source-evidence-data" type="application/json">{"schemaVersion":1,"verified":true,"repository":{"url":"https://github.com/MadManJohnSmith/Syncify","revision":"aede4f2da10dca91825be2499ae85bd694da6ec4","shortRevision":"aede4f2","label":"MadManJohnSmith/Syncify","href":"https://github.com/MadManJohnSmith/Syncify/tree/aede4f2da10dca91825be2499ae85bd694da6ec4"},"referenceCount":9,"nodes":{"ui":[{"path":"ui/src/views/LibraryView.vue","href":"https://github.com/MadManJohnSmith/Syncify/blob/aede4f2da10dca91825be2499ae85bd694da6ec4/ui/src/views/LibraryView.vue"}],"tauri":[{"path":"src-tauri/src/main.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aede4f2da10dca91825be2499ae85bd694da6ec4/src-tauri/src/main.rs"}],"db":[{"path":"src-tauri/src/db.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aede4f2da10dca91825be2499ae85bd694da6ec4/src-tauri/src/db.rs"}],"keyring":[{"path":"src-tauri/src/crypto.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aede4f2da10dca91825be2499ae85bd694da6ec4/src-tauri/src/crypto.rs"}],"workers":[{"path":"src-tauri/src/worker.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aede4f2da10dca91825be2499ae85bd694da6ec4/src-tauri/src/worker.rs"}],"services":[{"path":"src-tauri/src/services/spotify.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aede4f2da10dca91825be2499ae85bd694da6ec4/src-tauri/src/services/spotify.rs"}],"bridges":[{"path":"scripts/fingerprint_bridge.py","href":"https://github.com/MadManJohnSmith/Syncify/blob/aede4f2da10dca91825be2499ae85bd694da6ec4/scripts/fingerprint_bridge.py"}],"ffmpeg":[{"path":"src-tauri/src/cmd_utils.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aede4f2da10dca91825be2499ae85bd694da6ec4/src-tauri/src/cmd_utils.rs"}],"providers":[{"path":"src-tauri/src/services/mod.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aede4f2da10dca91825be2499ae85bd694da6ec4/src-tauri/src/services/mod.rs"}]}}</script>
-    <script id="archify-i18n-data" type="application/json">{"locale":"en","messages":{"viewer.kind.frontend":"Frontend","viewer.kind.backend":"Backend","viewer.kind.database":"Database","viewer.kind.cloud":"Cloud","viewer.kind.security":"Security","viewer.kind.messagebus":"Message bus","viewer.kind.external":"External","viewer.kind.neutral":"Neutral","viewer.kind.node":"Node","viewer.kind.start":"Start","viewer.kind.active":"Active","viewer.kind.waiting":"Waiting","viewer.kind.decision":"Decision","viewer.kind.success":"Success","viewer.kind.failure":"Failure","viewer.toolbar.actions":"Diagram actions","viewer.theme.toggle.title":"Toggle theme (T)","viewer.theme.toggle":"Toggle color theme","viewer.theme.dark":"Dark","viewer.theme.light":"Light","viewer.preset.choose.title":"Choose visual style (S cycles)","viewer.preset.choose":"Choose visual style","viewer.preset.style":"Style","viewer.preset.menu":"Visual style","viewer.preset.identity":"Visual identity","viewer.preset.cycles":"to cycle","viewer.preset.classic":"Classic","viewer.preset.classic.short":"Classic","viewer.preset.classic.hint":"Stable technical default","viewer.preset.flow":"Signal Flow","viewer.preset.flow.short":"Flow","viewer.preset.flow.hint":"Motion-forward presentation","viewer.preset.blueprint":"Blueprint","viewer.preset.blueprint.hint":"Engineering review","viewer.preset.editorial":"Editorial","viewer.preset.editorial.hint":"Publication and launch notes","viewer.preset.badge.signalFlow":"SIGNAL FLOW","viewer.preset.badge.blueprint":"BLUEPRINT / REV 01","viewer.preset.badge.editorial":"EDITORIAL / FIELD NOTE","viewer.preset.badge.editorialPlate":"ARCHIFY / PLATE 04","viewer.preset.current":"Visual style: {style}. Choose visual style","viewer.motion.live":"Live","viewer.motion.still":"Still","viewer.motion.pause":"Pause motion","viewer.motion.resume":"Resume motion","viewer.motion.reduced":"Motion paused by reduced-motion preference","viewer.motion.hidden":"Motion paused while this page is hidden","viewer.motion.yielding":"Pause motion; currently yielding to {owner}","viewer.motion.yielding.title":"Live preview enabled · yielding to {owner}","viewer.owner.route":"Route Probe","viewer.owner.lens":"Semantic Lens","viewer.owner.relationship":"Relationship Preview","viewer.owner.intent":"Intent Trace","viewer.owner.focus":"semantic focus","viewer.owner.legend":"legend preview","viewer.owner.reader":"reader interaction","viewer.present.enter":"Enter presentation stage","viewer.present.enter.title":"Presentation stage (F)","viewer.present.exit":"Exit presentation stage","viewer.present.exit.title":"Exit presentation stage (F or Escape)","viewer.present.present":"Present","viewer.present.exit.label":"Exit","viewer.export.button":"Export","viewer.export.button.title":"Export diagram (E)","viewer.export.diagram":"Export diagram","viewer.export.menu":"Export","viewer.export.subtitle":"Portable, clean outputs","viewer.export.share":"Share","viewer.export.shareCard":"Share Card","viewer.export.routeShareCard":"Route Share Card","viewer.export.reachShareCard":"Reach Share Card","viewer.export.copyDiagram":"Copy diagram","viewer.export.clipboardPng":"PNG to clipboard","viewer.export.raster":"Raster images","viewer.export.image":"Image","viewer.export.lossless":"Lossless image","viewer.export.compact":"Compact image","viewer.export.modern":"Modern image","viewer.export.vectorMotion":"Vector and motion","viewer.export.vectorMotion.heading":"Vector \u0026 motion","viewer.export.editable":"Editable vector","viewer.export.svg.auto":"SVG · Auto","viewer.export.svg.auto.hint":"Matches host theme","viewer.export.svg.light":"SVG · Light","viewer.export.svg.light.hint":"Always light","viewer.export.svg.dark":"SVG · Dark","viewer.export.svg.dark.hint":"Always dark","viewer.export.motion6s":"6s motion","viewer.export.unsupported":"Not supported by this browser","viewer.export.clipboardUnsupported":"Clipboard image write not supported by this browser","viewer.export.clipboardUnsupported.short":"Clipboard image write not supported in this browser.","viewer.export.motionUnavailable":"Motion capture unavailable in this browser","viewer.export.webmUnavailable":"WebM unavailable in this browser","viewer.export.failed":"Export failed: {message}","viewer.export.unknownVariant":"Unknown Share Card variant: {variant}","viewer.export.routeRequired":"Trace a route before exporting a Route Share Card","viewer.export.reachRequired":"Trace authored reach before exporting a Reach Share Card","viewer.export.unknown":"unknown","viewer.export.routeFailed":"Route Share Card export failed: {message}","viewer.export.reachFailed":"Reach Share Card export failed: {message}","viewer.export.copyFailed":"Copy failed: {message}","viewer.export.copiedPng":"Copied PNG to clipboard","viewer.export.downloadedRoute":"Downloaded Route Share Card","viewer.export.downloadedReach":"Downloaded Reach Share Card","viewer.export.downloadedWebm":"Downloaded WebM","viewer.export.recording":"Recording 6 seconds of motion…","viewer.export.card.routeSummary.one":"Path: {source} → {target} · {count} step","viewer.export.card.routeSummary.other":"Path: {source} → {target} · {count} steps","viewer.export.card.reachSummary":"Authored {direction} from {origin} · {nodes} · {links} · max {hops}","viewer.export.card.node.one":"{count} node","viewer.export.card.node.other":"{count} nodes","viewer.export.card.link.one":"{count} link","viewer.export.card.link.other":"{count} links","viewer.export.card.hop.one":"{count} hop","viewer.export.card.hop.other":"{count} hops","viewer.export.card.routeBadge":"ARCHIFY · ROUTE · {hops}","viewer.export.card.reachBadge":"ARCHIFY · {direction} REACH","viewer.export.direction.upstream":"Upstream","viewer.export.direction.downstream":"Downstream","viewer.export.error.canvasUnavailable":"Canvas unavailable for {label}","viewer.export.error.contextUnavailable":"2D canvas context unavailable for {label}","viewer.export.error.toBlobUnavailable":"canvas.toBlob unavailable for {label}","viewer.export.error.toBlobNull":"canvas.toBlob returned no data for {label}","viewer.export.error.variantsCombined":"Share Card variants cannot be combined","viewer.export.error.viewerState":"Share Card export could not remove temporary viewer state","viewer.export.error.routeState":"Route Card export could not preserve the resolved route safely","viewer.export.error.reachState":"Reach Card export could not preserve authored reach safely","viewer.export.error.webmRequirements":"WebM motion export requires a trace animation and browser MediaRecorder support","viewer.export.error.mediaRecorder":"MediaRecorder failed","viewer.export.error.emptyWebm":"MediaRecorder produced an empty WebM","viewer.export.error.webmBackground":"SVG background could not be loaded for WebM export","viewer.guide.title":"Explore this system","viewer.focus.selectedNodes":"{count} selected nodes","viewer.guide.eyebrow":"Diagram guide","viewer.guide.close":"Close diagram guide","viewer.guide.inspecting":"Inspecting compiled semantics","viewer.guide.actions":"Diagram exploration actions","viewer.guide.find":"Find any node","viewer.guide.find.hint":"Search labels, responsibilities, kinds, and stable IDs.","viewer.guide.route":"Trace a route","viewer.guide.route.aria":"Trace a directed route","viewer.guide.route.hint":"Ask how two semantic nodes connect in authored direction.","viewer.guide.map":"See the whole system","viewer.guide.map.hint":"Open Semantic Radar with a live viewport and stable nodes.","viewer.guide.lens":"Compare semantic kinds","viewer.guide.lens.hint":"Count roles, reveal their traffic, and compare direct authored links.","viewer.guide.present":"Enter Presentation Stage","viewer.guide.present.hint":"Give the live diagram the viewport without changing export.","viewer.guide.shortcuts":"Additional keyboard shortcuts","viewer.guide.shortcut.export":"Export","viewer.guide.shortcut.theme":"Theme","viewer.guide.shortcut.style":"Style","viewer.guide.shortcut.reset":"Reset","viewer.guide.shortcut.zoomIn":"Zoom in","viewer.guide.shortcut.zoomOut":"Zoom out","viewer.guide.shortcut.close":"Close","viewer.guide.facts":"{nodes} · {relationships}","viewer.guide.fact.node.one":"{count} semantic node","viewer.guide.fact.node.other":"{count} semantic nodes","viewer.guide.fact.relationship.one":"{count} relationship","viewer.guide.fact.relationship.other":"{count} relationships","viewer.guide.open":"Open diagram guide","viewer.finder.title":"Find a node","viewer.finder.close":"Close node finder","viewer.finder.placeholder":"Search labels or IDs","viewer.finder.search":"Search diagram nodes","viewer.finder.results":"Diagram nodes","viewer.finder.empty":"No matching nodes","viewer.finder.result.focus":"Focus {label}","viewer.finder.result.routeStart":"Choose {label} as route start","viewer.finder.result.routeTarget":"Choose {label} as route destination, {links}","viewer.finder.status.empty":"No matching nodes","viewer.finder.status.count.one":"{count} matching node","viewer.finder.status.count.other":"{count} matching nodes","viewer.finder.noun.nodes":"nodes","viewer.finder.link.one":"{count} link","viewer.finder.link.other":"{count} links","viewer.finder.result.focus.one":"Focus {label}, {count} related connection","viewer.finder.result.focus.other":"Focus {label}, {count} related connections","viewer.finder.status.filtered":"{visible} of {available} {noun}","viewer.finder.status.all":"{available} {noun}","viewer.passport.eyebrow":"Semantic passport","viewer.passport.metadata":"Node metadata","viewer.passport.evidence":"Verified source evidence","viewer.passport.verified":"Verified source","viewer.passport.verificationScope":"Verified against local Git at the pinned revision. Remote access has not been checked.","viewer.passport.reach":"Authored reach","viewer.passport.reach.trace":"Trace authored reachability","viewer.passport.upstream":"Upstream","viewer.passport.downstream":"Downstream","viewer.passport.upstream.trace":"Trace upstream authored reachability","viewer.passport.downstream.trace":"Trace downstream authored reachability","viewer.passport.close":"Close semantic passport","viewer.passport.move":"Move semantic passport. Drag, use arrow keys, or press Home to reset.","viewer.passport.copy":"Copy link","viewer.passport.copy.focus":"Copy link to focused node","viewer.passport.relations":"Relations","viewer.passport.relations.show":"Show connected relationships","viewer.passport.relations.hide":"Hide connected relationships","viewer.passport.relations.list":"Connected relationships","viewer.passport.copyRelation":"Copy relation","viewer.passport.copyNode":"Copy node","viewer.passport.copyPinned":"Copy link to pinned relationship","viewer.passport.copySource":"Copy link to source node","viewer.passport.copy.focused.success":"Focused node link copied","viewer.passport.copy.pinned.success":"Pinned relationship link copied","viewer.passport.copy.focused.failed":"Could not copy focused node link","viewer.passport.copy.pinned.failed":"Could not copy pinned relationship link","viewer.passport.relationship.none":"No connected relationships","viewer.passport.relationship.count.one":"{count} relation","viewer.passport.relationship.count.other":"{count} relations","viewer.passport.relationship.show.one":"Show {count} connected relationship","viewer.passport.relationship.show.other":"Show {count} connected relationships","viewer.passport.relationship.summary":"{out} outgoing · {in} incoming{loops}","viewer.passport.relationship.loops":" · {count} loop","viewer.passport.relationship.explorer":"Direct relationship explorer","viewer.passport.relationship.help":"Use arrow keys to explore relationships. Press Enter or Space to pin details; Escape clears.","viewer.passport.relationship.loopsBack":"loops back","viewer.passport.relationship.connectsTo":"connects to","viewer.passport.relationship.connectsFrom":"connects from","viewer.passport.relationship.pinned":"Pinned relationship · {from} → {to} · {label}","viewer.passport.relationship.inspect":"Inspect relationship {index} of {total}: {from} to {to}, {label}. Press Enter for details.","viewer.passport.relationship.group.out":"Outgoing","viewer.passport.relationship.group.in":"Incoming","viewer.passport.relationship.group.loop":"Self loops","viewer.passport.relationship.row":"{group}: {relationship}, {neighbor}","viewer.passport.relationship.direction.out":"OUT →","viewer.passport.relationship.direction.in":"← IN","viewer.passport.relationship.direction.loop":"LOOP","viewer.passport.sourceCount.one":"{count} verified source reference","viewer.passport.sourceCount.other":"{count} verified source references","viewer.passport.sourceMarker":"SRC","viewer.passport.beacon.one":"{count} verified source; focus this node to inspect","viewer.passport.beacon.other":"{count} verified sources; focus this node to inspect","viewer.passport.repository.open":"Open verified repository revision {revision}","viewer.passport.source.open":"Open verified source {path} at revision {revision}","viewer.passport.source.openLink":"Open ↗","viewer.passport.reach.upstream.one":"Trace {count} upstream authored node","viewer.passport.reach.upstream.other":"Trace {count} upstream authored nodes","viewer.passport.reach.downstream.one":"Trace {count} downstream authored node","viewer.passport.reach.downstream.other":"Trace {count} downstream authored nodes","viewer.passport.reach.noUpstream":"No upstream authored nodes","viewer.passport.reach.noDownstream":"No downstream authored nodes","viewer.passport.reach.status":"{direction} · {nodes} nodes · {links} links · max {hops} hops","viewer.route.eyebrow":"Path","viewer.route.start":"Click where the path starts","viewer.route.start.find":"Find start","viewer.route.start.find.aria":"Find a route start","viewer.route.copy":"Copy link","viewer.route.copy.aria":"Copy link to traced route","viewer.route.clear":"Clear","viewer.route.clear.aria":"Clear route probe","viewer.route.traced":"Path","viewer.route.pickTwo":"Click two nodes on the diagram","viewer.route.pickOne":"Click a node on the diagram","viewer.route.controls":"Route journey controls","viewer.route.previous":"Previous route position","viewer.route.play":"Play route journey","viewer.route.pause":"Pause route journey","viewer.route.replay":"Replay route journey","viewer.route.next":"Next route position","viewer.route.journey":"Journey","viewer.route.pause.label":"Pause","viewer.route.replay.label":"Replay","viewer.route.overview":"Overview","viewer.route.overview.aria":"Show complete route overview","viewer.route.instructions":"Click a start, then an end. Paths follow the arrows.","viewer.route.destination":"Where does the path from {label} end?","viewer.route.destination.find":"Find target","viewer.route.destination.find.aria":"Find a reachable route destination","viewer.route.differentDestination":"Choose a different destination","viewer.route.distinct":"Pick two different nodes.","viewer.route.unreachable":"Cannot reach {label} from here","viewer.route.unreachable.detail":"{target} cannot be reached from {source} along the arrows. Pick a highlighted node.","viewer.route.start.instructions":"Next, pick the end. Only nodes you can reach will light up.","viewer.route.copy.success":"Traced route link copied","viewer.route.copy.failed":"Could not copy traced route link","viewer.route.position":"Route position {index} of {total}: {label}","viewer.route.step":"Step {index} of {total} · {phase} · {label}","viewer.route.motionRequired":"Automatic journey requires Live motion","viewer.route.trigger.clear":"Clear traced route","viewer.route.overview.status":"{nodes} · {hops} · shortest path","viewer.route.overview.node.one":"{count} node","viewer.route.overview.node.other":"{count} nodes","viewer.route.overview.hop.one":"{count} step","viewer.route.overview.hop.other":"{count} steps","viewer.route.phase.playing":"Playing","viewer.route.phase.complete":"Complete","viewer.route.phase.inspecting":"Inspecting","viewer.route.destination.count.one":"{count} reachable node is highlighted. Click it.","viewer.route.destination.count.other":"{count} reachable nodes are highlighted. Click one.","viewer.route.noOutgoing":"No arrows lead out of this node. Clear it and pick another start.","viewer.route.result.title":"{source} to {target}","viewer.route.finder.source.title":"Choose route start","viewer.route.finder.source.placeholder":"Search route sources","viewer.route.finder.source.empty":"No matching route sources","viewer.route.finder.source.results":"Nodes that can start a route","viewer.route.finder.source.noun":"route sources","viewer.route.finder.source.badge":"start","viewer.route.finder.target.title":"Destination from {label}","viewer.route.finder.target.placeholder":"Search reachable destinations","viewer.route.finder.target.empty":"No matching reachable destinations","viewer.route.finder.target.results":"Reachable route destinations","viewer.route.finder.target.noun":"reachable destinations","viewer.route.hop.one":"{count} hop","viewer.route.hop.other":"{count} hops","viewer.lens.eyebrow":"Semantic lens","viewer.lens.title":"Compare system roles","viewer.lens.close":"Close semantic lens","viewer.lens.instruction":"Choose up to two semantic kinds. One reveals its real traffic; two compare only direct authored relationships.","viewer.lens.kinds":"Semantic kinds","viewer.lens.choose":"Choose a kind to inspect its nodes and touching relationships.","viewer.lens.copy":"Copy link to semantic lens","viewer.lens.clear":"Clear semantic lens","viewer.lens.open":"Open semantic lens","viewer.lens.openActive":"Open active semantic lens","viewer.lens.legend":"Semantic legend","viewer.lens.legend.inspect.one":"Inspect {label}, {count} node","viewer.lens.legend.inspect.other":"Inspect {label}, {count} nodes","viewer.lens.kind.count.one":"{label}, {count} node","viewer.lens.kind.count.other":"{label}, {count} nodes","viewer.lens.compare.one":"{first} → {second}: {forward} · {second} → {first}: {reverse} · {count} direct relationship","viewer.lens.compare.other":"{first} → {second}: {forward} · {second} → {first}: {reverse} · {count} direct relationships","viewer.lens.single":"{nodes} · {relationships} · connected peers remain visible","viewer.lens.node.one":"{count} {label} node","viewer.lens.node.other":"{count} {label} nodes","viewer.lens.relationship.one":"{count} touching relationship","viewer.lens.relationship.other":"{count} touching relationships","viewer.radar.title":"Semantic radar","viewer.radar.building":"Building overview","viewer.radar.openFull":"Open full semantic radar","viewer.radar.open":"Open radar","viewer.radar.close":"Close semantic radar","viewer.radar.surface":"Diagram overview. Click a node to focus it, or use arrow keys to pan.","viewer.radar.click":"Click node","viewer.radar.drag":"Drag to pan","viewer.radar.space":"Semantic radar needs more MAP space.","viewer.radar.nodes":"Semantic diagram radar nodes","viewer.radar.focus":"Focus {label} from Semantic Radar","viewer.radar.status":"{count} nodes · {viewport}","viewer.radar.fullMap":"{count} nodes · full map","viewer.radar.compacted":"Radar compacted to avoid covering the Semantic Passport or MAP controls.","viewer.radar.cancelWaiting":"Cancel semantic radar waiting for more MAP space","viewer.radar.needsSpace":"Semantic radar needs more visible MAP space","viewer.radar.viewport.full":"full map","viewer.radar.viewport.width":"{percent}% width","viewer.radar.viewport.scale":"{percent}% viewport","viewer.nav.controls":"Diagram view controls","viewer.nav.route":"Trace a directed route","viewer.nav.route.title":"Trace route (R)","viewer.nav.route.short":"PATH","viewer.nav.radar":"Open semantic radar","viewer.nav.radar.title":"Semantic radar (M)","viewer.nav.radar.short":"MAP","viewer.nav.lens":"Open semantic lens","viewer.nav.lens.title":"Semantic lens (L)","viewer.nav.lens.short":"LENS","viewer.nav.find":"Find a node","viewer.nav.find.title":"Find a node (/)","viewer.outline.title":"Node index","viewer.rail.show":"Notes \u0026 index","viewer.rail.controls":"Side panel","viewer.rail.collapse":"Collapse side panel","viewer.rail.bottom":"Move panel below the diagram","viewer.rail.right":"Move panel beside the diagram","viewer.nav.guide":"Open diagram guide","viewer.nav.guide.title":"Diagram guide (?)","viewer.nav.zoomOut":"Zoom out","viewer.nav.zoomOut.title":"Zoom out (-)","viewer.nav.reset":"Reset diagram view","viewer.nav.reset.title":"Reset view (0)","viewer.nav.read":"READ","viewer.nav.zoomIn":"Zoom in","viewer.nav.zoomIn.title":"Zoom in (+)","viewer.nav.camera":"{hint}. Reset diagram view","viewer.nav.camera.title":"{semantic}{hint} · reset view (0)","viewer.nav.camera.semantic":"Semantic camera active · ","viewer.nav.level.map":"MAP","viewer.nav.level.read":"READ","viewer.nav.level.full":"FULL","viewer.nav.level.auto":"AUTO","viewer.nav.detail.map":"Zoom in to reveal relationship labels and node context","viewer.nav.detail.read":"Zoom in again to reveal tags and annotations","viewer.nav.detail.full":"Full diagram detail","viewer.intent.summary":"{label}. {out} outgoing, {in} incoming{loops}. {total} connections. Press Enter for details.","viewer.intent.loops":", {count} self loop","viewer.common.copied":"Copied","viewer.common.copyFailed":"Copy failed","viewer.common.copyLink":"Copy link","viewer.common.clear":"Clear","viewer.common.close":"Close"}}</script>
+    <script id="archify-source-evidence-data" type="application/json">{"schemaVersion":1,"verified":true,"repository":{"url":"https://github.com/MadManJohnSmith/Syncify","revision":"aeb9c54e6a58ac370f22a375e529e4da2747eca4","shortRevision":"aeb9c54","label":"MadManJohnSmith/Syncify","href":"https://github.com/MadManJohnSmith/Syncify/tree/aeb9c54e6a58ac370f22a375e529e4da2747eca4"},"referenceCount":15,"nodes":{"sync":[{"path":"src-tauri/src/commands/service.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/commands/service.rs"}],"ui":[{"path":"ui/src/App.vue","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/ui/src/App.vue"},{"path":"ui/src/api/tauri.ts","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/ui/src/api/tauri.ts"}],"shell":[{"path":"src-tauri/src/main.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/main.rs"}],"secrets":[{"path":"src-tauri/src/crypto.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/crypto.rs"},{"path":"src-tauri/src/commands/accounts.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/commands/accounts.rs"}],"db":[{"path":"src-tauri/src/db.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/db.rs"}],"queue":[{"path":"src-tauri/src/commands/queue.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/commands/queue.rs"}],"worker":[{"path":"src-tauri/src/worker.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/worker.rs"}],"source":[{"path":"src-tauri/src/download/orchestrator.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/download/orchestrator.rs"}],"files":[{"path":"src-tauri/src/download/qobuz.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/download/qobuz.rs"}],"enrich":[{"path":"src-tauri/src/enrichment_worker.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/enrichment_worker.rs"},{"path":"src-tauri/src/services/enrichment.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/services/enrichment.rs"}],"sourcec":[{"path":"src-tauri/src/services/spotify.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/services/spotify.rs"}],"rec":[{"path":"src-tauri/src/services/operation_recovery.rs","href":"https://github.com/MadManJohnSmith/Syncify/blob/aeb9c54e6a58ac370f22a375e529e4da2747eca4/src-tauri/src/services/operation_recovery.rs"}]}}</script>
+    <script id="archify-i18n-data" type="application/json">{"locale":"es","messages":{"viewer.kind.frontend":"Frontend","viewer.kind.backend":"Backend","viewer.kind.database":"Base de datos","viewer.kind.cloud":"Nube","viewer.kind.security":"Seguridad","viewer.kind.messagebus":"Bus de mensajes","viewer.kind.external":"Externo","viewer.kind.neutral":"Neutral","viewer.kind.node":"Nodo","viewer.kind.start":"Inicio","viewer.kind.active":"Activo","viewer.kind.waiting":"En espera","viewer.kind.decision":"Decisión","viewer.kind.success":"Éxito","viewer.kind.failure":"Fallo","viewer.toolbar.actions":"Acciones del diagrama","viewer.theme.toggle.title":"Cambiar tema (T)","viewer.theme.toggle":"Cambiar tema de color","viewer.theme.dark":"Oscuro","viewer.theme.light":"Claro","viewer.preset.choose.title":"Elegir estilo visual (S alterna)","viewer.preset.choose":"Elegir estilo visual","viewer.preset.style":"Estilo","viewer.preset.menu":"Estilo visual","viewer.preset.identity":"Identidad visual","viewer.preset.cycles":"alterna","viewer.preset.classic":"Clásico","viewer.preset.classic.short":"Clásico","viewer.preset.classic.hint":"Predeterminado técnico estable","viewer.preset.flow":"Flujo de señal","viewer.preset.flow.short":"Flujo","viewer.preset.flow.hint":"Presentación con énfasis en el movimiento","viewer.preset.blueprint":"Plano","viewer.preset.blueprint.hint":"Revisión de ingeniería","viewer.preset.editorial":"Editorial","viewer.preset.editorial.hint":"Notas de publicación y lanzamiento","viewer.preset.badge.signalFlow":"FLUJO DE SEÑAL","viewer.preset.badge.blueprint":"PLANO / REV 01","viewer.preset.badge.editorial":"EDITORIAL / NOTA DE CAMPO","viewer.preset.badge.editorialPlate":"ARCHIFY / LÁMINA 04","viewer.preset.current":"Estilo visual: {style}. Elegir estilo visual","viewer.motion.live":"Activa","viewer.motion.still":"Fija","viewer.motion.pause":"Pausar animación","viewer.motion.resume":"Reanudar animación","viewer.motion.reduced":"Animación pausada por la preferencia de movimiento reducido","viewer.motion.hidden":"Animación pausada mientras esta página está oculta","viewer.motion.yielding":"Pausar animación; cediendo a {owner}","viewer.motion.yielding.title":"Vista previa en vivo activada · cediendo a {owner}","viewer.owner.route":"Sonda de ruta","viewer.owner.lens":"Lente semántico","viewer.owner.relationship":"Vista previa de relación","viewer.owner.intent":"Traza de intención","viewer.owner.focus":"enfoque semántico","viewer.owner.legend":"vista previa de la leyenda","viewer.owner.reader":"interacción del lector","viewer.present.enter":"Entrar al modo presentación","viewer.present.enter.title":"Modo presentación (F)","viewer.present.exit":"Salir del modo presentación","viewer.present.exit.title":"Salir del modo presentación (F o Escape)","viewer.present.present":"Presentar","viewer.present.exit.label":"Salir","viewer.export.button":"Exportar","viewer.export.button.title":"Exportar diagrama (E)","viewer.export.diagram":"Exportar diagrama","viewer.export.menu":"Exportar","viewer.export.subtitle":"Salidas portables y limpias","viewer.export.share":"Compartir","viewer.export.shareCard":"Tarjeta para compartir","viewer.export.routeShareCard":"Tarjeta de ruta para compartir","viewer.export.reachShareCard":"Tarjeta de alcance para compartir","viewer.export.copyDiagram":"Copiar diagrama","viewer.export.clipboardPng":"PNG al portapapeles","viewer.export.raster":"Imágenes rasterizadas","viewer.export.image":"Imagen","viewer.export.lossless":"Imagen sin pérdida","viewer.export.compact":"Imagen compacta","viewer.export.modern":"Imagen moderna","viewer.export.vectorMotion":"Vector y movimiento","viewer.export.vectorMotion.heading":"Vector y movimiento","viewer.export.editable":"Vector editable","viewer.export.svg.auto":"SVG · Auto","viewer.export.svg.auto.hint":"Coincide con el tema del host","viewer.export.svg.light":"SVG · Claro","viewer.export.svg.light.hint":"Siempre claro","viewer.export.svg.dark":"SVG · Oscuro","viewer.export.svg.dark.hint":"Siempre oscuro","viewer.export.motion6s":"Movimiento de 6 s","viewer.export.unsupported":"No compatible con este navegador","viewer.export.clipboardUnsupported":"Este navegador no admite escribir imágenes en el portapapeles","viewer.export.clipboardUnsupported.short":"Escritura de imágenes en el portapapeles no admitida en este navegador.","viewer.export.motionUnavailable":"Captura de movimiento no disponible en este navegador","viewer.export.webmUnavailable":"WebM no disponible en este navegador","viewer.export.failed":"Falló la exportación: {message}","viewer.export.unknownVariant":"Variante de tarjeta para compartir desconocida: {variant}","viewer.export.routeRequired":"Traza una ruta antes de exportar una tarjeta de ruta para compartir","viewer.export.reachRequired":"Traza el alcance definido antes de exportar una tarjeta de alcance para compartir","viewer.export.unknown":"desconocido","viewer.export.routeFailed":"Falló la exportación de la tarjeta de ruta para compartir: {message}","viewer.export.reachFailed":"Falló la exportación de la tarjeta de alcance para compartir: {message}","viewer.export.copyFailed":"Error al copiar: {message}","viewer.export.copiedPng":"PNG copiado al portapapeles","viewer.export.downloadedRoute":"Tarjeta de ruta para compartir descargada","viewer.export.downloadedReach":"Tarjeta de alcance para compartir descargada","viewer.export.downloadedWebm":"WebM descargado","viewer.export.recording":"Grabando 6 segundos de movimiento…","viewer.export.card.routeSummary.one":"Ruta: {source} → {target} · {count} paso","viewer.export.card.routeSummary.other":"Ruta: {source} → {target} · {count} pasos","viewer.export.card.reachSummary":"Alcance definido {direction} desde {origin} · {nodes} · {links} · máx {hops}","viewer.export.card.node.one":"{count} nodo","viewer.export.card.node.other":"{count} nodos","viewer.export.card.link.one":"{count} enlace","viewer.export.card.link.other":"{count} enlaces","viewer.export.card.hop.one":"{count} salto","viewer.export.card.hop.other":"{count} saltos","viewer.export.card.routeBadge":"ARCHIFY · RUTA · {hops}","viewer.export.card.reachBadge":"ARCHIFY · ALCANCE {direction}","viewer.export.direction.upstream":"Ascendente","viewer.export.direction.downstream":"Descendente","viewer.export.error.canvasUnavailable":"Lienzo no disponible para {label}","viewer.export.error.contextUnavailable":"Contexto de lienzo 2D no disponible para {label}","viewer.export.error.toBlobUnavailable":"canvas.toBlob no disponible para {label}","viewer.export.error.toBlobNull":"canvas.toBlob no devolvió datos para {label}","viewer.export.error.variantsCombined":"Las variantes de tarjeta para compartir no se pueden combinar","viewer.export.error.viewerState":"La exportación de la tarjeta para compartir no pudo quitar el estado temporal del visor","viewer.export.error.routeState":"La exportación de la tarjeta de ruta no pudo preservar la ruta resuelta de forma segura","viewer.export.error.reachState":"La exportación de la tarjeta de alcance no pudo preservar el alcance definido de forma segura","viewer.export.error.webmRequirements":"La exportación de movimiento WebM requiere una animación de traza y compatibilidad del navegador con MediaRecorder","viewer.export.error.mediaRecorder":"MediaRecorder falló","viewer.export.error.emptyWebm":"MediaRecorder produjo un WebM vacío","viewer.export.error.webmBackground":"No se pudo cargar el fondo SVG para la exportación WebM","viewer.guide.title":"Explorar este sistema","viewer.focus.selectedNodes":"{count} nodos seleccionados","viewer.guide.eyebrow":"Guía del diagrama","viewer.guide.close":"Cerrar la guía del diagrama","viewer.guide.inspecting":"Inspeccionando la semántica compilada","viewer.guide.actions":"Acciones de exploración del diagrama","viewer.guide.find":"Buscar cualquier nodo","viewer.guide.find.hint":"Busca por etiquetas, responsabilidades, tipos e IDs estables.","viewer.guide.route":"Trazar una ruta","viewer.guide.route.aria":"Trazar una ruta dirigida","viewer.guide.route.hint":"Pregunta cómo se conectan dos nodos semánticos en el sentido definido.","viewer.guide.map":"Ver todo el sistema","viewer.guide.map.hint":"Abre el Radar semántico con un viewport en vivo y nodos estables.","viewer.guide.lens":"Comparar tipos semánticos","viewer.guide.lens.hint":"Cuenta roles, revela su tráfico y compara enlaces directos definidos.","viewer.guide.present":"Entrar al modo presentación","viewer.guide.present.hint":"Dale al diagrama en vivo todo el viewport sin cambiar la exportación.","viewer.guide.shortcuts":"Atajos de teclado adicionales","viewer.guide.shortcut.export":"Exportar","viewer.guide.shortcut.theme":"Tema","viewer.guide.shortcut.style":"Estilo","viewer.guide.shortcut.reset":"Restablecer","viewer.guide.shortcut.zoomIn":"Acercar","viewer.guide.shortcut.zoomOut":"Alejar","viewer.guide.shortcut.close":"Cerrar","viewer.guide.facts":"{nodes} · {relationships}","viewer.guide.fact.node.one":"{count} nodo semántico","viewer.guide.fact.node.other":"{count} nodos semánticos","viewer.guide.fact.relationship.one":"{count} relación","viewer.guide.fact.relationship.other":"{count} relaciones","viewer.guide.open":"Abrir la guía del diagrama","viewer.finder.title":"Buscar un nodo","viewer.finder.close":"Cerrar el buscador de nodos","viewer.finder.placeholder":"Buscar etiquetas o IDs","viewer.finder.search":"Buscar nodos del diagrama","viewer.finder.results":"Nodos del diagrama","viewer.finder.empty":"No hay nodos coincidentes","viewer.finder.result.focus":"Enfocar {label}","viewer.finder.result.routeStart":"Elegir {label} como inicio de la ruta","viewer.finder.result.routeTarget":"Elegir {label} como destino de la ruta, {links}","viewer.finder.status.empty":"No hay nodos coincidentes","viewer.finder.status.count.one":"{count} nodo coincidente","viewer.finder.status.count.other":"{count} nodos coincidentes","viewer.finder.noun.nodes":"nodos","viewer.finder.link.one":"{count} enlace","viewer.finder.link.other":"{count} enlaces","viewer.finder.result.focus.one":"Enfocar {label}, {count} conexión relacionada","viewer.finder.result.focus.other":"Enfocar {label}, {count} conexiones relacionadas","viewer.finder.status.filtered":"{visible} de {available} {noun}","viewer.finder.status.all":"{available} {noun}","viewer.passport.eyebrow":"Pasaporte semántico","viewer.passport.metadata":"Metadatos del nodo","viewer.passport.evidence":"Evidencia de fuente verificada","viewer.passport.verified":"Fuente verificada","viewer.passport.verificationScope":"Verificado contra el Git local en la revisión fijada. No se ha comprobado el acceso remoto.","viewer.passport.reach":"Alcance definido","viewer.passport.reach.trace":"Trazar la alcanzabilidad definida","viewer.passport.upstream":"Ascendente","viewer.passport.downstream":"Descendente","viewer.passport.upstream.trace":"Trazar la alcanzabilidad definida ascendente","viewer.passport.downstream.trace":"Trazar la alcanzabilidad definida descendente","viewer.passport.close":"Cerrar el pasaporte semántico","viewer.passport.move":"Mover el pasaporte semántico. Arrastra, usa las flechas o pulsa Inicio para restablecer.","viewer.passport.copy":"Copiar enlace","viewer.passport.copy.focus":"Copiar enlace al nodo enfocado","viewer.passport.relations":"Relaciones","viewer.passport.relations.show":"Mostrar relaciones conectadas","viewer.passport.relations.hide":"Ocultar relaciones conectadas","viewer.passport.relations.list":"Relaciones conectadas","viewer.passport.copyRelation":"Copiar relación","viewer.passport.copyNode":"Copiar nodo","viewer.passport.copyPinned":"Copiar enlace a la relación fijada","viewer.passport.copySource":"Copiar enlace al nodo de origen","viewer.passport.copy.focused.success":"Enlace del nodo enfocado copiado","viewer.passport.copy.pinned.success":"Enlace de la relación fijada copiado","viewer.passport.copy.focused.failed":"No se pudo copiar el enlace del nodo enfocado","viewer.passport.copy.pinned.failed":"No se pudo copiar el enlace de la relación fijada","viewer.passport.relationship.none":"No hay relaciones conectadas","viewer.passport.relationship.count.one":"{count} relación","viewer.passport.relationship.count.other":"{count} relaciones","viewer.passport.relationship.show.one":"Mostrar {count} relación conectada","viewer.passport.relationship.show.other":"Mostrar {count} relaciones conectadas","viewer.passport.relationship.summary":"{out} salientes · {in} entrantes{loops}","viewer.passport.relationship.loops":" · {count} bucle","viewer.passport.relationship.explorer":"Explorador de relaciones directas","viewer.passport.relationship.help":"Usa las flechas para explorar las relaciones. Pulsa Enter o Espacio para fijar detalles; Escape las borra.","viewer.passport.relationship.loopsBack":"vuelve sobre sí mismo","viewer.passport.relationship.connectsTo":"conecta a","viewer.passport.relationship.connectsFrom":"conecta desde","viewer.passport.relationship.pinned":"Relación fijada · {from} → {to} · {label}","viewer.passport.relationship.inspect":"Inspeccionar relación {index} de {total}: {from} a {to}, {label}. Pulsa Enter para ver detalles.","viewer.passport.relationship.group.out":"Salientes","viewer.passport.relationship.group.in":"Entrantes","viewer.passport.relationship.group.loop":"Bucles propios","viewer.passport.relationship.row":"{group}: {relationship}, {neighbor}","viewer.passport.relationship.direction.out":"SAL →","viewer.passport.relationship.direction.in":"← ENT","viewer.passport.relationship.direction.loop":"BUCLE","viewer.passport.sourceCount.one":"{count} referencia de fuente verificada","viewer.passport.sourceCount.other":"{count} referencias de fuente verificadas","viewer.passport.sourceMarker":"SRC","viewer.passport.beacon.one":"{count} fuente verificada; enfoca este nodo para inspeccionar","viewer.passport.beacon.other":"{count} fuentes verificadas; enfoca este nodo para inspeccionar","viewer.passport.repository.open":"Abrir la revisión verificada del repositorio {revision}","viewer.passport.source.open":"Abrir la fuente verificada {path} en la revisión {revision}","viewer.passport.source.openLink":"Abrir ↗","viewer.passport.reach.upstream.one":"Trazar {count} nodo definido ascendente","viewer.passport.reach.upstream.other":"Trazar {count} nodos definidos ascendentes","viewer.passport.reach.downstream.one":"Trazar {count} nodo definido descendente","viewer.passport.reach.downstream.other":"Trazar {count} nodos definidos descendentes","viewer.passport.reach.noUpstream":"No hay nodos definidos ascendentes","viewer.passport.reach.noDownstream":"No hay nodos definidos descendentes","viewer.passport.reach.status":"{direction} · {nodes} nodos · {links} enlaces · máx {hops} saltos","viewer.route.eyebrow":"Ruta","viewer.route.start":"Haz clic donde empieza la ruta","viewer.route.start.find":"Buscar inicio","viewer.route.start.find.aria":"Buscar un inicio de ruta","viewer.route.copy":"Copiar enlace","viewer.route.copy.aria":"Copiar enlace a la ruta trazada","viewer.route.clear":"Borrar","viewer.route.clear.aria":"Borrar la sonda de ruta","viewer.route.traced":"Ruta","viewer.route.pickTwo":"Haz clic en dos nodos del diagrama","viewer.route.pickOne":"Haz clic en un nodo del diagrama","viewer.route.controls":"Controles del recorrido de la ruta","viewer.route.previous":"Posición anterior de la ruta","viewer.route.play":"Reproducir el recorrido de la ruta","viewer.route.pause":"Pausar el recorrido de la ruta","viewer.route.replay":"Repetir el recorrido de la ruta","viewer.route.next":"Posición siguiente de la ruta","viewer.route.journey":"Recorrido","viewer.route.pause.label":"Pausar","viewer.route.replay.label":"Repetir","viewer.route.overview":"Vista general","viewer.route.overview.aria":"Mostrar la vista general completa de la ruta","viewer.route.instructions":"Haz clic en un inicio y luego en un final. La ruta sigue las flechas.","viewer.route.destination":"¿Dónde termina la ruta desde {label}?","viewer.route.destination.find":"Buscar destino","viewer.route.destination.find.aria":"Buscar un destino de ruta alcanzable","viewer.route.differentDestination":"Elige un destino diferente","viewer.route.distinct":"Elige dos nodos distintos.","viewer.route.unreachable":"No se llega a {label} desde aquí","viewer.route.unreachable.detail":"No se llega a {target} desde {source} siguiendo las flechas. Elige un nodo resaltado.","viewer.route.start.instructions":"Luego elige el final. Solo se iluminan los nodos alcanzables.","viewer.route.copy.success":"Enlace de la ruta trazada copiado","viewer.route.copy.failed":"No se pudo copiar el enlace de la ruta trazada","viewer.route.position":"Posición de la ruta {index} de {total}: {label}","viewer.route.step":"Paso {index} de {total} · {phase} · {label}","viewer.route.motionRequired":"El recorrido automático requiere la animación Activa","viewer.route.trigger.clear":"Borrar la ruta trazada","viewer.route.overview.status":"{nodes} · {hops} · ruta más corta","viewer.route.overview.node.one":"{count} nodo","viewer.route.overview.node.other":"{count} nodos","viewer.route.overview.hop.one":"{count} paso","viewer.route.overview.hop.other":"{count} pasos","viewer.route.phase.playing":"Reproduciendo","viewer.route.phase.complete":"Completo","viewer.route.phase.inspecting":"Inspeccionando","viewer.route.destination.count.one":"{count} nodo alcanzable está resaltado. Haz clic en él.","viewer.route.destination.count.other":"{count} nodos alcanzables están resaltados. Haz clic en uno.","viewer.route.noOutgoing":"Ninguna flecha sale de este nodo. Bórralo y elige otro inicio.","viewer.route.result.title":"{source} a {target}","viewer.route.finder.source.title":"Elegir el inicio de la ruta","viewer.route.finder.source.placeholder":"Buscar orígenes de ruta","viewer.route.finder.source.empty":"No hay orígenes de ruta coincidentes","viewer.route.finder.source.results":"Nodos que pueden iniciar una ruta","viewer.route.finder.source.noun":"orígenes de ruta","viewer.route.finder.source.badge":"inicio","viewer.route.finder.target.title":"Destino desde {label}","viewer.route.finder.target.placeholder":"Buscar destinos alcanzables","viewer.route.finder.target.empty":"No hay destinos alcanzables coincidentes","viewer.route.finder.target.results":"Destinos de ruta alcanzables","viewer.route.finder.target.noun":"destinos alcanzables","viewer.route.hop.one":"{count} salto","viewer.route.hop.other":"{count} saltos","viewer.lens.eyebrow":"Lente semántico","viewer.lens.title":"Comparar roles del sistema","viewer.lens.close":"Cerrar el lente semántico","viewer.lens.instruction":"Elige hasta dos tipos semánticos. Uno revela su tráfico real; dos comparan solo las relaciones directas definidas.","viewer.lens.kinds":"Tipos semánticos","viewer.lens.choose":"Elige un tipo para inspeccionar sus nodos y las relaciones que lo tocan.","viewer.lens.copy":"Copiar enlace al lente semántico","viewer.lens.clear":"Borrar el lente semántico","viewer.lens.open":"Abrir el lente semántico","viewer.lens.openActive":"Abrir el lente semántico activo","viewer.lens.legend":"Leyenda semántica","viewer.lens.legend.inspect.one":"Inspeccionar {label}, {count} nodo","viewer.lens.legend.inspect.other":"Inspeccionar {label}, {count} nodos","viewer.lens.kind.count.one":"{label}, {count} nodo","viewer.lens.kind.count.other":"{label}, {count} nodos","viewer.lens.compare.one":"{first} → {second}: {forward} · {second} → {first}: {reverse} · {count} relación directa","viewer.lens.compare.other":"{first} → {second}: {forward} · {second} → {first}: {reverse} · {count} relaciones directas","viewer.lens.single":"{nodes} · {relationships} · los pares conectados permanecen visibles","viewer.lens.node.one":"{count} nodo {label}","viewer.lens.node.other":"{count} nodos {label}","viewer.lens.relationship.one":"{count} relación en contacto","viewer.lens.relationship.other":"{count} relaciones en contacto","viewer.radar.title":"Radar semántico","viewer.radar.building":"Construyendo la vista general","viewer.radar.openFull":"Abrir el radar semántico completo","viewer.radar.open":"Abrir el radar","viewer.radar.close":"Cerrar el radar semántico","viewer.radar.surface":"Vista general del diagrama. Haz clic en un nodo para enfocarlo, o usa las flechas para desplazarte.","viewer.radar.click":"Clic en el nodo","viewer.radar.drag":"Arrastra para desplazar","viewer.radar.space":"El radar semántico necesita más espacio de MAPA.","viewer.radar.nodes":"Nodos del radar del diagrama semántico","viewer.radar.focus":"Enfocar {label} desde el Radar semántico","viewer.radar.status":"{count} nodos · {viewport}","viewer.radar.fullMap":"{count} nodos · mapa completo","viewer.radar.compacted":"Radar compactado para no tapar el Pasaporte semántico ni los controles de MAPA.","viewer.radar.cancelWaiting":"Cancelar la espera del radar semántico por más espacio de MAPA","viewer.radar.needsSpace":"El radar semántico necesita más espacio de MAPA visible","viewer.radar.viewport.full":"mapa completo","viewer.radar.viewport.width":"{percent}% de ancho","viewer.radar.viewport.scale":"{percent}% del viewport","viewer.nav.controls":"Controles de vista del diagrama","viewer.nav.route":"Trazar una ruta dirigida","viewer.nav.route.title":"Trazar ruta (R)","viewer.nav.route.short":"RUTA","viewer.nav.radar":"Abrir el radar semántico","viewer.nav.radar.title":"Radar semántico (M)","viewer.nav.radar.short":"MAPA","viewer.nav.lens":"Abrir el lente semántico","viewer.nav.lens.title":"Lente semántico (L)","viewer.nav.lens.short":"LENTE","viewer.nav.find":"Buscar un nodo","viewer.nav.find.title":"Buscar un nodo (/)","viewer.outline.title":"Índice de nodos","viewer.rail.show":"Notas e índice","viewer.rail.controls":"Panel lateral","viewer.rail.collapse":"Contraer panel lateral","viewer.rail.bottom":"Mover el panel debajo","viewer.rail.right":"Mover el panel al lado","viewer.nav.guide":"Abrir la guía del diagrama","viewer.nav.guide.title":"Guía del diagrama (?)","viewer.nav.zoomOut":"Alejar","viewer.nav.zoomOut.title":"Alejar (-)","viewer.nav.reset":"Restablecer la vista del diagrama","viewer.nav.reset.title":"Restablecer vista (0)","viewer.nav.read":"LEER","viewer.nav.zoomIn":"Acercar","viewer.nav.zoomIn.title":"Acercar (+)","viewer.nav.camera":"{hint}. Restablecer la vista del diagrama","viewer.nav.camera.title":"{semantic}{hint} · restablecer vista (0)","viewer.nav.camera.semantic":"Cámara semántica activa · ","viewer.nav.level.map":"MAPA","viewer.nav.level.read":"LEER","viewer.nav.level.full":"COMPLETO","viewer.nav.level.auto":"AUTO","viewer.nav.detail.map":"Acerca para revelar las etiquetas de relación y el contexto de los nodos","viewer.nav.detail.read":"Acerca de nuevo para revelar etiquetas y anotaciones","viewer.nav.detail.full":"Detalle completo del diagrama","viewer.intent.summary":"{label}. {out} salientes, {in} entrantes{loops}. {total} conexiones. Pulsa Enter para ver detalles.","viewer.intent.loops":", {count} bucle propio","viewer.common.copied":"Copiado","viewer.common.copyFailed":"Error al copiar","viewer.common.copyLink":"Copiar enlace","viewer.common.clear":"Borrar","viewer.common.close":"Cerrar"}}</script>
     <!-- Main Diagram -->
     <div class="diagram-container" data-detail-level="read"
-         data-preset-badge-editorial-plate="ARCHIFY / PLATE 04">
-      <svg viewBox="0 0 1160 564" role="img" lang="en" aria-labelledby="archify-diagram-title archify-diagram-description" data-preset="classic" data-quality-profile="showcase" data-reader-fit="intrinsic-height" data-reader-min-text="7.5" data-reader-primary-text="14">
-        <title id="archify-diagram-title">Syncify · Arquitectura</title>
-        <desc id="archify-diagram-description">App de escritorio: Vue 3 sobre Tauri 2, SQLite local y credenciales en el keyring del sistema</desc>
+         data-preset-badge-editorial-plate="ARCHIFY / LÁMINA 04">
+      <svg viewBox="0 0 1708 922" role="img" lang="es" aria-labelledby="archify-diagram-title archify-diagram-description" data-animation="trace" data-preset="classic" data-quality-profile="showcase" data-reader-fit="intrinsic-height" data-reader-min-text="7.5" data-reader-primary-text="14">
+        <title id="archify-diagram-title">Syncify, por dentro</title>
+        <desc id="archify-diagram-description">De una cuenta conectada a audio verificado en disco — rastreado en el commit aeb9c54</desc>
         <!-- Definitions -->
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
@@ -5014,228 +5014,309 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <rect width="100%" height="100%" fill="url(#grid)" />
 
         <!-- Boundaries (behind everything) -->
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="0" data-composition-frame-label="App de escritorio (un solo proceso)" x="10" y="130" width="910" height="254" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="0" data-composition-frame-label="WebView — frontera de la UI" x="36" y="310" width="220" height="124" rx="12" class="c-region" stroke-width="1"/>
+
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="1" data-composition-frame-label="Proceso Rust de escritorio" x="436" y="130" width="896" height="724" rx="12" class="c-region" stroke-width="1"/>
+
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="security-group" data-composition-frame-id="2" data-composition-frame-label="Frontera de red" x="776" y="8" width="892" height="646" rx="8" class="c-security-group" stroke-width="1"/>
 
         <!-- Connection paths (before components for correct z-order) -->
         <g data-graph-role="automatic-crossover" style="--step:0">
-          <path data-graph-role="automatic-crossover-underlay" d="M 190 332 L 270 332" fill="none" stroke="var(--mask)" stroke-width="5.8" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="ui" data-edge-to="tauri" data-edge-label="invoke IPC" data-edge-key="0" data-edge-id="ui-tauri" data-composition-points="190,332;270,332" data-composition-crossover="halo" data-composition-independent="true" d="M 190 332 L 270 332" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 886 112 L 886 174" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="sourcec" data-edge-to="sync" data-edge-label="importación autenticada" data-edge-key="0" data-edge-id="syncapi" data-composition-points="886,112;886,174" data-composition-crossover="halo" data-composition-independent="true" d="M 886 112 L 886 174" class="a-default" data-animate="edge" style="--step:0" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:1">
-          <path data-graph-role="automatic-crossover-underlay" d="M 420 323.95 L 500 323.95" fill="none" stroke="var(--mask)" stroke-width="5.8" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="tauri" data-edge-to="db" data-edge-label="sqlx" data-edge-key="1" data-edge-id="tauri-db" data-composition-points="420,323.95;500,323.95" data-composition-crossover="halo" data-composition-independent="true" d="M 420 323.95 L 500 323.95" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 886 248 L 886 340" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="sync" data-edge-to="db" data-edge-label="guarda el catálogo" data-edge-key="1" data-edge-id="syncsql" data-composition-points="886,248;886,340" data-composition-crossover="halo" data-composition-independent="true" d="M 886 248 L 886 340" class="a-dashed" data-animate="edge" style="--step:1" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:2">
-          <path data-graph-role="automatic-crossover-underlay" d="M 331 300 L 331 220" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="tauri" data-edge-to="keyring" data-edge-label="tokens" data-edge-key="2" data-edge-id="tauri-keyring" data-composition-points="331,300;331,220" data-composition-crossover="halo" data-composition-independent="true" d="M 331 300 L 331 220" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 226 377 L 466 377" fill="none" stroke="var(--mask)" stroke-width="5.8" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="ui" data-edge-to="shell" data-edge-label="invoke + eventos" data-edge-key="2" data-edge-id="invoke" data-composition-points="226,377;466,377" data-composition-crossover="halo" data-composition-independent="true" d="M 226 377 L 466 377" class="a-emphasis" data-animate="edge" style="--step:2" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:3">
-          <path data-graph-role="automatic-crossover-underlay" d="M 345 300 L 345 252 Q 345 244 353 244 L 548 244 Q 556 244 556 236 L 556 220" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="tauri" data-edge-to="workers" data-edge-label="lanza" data-edge-key="3" data-edge-id="tauri-workers" data-composition-points="345,300;345,244;556,244;556,220" data-composition-crossover="halo" data-composition-independent="true" d="M 345 300 L 345 252 Q 345 244 353 244 L 548 244 Q 556 244 556 236 L 556 220" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 546 340 L 546 234" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="shell" data-edge-to="secrets" data-edge-label="cifrar / descifrar" data-edge-key="3" data-edge-id="creds" data-composition-points="546,340;546,234" data-composition-crossover="halo" data-composition-independent="true" d="M 546 340 L 546 234" class="a-security" data-animate="edge" style="--step:3" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:4">
-          <path data-graph-role="automatic-crossover-underlay" d="M 420 339 L 489 339 Q 497 339 497 347 L 497 355 Q 497 363 505 363 L 698 363 Q 706 363 706 355 L 706 340 Q 706 332 714 332 L 730 332" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="tauri" data-edge-to="services" data-edge-label="adapters" data-edge-key="4" data-edge-id="tauri-services" data-composition-points="420,339;497,339;497,363;706,363;706,332;730,332" data-composition-crossover="halo" data-composition-independent="true" d="M 420 339 L 489 339 Q 497 339 497 347 L 497 355 Q 497 363 505 363 L 698 363 Q 706 363 706 355 L 706 340 Q 706 332 714 332 L 730 332" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 626 377 L 806 377" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="shell" data-edge-to="db" data-edge-label="SQL" data-edge-key="4" data-edge-id="sql" data-composition-points="626,377;806,377" data-composition-crossover="halo" data-composition-independent="true" d="M 626 377 L 806 377" class="a-default" data-animate="edge" style="--step:4" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:5">
-          <path data-graph-role="automatic-crossover-underlay" d="M 570 220 L 570 300" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="workers" data-edge-to="db" data-edge-label="escribe" data-edge-key="5" data-edge-id="workers-db" data-composition-points="570,220;570,300" data-composition-crossover="halo" data-composition-independent="true" d="M 570 220 L 570 300" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 1229 414 L 1229 560" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="queue" data-edge-to="worker" data-edge-label="tomar la siguiente" data-edge-key="5" data-edge-id="claim" data-composition-points="1229,414;1229,560" data-composition-crossover="halo" data-composition-independent="true" d="M 1229 414 L 1229 560" class="a-default" data-animate="edge" style="--step:5" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:6">
-          <path data-graph-role="automatic-crossover-underlay" d="M 640 190 L 656 190 Q 664 190 664 198 L 664 460 Q 664 468 656 468 L 640 468" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="workers" data-edge-to="ffmpeg" data-edge-label="decodifica" data-edge-key="6" data-edge-id="workers-ffmpeg" data-composition-points="640,190;664,190;664,468;640,468" data-composition-crossover="halo" data-composition-independent="true" d="M 640 190 L 656 190 Q 664 190 664 198 L 664 460 Q 664 468 656 468 L 640 468" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 1302 597 L 1478 597" fill="none" stroke="var(--mask)" stroke-width="5.8" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="worker" data-edge-to="source" data-edge-label="solicitud + regla de reserva" data-edge-key="6" data-edge-id="route" data-composition-points="1302,597;1478,597" data-composition-crossover="halo" data-composition-independent="true" d="M 1302 597 L 1478 597" class="a-emphasis" data-animate="edge" style="--step:6" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:7">
-          <path data-graph-role="automatic-crossover-underlay" d="M 890 332 L 960 332" fill="none" stroke="var(--mask)" stroke-width="5.8" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="services" data-edge-to="providers" data-edge-label="HTTPS OAuth" data-edge-key="7" data-edge-id="services-providers" data-composition-points="890,332;960,332" data-composition-crossover="halo" data-composition-independent="true" d="M 890 332 L 960 332" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 1558 634 L 1558 780" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="source" data-edge-to="files" data-edge-label="temporal, verificar, mover" data-edge-key="7" data-edge-id="store" data-composition-points="1558,634;1558,780" data-composition-crossover="halo" data-composition-independent="true" d="M 1558 634 L 1558 780" class="a-default" data-animate="edge" style="--step:7" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:8">
-          <path data-graph-role="automatic-crossover-underlay" d="M 812 220 L 812 281 Q 812 289 804 289 L 735 289 Q 727 289 727 297 L 727 400 Q 727 408 719 408 L 585 408 Q 577 408 577 416 L 577 440" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="bridges" data-edge-to="ffmpeg" data-edge-label="subproceso" data-edge-key="8" data-edge-id="bridges-ffmpeg" data-composition-points="812,220;812,289;727,289;727,408;577,408;577,440" data-composition-crossover="halo" data-composition-independent="true" d="M 812 220 L 812 281 Q 812 289 804 289 L 735 289 Q 727 289 727 297 L 727 400 Q 727 408 719 408 L 585 408 Q 577 408 577 416 L 577 440" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 886 414 L 886 579 Q 886 587 894 587 L 902 587 Q 910 587 910 595 L 910 760" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="db" data-edge-to="enrich" data-edge-label="filas incompletas" data-edge-key="8" data-edge-id="eread" data-composition-points="886,414;886,587;910,587;910,760" data-composition-crossover="halo" data-composition-independent="true" d="M 886 414 L 886 579 Q 886 587 894 587 L 902 587 Q 910 587 910 595 L 910 760" class="a-dashed" data-animate="edge" style="--step:8" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
         </g>
         <g data-graph-role="automatic-crossover" style="--step:9">
-          <path data-graph-role="automatic-crossover-underlay" d="M 359 300 L 359 284 Q 359 276 367 276 L 698 276 Q 706 276 706 268 L 706 198 Q 706 190 714 190 L 730 190" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
-          <path data-edge-from="tauri" data-edge-to="bridges" data-edge-label="cmd_utils" data-edge-key="9" data-edge-id="tauri-bridges" data-composition-points="359,300;359,276;706,276;706,190;730,190" data-composition-crossover="halo" data-composition-independent="true" d="M 359 300 L 359 284 Q 359 276 367 276 L 698 276 Q 706 276 706 268 L 706 198 Q 706 190 714 190 L 730 190" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <path data-graph-role="automatic-crossover-underlay" d="M 1215 560 L 1215 450 Q 1215 442 1207 442 L 1147 442 Q 1139 442 1139 434 L 1139 342 Q 1139 334 1147 334 L 1207 334 Q 1215 334 1215 326 L 1215 310" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="worker" data-edge-to="rec" data-edge-label="checkpoint" data-edge-key="9" data-edge-id="checkpt" data-composition-points="1215,560;1215,442;1139,442;1139,334;1215,334;1215,310" data-composition-crossover="halo" data-composition-independent="true" d="M 1215 560 L 1215 450 Q 1215 442 1207 442 L 1147 442 Q 1139 442 1139 434 L 1139 342 Q 1139 334 1147 334 L 1207 334 Q 1215 334 1215 326 L 1215 310" class="a-dashed" data-animate="edge" style="--step:9" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+        </g>
+        <g data-graph-role="automatic-crossover" style="--step:10">
+          <path data-graph-role="automatic-crossover-underlay" d="M 1229 310 L 1229 340" fill="none" stroke="var(--mask)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="rec" data-edge-to="queue" data-edge-label="rebalance al reiniciar" data-edge-key="10" data-edge-id="resume" data-composition-points="1229,310;1229,340" data-composition-crossover="halo" data-composition-independent="true" d="M 1229 310 L 1229 340" class="a-security" data-animate="edge" style="--step:10" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
+        </g>
+        <g data-graph-role="automatic-crossover" style="--step:11">
+          <path data-graph-role="automatic-crossover-underlay" d="M 966 377 L 1142 377" fill="none" stroke="var(--mask)" stroke-width="5.8" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>
+          <path data-edge-from="db" data-edge-to="queue" data-edge-label="fila en cola" data-edge-key="11" data-edge-id="queueWrite" data-composition-points="966,377;1142,377" data-composition-crossover="halo" data-composition-independent="true" d="M 966 377 L 1142 377" class="a-emphasis" data-animate="edge" style="--step:11" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         </g>
 
         <!-- Components -->
-        <g id="node-ui" data-node-id="ui" data-node-label="Interfaz Vue 3" tabindex="0" role="button" aria-label="Focus Interfaz Vue 3, Vite ·Composition API, App de escritorio (un solo proceso)" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="Vite ·Composition API" data-node-context="App de escritorio (un solo proceso)">
-          <title>Interfaz Vue 3 · Vite ·Composition API · App de escritorio (un solo proceso)</title>
-          <rect x="40" y="300" width="150" height="64" rx="6" class="c-mask"/>
-          <rect x="40" y="300" width="150" height="64" rx="6" class="c-frontend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(46 306) scale(0.6875)">
+        <g id="node-sync" data-node-id="sync" data-node-label="Motor de sync" tabindex="0" role="button" aria-label="Enfocar Motor de sync, importar de un servicio, Proceso Rust de escritorio" aria-pressed="false" data-node-kind="backend" data-node-sublabel="importar de un servicio" data-node-context="Proceso Rust de escritorio">
+          <title>Motor de sync · importar de un servicio · Proceso Rust de escritorio</title>
+          <rect x="806" y="174" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="806" y="174" width="160" height="74" rx="6" class="c-backend" data-animate="node" style="--step:1" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(812 180) scale(0.6875)">
+            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="886" y="209" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Motor de sync</text>
+        <text data-detail="context" x="886" y="225" class="t-muted" font-size="9" text-anchor="middle">importar de un servicio</text>
+        </g>
+
+        <g id="node-ui" data-node-id="ui" data-node-label="Interfaz Vue" tabindex="0" role="button" aria-label="Enfocar Interfaz Vue, vistas e invoke, WebView — frontera de la UI, Vue.js" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="vistas e invoke" data-node-context="WebView — frontera de la UI" data-node-brand="Vue.js" data-node-brand-id="vue" data-node-brand-status="preset" data-node-brand-source="https://github.com/vuejs/art/blob/a1c78b74569b70a25300925b4eacfefcc143b8f6/logo.svg">
+          <title>Interfaz Vue · vistas e invoke · WebView — frontera de la UI · Vue.js</title>
+          <rect x="66" y="340" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="66" y="340" width="160" height="74" rx="6" class="c-frontend" data-animate="node" style="--step:2" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(72 346) scale(0.6875)">
             <rect x="2" y="3" width="12" height="10" rx="2"/>
             <path d="M2 6.5h12"/>
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="115" y="330" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Interfaz Vue 3</text>
-        <text data-detail="context" x="115" y="346" class="t-muted" font-size="9" text-anchor="middle">Vite ·Composition API</text>
+          <g aria-hidden="true" data-brand-mark="vue" data-brand-title="Vue.js" data-brand-status="preset" data-brand-source="https://github.com/vuejs/art/blob/a1c78b74569b70a25300925b4eacfefcc143b8f6/logo.svg" class="brand-mark" transform="translate(204 346)">
+            <rect width="16" height="16" rx="4" class="brand-mark-badge"/>
+            <path d="M24,1.61H14.06L12,5.16,9.94,1.61H0L12,22.39ZM12,14.08,5.16,2.23H9.59L12,6.41l2.41-4.18h4.43Z" transform="translate(3 3) scale(0.4166666666666667)" fill="#4FC08D"/>
+            <rect width="16" height="16" rx="4" class="brand-mark-frame"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="146" y="375" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Interfaz Vue</text>
+        <text data-detail="context" x="146" y="391" class="t-muted" font-size="9" text-anchor="middle">vistas e invoke</text>
         </g>
 
-        <g id="node-tauri" data-node-id="tauri" data-node-label="Nucleo Tauri 2" tabindex="0" role="button" aria-label="Focus Nucleo Tauri 2, comandos Rust, App de escritorio (un solo proceso)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="comandos Rust" data-node-context="App de escritorio (un solo proceso)">
-          <title>Nucleo Tauri 2 · comandos Rust · App de escritorio (un solo proceso)</title>
-          <rect x="270" y="300" width="150" height="64" rx="6" class="c-mask"/>
-          <rect x="270" y="300" width="150" height="64" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(276 306) scale(0.6875)">
+        <g id="node-shell" data-node-id="shell" data-node-label="Comandos Tauri" tabindex="0" role="button" aria-label="Enfocar Comandos Tauri, único proceso, Proceso Rust de escritorio" aria-pressed="false" data-node-kind="backend" data-node-sublabel="único proceso" data-node-context="Proceso Rust de escritorio">
+          <title>Comandos Tauri · único proceso · Proceso Rust de escritorio</title>
+          <rect x="466" y="340" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="466" y="340" width="160" height="74" rx="6" class="c-backend" data-animate="node" style="--step:3" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(472 346) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="345" y="330" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Nucleo Tauri 2</text>
-        <text data-detail="context" x="345" y="346" class="t-muted" font-size="9" text-anchor="middle">comandos Rust</text>
+          <text data-node-label="" data-detail-anchor="" x="546" y="375" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Comandos Tauri</text>
+        <text data-detail="context" x="546" y="391" class="t-muted" font-size="9" text-anchor="middle">único proceso</text>
         </g>
 
-        <g id="node-db" data-node-id="db" data-node-label="SQLite local" tabindex="0" role="button" aria-label="Focus SQLite local, syncify.db, App de escritorio (un solo proceso)" aria-pressed="false" data-node-kind="database" data-node-sublabel="syncify.db" data-node-context="App de escritorio (un solo proceso)">
-          <title>SQLite local · syncify.db · App de escritorio (un solo proceso)</title>
-          <rect x="500" y="300" width="140" height="60" rx="6" class="c-mask"/>
-          <rect x="500" y="300" width="140" height="60" rx="6" class="c-database" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(506 306) scale(0.6875)">
-            <ellipse cx="8" cy="4" rx="5" ry="2"/>
-            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="570" y="328" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">SQLite local</text>
-        <text data-detail="context" x="570" y="344" class="t-muted" font-size="9" text-anchor="middle">syncify.db</text>
-        </g>
-
-        <g id="node-keyring" data-node-id="keyring" data-node-label="Keyring del sistema" tabindex="0" role="button" aria-label="Focus Keyring del sistema, secret-service, App de escritorio (un solo proceso)" aria-pressed="false" data-node-kind="security" data-node-sublabel="secret-service" data-node-tag="credenciales" data-node-context="App de escritorio (un solo proceso)">
-          <title>Keyring del sistema · secret-service · App de escritorio (un solo proceso) · credenciales</title>
-          <rect x="270" y="160" width="150" height="60" rx="6" class="c-mask"/>
-          <rect x="270" y="160" width="150" height="60" rx="6" class="c-security" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(276 166) scale(0.6875)">
+        <g id="node-secrets" data-node-id="secrets" data-node-label="Credenciales" tabindex="0" role="button" aria-label="Enfocar Credenciales, cifradas en reposo, Proceso Rust de escritorio" aria-pressed="false" data-node-kind="security" data-node-sublabel="cifradas en reposo" data-node-context="Proceso Rust de escritorio">
+          <title>Credenciales · cifradas en reposo · Proceso Rust de escritorio</title>
+          <rect x="466" y="160" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="466" y="160" width="160" height="74" rx="6" class="c-security" data-animate="node" style="--step:4" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(472 166) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="345" y="188" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Keyring del sistema</text>
-        <text data-detail="context" x="345" y="204" class="t-muted" font-size="9" text-anchor="middle">secret-service</text>
-        <text data-detail="fine" x="345" y="212" class="t-security" font-size="7" text-anchor="middle">credenciales</text>
+          <text data-node-label="" data-detail-anchor="" x="546" y="195" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Credenciales</text>
+        <text data-detail="context" x="546" y="211" class="t-muted" font-size="9" text-anchor="middle">cifradas en reposo</text>
         </g>
 
-        <g id="node-workers" data-node-id="workers" data-node-label="Workers" tabindex="0" role="button" aria-label="Focus Workers, sync y descarga, App de escritorio (un solo proceso)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="sync y descarga" data-node-context="App de escritorio (un solo proceso)">
-          <title>Workers · sync y descarga · App de escritorio (un solo proceso)</title>
-          <rect x="500" y="160" width="140" height="60" rx="6" class="c-mask"/>
-          <rect x="500" y="160" width="140" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(506 166) scale(0.6875)">
+        <g id="node-db" data-node-id="db" data-node-label="Catálogo SQLite" tabindex="0" role="button" aria-label="Enfocar Catálogo SQLite, cuentas, pistas, cola, Proceso Rust de escritorio, SQLite" aria-pressed="false" data-node-kind="database" data-node-sublabel="cuentas, pistas, cola" data-node-context="Proceso Rust de escritorio" data-node-brand="SQLite" data-node-brand-id="sqlite" data-node-brand-status="preset" data-node-brand-source="https://github.com/sqlite/sqlite/blob/43e862723ec680542ca6f608f9963c0993dd7324/art/sqlite370.eps">
+          <title>Catálogo SQLite · cuentas, pistas, cola · Proceso Rust de escritorio · SQLite</title>
+          <rect x="806" y="340" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="806" y="340" width="160" height="74" rx="6" class="c-database" data-animate="node" style="--step:2" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(812 346) scale(0.6875)">
+            <ellipse cx="8" cy="4" rx="5" ry="2"/>
+            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
+          </g>
+          <g aria-hidden="true" data-brand-mark="sqlite" data-brand-title="SQLite" data-brand-status="preset" data-brand-source="https://github.com/sqlite/sqlite/blob/43e862723ec680542ca6f608f9963c0993dd7324/art/sqlite370.eps" class="brand-mark" transform="translate(944 346)">
+            <rect width="16" height="16" rx="4" class="brand-mark-badge"/>
+            <path d="M21.678.521c-1.032-.92-2.28-.55-3.513.544a8.71 8.71 0 0 0-.547.535c-2.109 2.237-4.066 6.38-4.674 9.544.237.48.422 1.093.544 1.561a13.044 13.044 0 0 1 .164.703s-.019-.071-.096-.296l-.05-.146a1.689 1.689 0 0 0-.033-.08c-.138-.32-.518-.995-.686-1.289-.143.423-.27.818-.376 1.176.484.884.778 2.4.778 2.4s-.025-.099-.147-.442c-.107-.303-.644-1.244-.772-1.464-.217.804-.304 1.346-.226 1.478.152.256.296.698.422 1.186.286 1.1.485 2.44.485 2.44l.017.224a22.41 22.41 0 0 0 .056 2.748c.095 1.146.273 2.13.5 2.657l.155-.084c-.334-1.038-.47-2.399-.41-3.967.09-2.398.642-5.29 1.661-8.304 1.723-4.55 4.113-8.201 6.3-9.945-1.993 1.8-4.692 7.63-5.5 9.788-.904 2.416-1.545 4.684-1.931 6.857.666-2.037 2.821-2.912 2.821-2.912s1.057-1.304 2.292-3.166c-.74.169-1.955.458-2.362.629-.6.251-.762.337-.762.337s1.945-1.184 3.613-1.72C21.695 7.9 24.195 2.767 21.678.521m-18.573.543A1.842 1.842 0 0 0 1.27 2.9v16.608a1.84 1.84 0 0 0 1.835 1.834h9.418a22.953 22.953 0 0 1-.052-2.707c-.006-.062-.011-.141-.016-.2a27.01 27.01 0 0 0-.473-2.378c-.121-.47-.275-.898-.369-1.057-.116-.197-.098-.31-.097-.432 0-.12.015-.245.037-.386a9.98 9.98 0 0 1 .234-1.045l.217-.028c-.017-.035-.014-.065-.031-.097l-.041-.381a32.8 32.8 0 0 1 .382-1.194l.2-.019c-.008-.016-.01-.038-.018-.053l-.043-.316c.63-3.28 2.587-7.443 4.8-9.791.066-.069.133-.128.198-.194Z" transform="translate(3 3) scale(0.4166666666666667)" fill="#003B57"/>
+            <rect width="16" height="16" rx="4" class="brand-mark-frame"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="886" y="375" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Catálogo SQLite</text>
+        <text data-detail="context" x="886" y="391" class="t-muted" font-size="9" text-anchor="middle">cuentas, pistas, cola</text>
+        </g>
+
+        <g id="node-queue" data-node-id="queue" data-node-label="Cola de descarga" tabindex="0" role="button" aria-label="Enfocar Cola de descarga, filas persistentes, Proceso Rust de escritorio" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="filas persistentes" data-node-context="Proceso Rust de escritorio">
+          <title>Cola de descarga · filas persistentes · Proceso Rust de escritorio</title>
+          <rect x="1142" y="340" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="1142" y="340" width="160" height="74" rx="6" class="c-messagebus" data-animate="node" style="--step:5" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(1148 346) scale(0.6875)">
+            <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>
+            <circle cx="5" cy="4.5" r="1" class="sigil-fill"/>
+            <circle cx="10.5" cy="8" r="1" class="sigil-fill"/>
+            <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="1222" y="375" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Cola de descarga</text>
+        <text data-detail="context" x="1222" y="391" class="t-muted" font-size="9" text-anchor="middle">filas persistentes</text>
+        </g>
+
+        <g id="node-worker" data-node-id="worker" data-node-label="Worker de descarga" tabindex="0" role="button" aria-label="Enfocar Worker de descarga, toma, pausa y límites, Proceso Rust de escritorio" aria-pressed="false" data-node-kind="backend" data-node-sublabel="toma, pausa y límites" data-node-context="Proceso Rust de escritorio">
+          <title>Worker de descarga · toma, pausa y límites · Proceso Rust de escritorio</title>
+          <rect x="1142" y="560" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="1142" y="560" width="160" height="74" rx="6" class="c-backend" data-animate="node" style="--step:6" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(1148 566) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="570" y="188" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Workers</text>
-        <text data-detail="context" x="570" y="204" class="t-muted" font-size="9" text-anchor="middle">sync y descarga</text>
+          <text data-node-label="" data-detail-anchor="" x="1222" y="595" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Worker de descarga</text>
+        <text data-detail="context" x="1222" y="611" class="t-muted" font-size="9" text-anchor="middle">toma, pausa y límites</text>
         </g>
 
-        <g id="node-services" data-node-id="services" data-node-label="Adaptadores de servicio" tabindex="0" role="button" aria-label="Focus Adaptadores de servicio, OAuth y catalogo, App de escritorio (un solo proceso)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="OAuth y catalogo" data-node-context="App de escritorio (un solo proceso)">
-          <title>Adaptadores de servicio · OAuth y catalogo · App de escritorio (un solo proceso)</title>
-          <rect x="730" y="300" width="160" height="64" rx="6" class="c-mask"/>
-          <rect x="730" y="300" width="160" height="64" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(736 306) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="810" y="330" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Adaptadores de servicio</text>
-        <text data-detail="context" x="810" y="346" class="t-muted" font-size="9" text-anchor="middle">OAuth y catalogo</text>
-        </g>
-
-        <g id="node-bridges" data-node-id="bridges" data-node-label="Puentes Python" tabindex="0" role="button" aria-label="Focus Puentes Python, fingerprint, metadata, App de escritorio (un solo proceso)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="fingerprint, metadata" data-node-context="App de escritorio (un solo proceso)">
-          <title>Puentes Python · fingerprint, metadata · App de escritorio (un solo proceso)</title>
-          <rect x="730" y="160" width="150" height="60" rx="6" class="c-mask"/>
-          <rect x="730" y="160" width="150" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(736 166) scale(0.6875)">
-            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
-          </g>
-          <text data-node-label="" data-detail-anchor="" x="805" y="188" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Puentes Python</text>
-        <text data-detail="context" x="805" y="204" class="t-muted" font-size="9" text-anchor="middle">fingerprint, metadata</text>
-        </g>
-
-        <g id="node-ffmpeg" data-node-id="ffmpeg" data-node-label="ffmpeg / fpcalc" tabindex="0" role="button" aria-label="Focus ffmpeg / fpcalc, binarios incluidos, Architecture component" aria-pressed="false" data-node-kind="external" data-node-sublabel="binarios incluidos" data-node-context="Architecture component">
-          <title>ffmpeg / fpcalc · binarios incluidos · Architecture component</title>
-          <rect x="500" y="440" width="140" height="56" rx="6" class="c-mask"/>
-          <rect x="500" y="440" width="140" height="56" rx="6" class="c-external" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(506 446) scale(0.6875)">
+        <g id="node-source" data-node-id="source" data-node-label="Proveedores de audio" tabindex="0" role="button" aria-label="Enfocar Proveedores de audio, Qobuz / Tidal / Songlink, Frontera de red" aria-pressed="false" data-node-kind="external" data-node-sublabel="Qobuz / Tidal / Songlink" data-node-context="Frontera de red">
+          <title>Proveedores de audio · Qobuz / Tidal / Songlink · Frontera de red</title>
+          <rect x="1478" y="560" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="1478" y="560" width="160" height="74" rx="6" class="c-external" data-animate="node" style="--step:7" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(1484 566) scale(0.6875)">
             <rect x="2.5" y="5" width="8.5" height="8" rx="1.5"/>
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="570" y="466" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">ffmpeg / fpcalc</text>
-        <text data-detail="context" x="570" y="482" class="t-muted" font-size="9" text-anchor="middle">binarios incluidos</text>
+          <text data-node-label="" data-detail-anchor="" x="1558" y="595" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Proveedores de audio</text>
+        <text data-detail="context" x="1558" y="611" class="t-muted" font-size="9" text-anchor="middle">Qobuz / Tidal / Songlink</text>
         </g>
 
-        <g id="node-providers" data-node-id="providers" data-node-label="Servicios de musica" tabindex="0" role="button" aria-label="Focus Servicios de musica, Spotify, Deezer, Tidal..., Architecture component" aria-pressed="false" data-node-kind="external" data-node-sublabel="Spotify, Deezer, Tidal..." data-node-context="Architecture component">
-          <title>Servicios de musica · Spotify, Deezer, Tidal... · Architecture component</title>
-          <rect x="960" y="300" width="160" height="60" rx="6" class="c-mask"/>
-          <rect x="960" y="300" width="160" height="60" rx="6" class="c-external" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(966 306) scale(0.6875)">
+        <g id="node-files" data-node-id="files" data-node-label="Carpeta de música" tabindex="0" role="button" aria-label="Enfocar Carpeta de música, temporal y luego final, Componente de arquitectura" aria-pressed="false" data-node-kind="database" data-node-sublabel="temporal y luego final" data-node-context="Componente de arquitectura">
+          <title>Carpeta de música · temporal y luego final · Componente de arquitectura</title>
+          <rect x="1478" y="780" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="1478" y="780" width="160" height="74" rx="6" class="c-database" data-animate="node" style="--step:8" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="database" class="semantic-sigil s-database" transform="translate(1484 786) scale(0.6875)">
+            <ellipse cx="8" cy="4" rx="5" ry="2"/>
+            <path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="1558" y="815" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Carpeta de música</text>
+        <text data-detail="context" x="1558" y="831" class="t-muted" font-size="9" text-anchor="middle">temporal y luego final</text>
+        </g>
+
+        <g id="node-enrich" data-node-id="enrich" data-node-label="Worker de metadatos" tabindex="0" role="button" aria-label="Enfocar Worker de metadatos, relleno en segundo plano, Proceso Rust de escritorio" aria-pressed="false" data-node-kind="backend" data-node-sublabel="relleno en segundo plano" data-node-context="Proceso Rust de escritorio">
+          <title>Worker de metadatos · relleno en segundo plano · Proceso Rust de escritorio</title>
+          <rect x="830" y="760" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="830" y="760" width="160" height="74" rx="6" class="c-backend" data-animate="node" style="--step:9" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(836 766) scale(0.6875)">
+            <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="910" y="795" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Worker de metadatos</text>
+        <text data-detail="context" x="910" y="811" class="t-muted" font-size="9" text-anchor="middle">relleno en segundo plano</text>
+        </g>
+
+        <g id="node-sourcec" data-node-id="sourcec" data-node-label="Catálogos remotos" tabindex="0" role="button" aria-label="Enfocar Catálogos remotos, origen de metadatos, Frontera de red" aria-pressed="false" data-node-kind="external" data-node-sublabel="origen de metadatos" data-node-context="Frontera de red">
+          <title>Catálogos remotos · origen de metadatos · Frontera de red</title>
+          <rect x="806" y="38" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="806" y="38" width="160" height="74" rx="6" class="c-external" data-animate="node" style="--step:0" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(812 44) scale(0.6875)">
             <rect x="2.5" y="5" width="8.5" height="8" rx="1.5"/>
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="1040" y="328" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Servicios de musica</text>
-        <text data-detail="context" x="1040" y="344" class="t-muted" font-size="9" text-anchor="middle">Spotify, Deezer, Tidal...</text>
+          <text data-node-label="" data-detail-anchor="" x="886" y="73" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Catálogos remotos</text>
+        <text data-detail="context" x="886" y="89" class="t-muted" font-size="9" text-anchor="middle">origen de metadatos</text>
+        </g>
+
+        <g id="node-rec" data-node-id="rec" data-node-label="Diario de recuperación" tabindex="0" role="button" aria-label="Enfocar Diario de recuperación, checkpoint y reinicio, Proceso Rust de escritorio" aria-pressed="false" data-node-kind="security" data-node-sublabel="checkpoint y reinicio" data-node-context="Proceso Rust de escritorio">
+          <title>Diario de recuperación · checkpoint y reinicio · Proceso Rust de escritorio</title>
+          <rect x="1142" y="236" width="160" height="74" rx="6" class="c-mask"/>
+          <rect x="1142" y="236" width="160" height="74" rx="6" class="c-security" data-animate="node" style="--step:10" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(1148 242) scale(0.6875)">
+            <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
+            <path d="m5.8 8 1.5 1.5 3-3"/>
+          </g>
+          <text data-node-label="" data-detail-anchor="" x="1222" y="271" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Diario de recuperación</text>
+        <text data-detail="context" x="1222" y="287" class="t-muted" font-size="9" text-anchor="middle">checkpoint y reinicio</text>
         </g>
 
         <!-- Connection labels -->
-        <g data-detail="context" data-edge-from="ui" data-edge-to="tauri" data-edge-label="invoke IPC" data-edge-key="0" data-edge-id="ui-tauri">
-          <rect x="201" y="312" width="58" height="14" rx="3" class="c-mask"/>
-          <text x="230" y="322" class="t-edge-emphasis" font-size="8" text-anchor="middle">invoke IPC</text>
+        <g data-detail="context" data-edge-from="sourcec" data-edge-to="sync" data-edge-label="importación autenticada" data-edge-key="0" data-edge-id="syncapi">
+          <rect x="759.5999999999999" y="136" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="819.8" y="146" class="t-edge-default" font-size="8" text-anchor="middle">importación autenticada</text>
         </g>
-        <g data-detail="context" data-edge-from="tauri" data-edge-to="db" data-edge-label="sqlx" data-edge-key="1" data-edge-id="tauri-db">
-          <rect x="445" y="303.95" width="30" height="14" rx="3" class="c-mask"/>
-          <text x="460" y="313.95" class="t-edge-emphasis" font-size="8" text-anchor="middle">sqlx</text>
+        <g data-detail="context" data-edge-from="sync" data-edge-to="db" data-edge-label="guarda el catálogo" data-edge-key="1" data-edge-id="syncsql">
+          <rect x="783.5999999999999" y="287" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="831.8" y="297" class="t-edge-dashed" font-size="8" text-anchor="middle">guarda el catálogo</text>
         </g>
-        <g data-detail="context" data-edge-from="tauri" data-edge-to="keyring" data-edge-label="tokens" data-edge-key="2" data-edge-id="tauri-keyring">
-          <rect x="286.20000000000005" y="253" width="38.8" height="14" rx="3" class="c-mask"/>
-          <text x="305.6" y="263" class="t-edge-default" font-size="8" text-anchor="middle">tokens</text>
+        <g data-detail="context" data-edge-from="ui" data-edge-to="shell" data-edge-label="invoke + eventos" data-edge-key="2" data-edge-id="invoke">
+          <rect x="302.6" y="357" width="86.8" height="14" rx="3" class="c-mask"/>
+          <text x="346" y="367" class="t-edge-emphasis" font-size="8" text-anchor="middle">invoke + eventos</text>
         </g>
-        <g data-detail="context" data-edge-from="tauri" data-edge-to="workers" data-edge-label="lanza" data-edge-key="3" data-edge-id="tauri-workers">
-          <rect x="433.5" y="224" width="34" height="14" rx="3" class="c-mask"/>
-          <text x="450.5" y="234" class="t-edge-default" font-size="8" text-anchor="middle">lanza</text>
+        <g data-detail="context" data-edge-from="shell" data-edge-to="secrets" data-edge-label="cifrar / descifrar" data-edge-key="3" data-edge-id="creds">
+          <rect x="497.8" y="320" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="546" y="330" class="t-edge-security" font-size="8" text-anchor="middle">cifrar / descifrar</text>
         </g>
-        <g data-detail="context" data-edge-from="tauri" data-edge-to="services" data-edge-label="adapters" data-edge-key="4" data-edge-id="tauri-services">
-          <rect x="434.3" y="349" width="48.4" height="14" rx="3" class="c-mask"/>
-          <text x="458.5" y="359" class="t-edge-default" font-size="8" text-anchor="middle">adapters</text>
+        <g data-detail="context" data-edge-from="shell" data-edge-to="db" data-edge-label="SQL" data-edge-key="4" data-edge-id="sql">
+          <rect x="701" y="357" width="30" height="14" rx="3" class="c-mask"/>
+          <text x="716" y="367" class="t-edge-default" font-size="8" text-anchor="middle">SQL</text>
         </g>
-        <g data-detail="context" data-edge-from="workers" data-edge-to="db" data-edge-label="escribe" data-edge-key="5" data-edge-id="workers-db">
-          <rect x="576" y="253" width="43.6" height="14" rx="3" class="c-mask"/>
-          <text x="597.8" y="263" class="t-edge-default" font-size="8" text-anchor="middle">escribe</text>
+        <g data-detail="context" data-edge-from="queue" data-edge-to="worker" data-edge-label="tomar la siguiente" data-edge-key="5" data-edge-id="claim">
+          <rect x="1235" y="480" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
+          <text x="1283.2" y="490" class="t-edge-default" font-size="8" text-anchor="middle">tomar la siguiente</text>
         </g>
-        <g data-detail="context" data-edge-from="workers" data-edge-to="ffmpeg" data-edge-label="decodifica" data-edge-key="6" data-edge-id="workers-ffmpeg">
-          <rect x="670" y="426.25" width="58" height="14" rx="3" class="c-mask"/>
-          <text x="699" y="436.25" class="t-edge-default" font-size="8" text-anchor="middle">decodifica</text>
+        <g data-detail="context" data-edge-from="worker" data-edge-to="source" data-edge-label="solicitud + regla de reserva" data-edge-key="6" data-edge-id="route">
+          <rect x="1317.8" y="577" width="144.4" height="14" rx="3" class="c-mask"/>
+          <text x="1390" y="587" class="t-edge-emphasis" font-size="8" text-anchor="middle">solicitud + regla de reserva</text>
         </g>
-        <g data-detail="context" data-edge-from="services" data-edge-to="providers" data-edge-label="HTTPS OAuth" data-edge-key="7" data-edge-id="services-providers">
-          <rect x="893.6" y="312" width="62.8" height="14" rx="3" class="c-mask"/>
-          <text x="925" y="322" class="t-edge-emphasis" font-size="8" text-anchor="middle">HTTPS OAuth</text>
+        <g data-detail="context" data-edge-from="source" data-edge-to="files" data-edge-label="temporal, verificar, mover" data-edge-key="7" data-edge-id="store">
+          <rect x="1417.1999999999998" y="700" width="134.8" height="14" rx="3" class="c-mask"/>
+          <text x="1484.6" y="710" class="t-edge-default" font-size="8" text-anchor="middle">temporal, verificar, mover</text>
         </g>
-        <g data-detail="context" data-edge-from="bridges" data-edge-to="ffmpeg" data-edge-label="subproceso" data-edge-key="8" data-edge-id="bridges-ffmpeg">
-          <rect x="740.5" y="269" width="58" height="14" rx="3" class="c-mask"/>
-          <text x="769.5" y="279" class="t-edge-default" font-size="8" text-anchor="middle">subproceso</text>
+        <g data-detail="context" data-edge-from="db" data-edge-to="enrich" data-edge-label="filas incompletas" data-edge-key="8" data-edge-id="eread">
+          <rect x="852.2" y="567" width="91.6" height="14" rx="3" class="c-mask"/>
+          <text x="898" y="577" class="t-edge-dashed" font-size="8" text-anchor="middle">filas incompletas</text>
         </g>
-        <g data-detail="context" data-edge-from="tauri" data-edge-to="bridges" data-edge-label="cmd_utils" data-edge-key="9" data-edge-id="tauri-bridges">
-          <rect x="505.9" y="256" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
-          <text x="532.5" y="266" class="t-edge-default" font-size="8" text-anchor="middle">cmd_utils</text>
+        <g data-detail="context" data-edge-from="worker" data-edge-to="rec" data-edge-label="checkpoint" data-edge-key="9" data-edge-id="checkpt">
+          <rect x="1148" y="422" width="58" height="14" rx="3" class="c-mask"/>
+          <text x="1177" y="432" class="t-edge-dashed" font-size="8" text-anchor="middle">checkpoint</text>
+        </g>
+        <g data-detail="context" data-edge-from="rec" data-edge-to="queue" data-edge-label="rebalance al reiniciar" data-edge-key="10" data-edge-id="resume">
+          <rect x="1235" y="318" width="115.6" height="14" rx="3" class="c-mask"/>
+          <text x="1292.8" y="328" class="t-edge-security" font-size="8" text-anchor="middle">rebalance al reiniciar</text>
+        </g>
+        <g data-detail="context" data-edge-from="db" data-edge-to="queue" data-edge-label="fila en cola" data-edge-key="11" data-edge-id="queueWrite">
+          <rect x="1020.2" y="357" width="67.6" height="14" rx="3" class="c-mask"/>
+          <text x="1054" y="367" class="t-edge-emphasis" font-size="8" text-anchor="middle">fila en cola</text>
         </g>
 
         <!-- Boundary labels (foreground masks keep routes out of titles) -->
-        <g data-graph-role="structural-frame-label" data-composition-frame-id="0" data-composition-frame-kind="region" data-composition-frame-label="App de escritorio (un solo proceso)">
-          <rect data-graph-role="structural-frame-label-mask" x="14" y="140" width="199" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="18" y="153" class="t-cloud" font-size="9" font-weight="600">App de escritorio (un solo proceso)</text>
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="0" data-composition-frame-kind="region" data-composition-frame-label="WebView — frontera de la UI">
+          <rect data-graph-role="structural-frame-label-mask" x="40" y="317" width="188.5135645870967" height="19" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="44" y="332.01935583870966" class="t-cloud" font-size="11.019355838709675" font-weight="600">WebView — frontera de la UI</text>
+        </g>
+
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="1" data-composition-frame-kind="region" data-composition-frame-label="Proceso Rust de escritorio">
+          <rect data-graph-role="structural-frame-label-mask" x="440" y="137" width="181.90195108387093" height="19" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="444" y="152.01935583870969" class="t-cloud" font-size="11.019355838709675" font-weight="600">Proceso Rust de escritorio</text>
+        </g>
+
+        <g data-graph-role="structural-frame-label" data-composition-frame-id="2" data-composition-frame-kind="security-group" data-composition-frame-label="Frontera de red">
+          <rect data-graph-role="structural-frame-label-mask" x="780" y="15" width="109.17420254838707" height="19" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="784" y="30.019355838709675" class="t-security" font-size="11.019355838709675" font-weight="600">Frontera de red</text>
         </g>
 
         <!-- Legend -->
         <g data-legend="" data-legend-bridge="">
-          <text x="40" y="528" class="t-primary" font-size="12" font-weight="650">Legend</text>
-          <g data-legend-semantic-kind="frontend" data-legend-kind="frontend" data-legend-label="Frontend" data-legend-x="40" data-legend-baseline="548" data-legend-width="83">
-            <rect x="40" y="539" width="16" height="10" rx="2.5" class="c-frontend" stroke-width="1"/>
-            <text x="62" y="548" class="t-muted" font-size="10" font-weight="500">Frontend</text>
+          <text x="40" y="886" class="t-primary" font-size="12" font-weight="650">Leyenda</text>
+          <g data-legend-semantic-kind="frontend" data-legend-kind="frontend" data-legend-label="Frontend" data-legend-x="40" data-legend-baseline="906" data-legend-width="83">
+            <rect x="40" y="897" width="16" height="10" rx="2.5" class="c-frontend" stroke-width="1"/>
+            <text x="62" y="906" class="t-muted" font-size="10" font-weight="500">Frontend</text>
           </g>
-          <g data-legend-semantic-kind="backend" data-legend-kind="backend" data-legend-label="Backend" data-legend-x="145" data-legend-baseline="548" data-legend-width="78">
-            <rect x="145" y="539" width="16" height="10" rx="2.5" class="c-backend" stroke-width="1"/>
-            <text x="167" y="548" class="t-muted" font-size="10" font-weight="500">Backend</text>
+          <g data-legend-semantic-kind="backend" data-legend-kind="backend" data-legend-label="Backend" data-legend-x="145" data-legend-baseline="906" data-legend-width="78">
+            <rect x="145" y="897" width="16" height="10" rx="2.5" class="c-backend" stroke-width="1"/>
+            <text x="167" y="906" class="t-muted" font-size="10" font-weight="500">Backend</text>
           </g>
-          <g data-legend-semantic-kind="database" data-legend-kind="database" data-legend-label="Database" data-legend-x="245" data-legend-baseline="548" data-legend-width="83">
-            <rect x="245" y="539" width="16" height="10" rx="2.5" class="c-database" stroke-width="1"/>
-            <text x="267" y="548" class="t-muted" font-size="10" font-weight="500">Database</text>
+          <g data-legend-semantic-kind="database" data-legend-kind="database" data-legend-label="Base de datos" data-legend-x="245" data-legend-baseline="906" data-legend-width="108">
+            <rect x="245" y="897" width="16" height="10" rx="2.5" class="c-database" stroke-width="1"/>
+            <text x="267" y="906" class="t-muted" font-size="10" font-weight="500">Base de datos</text>
           </g>
-          <g data-legend-semantic-kind="security" data-legend-kind="security" data-legend-label="Security" data-legend-x="350" data-legend-baseline="548" data-legend-width="83">
-            <rect x="350" y="539" width="16" height="10" rx="2.5" class="c-security" stroke-width="1"/>
-            <text x="372" y="548" class="t-muted" font-size="10" font-weight="500">Security</text>
+          <g data-legend-semantic-kind="security" data-legend-kind="security" data-legend-label="Seguridad" data-legend-x="375" data-legend-baseline="906" data-legend-width="88">
+            <rect x="375" y="897" width="16" height="10" rx="2.5" class="c-security" stroke-width="1"/>
+            <text x="397" y="906" class="t-muted" font-size="10" font-weight="500">Seguridad</text>
           </g>
-          <g data-legend-semantic-kind="external" data-legend-kind="external" data-legend-label="External" data-legend-x="455" data-legend-baseline="548" data-legend-width="83">
-            <rect x="455" y="539" width="16" height="10" rx="2.5" class="c-external" stroke-width="1"/>
-            <text x="477" y="548" class="t-muted" font-size="10" font-weight="500">External</text>
+          <g data-legend-semantic-kind="messagebus" data-legend-kind="messagebus" data-legend-label="Bus de mensajes" data-legend-x="485" data-legend-baseline="906" data-legend-width="118">
+            <rect x="485" y="897" width="16" height="10" rx="2.5" class="c-messagebus" stroke-width="1"/>
+            <text x="507" y="906" class="t-muted" font-size="10" font-weight="500">Bus de mensajes</text>
+          </g>
+          <g data-legend-semantic-kind="external" data-legend-kind="external" data-legend-label="Externo" data-legend-x="625" data-legend-baseline="906" data-legend-width="78">
+            <rect x="625" y="897" width="16" height="10" rx="2.5" class="c-external" stroke-width="1"/>
+            <text x="647" y="906" class="t-muted" font-size="10" font-weight="500">Externo</text>
           </g>
         </g>
       </svg>
@@ -5243,213 +5324,224 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       <div class="diagram-guide no-print" id="diagram-guide" hidden role="dialog" aria-modal="false" aria-labelledby="diagram-guide-title">
         <div class="diagram-guide-head">
           <span>
-            <span class="diagram-guide-eyebrow">Diagram guide</span>
-            <strong class="diagram-guide-title" id="diagram-guide-title">Explore this system</strong>
+            <span class="diagram-guide-eyebrow">Guía del diagrama</span>
+            <strong class="diagram-guide-title" id="diagram-guide-title">Explorar este sistema</strong>
           </span>
-          <button class="diagram-guide-close" id="diagram-guide-close" type="button" aria-label="Close diagram guide">&#215;</button>
+          <button class="diagram-guide-close" id="diagram-guide-close" type="button" aria-label="Cerrar la guía del diagrama">&#215;</button>
         </div>
-        <p class="diagram-guide-stats" id="diagram-guide-stats">Inspecting compiled semantics</p>
-        <div class="diagram-guide-actions" id="diagram-guide-actions" role="group" aria-label="Diagram exploration actions">
-          <button class="diagram-guide-action" type="button" data-guide-action="find" aria-label="Find any node">
+        <p class="diagram-guide-stats" id="diagram-guide-stats">Inspeccionando la semántica compilada</p>
+        <div class="diagram-guide-actions" id="diagram-guide-actions" role="group" aria-label="Acciones de exploración del diagrama">
+          <button class="diagram-guide-action" type="button" data-guide-action="find" aria-label="Buscar cualquier nodo">
             <span class="diagram-guide-index" aria-hidden="true">01</span>
-            <span class="diagram-guide-action-copy"><strong>Find any node</strong><small>Search labels, responsibilities, kinds, and stable IDs.</small></span>
+            <span class="diagram-guide-action-copy"><strong>Buscar cualquier nodo</strong><small>Busca por etiquetas, responsabilidades, tipos e IDs estables.</small></span>
             <kbd aria-hidden="true">/</kbd>
           </button>
-          <button class="diagram-guide-action" type="button" data-guide-action="route" aria-label="Trace a directed route">
+          <button class="diagram-guide-action" type="button" data-guide-action="route" aria-label="Trazar una ruta dirigida">
             <span class="diagram-guide-index" aria-hidden="true">02</span>
-            <span class="diagram-guide-action-copy"><strong>Trace a route</strong><small>Ask how two semantic nodes connect in authored direction.</small></span>
+            <span class="diagram-guide-action-copy"><strong>Trazar una ruta</strong><small>Pregunta cómo se conectan dos nodos semánticos en el sentido definido.</small></span>
             <kbd aria-hidden="true">R</kbd>
           </button>
-          <button class="diagram-guide-action" type="button" data-guide-action="map" aria-label="See the whole system">
+          <button class="diagram-guide-action" type="button" data-guide-action="map" aria-label="Ver todo el sistema">
             <span class="diagram-guide-index" aria-hidden="true">03</span>
-            <span class="diagram-guide-action-copy"><strong>See the whole system</strong><small>Open Semantic Radar with a live viewport and stable nodes.</small></span>
+            <span class="diagram-guide-action-copy"><strong>Ver todo el sistema</strong><small>Abre el Radar semántico con un viewport en vivo y nodos estables.</small></span>
             <kbd aria-hidden="true">M</kbd>
           </button>
-          <button class="diagram-guide-action" type="button" data-guide-action="lens" aria-label="Compare semantic kinds">
+          <button class="diagram-guide-action" type="button" data-guide-action="lens" aria-label="Comparar tipos semánticos">
             <span class="diagram-guide-index" aria-hidden="true">04</span>
-            <span class="diagram-guide-action-copy"><strong>Compare semantic kinds</strong><small>Count roles, reveal their traffic, and compare direct authored links.</small></span>
+            <span class="diagram-guide-action-copy"><strong>Comparar tipos semánticos</strong><small>Cuenta roles, revela su tráfico y compara enlaces directos definidos.</small></span>
             <kbd aria-hidden="true">L</kbd>
           </button>
-          <button class="diagram-guide-action" type="button" data-guide-action="present" aria-label="Enter presentation stage">
+          <button class="diagram-guide-action" type="button" data-guide-action="present" aria-label="Entrar al modo presentación">
             <span class="diagram-guide-index" aria-hidden="true">05</span>
-            <span class="diagram-guide-action-copy"><strong>Enter Presentation Stage</strong><small>Give the live diagram the viewport without changing export.</small></span>
+            <span class="diagram-guide-action-copy"><strong>Entrar al modo presentación</strong><small>Dale al diagrama en vivo todo el viewport sin cambiar la exportación.</small></span>
             <kbd aria-hidden="true">F</kbd>
           </button>
         </div>
-        <div class="diagram-guide-shortcuts" aria-label="Additional keyboard shortcuts">
-          <span><kbd>E</kbd> Export</span><span><kbd>T</kbd> Theme</span><span><kbd>S</kbd> Style</span><span><kbd>0</kbd> Reset</span><span><kbd>+</kbd> Zoom in</span><span><kbd>-</kbd> Zoom out</span><span><kbd>Esc</kbd> Close</span>
+        <div class="diagram-guide-shortcuts" aria-label="Atajos de teclado adicionales">
+          <span><kbd>E</kbd> Exportar</span><span><kbd>T</kbd> Tema</span><span><kbd>S</kbd> Estilo</span><span><kbd>0</kbd> Restablecer</span><span><kbd>+</kbd> Acercar</span><span><kbd>-</kbd> Alejar</span><span><kbd>Esc</kbd> Cerrar</span>
         </div>
         <p class="diagram-guide-feedback" id="diagram-guide-feedback" aria-live="polite"></p>
       </div>
       <div class="node-finder no-print" id="node-finder" hidden role="dialog" aria-modal="false" aria-labelledby="node-finder-title">
         <div class="node-finder-head">
-          <strong id="node-finder-title">Find a node</strong>
-          <button class="node-finder-close" id="node-finder-close" type="button" aria-label="Close node finder">&#215;</button>
+          <strong id="node-finder-title">Buscar un nodo</strong>
+          <button class="node-finder-close" id="node-finder-close" type="button" aria-label="Cerrar el buscador de nodos">&#215;</button>
         </div>
         <div class="node-finder-search">
           <span aria-hidden="true">&#8981;</span>
-          <input class="node-finder-input" id="node-finder-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search labels or IDs" aria-label="Search diagram nodes" aria-describedby="node-finder-status">
+          <input class="node-finder-input" id="node-finder-input" type="search" autocomplete="off" spellcheck="false" placeholder="Buscar etiquetas o IDs" aria-label="Buscar nodos del diagrama" aria-describedby="node-finder-status">
           <kbd aria-hidden="true">/</kbd>
         </div>
-        <div class="node-finder-results" id="node-finder-results" role="group" aria-label="Diagram nodes"></div>
-        <p class="node-finder-empty" id="node-finder-empty" hidden>No matching nodes</p>
+        <div class="node-finder-results" id="node-finder-results" role="group" aria-label="Nodos del diagrama"></div>
+        <p class="node-finder-empty" id="node-finder-empty" hidden>No hay nodos coincidentes</p>
         <p class="node-finder-status" id="node-finder-status" aria-live="polite"></p>
       </div>
       <div class="focus-chip relationship-lens no-print" id="focus-chip" hidden role="region" aria-labelledby="relationship-lens-title">
         <div class="relationship-lens-head">
-          <button class="relationship-lens-drag-handle" id="btn-focus-move" type="button" data-focus-drag-handle aria-label="Move semantic passport. Drag, use arrow keys, or press Home to reset." title="Move semantic passport. Drag, use arrow keys, or press Home to reset."></button>
+          <button class="relationship-lens-drag-handle" id="btn-focus-move" type="button" data-focus-drag-handle aria-label="Mover el pasaporte semántico. Arrastra, usa las flechas o pulsa Inicio para restablecer." title="Mover el pasaporte semántico. Arrastra, usa las flechas o pulsa Inicio para restablecer."></button>
           <div class="relationship-lens-copy">
-            <span class="relationship-lens-eyebrow">Semantic passport</span>
+            <span class="relationship-lens-eyebrow">Pasaporte semántico</span>
             <strong class="relationship-lens-title" id="relationship-lens-title"><span id="focus-label"></span></strong>
             <span class="semantic-passport-detail" id="focus-detail" hidden></span>
-            <div class="semantic-passport-meta" id="focus-passport-meta" aria-label="Node metadata">
+            <div class="semantic-passport-meta" id="focus-passport-meta" aria-label="Metadatos del nodo">
               <span id="focus-kind" data-passport="kind"></span>
               <span id="focus-context" data-passport="context" hidden></span>
               <span id="focus-tag" data-passport="tag" hidden></span>
               <span id="focus-brand" data-passport="brand" hidden></span>
               <code id="focus-id" data-passport="id"></code>
             </div>
-            <div class="semantic-passport-evidence" id="focus-evidence" hidden aria-label="Verified source evidence">
+            <div class="semantic-passport-evidence" id="focus-evidence" hidden aria-label="Evidencia de fuente verificada">
               <div class="semantic-passport-evidence-head">
-                <span class="semantic-passport-evidence-status">Verified source</span>
+                <span class="semantic-passport-evidence-status">Fuente verificada</span>
                 <a class="semantic-passport-repository" id="focus-repository" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"></a>
               </div>
               <div class="semantic-passport-evidence-links" id="focus-evidence-links"></div>
             </div>
             <span class="relationship-lens-summary" id="focus-summary" aria-live="polite"></span>
             <div class="semantic-passport-reach" id="focus-reach" hidden>
-              <span class="semantic-passport-reach-label">Authored reach</span>
-              <div class="semantic-passport-reach-actions" role="group" aria-label="Trace authored reachability">
-                <button id="btn-reach-upstream" type="button" aria-label="Trace upstream authored reachability" aria-pressed="false">
-                  <span>Upstream</span><strong id="focus-reach-upstream-count">0</strong>
+              <span class="semantic-passport-reach-label">Alcance definido</span>
+              <div class="semantic-passport-reach-actions" role="group" aria-label="Trazar la alcanzabilidad definida">
+                <button id="btn-reach-upstream" type="button" aria-label="Trazar la alcanzabilidad definida ascendente" aria-pressed="false">
+                  <span>Ascendente</span><strong id="focus-reach-upstream-count">0</strong>
                 </button>
-                <button id="btn-reach-downstream" type="button" aria-label="Trace downstream authored reachability" aria-pressed="false">
-                  <span>Downstream</span><strong id="focus-reach-downstream-count">0</strong>
+                <button id="btn-reach-downstream" type="button" aria-label="Trazar la alcanzabilidad definida descendente" aria-pressed="false">
+                  <span>Descendente</span><strong id="focus-reach-downstream-count">0</strong>
                 </button>
               </div>
               <small class="semantic-passport-reach-status" id="focus-reach-status" hidden aria-live="polite"></small>
             </div>
           </div>
           <div class="relationship-lens-actions">
-            <button id="btn-focus-clear" type="button" aria-label="Close semantic passport" title="Close">&#215;</button>
-            <button id="btn-focus-copy" type="button" aria-label="Copy link to focused node">Copy link</button>
-            <button id="btn-focus-relations" type="button" aria-label="Show connected relationships" aria-expanded="false" aria-controls="relationship-lens-list">Relations</button>
+            <button id="btn-focus-clear" type="button" aria-label="Cerrar el pasaporte semántico" title="Cerrar">&#215;</button>
+            <button id="btn-focus-copy" type="button" aria-label="Copiar enlace al nodo enfocado">Copiar enlace</button>
+            <button id="btn-focus-relations" type="button" aria-label="Mostrar relaciones conectadas" aria-expanded="false" aria-controls="relationship-lens-list">Relaciones</button>
           </div>
         </div>
-        <div class="relationship-lens-list" id="relationship-lens-list" aria-label="Connected relationships"></div>
+        <div class="relationship-lens-list" id="relationship-lens-list" aria-label="Relaciones conectadas"></div>
       </div>
       <div class="route-probe no-print" id="route-probe" hidden role="region" aria-labelledby="route-probe-title" data-state="idle">
         <div class="route-probe-head">
           <span class="route-probe-copy">
-            <span class="route-probe-eyebrow">Path</span>
-            <strong class="route-probe-title" id="route-probe-title">Click where the path starts</strong>
+            <span class="route-probe-eyebrow">Ruta</span>
+            <strong class="route-probe-title" id="route-probe-title">Haz clic donde empieza la ruta</strong>
           </span>
           <span class="route-probe-actions">
-            <button class="route-probe-find" id="route-probe-find" type="button" aria-label="Find a route start" data-node-finder-trigger>Find start</button>
-            <button class="route-probe-copy-link" id="route-probe-copy" type="button" aria-label="Copy link to traced route" hidden>Copy link</button>
-            <button id="route-probe-clear" type="button" aria-label="Clear route probe">Clear</button>
+            <button class="route-probe-find" id="route-probe-find" type="button" aria-label="Buscar un inicio de ruta" data-node-finder-trigger>Buscar inicio</button>
+            <button class="route-probe-copy-link" id="route-probe-copy" type="button" aria-label="Copiar enlace a la ruta trazada" hidden>Copiar enlace</button>
+            <button id="route-probe-clear" type="button" aria-label="Borrar la sonda de ruta">Borrar</button>
           </span>
         </div>
-        <div class="route-probe-path" id="route-probe-path" aria-label="Path">
-          <span class="route-probe-placeholder">Click two nodes on the diagram</span>
+        <div class="route-probe-path" id="route-probe-path" aria-label="Ruta">
+          <span class="route-probe-placeholder">Haz clic en dos nodos del diagrama</span>
         </div>
-        <div class="route-journey-controls" id="route-journey-controls" hidden role="group" aria-label="Route journey controls" data-playing="false">
-          <button id="route-journey-prev" type="button" aria-label="Previous route position" title="Previous route position">&#8592;</button>
-          <button class="route-journey-play" id="route-journey-play" type="button" aria-label="Play route journey" aria-pressed="false" title="Play route journey">
+        <div class="route-journey-controls" id="route-journey-controls" hidden role="group" aria-label="Controles del recorrido de la ruta" data-playing="false">
+          <button id="route-journey-prev" type="button" aria-label="Posición anterior de la ruta" title="Posición anterior de la ruta">&#8592;</button>
+          <button class="route-journey-play" id="route-journey-play" type="button" aria-label="Reproducir el recorrido de la ruta" aria-pressed="false" title="Reproducir el recorrido de la ruta">
             <span id="route-journey-play-icon" aria-hidden="true">&#9654;</span>
-            <span id="route-journey-play-label">Journey</span>
+            <span id="route-journey-play-label">Recorrido</span>
           </button>
-          <button id="route-journey-next" type="button" aria-label="Next route position" title="Next route position">&#8594;</button>
-          <button class="route-journey-overview" id="route-journey-overview" type="button" aria-label="Show complete route overview" title="Show complete route overview">Overview</button>
+          <button id="route-journey-next" type="button" aria-label="Posición siguiente de la ruta" title="Posición siguiente de la ruta">&#8594;</button>
+          <button class="route-journey-overview" id="route-journey-overview" type="button" aria-label="Mostrar la vista general completa de la ruta" title="Mostrar la vista general completa de la ruta">Vista general</button>
         </div>
-        <small class="route-probe-status" id="route-probe-status" aria-live="polite">Click a start, then an end. Paths follow the arrows.</small>
+        <small class="route-probe-status" id="route-probe-status" aria-live="polite">Haz clic en un inicio y luego en un final. La ruta sigue las flechas.</small>
       </div>
       <div class="semantic-lens no-print" id="semantic-lens" hidden role="dialog" aria-modal="false" aria-labelledby="semantic-lens-title">
         <div class="semantic-lens-head">
           <span>
-            <span class="semantic-lens-eyebrow">Semantic lens</span>
-            <strong class="semantic-lens-title" id="semantic-lens-title">Compare system roles</strong>
+            <span class="semantic-lens-eyebrow">Lente semántico</span>
+            <strong class="semantic-lens-title" id="semantic-lens-title">Comparar roles del sistema</strong>
           </span>
-          <button class="semantic-lens-close" id="semantic-lens-close" type="button" aria-label="Close semantic lens">&#215;</button>
+          <button class="semantic-lens-close" id="semantic-lens-close" type="button" aria-label="Cerrar el lente semántico">&#215;</button>
         </div>
-        <p class="semantic-lens-instruction">Choose up to two semantic kinds. One reveals its real traffic; two compare only direct authored relationships.</p>
-        <div class="semantic-lens-kinds" id="semantic-lens-kinds" role="group" aria-label="Semantic kinds"></div>
-        <p class="semantic-lens-status" id="semantic-lens-status" aria-live="polite">Choose a kind to inspect its nodes and touching relationships.</p>
+        <p class="semantic-lens-instruction">Elige hasta dos tipos semánticos. Uno revela su tráfico real; dos comparan solo las relaciones directas definidas.</p>
+        <div class="semantic-lens-kinds" id="semantic-lens-kinds" role="group" aria-label="Tipos semánticos"></div>
+        <p class="semantic-lens-status" id="semantic-lens-status" aria-live="polite">Elige un tipo para inspeccionar sus nodos y las relaciones que lo tocan.</p>
         <div class="semantic-lens-actions">
-          <button id="semantic-lens-copy" type="button" aria-label="Copy link to semantic lens" hidden>Copy link</button>
-          <button id="semantic-lens-clear" type="button" aria-label="Clear semantic lens">Clear</button>
+          <button id="semantic-lens-copy" type="button" aria-label="Copiar enlace al lente semántico" hidden>Copiar enlace</button>
+          <button id="semantic-lens-clear" type="button" aria-label="Borrar el lente semántico">Borrar</button>
         </div>
       </div>
       <div class="overview-map no-print" id="overview-map" hidden role="region" aria-labelledby="overview-map-title">
         <div class="overview-map-head">
           <span class="overview-map-live" aria-hidden="true"></span>
           <span class="overview-map-copy">
-            <strong id="overview-map-title">Semantic radar</strong>
-            <small id="overview-map-status" aria-live="polite">Building overview</small>
+            <strong id="overview-map-title">Radar semántico</strong>
+            <small id="overview-map-status" aria-live="polite">Construyendo la vista general</small>
           </span>
-          <button class="overview-map-expand" id="overview-map-expand" type="button" aria-label="Open full semantic radar">Open radar</button>
-          <button class="overview-map-close" id="overview-map-close" type="button" aria-label="Close semantic radar">&#215;</button>
+          <button class="overview-map-expand" id="overview-map-expand" type="button" aria-label="Abrir el radar semántico completo">Abrir el radar</button>
+          <button class="overview-map-close" id="overview-map-close" type="button" aria-label="Cerrar el radar semántico">&#215;</button>
         </div>
-        <div class="overview-map-surface" id="overview-map-surface" tabindex="0" role="group" aria-label="Diagram overview. Click a node to focus it, or use arrow keys to pan."></div>
-        <div class="overview-map-hint" aria-hidden="true"><span>Click node</span><span>Drag to pan</span></div>
+        <div class="overview-map-surface" id="overview-map-surface" tabindex="0" role="group" aria-label="Vista general del diagrama. Haz clic en un nodo para enfocarlo, o usa las flechas para desplazarte."></div>
+        <div class="overview-map-hint" aria-hidden="true"><span>Clic en el nodo</span><span>Arrastra para desplazar</span></div>
       </div>
-      <p class="overview-map-feedback no-print" id="overview-map-feedback" role="status" aria-live="polite" hidden>Semantic radar needs more MAP space.</p>
-      <button class="rail-reveal no-print" id="rail-reveal" type="button" hidden aria-controls="reader-rail" aria-expanded="false"><span class="rail-reveal-icon" aria-hidden="true"></span><span>Notes &amp; index</span></button>
-      <div class="diagram-nav no-print" role="toolbar" aria-label="Diagram view controls">
-        <button id="btn-route-probe" type="button" aria-label="Trace a directed route" aria-pressed="false" aria-controls="route-probe" title="Trace route (R)">PATH</button>
-        <button id="btn-overview-map" type="button" aria-label="Open semantic radar" aria-expanded="false" aria-controls="overview-map" title="Semantic radar (M)">MAP</button>
-        <button id="btn-semantic-lens" type="button" aria-label="Open semantic lens" aria-haspopup="dialog" aria-expanded="false" aria-pressed="false" aria-controls="semantic-lens" title="Semantic lens (L)">LENS</button>
-        <button id="btn-node-finder" type="button" aria-label="Find a node" aria-haspopup="dialog" aria-expanded="false" aria-controls="node-finder" title="Find a node (/)" data-node-finder-trigger><span class="diagram-nav-icon find" aria-hidden="true"></span></button>
-        <button id="btn-diagram-guide" type="button" hidden aria-label="Open diagram guide" aria-haspopup="dialog" aria-expanded="false" aria-controls="diagram-guide" title="Diagram guide (?)"><span class="diagram-nav-icon guide" aria-hidden="true"></span></button>
-        <button data-view="out" type="button" aria-label="Zoom out" title="Zoom out (-)"><span class="diagram-nav-icon minus" aria-hidden="true"></span></button>
-        <button data-view="reset" type="button" aria-label="Reset diagram view" title="Reset view (0)"><span class="diagram-nav-detail" data-view-detail hidden>READ</span><span class="diagram-nav-percent" data-view-percent>100%</span></button>
-        <button data-view="in" type="button" aria-label="Zoom in" title="Zoom in (+)"><span class="diagram-nav-icon plus" aria-hidden="true"></span></button>
+      <p class="overview-map-feedback no-print" id="overview-map-feedback" role="status" aria-live="polite" hidden>El radar semántico necesita más espacio de MAPA.</p>
+      <button class="rail-reveal no-print" id="rail-reveal" type="button" hidden aria-controls="reader-rail" aria-expanded="false"><span class="rail-reveal-icon" aria-hidden="true"></span><span>Notas e índice</span></button>
+      <div class="diagram-nav no-print" role="toolbar" aria-label="Controles de vista del diagrama">
+        <button id="btn-route-probe" type="button" aria-label="Trazar una ruta dirigida" aria-pressed="false" aria-controls="route-probe" title="Trazar ruta (R)">RUTA</button>
+        <button id="btn-overview-map" type="button" aria-label="Abrir el radar semántico" aria-expanded="false" aria-controls="overview-map" title="Radar semántico (M)">MAPA</button>
+        <button id="btn-semantic-lens" type="button" aria-label="Abrir el lente semántico" aria-haspopup="dialog" aria-expanded="false" aria-pressed="false" aria-controls="semantic-lens" title="Lente semántico (L)">LENTE</button>
+        <button id="btn-node-finder" type="button" aria-label="Buscar un nodo" aria-haspopup="dialog" aria-expanded="false" aria-controls="node-finder" title="Buscar un nodo (/)" data-node-finder-trigger><span class="diagram-nav-icon find" aria-hidden="true"></span></button>
+        <button id="btn-diagram-guide" type="button" hidden aria-label="Abrir la guía del diagrama" aria-haspopup="dialog" aria-expanded="false" aria-controls="diagram-guide" title="Guía del diagrama (?)"><span class="diagram-nav-icon guide" aria-hidden="true"></span></button>
+        <button data-view="out" type="button" aria-label="Alejar" title="Alejar (-)"><span class="diagram-nav-icon minus" aria-hidden="true"></span></button>
+        <button data-view="reset" type="button" aria-label="Restablecer la vista del diagrama" title="Restablecer vista (0)"><span class="diagram-nav-detail" data-view-detail hidden>LEER</span><span class="diagram-nav-percent" data-view-percent>100%</span></button>
+        <button data-view="in" type="button" aria-label="Acercar" title="Acercar (+)"><span class="diagram-nav-icon plus" aria-hidden="true"></span></button>
       </div>
     </div>
 
     <aside class="reader-rail" id="reader-rail">
-    <div class="rail-controls no-print" role="toolbar" aria-label="Side panel">
-      <button class="rail-control" id="rail-placement" type="button" hidden aria-label="Move panel below the diagram" title="Move panel below the diagram" data-placement="right"><span class="rail-control-icon placement" aria-hidden="true"></span></button>
-      <button class="rail-control" id="rail-collapse" type="button" hidden aria-controls="reader-rail" aria-expanded="true" aria-label="Collapse side panel" title="Collapse side panel"><span class="rail-control-icon collapse" aria-hidden="true"></span></button>
+    <div class="rail-controls no-print" role="toolbar" aria-label="Panel lateral">
+      <button class="rail-control" id="rail-placement" type="button" hidden aria-label="Mover el panel debajo" title="Mover el panel debajo" data-placement="right"><span class="rail-control-icon placement" aria-hidden="true"></span></button>
+      <button class="rail-control" id="rail-collapse" type="button" hidden aria-controls="reader-rail" aria-expanded="true" aria-label="Contraer panel lateral" title="Contraer panel lateral"><span class="rail-control-icon collapse" aria-hidden="true"></span></button>
     </div>
     <!-- Info Cards -->
     <div class="cards">
       <div class="card">
         <div class="card-header">
           <div class="card-dot cyan"></div>
-          <h3>Datos y secretos</h3>
+          <h3>Dos importaciones distintas</h3>
         </div>
         <ul>
-          <li>La biblioteca y el progreso viven en SQLite; las credenciales nunca en la base de datos.</li>
-          <li>La clave de cifrado se guarda en el keyring del sistema con lectura de verificacion.</li>
+          <li>El sync trae metadatos a SQLite; por sí solo no descarga audio.</li>
+          <li>La descarga en cola la toma otro worker y luego busca un proveedor de audio.</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot emerald"></div>
-          <h3>Por que hay dos lenguajes</h3>
+          <h3>Condiciones importantes</h3>
         </div>
         <ul>
-          <li>Rust para el nucleo y la concurrencia; Python para el trabajo de audio y metadatos.</li>
-          <li>cmd_utils resuelve las rutas de los puentes segun el empaquetado (AppImage, instalador o repo).</li>
+          <li>El proveedor de reserva solo entra si el audio falta, no si falla la autenticación.</li>
+          <li>El archivo temporal se verifica byte a byte antes de pasar a la biblioteca.</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
-          <div class="card-dot violet"></div>
-          <h3>Sesiones</h3>
+          <div class="card-dot amber"></div>
+          <h3>Nunca a la vez</h3>
         </div>
         <ul>
-          <li>Un corte de red no invalida una cuenta: solo un rechazo real del proveedor lo hace.</li>
-          <li>Un token caducado sin refresh se reporta como error, nunca como exito.</li>
+          <li>El sync manual y el automático comparten un control, nunca se solapan.</li>
+          <li>Si algo muere, un diario de recuperación reordena la cola al arrancar.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot slate"></div>
+          <h3>Límite de la evidencia</h3>
+        </div>
+        <ul>
+          <li>Cada nodo enlaza a la función que cumple ese rol en el commit fijado.</li>
+          <li>Los cambios sin confirmar no están representados; la UI y la red no se probaron.</li>
         </ul>
       </div>
     </div>
     <nav class="node-outline no-print" id="node-outline" hidden aria-labelledby="node-outline-title">
       <div class="node-outline-head">
-        <strong id="node-outline-title">Node index</strong>
+        <strong id="node-outline-title">Índice de nodos</strong>
         <span class="node-outline-count" id="node-outline-count"></span>
       </div>
       <ol class="node-outline-list" id="node-outline-list"></ol>

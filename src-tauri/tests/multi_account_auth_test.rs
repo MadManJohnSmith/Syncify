@@ -125,6 +125,7 @@ async fn test_normalized_email_revives_the_existing_row() {
         Some("  USER@example.com "),
         None,
         "enc_fresh",
+        None,
     )
     .await
     .expect("login con el mismo email en otra capitalización");
@@ -161,9 +162,17 @@ async fn test_case_variant_residue_always_resolves_to_the_highest_id() {
     let upper = insert_account(&pool, "qobuz", Some("DUP@x.com"), None, false).await;
     assert!(upper > lower, "la fila de id mayor se insertó después");
 
-    let returned = upsert_service_account(&pool, svc, "Owner", Some("Dup@X.com"), None, "enc_high")
-        .await
-        .expect("el match case-insensitive resuelve");
+    let returned = upsert_service_account(
+        &pool,
+        svc,
+        "Owner",
+        Some("Dup@X.com"),
+        None,
+        "enc_high",
+        None,
+    )
+    .await
+    .expect("el match case-insensitive resuelve");
 
     assert_eq!(
         returned, upper,
@@ -205,6 +214,7 @@ async fn test_case_variant_sibling_does_not_break_the_update() {
         Some("A@X.com"),
         None,
         "enc_no_email_rewrite",
+        None,
     )
     .await
     .expect("el login no debe caer en el UNIQUE(email)");
@@ -253,6 +263,7 @@ async fn test_known_user_id_wins_over_an_unknown_email() {
         Some("new@x.com"),
         Some("user-42"),
         "enc_email_changed",
+        None,
     )
     .await
     .expect("login con email nuevo y user_id conocido");
@@ -296,6 +307,7 @@ async fn test_user_id_wins_when_email_and_user_id_point_to_different_rows() {
         Some("taken@x.com"),
         Some("sp-user"),
         "enc_user_row",
+        None,
     )
     .await
     .expect("sin violación del índice parcial");
@@ -327,10 +339,10 @@ async fn test_two_tidal_logins_with_distinct_user_ids_are_two_accounts() {
     let pool = setup_test_db().await;
     let svc = service_id(&pool, "tidal").await;
 
-    let first = upsert_service_account(&pool, svc, "T1", None, Some("tid-1"), "enc_1")
+    let first = upsert_service_account(&pool, svc, "T1", None, Some("tid-1"), "enc_1", None)
         .await
         .expect("primer login tidal");
-    let second = upsert_service_account(&pool, svc, "T2", None, Some("tid-2"), "enc_2")
+    let second = upsert_service_account(&pool, svc, "T2", None, Some("tid-2"), "enc_2", None)
         .await
         .expect("segundo login tidal");
 
@@ -344,7 +356,7 @@ async fn test_two_tidal_logins_with_distinct_user_ids_are_two_accounts() {
     assert_eq!(active_ids(&pool, "tidal").await, vec![second]);
 
     // Y un re-login del primero revive SU fila sin tocar la segunda.
-    let again = upsert_service_account(&pool, svc, "T1", None, Some("tid-1"), "enc_1b")
+    let again = upsert_service_account(&pool, svc, "T1", None, Some("tid-1"), "enc_1b", None)
         .await
         .expect("re-login de la primera cuenta");
     assert_eq!(again, first);
@@ -365,7 +377,7 @@ async fn test_login_without_identity_reuses_the_newest_row() {
     let newer = insert_account(&pool, "deezer", None, None, false).await;
     assert!(newer > older);
 
-    let returned = upsert_service_account(&pool, svc, "Deezer", None, None, "enc_arl")
+    let returned = upsert_service_account(&pool, svc, "Deezer", None, None, "enc_arl", None)
         .await
         .expect("fallback monocuenta");
 
@@ -385,10 +397,10 @@ async fn test_login_without_identity_reuses_the_newest_row() {
 async fn soundcloud_placeholder_without_identity_does_not_overwrite_another_account() {
     let pool = setup_test_db().await;
     let svc = service_id(&pool, "soundcloud").await;
-    let first = upsert_service_account(&pool, svc, "Unknown 1", None, None, "enc_first")
+    let first = upsert_service_account(&pool, svc, "Unknown 1", None, None, "enc_first", None)
         .await
         .unwrap();
-    let second = upsert_service_account(&pool, svc, "Unknown 2", None, None, "enc_second")
+    let second = upsert_service_account(&pool, svc, "Unknown 2", None, None, "enc_second", None)
         .await
         .unwrap();
     assert_ne!(first, second);
@@ -405,12 +417,14 @@ async fn test_new_identity_inserts_and_leaves_exactly_one_active() {
     let pool = setup_test_db().await;
     let svc = service_id(&pool, "qobuz").await;
 
-    let first = upsert_service_account(&pool, svc, "A", Some("a@x.com"), Some("u-a"), "enc_a")
-        .await
-        .unwrap();
-    let second = upsert_service_account(&pool, svc, "B", Some("b@x.com"), Some("u-b"), "enc_b")
-        .await
-        .unwrap();
+    let first =
+        upsert_service_account(&pool, svc, "A", Some("a@x.com"), Some("u-a"), "enc_a", None)
+            .await
+            .unwrap();
+    let second =
+        upsert_service_account(&pool, svc, "B", Some("b@x.com"), Some("u-b"), "enc_b", None)
+            .await
+            .unwrap();
 
     assert_ne!(first, second);
     assert_eq!(active_ids(&pool, "qobuz").await, vec![second]);

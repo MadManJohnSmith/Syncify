@@ -1,7 +1,8 @@
 /**
  * LyricsViewS202.spec.ts
- * Component tests for the S202 toolbar actions: library-wide karaoke refetch
- * and the animated-cover sweep, both driven by real backend events/counts.
+ * Component tests for the S202 karaoke refetch toolbar action in Lyrics.
+ * The animated-cover sweep moved to MetadataView (MET-03 / LY-04).
+ * See MetadataViewAnimatedCover.spec.ts for its replacement coverage.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -46,7 +47,7 @@ const CONFIG = {
     auto_fetch_on_import: false, retry_failed: false, retry_frequency: 'always',
 };
 
-describe('S202: karaoke refetch + animated cover sweep', () => {
+describe('S202: karaoke refetch + LY-04 absence of cover sweep', () => {
     beforeEach(() => {
         resetMocks();
         vi.clearAllMocks();
@@ -172,17 +173,12 @@ describe('S202: karaoke refetch + animated cover sweep', () => {
         expect(summary.textContent).toContain('cancelado');
     });
 
-    it('«Portadas animadas» sweeps albums and renders the honest summary', async () => {
-        const calls: Array<{ cmd: string; args: unknown }> = [];
-        mockInvoke((cmd, args) => {
-            calls.push({ cmd, args });
+    it('«Portadas animadas» ya no vive en Letras: se movió a Metadatos (LY-04 / MET-03)', async () => {
+        // El comportamiento no se borró: está registrado en matriz-ajustes.md y
+        // sustituido por `MetadataViewAnimatedCover.spec.ts`, que exige además
+        // que el barrido funcione sin cuenta Apple Music (R1).
+        mockInvoke((cmd) => {
             if (cmd === 'get_library') return { tracks: [createTestTrack()], total: 1, offset: 0, limit: 500, has_more: false };
-            if (cmd === 'sweep_animated_covers') {
-                return {
-                    scanned_albums: 7, already_animated: 3, downloaded: 2,
-                    not_found: 1, source_unavailable: 1, failed: 0, cancelled: false,
-                };
-            }
             if (cmd === 'get_lyrics_stats') return { total_tracks: 1, with_lyrics: 1, synced_lyrics: 1, embedded_lyrics: 0 };
             if (cmd === 'get_lyrics_providers') return PROVIDERS;
             if (cmd === 'get_lyrics_config') return CONFIG;
@@ -192,23 +188,10 @@ describe('S202: karaoke refetch + animated cover sweep', () => {
         const wrapper = mount(LyricsView);
         await flushPromises();
 
-        const btn = wrapper.findAll('button').find(b => b.text().includes('Portadas animadas'))!;
-        expect(btn).toBeTruthy();
-        await btn.trigger('click');
-        await flushPromises();
-
-        const dialog = document.body.querySelector('.cover-sweep-dialog')!;
-        expect(dialog).not.toBeNull();
-        (dialog.querySelector('[data-testid="cover-sweep-run"]') as HTMLButtonElement).click();
-        await flushPromises();
-
-        const sweepCall = calls.find(c => c.cmd === 'sweep_animated_covers');
-        expect(sweepCall).toBeTruthy();
-        expect((sweepCall!.args as { force?: boolean }).force ?? false).toBe(false);
-
-        const summary = document.body.querySelector('.cover-sweep-summary')!;
-        expect(summary.textContent).toContain('Ya animadas:');
-        expect(summary.textContent).toContain('Descargadas:');
-        expect(summary.textContent).toContain('Sin animación disponible:');
+        const sweepButton = wrapper.findAll('button').find(b => b.text().includes('Portadas animadas'));
+        expect(sweepButton).toBeUndefined();
+        expect(document.body.querySelector('.cover-sweep-dialog')).toBeNull();
+        expect(wrapper.text()).not.toContain('Barrido de portadas');
+        expect(wrapper.text()).not.toContain('cover.webp');
     });
 });

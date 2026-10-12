@@ -171,4 +171,62 @@ describe('SettingsView', () => {
         const hasErrorToast = toast.toasts.value.some(t => t.type === 'error' && t.title.includes('Failed to save settings'));
         expect(hasErrorToast).toBe(true);
     });
+
+    it('does not write a stale sync_settings concurrency value on Save Changes', async () => {
+        // Concurrency has a single source of truth: the KV key dl_concurrent_downloads,
+        // which only SettingsDownloads.vue writes (settingsApi.setMaxConcurrentDownloads).
+        // update_sync_settings mirrors that value for compatibility, so it must send the
+        // value the worker is actually running with, never useSyncSettings' cached copy.
+        const workerConcurrency = 7;
+        const syncSettingsPayloads: Record<string, unknown>[] = [];
+
+        mockInvoke((command, args) => {
+            if (command === 'get_services') return [];
+            if (command === 'get_accounts') return [];
+            if (command === 'get_service_preferences') return [];
+            if (command === 'get_service_sync_settings') return [];
+            if (command === 'get_sync_settings') {
+                return {
+                    id: 1,
+                    auto_sync_enabled: true,
+                    sync_interval_value: 1,
+                    sync_interval_unit: 'hours',
+                    sync_on_startup: true,
+                    background_download: true,
+                    max_concurrent_downloads: 2,
+                    rate_limit_delay_ms: 500,
+                    pause_on_metered: true,
+                    pause_on_low_battery: true,
+                };
+            }
+            if (command === 'get_quality_preferences') return [];
+            if (command === 'get_folder_settings') return null;
+            if (command === 'get_duplicate_settings') return null;
+            if (command === 'get_audio_processing_settings') return null;
+            if (command === 'get_lyrics_providers') return [];
+            if (command === 'get_lyrics_config') return null;
+            if (command === 'get_advanced_settings') return null;
+            if (command === 'get_effective_download_preferences') {
+                return { maxConcurrentDownloads: workerConcurrency };
+            }
+            if (command === 'update_sync_settings') {
+                syncSettingsPayloads.push((args as { settings?: Record<string, unknown> })?.settings ?? {});
+            }
+            return null;
+        });
+
+        const wrapper = mount(SettingsView);
+        await flushPromises();
+
+        const saveButton = wrapper.findAll('button').find(b => b.text().includes('Save Changes'));
+        await saveButton!.trigger('click');
+        await flushPromises();
+
+        expect(syncSettingsPayloads.length).toBeGreaterThan(0);
+        syncSettingsPayloads.forEach(payload => {
+            expect(payload.max_concurrent_downloads).toBe(workerConcurrency);
+        });
+
+        wrapper.unmount();
+    });
 });

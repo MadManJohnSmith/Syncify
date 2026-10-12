@@ -1492,7 +1492,7 @@ pub async fn perform_sync_favorites(
     let mut total_found = 0i64;
 
     // F2-4: un solo motor por invocación para todos los servicios.
-    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::new();
+    let enrichment_engine = crate::services::enrichment::EnrichmentEngine::with_db(db.clone());
 
     match service_lower.as_str() {
         "tidal" => {

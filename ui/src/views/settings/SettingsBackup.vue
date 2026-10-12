@@ -48,20 +48,49 @@
       </div>
 
       <div class="flex items-center gap-3">
-        <input 
+        <input
           type="text"
           v-model="importFilePath"
           placeholder="Enter or paste absolute backup file path..."
           class="flex-1 px-4 py-2.5 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-primary"
         />
-        <button 
-          @click="handleImport"
+        <button
+          v-if="!showImportConfirm"
+          @click="showImportConfirm = true"
           :disabled="isImporting || !importFilePath.trim()"
           class="px-5 py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm font-medium transition-all disabled:opacity-50 flex items-center gap-2"
         >
           <span class="material-symbols-outlined text-[18px]" :class="{ 'animate-spin': isImporting }">download</span>
           {{ isImporting ? 'Importing...' : 'Restore Backup' }}
         </button>
+      </div>
+
+      <!-- Confirmation prompt before restoring backup (BR-02) -->
+      <div v-if="showImportConfirm" class="p-4 bg-sky-500/10 border border-sky-500/30 rounded-xl space-y-3">
+        <div class="flex items-center gap-2 text-sky-600 dark:text-sky-400 font-semibold text-sm">
+          <span class="material-symbols-outlined text-[20px]">help</span>
+          <span>¿Confirmar restauración de la biblioteca?</span>
+        </div>
+        <p class="text-xs text-text-secondary">
+          Se importarán las pistas, álbumes, favoritos y listas del archivo <code class="font-mono text-gray-800 dark:text-gray-200">{{ importFilePath }}</code>. Los datos existentes no se duplicarán y la operación es atómica.
+        </p>
+        <div class="flex items-center gap-3">
+          <button
+            @click="handleImport"
+            :disabled="isImporting"
+            class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
+          >
+            <span class="material-symbols-outlined text-[16px]" :class="{ 'animate-spin': isImporting }">check</span>
+            {{ isImporting ? 'Restaurando...' : 'Sí, Restaurar Ahora' }}
+          </button>
+          <button
+            @click="showImportConfirm = false"
+            :disabled="isImporting"
+            class="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-surface-highlight dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg text-xs font-semibold transition-colors"
+          >
+            Cancelar
+          </button>
+        </div>
       </div>
 
       <div v-if="lastImportResult" class="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1">
@@ -72,7 +101,7 @@
       </div>
     </div>
 
-    <!-- S152A: Physical Library Integrity & Reconciliation Safety Gate -->
+    <!-- S152A: Physical Library Integrity & Reconciliation Safety Gate (BR-03: Explicación amigable) -->
     <div class="p-6 rounded-2xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm space-y-6">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-3">
@@ -80,13 +109,34 @@
             <span class="material-symbols-outlined text-[24px]">verified_user</span>
           </div>
           <div>
-            <h3 class="text-lg font-bold text-gray-900 dark:text-white">Physical Library Integrity & Reconciliation</h3>
-            <p class="text-sm text-text-secondary">Audit and synchronize disk storage with database download records with safety gates, strict identity relinking, and atomic rollbacks.</p>
+            <h3 class="text-lg font-bold text-gray-900 dark:text-white">Integridad y Sincronización de Archivos en Disco (Physical Library)</h3>
+            <p class="text-sm text-text-secondary">Comprueba que tus archivos de audio en disco coincidan con tu biblioteca de Syncify. Rescata canciones huérfanas, detecta archivos movidos y limpia temporales.</p>
           </div>
         </div>
         <span class="px-3 py-1 text-xs font-semibold rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
           S152A Safety Gate
         </span>
+      </div>
+
+      <!-- Ayuda contextual para el usuario (BR-03) -->
+      <div class="p-4 rounded-xl bg-amber-500/5 border border-amber-500/20 text-xs text-text-secondary space-y-2">
+        <div class="flex items-center gap-1.5 font-bold text-gray-900 dark:text-white">
+          <span class="material-symbols-outlined text-[16px] text-amber-500">help</span>
+          <span>¿Cómo funciona la sincronización de archivos físicos?</span>
+        </div>
+        <p class="leading-relaxed">
+          Esta función analiza la carpeta de descargas de tu ordenador frente a los registros de Syncify para mantener ambos sincronizados de forma segura:
+        </p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-[11px]">
+          <div class="p-2 rounded-lg bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark">
+            <strong class="text-gray-900 dark:text-white block mb-0.5">🔍 Modo Auditoría (DryRun):</strong>
+            Escanea tu disco y te muestra una lista previa de cambios necesarios <em>sin modificar ni borrar nada</em>.
+          </div>
+          <div class="p-2 rounded-lg bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark">
+            <strong class="text-gray-900 dark:text-white block mb-0.5">⚡ Modo Aplicar (Execute):</strong>
+            Ejecuta las correcciones: re-vincula canciones huérfanas encontradas por ISRC o elimina registros rotos si lo autorizas.
+          </div>
+        </div>
       </div>
 
       <!-- Controls Grid -->
@@ -289,9 +339,33 @@ const isExporting = ref(false)
 const isImporting = ref(false)
 const isReconciling = ref(false)
 const importFilePath = ref('')
-const lastExportResult = ref<ExportLibraryResult | null>(null)
-const lastImportResult = ref<ImportLibraryResult | null>(null)
-const lastReconcileReport = ref<LibraryReconciliationReport | null>(null)
+const showImportConfirm = ref(false)
+
+const STORAGE_EXPORT_KEY = 'syncify_last_backup_export'
+const STORAGE_IMPORT_KEY = 'syncify_last_backup_import'
+const STORAGE_RECONCILE_KEY = 'syncify_last_backup_reconcile'
+
+function loadStoredJson<T>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) as T : null
+  } catch {
+    return null
+  }
+}
+
+function saveStoredJson(key: string, val: any) {
+  try {
+    if (val) localStorage.setItem(key, JSON.stringify(val))
+    else localStorage.removeItem(key)
+  } catch {
+    // ignore storage write errors
+  }
+}
+
+const lastExportResult = ref<ExportLibraryResult | null>(loadStoredJson<ExportLibraryResult>(STORAGE_EXPORT_KEY))
+const lastImportResult = ref<ImportLibraryResult | null>(loadStoredJson<ImportLibraryResult>(STORAGE_IMPORT_KEY))
+const lastReconcileReport = ref<LibraryReconciliationReport | null>(loadStoredJson<LibraryReconciliationReport>(STORAGE_RECONCILE_KEY))
 
 const reconcileOptions = reactive<ReconciliationOptions>({
   dryRun: true,
@@ -307,6 +381,7 @@ async function handleExport() {
   try {
     const res = await exportLibrary()
     lastExportResult.value = res
+    saveStoredJson(STORAGE_EXPORT_KEY, res)
     toast.success(`Exported ${res.tracks_count} tracks to backup file`)
   } catch (e: any) {
     toast.error(`Export failed: ${e}`)
@@ -317,10 +392,12 @@ async function handleExport() {
 
 async function handleImport() {
   if (!importFilePath.value.trim()) return
+  showImportConfirm.value = false
   isImporting.value = true
   try {
     const res = await importLibrary(importFilePath.value.trim())
     lastImportResult.value = res
+    saveStoredJson(STORAGE_IMPORT_KEY, res)
     toast.success(res.message)
   } catch (e: any) {
     toast.error(`Import failed: ${e}`)
@@ -341,6 +418,7 @@ async function handleReconciliation() {
       confirmDelete: reconcileOptions.confirmDelete,
     })
     lastReconcileReport.value = report
+    saveStoredJson(STORAGE_RECONCILE_KEY, report)
     if (report.dryRun) {
       toast.success(`Integrity audit complete: ${report.missingFiles.length} missing, ${report.orphanFiles.length} orphans`)
     } else {

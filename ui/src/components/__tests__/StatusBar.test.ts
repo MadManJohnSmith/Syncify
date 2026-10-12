@@ -37,7 +37,7 @@ vi.mock('../../api/settings', () => ({
 }))
 
 vi.mock('../../composables/usePlayer', () => ({
-  usePlayer: () => ({ current: { value: null } }),
+  usePlayer: () => ({ current: { value: null }, restoreFromPersistence: vi.fn().mockResolvedValue(undefined) }),
 }))
 
 vi.mock('../../composables/useToast', () => ({
@@ -132,7 +132,7 @@ describe('StatusBar (FE-7 fake telemetry removal)', () => {
     await nextTick()
 
     const text = wrapper.text()
-    expect(text).toContain('Sync failed')
+    expect(text).toContain('Background process failed')
     expect(text).not.toContain('Connection timeout')
 
     // Open the sync popover: the real error message is shown, not an invented one

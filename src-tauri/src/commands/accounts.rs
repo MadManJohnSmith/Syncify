@@ -82,6 +82,145 @@ pub struct AccountInfo {
     pub credentials_invalid: bool,
     pub invalid_reason: Option<String>,
     pub last_auth_error: Option<String>,
+    /// Secret-free summary of what this account has stored (see
+    /// [`summarize_stored_credentials`]). No credential value ever crosses IPC.
+    pub credential_state: StoredCredentialState,
+    /// Whether this account can stream: `Some(true)` confirmed,
+    /// `Some(false)` authenticated without streaming, `None` unknown.
+    /// Qobuz hands out a 30-second preview to accounts with `Some(false)`, so
+    /// the UI can explain a short download instead of leaving it unexplained.
+    pub streaming_entitled: Option<bool>,
+}
+
+/// Keys that hold a browser/provider session cookie or session id. They work
+/// until the provider invalidates them; the app can never refresh them, which
+/// is precisely what the UI must be able to say honestly.
+const CREDENTIAL_COOKIE_KEYS: &[&str] = &[
+    "arl",
+    "sp_dc",
+    "sp_key",
+    "session_id",
+    "browser_cookies",
+    "cookies",
+    "cookie",
+    "cookie_jar",
+];
+
+/// Keys that hold a provider API token (not OAuth, not a cookie).
+const CREDENTIAL_TOKEN_KEYS: &[&str] = &["user_auth_token", "auth_token", "api_token", "token"];
+
+/// Keys that hold an OAuth access token. A companion `refresh_token` marks the
+/// credential as renewable without the user.
+const CREDENTIAL_OAUTH_KEYS: &[&str] = &["access_token", "oauth_token"];
+
+/// Keys that hold a user-chosen secret.
+const CREDENTIAL_PASSWORD_KEYS: &[&str] = &["password", "passwd", "user_password"];
+
+fn credential_has_value(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        Some(serde_json::Value::String(s)) => !s.trim().is_empty(),
+        Some(serde_json::Value::Number(n)) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Object(_)) | Some(serde_json::Value::Array(_)) => true,
+        Some(serde_json::Value::Null) | None => false,
+    }
+}
+
+/// Summarize what kind of credential an account stores — NEVER its value.
+///
+/// Takes the decrypted credentials object (already inside the backend, never
+/// returned by this function) and answers, with booleans and an enumerated
+/// kind only:
+///
+/// * is there a username+password, a session cookie, or a token?
+/// * can it renew itself (OAuth refresh token) or does it need the user again?
+///
+/// The result is what lets the UI tell the truth about a cookie-only import:
+/// "this account uses a browser session cookie that expires; reconnect to
+/// renew it" — without ever printing the cookie, and without claiming a
+/// password is recoverable when only a cookie was captured.
+///
+/// Two shapes must NOT read as several credentials at once, because that would
+/// report a cookie-only import as `Mixed` and mislead the user:
+///
+/// * a cookie (Deezer ARL, Spotify `sp_dc`) is itself a token-shaped secret, so
+///   `has_token` stays true for it — but it counts as ONE category.
+/// * a credential whose `access_token` is byte-identical to its stored cookie is
+///   a duplicated alias (the Deezer bridge saves the ARL under both keys for
+///   compatibility), not a second secret — so it is not counted as OAuth. An
+///   `access_token` with a companion `refresh_token`, or one that differs from
+///   every stored cookie, stays a genuine OAuth access token.
+///
+/// SECURITY: the returned struct holds no credential material, so serializing
+/// it over IPC cannot leak one. Identity metadata is not counted as a secret;
+/// recognized secret keys and cookie/password-bearing names are.
+pub fn summarize_stored_credentials(creds: Option<&serde_json::Value>) -> StoredCredentialState {
+    let Some(obj) = creds.and_then(|c| c.as_object()) else {
+        return StoredCredentialState::default();
+    };
+
+    let key_present = |keys: &[&str], keyword: Option<&str>| -> bool {
+        obj.iter().any(|(name, value)| {
+            (keys.contains(&name.as_str())
+                || keyword.is_some_and(|word| name.to_ascii_lowercase().contains(word)))
+                && credential_has_value(Some(value))
+        })
+    };
+
+    let has_cookie = key_present(CREDENTIAL_COOKIE_KEYS, Some("cookie"));
+    let has_password = key_present(CREDENTIAL_PASSWORD_KEYS, Some("password"));
+    let has_api_token = key_present(CREDENTIAL_TOKEN_KEYS, None);
+    // Deezer stores its ARL twice (as `arl` and `access_token`) for bridge
+    // compatibility. Suppress only that duplicate, not a distinct OAuth token.
+    let access_token_is_cookie_alias = obj
+        .get("access_token")
+        .filter(|value| credential_has_value(Some(value)))
+        .is_some_and(|access| {
+            obj.iter().any(|(name, value)| {
+                (CREDENTIAL_COOKIE_KEYS.contains(&name.as_str())
+                    || name.to_ascii_lowercase().contains("cookie"))
+                    && value == access
+            })
+        });
+    let has_refresh_token = credential_has_value(obj.get("refresh_token"));
+    let has_oauth = CREDENTIAL_OAUTH_KEYS.iter().any(|key| {
+        credential_has_value(obj.get(*key))
+            && (*key != "access_token" || has_refresh_token || !access_token_is_cookie_alias)
+    });
+    // `has_token` describes any token-shaped secret, including cookies. Count
+    // only distinct credential categories when deciding whether the kind is Mixed.
+    let has_token = has_api_token || has_oauth || has_cookie;
+    let categories = [has_password, has_cookie, has_oauth || has_api_token]
+        .iter()
+        .filter(|present| **present)
+        .count();
+
+    let kind = if categories == 0 {
+        StoredCredentialKind::None
+    } else if categories > 1 {
+        StoredCredentialKind::Mixed
+    } else if has_password {
+        StoredCredentialKind::Password
+    } else if has_cookie {
+        StoredCredentialKind::Cookie
+    } else if has_oauth {
+        StoredCredentialKind::Oauth
+    } else {
+        StoredCredentialKind::Token
+    };
+
+    let auto_refreshable = credential_has_value(obj.get("refresh_token"))
+        || credential_has_value(obj.get("device_code"));
+    let has_credential = categories > 0;
+
+    StoredCredentialState {
+        kind,
+        has_password,
+        has_cookie,
+        has_token,
+        has_credential,
+        auto_refreshable,
+    }
 }
 
 /// Get all supported services
@@ -98,19 +237,43 @@ pub async fn get_services(state: State<'_, AppState>) -> Result<Vec<ServiceInfo>
 }
 
 /// Get all connected accounts (without credentials)
+///
+/// `credentials_json` IS read, but only through
+/// [`summarize_stored_credentials`], which turns it into the secret-free
+/// `credential_state` (kind + booleans). The credential itself never leaves
+/// this function, so the IPC payload cannot carry a password, cookie or token.
 #[tauri::command]
 pub async fn get_accounts(state: State<'_, AppState>) -> Result<Vec<AccountInfo>, String> {
-    let rows: Vec<(i64, i64, String, Option<String>, Option<String>, i64, Option<String>, Option<String>, i64, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.last_synced, a.created_at,
-                      IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error
-               FROM accounts a
-               JOIN services s ON s.id = a.service_id
-               ORDER BY s.name, a.created_at"#
-        )
-        .fetch_all(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
+    perform_get_accounts(&state.db).await
+}
+
+/// Testable core of `get_accounts`: same contract, no Tauri state needed.
+pub async fn perform_get_accounts(db: &sqlx::SqlitePool) -> Result<Vec<AccountInfo>, String> {
+    let rows: Vec<(
+        i64,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        i64,
+        Option<String>,
+        Option<String>,
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+    )> = sqlx::query_as(
+        r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.last_synced, a.created_at,
+                  IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error,
+                  a.credentials_json, a.streaming_entitled
+           FROM accounts a
+           JOIN services s ON s.id = a.service_id
+           ORDER BY s.name, a.created_at"#,
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
 
     let accounts = rows
         .into_iter()
@@ -127,7 +290,16 @@ pub async fn get_accounts(state: State<'_, AppState>) -> Result<Vec<AccountInfo>
                 credentials_invalid,
                 invalid_reason,
                 last_auth_error,
+                credentials_json,
+                streaming_entitled,
             )| {
+                let credential_state = credentials_json
+                    .as_deref()
+                    .and_then(|enc| crypto::decrypt(enc).ok())
+                    .and_then(|dec| serde_json::from_str::<serde_json::Value>(&dec).ok())
+                    .map(|creds| summarize_stored_credentials(Some(&creds)))
+                    .unwrap_or_default();
+
                 AccountInfo {
                     id,
                     service_id,
@@ -140,6 +312,12 @@ pub async fn get_accounts(state: State<'_, AppState>) -> Result<Vec<AccountInfo>
                     credentials_invalid: credentials_invalid != 0,
                     invalid_reason,
                     last_auth_error,
+                    credential_state,
+                    streaming_entitled: match streaming_entitled {
+                        1 => Some(true),
+                        0 => Some(false),
+                        _ => None,
+                    },
                 }
             },
         )
@@ -298,6 +476,236 @@ pub async fn get_internal_account_credentials(
         Some(_) => Err("Credentials missing for account".into()),
         None => Err("Account not found".into()),
     }
+}
+
+/// Ordering weight for a stored `streaming_entitled` tri-state.
+///
+/// 1 = the account can stream, 0 = authenticated but without streaming, and
+/// -1 = never determined (accounts predating migration 0095, or providers that
+/// don't report it). `Unknown` deliberately weighs more than `NoStreaming`: an
+/// account whose entitlement we don't know may still be perfectly usable, and
+/// demoting it would break accounts that worked before the column existed.
+fn entitlement_rank(stored: Option<i64>) -> u8 {
+    match stored {
+        Some(1) => 2,
+        Some(0) => 0,
+        _ => 1,
+    }
+}
+
+/// One row of the fallback query, as `get_service_fallback_account_ids` reads it:
+/// (id, is_active, credentials_invalid, streaming_entitled).
+type AccountFallbackRow = (i64, i64, i64, Option<i64>);
+
+/// Sort key: invalid credentials last, then the account that can actually
+/// stream, then active, then newest. Pure, so the ordering is testable without
+/// a database.
+fn account_fallback_sort_key(row: &AccountFallbackRow) -> (u8, u8, i64, i64) {
+    let (id, is_active, invalid, entitled) = *row;
+    (invalid as u8, entitlement_rank(entitled), is_active, id)
+}
+
+/// Extract the Qobuz streaming entitlement from a login payload.
+///
+/// The Qobuz bridge returns the `credential` block of `user/getUserData`, whose
+/// `lossless_streaming` / `hires_streaming` / `hires_purchases_streaming` flags say
+/// whether this specific account can stream. An account that authenticates fine
+/// but has no streaming entitlement gets a valid URL for a 30-second preview from
+/// `track/getFileUrl`, which is exactly the failure this guards against.
+///
+/// Returns `None` when the provider said nothing usable, which callers must store
+/// as "unknown" (`-1`) rather than "not entitled": an absent flag is not evidence.
+pub fn qobuz_streaming_entitlement(credentials: &serde_json::Value) -> Option<bool> {
+    let credential = credentials.get("credential")?;
+    let flags: Vec<bool> = [
+        "lossless_streaming",
+        "hires_streaming",
+        "hires_purchases_streaming",
+    ]
+    .iter()
+    .filter_map(|key| credential.get(key).and_then(|v| v.as_bool()))
+    .collect();
+
+    if flags.is_empty() {
+        // A credential block without any of the three keys is not evidence of
+        // anything: answering "no streaming" here would demote an account just
+        // because the payload shape differed.
+        return None;
+    }
+    Some(flags.iter().any(|flag| *flag))
+}
+
+#[cfg(test)]
+mod entitlement_tests {
+    use super::*;
+
+    #[test]
+    fn qobuz_entitlement_reads_any_streaming_flag() {
+        let base = |cred: serde_json::Value| serde_json::json!({ "credential": cred });
+
+        assert_eq!(
+            qobuz_streaming_entitlement(&base(serde_json::json!({
+                "lossless_streaming": true
+            }))),
+            Some(true)
+        );
+        assert_eq!(
+            qobuz_streaming_entitlement(&base(serde_json::json!({
+                "lossless_streaming": false,
+                "hires_streaming": true
+            }))),
+            Some(true)
+        );
+        assert_eq!(
+            qobuz_streaming_entitlement(&base(serde_json::json!({
+                "hires_purchases_streaming": true
+            }))),
+            Some(true)
+        );
+        // Authenticated but on a plan without streaming: the preview case.
+        assert_eq!(
+            qobuz_streaming_entitlement(&base(serde_json::json!({
+                "lossless_streaming": false,
+                "hires_streaming": false
+            }))),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn qobuz_entitlement_is_unknown_when_provider_is_silent() {
+        // No credential block, or one without any of the three flags: the honest
+        // answer is "unknown", never a guess.
+        assert_eq!(qobuz_streaming_entitlement(&serde_json::json!({})), None);
+        assert_eq!(
+            qobuz_streaming_entitlement(&serde_json::json!({ "credential": {} })),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod fallback_order_tests {
+    use super::*;
+
+    fn order(mut rows: Vec<AccountFallbackRow>) -> Vec<i64> {
+        rows.sort_by(|a, b| {
+            let ka = account_fallback_sort_key(a);
+            let kb = account_fallback_sort_key(b);
+            // invalid ASC, entitlement rank DESC, active DESC, id DESC
+            ka.0.cmp(&kb.0)
+                .then_with(|| kb.1.cmp(&ka.1))
+                .then_with(|| kb.2.cmp(&ka.2))
+                .then_with(|| kb.3.cmp(&ka.3))
+        });
+        rows.into_iter().map(|r| r.0).collect()
+    }
+
+    #[test]
+    fn ordering_prefers_entitled_then_unknown_then_not_entitled() {
+        // ids chosen so that a naive `id DESC` sort would produce the reverse.
+        let rows = vec![
+            (10, 1, 0, Some(0)),  // no streaming, newest
+            (11, 1, 0, Some(-1)), // unknown
+            (12, 1, 0, Some(1)),  // entitled, oldest
+        ];
+        assert_eq!(order(rows), vec![12, 11, 10]);
+    }
+
+    #[test]
+    fn invalid_credentials_always_sort_last() {
+        // The entitled-but-invalid row must lose to the valid unknown one:
+        // credentials_invalid is the primary key, entitlement only breaks ties
+        // among valid accounts.
+        let rows = vec![
+            (20, 1, 1, Some(1)),  // invalid, entitled
+            (21, 1, 0, Some(-1)), // valid, unknown
+        ];
+        assert_eq!(order(rows), vec![21, 20]);
+    }
+
+    #[test]
+    fn active_and_id_desc_still_break_ties() {
+        let rows = vec![
+            (30, 0, 0, Some(1)), // entitled but inactive
+            (31, 1, 0, Some(1)), // entitled and active
+        ];
+        assert_eq!(order(rows), vec![31, 30]);
+
+        // Same entitlement and active flag: newest first.
+        let rows = vec![(40, 1, 0, Some(1)), (41, 1, 0, Some(1))];
+        assert_eq!(order(rows), vec![41, 40]);
+    }
+
+    #[test]
+    fn entitlement_rank_maps_all_three_states() {
+        assert_eq!(entitlement_rank(Some(1)), 2);
+        assert_eq!(entitlement_rank(Some(0)), 0);
+        // Unknown, and "no row value at all", are both the middle weight.
+        assert_eq!(entitlement_rank(Some(-1)), 1);
+        assert_eq!(entitlement_rank(None), 1);
+    }
+}
+
+/// Query account IDs for a service in fallback priority order:
+/// 1. The preferred account ID (if specified and exists for this service)
+/// 2. Valid accounts with `credentials_invalid = 0`, ordered by streaming
+///    entitlement (`Streaming` → `Unknown` → `NoStreaming`), then active
+///    (`is_active = 1`), then newest (`id DESC`)
+/// 3. Accounts with `credentials_invalid = 1` as last resort, same rest of order
+///
+/// Entitlement only reorders the list; it never removes a candidate. See
+/// [`entitlement_rank`] for why `Unknown` sorts above `NoStreaming`.
+///
+/// This does NOT mutate `is_active` in SQLite, keeping the single-active-account
+/// invariant intact (`commands/accounts.rs:225, 524`) while allowing the download pipeline
+/// to fall back between multiple accounts in-memory at the request layer.
+pub async fn get_service_fallback_account_ids(
+    db: &sqlx::SqlitePool,
+    service_name: &str,
+    preferred_account_id: Option<i64>,
+) -> Result<Vec<i64>, String> {
+    let rows: Vec<AccountFallbackRow> = sqlx::query_as(
+        r#"
+        SELECT a.id, a.is_active, IFNULL(a.credentials_invalid, 0) as credentials_invalid,
+               a.streaming_entitled
+        FROM accounts a
+        JOIN services s ON s.id = a.service_id
+        WHERE LOWER(s.name) = LOWER(?)
+        "#,
+    )
+    .bind(service_name)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Ordered here rather than in SQL: a single ORDER BY that has to invert a
+    // -1/0/1 tri-state AND put invalid rows last reads worse than this, and the
+    // list is per service, not per library.
+    let mut ranked: Vec<AccountFallbackRow> = rows;
+    ranked.sort_by(|a, b| {
+        let ka = account_fallback_sort_key(a);
+        let kb = account_fallback_sort_key(b);
+        ka.0.cmp(&kb.0)
+            .then_with(|| kb.1.cmp(&ka.1))
+            .then_with(|| kb.2.cmp(&ka.2))
+            .then_with(|| kb.3.cmp(&ka.3))
+    });
+
+    let mut account_ids = Vec::with_capacity(ranked.len());
+    if let Some(pref_id) = preferred_account_id {
+        if ranked.iter().any(|(id, ..)| *id == pref_id) {
+            account_ids.push(pref_id);
+        }
+    }
+
+    for (id, ..) in ranked {
+        if !account_ids.contains(&id) {
+            account_ids.push(id);
+        }
+    }
+
+    Ok(account_ids)
 }
 
 /// Update account's last synced time
@@ -1269,6 +1677,67 @@ pub async fn get_service_auth_status(
 // CREDENTIAL INVALIDATION HELPER (S127B)
 // ==============================================
 
+/// Sanea el texto que se va a persistir como `last_auth_error` / `invalid_reason`.
+///
+/// Ese texto se muestra en Settings > Accounts y en las notificaciones del
+/// sistema, así que un error de proveedor que arrastre credenciales (token en
+/// una URL de error, cookie de sesión, cuerpo de petición) saldría de la máquina
+/// del usuario. La redacción es conservadora a propósito: sustituye el VALOR
+/// por `[REDACTED]` conservando el mensaje accionable y la clave, y ante la
+/// duda recorta. Nunca falla.
+pub fn sanitize_auth_error_reason(raw: &str) -> String {
+    const MAX_CHARS: usize = 300;
+
+    let mut sanitized = raw.to_string();
+
+    // 1) Pares "clave": "valor" (JSON de respuesta de proveedor).
+    // 2) Pares clave=valor (query strings de URLs de error).
+    for key in [
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "client_secret",
+        "api_key",
+        "apikey",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "user_auth_token",
+        "user_token",
+        "token",
+        "session_id",
+        "sessionid",
+        "session",
+        "sid",
+        "sp_dc",
+        "cookie",
+        "cookies",
+        "authorization",
+    ] {
+        let alt = format!(r#"(?i)("?{}"?\s*[:=]\s*)"[^"]*""#, regex::escape(key));
+        if let Ok(re) = regex::Regex::new(&alt) {
+            sanitized = re.replace_all(&sanitized, r#"$1"[REDACTED]""#).to_string();
+        }
+        let bare = format!(r#"(?i)(\b{}[=:]\s*)([^\s&;,"']+)"#, regex::escape(key));
+        if let Ok(re) = regex::Regex::new(&bare) {
+            sanitized = re.replace_all(&sanitized, "$1[REDACTED]").to_string();
+        }
+    }
+
+    // 2) Tokens JWT sueltos (empiezan por eyJ: base64 de {"alg":…}).
+    if let Ok(re) = regex::Regex::new(r"\beyJ[A-Za-z0-9_\-\.]{10,}") {
+        sanitized = re.replace_all(&sanitized, "[REDACTED]").to_string();
+    }
+
+    if sanitized.chars().count() > MAX_CHARS {
+        let truncated: String = sanitized.chars().take(MAX_CHARS).collect();
+        format!("{}…", truncated)
+    } else {
+        sanitized
+    }
+}
+
 /// Mark the active account for a service as having invalid credentials.
 ///
 /// Called when an HTTP 401 is received mid-flight to ensure the account
@@ -1282,12 +1751,19 @@ pub async fn get_service_auth_status(
 /// cuenta activa.
 ///
 /// Returns the number of rows updated (0 if no account matched).
+///
+/// El `reason` puede venir de un error arbitrario del pipeline de descarga y es
+/// texto persistido en `last_auth_error`, que la UI y las notificaciones
+/// muestran tal cual. Se sanea aquí —frontera de persistencia— para que un
+/// mensaje que arrastre un token, una cookie o una contraseña no salga nunca de
+/// la máquina del usuario.
 pub async fn mark_account_credentials_invalid(
     db: &sqlx::SqlitePool,
     service_name: &str,
     reason: &str,
     account_id: Option<i64>,
 ) -> Result<u64, String> {
+    let reason = sanitize_auth_error_reason(reason);
     let rows_affected = match account_id {
         Some(aid) => {
             sqlx::query(
@@ -1301,8 +1777,8 @@ pub async fn mark_account_credentials_invalid(
                   AND service_id = (SELECT id FROM services WHERE name = ? LIMIT 1)
                 "#,
             )
-            .bind(reason)
-            .bind(reason)
+            .bind(&reason)
+            .bind(&reason)
             // A-4: el latch se autocura por antigüedad (orchestrator.rs), y para eso
             // necesita saber CUÁNDO se marcó. Sin esta columna el veredicto no tiene
             // edad y el servicio quedaba bloqueado para siempre.
@@ -1330,8 +1806,8 @@ pub async fn mark_account_credentials_invalid(
               AND is_active = 1
             "#,
         )
-        .bind(reason)
-        .bind(reason)
+        .bind(&reason)
+        .bind(&reason)
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(service_name)
         .execute(db)
@@ -1347,7 +1823,7 @@ pub async fn mark_account_credentials_invalid(
             account_id,
             reason
         );
-        emit_auth_state_updated_for_account(service_name, "invalidated", account_id, Some(reason));
+        emit_auth_state_updated_for_account(service_name, "invalidated", account_id, Some(&reason));
     } else {
         tracing::warn!(
             "[Auth] mark_account_credentials_invalid called for {} (account_id={:?}) but no matching account found",
@@ -1362,7 +1838,10 @@ pub async fn mark_account_credentials_invalid(
 #[cfg(test)]
 mod accounts_tests {
 
-    use super::{activate_account_exclusive, insert_account_exclusive};
+    use super::{
+        activate_account_exclusive, get_service_fallback_account_ids, insert_account_exclusive,
+        summarize_stored_credentials,
+    };
     use sqlx::sqlite::SqlitePoolOptions;
 
     /// Create an in-memory test database with schema
@@ -1397,9 +1876,14 @@ mod accounts_tests {
                 display_name TEXT,
                 email TEXT,
                 is_active INTEGER DEFAULT 1,
+                credentials_invalid INTEGER DEFAULT 0,
+                invalid_reason TEXT,
+                last_auth_error TEXT,
+                last_auth_error_at TEXT,
                 credentials_json TEXT,
                 last_synced TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                streaming_entitled INTEGER NOT NULL DEFAULT -1,
                 UNIQUE(service_id, email)
             )
         "#,
@@ -1813,5 +2297,225 @@ mod accounts_tests {
                 .await
                 .expect("Failed to read active account");
         assert_eq!(back, first);
+    }
+
+    #[tokio::test]
+    async fn test_get_service_fallback_account_ids_priority_and_immutability() {
+        let pool = setup_test_db().await;
+        let (service_id,): (i64,) = sqlx::query_as("SELECT id FROM services WHERE name = 'tidal'")
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to get tidal service id");
+
+        let acc1 = insert_account_exclusive(
+            &pool,
+            service_id,
+            "enc_1",
+            Some("Acc One"),
+            Some("one@tidal.com"),
+        )
+        .await
+        .expect("acc1");
+
+        let acc2 = insert_account_exclusive(
+            &pool,
+            service_id,
+            "enc_2",
+            Some("Acc Two"),
+            Some("two@tidal.com"),
+        )
+        .await
+        .expect("acc2");
+
+        // acc2 was inserted last so it is active; acc1 is inactive
+        let fallback_order = get_service_fallback_account_ids(&pool, "tidal", None)
+            .await
+            .expect("fallback order");
+        assert_eq!(
+            fallback_order,
+            vec![acc2, acc1],
+            "Active account must come first, followed by inactive sibling"
+        );
+
+        // Requesting preferred account overrides order without modifying is_active
+        let preferred_order = get_service_fallback_account_ids(&pool, "tidal", Some(acc1))
+            .await
+            .expect("preferred order");
+        assert_eq!(
+            preferred_order,
+            vec![acc1, acc2],
+            "Preferred account must come first when requested"
+        );
+
+        // Verify SQLite is_active is completely untouched
+        let (active_id,): (i64,) =
+            sqlx::query_as("SELECT id FROM accounts WHERE service_id = ? AND is_active = 1")
+                .bind(service_id)
+                .fetch_one(&pool)
+                .await
+                .expect("Failed to read active account");
+        assert_eq!(
+            active_id, acc2,
+            "is_active invariant in SQLite must not be modified by fallback resolution"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_service_fallback_account_ids_orders_by_streaming_entitlement() {
+        let pool = setup_test_db().await;
+        let (service_id,): (i64,) = sqlx::query_as("SELECT id FROM services WHERE name = 'qobuz'")
+            .fetch_one(&pool)
+            .await
+            .expect("Failed to get qobuz service id");
+
+        // Inserted so that a plain `id DESC` sort would invert the intended
+        // order: the account WITHOUT streaming is the newest on purpose.
+        let acc_no_stream = insert_account_exclusive(
+            &pool,
+            service_id,
+            "enc_no",
+            Some("No Streaming"),
+            Some("no@qobuz.com"),
+        )
+        .await
+        .expect("acc_no_stream");
+        let acc_unknown = insert_account_exclusive(
+            &pool,
+            service_id,
+            "enc_unknown",
+            Some("Unknown"),
+            Some("unknown@qobuz.com"),
+        )
+        .await
+        .expect("acc_unknown");
+        let acc_streaming = insert_account_exclusive(
+            &pool,
+            service_id,
+            "enc_yes",
+            Some("Streaming"),
+            Some("yes@qobuz.com"),
+        )
+        .await
+        .expect("acc_streaming");
+
+        sqlx::query("UPDATE accounts SET streaming_entitled = 0 WHERE id = ?")
+            .bind(acc_no_stream)
+            .execute(&pool)
+            .await
+            .expect("mark acc_no_stream");
+        // acc_unknown keeps the migration default of -1.
+        sqlx::query("UPDATE accounts SET streaming_entitled = 1 WHERE id = ?")
+            .bind(acc_streaming)
+            .execute(&pool)
+            .await
+            .expect("mark acc_streaming");
+
+        let order = get_service_fallback_account_ids(&pool, "qobuz", None)
+            .await
+            .expect("fallback order");
+
+        assert_eq!(
+            order,
+            vec![acc_streaming, acc_unknown, acc_no_stream],
+            "An account with streaming must outrank an unknown one, which must outrank one without"
+        );
+    }
+
+    // ==============================================
+    // summarize_stored_credentials: secret-free kind
+    // ==============================================
+
+    use crate::commands::types::{StoredCredentialKind, StoredCredentialState};
+    use serde_json::json;
+
+    #[test]
+    fn cookie_plus_cookie_alias_access_token_reports_cookie() {
+        // Deezer saves its ARL twice: once as `arl`, once as `access_token`
+        // (scripts/auth_bridge.py:376). The duplicate is the SAME secret, so the
+        // account holds one cookie — not a cookie plus an OAuth session.
+        let state = summarize_stored_credentials(Some(
+            &json!({ "arl": "arlcookie", "access_token": "arlcookie" }),
+        ));
+
+        assert_eq!(state.kind, StoredCredentialKind::Cookie);
+        assert!(state.has_cookie);
+        assert!(
+            state.has_token,
+            "a cookie is a token-shaped secret, so has_token must stay true"
+        );
+        assert!(!state.has_password);
+        assert!(!state.auto_refreshable);
+        assert!(state.has_credential);
+    }
+
+    #[test]
+    fn password_only_account_reports_password() {
+        let state = summarize_stored_credentials(Some(&json!({
+            "username": "ana@example.com",
+            "password": "user-password",
+        })));
+
+        assert_eq!(state.kind, StoredCredentialKind::Password);
+        assert!(state.has_password);
+        assert!(!state.has_cookie);
+        assert!(!state.has_token);
+        assert!(!state.auto_refreshable);
+        assert!(state.has_credential);
+    }
+
+    #[test]
+    fn oauth_access_token_with_refresh_token_stays_oauth() {
+        // A REAL OAuth access token is not a cookie alias: it differs from
+        // every stored cookie and comes with a refresh token.
+        let state = summarize_stored_credentials(Some(&json!({
+            "access_token": "oauth-access",
+            "refresh_token": "oauth-refresh",
+        })));
+
+        assert_eq!(state.kind, StoredCredentialKind::Oauth);
+        assert!(state.has_token);
+        assert!(state.auto_refreshable);
+        assert!(!state.has_password);
+        assert!(!state.has_cookie);
+    }
+
+    #[test]
+    fn oauth_access_token_plus_cookie_reports_mixed_not_alias() {
+        // access_token that DIFFERS from the stored cookie is a second secret:
+        // a Spotify session holding both an OAuth token and an sp_dc cookie.
+        let state = summarize_stored_credentials(Some(&json!({
+            "sp_dc": "browsercookie",
+            "access_token": "oauth-access",
+            "refresh_token": "oauth-refresh",
+        })));
+
+        assert_eq!(state.kind, StoredCredentialKind::Mixed);
+        assert!(state.has_cookie);
+        assert!(state.has_token);
+        assert!(state.auto_refreshable);
+    }
+
+    #[test]
+    fn identity_metadata_alone_is_not_a_credential() {
+        let state = summarize_stored_credentials(Some(&json!({ "user_id": "1234567" })));
+
+        assert_eq!(state.kind, StoredCredentialKind::None);
+        assert_eq!(state, StoredCredentialState::default());
+    }
+
+    #[test]
+    fn non_object_or_missing_credentials_report_none() {
+        assert_eq!(
+            summarize_stored_credentials(None),
+            StoredCredentialState::default()
+        );
+        assert_eq!(
+            summarize_stored_credentials(Some(&serde_json::Value::Null)),
+            StoredCredentialState::default()
+        );
+        assert_eq!(
+            summarize_stored_credentials(Some(&json!("just-a-string"))),
+            StoredCredentialState::default()
+        );
     }
 }

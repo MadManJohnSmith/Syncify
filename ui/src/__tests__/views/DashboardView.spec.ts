@@ -191,4 +191,71 @@ describe('DashboardView.vue (TASK-128 UI Completion)', () => {
     expect(wrapper.text()).toContain('Downloading: Bohemian Rhapsody • Queen')
     expect(wrapper.text()).toContain('Failed: Hotel California • Eagles')
   })
+
+  it('D-01: does not render System Diagnostics widget', async () => {
+    const wrapper = mount(DashboardView)
+    await flushPromises()
+
+    expect(wrapper.find('.system-diagnostics').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('System Diagnostics')
+    expect(wrapper.text()).not.toContain('FFmpeg')
+    expect(wrapper.text()).not.toContain('Chromaprint')
+  })
+
+  it('D-03 and D-04: Storage Usage and Lyrics Coverage have reduced col-span-2', async () => {
+    const wrapper = mount(DashboardView)
+    await flushPromises()
+
+    const storageCard = wrapper.find('.storage-usage')
+    expect(storageCard.exists()).toBe(true)
+    expect(storageCard.classes()).toContain('xl:col-span-2')
+
+    const lyricsCard = wrapper.find('.lyrics-coverage')
+    expect(lyricsCard.exists()).toBe(true)
+    expect(lyricsCard.classes()).toContain('xl:col-span-2')
+  })
+
+  it('D-05: formats service names centralized without underscore artifacts', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_service_statuses') {
+        return [
+          { name: 'apple_music', connected: true, library_count: 50 },
+          { name: 'spotify', connected: true, library_count: 100 },
+        ]
+      }
+      return null
+    })
+
+    const wrapper = mount(DashboardView)
+    await flushPromises()
+
+    const sources = wrapper.find('.service-distribution')
+    expect(sources.text()).toContain('Apple Music')
+    expect(sources.text()).not.toContain('Apple_music')
+    expect(sources.text()).not.toContain('apple_music')
+    expect(sources.text()).toContain('Spotify')
+  })
+
+  it('D-06: displays clean empty state when no sources are connected', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_service_statuses') return []
+      return null
+    })
+
+    const wrapper = mount(DashboardView)
+    await flushPromises()
+
+    const sources = wrapper.find('.service-distribution')
+    expect(sources.text()).toContain('No sources connected')
+  })
+
+  it('D-07: library overview positions separator with mt-auto to avoid overlap', async () => {
+    const wrapper = mount(DashboardView)
+    await flushPromises()
+
+    const overview = wrapper.find('.library-overview')
+    const footer = overview.find('.border-t')
+    expect(footer.exists()).toBe(true)
+    expect(footer.classes()).toContain('mt-auto')
+  })
 })

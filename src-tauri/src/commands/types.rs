@@ -501,13 +501,77 @@ pub struct ImportPreferences {
     pub force_retry_unavailable: bool,
 }
 
+/// Honest, secret-free summary of WHAT KIND of credential an account has stored.
+///
+/// The account's real credential material (passwords, cookies, OAuth tokens)
+/// never leaves the backend. Some flows, however, leave the user with no way to
+/// tell whether their login actually stored something reusable or only a
+/// browser cookie — which is exactly the difference between "reconnect works
+/// again automatically" and "you must log in in a browser every time".
+///
+/// This DTO answers that question with only booleans and an enumerated kind:
+/// no value of any credential is present in any field, so serializing it over
+/// IPC cannot leak a password, cookie or token even by accident.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredCredentialKind {
+    /// Username + password are stored (Qobuz form login).
+    Password,
+    /// A browser session cookie / provider session id is stored (Deezer ARL,
+    /// Spotify `sp_dc`): it works until the provider expires it and cannot be
+    /// refreshed from the app.
+    Cookie,
+    /// A long-lived API token is stored (Qobuz `user_auth_token`).
+    Token,
+    /// An OAuth access token is stored (SoundCloud, Tidal device flow).
+    Oauth,
+    /// Several kinds are present at once (e.g. token plus fallback password).
+    Mixed,
+    /// Nothing usable is stored.
+    None,
+}
+
+/// Secret-free description of an account's stored credential. See
+/// [`StoredCredentialKind`]: no field ever holds credential material, only the
+/// shape of what is stored and whether it can be refreshed without the user.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredCredentialState {
+    /// Which kind of credential the account holds.
+    pub kind: StoredCredentialKind,
+    /// True only when a username/email paired with a password is stored.
+    pub has_password: bool,
+    /// True when a browser/provider session cookie or session id is stored.
+    pub has_cookie: bool,
+    /// True when any token-ish secret (API token, OAuth token, cookie token) is stored.
+    pub has_token: bool,
+    /// False when nothing usable is stored at all.
+    pub has_credential: bool,
+    /// True when the stored credential can renew itself (OAuth refresh token).
+    /// False for cookies and passwords: those need the user to log in again.
+    pub auto_refreshable: bool,
+}
+
+impl Default for StoredCredentialState {
+    fn default() -> Self {
+        Self {
+            kind: StoredCredentialKind::None,
+            has_password: false,
+            has_cookie: false,
+            has_token: false,
+            has_credential: false,
+            auto_refreshable: false,
+        }
+    }
+}
+
 impl Default for ImportPreferences {
     fn default() -> Self {
         Self {
             service_name: String::new(),
             favorite_tracks: true,
-            favorite_albums: false,
-            favorite_artists: false,
+            favorite_albums: true,
+            favorite_artists: true,
             playlists: true,
             purchases: false,
             library_history: false,

@@ -57,11 +57,27 @@ describe('SettingsGeneral — only offers settings the app honours', () => {
   it('keeps the three startup switches, exposed as accessible switches', async () => {
     const wrapper = await mountView()
 
-    const names = wrapper.findAll('button[role="switch"]').map(b => b.attributes('aria-label'))
+    const startupSection = wrapper.find('section')
+    const names = startupSection.findAll('button[role="switch"]').map(b => b.attributes('aria-label'))
     expect(names).toHaveLength(3)
     expect(names.join(' | ')).toContain('Start on system boot')
     expect(names.join(' | ')).toContain('Start minimized to tray')
     expect(names.join(' | ')).toContain('Close to tray instead of exit')
+  })
+
+  it('loads and saves category notification preferences without touching startup toggles', async () => {
+    const wrapper = await mountView()
+    const section = wrapper.find('[data-testid="notification-preferences"]')
+    expect(section.exists()).toBe(true)
+    const errors = section.findAll('button[role="switch"]').find(b => b.attributes('aria-label') === 'Errors')
+    expect(errors).toBeDefined()
+    await errors!.trigger('click')
+    await flushPromises()
+    // Saving notification preferences is a real IPC call, not a visual-only toggle.
+    const { invoke } = await import('@tauri-apps/api/core')
+    expect(vi.mocked(invoke).mock.calls.some(([cmd, args]) =>
+      cmd === 'update_tray_settings' && (args as { settings?: { notifyErrors?: boolean } })?.settings?.notifyErrors === false
+    )).toBe(true)
   })
 
   it('describes the boot switch as login-based, not Windows-only', async () => {

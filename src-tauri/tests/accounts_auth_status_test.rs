@@ -1,5 +1,8 @@
 use sqlx::sqlite::SqlitePoolOptions;
-use syncify_tauri_lib::commands::{perform_get_service_auth_status, perform_reset_database};
+use syncify_tauri_lib::commands::types::{StoredCredentialKind, StoredCredentialState};
+use syncify_tauri_lib::commands::{
+    perform_get_accounts, perform_get_service_auth_status, perform_reset_database,
+};
 use syncify_tauri_lib::crypto;
 
 async fn setup_test_db() -> sqlx::SqlitePool {
@@ -277,4 +280,240 @@ async fn test_reset_database_preserves_accounts_and_credentials() {
     assert_eq!(status_after_reset.status, "connected_valid");
     assert!(status_after_reset.is_authenticated);
     assert_eq!(status_after_reset.account_id, Some(account_id));
+}
+
+// ==============================================
+// STORED CREDENTIAL STATE (secret-free only)
+// ==============================================
+
+async fn insert_account_with_creds(
+    pool: &sqlx::SqlitePool,
+    service: &str,
+    display_name: &str,
+    creds: serde_json::Value,
+) -> i64 {
+    let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
+        .bind(service)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let encrypted = crypto::encrypt(&creds.to_string()).unwrap();
+    sqlx::query_scalar(
+        r#"INSERT INTO accounts (service_id, display_name, credentials_json, is_active, credentials_invalid)
+           VALUES (?, ?, ?, 1, 0) RETURNING id"#,
+    )
+    .bind(service_id)
+    .bind(display_name)
+    .bind(&encrypted)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn test_cookie_only_account_reports_a_cookie_kind_without_revealing_it() {
+    let pool = setup_test_db().await;
+    // Deezer only ever captures an ARL cookie: there is no password to recover.
+    let secret_arl = "<SECRET_64fbed9b>";
+    let account_id = insert_account_with_creds(
+        &pool,
+        "deezer",
+        "Deezer User",
+        serde_json::json!({ "arl": secret_arl, "access_token": secret_arl }),
+    )
+    .await;
+
+    let accounts = perform_get_accounts(&pool).await.unwrap();
+    let account = accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .expect("account row");
+
+    assert_eq!(account.credential_state.kind, StoredCredentialKind::Cookie);
+    assert!(account.credential_state.has_cookie);
+    assert!(
+        !account.credential_state.has_password,
+        "a cookie import must never claim a password is stored"
+    );
+    assert!(!account.credential_state.auto_refreshable);
+    assert!(account.credential_state.has_credential);
+
+    // SECURITY: the serialized payload must not contain the credential value.
+    let serialized = serde_json::to_string(&account).unwrap();
+    assert!(
+        !serialized.contains(&secret_arl),
+        "credential material must never reach the IPC payload"
+    );
+    assert!(!serialized.contains("arl"));
+}
+
+#[tokio::test]
+async fn test_password_only_account_reports_a_password_kind() {
+    let pool = setup_test_db().await;
+    let account_id = insert_account_with_creds(
+        &pool,
+        "qobuz",
+        "Qobuz User",
+        serde_json::json!({
+            "username": "ana@example.com",
+            "password": "super-secret-password"
+        }),
+    )
+    .await;
+
+    let accounts = perform_get_accounts(&pool).await.unwrap();
+    let account = accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .expect("account row");
+
+    assert_eq!(
+        account.credential_state.kind,
+        StoredCredentialKind::Password
+    );
+    assert!(account.credential_state.has_password);
+    assert!(!account.credential_state.has_cookie);
+    assert!(!account.credential_state.auto_refreshable);
+
+    let serialized = serde_json::to_string(&account).unwrap();
+    assert!(!serialized.contains("super-secret-password"));
+    assert!(!serialized.contains("password\":"));
+}
+
+#[tokio::test]
+async fn test_oauth_account_reports_auto_refreshable() {
+    let pool = setup_test_db().await;
+    let account_id = insert_account_with_creds(
+        &pool,
+        "spotify",
+        "Spotify User",
+        serde_json::json!({
+            "token_type": "<SECRET_e47c8c25>",
+            "access_token": "<SECRET_140872ef>",
+            "refresh_token": "refresh_secret_value",
+            "expires_at": 1_800_000_000
+        }),
+    )
+    .await;
+
+    let accounts = perform_get_accounts(&pool).await.unwrap();
+    let account = accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .expect("account row");
+
+    assert_eq!(account.credential_state.kind, StoredCredentialKind::Oauth);
+    assert!(
+        account.credential_state.auto_refreshable,
+        "an OAuth refresh token means the app can renew without the user"
+    );
+
+    let serialized = serde_json::to_string(&account).unwrap();
+    assert!(!serialized.contains("access_secret_value"));
+    assert!(!serialized.contains("refresh_secret_value"));
+}
+
+#[tokio::test]
+async fn test_account_without_credentials_reports_no_credential() {
+    let pool = setup_test_db().await;
+    let account_id = insert_account_with_creds(
+        &pool,
+        "tidal",
+        "Tidal User",
+        serde_json::json!({ "user_id": "1234567" }),
+    )
+    .await;
+
+    let accounts = perform_get_accounts(&pool).await.unwrap();
+    let account = accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .expect("account row");
+
+    assert_eq!(account.credential_state.kind, StoredCredentialKind::None);
+    assert!(!account.credential_state.has_credential);
+    assert_eq!(account.credential_state, StoredCredentialState::default());
+}
+
+#[tokio::test]
+async fn test_account_with_null_credentials_reports_no_credential() {
+    let pool = setup_test_db().await;
+    let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'soundcloud'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let account_id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO accounts (service_id, display_name, credentials_json, is_active, credentials_invalid)
+           VALUES (?, 'SoundCloud User', NULL, 1, 0) RETURNING id"#,
+    )
+    .bind(service_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let accounts = perform_get_accounts(&pool).await.unwrap();
+    let account = accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .expect("account row");
+
+    assert_eq!(account.credential_state.kind, StoredCredentialKind::None);
+    assert!(!account.credential_state.has_credential);
+}
+
+#[tokio::test]
+async fn test_token_plus_fallback_password_reports_mixed_and_no_secret_leak() {
+    let pool = setup_test_db().await;
+    let account_id = insert_account_with_creds(
+        &pool,
+        "qobuz",
+        "Qobuz User",
+        serde_json::json!({
+            "user_auth_token": "user_auth_token_value_1234567890",
+            "username": "ana@example.com",
+            "password": "fallback_password_value"
+        }),
+    )
+    .await;
+
+    let accounts = perform_get_accounts(&pool).await.unwrap();
+    let account = accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .expect("account row");
+
+    assert_eq!(account.credential_state.kind, StoredCredentialKind::Mixed);
+    assert!(account.credential_state.has_password);
+    assert!(account.credential_state.has_token);
+    assert!(account.credential_state.has_credential);
+
+    let serialized = serde_json::to_string(&account).unwrap();
+    assert!(!serialized.contains("user_auth_token_value_1234567890"));
+    assert!(!serialized.contains("fallback_password_value"));
+}
+
+#[tokio::test]
+async fn test_corrupted_credentials_do_not_break_account_listing() {
+    let pool = setup_test_db().await;
+    let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'tidal'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let account_id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO accounts (service_id, display_name, credentials_json, is_active, credentials_invalid)
+           VALUES (?, 'Tidal User', 'not-a-ciphertext', 1, 0) RETURNING id"#,
+    )
+    .bind(service_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let accounts = perform_get_accounts(&pool).await.unwrap();
+    let account = accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .expect("account row");
+
+    assert_eq!(account.credential_state.kind, StoredCredentialKind::None);
+    assert!(!account.credential_state.has_credential);
 }

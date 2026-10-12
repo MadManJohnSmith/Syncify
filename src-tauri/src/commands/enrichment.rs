@@ -184,7 +184,7 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
                     .unwrap_or((None,));
 
             if mb.0.is_none() {
-                let mb_client = crate::services::MusicBrainzClient::new();
+                let mb_client = crate::services::MusicBrainzClient::with_db(state.db.clone());
                 if let Ok(Some(recording)) = mb_client.lookup_by_isrc(isrc).await {
                     let _ = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
                         .bind(&recording.id)
@@ -273,9 +273,16 @@ pub async fn get_enrichment_status(
 // INCREMENTAL LIBRARY ENRICHMENT (S144)
 // ==============================================
 
-lazy_static::lazy_static! {
-    static ref GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE: crate::services::incremental_enrichment::IncrementalEnrichmentService =
-        crate::services::incremental_enrichment::IncrementalEnrichmentService::new();
+static GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE: std::sync::OnceLock<
+    crate::services::incremental_enrichment::IncrementalEnrichmentService,
+> = std::sync::OnceLock::new();
+
+fn incremental_enrichment_service(
+    db: &crate::DbPool,
+) -> &'static crate::services::incremental_enrichment::IncrementalEnrichmentService {
+    GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE.get_or_init(|| {
+        crate::services::incremental_enrichment::IncrementalEnrichmentService::with_db(db.clone())
+    })
 }
 
 #[tauri::command]
@@ -285,7 +292,7 @@ pub async fn preview_library_enrichment(
     track_ids: Option<Vec<i64>>,
 ) -> Result<crate::services::incremental_enrichment::EnrichmentPreview, String> {
     let mode = mode.unwrap_or_default();
-    GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE
+    incremental_enrichment_service(&state.db)
         .preview_enrichment(&state.db, mode, track_ids)
         .await
 }
@@ -301,7 +308,7 @@ pub async fn start_library_enrichment(
     let db = state.db.clone();
     let app_handle = app.clone();
 
-    GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE
+    incremental_enrichment_service(&db)
         .run_enrichment(&db, mode, track_ids, move |progress| {
             // Solo el nombre canónico: el alias sin guion no tiene ningún
             // listener en la UI y duplicaba el tráfico IPC por evento.
@@ -312,12 +319,16 @@ pub async fn start_library_enrichment(
 
 #[tauri::command]
 pub async fn cancel_library_enrichment() -> Result<bool, String> {
-    GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE.cancel_job();
+    if let Some(service) = GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE.get() {
+        service.cancel_job();
+    }
     Ok(true)
 }
 
 #[tauri::command]
 pub async fn get_library_enrichment_status(
 ) -> Result<Option<crate::services::incremental_enrichment::EnrichmentJobSummary>, String> {
-    Ok(GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE.get_job_status())
+    Ok(GLOBAL_INCREMENTAL_ENRICHMENT_SERVICE
+        .get()
+        .and_then(|service| service.get_job_status()))
 }

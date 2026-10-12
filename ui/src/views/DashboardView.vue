@@ -35,45 +35,45 @@
       </button>
     </div>
 
-    <!-- Dashboard grid: una sola pantalla, la página no hace scroll -->
+    <!-- Dashboard grid: una sola pantalla en xl, la página no hace scroll -->
     <div v-else class="flex-1 min-h-0 overflow-y-auto xl:overflow-hidden p-3">
       <div class="xl:h-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-3 xl:grid-rows-3 auto-rows-fr">
-        <!-- Library Overview -->
-        <div class="stat-card library-overview xl:col-span-4 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+        <!-- Row 1: Library Overview (5 cols) -->
+        <div class="stat-card library-overview xl:col-span-5 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Library Overview</h3>
-          <div class="flex-1 min-h-0 grid grid-cols-3 gap-2 content-start">
-            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
-              <p class="text-lg font-bold text-ink leading-tight">{{ stats.totalTracks.toLocaleString() }}</p>
-              <p class="text-[11px] text-gray-500">Tracks</p>
+          <div class="flex-1 min-h-0 grid grid-cols-3 gap-1.5 sm:gap-2 content-start overflow-y-auto custom-scrollbar">
+            <div class="metric-box bg-surface-highlight rounded-lg px-1.5 py-1 sm:px-2 sm:py-1.5 text-center">
+              <p class="text-base sm:text-lg font-bold text-ink leading-tight truncate">{{ stats.totalTracks.toLocaleString() }}</p>
+              <p class="text-[10px] sm:text-[11px] text-gray-500 truncate" title="Tracks">Tracks</p>
             </div>
-            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
-              <p class="text-lg font-bold text-purple-400 leading-tight">{{ stats.totalAlbums }}</p>
-              <p class="text-[11px] text-gray-500">Albums</p>
+            <div class="metric-box bg-surface-highlight rounded-lg px-1.5 py-1 sm:px-2 sm:py-1.5 text-center">
+              <p class="text-base sm:text-lg font-bold text-purple-400 leading-tight truncate">{{ stats.totalAlbums.toLocaleString() }}</p>
+              <p class="text-[10px] sm:text-[11px] text-gray-500 truncate" title="Albums">Albums</p>
             </div>
-            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
-              <p class="text-lg font-bold text-teal-400 leading-tight">{{ stats.totalArtists }}</p>
-              <p class="text-[11px] text-gray-500">Artists</p>
+            <div class="metric-box bg-surface-highlight rounded-lg px-1.5 py-1 sm:px-2 sm:py-1.5 text-center">
+              <p class="text-base sm:text-lg font-bold text-teal-400 leading-tight truncate">{{ stats.totalArtists.toLocaleString() }}</p>
+              <p class="text-[10px] sm:text-[11px] text-gray-500 truncate" title="Artists">Artists</p>
             </div>
-            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
-              <p class="text-lg font-bold text-indigo-400 leading-tight">{{ stats.totalPlaylists }}</p>
-              <p class="text-[11px] text-gray-500">Playlists</p>
+            <div class="metric-box bg-surface-highlight rounded-lg px-1.5 py-1 sm:px-2 sm:py-1.5 text-center">
+              <p class="text-base sm:text-lg font-bold text-indigo-400 leading-tight truncate">{{ stats.totalPlaylists.toLocaleString() }}</p>
+              <p class="text-[10px] sm:text-[11px] text-gray-500 truncate" title="Playlists">Playlists</p>
             </div>
-            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
-              <p class="text-lg font-bold text-green-400 leading-tight">{{ stats.downloadedTracks.toLocaleString() }}</p>
-              <p class="text-[11px] text-gray-500">Downloaded</p>
+            <div class="metric-box bg-surface-highlight rounded-lg px-1.5 py-1 sm:px-2 sm:py-1.5 text-center">
+              <p class="text-base sm:text-lg font-bold text-green-400 leading-tight truncate">{{ stats.downloadedTracks.toLocaleString() }}</p>
+              <p class="text-[10px] sm:text-[11px] text-gray-500 truncate" title="Downloaded">Downloaded</p>
             </div>
-            <div class="metric-box bg-surface-highlight rounded-lg px-2 py-1.5 text-center">
-              <p class="text-lg font-bold text-amber-400 leading-tight">{{ stats.activeDownloads }}</p>
-              <p class="text-[11px] text-gray-500">Active downloads</p>
+            <div class="metric-box bg-surface-highlight rounded-lg px-1.5 py-1 sm:px-2 sm:py-1.5 text-center">
+              <p class="text-base sm:text-lg font-bold text-amber-400 leading-tight truncate">{{ stats.activeDownloads.toLocaleString() }}</p>
+              <p class="text-[10px] sm:text-[11px] text-gray-500 truncate" title="Active downloads">Active downloads</p>
             </div>
           </div>
-          <div class="shrink-0 mt-2 pt-2 border-t border-border-dark flex items-center justify-between text-[11px] text-gray-500">
-            <span>{{ stats.streamingTracks.toLocaleString() }} streaming only</span>
-            <span>{{ stats.downloadedPercent }}% of the library on disk</span>
+          <div class="shrink-0 mt-auto pt-2 border-t border-border-dark flex items-center justify-between gap-2 text-[10px] sm:text-[11px] text-gray-500">
+            <span class="truncate">{{ stats.streamingTracks.toLocaleString() }} streaming only</span>
+            <span class="truncate shrink-0">{{ stats.downloadedPercent }}% of the library on disk</span>
           </div>
         </div>
 
-        <!-- Library Growth -->
+        <!-- Row 1: Library Growth (5 cols) -->
         <div class="stat-card growth-chart xl:col-span-5 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <div class="flex items-center justify-between mb-2 shrink-0 gap-2">
             <h3 class="text-xs font-semibold text-ink">Library Growth</h3>
@@ -84,17 +84,25 @@
               <option value="all">All time</option>
             </select>
           </div>
-          <div v-if="growthData.length > 0" class="flex-1 min-h-0 flex items-end gap-3">
-            <div class="flex-1 min-h-0 flex items-end justify-around gap-2">
-              <div v-for="(entry, i) in growthData" :key="i" class="flex-1 flex flex-col items-center gap-1 min-w-0">
-                <div class="w-full flex items-end justify-center gap-0.5 h-full max-h-[150px]">
-                  <div class="w-1/3 bg-primary/40 rounded-t" :style="{ height: entry.total + '%' }"></div>
-                  <div class="w-1/3 bg-primary rounded-t" :style="{ height: entry.downloaded + '%' }"></div>
+          <div v-if="growthData.length > 0" class="flex-1 min-h-0 flex items-stretch gap-3">
+            <div class="flex-1 h-full min-h-[64px] flex items-end justify-around gap-2">
+              <div v-for="(entry, i) in growthData" :key="i" class="flex-1 h-full flex flex-col items-center justify-end gap-1 min-w-0">
+                <div class="w-full flex-1 min-h-[48px] max-h-[140px] flex items-end justify-center gap-1 pb-0.5">
+                  <div
+                    class="w-2.5 sm:w-3.5 bg-primary/40 rounded-t transition-all duration-300"
+                    :style="{ height: entry.total > 0 ? Math.max(entry.total, 6) + '%' : '0%' }"
+                    :title="`Total tracks: ${entry.total}%`"
+                  ></div>
+                  <div
+                    class="w-2.5 sm:w-3.5 bg-primary rounded-t transition-all duration-300"
+                    :style="{ height: entry.downloaded > 0 ? Math.max(entry.downloaded, 6) + '%' : '0%' }"
+                    :title="`Downloaded: ${entry.downloaded}%`"
+                  ></div>
                 </div>
-                <span class="text-[10px] text-gray-500 truncate w-full text-center">{{ entry.label }}</span>
+                <span class="text-[10px] text-gray-500 truncate w-full text-center shrink-0">{{ entry.label }}</span>
               </div>
             </div>
-            <div class="shrink-0 space-y-1 text-[10px] text-gray-400">
+            <div class="shrink-0 space-y-1 text-[10px] text-gray-400 pb-1 self-end">
               <div class="flex items-center gap-1">
                 <span class="w-2 h-2 rounded bg-primary/40"></span>Total tracks
               </div>
@@ -113,13 +121,13 @@
           </div>
         </div>
 
-        <!-- Storage Usage -->
-        <div class="stat-card storage-usage xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Storage Usage</h3>
+        <!-- Row 1: Storage Usage (2 cols - D-03: reducido proporcional a su contenido) -->
+        <div class="stat-card storage-usage xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+          <h3 class="text-xs font-semibold text-ink mb-1.5 shrink-0">Storage Usage</h3>
           <p class="text-xl font-bold text-ink shrink-0">{{ stats.storageUsed }}</p>
 
-          <div class="h-2 bg-gray-700 rounded-full overflow-hidden flex mt-2 mb-2 shrink-0">
-            <template v-if="storageData">
+          <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden flex mt-2 mb-2 shrink-0">
+            <template v-if="storageData && storageData.used_bytes > 0">
               <div
                 v-for="(item, i) in storageData.breakdown"
                 :key="item.format"
@@ -130,49 +138,51 @@
             <div v-else class="bg-gray-600 h-full w-full"></div>
           </div>
 
-          <div class="flex-1 min-h-0 space-y-1 text-[11px] overflow-hidden">
-            <template v-if="storageData">
-              <div v-for="(item, i) in storageData.breakdown" :key="item.format" class="flex justify-between">
-                <span class="flex items-center gap-1.5 text-gray-300">
-                  <span :class="[i === 0 ? 'bg-blue-500' : i === 1 ? 'bg-green-500' : 'bg-gray-400', 'w-2 h-2 rounded']"></span>
-                  {{ item.format }}
+          <div class="flex-1 min-h-0 space-y-1 text-[11px] overflow-y-auto custom-scrollbar">
+            <template v-if="storageData && storageData.breakdown.length > 0">
+              <div v-for="(item, i) in storageData.breakdown" :key="item.format" class="flex justify-between items-center">
+                <span class="flex items-center gap-1.5 text-gray-300 truncate pr-1">
+                  <span :class="[i === 0 ? 'bg-blue-500' : i === 1 ? 'bg-green-500' : 'bg-gray-400', 'w-2 h-2 rounded shrink-0']"></span>
+                  <span class="truncate">{{ item.format }}</span>
                 </span>
-                <span class="text-gray-500">{{ formatBytes(item.size_bytes) }}</span>
+                <span class="text-gray-500 shrink-0 font-mono text-[10px]">{{ formatBytes(item.size_bytes) }}</span>
               </div>
             </template>
-            <p v-else class="text-gray-500 py-1">No storage data</p>
+            <p v-else class="text-gray-500 py-1 italic text-xs">No storage data</p>
           </div>
 
-          <p class="shrink-0 text-[11px] text-gray-500 mt-1">{{ freeSpaceLabel }} · ~{{ stats.perTrackSize }} per track</p>
+          <p class="shrink-0 text-[10px] sm:text-[11px] text-gray-500 mt-1 truncate" :title="`${freeSpaceLabel} · ~${stats.perTrackSize} per track`">
+            {{ freeSpaceLabel }} · ~{{ stats.perTrackSize }} per track
+          </p>
         </div>
 
-        <!-- Quality Distribution -->
+        <!-- Row 2: Audio Quality (3 cols) -->
         <div class="stat-card quality-distribution xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Audio Quality</h3>
-          <div v-if="qualityData.length > 0" class="flex-1 min-h-0 space-y-2 overflow-hidden">
+          <div v-if="qualityData.length > 0" class="flex-1 min-h-0 space-y-2 overflow-y-auto custom-scrollbar">
             <div v-for="(item, i) in qualityData" :key="item.label" @click="handleQualityClick(item.label)" class="cursor-pointer hover:bg-white/5 rounded-lg px-1 -mx-1 py-0.5 transition-colors">
               <div class="flex justify-between text-[11px] mb-0.5">
                 <span class="text-gray-300 truncate">{{ item.label }}</span>
-                <span class="text-gray-500 shrink-0">{{ item.count }} tracks</span>
+                <span class="text-gray-500 shrink-0">{{ item.count.toLocaleString() }} tracks</span>
               </div>
               <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
                 <div
                   :class="[i === 0 ? 'bg-indigo-500' : i === 1 ? 'bg-blue-400' : 'bg-gray-500', 'h-full rounded-full']"
-                  :style="{ width: (item.count / stats.totalTracks * 100) + '%' }"
+                  :style="{ width: (stats.totalTracks > 0 ? (item.count / stats.totalTracks * 100) : 0) + '%' }"
                 ></div>
               </div>
             </div>
           </div>
-          <div v-else class="flex-1 min-h-0 flex flex-col items-center justify-center text-gray-500 italic text-xs">
+          <div v-else class="flex-1 min-h-0 flex flex-col items-center justify-center text-gray-500 italic text-xs text-center">
             <span class="material-symbols-outlined text-3xl mb-1">graphic_eq</span>
             No downloads yet
           </div>
         </div>
 
-        <!-- Service Distribution -->
+        <!-- Row 2: Sources / Services (3 cols - D-05: nombre formateado centralizadamente) -->
         <div class="stat-card service-distribution xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Sources</h3>
-          <div class="flex-1 min-h-0 space-y-2 overflow-hidden">
+          <div v-if="stats.services.length > 0" class="flex-1 min-h-0 space-y-2 overflow-y-auto custom-scrollbar">
             <div v-for="service in stats.services" :key="service.name">
               <div class="flex justify-between text-[11px] mb-0.5">
                 <span class="text-ink truncate pr-2">{{ service.name }}</span>
@@ -183,41 +193,45 @@
               </div>
             </div>
           </div>
+          <div v-else class="flex-1 min-h-0 flex flex-col items-center justify-center text-gray-500 italic text-xs text-center">
+            <span class="material-symbols-outlined text-3xl mb-1">hub</span>
+            No sources connected
+          </div>
         </div>
 
-        <!-- Download Queue -->
+        <!-- Row 2: Download Queue (2 cols) -->
         <div class="stat-card queue-stats xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Download Queue</h3>
-          <div v-if="queueStats" class="flex-1 min-h-0 space-y-1.5 text-[11px] overflow-hidden">
+          <div v-if="queueStats" class="flex-1 min-h-0 space-y-1.5 text-[11px] overflow-y-auto custom-scrollbar">
             <div class="flex justify-between">
               <span class="text-gray-400">Queued</span>
-              <span class="text-gray-200 font-mono">{{ queueStats.queued }}</span>
+              <span class="text-gray-200 font-mono">{{ queueStats.queued.toLocaleString() }}</span>
             </div>
             <div class="flex justify-between">
               <span class="text-blue-400">Downloading</span>
-              <span class="text-blue-300 font-mono">{{ queueStats.downloading }}</span>
+              <span class="text-blue-300 font-mono">{{ queueStats.downloading.toLocaleString() }}</span>
             </div>
             <div class="flex justify-between">
               <span class="text-gray-400">Completed</span>
-              <span class="text-green-500 font-mono">+{{ queueStats.completed }} tracks</span>
+              <span class="text-green-500 font-mono">+{{ queueStats.completed.toLocaleString() }} tracks</span>
             </div>
             <div class="flex justify-between">
               <span class="text-gray-400">Failed</span>
-              <button v-if="queueStats.failed > 0" @click="goToFailed" class="text-red-400 hover:underline font-mono">{{ queueStats.failed }}</button>
+              <button v-if="queueStats.failed > 0" @click="goToFailed" class="text-red-400 hover:underline font-mono">{{ queueStats.failed.toLocaleString() }}</button>
               <span v-else class="text-gray-600 font-mono">0</span>
             </div>
             <div class="flex justify-between">
               <span class="text-gray-600">In the queue overall</span>
-              <span class="text-gray-400 font-mono">{{ queueStats.total }}</span>
+              <span class="text-gray-400 font-mono">{{ queueStats.total.toLocaleString() }}</span>
             </div>
           </div>
           <div v-else class="flex-1 min-h-0 flex items-center justify-center text-gray-500 italic text-xs">No queue data</div>
         </div>
 
-        <!-- Recent Activity -->
-        <div class="stat-card recent-activity xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+        <!-- Row 2: Recent Activity (4 cols - expandido para legibilidad de títulos tras eliminar System Diagnostics) -->
+        <div class="stat-card recent-activity xl:col-span-4 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Recent Activity</h3>
-          <div v-if="recentActivity.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-hidden">
+          <div v-if="recentActivity.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-y-auto custom-scrollbar">
             <div v-for="activity in recentActivity" :key="activity.id" class="flex items-center gap-2">
               <div :class="['w-6 h-6 rounded-full flex items-center justify-center shrink-0', activity.color]">
                 <span class="material-symbols-outlined text-xs">{{ activity.icon }}</span>
@@ -238,32 +252,7 @@
           </div>
         </div>
 
-        <!-- System Diagnostics -->
-        <div class="stat-card system-diagnostics xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">System Diagnostics</h3>
-          <div class="flex-1 min-h-0 space-y-1.5 text-[11px] overflow-hidden">
-            <div class="flex items-center justify-between bg-surface-highlight rounded-lg px-2 py-1.5">
-              <span class="flex items-center gap-1.5 text-gray-200">
-                <span class="material-symbols-outlined text-sm text-blue-400">transform</span>
-                FFmpeg
-              </span>
-              <span v-if="ffmpegStatus === 'checking'" class="material-symbols-outlined text-sm animate-spin text-gray-500">sync</span>
-              <span v-else-if="ffmpegStatus === 'installed'" class="text-success">Installed</span>
-              <span v-else class="text-red-400">Missing</span>
-            </div>
-            <div class="flex items-center justify-between bg-surface-highlight rounded-lg px-2 py-1.5">
-              <span class="flex items-center gap-1.5 text-gray-200">
-                <span class="material-symbols-outlined text-sm text-purple-400">fingerprint</span>
-                Chromaprint
-              </span>
-              <span v-if="fpcalcStatus === 'checking'" class="material-symbols-outlined text-sm animate-spin text-gray-500">sync</span>
-              <span v-else-if="fpcalcStatus === 'installed'" class="text-success">Installed</span>
-              <span v-else class="text-red-400">Missing</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Metadata Quality -->
+        <!-- Row 3: Metadata Quality (3 cols) -->
         <div class="stat-card metadata-quality xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Metadata Quality</h3>
           <div v-if="metadataStats" class="flex-1 min-h-0 flex gap-3 overflow-hidden">
@@ -299,20 +288,22 @@
           <div v-else class="flex-1 min-h-0 flex items-center justify-center text-gray-500 italic text-xs">No metadata data</div>
         </div>
 
-        <!-- Lyrics Coverage -->
-        <div class="stat-card lyrics-coverage xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
+        <!-- Row 3: Lyrics Coverage (2 cols - D-04: reducido proporcional a su contenido) -->
+        <div class="stat-card lyrics-coverage xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Lyrics Coverage</h3>
-          <div v-if="lyricsStats" class="flex-1 min-h-0 flex flex-col overflow-hidden">
-            <div class="shrink-0 flex items-baseline gap-2 mb-2">
-              <span class="text-xl font-bold text-ink">{{ lyricsStats.total_tracks > 0 ? Math.round((lyricsStats.with_lyrics / lyricsStats.total_tracks) * 100) : 0 }}%</span>
-              <span class="text-[11px] text-gray-500">{{ lyricsStats.with_lyrics }} / {{ lyricsStats.total_tracks }} tracks</span>
-            </div>
-            <div class="shrink-0 h-1.5 bg-gray-700 rounded-full overflow-hidden mb-2">
-              <div class="h-full bg-primary rounded-full" :style="{ width: (lyricsStats.total_tracks > 0 ? (lyricsStats.with_lyrics / lyricsStats.total_tracks) * 100 : 0) + '%' }"></div>
-            </div>
-            <div class="flex-1 min-h-0 flex items-end justify-between text-[10px] text-gray-500 shrink-0">
-              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-green-500"></span>{{ lyricsStats.synced_lyrics }} synced</span>
-              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-yellow-500"></span>Missing {{ lyricsStats.total_tracks > 0 ? lyricsStats.total_tracks - lyricsStats.with_lyrics : 0 }}</span>
+          <div v-if="lyricsStats" class="flex-1 min-h-0 flex flex-col justify-between overflow-hidden">
+            <div>
+              <div class="shrink-0 flex items-baseline gap-2 mb-1.5">
+                <span class="text-xl font-bold text-ink">{{ lyricsStats.total_tracks > 0 ? Math.round((lyricsStats.with_lyrics / lyricsStats.total_tracks) * 100) : 0 }}%</span>
+                <span class="text-[11px] text-gray-500 truncate">{{ lyricsStats.with_lyrics.toLocaleString() }} / {{ lyricsStats.total_tracks.toLocaleString() }} tracks</span>
+              </div>
+              <div class="shrink-0 h-1.5 bg-gray-700 rounded-full overflow-hidden mb-2">
+                <div class="h-full bg-primary rounded-full transition-all duration-300" :style="{ width: (lyricsStats.total_tracks > 0 ? (lyricsStats.with_lyrics / lyricsStats.total_tracks) * 100 : 0) + '%' }"></div>
+              </div>
+              <div class="flex items-center justify-between gap-1 text-[10px] text-gray-500 flex-wrap">
+                <span class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-green-500 shrink-0"></span>{{ lyricsStats.synced_lyrics.toLocaleString() }} synced</span>
+                <span class="flex items-center gap-1"><span class="w-2 h-2 rounded bg-yellow-500 shrink-0"></span>Missing {{ lyricsStats.total_tracks > 0 ? (lyricsStats.total_tracks - lyricsStats.with_lyrics).toLocaleString() : 0 }}</span>
+              </div>
             </div>
             <button
               class="shrink-0 mt-2 py-1 text-[11px] text-primary hover:bg-primary/5 rounded-lg border border-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -329,14 +320,14 @@
           <div v-else class="flex-1 min-h-0 flex items-center justify-center text-gray-500 italic text-xs">No lyrics data</div>
         </div>
 
-        <!-- Top Artists -->
+        <!-- Row 3: Top Artists (2 cols) -->
         <div class="stat-card top-artists xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Top Artists</h3>
-          <div v-if="stats.topArtists.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-hidden">
+          <div v-if="stats.topArtists.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-y-auto custom-scrollbar">
             <div v-for="artist in stats.topArtists" :key="artist.name">
               <div class="flex justify-between text-[11px] mb-0.5">
                 <span class="text-ink truncate pr-2">{{ artist.name }}</span>
-                <span class="text-gray-500 shrink-0">{{ artist.tracks }} tracks</span>
+                <span class="text-gray-500 shrink-0">{{ artist.tracks.toLocaleString() }} tracks</span>
               </div>
               <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
                 <div class="bg-primary h-full rounded-full" :style="{ width: artist.percent + '%' }"></div>
@@ -349,14 +340,14 @@
           </div>
         </div>
 
-        <!-- Top Genres -->
+        <!-- Row 3: Top Genres (2 cols) -->
         <div class="stat-card top-genres xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Top Genres</h3>
-          <div v-if="stats.topGenres.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-hidden">
+          <div v-if="stats.topGenres.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-y-auto custom-scrollbar">
             <div v-for="genre in stats.topGenres" :key="genre.name">
               <div class="flex justify-between text-[11px] mb-0.5">
                 <span class="text-ink truncate pr-2">{{ genre.name }}</span>
-                <span class="text-gray-500 shrink-0">{{ genre.tracks }} tracks</span>
+                <span class="text-gray-500 shrink-0">{{ genre.tracks.toLocaleString() }} tracks</span>
               </div>
               <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
                 <div class="bg-primary h-full rounded-full" :style="{ width: genre.percent + '%' }"></div>
@@ -369,11 +360,14 @@
           </div>
         </div>
 
-        <!-- Duplicates -->
-        <div class="stat-card duplicates xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden" :class="{ 'opacity-60': duplicateStats === null }">
-          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Duplicates</h3>
+        <!-- Row 3: Duplicates (3 cols) -->
+        <div class="stat-card duplicates xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden" :class="{ 'opacity-60': duplicateStats === null }">
+          <div class="flex items-center justify-between mb-1 shrink-0">
+            <h3 class="text-xs font-semibold text-ink">Duplicates</h3>
+            <span v-if="duplicateStats !== null && duplicateStats > 0" class="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-400 rounded-full font-medium">Action needed</span>
+          </div>
           <div class="flex-1 min-h-0 flex flex-col items-center justify-center">
-            <p class="text-2xl font-bold text-gray-600 mb-0.5" :class="{ 'text-warning': duplicateStats && duplicateStats > 0 }">{{ duplicateStats ?? '—' }}</p>
+            <p class="text-2xl font-bold text-gray-600 mb-0.5" :class="{ 'text-warning': duplicateStats && duplicateStats > 0 }">{{ duplicateStats !== null ? duplicateStats.toLocaleString() : '—' }}</p>
             <p class="text-[11px] text-gray-500 text-center">{{ duplicateStats === null ? 'Scanning...' : 'Extra tracks detected' }}</p>
           </div>
           <div class="shrink-0 flex gap-1.5 mt-2">
@@ -402,14 +396,13 @@ import { accountsApi } from '@/api/accounts'
 import { metadataApi } from '@/api/metadata'
 import { lyricsApi } from '@/api/lyrics'
 import { dashboardApi } from '@/api/dashboard'
-import { toolsApi } from '@/api/tools'
 import { getStorageStats, type StorageStats } from '@/api/storage'
-import type { 
-  LibraryStats, QueueStats, ServiceStatus, MetadataStats, 
-  LyricsStats, LibrarySnapshot, 
-  TopArtist, TopGenre, QualityBucket 
+import { formatServiceName } from '@/composables/useGlobalTasks'
+import type {
+  LibraryStats, QueueStats, ServiceStatus, MetadataStats,
+  LyricsStats, LibrarySnapshot,
+  TopArtist, TopGenre, QualityBucket
 } from '@/api/types'
-
 
 const router = useRouter()
 const toast = useToast()
@@ -437,10 +430,6 @@ const duplicateStats = ref<number | null>(null)
 const isFetchingLyrics = ref(false)
 const isAutoResolving = ref(false)
 const recentActivity = ref<{id: number, icon: string, color: string, text: string, time: string}[]>([])
-
-// System Diagnostics State
-const ffmpegStatus = ref<'checking' | 'installed' | 'missing'>('checking')
-const fpcalcStatus = ref<'checking' | 'installed' | 'missing'>('checking')
 
 // Helper to format bytes
 function formatBytes(bytes: number, decimals = 2) {
@@ -480,10 +469,10 @@ function formatTimeAgo(dateStr: string): string {
 // Computed stats (combining backend data with defaults)
 const stats = computed(() => {
   const lib = libraryStats.value
-  const downloadedPercent = lib && lib.total_tracks > 0 
+  const downloadedPercent = lib && lib.total_tracks > 0
     ? Math.round((lib.total_downloads / lib.total_tracks) * 100)
     : 0
-  
+
   return {
     totalTracks: lib?.total_tracks ?? 0,
     totalAlbums: lib?.total_albums ?? 0,
@@ -495,18 +484,18 @@ const stats = computed(() => {
     downloadedPercent,
     storageUsed: storageData.value ? formatBytes(storageData.value.used_bytes) : '-- GB',
     storageAvailable: storageData.value ? formatBytes(storageData.value.available_bytes) : '-- GB',
-    perTrackSize: (lib?.total_tracks ?? 0) > 0 && storageData.value 
-      ? formatBytes(storageData.value.used_bytes / lib!.total_tracks) 
+    perTrackSize: (lib?.total_tracks ?? 0) > 0 && storageData.value
+      ? formatBytes(storageData.value.used_bytes / lib!.total_tracks)
       : '—',
     services: serviceStatuses.value.map((s, i) => ({
-      name: s.name.charAt(0).toUpperCase() + s.name.slice(1),
+      name: formatServiceName(s.name),
       percent: s.library_count > 0 ? Math.round((s.library_count / (lib?.total_tracks || 1)) * 100) : 0,
       color: ['bg-blue-500', 'bg-green-500', 'bg-gray-900', 'bg-gray-400'][i] || 'bg-gray-400'
     })),
     topArtists: topArtistsData.value.map((a, i, arr) => ({
       name: a.name,
       tracks: a.track_count,
-      percent: arr[0].track_count > 0 ? Math.round((a.track_count / arr[0].track_count) * 100) : 0
+      percent: arr[0]?.track_count > 0 ? Math.round((a.track_count / arr[0].track_count) * 100) : 0
     })),
     topGenres: topGenresData.value.map((g, i, arr) => ({
       name: g.name,
@@ -575,43 +564,24 @@ async function fetchRecentActivity() {
   }
 }
 
-// Fetch system secondary diagnostics (FFmpeg, fpcalc)
-async function fetchSystemDiagnostics() {
-  ffmpegStatus.value = 'checking'
-  fpcalcStatus.value = 'checking'
-  try {
-    const [ffmpeg, fpcalc] = await Promise.all([
-      toolsApi.checkFfmpeg(),
-      toolsApi.checkFingerprint()
-    ])
-    ffmpegStatus.value = ffmpeg.success ? 'installed' : 'missing'
-    fpcalcStatus.value = fpcalc.success ? 'installed' : 'missing'
-  } catch (e) {
-    console.error('Failed to check system tools:', e)
-    ffmpegStatus.value = 'missing'
-    fpcalcStatus.value = 'missing'
-  }
-}
-
-// Fetch all data
 async function handleAutoResolveDuplicates() {
   if (isAutoResolving.value) return
-  
+
   const confirmed = await confirm(
     'Auto-resolve will keep the highest quality version of each duplicate group. Downloaded files are always preserved. This cannot be undone.',
     { title: 'Auto-resolve Duplicates', variant: 'warning' }
   )
-  
+
   if (confirmed !== true) return
-  
+
   isAutoResolving.value = true
   try {
     const result = await dashboardApi.autoResolveDuplicates()
-    
     toast.success(`Resolved ${result.groups_resolved} groups, removed ${result.tracks_removed} duplicates`)
     await fetchData()
   } catch (e) {
-    toast.error(`Auto-resolve failed: ${e}`)
+    console.error('Failed to auto-resolve duplicates:', e)
+    toast.error('Failed to resolve duplicates', String(e))
   } finally {
     isAutoResolving.value = false
   }
@@ -620,13 +590,10 @@ async function handleAutoResolveDuplicates() {
 async function fetchData() {
   loading.value = true
   error.value = null
-  
-  // Start diagnostics in parallel
-  fetchSystemDiagnostics()
-  
+
   try {
     const [
-      libStats, qStats, services, meta, lyrics, snaps, storage, 
+      libStats, qStats, services, meta, lyrics, snaps, storage,
       topArtists, topGenres, qualityList, dupeStats
     ] = await Promise.all([
       libraryApi.getLibraryStats(),
@@ -641,7 +608,7 @@ async function fetchData() {
       libraryApi.getAudioQualityDistribution(),
       dashboardApi.getDuplicateStats().catch(() => 0) // Fallback inline for partial failures
     ])
-    
+
     libraryStats.value = libStats
     queueStats.value = qStats
     serviceStatuses.value = services
@@ -653,7 +620,7 @@ async function fetchData() {
     topGenresData.value = topGenres
     qualityData.value = qualityList
     duplicateStats.value = dupeStats
-    
+
     // Map snapshots to growthData or derive from real library statistics
     if (snaps && snaps.length > 0 && snaps.some((s: LibrarySnapshot) => s.total_tracks > 0)) {
       const maxTracks = Math.max(...snaps.map((s: LibrarySnapshot) => s.total_tracks), 1)
@@ -670,9 +637,9 @@ async function fetchData() {
     } else {
       growthData.value = []
     }
-    
+
     await fetchRecentActivity()
-    
+
     lastUpdated.value = 'just now'
   } catch (e) {
     console.error('Failed to fetch dashboard data:', e)
@@ -741,7 +708,7 @@ function exportReport() {
       failed: queueStats.value?.failed ?? 0,
     },
     connectedServices: serviceStatuses.value.map(s => ({
-      name: s.name,
+      name: formatServiceName(s.name),
       connected: s.connected,
       email: s.account_email,
       libraryCount: s.library_count
@@ -752,7 +719,7 @@ function exportReport() {
       serviceStatuses: serviceStatuses.value
     }
   }
-  
+
   // Create downloadable JSON file
   const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
@@ -763,7 +730,7 @@ function exportReport() {
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
-  
+
   // Also copy to clipboard for easy sharing
   const textReport = `
 === Syncify Dashboard Report ===
@@ -771,39 +738,39 @@ Generated: ${new Date().toLocaleString()}
 
 📊 LIBRARY STATS
 Total Tracks: ${stats.value.totalTracks.toLocaleString()}
-Albums: ${stats.value.totalAlbums}
-Artists: ${stats.value.totalArtists}
-Playlists: ${stats.value.totalPlaylists}
+Albums: ${stats.value.totalAlbums.toLocaleString()}
+Artists: ${stats.value.totalArtists.toLocaleString()}
+Playlists: ${stats.value.totalPlaylists.toLocaleString()}
 Downloaded: ${stats.value.downloadedTracks.toLocaleString()} (${stats.value.downloadedPercent}%)
 Streaming Only: ${stats.value.streamingTracks.toLocaleString()}
 
 📥 DOWNLOAD QUEUE
-Queued: ${queueStats.value?.queued ?? 0}
-Downloading: ${queueStats.value?.downloading ?? 0}
-Completed: ${queueStats.value?.completed ?? 0}
-Failed: ${queueStats.value?.failed ?? 0}
+Queued: ${(queueStats.value?.queued ?? 0).toLocaleString()}
+Downloading: ${(queueStats.value?.downloading ?? 0).toLocaleString()}
+Completed: ${(queueStats.value?.completed ?? 0).toLocaleString()}
+Failed: ${(queueStats.value?.failed ?? 0).toLocaleString()}
 
 🔗 CONNECTED SERVICES
-${serviceStatuses.value.map(s => `- ${s.name}: ${s.connected ? 'Connected' : 'Disconnected'} (${s.library_count} tracks)`).join('\n')}
+${serviceStatuses.value.map(s => `- ${formatServiceName(s.name)}: ${s.connected ? 'Connected' : 'Disconnected'} (${s.library_count.toLocaleString()} tracks)`).join('\n')}
 `.trim()
-  
+
   navigator.clipboard.writeText(textReport).then(() => {
     console.log('Report copied to clipboard!')
   }).catch(() => {
     console.log('Clipboard copy failed, but file was downloaded')
   })
-  
+
   console.log('Dashboard report exported:', report)
 }
+
 function handleQualityClick(label: string) {
   router.push({ path: '/library', query: { filter: 'quality', quality: label } })
 }
+
 function goToFailed() {
   router.push({ path: '/downloads', query: { filter: 'failed' } })
 }
-function goToMetadata() {
-  router.push({ path: '/metadata', query: { filter: 'needs_work' } })
-}
+
 async function fetchMissingLyrics() {
   if (isFetchingLyrics.value) return
   isFetchingLyrics.value = true
@@ -819,11 +786,10 @@ async function fetchMissingLyrics() {
   }
 }
 
-
 onMounted(async () => {
   await dashboardApi.createLibrarySnapshot().catch(() => null)
   await fetchData()
-  
+
   // Get app version
   try {
     appVersion.value = await getVersion()

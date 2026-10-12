@@ -71,31 +71,6 @@ describe('SettingsServices — download priority drag and drop', () => {
         return mockPreferences
       }
       if (command === 'get_download_settings') return null
-      if (command === 'get_advanced_settings') {
-        return {
-          id: 1,
-          log_level: 'info',
-          log_to_file: true,
-          log_file_max_size_mb: 50,
-          log_file_retention_days: 30,
-          max_concurrent_downloads: 3,
-          max_concurrent_imports: 2,
-          worker_timeout_seconds: 300,
-          cache_enabled: true,
-          cache_max_size_mb: 500,
-          cache_ttl_hours: 168,
-          fuzzy_match_threshold: 0.85,
-          use_acoustic_fingerprinting: true,
-          prefer_exact_matches: true,
-          request_timeout_seconds: 30,
-          max_retries: 3,
-          retry_delay_seconds: 5,
-          use_proxy: false,
-          proxy_url: null,
-          debug_mode: false,
-          verbose_api_logging: false,
-        }
-      }
       return null
     })
 

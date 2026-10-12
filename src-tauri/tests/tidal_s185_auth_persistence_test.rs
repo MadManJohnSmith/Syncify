@@ -299,6 +299,7 @@ async fn test_s185_login_upsert_keeps_sibling_rows_and_pipeline_selects_clean_ro
         Some("owner@test.example"),
         None,
         &encrypted,
+        None,
     )
     .await
     .expect("upsert succeeds");
@@ -363,6 +364,7 @@ async fn test_s185_login_upsert_keeps_sibling_rows_and_pipeline_selects_clean_ro
         None,
         None,
         &encrypted,
+        None,
     )
     .await
     .expect("insert path succeeds");
@@ -411,6 +413,7 @@ async fn test_s185_relogin_with_different_email_survives_unique_constraint() {
         Some("account_b@test.example"),
         None,
         &fresh,
+        None,
     )
     .await
     .expect("re-login con email existente no debe chocar con UNIQUE");
@@ -435,6 +438,7 @@ async fn test_s185_relogin_with_different_email_survives_unique_constraint() {
         Some("brand_new@test.example"),
         None,
         &fresh,
+        None,
     )
     .await
     .expect("re-login con email nuevo crea una cuenta nueva");

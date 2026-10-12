@@ -27,6 +27,11 @@
           <div class="toast-message flex-1 min-w-0">
             <p class="text-sm font-semibold text-white">{{ toast.title }}</p>
             <p v-if="toast.description" class="text-xs text-white/70 mt-0.5">{{ toast.description }}</p>
+
+            <!-- Aggregated counter (NT-02): one popup stands for many events. -->
+            <p v-if="toast.batchCount && toast.batchCount > 1" class="text-[10px] text-white/60 mt-0.5">
+              {{ toast.batchCount }} events merged · history keeps each one
+            </p>
             
             <!-- Progress Bar (for progress type) -->
             <div v-if="toast.type === 'progress' && toast.progress !== undefined" class="mt-2">

@@ -134,6 +134,11 @@ async function loadFromBackend() {
 // Save global sync settings to backend
 async function saveGlobalSettings() {
     try {
+        // update_sync_settings also updates the worker and the download KV key.
+        // Use the live worker value so saving an unrelated sync field cannot
+        // restore an obsolete concurrency value from this composable's cache.
+        const effective = await settingsApi.getEffectiveDownloadPreferences()
+        globalSyncSettings.maxConcurrentDownloads = effective.maxConcurrentDownloads
         await settingsApi.updateSyncSettings({
             id: 1,
             auto_sync_enabled: globalSyncSettings.autoSyncEnabled,

@@ -146,6 +146,30 @@ struct MxmToken {
     obtained_at: Instant,
 }
 
+/// Configuration for the lyrics download engine
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LyricsEngineConfig {
+    pub min_sync_level: String,
+    pub preferred_language: String,
+    pub storage_format: String,
+    pub auto_fetch_on_import: bool,
+    pub retry_failed: bool,
+    pub retry_frequency: String,
+}
+
+impl Default for LyricsEngineConfig {
+    fn default() -> Self {
+        Self {
+            min_sync_level: "line".to_string(),
+            preferred_language: "original".to_string(), // Default = ORIGINAL language, not english
+            storage_format: "lrc".to_string(),          // LRC only, no TTML for compatibility
+            auto_fetch_on_import: true,
+            retry_failed: true,
+            retry_frequency: "weekly".to_string(),
+        }
+    }
+}
+
 /// Lyrics client with caching + Musixmatch token management + Spotify Color Lyrics direct access
 pub struct LyricsClient {
     client: Client,
@@ -155,6 +179,7 @@ pub struct LyricsClient {
     mxm_token: TokioMutex<Option<MxmToken>>,
     spotify_sp_dc: TokioMutex<Option<String>>,
     spotify_access_token: TokioMutex<Option<(String, Instant)>>,
+    config: RwLock<LyricsEngineConfig>,
 }
 
 /// Validate lyrics response quality (ensures content is genuine and not just title/artist placeholder)
@@ -203,6 +228,10 @@ pub fn is_valid_lyrics(lyrics: &LyricsResponse, expected_title: &str) -> bool {
 
 impl LyricsClient {
     pub fn new() -> Self {
+        Self::with_config(LyricsEngineConfig::default())
+    }
+
+    pub fn with_config(config: LyricsEngineConfig) -> Self {
         let env_sp_dc = std::env::var("SPOTIFY_SP_DC")
             .ok()
             .filter(|s| !s.trim().is_empty());
@@ -212,6 +241,18 @@ impl LyricsClient {
             mxm_token: TokioMutex::new(None),
             spotify_sp_dc: TokioMutex::new(env_sp_dc),
             spotify_access_token: TokioMutex::new(None),
+            config: RwLock::new(config),
+        }
+    }
+
+    pub fn config(&self) -> LyricsEngineConfig {
+        self.config.read().map(|c| c.clone()).unwrap_or_default()
+    }
+
+    #[allow(dead_code)]
+    pub fn set_config(&self, config: LyricsEngineConfig) {
+        if let Ok(mut c) = self.config.write() {
+            *c = config;
         }
     }
 
@@ -241,32 +282,178 @@ impl LyricsClient {
             return Err(anyhow!("No lyrics found"));
         }
 
-        // Find best match by duration (strict tolerance <= 3.0s and title match)
-        let tolerance = 3.0;
-        let mut best_match: Option<&LRCLibResponse> = None;
+        // Score candidates based on duration, title, synced status, and preferred language
+        let config = self.config();
+        let pref_lang = config.preferred_language.to_lowercase();
         let track_lower = query.to_lowercase();
+
+        let mut best_score = -1000.0f64;
+        let mut best_match: Option<&LRCLibResponse> = None;
 
         for result in &results {
             let has_synced = result.synced_lyrics.is_some();
-            let duration_matches = if let Some(d) = result.duration {
-                (d - duration_sec).abs() <= tolerance
-            } else {
-                false
-            };
+            let has_plain = result.plain_lyrics.is_some();
+            if !has_synced && !has_plain {
+                continue;
+            }
 
             let r_title = result.track_name.as_deref().unwrap_or("").to_lowercase();
             let title_matches = r_title.contains(&track_lower) || track_lower.contains(&r_title);
+            if !title_matches && !r_title.is_empty() {
+                continue;
+            }
 
-            // Require both synced lyrics AND strict duration + title match
-            if duration_matches && has_synced && title_matches {
+            let mut score = 0.0f64;
+
+            // Prioritize synced lyrics
+            if has_synced {
+                score += 100.0;
+            }
+
+            // Exact title match bonus
+            if r_title == track_lower {
+                score += 30.0;
+            }
+
+            // Duration match (only evaluated if duration_sec > 0.0)
+            if duration_sec > 0.0 {
+                if let Some(d) = result.duration {
+                    let diff = (d - duration_sec).abs();
+                    if diff <= 3.0 {
+                        score += 50.0 - diff * 10.0;
+                    } else if diff <= 8.0 {
+                        score += 10.0 - diff;
+                    } else {
+                        // Beyond 8s tolerance
+                        continue;
+                    }
+                }
+            }
+
+            // Language matching: if preference is set (not empty, "original", or "any"), boost if matches
+            if !pref_lang.is_empty() && pref_lang != "original" && pref_lang != "any" {
+                let sample = result
+                    .synced_lyrics
+                    .as_deref()
+                    .or(result.plain_lyrics.as_deref())
+                    .unwrap_or("");
+                if let Some(detected) = detect_language_heuristic(sample) {
+                    if detected.to_lowercase() == pref_lang {
+                        score += 60.0;
+                    }
+                }
+            }
+
+            if score > best_score {
+                best_score = score;
                 best_match = Some(result);
-                break;
             }
         }
 
-        let best =
-            best_match.ok_or_else(|| anyhow!("No title/duration matching synced lyrics found"))?;
+        let best = best_match
+            .ok_or_else(|| anyhow!("No title/duration matching lyrics found for query"))?;
         self.parse_response(best)
+    }
+
+    /// Search across all available lyrics providers in parallel and return all valid results.
+    /// This allows the user / UI to compare and choose lyrics from any responding provider (LY-07).
+    pub async fn search_all_providers(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+    ) -> Vec<LyricsResponse> {
+        info!(
+            "[LyricsEngine] Searching ALL providers for '{} - {}' ({:.1}s)",
+            artist, track, duration_sec
+        );
+
+        let simplified = simplify_track_name(track);
+        let lrclib_query = format!("{} {}", artist, track);
+
+        // Run provider searches concurrently
+        let (
+            am_res,
+            spot_res,
+            mxm_rich_res,
+            mxm_plain_res,
+            lrclib_res,
+            lrclib_plain_res,
+            netease_res,
+            kugou_res,
+            qq_res,
+            ultrastar_res,
+            lyricsplus_res,
+            tekstowo_res,
+        ) = tokio::join!(
+            self.fetch_apple_music_ttml(artist, track, duration_sec),
+            self.fetch_spotify_lyrics(artist, track, duration_sec),
+            self.fetch_musixmatch_richsync(artist, track, duration_sec),
+            self.fetch_musixmatch_plain(artist, track, duration_sec),
+            self.search_lyrics(&lrclib_query, duration_sec),
+            self.fetch_lrclib_plain(artist, track),
+            self.fetch_netease_lyrics(artist, track, duration_sec),
+            self.fetch_kugou_karaoke(artist, track, duration_sec),
+            self.fetch_qqmusic_lyrics(artist, track, duration_sec),
+            self.fetch_ultrastar_karaoke(artist, track),
+            self.fetch_lyricsplus(artist, track, duration_sec),
+            self.fetch_tekstowo_plain(artist, track),
+        );
+
+        let all_candidates = vec![
+            am_res,
+            spot_res,
+            mxm_rich_res,
+            lrclib_res,
+            kugou_res,
+            qq_res,
+            netease_res,
+            lyricsplus_res,
+            ultrastar_res,
+            mxm_plain_res,
+            lrclib_plain_res,
+            tekstowo_res,
+        ];
+
+        let mut results = Vec::new();
+        let mut seen_keys = std::collections::HashSet::new();
+
+        for mut lyrics in all_candidates.into_iter().flatten() {
+            if is_valid_lyrics(&lyrics, track)
+                || (!simplified.is_empty() && is_valid_lyrics(&lyrics, &simplified))
+            {
+                if !lyrics.lines.is_empty() {
+                    lyrics.lines.sort_by_key(|l| l.start_time_ms);
+                }
+                let key = format!("{}:{}", lyrics.provider, lyrics.sync_type);
+                if seen_keys.insert(key) {
+                    results.push(lyrics);
+                }
+            }
+        }
+
+        // Rank by sync capability: syllable/word > line > plain
+        results.sort_by(|a, b| {
+            let rank = |res: &LyricsResponse| -> u8 {
+                if res.sync_type == "KARAOKE_WORD_SYNCED" || res.sync_type == "WORD_SYNCED" {
+                    3
+                } else if res.sync_type == "LINE_SYNCED" || !res.lines.is_empty() {
+                    2
+                } else {
+                    1
+                }
+            };
+            rank(b).cmp(&rank(a))
+        });
+
+        info!(
+            "[LyricsEngine] Search complete for '{} - {}': {} valid results found across all providers",
+            artist,
+            track,
+            results.len()
+        );
+
+        results
     }
 
     /// Fetch from all sources with Karaoke-First priority fallbacks and strict duration matching
@@ -2080,6 +2267,13 @@ impl LyricsPipelineService {
     pub fn new() -> Self {
         Self {
             client: LyricsClient::new(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_config(config: LyricsEngineConfig) -> Self {
+        Self {
+            client: LyricsClient::with_config(config),
         }
     }
 

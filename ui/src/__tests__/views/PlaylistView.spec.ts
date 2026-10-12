@@ -11,6 +11,7 @@ import { mount, flushPromises } from '@vue/test-utils';
 import PlaylistView from '@/views/PlaylistView.vue';
 import { save } from '@tauri-apps/plugin-dialog';
 import { mockInvoke, resetMocks } from '../setup';
+import { useDialog } from '@/composables/useToast';
 
 describe('PlaylistView', () => {
     beforeEach(() => {
@@ -284,6 +285,61 @@ describe('PlaylistView', () => {
 
         expect(document.body.querySelector('input[type="url"]')).not.toBeNull();
         expect(invokeCalls.some(c => c.cmd.startsWith('import_'))).toBe(false);
+    });
+
+    it('imports playlist URL without protocol prefix (e.g. open.spotify.com/...)', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'import_spotify_playlists') return { success: true, imported: 1, errors: [] };
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('button').find((b: any) => b.text().includes('Import URL'))!.trigger('click');
+        const input = document.body.querySelector('input[type="url"]') as HTMLInputElement;
+        input.value = 'open.spotify.com/playlist/xyz789';
+        input.dispatchEvent(new Event('input'));
+        bodyButtons().find(b => b.textContent?.trim() === 'Import')!.click();
+        await flushPromises();
+
+        expect(invokeCalls.some(c => c.cmd === 'import_spotify_playlists')).toBe(true);
+    });
+
+    it('allows deleting smart playlists', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_playlists') return [
+                { id: 99, name: 'My Smart Playlist', track_count: 5, is_smart: true, rules_json: '[]' }
+            ];
+            if (cmd === 'get_local_playlist_tracks') return makePage([]);
+            if (cmd === 'delete_playlist') return null;
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+
+        // Select the smart playlist
+        const smartItem = wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('My Smart Playlist'));
+        expect(smartItem).toBeDefined();
+        await smartItem!.trigger('click');
+        await flushPromises();
+
+        // The delete button in header should be present
+        const deleteButton = wrapper.find('button[aria-label="Delete playlist"]');
+        expect(deleteButton.exists()).toBe(true);
+        await deleteButton.trigger('click');
+        await flushPromises();
+
+        const { resolveDialog } = useDialog();
+        resolveDialog('confirm');
+        await flushPromises();
+
+        expect(invokeCalls).toContainEqual({ cmd: 'delete_playlist', args: { id: 99 } });
     });
 
 });

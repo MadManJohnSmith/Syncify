@@ -150,6 +150,16 @@ impl IncrementalEnrichmentService {
         }
     }
 
+    /// Create a service backed by the persistent MusicBrainz cache.
+    pub fn with_db(db: crate::db::DbPool) -> Self {
+        Self {
+            mb_client: MusicBrainzClient::with_db(db),
+            cache: Arc::new(RwLock::new(EnrichmentMemoryCache::default())),
+            cancellation_token: Arc::new(AtomicBool::new(false)),
+            active_job: Arc::new(RwLock::new(None)),
+        }
+    }
+
     /// Clear all in-memory caches
     #[allow(dead_code)] // Cubierta por `tests/enrichment_incremental_test.rs`.
     pub fn clear_cache(&self) {

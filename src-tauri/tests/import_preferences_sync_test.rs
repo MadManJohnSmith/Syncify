@@ -1,3 +1,17 @@
+//! Import preferences per service (R2 / C-08).
+//!
+//! **R2 (docs/HANDOFF-2026-10-11.md:29-30)** — el comportamiento cambió a
+//! propósito con la migración `src-tauri/migrations/0092_import_preferences_defaults.sql`:
+//! las aserciones de `test_import_preferences_persistence_and_defaults` que exigían
+//! `!favorite_albums` y `!favorite_artists` describían los defaults **previos** a C-08.
+//! Se actualizan al contrato de C-08 (activos: favoritos, álbumes, artistas,
+//! playlists; desactivados: compras, historial, apariciones — ver
+//! `docs/Errores-Pruebas-2026-10-08.md:171-172`).
+//!
+//! El caso explícito de fila **anterior** a 0092, y de fila nueva, lo cubre
+//! `test_0092_defaults_apply_to_new_rows_and_preserve_existing_user_rows` de este
+//! mismo fichero. La comprobación equivalente a nivel de semilla de 0008 está en
+//! `src-tauri/tests/service_sync_settings_migration_test.rs::new_services_sync_albums_and_artists_by_default_without_resetting_users`.
 use sqlx::sqlite::SqlitePoolOptions;
 use syncify_tauri_lib::commands::{
     perform_get_service_import_preferences, perform_sync_service,
@@ -33,8 +47,9 @@ async fn test_import_preferences_persistence_and_defaults() {
 
     assert_eq!(default_prefs.service_name, "qobuz");
     assert!(default_prefs.favorite_tracks);
-    assert!(!default_prefs.favorite_albums);
-    assert!(!default_prefs.favorite_artists);
+    // C-08: álbumes y artistas pasan a activos por defecto (migración 0092).
+    assert!(default_prefs.favorite_albums);
+    assert!(default_prefs.favorite_artists);
     assert!(default_prefs.playlists);
     assert!(!default_prefs.purchases);
     assert!(!default_prefs.library_history);
@@ -75,6 +90,125 @@ async fn test_import_preferences_persistence_and_defaults() {
     assert_eq!(fetched.favorite_artists, true);
     assert_eq!(fetched.playlists, false);
     assert_eq!(fetched.include_appearances, true);
+}
+
+/// C-08, contrato completo de la migración `0092_import_preferences_defaults.sql`:
+///
+/// 1. Una fila creada DESPUÉS de 0092 recibe el alcance por defecto nuevo
+///    (`sync_albums=1`, `sync_favorite_artists=1`).
+/// 2. Una fila ANTERIOR a 0092 que un usuario sí configuró (tiene `last_synced`)
+///    conserva sus valores (`false`): la migración reconstruye la tabla y solo
+///    reescribe las filas cuyo `last_synced` es NULL.
+#[tokio::test]
+async fn test_0092_defaults_apply_to_new_rows_and_preserve_existing_user_rows() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("Failed to connect to in-memory DB");
+
+    // Apply migrations up to 0091 only: state BEFORE 0092 existed.
+    let migrator = sqlx::migrate!("./migrations");
+    let mut pre_0092_migrations = Vec::new();
+    for m in migrator.migrations.iter() {
+        if m.version <= 91 {
+            pre_0092_migrations.push(m.clone());
+        }
+    }
+
+    let partial_migrator = sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(pre_0092_migrations),
+        ignore_missing: false,
+        locking: true,
+        no_tx: false,
+    };
+    partial_migrator
+        .run(&pool)
+        .await
+        .expect("Failed to apply migrations up to 0091");
+
+    // A row that existed BEFORE 0092 and was actually used by a user:
+    // it chose not to import albums nor artists, and it did sync at least once.
+    sqlx::query(
+        "INSERT INTO service_sync_settings
+           (service_name, sync_favorites, sync_albums, sync_favorite_artists,
+            sync_playlists, sync_purchases, sync_library_history,
+            sync_include_appearances, incremental_sync, last_synced)
+         VALUES ('pre0092_service', 1, 0, 0, 1, 0, 0, 0, 1, '2026-10-01 12:00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to insert pre-0092 row");
+
+    // A pre-0092 row nobody ever configured or synced (like the 0008 seeds).
+    sqlx::query(
+        "INSERT INTO service_sync_settings
+           (service_name, sync_favorites, sync_albums, sync_favorite_artists,
+            sync_playlists, sync_purchases, sync_library_history,
+            sync_include_appearances, incremental_sync, last_synced)
+         VALUES ('pre0092_untouched', 1, 0, 0, 1, 0, 0, 0, 1, NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to insert untouched pre-0092 row");
+
+    // Sanity check: before 0092 the old defaults really were off.
+    let pre_0092 = perform_get_service_import_preferences(&pool, "pre0092_service")
+        .await
+        .expect("Reading pre-0092 row must succeed");
+    assert!(!pre_0092.favorite_albums);
+    assert!(!pre_0092.favorite_artists);
+
+    // Now apply 0092 (and anything after it).
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to apply migration 0092");
+
+    // 1. Existing (pre-0092, user-configured) row keeps its values: no reset.
+    let after_0092 = perform_get_service_import_preferences(&pool, "pre0092_service")
+        .await
+        .expect("Reading pre-0092 row after 0092 must succeed");
+    assert!(
+        !after_0092.favorite_albums,
+        "pre-0092 row with last_synced must keep favorite_albums=false"
+    );
+    assert!(
+        !after_0092.favorite_artists,
+        "pre-0092 row with last_synced must keep favorite_artists=false"
+    );
+
+    // 2. A pre-0092 row nobody ever synced receives the new defaults (C-08).
+    let untouched = perform_get_service_import_preferences(&pool, "pre0092_untouched")
+        .await
+        .expect("Reading untouched pre-0092 row must succeed");
+    assert!(
+        untouched.favorite_albums,
+        "pre-0092 row with last_synced NULL must get favorite_albums=true (C-08)"
+    );
+    assert!(untouched.favorite_artists);
+
+    // 3. A genuinely NEW row (created after 0092) gets the C-08 defaults.
+    sqlx::query("INSERT INTO service_sync_settings (service_name) VALUES ('post0092_service')")
+        .execute(&pool)
+        .await
+        .expect("Failed to insert post-0092 row");
+    let post_0092 = perform_get_service_import_preferences(&pool, "post0092_service")
+        .await
+        .expect("Reading post-0092 row must succeed");
+    assert!(
+        post_0092.favorite_albums,
+        "new row must default favorite_albums=true (C-08)"
+    );
+    assert!(
+        post_0092.favorite_artists,
+        "new row must default favorite_artists=true (C-08)"
+    );
+    assert!(post_0092.favorite_tracks);
+    assert!(post_0092.playlists);
+    assert!(!post_0092.purchases);
+    assert!(!post_0092.library_history);
+    assert!(!post_0092.include_appearances);
 }
 
 #[tokio::test]

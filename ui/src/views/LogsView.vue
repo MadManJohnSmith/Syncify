@@ -132,6 +132,7 @@
           <option value="musicbrainz">MusicBrainz</option>
           <option value="lastfm">Last.fm</option>
           <option value="downloads">Downloads</option>
+          <option value="lyrics">Lyrics</option>
           <option value="enrichment">Enrichment</option>
           <option value="worker">Worker</option>
           <option value="database">Database</option>

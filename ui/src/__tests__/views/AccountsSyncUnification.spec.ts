@@ -442,8 +442,11 @@ describe('S126A Accounts & Sync Unification Suite', () => {
     const updatedSpotifyCard = wrapper.findAll('.service-card').find(c => c.text().includes('Spotify'))
     expect(updatedSpotifyCard).toBeDefined()
     expect(updatedSpotifyCard!.text()).toContain('needs reauthentication')
-    expect(updatedSpotifyCard!.text()).toContain('RequiresAuth: Qobuz user authentication required (401)')
     expect(updatedSpotifyCard!.text()).toContain('Reconnect Required')
+    // LAST_AUTH_ERROR must NOT be echoed: the raw provider string can carry
+    // credentials/cookies, so the UI shows a safe classification instead.
+    expect(updatedSpotifyCard!.text()).not.toContain('RequiresAuth: Qobuz user authentication required (401)')
+    expect(updatedSpotifyCard!.text()).not.toContain('RequiresAuth')
     const reconnectBtn = updatedSpotifyCard!.findAll('button').find(b => b.text().includes('Reconnect'))
     expect(reconnectBtn).toBeDefined()
   })

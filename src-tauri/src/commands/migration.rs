@@ -165,6 +165,83 @@ pub async fn get_migration_items_by_status(
 
 /// Preview a migration before starting.
 ///
+async fn prefetch_isrc_map(
+    db: &sqlx::SqlitePool,
+    tracks: &[MigrationSourceTrack],
+) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for chunk in tracks.chunks(400) {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT ts.service_track_id, t.isrc FROM tracks t JOIN track_sources ts ON ts.track_id = t.id WHERE t.isrc IS NOT NULL AND ts.service_track_id IN ("
+        );
+        let mut sep = qb.separated(", ");
+        for t in chunk {
+            sep.push_bind(&t.external_id);
+        }
+        qb.push(")");
+        if let Ok(rows) = qb.build_query_as::<(String, String)>().fetch_all(db).await {
+            for (sid, isrc_val) in rows {
+                map.insert(sid, isrc_val);
+            }
+        }
+    }
+    map
+}
+
+async fn prefetch_local_destination_matches(
+    db: &sqlx::SqlitePool,
+    destination_service: &str,
+    tracks: &[MigrationSourceTrack],
+) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for chunk in tracks.chunks(400) {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT ts1.service_track_id, ts2.service_track_id FROM track_sources ts1 JOIN track_sources ts2 ON ts2.track_id = ts1.track_id JOIN services s ON s.id = ts2.service_id WHERE s.name = "
+        );
+        qb.push_bind(destination_service);
+        qb.push(" AND ts1.service_track_id IN (");
+        let mut sep = qb.separated(", ");
+        for t in chunk {
+            sep.push_bind(&t.external_id);
+        }
+        qb.push(")");
+        if let Ok(rows) = qb.build_query_as::<(String, String)>().fetch_all(db).await {
+            for (src_id, dest_id) in rows {
+                map.insert(src_id, dest_id);
+            }
+        }
+    }
+    map
+}
+
+async fn prefetch_manual_matches(
+    db: &sqlx::SqlitePool,
+    destination_service: &str,
+    destination_account_id: Option<i64>,
+) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let rows: Result<Vec<(String, String)>, _> = sqlx::query_as(
+        r#"SELECT mi.source_track_id, mi.destination_track_id
+           FROM migration_items mi
+           JOIN migration_jobs mj ON mj.id = mi.job_id
+           WHERE mi.match_method = 'manual'
+             AND mi.destination_track_id IS NOT NULL
+             AND mj.destination_service = ?
+             AND mj.destination_account_id IS ?
+           ORDER BY mi.id ASC"#,
+    )
+    .bind(destination_service)
+    .bind(destination_account_id)
+    .fetch_all(db)
+    .await;
+    if let Ok(rows) = rows {
+        for (src_id, dest_id) in rows {
+            map.insert(src_id, dest_id);
+        }
+    }
+    map
+}
+
 /// The counts are real: every track the job would process (the same
 /// `fetch_migration_source_tracks` selection start_migration uses) is matched
 /// against the destination service with the engine's ISRC/metadata search —
@@ -211,29 +288,30 @@ pub async fn preview_migration(
     )
     .await?;
 
+    let isrc_map = prefetch_isrc_map(&state.db, &tracks).await;
+    let local_dest_matches =
+        prefetch_local_destination_matches(&state.db, &destination_service, &tracks).await;
+    let manual_matches =
+        prefetch_manual_matches(&state.db, &destination_service, effective_destination).await;
+
     let mut matched_tracks = 0i64;
     // Per-playlist aggregation: (external id, real name, track_count, matched_count)
     let mut playlist_stats: Vec<(String, String, i64, i64)> = Vec::new();
 
     for track in &tracks {
-        let isrc: Option<(String,)> = sqlx::query_as(
-            "SELECT t.isrc FROM tracks t
-             JOIN track_sources ts ON ts.track_id = t.id
-             WHERE ts.service_track_id = ? AND t.isrc IS NOT NULL LIMIT 1",
-        )
-        .bind(&track.external_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-
-        let (match_confidence, _method, dest_track_id, _error) = clients
-            .search_match(
-                isrc.as_ref().map(|(value,)| value.as_str()),
-                &track.title,
-                &track.artist,
-            )
-            .await;
+        let (match_confidence, _method, dest_track_id, _error) =
+            if let Some(dest_id) = manual_matches.get(&track.external_id) {
+                (1.0, "manual", Some(dest_id.clone()), None)
+            } else if let Some(dest_id) = local_dest_matches.get(&track.external_id) {
+                (1.0, "isrc", Some(dest_id.clone()), None)
+            } else {
+                let isrc = isrc_map.get(&track.external_id).map(|s| s.as_str());
+                let res = clients
+                    .search_match(isrc, &track.title, &track.artist)
+                    .await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                res
+            };
         let is_match = match_confidence >= options.match_threshold && dest_track_id.is_some();
         if is_match {
             matched_tracks += 1;
@@ -256,10 +334,6 @@ pub async fn preview_migration(
                 )),
             }
         }
-
-        // Same pacing as start_migration to stay within the destination's
-        // rate limits while matching.
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
     let total_tracks = tracks.len() as i64;
@@ -1123,6 +1197,7 @@ impl DestinationClients {
 /// previous migration job toward the exact destination account. Legacy NULL
 /// jobs only match a NULL destination; a concrete account must not inherit
 /// an unscoped choice made by a different user.
+#[allow(dead_code)]
 pub async fn find_manual_match(
     db: &sqlx::SqlitePool,
     source_track_id: &str,
@@ -1407,22 +1482,42 @@ pub async fn start_migration<R: tauri::Runtime>(
         ),
     );
 
-    // Insert migration items up front (status 'pending') and keep each row's id
-    // so the per-item result update addresses exactly that row (BD-7).
+    // Insert migration items up front (status 'pending') inside a transaction for high throughput
     let mut item_ids: Vec<Option<i64>> = Vec::with_capacity(tracks.len());
-    for track in &tracks {
-        let item_id = match insert_migration_item(&state.db, &job_id, track).await {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to insert migration item for {}: {}",
-                    track.external_id,
-                    e
-                );
-                None
-            }
-        };
-        item_ids.push(item_id);
+    {
+        let mut tx = state.db.begin().await.ok();
+        for track in &tracks {
+            let item_id = if let Some(ref mut transaction) = tx {
+                sqlx::query_scalar(
+                    r#"INSERT INTO migration_items (job_id, source_track_id, source_track_title,
+                                                  source_track_artist, source_track_album,
+                                                  source_playlist_id, source_playlist_name,
+                                                  status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                       RETURNING id"#,
+                )
+                .bind(&job_id)
+                .bind(&track.external_id)
+                .bind(&track.title)
+                .bind(&track.artist)
+                .bind(&track.album)
+                .bind(&track.playlist_id)
+                .bind(&track.playlist_name)
+                .fetch_optional(&mut **transaction)
+                .await
+                .ok()
+                .flatten()
+            } else {
+                insert_migration_item(&state.db, &job_id, track)
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            item_ids.push(item_id);
+        }
+        if let Some(transaction) = tx {
+            let _ = transaction.commit().await;
+        }
     }
 
     // Destination clients for matching/transferring, built from the stored
@@ -1438,6 +1533,13 @@ pub async fn start_migration<R: tauri::Runtime>(
             destination_service
         );
     }
+
+    // Pre-load ISRCs, manual matches, and local destination matches in batch for fast lookups
+    let isrc_map = prefetch_isrc_map(&state.db, &tracks).await;
+    let local_dest_matches =
+        prefetch_local_destination_matches(&state.db, &destination_service, &tracks).await;
+    let manual_matches =
+        prefetch_manual_matches(&state.db, &destination_service, effective_destination).await;
 
     // Process tracks with real matching
     let mut completed = 0i64;
@@ -1466,30 +1568,9 @@ pub async fn start_migration<R: tauri::Runtime>(
             break;
         }
 
-        // Try to get ISRC for this track from our database
-        let isrc: Option<(String,)> = sqlx::query_as(
-            "SELECT t.isrc FROM tracks t
-             JOIN track_sources ts ON ts.track_id = t.id
-             WHERE ts.service_track_id = ? AND t.isrc IS NOT NULL LIMIT 1",
-        )
-        .bind(ext_id)
-        .fetch_optional(&state.db)
-        .await
-        .ok()
-        .flatten();
-
-        // A match the user attached by hand on a previous run of this route is
-        // applied as-is (4.2: reviewed matches are effective); the transfer
-        // still runs so the favorite really lands on the destination.
-        let manual_dest_id = find_manual_match(
-            &state.db,
-            ext_id,
-            &destination_service,
-            effective_destination,
-        )
-        .await
-        .ok()
-        .flatten();
+        let isrc = isrc_map.get(ext_id).cloned();
+        let manual_dest_id = manual_matches.get(ext_id).cloned();
+        let local_dest_id = local_dest_matches.get(ext_id).cloned();
 
         // The fourth tuple element carries the underlying API error when one
         // occurred, so failed items can record a real error_message (BD-7).
@@ -1508,9 +1589,19 @@ pub async fn start_migration<R: tauri::Runtime>(
                     Some(format!("Failed to add to favorites: {}", e)),
                 ),
             }
+        } else if let Some(dest_id) = &local_dest_id {
+            match clients.add_favorite(dest_id).await {
+                Ok(_) => (1.0, "isrc", Some(dest_id.clone()), None),
+                Err(e) => (
+                    1.0,
+                    "isrc",
+                    None,
+                    Some(format!("Failed to add to favorites: {}", e)),
+                ),
+            }
         } else {
             clients
-                .match_and_transfer(isrc.as_ref().map(|(value,)| value.as_str()), title, artist)
+                .match_and_transfer(isrc.as_deref(), title, artist)
                 .await
         };
 
@@ -1565,32 +1656,46 @@ pub async fn start_migration<R: tauri::Runtime>(
             }
         }
 
-        // Emit progress every 5 items (more frequent for real API calls)
-        if i % 5 == 0 {
-            let current_action = if status == "transferred" {
-                format!("Transferring {}", title)
-            } else {
-                "Searching for match".to_string()
-            };
-            let _ = app.emit(
-                "migration-progress",
-                build_migration_progress(
-                    started_at.elapsed().as_secs_f64(),
-                    &job_id,
-                    i as i64 + 1,
-                    total_items,
-                    format!("{} - {}", artist, title),
-                    current_action,
-                    "running",
-                    completed,
-                    failed,
-                    skipped,
-                ),
-            );
+        // Emit progress every item so the frontend gets real-time updates
+        let current_action = if status == "transferred" {
+            format!("Transferring {}", title)
+        } else {
+            "Searching for match".to_string()
+        };
+        let _ = app.emit(
+            "migration-progress",
+            build_migration_progress(
+                started_at.elapsed().as_secs_f64(),
+                &job_id,
+                i as i64 + 1,
+                total_items,
+                format!("{} - {}", artist, title),
+                current_action,
+                "running",
+                completed,
+                failed,
+                skipped,
+            ),
+        );
+
+        // Update job progress in DB periodically or on last item to reduce disk write contention
+        if i % 5 == 0 || i + 1 == tracks.len() {
+            sqlx::query("UPDATE migration_jobs SET completed_items = ?, failed_items = ?, skipped_items = ? WHERE id = ?")
+                .bind(completed)
+                .bind(failed)
+                .bind(skipped)
+                .bind(&job_id)
+                .execute(&state.db)
+                .await
+                .ok();
         }
 
-        // Small delay to avoid rate limiting
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Small delay to avoid rate limiting (lower for local catalog matches)
+        if manual_dest_id.is_none() && local_dest_id.is_none() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+        } else {
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        }
     }
 
     // `create_playlists` (migration options): when it is on, the source

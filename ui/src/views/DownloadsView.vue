@@ -96,109 +96,6 @@
       </div>
     </div>
 
-    <!-- Collapsible Queue Details Panel (Reconciliation, Telemetry, Sidecars/Artifacts) -->
-    <div v-show="showQueueDetails" class="mx-8 mb-3 space-y-2 transition-all">
-      <!-- Reconciled Queue Audit Strip -->
-      <div class="reconciliation-strip px-4 py-2 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-xs flex items-center justify-between gap-3 text-xs flex-wrap">
-        <div class="flex items-center gap-1.5 font-semibold text-text-secondary shrink-0">
-          <span class="material-symbols-outlined text-[16px] text-primary">analytics</span>
-          <span class="uppercase tracking-wider text-[10px]">Queue Reconciliation:</span>
-        </div>
-        <div class="flex items-center gap-3 flex-wrap text-text-secondary text-[11px]">
-          <span title="Total tracks requested by user / selection">Seleccionadas: <strong class="text-gray-900 dark:text-white">{{ queueStats?.submitted ?? totalItemCount }}</strong></span>
-          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Initial eligible tracks in queue">Elegibles: <strong class="text-indigo-400">{{ (queueStats?.submitted ?? totalItemCount) - (queueStats?.skipped ?? 0) - (queueStats?.deduplicated ?? 0) }}</strong></span>
-          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Excluded before queuing due to preflight filter">Excluidas Preflight: <strong class="text-amber-500">{{ (queueStats?.skipped ?? 0) + (queueStats?.deduplicated ?? 0) }}</strong></span>
-          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Tracks currently in queued state">Pendientes: <strong class="text-amber-500">{{ queueStats?.queued ?? queuedCount }}</strong></span>
-          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Tracks currently downloading concurrently">Activas: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
-          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Finished downloads in queue">Completadas: <strong class="text-success">{{ queueStats?.completed ?? completedItemsCount }}</strong></span>
-          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Failed downloads in queue">Fallidas: <strong class="text-error">{{ queueStats?.failed ?? failedItemsCount }}</strong></span>
-          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Cancelled downloads in queue">Canceladas: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
-          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Skipped tracks due to stale/missing sources">Skipped: <strong class="text-gray-500">{{ queueStats?.skipped ?? 0 }}</strong></span>
-          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Physical audio files saved on disk in downloads library">Archivos Físicos: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItemsCount }}</strong></span>
-        </div>
-      </div>
-
-      <!-- Live Telemetry & Generated Artifacts Bar -->
-      <div class="telemetry-bar px-4 py-2.5 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-xs flex items-center justify-between gap-4 flex-wrap">
-        <!-- Speed & ETA & Health -->
-        <div class="flex items-center gap-5 flex-wrap">
-          <!-- Live Speed / Throughput -->
-          <div class="flex items-center gap-2">
-            <span class="material-symbols-outlined text-[18px] text-blue-500">speed</span>
-            <div>
-              <div class="flex items-center gap-1">
-                <span class="text-[9px] font-bold text-text-secondary uppercase tracking-wider block leading-none">Throughput</span>
-                <span v-if="activeDownloads.length > 0 && !isPaused" class="px-1 py-0.2 rounded text-[8px] font-bold bg-blue-500/15 text-blue-400">LIVE</span>
-              </div>
-              <span class="text-xs font-extrabold text-gray-900 dark:text-white font-mono leading-tight">{{ formattedThroughput }}</span>
-            </div>
-          </div>
-
-          <div class="w-px h-6 bg-gray-200 dark:bg-border-dark"></div>
-
-          <!-- Estimated Time Remaining (ETA) -->
-          <div class="flex items-center gap-2">
-            <span class="material-symbols-outlined text-[18px] text-purple-400">timer</span>
-            <div>
-              <span class="text-[9px] font-bold text-text-secondary uppercase tracking-wider block leading-none">Est. Time Remaining</span>
-              <span class="text-xs font-extrabold text-gray-900 dark:text-white font-mono leading-tight">{{ formattedEta }}</span>
-            </div>
-          </div>
-
-          <div class="w-px h-6 bg-gray-200 dark:bg-border-dark"></div>
-
-          <!-- Success Rate -->
-          <div class="flex items-center gap-2">
-            <span class="material-symbols-outlined text-[18px] text-emerald-400">verified</span>
-            <div>
-              <span class="text-[9px] font-bold text-text-secondary uppercase tracking-wider block leading-none">Success Rate</span>
-              <span class="text-xs font-extrabold leading-tight" :class="successRate >= 90 ? 'text-emerald-500 dark:text-emerald-400' : (successRate >= 75 ? 'text-amber-500' : 'text-error')">
-                {{ successRate }}%
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Right: Generated Artifacts / Sidecars Counters -->
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-[10px] font-bold text-text-secondary uppercase tracking-wider mr-1">Generated Artifacts:</span>
-          
-          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Audio Tracks Generated (FLAC/MP3)">
-            <span class="material-symbols-outlined text-[14px] text-primary">audiotrack</span>
-            <span class="text-text-secondary text-[11px]">Audio</span>
-            <span class="font-bold font-mono text-primary text-[11px]">{{ artifactCounters.audio }}</span>
-          </div>
-
-          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Synced Lyrics Sidecars (.lrc)">
-            <span class="material-symbols-outlined text-[14px] text-amber-500">lyrics</span>
-            <span class="text-text-secondary text-[11px]">LRC</span>
-            <span class="font-bold font-mono text-amber-500 text-[11px]">{{ artifactCounters.lrc }}</span>
-          </div>
-
-          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Album Artwork Portadas">
-            <span class="material-symbols-outlined text-[14px] text-pink-500">image</span>
-            <span class="text-text-secondary text-[11px]">Covers</span>
-            <span class="font-bold font-mono text-pink-500 text-[11px]">{{ artifactCounters.covers }}</span>
-          </div>
-
-          <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Digital Booklets Sidecars (.pdf)">
-            <span class="material-symbols-outlined text-[14px] text-cyan-500">menu_book</span>
-            <span class="text-text-secondary text-[11px]">Booklets</span>
-            <span class="font-bold font-mono text-cyan-500 text-[11px]">{{ artifactCounters.booklets }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <!-- Downloads Control Bar: Progress, Fast Action Buttons, Tabs & Search -->
     <div class="downloads-toolbar mx-8 mb-3 p-3 rounded-2xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-xs flex flex-col gap-3 shrink-0">
       <!-- Top Row: Compact Global Progress & Frequent Operational Actions -->
@@ -284,47 +181,23 @@
               <span class="material-symbols-outlined text-[16px]">more_vert</span>
             </button>
 
-            <!-- Dropdown Menu -->
-            <div 
-              v-if="showSecondaryMenu" 
+            <!-- Dropdown Menu (DSC-06: duplicate clear actions removed) -->
+            <div
+              v-if="showSecondaryMenu"
               class="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl shadow-xl z-30 py-1 overflow-hidden"
               @click="showSecondaryMenu = false"
             >
-              <button 
-                @click="showDownloadFavoritesModal = true" 
-                :disabled="isProcessing" 
+              <button
+                @click="showDownloadFavoritesModal = true"
+                :disabled="isProcessing"
                 class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors"
               >
                 <span class="material-symbols-outlined text-[16px] text-red-500">favorite</span>
                 Download Favorites
               </button>
-              <button 
-                @click="clearCompleted" 
-                :disabled="isProcessing || completedItemsCount === 0" 
-                class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors disabled:opacity-50"
-              >
-                <span class="material-symbols-outlined text-[16px] text-gray-400">delete_sweep</span>
-                Clear Completed
-              </button>
-              <button 
-                @click="clearFailed" 
-                :disabled="isProcessing || failedItemsCount === 0" 
-                class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-error hover:bg-error/10 transition-colors disabled:opacity-50"
-              >
-                <span class="material-symbols-outlined text-[16px]">delete</span>
-                Clear Failed
-              </button>
-              <button
-                @click="clearHistory"
-                :disabled="isProcessing"
-                class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors disabled:opacity-50"
-              >
-                <span class="material-symbols-outlined text-[16px] text-gray-400">history</span>
-                Clear History
-              </button>
               <div class="h-px bg-gray-200 dark:bg-border-dark my-1"></div>
-              <button 
-                @click="showSettingsPanel = true" 
+              <button
+                @click="showSettingsPanel = true"
                 class="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors"
               >
                 <span class="material-symbols-outlined text-[16px] text-primary">settings</span>
@@ -379,8 +252,109 @@
       </div>
     </div>
 
-    <!-- Scrollable Content Area -->
+    <!-- Scrollable Content Area (DSC-01: unifies scroll so details panel does not push downloads offscreen) -->
     <div class="flex-1 overflow-y-auto custom-scrollbar px-8 pb-8 space-y-6">
+
+      <!-- Collapsible Queue Details Panel (Reconciliation, Telemetry, Sidecars/Artifacts) -->
+      <div v-show="showQueueDetails" class="space-y-2 transition-all">
+        <!-- Reconciled Queue Audit Strip -->
+        <div class="reconciliation-strip px-4 py-2 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-xs flex items-center justify-between gap-3 text-xs flex-wrap">
+          <div class="flex items-center gap-1.5 font-semibold text-text-secondary shrink-0">
+            <span class="material-symbols-outlined text-[16px] text-primary">analytics</span>
+            <span class="uppercase tracking-wider text-[10px]">Queue Reconciliation:</span>
+          </div>
+          <div class="flex items-center gap-3 flex-wrap text-text-secondary text-[11px]">
+            <span title="Total tracks requested by user / selection">Seleccionadas: <strong class="text-gray-900 dark:text-white">{{ queueStats?.submitted ?? totalItemCount }}</strong></span>
+            <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+            <span title="Initial eligible tracks in queue">Elegibles: <strong class="text-indigo-400">{{ queueStats?.initial_eligible_total ?? (queueStats?.submitted ?? totalItemCount) }}</strong></span>
+            <span v-if="(queueStats?.skipped ?? 0) > 0" class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+            <span v-if="(queueStats?.skipped ?? 0) > 0" title="Tracks with unresolvable or missing source">Fuentes no disp.: <strong class="text-amber-500">{{ queueStats?.skipped }}</strong></span>
+            <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+            <span title="Tracks currently in queued state">Pendientes: <strong class="text-amber-500">{{ queueStats?.queued ?? queuedCount }}</strong></span>
+            <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+            <span title="Tracks currently downloading concurrently">Activas: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
+            <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+            <span title="Finished downloads in queue">Completadas: <strong class="text-success">{{ queueStats?.completed ?? completedItemsCount }}</strong></span>
+            <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+            <span title="Failed downloads in queue">Fallidas: <strong class="text-error">{{ queueStats?.failed ?? failedItemsCount }}</strong></span>
+            <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+            <span title="Cancelled downloads in queue">Canceladas: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
+            <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+            <span title="Physical audio files saved on disk in downloads library">Archivos Físicos: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItemsCount }}</strong></span>
+          </div>
+        </div>
+
+        <!-- Live Telemetry & Generated Artifacts Bar -->
+        <div class="telemetry-bar px-4 py-2.5 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-xs flex items-center justify-between gap-4 flex-wrap">
+          <!-- Speed & ETA & Health -->
+          <div class="flex items-center gap-5 flex-wrap">
+            <!-- Live Speed / Throughput -->
+            <div class="flex items-center gap-2">
+              <span class="material-symbols-outlined text-[18px] text-blue-500">speed</span>
+              <div>
+                <div class="flex items-center gap-1">
+                  <span class="text-[9px] font-bold text-text-secondary uppercase tracking-wider block leading-none">Throughput</span>
+                  <span v-if="activeDownloads.length > 0 && !isPaused" class="px-1 py-0.2 rounded text-[8px] font-bold bg-blue-500/15 text-blue-400">LIVE</span>
+                </div>
+                <span class="text-xs font-extrabold text-gray-900 dark:text-white font-mono leading-tight">{{ formattedThroughput }}</span>
+              </div>
+            </div>
+
+            <div class="w-px h-6 bg-gray-200 dark:bg-border-dark"></div>
+
+            <!-- Estimated Time Remaining (ETA) -->
+            <div class="flex items-center gap-2">
+              <span class="material-symbols-outlined text-[18px] text-purple-400">timer</span>
+              <div>
+                <span class="text-[9px] font-bold text-text-secondary uppercase tracking-wider block leading-none">Est. Time Remaining</span>
+                <span class="text-xs font-extrabold text-gray-900 dark:text-white font-mono leading-tight">{{ formattedEta }}</span>
+              </div>
+            </div>
+
+            <div class="w-px h-6 bg-gray-200 dark:bg-border-dark"></div>
+
+            <!-- Success Rate -->
+            <div class="flex items-center gap-2">
+              <span class="material-symbols-outlined text-[18px] text-emerald-400">verified</span>
+              <div>
+                <span class="text-[9px] font-bold text-text-secondary uppercase tracking-wider block leading-none">Success Rate</span>
+                <span class="text-xs font-extrabold leading-tight" :class="successRate >= 90 ? 'text-emerald-500 dark:text-emerald-400' : (successRate >= 75 ? 'text-amber-500' : 'text-error')">
+                  {{ successRate }}%
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Generated Artifacts / Sidecars Counters -->
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-[10px] font-bold text-text-secondary uppercase tracking-wider mr-1">Generated Artifacts:</span>
+
+            <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Audio Tracks Generated (FLAC/MP3)">
+              <span class="material-symbols-outlined text-[14px] text-primary">audiotrack</span>
+              <span class="text-text-secondary text-[11px]">Audio</span>
+              <span class="font-bold font-mono text-primary text-[11px]">{{ artifactCounters.audio }}</span>
+            </div>
+
+            <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Synced Lyrics Sidecars (.lrc)">
+              <span class="material-symbols-outlined text-[14px] text-amber-500">lyrics</span>
+              <span class="text-text-secondary text-[11px]">LRC</span>
+              <span class="font-bold font-mono text-amber-500 text-[11px]">{{ artifactCounters.lrc }}</span>
+            </div>
+
+            <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Album Artwork Portadas">
+              <span class="material-symbols-outlined text-[14px] text-pink-500">image</span>
+              <span class="text-text-secondary text-[11px]">Covers</span>
+              <span class="font-bold font-mono text-pink-500 text-[11px]">{{ artifactCounters.covers }}</span>
+            </div>
+
+            <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Digital Booklets Sidecars (.pdf)">
+              <span class="material-symbols-outlined text-[14px] text-cyan-500">menu_book</span>
+              <span class="text-text-secondary text-[11px]">Booklets</span>
+              <span class="font-bold font-mono text-cyan-500 text-[11px]">{{ artifactCounters.booklets }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- Active Downloads Section -->
       <div v-if="(viewFilter === 'all' || viewFilter === 'active') && (filteredActiveDownloads.length > 0 || !searchQuery)" class="active-downloads">
@@ -1015,37 +989,37 @@
         </div>
       </div>
 
-    </div>
+      <!-- Statistics Card (collapsible summary inside scroll area) -->
+      <div v-if="showStats" class="stats-card pt-2">
+        <div class="flex items-center justify-between p-3.5 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm">
+          <div class="flex items-center gap-6">
+            <div class="text-center">
+              <p class="text-lg font-bold text-gray-900 dark:text-white">{{ queueStats?.total || rawQueueItems.length }}</p>
+              <p class="text-[10px] text-text-secondary">Total Queue</p>
+            </div>
+            <div class="w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
+            <div class="text-center">
+              <p class="text-lg font-bold text-primary">{{ auditReport?.source_locked_count || queueStats?.queued || 0 }}</p>
+              <p class="text-[10px] text-text-secondary">Source Locked</p>
+            </div>
+            <div class="w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
+            <div class="text-center">
+              <p class="text-lg font-bold text-amber-500">{{ auditReport?.stale_source_count || 0 }}</p>
+              <p class="text-[10px] text-text-secondary">Stale / 404</p>
+            </div>
+            <div class="w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
+            <div class="text-center">
+              <p class="text-lg font-bold text-success">{{ queueStats?.total ? ((queueStats.completed / queueStats.total) * 100).toFixed(1) : '100.0' }}%</p>
+              <p class="text-[10px] text-text-secondary">Success Rate</p>
+            </div>
+          </div>
 
-    <!-- Statistics Card (collapsible footer summary) -->
-    <div v-if="showStats" class="stats-card mx-8 mb-4 shrink-0">
-      <div class="flex items-center justify-between p-3.5 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm">
-        <div class="flex items-center gap-6">
-          <div class="text-center">
-            <p class="text-lg font-bold text-gray-900 dark:text-white">{{ queueStats?.total || rawQueueItems.length }}</p>
-            <p class="text-[10px] text-text-secondary">Total Queue</p>
-          </div>
-          <div class="w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
-          <div class="text-center">
-            <p class="text-lg font-bold text-primary">{{ auditReport?.source_locked_count || queueStats?.queued || 0 }}</p>
-            <p class="text-[10px] text-text-secondary">Source Locked</p>
-          </div>
-          <div class="w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
-          <div class="text-center">
-            <p class="text-lg font-bold text-amber-500">{{ auditReport?.stale_source_count || 0 }}</p>
-            <p class="text-[10px] text-text-secondary">Stale / 404</p>
-          </div>
-          <div class="w-px h-8 bg-gray-200 dark:bg-border-dark"></div>
-          <div class="text-center">
-            <p class="text-lg font-bold text-success">{{ queueStats?.total ? ((queueStats.completed / queueStats.total) * 100).toFixed(1) : '100.0' }}%</p>
-            <p class="text-[10px] text-text-secondary">Success Rate</p>
-          </div>
+          <button @click="showStats = false" class="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
+            <span class="material-symbols-outlined text-[18px]">close</span>
+          </button>
         </div>
-
-        <button @click="showStats = false" class="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
-          <span class="material-symbols-outlined text-[18px]">close</span>
-        </button>
       </div>
+
     </div>
 
     <!-- Download Settings Panel (Teleport) -->
@@ -1740,17 +1714,14 @@ const eligibleQueueTotal = computed(() => {
 })
 
 const overallProgress = computed(() => {
-  const denominator = eligibleQueueTotal.value
+  const denominator = totalItemCount.value || queueStats.value?.total || 0
   if (denominator === 0) return 0
   const completedPart = completedItemsCount.value * 100
-  const failedPart = failedItemsCount.value * 100
-  const skippedCount = queueStats.value?.skipped ?? 0
-  const skippedPart = skippedCount * 100
   const activePart = activeDownloads.value.reduce((acc, item) => {
     const p = item.percent !== null && item.percent !== undefined ? item.percent : (item.progress || 0)
     return acc + Math.min(100, Math.max(0, p))
   }, 0)
-  return Math.min(100, Math.max(0, (completedPart + failedPart + skippedPart + activePart) / denominator))
+  return Math.min(100, Math.max(0, (completedPart + activePart) / denominator))
 })
 
 const activeBatchProgress = computed(() => {

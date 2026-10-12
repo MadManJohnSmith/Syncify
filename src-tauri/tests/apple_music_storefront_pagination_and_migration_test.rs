@@ -560,6 +560,315 @@ async fn import_playlists_paginates_tracks_and_registers_the_remote_identity() {
     assert_eq!(positions, vec![0, 1]);
 }
 
+#[tokio::test]
+async fn import_playlists_paginates_tracks_across_two_collection_pages() {
+    let _guard = DB_LOCK.lock().unwrap();
+    let pool = setup_test_db().await;
+    let (_service_id, account_id) = setup_apple_account(&pool).await;
+
+    let (mock_url, recorded) = spawn_mock_server(|_method, target| {
+        if target.contains("me/library/playlists?offset=0") {
+            (
+                200,
+                serde_json::json!({
+                    "data": [{
+                        "id": "pl_1",
+                        "attributes": {
+                            "name": "Road Trip",
+                            "description": { "standard": "Long drives" },
+                            "dateAdded": "2024-02-03T09:00:00Z"
+                        }
+                    }],
+                    "next": "/v1/me/library/playlists?offset=1",
+                    "meta": { "total": 2 }
+                })
+                .to_string(),
+            )
+        } else if target.contains("me/library/playlists?offset=1") {
+            (
+                200,
+                serde_json::json!({
+                    "data": [{
+                        "id": "pl_2",
+                        "attributes": {
+                            "name": "Late Set",
+                            "dateAdded": "2024-03-03T09:00:00Z"
+                        }
+                    }],
+                    "next": null,
+                    "meta": { "total": 2 }
+                })
+                .to_string(),
+            )
+        } else if target.contains("me/library/playlists/pl_1/tracks?offset=0") {
+            (
+                200,
+                serde_json::json!({
+                    "data": [song("p1", "Playlist Track One", "Artist Alpha", "ISRCPPP0001")],
+                    "next": "/v1/me/library/playlists/pl_1/tracks?offset=1"
+                })
+                .to_string(),
+            )
+        } else if target.contains("me/library/playlists/pl_1/tracks?offset=1") {
+            (
+                200,
+                serde_json::json!({
+                    "data": [song("p2", "Playlist Track Two", "Artist Beta", "ISRCPPP0002")],
+                    "next": null
+                })
+                .to_string(),
+            )
+        } else if target.contains("me/library/playlists/pl_2/tracks?offset=0") {
+            (
+                200,
+                serde_json::json!({
+                    "data": [song("q1", "Second Playlist Track", "Artist Alpha", "ISRCQQQ0001")],
+                    "next": null
+                })
+                .to_string(),
+            )
+        } else {
+            (404, r#"{"error":"unexpected"}"#.to_string())
+        }
+    })
+    .await;
+
+    let client = AppleMusicClient::new("dev".into(), "user".into()).with_base_url(mock_url);
+    let result = client
+        .import_playlists(&pool, account_id)
+        .await
+        .expect("import_playlists must succeed");
+
+    assert_eq!(result.entities, 2, "both collection pages must be visited");
+    assert_eq!(result.imported, 3, "every page of every playlist must land");
+
+    let targets: Vec<String> = recorded
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.target.clone())
+        .collect();
+
+    // 40005 forbids `include=tracks` on a collection request: the playlist
+    // collection page must be plain, and every track must come from a
+    // single-resource fetch.
+    for target in &targets {
+        assert!(
+            !target.contains("include="),
+            "no collection request may use Apple Music `include` relationships: {}",
+            target
+        );
+    }
+    for playlist in ["pl_1", "pl_2"] {
+        assert!(
+            targets.iter().any(|t| t.contains(&format!(
+                "me/library/playlists/{}/tracks?offset=0",
+                playlist
+            ))),
+            "playlist {} must be expanded through its single-resource endpoint: {:?}",
+            playlist,
+            targets
+        );
+    }
+    assert!(
+        targets
+            .iter()
+            .any(|t| t.contains("me/library/playlists/pl_1/tracks?offset=1")),
+        "tracks inside one playlist must keep paginating: {:?}",
+        targets
+    );
+
+    for playlist in ["pl_1", "pl_2"] {
+        let (track_count,): (i64,) =
+            sqlx::query_as("SELECT track_count FROM playlists WHERE service_playlist_id = ?")
+                .bind(playlist)
+                .fetch_one(&pool)
+                .await
+                .expect("playlist row");
+        let expected = if playlist == "pl_1" { 2 } else { 1 };
+        assert_eq!(
+            track_count, expected,
+            "track_count of {} must reflect the expansion",
+            playlist
+        );
+    }
+}
+
+#[tokio::test]
+async fn import_albums_expands_page_two_of_the_collection() {
+    let _guard = DB_LOCK.lock().unwrap();
+    let pool = setup_test_db().await;
+    let (_service_id, account_id) = setup_apple_account(&pool).await;
+
+    let (mock_url, recorded) = spawn_mock_server(|_method, target| {
+        if target.contains("me/library/albums?offset=0") {
+            (
+                200,
+                serde_json::json!({
+                    "data": [{
+                        "id": "album_1",
+                        "attributes": {
+                            "name": "Album One",
+                            "artistName": "Artist Alpha",
+                            "trackCount": 1,
+                            "dateAdded": "2024-01-01T00:00:00Z",
+                            "releaseDate": "2019-05-04",
+                            "upc": "00602577551234"
+                        }
+                    }],
+                    "next": "/v1/me/library/albums?offset=1",
+                    "meta": { "total": 2 }
+                })
+                .to_string(),
+            )
+        } else if target.contains("me/library/albums?offset=1") {
+            (
+                200,
+                serde_json::json!({
+                    "data": [{
+                        "id": "album_2",
+                        "attributes": {
+                            "name": "Album Two",
+                            "artistName": "Artist Beta",
+                            "trackCount": 1,
+                            "dateAdded": "2024-02-01T00:00:00Z",
+                            "releaseDate": "2020-05-04",
+                            "upc": "00602577559999"
+                        }
+                    }],
+                    "next": null,
+                    "meta": { "total": 2 }
+                })
+                .to_string(),
+            )
+        } else if target.contains("me/library/albums/album_1/tracks?offset=0") {
+            (
+                200,
+                serde_json::json!({
+                    "data": [song("a1", "Album Track One", "Artist Alpha", "ISRCAAA0001")],
+                    "next": null
+                })
+                .to_string(),
+            )
+        } else if target.contains("me/library/albums/album_2/tracks?offset=0") {
+            (
+                200,
+                serde_json::json!({
+                    "data": [song("b1", "Album Track Two", "Artist Beta", "ISRCBBB0002")],
+                    "next": null
+                })
+                .to_string(),
+            )
+        } else {
+            (404, r#"{"error":"unexpected"}"#.to_string())
+        }
+    })
+    .await;
+
+    let client = AppleMusicClient::new("dev".into(), "user".into()).with_base_url(mock_url);
+    let result = client
+        .import_albums(&pool, account_id)
+        .await
+        .expect("import_albums must succeed");
+
+    assert_eq!(result.entities, 2, "both album collection pages must land");
+    assert_eq!(result.imported, 2, "both album tracks must land");
+
+    let targets: Vec<String> = recorded
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.target.clone())
+        .collect();
+
+    for target in &targets {
+        assert!(
+            !target.contains("include="),
+            "no collection request may use Apple Music `include` relationships: {}",
+            target
+        );
+    }
+    for album in ["album_1", "album_2"] {
+        assert!(
+            targets
+                .iter()
+                .any(|t| t.contains(&format!("me/library/albums/{}/tracks?offset=0", album))),
+            "album {} must be expanded through its single-resource endpoint: {:?}",
+            album,
+            targets
+        );
+    }
+
+    let importers: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("library entries");
+    assert_eq!(importers, 2);
+
+    // The tracks of both albums must keep their album assignment.
+    let albums: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT a.title, COUNT(*) FROM tracks t JOIN albums a ON a.id = t.album_id \
+         GROUP BY a.title ORDER BY a.title",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("album assignment");
+    assert_eq!(
+        albums,
+        vec![("Album One".to_string(), 1), ("Album Two".to_string(), 1)]
+    );
+}
+
+// ============================================================
+// The 40005 regression: `include=tracks` is not a collection dialect
+// ============================================================
+
+#[tokio::test]
+async fn import_albums_rejects_40005_instead_of_retrying_it() {
+    let _guard = DB_LOCK.lock().unwrap();
+    let pool = setup_test_db().await;
+    let (_service_id, account_id) = setup_apple_account(&pool).await;
+
+    const APPLE_ERROR_40005: &str = r#"{"errors":[{"id":"ERR-40005","title":"Invalid Relationship Request","status":"40005","code":"40005","detail":"tracks relationship may only be activated with a single resource fetch"}]}"#;
+
+    let (mock_url, recorded) = spawn_mock_server(move |_method, target| {
+        if target.contains("me/library/albums") {
+            (400, APPLE_ERROR_40005.to_string())
+        } else {
+            (404, r#"{"error":"unexpected"}"#.to_string())
+        }
+    })
+    .await;
+
+    let client = AppleMusicClient::new("dev".into(), "user".into()).with_base_url(mock_url);
+    let error = client
+        .import_albums(&pool, account_id)
+        .await
+        .expect_err("Apple Music answers 40005 with a terminal status, the import must fail");
+
+    assert!(
+        error.contains("40005"),
+        "the import must surface the 40005 status, got: {}",
+        error
+    );
+
+    // A terminal status must be sent once, never retried: no retry loop may hide
+    // the real cause or hammer Apple with the same rejected request.
+    let attempts = recorded
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.target.contains("me/library/albums"))
+        .count();
+    assert_eq!(
+        attempts, 1,
+        "expected a single terminal attempt, got {}",
+        attempts
+    );
+}
+
 // ============================================================
 // Migration destination (transfer step)
 // ============================================================

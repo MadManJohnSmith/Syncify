@@ -1,8 +1,8 @@
 <template>
   <!-- Splash Screen -->
   <Transition name="fade">
-    <SplashScreen 
-      v-if="showSplash" 
+    <SplashScreen
+      v-if="showSplash"
       :error="splashError"
       :status-text="splashStatusText"
       :progress="splashProgress"
@@ -11,122 +11,29 @@
       @retry="retryInitialization"
     />
   </Transition>
-  
+
   <!-- Main App -->
-  <div class="bg-background-light dark:bg-background-dark text-white font-display overflow-hidden h-screen w-full flex">
-    <!-- Sidebar -->
-    <aside class="w-64 h-full bg-shell border-r border-border-dark flex flex-col shrink-0 z-20">
-      <nav class="flex-1 px-3 py-6 flex flex-col gap-1 overflow-y-auto">
-        <router-link 
-          to="/dashboard" 
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-elevated !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/dashboard' }">dashboard</span>
-          <span class="text-sm font-medium">Dashboard</span>
-        </router-link>
-
-        <router-link
-          to="/library"
-          data-tour="library"
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-elevated !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/library' }">library_music</span>
-          <span class="text-sm font-medium">Library</span>
-        </router-link>
-
-        <router-link 
-          to="/playlists" 
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-elevated !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/playlists' }">queue_music</span>
-          <span class="text-sm font-medium">Playlists</span>
-        </router-link>
-        
-        <router-link
-          to="/downloads"
-          data-tour="downloads"
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-elevated !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/downloads' }">download</span>
-          <span class="text-sm font-medium">Downloads</span>
-        </router-link>
-
-        <router-link 
-          to="/migration" 
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-elevated !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/migration' }">sync_alt</span>
-          <span class="text-sm font-medium">Migrate</span>
-        </router-link>
-
-        <router-link
-          to="/accounts"
-          data-tour="accounts"
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-elevated !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/accounts' }">manage_accounts</span>
-          <span class="text-sm font-medium">Accounts</span>
-        </router-link>
-
-        <router-link 
-          to="/metadata" 
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-elevated !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/metadata' }">edit_note</span>
-          <span class="text-sm font-medium">Metadata</span>
-        </router-link>
-
-        <router-link 
-          to="/lyrics" 
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-elevated !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/lyrics' }">lyrics</span>
-          <span class="text-sm font-medium">Lyrics</span>
-        </router-link>
-
-        <div class="mt-auto"></div>
-        <div class="my-2 border-t border-border-dark opacity-50"></div>
-
-        <router-link 
-          to="/logs" 
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-elevated !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/logs' }">terminal</span>
-          <span class="text-sm font-medium">Logs</span>
-        </router-link>
-
-        <router-link
-          to="/settings"
-          data-tour="settings"
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
-          active-class="bg-elevated !text-white"
-        >
-          <span class="material-symbols-outlined group-hover:text-primary transition-colors" :class="{ 'fill-1 text-primary': $route.path === '/settings' }">settings</span>
-          <span class="text-sm font-medium">Settings</span>
-        </router-link>
-      </nav>
-    </aside>
-
-    <!-- Main Content -->
-    <main class="flex-1 flex flex-col h-full overflow-hidden relative">
+  <div class="bg-background-light dark:bg-background-dark text-white font-display overflow-hidden h-screen w-full flex flex-col">
       <!-- Header -->
-      <header class="h-16 w-full bg-shell border-b border-border-dark flex items-center justify-between px-6 shrink-0 z-30 relative select-none" data-tauri-drag-region>
-        <div class="flex items-center gap-3">
+      <header class="h-16 w-full bg-shell border-b border-border-dark flex items-center justify-between px-4 md:px-6 shrink-0 z-30 relative select-none" data-tauri-drag-region>
+        <div class="flex items-center gap-2 md:gap-3">
+          <!-- PL-01: hamburguesa, único acceso al menú lateral -->
+          <button
+            @click="toggleSidebarCollapsed"
+            data-testid="nav-drawer-toggle"
+            :aria-label="sidebarOverlay ? (sidebarOpenOnMobile ? 'Cerrar menú' : 'Abrir menú') : (sidebarCollapsed ? 'Expandir menú' : 'Colapsar menú')"
+            :aria-expanded="sidebarOverlay ? sidebarOpenOnMobile : !sidebarCollapsed"
+            aria-controls="app-nav-drawer"
+            class="p-2 -ml-1 rounded-lg hover:bg-surface-dark transition-colors text-text-secondary hover:text-white"
+          >
+            <span class="material-symbols-outlined">menu</span>
+          </button>
           <div class="w-8 h-8 bg-gradient-to-br from-primary to-purple-600 rounded-lg flex items-center justify-center shadow-lg shadow-primary/20">
             <span class="material-symbols-outlined text-white text-xl">all_inclusive</span>
           </div>
           <span class="text-lg font-bold tracking-tight text-white">Syncify</span>
         </div>
-        
+
         <div class="flex items-center gap-3">
           <!-- Search Button: abre el modal de búsqueda (Ctrl+F / Ctrl+K) -->
           <button
@@ -138,101 +45,11 @@
             <span class="text-xs hidden md:inline">Search...</span>
             <kbd class="hidden md:inline px-1.5 py-0.5 bg-surface-dark rounded text-xs text-gray-500">⌘F</kbd>
           </button>
-          
-          <!-- Status Indicator with Dropdown -->
-          <div class="relative">
-            <div 
-              @click="showTasksDropdown = !showTasksDropdown"
-              class="status-indicator flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-dark/50 border border-border-dark/50 hover:bg-surface-dark transition-colors cursor-pointer group"
-            >
-              <span v-if="hasActiveTasks" class="relative flex h-2 w-2">
-                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
-                <span class="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
-              </span>
-              <span v-else class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-              <span class="text-xs font-medium text-text-secondary group-hover:text-white max-w-24 truncate">{{ taskStatusText }}</span>
-              <span v-if="hasActiveTasks" class="material-symbols-outlined text-primary text-sm material-symbols-filled">bolt</span>
-              <span v-else class="material-symbols-outlined text-green-500 text-sm">check_circle</span>
-            </div>
-            
-            <!-- Tasks Dropdown -->
-            <Transition name="slide-down">
-              <div 
-                v-if="showTasksDropdown" 
-                class="tasks-dropdown absolute top-full right-0 mt-2 w-80 bg-gray-900 border border-gray-700 rounded-xl shadow-xl overflow-hidden z-50"
-              >
-                <div class="p-3 border-b border-gray-700 flex items-center justify-between">
-                  <span class="font-medium text-white text-sm">Active Tasks</span>
-                  <span v-if="hasActiveTasks" class="text-xs text-gray-400">
-                    {{ Math.round(gpProgress) }}% overall<template v-if="gpEta"> · ~{{ gpEta }} left</template>
-                  </span>
-                </div>
-                
-                <div v-if="activeTasks.length > 0" class="max-h-80 overflow-y-auto">
-                  <div 
-                    v-for="task in activeTasks" 
-                    :key="task.id"
-                    class="p-3 border-b border-gray-800 last:border-0 hover:bg-gray-800/50 transition-colors"
-                  >
-                    <div class="flex items-center justify-between mb-1">
-                      <div class="flex items-center gap-1.5 truncate flex-1">
-                        <span class="text-sm font-medium text-white truncate">{{ task.name }}</span>
-                        <span v-if="task.phase" class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-primary/20 text-primary uppercase shrink-0">
-                          {{ task.phase }}
-                        </span>
-                      </div>
-                      <span :class="[
-                        'text-xs ml-2 shrink-0 font-medium',
-                        task.status === 'requires_auth' ? 'text-red-400 font-semibold' : 'text-gray-400'
-                      ]">
-                        {{ formatProgress(task) }}
-                      </span>
-                    </div>
-                    
-                    <div v-if="task.description" class="text-xs text-gray-400 truncate mb-1.5">{{ task.description }}</div>
 
-                    <div v-if="task.importedCount !== undefined || task.favoriteCount !== undefined" class="flex items-center gap-2 text-[11px] text-gray-400 mb-2">
-                      <span v-if="task.importedCount !== undefined" class="flex items-center gap-0.5">
-                        <span class="material-symbols-outlined text-[13px] text-primary">download</span>
-                        {{ task.importedCount }} imported
-                      </span>
-                      <span v-if="task.favoriteCount !== undefined" class="flex items-center gap-0.5">
-                        <span class="material-symbols-outlined text-[13px] text-red-400">favorite</span>
-                        {{ task.favoriteCount }} favorites
-                      </span>
-                    </div>
 
-                    <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                      <div 
-                        :class="[
-                          'h-full rounded-full transition-all duration-300',
-                          task.status === 'requires_auth' ? 'bg-red-500' :
-                          task.status === 'failed' ? 'bg-amber-500' : 'bg-primary'
-                        ]"
-                        :style="{ width: (task.status === 'requires_auth' || task.status === 'failed' ? 100 : task.progress) + '%' }"
-                      ></div>
-                    </div>
-
-                    <div v-if="task.status === 'requires_auth'" class="mt-2 flex items-center justify-between">
-                      <span class="text-[11px] text-red-400">⚠️ Session expired</span>
-                      <router-link to="/accounts" class="px-2 py-0.5 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded text-xs font-medium transition-colors">
-                        Reconnect
-                      </router-link>
-                    </div>
-                  </div>
-                </div>
-                
-                <div v-else class="p-4 text-center text-gray-400 text-sm">
-                  <span class="material-symbols-outlined text-2xl text-gray-600 block mb-2">check_circle</span>
-                  No active tasks
-                </div>
-              </div>
-            </Transition>
-          </div>
-          
           <!-- Single Notifications Bell -->
           <div class="relative notification-container">
-            <button 
+            <button
               @click="showNotifications = !showNotifications"
               class="notification-button notification-bell-btn relative p-2 rounded-lg hover:bg-surface-dark transition-colors text-text-secondary hover:text-white"
               title="Notifications"
@@ -245,15 +62,15 @@
 
             <!-- Notifications History Dropdown Panel -->
             <Transition name="dropdown">
-              <div 
-                v-if="showNotifications" 
+              <div
+                v-if="showNotifications"
                 class="notification-dropdown absolute top-full right-0 mt-2 w-96 bg-white dark:bg-surface-dark rounded-xl shadow-2xl border border-gray-200 dark:border-border-dark overflow-hidden z-50"
               >
                 <!-- Header -->
                 <div class="px-4 py-3 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
                   <h4 class="font-semibold text-gray-900 dark:text-white text-sm">Notifications</h4>
                   <div class="flex gap-1">
-                    <button 
+                    <button
                       :class="[
                         'px-2.5 py-1 rounded-lg text-xs font-medium transition-colors',
                         historyFilter === 'all' ? 'bg-primary/10 text-primary' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-surface-highlight'
@@ -262,7 +79,7 @@
                     >
                       All
                     </button>
-                    <button 
+                    <button
                       :class="[
                         'px-2.5 py-1 rounded-lg text-xs font-medium transition-colors',
                         historyFilter === 'unread' ? 'bg-primary/10 text-primary' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-surface-highlight'
@@ -273,22 +90,22 @@
                     </button>
                   </div>
                 </div>
-                
+
                 <!-- Notifications List -->
                 <div class="max-h-80 overflow-y-auto custom-scrollbar">
                   <div v-if="filteredNotifications.length === 0" class="p-6 text-center">
                     <span class="material-symbols-outlined text-3xl text-gray-300 dark:text-gray-600 mb-1 block">notifications_off</span>
                     <p class="text-xs text-gray-500">No notifications</p>
                   </div>
-                  
-                  <div 
-                    v-for="notification in filteredNotifications" 
+
+                  <div
+                    v-for="notification in filteredNotifications"
                     :key="notification.id"
                     :class="[
                       'px-4 py-2.5 border-b border-gray-100 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors cursor-pointer',
                       !notification.read && 'bg-primary/5'
                     ]"
-                    @click="markAsRead(notification.id)"
+                    @click="notification.actionLabel ? runHistoryAction(notification.id) : markAsRead(notification.id)"
                   >
                     <div class="flex items-start gap-3">
                       <div :class="[
@@ -299,8 +116,8 @@
                         'bg-blue-500/20 text-blue-500'
                       ]">
                         <span class="material-symbols-outlined text-[16px]">
-                          {{ notification.type === 'success' ? 'check_circle' : 
-                             notification.type === 'error' ? 'error' : 
+                          {{ notification.type === 'success' ? 'check_circle' :
+                             notification.type === 'error' ? 'error' :
                              notification.type === 'warning' ? 'warning' : 'info' }}
                         </span>
                       </div>
@@ -313,7 +130,7 @@
                     </div>
                   </div>
                 </div>
-                
+
                 <!-- Footer -->
                 <div class="px-4 py-2.5 border-t border-gray-200 dark:border-border-dark flex items-center justify-between text-xs">
                   <button @click="clearAllHistory" class="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
@@ -326,19 +143,14 @@
               </div>
             </Transition>
           </div>
-          
-          <!-- Help Button -->
-          <button 
-            @click="showHelp = true"
-            class="p-2 rounded-lg hover:bg-surface-dark transition-colors text-text-secondary hover:text-white"
-          >
-            <span class="material-symbols-outlined">help</span>
-          </button>
         </div>
-        
-        <!-- Global Progress Bar: agregado ponderado de todas las tareas
-             activas (bytes si hay, si no por ítem), con suavizado. Sin datos
-             de peso se mantiene indeterminada (animación). -->
+
+        <!-- Barra de progreso global (G-03): es `absolute` dentro de la
+             cabecera, y la cabecera es la única caja de arriba a abajo, así que
+             `left-0 right-0` == ancho completo de la ventana. El detalle de lo
+             que se está haciendo ya NO va aquí (G-04/BP-01: fuera la píldora con
+             el nombre de la tarea dominante); vive en "Background Processes", en
+             la barra inferior (StatusBar.vue). -->
         <div class="absolute bottom-0 left-0 right-0 h-[2px] bg-surface-dark">
           <div
             v-if="gpHasActive && gpIndeterminate"
@@ -352,112 +164,223 @@
             data-testid="global-progress-bar"
           ></div>
         </div>
-
-        <!-- Resumen de la barra global: ítem actual + % total + ETA cuando
-             hay datos. Centrado sobre la zona vacía de la cabecera. -->
-        <div
-          v-if="gpHasActive"
-          class="global-progress-summary absolute bottom-1 left-1/2 -translate-x-1/2 flex items-center gap-1.5 text-[10px] font-medium text-text-secondary bg-surface-dark/70 border border-border-dark/40 rounded-full px-2.5 py-0.5 max-w-[320px] select-none"
-          data-testid="global-progress-summary"
-        >
-          <span class="material-symbols-outlined text-[12px] text-primary shrink-0" :class="{ 'animate-spin': !gpIndeterminate }">progress_activity</span>
-          <span class="truncate" :title="gpCurrent">{{ gpCurrent }}</span>
-          <span class="shrink-0 font-mono" data-testid="global-progress-percent">{{ Math.round(gpProgress) }}%</span>
-          <span v-if="gpEta" class="shrink-0 text-gray-500" data-testid="global-progress-eta">~{{ gpEta }}</span>
-        </div>
       </header>
 
-      <!-- Page Content -->
-      <div id="page-content" :class="['flex-1 overflow-hidden relative', current ? 'pb-24' : 'pb-8']">
+    <div class="flex flex-1 min-h-0 min-w-0 overflow-hidden">
+    <!-- Barra lateral clasica de escritorio (PL-01, decision del usuario 9-oct-2026).
+         Hermana flex de <main>, bajo la cabecera de ancho completo (G-03). Ya NO es
+         un drawer modal: no hay backdrop que oscurezca la app al navegar. En pantallas
+         estrechas se comporta como overlay, pero en `lg:` queda fija y siempre visible.
+         Colapsa a solo iconos (w-16) guardando la preferencia en localStorage.
+         El unico acceso para colapsar/expandir es la hamburguesa de la cabecera
+         (peticion del usuario 12-oct-2026): la franja superior con el boton de
+         colapsar se elimino, asi que la navegacion arranca arriba del todo y el
+         lateral ya no reserva esos 64px. -->
+    <aside
+      v-if="sidebarVisible"
+      id="app-nav-drawer"
+      data-testid="nav-drawer"
+      aria-label="Main navigation"
+      :class="[
+        'bg-shell border-r border-border-dark flex flex-col shrink-0 h-full',
+        'fixed lg:static top-16 bottom-0 left-0 z-[180] lg:z-auto',
+        sidebarCollapsed ? 'w-16' : 'w-64 max-w-[85vw]',
+        sidebarOverlay && 'shadow-2xl'
+      ]"
+    >
+      <nav
+        class="flex-1 overflow-y-auto overflow-x-hidden p-2 space-y-1 flex flex-col"
+        :class="sidebarCollapsed ? 'items-center' : ''"
+        aria-label="Vistas"
+      >
+        <router-link
+          to="/dashboard"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Dashboard' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/dashboard' }">dashboard</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Dashboard</span>
+        </router-link>
+
+        <router-link
+          to="/library"
+          data-tour="library"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Library' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/library' }">library_music</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Library</span>
+        </router-link>
+
+        <router-link
+          to="/playlists"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Playlists' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/playlists' }">queue_music</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Playlists</span>
+        </router-link>
+
+        <router-link
+          to="/downloads"
+          data-tour="downloads"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Downloads' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/downloads' }">download</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Downloads</span>
+        </router-link>
+
+        <router-link
+          to="/migration"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Migrate' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/migration' }">sync_alt</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Migrate</span>
+        </router-link>
+
+        <router-link
+          to="/accounts"
+          data-tour="accounts"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Accounts' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/accounts' }">manage_accounts</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Accounts</span>
+        </router-link>
+
+        <router-link
+          to="/metadata"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Metadata' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/metadata' }">edit_note</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Metadata</span>
+        </router-link>
+
+        <router-link
+          to="/lyrics"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Lyrics' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/lyrics' }">lyrics</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Lyrics</span>
+        </router-link>
+
+        <router-link
+          to="/logs"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Logs' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/logs' }">terminal</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Logs</span>
+        </router-link>
+
+        <div class="mt-auto"></div>
+        <div class="my-2 border-t border-border-dark opacity-50" :class="sidebarCollapsed ? 'w-10' : 'w-full'"></div>
+
+        <!-- UI-CORR-4 (10-oct-2026): Settings estaba en la barra inferior
+             (StatusBar), donde competía con Background Processes, Online y
+             Storage: en cuanto el mini-reproductor aparecía, el botón se
+             comprimía a solo icono. Vuelve al lateral, con texto cuando está
+             expandida (de fácil acceso, se lee) y con `title` cuando está
+             colapsada (icono + tooltip accesible, igual que el resto de
+             enlaces). Queda justo encima de "Now Playing", a la izquierda. -->
+        <router-link
+          to="/settings"
+          data-testid="nav-sidebar-settings"
+          data-tour="settings"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Settings' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/settings' }">settings</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Settings</span>
+        </router-link>
+
+        <button
+          @click="openFullscreenPlayer"
+          data-testid="nav-fullscreen-player"
+          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group text-left"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          title="Now Playing"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0">album</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium">Now Playing</span>
+        </button>
+      </nav>
+    </aside>
+    <main class="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden relative">
+
+      <!-- Page Content. CONTRATO DE SCROLL (ola 3, virtualización):
+           este NO es el elemento que hace scroll — es `overflow-hidden` a
+           propósito. Cada vista trae su propio scroller (`LibraryView.vue:519`,
+           `:685`, `:752`, `:802`; `MetadataView.vue:144`;
+           `LyricsView.vue:181`), y es ahí donde la virtualización debe
+           engancharse. Lo que este contenedor garantiza es que la vista
+           ocupe el alto disponible entre cabecera y barra inferior sin pelear
+           con el shell.
+
+           UI-CORR-1 (10-oct-2026): `pb-8` reservaba SOLO 32px, pero la barra
+           inferior creció a alto real (StatusBar.vue: `min-h-12` + `h-auto`)
+           para que el mini-reproductor cupiera: el resultado era que la barra
+           tapaba el reproductor y el final de cada vista. Ahora el reserva es
+           el alto MEDIDO de la barra, que StatusBar publica en
+           `--status-bar-h` al montar y en cada resize; `48px` es el mínimo de
+           respaldo para el primer frame y para jsdom. El `+ 8px` es el mismo
+           colchón visual de antes.
+           `#page-content` + `data-testid="view-scroll-host"` son el ancla
+           estable para calcular alturas, NO el scroller de cada vista. -->
+      <div
+        id="page-content"
+        data-testid="view-scroll-host"
+        class="flex-1 min-h-0 overflow-hidden relative"
+        style="padding-bottom: calc(var(--status-bar-h, 48px) + 8px)"
+      >
         <router-view v-slot="{ Component }">
           <transition name="fade" mode="out-in">
             <component :is="Component" />
           </transition>
         </router-view>
       </div>
-      
+
       <!-- Status Bar -->
       <StatusBar />
     </main>
-    
+    </div>
     <!-- Global Components -->
-    <NowPlayingBar />
     <ToastNotifications />
     <CommandPalette v-model="showCommandPalette" @close="showCommandPalette = false" />
     <SearchView v-if="showSearchModal" @close="closeSearchModal" />
     <KeyboardShortcuts @search="openSearchModal" @command-palette="showCommandPalette = true" />
-    <HelpPanel v-model="showHelp" @close="showHelp = false" />
-    <QuickActionsFab
-      :currentTab="currentTab"
-      @sync-all="handleSyncAll"
-      @scan-folder="handleScanFolder"
-      @scan-library="handleScanFolder"
-      @download-url="handleDownloadUrl"
-      @new-playlist="handleNewPlaylist"
-      @pause-all="handlePauseAll"
-      @retry-failed="handleRetryFailed"
-      @clear-completed="handleClearCompleted"
-      @auto-fix="handleAutoFixMetadata"
-      @fetch-metadata="handleFetchMissingMetadata"
-      @fetch-lyrics="handleFetchMissingLyrics"
-      @upgrade-lyrics="handleUpgradeLyrics"
-    />
     <OnboardingWizard
       v-if="showOnboarding"
       @complete="handleOnboardingComplete"
       @skip="handleOnboardingSkip"
     />
-
-    <!-- URL Import Modal -->
-    <div 
-      v-if="showUrlImportModal" 
-      class="fixed inset-0 bg-black/60 flex items-center justify-center z-[200] p-4"
-      @click.self="showUrlImportModal = false"
-    >
-      <div class="bg-surface-dark border border-border-dark rounded-xl p-6 w-full max-w-md shadow-2xl">
-        <div class="flex items-center justify-between mb-4">
-          <div class="flex items-center gap-2">
-            <span class="material-symbols-outlined text-primary text-2xl">link</span>
-            <h3 class="text-lg font-semibold text-white">Download from URL</h3>
-          </div>
-          <button 
-            @click="showUrlImportModal = false" 
-            class="text-text-secondary hover:text-white transition-colors"
-          >
-            <span class="material-symbols-outlined text-lg">close</span>
-          </button>
-        </div>
-        <p class="text-sm text-text-secondary mb-4">
-          Paste a track, album, or playlist link from Spotify, Tidal, Qobuz, Deezer, etc.
-        </p>
-        <input 
-          v-model="urlToImport" 
-          type="text" 
-          placeholder="https://open.spotify.com/track/... or similar" 
-          class="w-full px-3 py-2 bg-background-dark border border-border-dark rounded-lg text-white text-sm focus:outline-none focus:border-primary mb-4"
-          @keydown.enter="handleImportUrlSubmit"
-          autofocus
-        />
-        <div class="flex justify-end gap-2">
-          <button 
-            @click="showUrlImportModal = false" 
-            class="px-4 py-2 text-sm text-text-secondary hover:text-white rounded-lg transition-colors"
-          >
-            Cancel
-          </button>
-          <button 
-            @click="handleImportUrlSubmit" 
-            :disabled="!urlToImport.trim() || isImportingUrl"
-            class="px-4 py-2 text-sm bg-primary hover:bg-primary-hover disabled:opacity-50 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
-          >
-            <span v-if="isImportingUrl" class="material-symbols-outlined text-sm animate-spin">sync</span>
-            <span>{{ isImportingUrl ? 'Importing...' : 'Download' }}</span>
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
+
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
@@ -469,34 +392,30 @@ import StatusBar from './components/StatusBar.vue'
 import ToastNotifications from './components/ToastNotifications.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import KeyboardShortcuts from './components/KeyboardShortcuts.vue'
-import HelpPanel from './components/HelpPanel.vue'
-import QuickActionsFab, { type ActionCallback } from './components/QuickActionsFab.vue'
-import NowPlayingBar from './components/NowPlayingBar.vue'
 import SearchView from './views/SearchView.vue'
 import OnboardingWizard from './components/OnboardingWizard.vue'
 
 // Composables & APIs
 import { useGlobalTasks } from './composables/useGlobalTasks'
-import { useGlobalProgressBar } from './composables/useGlobalProgressBar'
 import { useToast } from './composables/useToast'
-import { useNotificationListener } from './composables/useNotificationListener'
+import { useNotificationListener, NAVIGATE_EVENT } from './composables/useNotificationListener'
 import { useLogs } from './composables/useLogs'
 import { usePlayer } from './composables/usePlayer'
 import { applyTintFromCover, resetTint } from './composables/useTint'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { TauriEvents } from './api/tauri'
 import { accountsApi } from './api/accounts'
-import { libraryApi } from './api/library'
-import { pauseDownloads, retryAllFailed, clearQueue } from './api/queue'
-import { enrichAllNeeding, enrichMetadataMusicBrainz } from './api/metadata'
-import { fetchLyrics, fetchMissingLyrics, getAllLyrics, getLyrics } from './api/lyrics'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { runHealthCheck, getDownloadSettings } from './api/settings'
+import { trayApi } from './api/tray'
 
 const route = useRoute()
+
+// `route` puede ser undefined si el componente se monta sin router (tests del
+// cascarón). Derivar el path aquí evita que la plantilla rompa al renderizar.
+const routePath = computed(() => route?.path ?? '')
 const router = useRouter()
 const toast = useToast()
-const { unreadCount, history: notificationHistory, markAsRead, markAllAsRead, clearAllHistory } = toast
+const { unreadCount, history: notificationHistory, markAsRead, markAllAsRead, clearAllHistory, runHistoryAction } = toast
 const { startListening: startNotificationListening, stopListening: stopNotificationListening } = useNotificationListener()
 const { initLogListeners } = useLogs()
 const { current } = usePlayer()
@@ -520,27 +439,32 @@ watch(
 let unlistenPythonDeps: UnlistenFn | null = null
 let unlistenTrayOpenSettings: UnlistenFn | null = null
 
-// Global tasks state
-const {
-  activeTasks,
-  hasActiveTasks,
-  activeTaskCount,
-  initEventListeners,
-  startSyncTask,
-  completeTask,
-  startScanTask
-} = useGlobalTasks()
-
-// Barra de progreso global ponderada (bytes si hay, si no por ítem),
-// suavizada y con ETA. Se destructura para que las refs se auto-desenvuelvan
-// en la plantilla.
-const {
-  hasActive: gpHasActive,
-  isIndeterminate: gpIndeterminate,
-  progress: gpProgress,
-  currentLabel: gpCurrent,
-  etaLabel: gpEta,
-} = useGlobalProgressBar()
+// BP-02: la barra de arriba es SOLO de procesos en segundo plano. El
+// composable `useGlobalProgressBar` suma TODAS las tareas (`:107-108`), y no
+// está en los ficheros de este carril; se deriva aquí el avance ponderado de
+// las tareas de fondo sin incluir descargas ni operaciones síncronas.
+// `scan` se inicia/espera en AccountsView.vue:1359-1396, y `import` también
+// se crea desde llamadas UI (`useGlobalTasks.ts:461-470`): ninguno es un
+// proceso en segundo plano del shell. Esta política de tipos coincide con la
+// del panel inferior en `StatusBar.vue`.
+const { activeTasks, initEventListeners } = useGlobalTasks()
+const BACKGROUND_TASK_TYPES = new Set(['sync', 'metadata', 'lyrics'])
+const backgroundTasks = computed(() => activeTasks.value.filter(t => BACKGROUND_TASK_TYPES.has(t.type)))
+const gpHasActive = computed(() => backgroundTasks.value.length > 0)
+const gpIndeterminate = computed(() => backgroundTasks.value.every(t => !t.total || t.total <= 0))
+const gpProgress = computed(() => {
+  const tasks = backgroundTasks.value
+  const totals = tasks.map(t => t.total ?? 0).filter(total => total > 0)
+  const fallback = totals.length ? totals.reduce((sum, n) => sum + n, 0) / totals.length : 1
+  let weighted = 0
+  let weightSum = 0
+  for (const task of tasks) {
+    const weight = (task.total ?? 0) > 0 ? task.total! : fallback
+    weighted += Math.min(100, Math.max(0, task.progress ?? 0)) * weight
+    weightSum += weight
+  }
+  return weightSum ? Math.round(weighted / weightSum) : 0
+})
 
 // Global state
 const showSplash = ref(true)
@@ -550,10 +474,84 @@ const splashProgress = ref(15)
 const showCommandPalette = ref(false)
 const showSearchModal = ref(false)
 const showNotifications = ref(false)
-const showTasksDropdown = ref(false)
-const showHelp = ref(false)
 const showOnboarding = ref(false)
 const historyFilter = ref<'all' | 'unread'>('all')
+
+// --- Barra lateral (PL-01) ------------------------------------------------
+// Durante el onboarding el sidebar debe existir: el tour busca sus objetivos con
+// `document.querySelector` sobre `[data-tour]` (`OnboardingWizard.vue:606`) y,
+// si el elemento no existe, se salta ese paso. `sidebarVisible` lo cubre.
+
+// Barra lateral clasica: siempre visible en escritorio, colapsable a iconos.
+// En pantallas estrechas se monta como overlay y empieza cerrada (sidebarOverlay),
+// asi que durante el onboarding se fuerza visible. El estado colapsado se persiste.
+const SIDEBAR_COLLAPSED_KEY = 'syncify.sidebarCollapsed.v1'
+// jsdom (vitest) no implementa matchMedia; se trata como escritorio ancho.
+const isNarrowViewport = () => {
+  try {
+    return window.matchMedia?.('(max-width: 1023px)').matches ?? false
+  } catch {
+    return false
+  }
+}
+
+const sidebarCollapsed = ref(false)
+const sidebarOverlay = ref(false)
+const sidebarOpenOnMobile = ref(false)
+
+function readCollapsedPreference(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function toggleSidebarCollapsed() {
+  if (sidebarOverlay.value) {
+    sidebarOpenOnMobile.value = !sidebarOpenOnMobile.value
+    return
+  }
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed.value))
+  } catch {
+    /* modo privado: la preferencia solo vive en memoria */
+  }
+}
+
+function syncViewportMode() {
+  const narrow = isNarrowViewport()
+  sidebarOverlay.value = narrow
+  if (narrow) {
+    sidebarCollapsed.value = false
+    sidebarOpenOnMobile.value = false
+  } else {
+    sidebarCollapsed.value = readCollapsedPreference()
+  }
+}
+
+function handleViewportResize() {
+  syncViewportMode()
+}
+
+const sidebarVisible = computed(() => {
+  if (sidebarOverlay.value) return sidebarOpenOnMobile.value || showOnboarding.value
+  return true
+})
+
+/**
+ * PL-10: el reproductor de pantalla completa es PL-09/PL-10, carril
+ * `7-reproductor`, y todavía no existe (grep `fullscreen` en `ui/src` = 0 fuera
+ * de iconos de Material). Lo que sí es de este carril es el menú lateral: que
+ * exista y llegue hasta ahí. Se emite un `CustomEvent` de `window` como punto
+ * de enganche; si el componente de la ola 7 no aparece, el enlace es inerte
+ * pero no rompe nada.
+ */
+function openFullscreenPlayer() {
+  if (sidebarOverlay.value) sidebarOpenOnMobile.value = false
+  window.dispatchEvent(new CustomEvent('syncify:open-fullscreen-player'))
+}
 
 const filteredNotifications = computed(() => {
   if (historyFilter.value === 'unread') {
@@ -562,341 +560,16 @@ const filteredNotifications = computed(() => {
   return notificationHistory.value
 })
 
-// Current tab for contextual FAB actions
-const currentTab = computed(() => {
-  const path = route?.path ? route.path.replace('/', '') : ''
-  return path || 'dashboard'
-})
-
-// Task status text for indicator
-const taskStatusText = computed(() => {
-  if (!hasActiveTasks.value) return 'Idle'
-  if (activeTaskCount.value === 1) return activeTasks.value[0]?.name || 'Running...'
-  return `${activeTaskCount.value} tasks`
-})
-
-// Format task progress
-function formatProgress(task: any): string {
-  if (task.status === 'requires_auth') {
-    return 'Auth Required'
-  }
-  if (task.status === 'failed') {
-    return 'Failed'
-  }
-  if (task.current !== undefined && task.total !== undefined && task.total > 0) {
-    return `${task.current}/${task.total}`
-  }
-  return `${task.progress}%`
+// Cerrar al pulsar fuera: notificaciones de la campana y desplegable de
+// tareas de la cabecera. La barra global solo cubre procesos en segundo
+// plano; el desplegable lista TODAS las tareas activas con su progreso.
+function onNotificationNavigate(e: Event) {
+  const destination = (e as CustomEvent<{ route?: string }>).detail?.route
+  if (destination) void router.push(destination)
 }
 
-// QuickActionsFab Handlers & URL Import State
-const showUrlImportModal = ref(false)
-const urlToImport = ref('')
-const isImportingUrl = ref(false)
-
-async function handleSyncAll(callback?: ActionCallback) {
-  const syncOperation = async () => {
-    try {
-      const accounts = await accountsApi.getAccounts()
-      const activeAccounts = accounts.filter(a => a.is_active)
-      const serviceNames = Array.from(new Set(activeAccounts.map(a => a.service_name.toLowerCase())))
-      
-      if (serviceNames.length === 0) {
-        toast.info('No active services connected. Redirecting to Accounts...')
-        if (router) {
-          await router.push('/accounts')
-        }
-        return
-      }
-
-      toast.info(`Starting sync for ${serviceNames.length} service(s)...`)
-      
-      let successCount = 0
-      let errorCount = 0
-      const errors: string[] = []
-
-      for (const service of serviceNames) {
-        const taskId = startSyncTask(service)
-        try {
-          const res = await accountsApi.syncService(service)
-          if (res.success) {
-            successCount++
-            completeTask(taskId, true, undefined, {
-              imported: res.tracksChangedUnique ?? res.importedTracksTotal ?? 0,
-              message: res.message
-            })
-          } else {
-            errorCount++
-            const err = res.errors?.[0] || 'Sync failed'
-            errors.push(`${service}: ${err}`)
-            completeTask(taskId, false, err)
-          }
-        } catch (e: any) {
-          errorCount++
-          const err = e?.message || String(e)
-          errors.push(`${service}: ${err}`)
-          completeTask(taskId, false, err)
-        }
-      }
-
-      if (errorCount > 0 && successCount === 0) {
-        const primaryError = errors.join(', ')
-        toast.error(`Sync failed: ${primaryError}`)
-        throw new Error(primaryError)
-      } else if (errorCount > 0) {
-        toast.warning(`Synced ${successCount} service(s) with ${errorCount} error(s)`)
-      } else {
-        toast.success(`Successfully synced ${successCount} service(s)`)
-      }
-    } catch (err: any) {
-      if (!err.message?.includes('No active services')) {
-        toast.error(`Sync failed: ${err?.message || err}`)
-      }
-      throw err
-    }
-  }
-
-  const promise = syncOperation()
-  if (callback) {
-    callback(promise)
-  }
-}
-
-async function handleScanFolder(callback?: ActionCallback) {
-  const scanOperation = async () => {
-    try {
-      let selectedPath: string | null = null
-      try {
-        const result = await openDialog({
-          directory: true,
-          multiple: false,
-          title: 'Select Music Folder to Scan'
-        })
-        if (typeof result === 'string') {
-          selectedPath = result
-        }
-      } catch (e) {
-        console.warn('File dialog not available or cancelled:', e)
-      }
-
-      if (!selectedPath) {
-        if (router) {
-          await router.push('/library')
-        }
-        return
-      }
-
-      toast.info(`Scanning folder: ${selectedPath}`)
-      const taskId = startScanTask(selectedPath)
-
-      const result = await libraryApi.scanLocalLibraryWithProgress(selectedPath, { recursive: true })
-      if (result.success && result.data) {
-        const count = result.data.total_files
-        completeTask(taskId, true)
-        toast.success(`Scanned ${count} files successfully`)
-      } else {
-        const err = result.error || 'Scan failed'
-        completeTask(taskId, false, err)
-        toast.error(`Scan error: ${err}`)
-        throw new Error(err)
-      }
-    } catch (err: any) {
-      toast.error(`Scan failed: ${err?.message || err}`)
-      throw err
-    }
-  }
-
-  const promise = scanOperation()
-  if (callback) {
-    callback(promise)
-  }
-}
-
-function handleDownloadUrl(callback?: ActionCallback) {
-  showUrlImportModal.value = true
-  callback?.()
-}
-
-async function handleImportUrlSubmit() {
-  const url = urlToImport.value.trim()
-  if (!url) return
-  isImportingUrl.value = true
-  try {
-    const res = await accountsApi.importFromUrl(url)
-    if (res && res.id) {
-      toast.success(`Parsed ${res.service} ${res.content_type}: ${res.id}`)
-      showUrlImportModal.value = false
-      urlToImport.value = ''
-      if (router) {
-        await router.push('/downloads')
-      }
-    } else {
-      toast.info(`Importing ${url}...`)
-      showUrlImportModal.value = false
-      urlToImport.value = ''
-      if (router) {
-        await router.push('/downloads')
-      }
-    }
-  } catch (err: any) {
-    toast.error(`Failed to import from URL: ${err?.message || err}`)
-  } finally {
-    isImportingUrl.value = false
-  }
-}
-
-async function handleNewPlaylist(callback?: ActionCallback) {
-  try {
-    if (router) {
-      await router.push({ path: '/playlists', query: { create: '1' } })
-    }
-    callback?.()
-  } catch (err) {
-    callback?.(err)
-  }
-}
-
-async function handlePauseAll(callback?: ActionCallback) {
-  try {
-    await pauseDownloads()
-    toast.info('Paused all downloads')
-    callback?.()
-  } catch (e: any) {
-    toast.error(`Failed to pause: ${e?.message || e}`)
-    callback?.(e)
-  }
-}
-
-async function handleRetryFailed(callback?: ActionCallback) {
-  try {
-    await retryAllFailed()
-    toast.info('Retrying failed downloads')
-    callback?.()
-  } catch (e: any) {
-    toast.error(`Failed to retry: ${e?.message || e}`)
-    callback?.(e)
-  }
-}
-
-async function handleClearCompleted(callback?: ActionCallback) {
-  try {
-    await clearQueue('completed')
-    toast.info('Cleared completed downloads')
-    callback?.()
-  } catch (e: any) {
-    toast.error(`Failed to clear: ${e?.message || e}`)
-    callback?.(e)
-  }
-}
-
-// ==============================================
-// Metadata / Lyrics quick actions (FAB)
-// ==============================================
-//
-// These handlers hand the operation promise to the FAB callback, which is what
-// drives its loading/success/error feedback. They must NOT also return it: Vue
-// wraps every event-handler result and would report the same rejection a second
-// time as an unhandled error, duplicating the error the FAB already shows.
-
-async function handleAutoFixMetadata(callback?: ActionCallback) {
-  const operation = async () => {
-    try {
-      toast.info('Auto-fixing metadata issues via MusicBrainz...')
-      const res = await enrichMetadataMusicBrainz()
-      toast.success(`Auto-Fix finished: ${res.enriched} of ${res.total} tracks enriched, ${res.failed} failed`)
-    } catch (e: any) {
-      toast.error(`Auto-Fix failed: ${e?.message || e}`)
-      throw e
-    }
-  }
-  const promise = operation()
-  callback?.(promise)
-}
-
-async function handleFetchMissingMetadata(callback?: ActionCallback) {
-  const operation = async () => {
-    try {
-      toast.info('Enriching tracks that are missing metadata...')
-      const res = await enrichAllNeeding()
-      toast.success(`Metadata enrichment finished: ${res.enriched} of ${res.total} tracks updated, ${res.failed} failed`)
-    } catch (e: any) {
-      toast.error(`Metadata enrichment failed: ${e?.message || e}`)
-      throw e
-    }
-  }
-  const promise = operation()
-  callback?.(promise)
-}
-
-async function handleFetchMissingLyrics(callback?: ActionCallback) {
-  const operation = async () => {
-    try {
-      toast.info('Fetching lyrics for tracks that are missing them...')
-      const res = await fetchMissingLyrics()
-      toast.success(`Lyrics fetch finished: ${res.fetched} fetched, ${res.failed} failed, ${res.skipped} skipped`)
-    } catch (e: any) {
-      toast.error(`Lyrics fetch failed: ${e?.message || e}`)
-      throw e
-    }
-  }
-  const promise = operation()
-  callback?.(promise)
-}
-
-const LYRICS_UPGRADE_BATCH = 100
-
-async function handleUpgradeLyrics(callback?: ActionCallback) {
-  const operation = async () => {
-    try {
-      toast.info('Re-fetching unsynced lyrics looking for synced versions...')
-      const allLyrics = await getAllLyrics()
-      // Unsynced lyrics are stored as plain text; lrc/ttml carry timing.
-      const unsyncedTrackIds = [...new Set(
-        allLyrics
-          .filter(l => l.format === 'plain')
-          .map(l => l.track_id)
-      )].slice(0, LYRICS_UPGRADE_BATCH)
-
-      if (unsyncedTrackIds.length === 0) {
-        toast.info('No unsynced lyrics to upgrade')
-        return
-      }
-
-      let upgraded = 0
-      let failed = 0
-      for (const trackId of unsyncedTrackIds) {
-        try {
-          const fetched = await fetchLyrics(trackId)
-          const after = fetched ?? await getLyrics(trackId)
-          if (after && (after.format === 'lrc' || after.format === 'ttml')) {
-            upgraded++
-          }
-        } catch (e) {
-          console.warn(`Lyrics upgrade failed for track ${trackId}:`, e)
-          failed++
-        }
-      }
-
-      if (upgraded > 0) {
-        toast.success(`Upgraded ${upgraded} of ${unsyncedTrackIds.length} unsynced lyrics to synced`)
-      } else {
-        toast.info(`No unsynced lyrics upgraded (${failed} of ${unsyncedTrackIds.length} fetches failed)`)
-      }
-    } catch (e: any) {
-      toast.error(`Lyrics upgrade failed: ${e?.message || e}`)
-      throw e
-    }
-  }
-  const promise = operation()
-  callback?.(promise)
-}
-
-// Close dropdown on outside click
 function handleOutsideClick(e: MouseEvent) {
   const target = e.target as HTMLElement
-  if (!target.closest('.tasks-dropdown') && !target.closest('.status-indicator')) {
-    showTasksDropdown.value = false
-  }
   if (!target.closest('.notification-dropdown') && !target.closest('.notification-button')) {
     showNotifications.value = false
   }
@@ -913,8 +586,19 @@ function handleKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
     e.preventDefault()
     openSearchModal()
+    return
+  }
+  // En pantallas estrechas Escape cierra la navegación superpuesta.
+  if (e.key === 'Escape' && sidebarOverlay.value && sidebarOpenOnMobile.value) {
+    sidebarOpenOnMobile.value = false
   }
 }
+
+// En pantallas estrechas, navegar cierra el sidebar superpuesto;
+// en escritorio la barra lateral permanece siempre visible.
+watch(() => route?.path, () => {
+  if (sidebarOverlay.value) sidebarOpenOnMobile.value = false
+})
 
 function openSearchModal() {
   showSearchModal.value = true
@@ -949,6 +633,16 @@ async function initializeApp() {
     initEventListeners()
     startNotificationListening()
     initLogListeners()
+    try {
+      const preferences = await trayApi.getTraySettings()
+      toast.applyTrayPreferences({
+        notify_download_complete: preferences.notifyDownloadComplete,
+        notify_sync_complete: preferences.notifySyncComplete,
+        notify_updates: preferences.notifyUpdates,
+      })
+    } catch (error) {
+      console.warn('Could not load notification preferences:', error)
+    }
 
     // 2. Database and system health check
     splashProgress.value = 45
@@ -1017,6 +711,11 @@ function handleSplashComplete() {
 
 // Check if first-time user
 onMounted(async () => {
+  // Inicializar el modo del sidebar (fijo en escritorio / overlay en movil)
+  syncViewportMode()
+  window.addEventListener('resize', handleViewportResize)
+  window.addEventListener(NAVIGATE_EVENT, onNotificationNavigate)
+
   // Listen for missing python dependencies
   try {
     unlistenPythonDeps = await listen(TauriEvents.PYTHON_DEPS_MISSING, (event: any) => {
@@ -1052,6 +751,8 @@ onUnmounted(() => {
   unlistenTrayOpenSettings?.()
   unlistenTrayOpenSettings = null
   stopNotificationListening()
+  window.removeEventListener('resize', handleViewportResize)
+  window.removeEventListener(NAVIGATE_EVENT, onNotificationNavigate)
   document.removeEventListener('click', handleOutsideClick)
   document.removeEventListener('keydown', handleKeydown)
 })

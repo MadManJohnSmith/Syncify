@@ -6,11 +6,11 @@
 
 **Estado de revisión:** 2026-10-06 — fase 1 implementada en UI (cola con identidad, modos persistentes, acreditación de 30 s, restauración tras reinicio). MediaSession integrado con feature detection y degradación limpia. **MPRIS NO verificado en GUI**: no se ejecutó sesión gráfica ni D-Bus de Syncify; la prueba manual queda definida abajo y no debe darse por hecha hasta ejecutarse.
 
-**Último cambio:** fase 1 del player — archivos: `ui/src/composables/usePlayer.ts`, `ui/src/components/NowPlayingBar.vue`, `ui/src/api/library.ts` (`recordLocalPlay`), vistas consumidoras (`AlbumDetailView.vue`, `ArtistDetailView.vue`, `PlaylistView.vue`, `LibraryView.vue`).
+**Último cambio:** fase 1 del player — archivos: `ui/src/composables/usePlayer.ts`, `ui/src/components/StatusBar.vue` (mini reproductor, desde PL-08) y `ui/src/components/player/FullscreenPlayer.vue`, `ui/src/api/library.ts` (`recordLocalPlay`), vistas consumidoras (`AlbumDetailView.vue`, `ArtistDetailView.vue`, `PlaylistView.vue`, `LibraryView.vue`).
 **Leer antes de modificar:** `ui/src/composables/usePlayer.ts` (única fuente de verdad del estado de reproducción), `src-tauri/src/commands/playback.rs` (`resolve_playback_source`, `record_local_play` — lado Rust, propiedad de su implementador), `src-tauri/migrations/0091_local_play_stats.sql`.
 **Archivos core:**
 - `ui/src/composables/usePlayer.ts` (player, cola, modos, acreditación 30 s, persistencia, MediaSession)
-- `ui/src/components/NowPlayingBar.vue` (controles globales y panel de cola)
+- `ui/src/components/StatusBar.vue` (mini reproductor y controles globales; PL-08 borró el `NowPlayingBar.vue` duplicado) + `ui/src/components/player/FullscreenPlayer.vue` (panel expandido/cola)
 - `src-tauri/migrations/0091_local_play_stats.sql` (schema `play_count`/`last_played`/`playback_listens`)
 - `src-tauri/src/commands/playback.rs` (`record_local_play`: INSERT-primero, idempotente por `listen_session_id`)
 

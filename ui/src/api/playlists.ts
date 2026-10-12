@@ -253,10 +253,21 @@ export interface SyncPlaylistsResult {
 export async function syncPlaylists(service?: string): Promise<SyncPlaylistsResult> {
     const raw = await invokeCommand<unknown>('sync_playlists', { service });
     const rec = asRecord(raw);
+    const servicesRaw = Array.isArray(rec?.services) ? rec?.services : [];
+    const services: PlaylistServiceSummary[] = servicesRaw.map(s => {
+        const item = asRecord(s);
+        return {
+            service: asString(item?.service),
+            playlists: asNumber(item?.playlists),
+            tracks_linked: asNumber(item?.tracks_linked),
+            last_synced: item?.last_synced ? asString(item?.last_synced) : undefined,
+        };
+    });
     return {
         playlists_synced: asNumber(rec?.playlists_synced),
         tracks_linked: asNumber(rec?.tracks_linked),
         message: asString(rec?.message),
+        services,
     };
 }
 

@@ -481,6 +481,27 @@ pub struct QobuzClient {
     base_url: String,
 }
 
+/// Mensaje de login fallido SIN reproducir la respuesta de la API.
+///
+/// El error anterior interpolaba el JSON completo (`No auth token in login
+/// response: {…}`), y ese objeto trae `user` con `auth_token`, `display_name`,
+/// `id` y en algunas rutas el `email`/`password` de la petición que devuelve la
+/// propia Qobuz cuando las credenciales son inválidas. Ese texto sale por el
+/// `Err` del login, lo envuelve `resolve_qobuz_user_auth_token_with` y acaba
+/// persistido en `accounts.last_auth_error` —visible en la UI y en las
+/// notificaciones— dejando el token/cookies del usuario fuera de su máquina.
+///
+/// Ahora se describe el fallo y, como pista diagnóstica, solo se reproducen
+/// códigos de error y estados de nivel superior (`error_code`, `status`, …):
+/// nunca el objeto `user` (donde vive el token) ni el texto libre del proveedor,
+/// que puede incorporar valores enviados por el cliente.
+pub fn qobuz_login_missing_token_message(_response: &serde_json::Value) -> String {
+    // Fail closed: even short `error_code`/`status` fields can contain echoed
+    // credentials. No value from an untrusted login response belongs in an
+    // error that is persisted to last_auth_error or shown via IPC.
+    "Qobuz login rejected: no user auth token in the response. Check the Qobuz credentials and reconnect in Settings > Accounts.".to_string()
+}
+
 impl QobuzClient {
     fn build_client() -> Client {
         Client::builder()
@@ -579,18 +600,35 @@ impl QobuzClient {
             return Err("Authentication required".to_string());
         }
 
-        let response = request
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+        let response = request.send().await.map_err(|e| {
+            if method == "user/login" {
+                // reqwest errors can embed the request URL, including the
+                // email and password passed as query parameters above.
+                "Qobuz login request failed; check your connection and reconnect.".to_string()
+            } else {
+                format!("Request failed: {}", e)
+            }
+        })?;
 
         let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
+        let text = response.text().await.map_err(|e| {
+            if method == "user/login" {
+                "Failed to read Qobuz login response".to_string()
+            } else {
+                format!("Failed to read response: {}", e)
+            }
+        })?;
 
         if !status.is_success() {
+            if method == "user/login" {
+                // The provider may echo the submitted credentials or a token.
+                // Do not log or propagate the untrusted response body.
+                tracing::warn!("[QobuzClient] Login rejected (HTTP {})", status);
+                return Err(format!(
+                    "Qobuz login rejected (HTTP {}); please reconnect.",
+                    status
+                ));
+            }
             tracing::warn!(
                 "[QobuzClient] API error for {} ({}): {}",
                 method,
@@ -601,18 +639,24 @@ impl QobuzClient {
         }
 
         serde_json::from_str(&text).map_err(|e| {
-            tracing::error!(
-                "[QobuzClient] Deserialization failure for {}: {} (raw: {})",
-                method,
-                e,
-                &text[..text.len().min(300)]
-            );
-            format!(
-                "Failed to parse Qobuz response for {}: {} (raw: {})",
-                method,
-                e,
-                &text[..text.len().min(300)]
-            )
+            if method == "user/login" {
+                // Parse errors can include slices of the response JSON.
+                tracing::warn!("[QobuzClient] Invalid login response format");
+                "Failed to parse Qobuz login response".to_string()
+            } else {
+                tracing::error!(
+                    "[QobuzClient] Deserialization failure for {}: {} (raw: {})",
+                    method,
+                    e,
+                    &text[..text.len().min(300)]
+                );
+                format!(
+                    "Failed to parse Qobuz response for {}: {} (raw: {})",
+                    method,
+                    e,
+                    &text[..text.len().min(300)]
+                )
+            }
         })
     }
 
@@ -627,10 +671,24 @@ impl QobuzClient {
 
         let token = result["user"]["auth_token"]
             .as_str()
-            .ok_or_else(|| format!("No auth token in login response: {}", result))?;
+            .ok_or_else(|| qobuz_login_missing_token_message(&result))?;
 
         Ok(token.to_string())
     }
+    /// Read a user's streaming entitlement from `user/getUserData`.
+    ///
+    /// A valid Qobuz token can still receive only a 30-second preview. The
+    /// provider's credential flags, not successful authentication, determine
+    /// whether this account can stream full tracks. A response without the
+    /// flags is unknown and must not be treated as "no subscription".
+    pub async fn get_user_streaming_entitlement(&self) -> Result<Option<bool>, String> {
+        let response: serde_json::Value =
+            self.api_request("user/getUserData", vec![], true).await?;
+        Ok(crate::commands::accounts::qobuz_streaming_entitlement(
+            &response["user"],
+        ))
+    }
+
     /// Get user's favorite tracks (paginated)
     pub async fn get_favorites(
         &self,

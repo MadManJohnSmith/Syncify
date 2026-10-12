@@ -110,8 +110,8 @@
         </div>
         
         <!-- Imported Playlists (per service) -->
-        <div v-for="service in importedServices" :key="service.id" class="mt-2">
-          <button 
+        <div v-for="service in filteredImportedServices" :key="service.id" class="mt-2">
+          <button
             @click="expandedCategories[service.id] = !expandedCategories[service.id]"
             class="w-full px-4 py-2 flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide hover:bg-gray-100 dark:hover:bg-surface-highlight"
           >
@@ -123,34 +123,48 @@
           </button>
           <Transition name="accordion">
             <div v-if="expandedCategories[service.id]" class="px-2 space-y-1">
-              <div 
-                v-for="playlist in service.playlists" 
+              <div
+                v-for="playlist in service.playlists"
                 :key="playlist.id"
                 class="playlist-item p-2 rounded-lg cursor-pointer transition-colors flex items-center gap-3 group"
                 :class="selectedPlaylist?.id === playlist.id ? 'bg-primary/10 border border-primary/20' : 'hover:bg-gray-100 dark:hover:bg-surface-highlight'"
                 @click="selectPlaylist(playlist)"
+                @contextmenu.prevent="openPlaylistMenu($event, playlist)"
               >
-                <div class="w-10 h-10 rounded-lg bg-gray-200 dark:bg-gray-700 overflow-hidden shrink-0">
-                  <img v-if="playlist.coverArt" :src="playlist.coverArt" class="w-full h-full object-cover">
-                </div>
+                <TrackCover
+                  :src="playlist.coverArt || playlist.image_url"
+                  :item-id="playlist.id"
+                  :alt="playlist.name"
+                  size-class="w-10 h-10"
+                  rounded="rounded-lg"
+                  icon="queue_music"
+                />
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ playlist.name }}</p>
                   <div class="flex items-center gap-2 text-xs text-gray-500">
-                    <span>{{ playlist.track_count }} tracks</span>
+                    <span>{{ playlist.track_count ?? playlist.trackCount }} tracks</span>
                     <span v-if="playlist.last_synced" class="flex items-center gap-1 text-green-500">
                       <span class="material-symbols-outlined text-xs">sync</span>
                       Synced
                     </span>
                   </div>
                 </div>
+                <div class="opacity-60 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                  <button @click.stop="playPlaylist(playlist)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
+                    <span class="material-symbols-outlined text-sm">play_arrow</span>
+                  </button>
+                  <button @click.stop="openPlaylistMenu($event, playlist)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
+                    <span class="material-symbols-outlined text-sm">more_vert</span>
+                  </button>
+                </div>
               </div>
             </div>
           </Transition>
         </div>
-        
+
         <!-- Smart Playlists -->
         <div class="mt-2">
-          <button 
+          <button
             @click="expandedCategories.smart = !expandedCategories.smart"
             class="w-full px-4 py-2 flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide hover:bg-gray-100 dark:hover:bg-surface-highlight"
           >
@@ -162,19 +176,28 @@
           </button>
           <Transition name="accordion">
             <div v-if="expandedCategories.smart" class="px-2 space-y-1">
-              <div 
-                v-for="playlist in smartPlaylists" 
+              <div
+                v-for="playlist in filteredSmartPlaylists"
                 :key="playlist.id"
-                class="playlist-item p-2 rounded-lg cursor-pointer transition-colors flex items-center gap-3"
+                class="playlist-item p-2 rounded-lg cursor-pointer transition-colors flex items-center gap-3 group"
                 :class="selectedPlaylist?.id === playlist.id ? 'bg-primary/10 border border-primary/20' : 'hover:bg-gray-100 dark:hover:bg-surface-highlight'"
                 @click="selectPlaylist(playlist)"
+                @contextmenu.prevent="openPlaylistMenu($event, playlist)"
               >
-                <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
+                <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shrink-0">
                   <span class="material-symbols-outlined text-white text-lg">{{ playlist.icon || 'auto_awesome' }}</span>
                 </div>
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ playlist.name }}</p>
                   <p class="text-xs text-gray-500">{{ playlist.trackCount }} tracks · Auto-updates</p>
+                </div>
+                <div class="opacity-60 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                  <button @click.stop="playPlaylist(playlist)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
+                    <span class="material-symbols-outlined text-sm">play_arrow</span>
+                  </button>
+                  <button @click.stop="openPlaylistMenu($event, playlist)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
+                    <span class="material-symbols-outlined text-sm">more_vert</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -293,7 +316,7 @@
               <button @click="shufflePlay" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-full">
                 <span class="material-symbols-outlined">shuffle</span>
               </button>
-              <button v-if="canMutateSelectedPlaylist" @click="deleteSelectedPlaylist" class="p-2 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-full text-red-500" aria-label="Delete playlist" title="Delete playlist">
+              <button v-if="canDeleteSelectedPlaylist" @click="deleteSelectedPlaylist" class="p-2 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-full text-red-500" aria-label="Delete playlist" title="Delete playlist">
                 <span class="material-symbols-outlined">delete</span>
               </button>
             </div>
@@ -698,8 +721,8 @@
         <div class="my-1 border-t border-gray-200 dark:border-border-dark"></div>
         <button
           class="w-full flex items-center gap-3 px-4 py-2 text-sm text-left text-error hover:bg-red-50 dark:hover:bg-red-500/10"
-          :disabled="!canMutateMenuPlaylist"
-          :class="{ 'opacity-40 pointer-events-none': !canMutateMenuPlaylist }"
+          :disabled="!canDeleteMenuPlaylist"
+          :class="{ 'opacity-40 pointer-events-none': !canDeleteMenuPlaylist }"
           @click="menuDeletePlaylist"
         >
           <span class="material-symbols-outlined text-base">delete</span>
@@ -811,12 +834,17 @@ const canMutateSelectedPlaylist = computed(() => {
   return Boolean(playlist && typeof playlist.id === 'number' && playlist.id > 0 && !playlist.smart)
 })
 
+const canDeleteSelectedPlaylist = computed(() => {
+  const playlist = selectedPlaylist.value
+  return Boolean(playlist && typeof playlist.id === 'number' && playlist.id > 0)
+})
+
 // Map LibraryTrack to UI Track
 function mapToTrack(item: LibraryTrack, _index: number) {
   const durationSec = (item.duration_ms ?? 0) / 1000;
   const mins = Math.floor(durationSec / 60);
   const secs = Math.floor(durationSec % 60);
-  
+
   return {
     id: item.id,
     title: item.title,
@@ -830,16 +858,34 @@ function mapToTrack(item: LibraryTrack, _index: number) {
 
 // Computed
 const totalPlaylists = computed(() => {
-  return 1 + myPlaylists.value.length + 
-    importedServices.value.reduce((acc, s) => acc + s.playlists.length, 0) + 
+  return 1 + myPlaylists.value.length +
+    importedServices.value.reduce((acc, s) => acc + s.playlists.length, 0) +
     smartPlaylists.value.length
 })
 
 const filteredMyPlaylists = computed(() => {
   if (!searchQuery.value) return myPlaylists.value
-  return myPlaylists.value.filter(p => 
+  return myPlaylists.value.filter(p =>
     p.name.toLowerCase().includes(searchQuery.value.toLowerCase())
   )
+})
+
+const filteredSmartPlaylists = computed(() => {
+  if (!searchQuery.value) return smartPlaylists.value
+  return smartPlaylists.value.filter(p =>
+    p.name.toLowerCase().includes(searchQuery.value.toLowerCase())
+  )
+})
+
+const filteredImportedServices = computed(() => {
+  if (!searchQuery.value) return importedServices.value
+  const query = searchQuery.value.toLowerCase()
+  return importedServices.value
+    .map(service => ({
+      ...service,
+      playlists: service.playlists.filter((p: any) => p.name.toLowerCase().includes(query)),
+    }))
+    .filter(service => service.playlists.length > 0)
 })
 
 const smartPreviewCount = ref(0)
@@ -925,7 +971,7 @@ async function loadPlaylistTracks() {
 async function loadPlaylists() {
   try {
     const playlists = await libraryApi.getPlaylists()
-    
+
     // Separate smart playlists vs regular playlists
     smartPlaylists.value = playlists
       .filter(p => Boolean(p.is_smart))
@@ -946,13 +992,38 @@ async function loadPlaylists() {
           smart: true,
           rules: parsedRules,
           rules_json: p.rules_json,
+          image_url: p.image_url,
+          coverArt: p.image_url,
         }
       })
 
-    myPlaylists.value = playlists.filter(p => !p.is_smart)
-    
-    // Reset categories
-    importedServices.value = []
+    const nonSmart = playlists.filter(p => !p.is_smart)
+    const localPlaylists: Playlist[] = []
+    const serviceMap = new Map<string, any[]>()
+
+    for (const p of nonSmart) {
+      const sName = p.service_name?.toLowerCase()
+      if (sName && ['spotify', 'qobuz', 'tidal', 'deezer', 'apple_music', 'soundcloud'].includes(sName)) {
+        if (!serviceMap.has(sName)) {
+          serviceMap.set(sName, [])
+        }
+        serviceMap.get(sName)!.push({
+          ...p,
+          coverArt: p.image_url,
+        })
+      } else {
+        localPlaylists.push(p)
+      }
+    }
+
+    myPlaylists.value = localPlaylists
+
+    importedServices.value = Array.from(serviceMap.entries()).map(([svcKey, pls]) => ({
+      id: svcKey,
+      name: svcKey.charAt(0).toUpperCase() + svcKey.slice(1),
+      color: getServiceColor(svcKey),
+      playlists: pls,
+    }))
   } catch (error) {
     console.error('Failed to load playlists:', error)
   }
@@ -964,7 +1035,11 @@ async function triggerSyncPlaylists() {
   isSyncing.value = true
   try {
     const res = await playlistsApi.syncPlaylists()
-    toast.success(res.message)
+    if (res.playlists_synced > 0) {
+      toast.success(res.message)
+    } else {
+      toast.info(res.message || 'No linked service playlists found.')
+    }
     await loadPlaylists()
   } catch (e: any) {
     toast.error(`Sync failed: ${e}`)
@@ -1066,10 +1141,16 @@ function applyUpdatedPlaylist(updated: Playlist) {
   selectedPlaylist.value = { ...selectedPlaylist.value, ...updated }
   const index = myPlaylists.value.findIndex(p => p.id === updated.id)
   if (index >= 0) myPlaylists.value[index] = { ...myPlaylists.value[index], ...updated }
+  const smartIndex = smartPlaylists.value.findIndex(p => p.id === updated.id)
+  if (smartIndex >= 0) smartPlaylists.value[smartIndex] = { ...smartPlaylists.value[smartIndex], ...updated }
+  for (const group of importedServices.value) {
+    const sIdx = group.playlists.findIndex((p: any) => p.id === updated.id)
+    if (sIdx >= 0) group.playlists[sIdx] = { ...group.playlists[sIdx], ...updated }
+  }
 }
 
 async function deleteSelectedPlaylist() {
-  if (!canMutateSelectedPlaylist.value) return
+  if (!canDeleteSelectedPlaylist.value) return
   const playlist = selectedPlaylist.value
   // R13: confirmación unificada en la app (antes window.confirm nativo).
   const confirmed = await confirm(`Delete playlist “${playlist.name}”?`, {
@@ -1081,6 +1162,11 @@ async function deleteSelectedPlaylist() {
   try {
     await playlistsApi.deletePlaylist(playlist.id)
     myPlaylists.value = myPlaylists.value.filter(p => p.id !== playlist.id)
+    smartPlaylists.value = smartPlaylists.value.filter(p => p.id !== playlist.id)
+    for (const group of importedServices.value) {
+      group.playlists = group.playlists.filter((p: any) => p.id !== playlist.id)
+    }
+    importedServices.value = importedServices.value.filter(g => g.playlists.length > 0)
     selectedPlaylist.value = null
     playlistTracks.value = []
     toast.success('Playlist deleted')
@@ -1180,7 +1266,9 @@ function removeRule(index: number) {
 
 function serviceFromPlaylistUrl(rawUrl: string): string | null {
   try {
-    const host = new URL(rawUrl.trim()).hostname.toLowerCase().replace(/^www\./, '')
+    const trimmed = rawUrl.trim()
+    const withProto = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+    const host = new URL(withProto).hostname.toLowerCase().replace(/^www\./, '')
     if (host === 'open.spotify.com' || host.endsWith('.spotify.com')) return 'spotify'
     if (host === 'play.qobuz.com' || host.endsWith('.qobuz.com')) return 'qobuz'
     if (host === 'listen.tidal.com' || host.endsWith('.tidal.com')) return 'tidal'
@@ -1465,6 +1553,11 @@ function closePlaylistMenu() {
 const canMutateMenuPlaylist = computed(() => {
   const id = playlistMenu.value?.playlist?.id
   return typeof id === 'number' && id > 0 && !playlistMenu.value?.playlist?.smart
+})
+
+const canDeleteMenuPlaylist = computed(() => {
+  const id = playlistMenu.value?.playlist?.id
+  return typeof id === 'number' && id > 0
 })
 
 async function menuSelectPlaylist() {

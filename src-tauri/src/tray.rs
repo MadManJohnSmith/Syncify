@@ -17,6 +17,9 @@ use tauri::{
 use crate::commands::{
     perform_sync_service_with_emitter, AppNotification, NotificationCategory, NotificationKind,
 };
+// `reg.exe` es un binario de consola: sin `CREATE_NO_WINDOW` Windows le abre una
+// ventana propia encima de la app cada vez que se consulta o cambia el autoinicio.
+use crate::cmd_utils::create_std_command;
 
 pub const SYNCIFY_TRAY_ID: &str = "syncify-tray";
 
@@ -64,6 +67,13 @@ const KV_START_ON_BOOT: &str = "start_on_boot";
 /// Ítem 32: el toggle del menú de bandeja persiste aquí.
 const KV_NOTIFICATIONS_ENABLED: &str = "notifications_enabled";
 
+const KV_NOTIFY_DOWNLOAD_COMPLETE: &str = "notify_download_complete";
+const KV_NOTIFY_SYNC_COMPLETE: &str = "notify_sync_complete";
+const KV_NOTIFY_ERRORS: &str = "notify_errors";
+const KV_NOTIFY_UPDATES: &str = "notify_updates";
+const KV_NOTIFICATION_SOUND: &str = "notification_sound";
+const KV_NOTIFY_WHEN_VISIBLE: &str = "notify_when_visible";
+
 fn kv_bool(raw: Option<&String>, default: bool) -> bool {
     match raw.map(|v| v.trim().to_ascii_lowercase()) {
         Some(v) if v == "true" || v == "1" => true,
@@ -85,6 +95,12 @@ pub async fn load_tray_settings(db: &crate::DbPool) -> TraySettings {
         KV_START_MINIMIZED.to_string(),
         KV_START_ON_BOOT.to_string(),
         KV_NOTIFICATIONS_ENABLED.to_string(),
+        KV_NOTIFY_DOWNLOAD_COMPLETE.to_string(),
+        KV_NOTIFY_SYNC_COMPLETE.to_string(),
+        KV_NOTIFY_ERRORS.to_string(),
+        KV_NOTIFY_UPDATES.to_string(),
+        KV_NOTIFICATION_SOUND.to_string(),
+        KV_NOTIFY_WHEN_VISIBLE.to_string(),
     ];
 
     match crate::commands::perform_get_kv_settings(db, keys).await {
@@ -95,6 +111,24 @@ pub async fn load_tray_settings(db: &crate::DbPool) -> TraySettings {
             notifications_enabled: kv_bool(
                 map.get(KV_NOTIFICATIONS_ENABLED),
                 defaults.notifications_enabled,
+            ),
+            notify_download_complete: kv_bool(
+                map.get(KV_NOTIFY_DOWNLOAD_COMPLETE),
+                defaults.notify_download_complete,
+            ),
+            notify_sync_complete: kv_bool(
+                map.get(KV_NOTIFY_SYNC_COMPLETE),
+                defaults.notify_sync_complete,
+            ),
+            notify_errors: kv_bool(map.get(KV_NOTIFY_ERRORS), defaults.notify_errors),
+            notify_updates: kv_bool(map.get(KV_NOTIFY_UPDATES), defaults.notify_updates),
+            notification_sound: kv_bool(
+                map.get(KV_NOTIFICATION_SOUND),
+                defaults.notification_sound,
+            ),
+            notify_when_visible: kv_bool(
+                map.get(KV_NOTIFY_WHEN_VISIBLE),
+                defaults.notify_when_visible,
             ),
             ..defaults
         },
@@ -200,7 +234,9 @@ fn write_or_remove(path: &Path, contents: Option<String>) -> Result<(), String> 
 }
 
 fn windows_autostart(exe: &Path, enabled: bool) -> Result<(), String> {
-    let mut command = std::process::Command::new("reg");
+    // `reg.exe` es un binario de consola: sin `CREATE_NO_WINDOW` Windows le abre
+    // una ventana propia encima de la app cada vez que se cambia el autoinicio.
+    let mut command = create_std_command("reg");
     if enabled {
         command
             .arg("add")
@@ -276,7 +312,7 @@ pub fn apply_autostart(exe: &Path, enabled: bool) -> Result<(), String> {
 /// Whether the OS currently has a Syncify autostart entry registered.
 pub fn is_autostart_enabled() -> bool {
     if cfg!(target_os = "windows") {
-        std::process::Command::new("reg")
+        create_std_command("reg")
             .arg("query")
             .arg(WINDOWS_AUTOSTART_RUN_KEY)
             .arg("/v")
@@ -336,6 +372,29 @@ pub struct TraySettings {
 
 fn default_true() -> bool {
     true
+}
+
+/// Whether an in-app alert is allowed by the persisted category preferences.
+/// The UI still aggregates per-track activity; this controls the backend event
+/// rather than using the tray-only global `notifications_enabled` flag.
+pub async fn notification_category_enabled(
+    db: &crate::DbPool,
+    category: &str,
+    is_error: bool,
+) -> bool {
+    let settings = load_tray_settings(db).await;
+    if !settings.notifications_enabled {
+        return false;
+    }
+    if is_error {
+        return settings.notify_errors;
+    }
+    match category {
+        "download" => settings.notify_download_complete,
+        "sync" => settings.notify_sync_complete,
+        "updates" => settings.notify_updates,
+        _ => true,
+    }
 }
 
 fn default_icon_style() -> String {
@@ -903,6 +962,21 @@ pub async fn update_tray_settings<R: Runtime>(
     app: AppHandle<R>,
     settings: TraySettings,
 ) -> Result<(), String> {
+    let db = app.state::<crate::AppState>().db.clone();
+    for (key, value) in [
+        (
+            KV_NOTIFY_DOWNLOAD_COMPLETE,
+            settings.notify_download_complete,
+        ),
+        (KV_NOTIFY_SYNC_COMPLETE, settings.notify_sync_complete),
+        (KV_NOTIFY_ERRORS, settings.notify_errors),
+        (KV_NOTIFY_UPDATES, settings.notify_updates),
+        (KV_NOTIFICATION_SOUND, settings.notification_sound),
+        (KV_NOTIFY_WHEN_VISIBLE, settings.notify_when_visible),
+        (KV_NOTIFICATIONS_ENABLED, settings.notifications_enabled),
+    ] {
+        crate::commands::perform_save_setting(&db, key.to_string(), value.to_string()).await?;
+    }
     set_close_to_tray(settings.close_to_tray);
     set_notifications_enabled(settings.notifications_enabled);
 

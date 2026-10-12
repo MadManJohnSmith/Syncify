@@ -140,8 +140,40 @@ describe('LyricsView (fully wired tab)', () => {
         await flushPromises();
 
         expect(wrapper.text()).toContain('Second line');
-        // Timestamp labels rendered from real LRC parsing
+        // LY-01: In listening mode timestamps are hidden by default
+        expect(wrapper.text()).not.toContain('00:05.50');
+        // When toggle button is clicked, timestamps are rendered
+        await wrapper.find('[data-testid="toggle-timestamps"]').trigger('click');
         expect(wrapper.text()).toContain('00:05.50');
+    });
+
+    it('Q-07: listening mode hides word timestamps without changing stored lyrics', async () => {
+        const wordLyrics = {
+            ...lrcLyrics(1),
+            sync_level: 'word' as const,
+            content: '[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you',
+        };
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_library') return { tracks: [createTestTrack({ id: 1, lyrics_type: 'synced' })], total: 1, offset: 0, limit: 500, has_more: false };
+            if (cmd === 'get_lyrics') return wordLyrics;
+            if (cmd === 'get_lyrics_stats') return { total_tracks: 1, with_lyrics: 1, synced_lyrics: 1, embedded_lyrics: 0 };
+            if (cmd === 'get_lyrics_providers') return PROVIDERS;
+            if (cmd === 'get_lyrics_config') return CONFIG;
+            return null;
+        });
+
+        const wrapper = mount(LyricsView);
+        await flushPromises();
+        await wrapper.findAll('.lyrics-track-list .cursor-pointer')[0].trigger('click');
+        await flushPromises();
+
+        const visibleLine = wrapper.find('.synced-line');
+        expect(visibleLine.text()).toContain('I wish you');
+        expect(visibleLine.text()).not.toContain('<00:');
+        expect(wordLyrics.content).toContain('<00:10.50>');
+        await wrapper.find('[data-testid="toggle-timestamps"]').trigger('click');
+        expect(wrapper.find('.synced-line .timestamp').text()).toBe('00:10.00');
+        expect(wrapper.find('.synced-line').text()).not.toContain('<00:');
     });
 
     it('shows unsynced paragraphs for plain-format lyrics', async () => {

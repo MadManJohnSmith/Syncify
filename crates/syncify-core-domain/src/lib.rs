@@ -3,6 +3,13 @@
 //! Pure, I/O-free domain types, quality policy, error models, manifest schema,
 //! typed progress events, metadata models, cover preservation rules, byte validators,
 //! and library layout engine.
+//!
+//! The [`process`] module is the one procedural exception, and deliberately so:
+//! it holds no domain state, only the two policies every spawn site in the
+//! workspace needs — "never give a console-subsystem child its own window" and
+//! "never leave a piped stderr unread". Both are append-only helpers over the
+//! standard library, so the crate still depends on nothing beyond `serde`,
+//! `serde_json`, `chrono` and `regex`.
 
 pub mod byte_validators;
 pub mod concurrency;
@@ -14,6 +21,7 @@ pub mod manifest;
 pub mod metadata;
 pub mod operation_recovery;
 pub mod parity;
+pub mod process;
 pub mod quality;
 pub mod repair;
 pub mod version_derivation;
@@ -53,6 +61,10 @@ pub use parity::{
     build_parity_report, compare_snapshots, get_expected_intentional_difference_registry,
     NormalizedOutputSnapshot, ParityCaseId, ParityClassification, ParityDifferenceRegistryItem,
     ParityExecutionResult, ParityReport,
+};
+pub use process::{
+    configure_hidden, join_stderr_drain, spawn_stderr_drain, StderrDrainReport,
+    CREATE_NO_WINDOW_FLAG,
 };
 pub use quality::{
     classify_audio_tier, normalize_audio_quality, AudioTier, FormatId, QualityClass,

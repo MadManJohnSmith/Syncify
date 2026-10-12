@@ -14,6 +14,10 @@ Plexamp, or any player you love.
 **[⬇ Download the latest release](https://github.com/MadManJohnSmith/Syncify/releases/latest)**
 · [Build from source](#building-from-source) · [Documentation](docs/README.en.md)
 
+> **Handoff status (2026-10-11):** The features below describe uncommitted work,
+> not necessarily the tagged v0.5.0 release. See [verification and limitations](#verification-and-limitations)
+> before treating this working tree as ready to publish.
+
 [![Release](https://img.shields.io/github/v/release/MadManJohnSmith/Syncify?style=flat-square&logo=github)](https://github.com/MadManJohnSmith/Syncify/releases/latest)
 [![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8D8?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
@@ -63,19 +67,21 @@ that: it turns "your" catalog into *your* catalog.
 
 ## What can you do with it?
 
-- **Import your library** from Qobuz, Tidal, Spotify, Deezer, SoundCloud and
-  Apple Music — tracks, albums, artists, playlists. It is not the same depth
-  everywhere: SoundCloud's public API exposes no playlist or history
-  endpoints, Deezer exposes no listening history, and Apple's importer reads
-  the favorites library rather than your history. The
-  [parity matrix](docs/MATRIZ_PARIDAD_IMPORTACION.md) is the exact reference.
+- **Import your library** from Qobuz, Tidal, Spotify, Deezer, SoundCloud,
+  Apple Music, or your **local music folders** — tracks, albums, artists,
+  playlists. Match and deduplicate your physical disk files with streaming
+  catalogs via ISRC and audio hash, keeping a unified metadata score.
+- **Listen with the built-in player**: unified audio player docked in the
+  bottom status bar with expand-on-hover album art, plus a full-screen player
+  view featuring auto-scrolling synced lyrics (`.lrc`), digital booklet (`.pdf`)
+  viewing, and animated cover display.
 - **Migrate between services**: pick a source, pick a destination, review the
   matches, transfer. Syncify matches on ISRC first, then title and artist, and
   transfers what it matches as **favorites on the destination account**. It
   does not rebuild your playlists over there yet.
-- **Download with a quality cascade**: the engine always targets the best
-  tier a track is offered in, steps down to the next one when it isn't, and
-  verifies every file it writes.
+- **Download with a strict quality cascade**: cross-service lossless fallback
+  (Qobuz ↔ Tidal) prioritizes FLAC/CD quality across providers before stepping
+  down, enforcing a strict 320 kbps minimum floor with physical file verification.
 - **Get professional-grade metadata automatically**: multi-value artists,
   collaborations, compilations handled correctly, countries, BPM, musical
   key and energy — from MusicBrainz, AcoustID and Last.fm.
@@ -107,7 +113,8 @@ that: it turns "your" catalog into *your* catalog.
 
 Under the hood: a **Tauri 2** desktop app (Rust core + Vue 3 UI) with a typed
 IPC layer, a multi-threaded download/repair engine, and a local schema
-hardened across **83 SQL migrations**. Service logins run through small
+hardened across **91 SQL migrations in this working tree** (87 committed plus
+4 new here). Service logins run through small
 audited Python bridges (Playwright, Mutagen, AcoustID).
 
 ### How it comes together
@@ -167,19 +174,23 @@ Grab the latest build from the
 | Platform | Files |
 |---|---|
 | **Windows** | `Syncify_*_x64-setup.exe` (installer) · `Syncify-Windows-Portable.zip` |
-| **Linux** | `*.AppImage` · `*.deb` · `Syncify-Linux-x86_64.tar.gz` (raw binary + bridges) |
+| **Linux** | `*.AppImage` · `*.deb` · `Syncify-Linux-x86_64.tar.gz` (raw binary + bundled binaries) |
 
-Then:
+Both packages bundle their own copies of the external tools, so a fresh
+install has nothing extra to fetch or configure:
 
-1. Install and launch Syncify: `ffmpeg`, `ffprobe` and `fpcalc` (Chromaprint)
-   **ship inside every package**, and so does a private Python runtime with
-   the service bridges already installed — there is nothing else to
-   download, install or configure.
+- `ffmpeg`, `ffprobe` and `fpcalc` (Chromaprint) travel as `bundle.externalBin`
+  entries; the Linux AppImage also carries the minimum GStreamer plugins, without
+  which it would launch but make no sound.
+- A private Python runtime with the service bridges already installed, so the
+  user's Python is never needed.
 2. Run the first-run wizard: connect your accounts, pick your music folder,
    done. Credentials are encrypted and stored in Syncify's own SQLite
    database, inside the app profile folder. The encryption key lives in your
    OS keyring when one is available, and falls back to a `.crypto_key` file
-   (mode `0600`, same profile folder) when it is not.
+   (mode `0600`, same profile folder) when it is not. On Linux without a Secret
+   Service (headless, minimal window manager) that file fallback is what you
+   get, by design.
 
 > Building from source? See
 > [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md) for how the
@@ -205,13 +216,57 @@ is ever written to a plain config file.
 **What quality can I expect?**
 
 The engine targets the best tier each service offers (FLAC up to Hi-Res
-24-bit/192 kHz) and falls back to lower tiers per track. Every file is
-verified against what the provider promised before it counts as done.
+24-bit/192 kHz) and steps down when a tier is unavailable. On a Qobuz→Tidal
+cross-service fallback the lossless tier is preferred before any lossy step,
+and a candidate below 320 kbps is rejected rather than written. Every file is
+re-inspected on disk and verified against what the provider promised before
+it counts as done.
 
 **Is there a macOS version?**
 
-Not yet. Windows (installer and portable) and Linux (AppImage, DEB,
-tarball) are the supported platforms today.
+No. Windows (installer and portable) and Linux (AppImage, DEB, tarball) are
+the supported platforms.
+
+**Can I download from Spotify, Deezer, SoundCloud or Apple Music?**
+
+Not directly from those services. The download engines currently work by
+routing a match to a native delivery pipeline (Qobuz and Tidal) or, via a
+SongLink resolution step, to an Amazon Music fallback; Spotify, Deezer,
+SoundCloud and Apple Music serve no downloadable stream. In practice the app
+notes which tracks found no source instead of silently skipping them.
+
+**Is the app finished?**
+
+No, and this page does not claim so. Syncify is pre-1.0: feature work is under
+way on this handoff branch and no release has been cut from it. The current
+tag `v0.5.0` predates the full-screen player, the synchronized lyrics viewer,
+and the strict 320 kbps quality cascade described above. A next release needs
+the checks listed below to be extended first.
+
+### Verification and limitations
+
+This working tree automates the Rust, UI and Python suites (last run
+2026-10-11; green). What has **not** been proven here, and must not be
+advertised as working:
+
+- **The graphical session.** No UI layout, audio playback, tray, MPRIS/D-Bus,
+  or window-manager behaviour has been run on a real desktop; the graphical
+  frontend is not yet built or launched by this tooling.
+- **Live network paths.** No launch login, provider enrichment, download, or
+  lyrics resolution ran against real services; those parts are only tested
+  against fixtures and mocks.
+- **Windows.** The Windows build path exists in CI, but the Windows installers
+  and the bundled Windows binaries have not been produced or exercised
+  locally; the `x86_64-pc-windows-msvc` target has not been checked on this
+  machine.
+- **The release itself.** The working tree is uncommitted and no release has
+  been cut from it. The download link above still points at v0.5.0, which
+  predates these changes; the `Release` and `CI` badges describe what last
+  published, not this state.
+
+Next publication requires, at minimum, a green run of the checks above on the
+committed revision plus the release gate's own requirements (a `vX.Y.Z` tag
+pointing at a revision whose CI run succeeded).
 
 ## Building from source
 

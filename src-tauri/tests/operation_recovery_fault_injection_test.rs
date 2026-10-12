@@ -41,6 +41,41 @@ use syncify_tauri_lib::services::operation_recovery::{
 use syncify_tauri_lib::services::tidal_pipeline::TidalSingleTrackRequest;
 use tempfile::TempDir;
 
+#[test]
+fn qobuz_preview_is_retryable_not_auth_or_malformed() {
+    use syncify_core_domain::ErrorTaxonomy;
+    let preview = "QobuzPreviewPayload: Qobuz delivered MP3 instead of requested FLAC format_id=6: stream URL returned lossy audio";
+    let classified = classify_operation_error(OperationType::DownloadQobuz, "qobuz", preview);
+    assert!(matches!(
+        classified,
+        ErrorTaxonomy::QobuzPreviewPayload { .. }
+    ));
+    assert!(classified.is_retryable());
+    assert!(!classified.requires_user_action());
+    let with_fallback_context = format!(
+        "{}; Tidal equivalent unavailable: SourceIdentityMissing",
+        preview
+    );
+    assert!(matches!(
+        classify_operation_error(
+            OperationType::DownloadQobuz,
+            "qobuz",
+            &with_fallback_context
+        ),
+        ErrorTaxonomy::QobuzPreviewPayload { .. }
+    ));
+    // Historical queue rows carry the pre-taxonomy message, but their bytes
+    // failed FLAC magic verification and must stay terminal audio corruption.
+    let legacy =
+        "Qobuz download failed: Downloaded audio failed bit-perfect FLAC magic verification";
+    let corrupt = classify_operation_error(OperationType::DownloadQobuz, "qobuz", legacy);
+    assert!(matches!(
+        corrupt,
+        ErrorTaxonomy::AudioValidationFailed { .. }
+    ));
+    assert!(corrupt.is_terminal());
+}
+
 /// Helper to generate a minimal valid FLAC file (fLaC magic header + minimal streaminfo block)
 fn create_valid_flac_file(path: &Path) {
     if let Some(parent) = path.parent() {
@@ -831,6 +866,7 @@ async fn production_tidal_pipeline_reuses_the_worker_journal_entry() {
         hint_release_date: Some("2020-03-27".to_string()),
         hint_track_id: Some(tid),
         operation_id: Some("op-production-download-04".to_string()),
+        account_id: None,
     };
 
     let pipeline_journal: JournaledOperation = begin_tidal_download_operation(&pool, &request)

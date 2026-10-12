@@ -1,4 +1,4 @@
-//! Integration tests for S123A: Fallback Qobuz -> Tidal by Edition Identity
+//! Integration tests for S123A & FS-05: Multi-Service Fallback & Quality Floor Policy
 //!
 //! Tests:
 //! 1. Qobuz exacto disponible: no intenta Tidal.
@@ -10,8 +10,12 @@
 //! 7. Qobuz 404 + varios candidatos Tidal: AmbiguousSource.
 //! 8. Provenance original/effective preservado.
 //! 9. No hay busqueda ISRC mientras la fuente original siga disponible.
+//! 10. FS-05: Prioridad de calidad entre servicios antes de degradar a lossy 320 kbps.
+//! 11. FS-05: Suelo mínimo estricto de 320 kbps (nunca descender por debajo de 320).
+//! 12. FS-05: Fallback bidireccional Tidal -> Qobuz.
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use syncify_core_domain::quality::QualityPolicy;
 use syncify_tauri_lib::download::orchestrator::DownloadOrchestrator;
 use syncify_tauri_lib::download::progress::DownloadRequest;
 
@@ -464,4 +468,200 @@ async fn test_9_no_isrc_search_while_original_source_is_available() {
     // the system proceeds directly to download without doing ISRC search
     assert_eq!(req.service_name.as_deref(), Some("qobuz"));
     assert_eq!(req.service_track_id.as_deref(), Some("qobuz_available_999"));
+}
+
+#[tokio::test]
+async fn test_10_cross_service_quality_first_policy_hierarchy() {
+    let db = create_test_db().await;
+    let orchestrator = DownloadOrchestrator::new().with_db(db.clone());
+
+    let isrc_val = "USRC12300010";
+
+    let _artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Quality Artist') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Quality Album') RETURNING id")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, isrc) VALUES ('Quality Track', ?, ?) RETURNING id",
+    )
+    .bind(album_id)
+    .bind(isrc_val)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    // Insert Tidal FLAC candidate (lossless)
+    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) VALUES (?, 3, '777888', 'FLAC', 16, 44100, 1)")
+        .bind(track_id).execute(&db).await.unwrap();
+
+    let req = DownloadRequest {
+        item_id: "test_quality_first".to_string(),
+        isrc: Some(isrc_val.to_string()),
+        service_name: Some("qobuz".to_string()),
+        service_track_id: Some("999404".to_string()),
+        track_name: "Quality Track".to_string(),
+        artist_name: "Quality Artist".to_string(),
+        album_name: "Quality Album".to_string(),
+        quality: "LOSSLESS".to_string(),
+        allow_fallback: true,
+        strict_quality: false,
+        ..Default::default()
+    };
+
+    // When Qobuz lacks the track or lossless format, fallback must resolve Tidal with lossless FLAC
+    let fallback_res = orchestrator.resolve_edition_identity_fallback(&req).await;
+    assert!(fallback_res.is_ok());
+    let matched = fallback_res.unwrap();
+    assert_eq!(matched.target_service, "tidal");
+    assert_eq!(matched.target_track_id, 777888);
+    assert_eq!(matched.candidate_audio_quality.as_deref(), Some("FLAC"));
+
+    // Quality check verifies that the Tidal candidate satisfies lossless request
+    let is_inferior = QualityPolicy::is_quality_inferior(
+        Some(&req.quality),
+        matched.candidate_audio_quality.as_deref(),
+        None,
+        None,
+    );
+    assert!(
+        !is_inferior,
+        "Tidal FLAC must satisfy requested LOSSLESS quality"
+    );
+}
+
+#[tokio::test]
+async fn test_11_quality_floor_enforcement_never_below_320() {
+    // Policy rule: "solo si no se encuentra en ninguno, bajar a 320 — pero NUNCA por debajo."
+    // 320 kbps ("high", "320", "mp3") is the minimum allowable floor.
+    assert!(!QualityPolicy::is_below_minimum_floor(
+        Some("high"),
+        Some("AAC"),
+        None
+    ));
+    assert!(!QualityPolicy::is_below_minimum_floor(
+        Some("320"),
+        Some("MP3"),
+        None
+    ));
+    assert!(!QualityPolicy::is_below_minimum_floor(
+        Some("320kbps"),
+        Some("MP3"),
+        None
+    ));
+    assert!(!QualityPolicy::is_below_minimum_floor(
+        Some("lossy"),
+        Some("AAC"),
+        Some(320)
+    ));
+
+    // Quality values below 320 kbps must be detected as below floor
+    assert!(QualityPolicy::is_below_minimum_floor(
+        Some("low"),
+        Some("AAC"),
+        None
+    ));
+    assert!(QualityPolicy::is_below_minimum_floor(
+        Some("medium"),
+        Some("MP3"),
+        None
+    ));
+    assert!(QualityPolicy::is_below_minimum_floor(
+        Some("96"),
+        Some("AAC"),
+        None
+    ));
+    assert!(QualityPolicy::is_below_minimum_floor(
+        Some("128"),
+        Some("MP3"),
+        None
+    ));
+    assert!(QualityPolicy::is_below_minimum_floor(
+        Some("160"),
+        Some("MP3"),
+        None
+    ));
+    assert!(QualityPolicy::is_below_minimum_floor(
+        Some("256"),
+        Some("AAC"),
+        None
+    ));
+    assert!(QualityPolicy::is_below_minimum_floor(None, None, Some(192)));
+
+    // Stream resolution evaluation with quality below floor must be rejected even with allow_fallback=true
+    let decision_low = QualityPolicy::evaluate_stream_resolution(
+        "lossless", "low", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
+    );
+    assert_eq!(
+        decision_low.decision,
+        syncify_core_domain::quality::QualityDecisionKind::RejectedQuality
+    );
+    assert!(decision_low
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("below the minimum allowed floor of 320 kbps"));
+}
+
+#[tokio::test]
+async fn test_12_bidirectional_tidal_to_qobuz_fallback() {
+    let db = create_test_db().await;
+    let orchestrator = DownloadOrchestrator::new().with_db(db.clone());
+
+    let isrc_val = "USRC12300012";
+
+    let _artist_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name) VALUES ('Tidal-to-Qobuz Artist') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title) VALUES ('Tidal-to-Qobuz Album') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, isrc) VALUES ('Tidal-to-Qobuz Track', ?, ?) RETURNING id",
+    )
+    .bind(album_id)
+    .bind(isrc_val)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    // Insert Qobuz source in DB
+    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available) VALUES (?, 2, '12345678', 'FLAC', 24, 96000, 1)")
+        .bind(track_id).execute(&db).await.unwrap();
+
+    let req = DownloadRequest {
+        item_id: "test_tidal_to_qobuz".to_string(),
+        isrc: Some(isrc_val.to_string()),
+        service_name: Some("tidal".to_string()),
+        service_track_id: Some("999404".to_string()),
+        track_name: "Tidal-to-Qobuz Track".to_string(),
+        artist_name: "Tidal-to-Qobuz Artist".to_string(),
+        album_name: "Tidal-to-Qobuz Album".to_string(),
+        quality: "HI_RES_LOSSLESS".to_string(),
+        allow_fallback: true,
+        strict_quality: false,
+        ..Default::default()
+    };
+
+    // When primary service is Tidal, fallback must target Qobuz
+    let fallback_res = orchestrator.resolve_edition_identity_fallback(&req).await;
+    assert!(
+        fallback_res.is_ok(),
+        "Must resolve edition fallback to Qobuz"
+    );
+    let matched = fallback_res.unwrap();
+    assert_eq!(matched.target_service, "qobuz");
+    assert_eq!(matched.target_track_id, 12345678);
+    assert_eq!(matched.match_method, "exact_isrc");
 }

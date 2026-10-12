@@ -6,7 +6,6 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { escapeHtml, escapeRegex, escapeRegExp, highlightMatch, sanitizeHtml } from '../../utils/sanitize'
 import CommandPalette from '../../components/CommandPalette.vue'
 import KeyboardShortcuts from '../../components/KeyboardShortcuts.vue'
-import HelpPanel from '../../components/HelpPanel.vue'
 import * as libraryApi from '../../api/library'
 
 vi.mock('vue-router', () => ({
@@ -253,7 +252,7 @@ describe('sanitize utilities (TASK-08)', () => {
     })
   })
 
-  describe('CommandPalette and HelpPanel ReDoS & regex crash prevention (TASK-09)', () => {
+  describe('CommandPalette ReDoS & regex crash prevention (TASK-09)', () => {
     beforeEach(() => {
       vi.clearAllMocks()
       document.body.innerHTML = ''
@@ -290,31 +289,8 @@ describe('sanitize utilities (TASK-08)', () => {
       wrapper.unmount()
     })
 
-    it('does not throw SyntaxError when searching with special regex characters in HelpPanel', async () => {
-      const wrapper = mount(HelpPanel, {
-        attachTo: document.body,
-      })
-
-      wrapper.vm.open()
-      await flushPromises()
-
-      const input = document.body.querySelector('input')
-      expect(input).not.toBeNull()
-
-      const dangerousInputs = ['[', '*', '(', '\\', '+', '[a-z', '(?=', '.*']
-      for (const query of dangerousInputs) {
-        input!.value = query
-        input!.dispatchEvent(new Event('input'))
-        await flushPromises()
-
-        // Verify template rendered without error
-        expect(() => {
-          const bodyHtml = document.body.innerHTML
-          expect(bodyHtml).toBeDefined()
-        }).not.toThrow()
-      }
-
-      wrapper.unmount()
-    })
+    // G-05: se elimina el test de búsqueda en HelpPanel; ese componente ya
+    // no existe. La protección de CommandPalette sigue arriba, y
+    // highlightMatch conserva sus pruebas unitarias.
   })
 })

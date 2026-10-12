@@ -7,6 +7,7 @@ import type { MetadataPreferences } from '@/api/types'
 
 // Singleton state
 const isLoading = ref(true)
+const isSaving = ref(false)
 const error = ref<string | null>(null)
 
 // Metadata settings (singleton)
@@ -53,9 +54,11 @@ async function loadFromBackend() {
     }
 }
 
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+
 // Save all settings to backend
 async function saveToBackend() {
-    isLoading.value = true
+    isSaving.value = true
     error.value = null
 
     try {
@@ -67,19 +70,39 @@ async function saveToBackend() {
         error.value = String(e)
         throw e
     } finally {
-        isLoading.value = false
+        isSaving.value = false
     }
+}
+
+// Debounced save for high-frequency input (sliders, SC-01)
+function saveDebounced(delayMs = 300): Promise<void> {
+    if (saveTimer) {
+        clearTimeout(saveTimer)
+    }
+    return new Promise((resolve) => {
+        saveTimer = setTimeout(async () => {
+            saveTimer = null
+            try {
+                await saveToBackend()
+            } catch {
+                // error handled in saveToBackend
+            }
+            resolve()
+        }, delayMs)
+    })
 }
 
 export function useMetadataSettings() {
     return {
         // State
         isLoading,
+        isSaving,
         error,
         settings,
 
         // Actions
         loadSettings: loadFromBackend,
         saveSettings: saveToBackend,
+        saveDebounced,
     }
 }

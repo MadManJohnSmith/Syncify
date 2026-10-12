@@ -109,10 +109,10 @@ impl EnrichmentWorker {
         rate_limiter: Arc<RateLimiter>,
     ) -> Self {
         Self {
+            engine: EnrichmentEngine::with_db(db.clone()),
             db,
             state,
             rate_limiter,
-            engine: EnrichmentEngine::new(),
             app_handle: None,
         }
     }
@@ -248,6 +248,40 @@ impl EnrichmentWorker {
             message: format!("Enriching '{}' by '{}'", title, artist),
             timestamp: chrono::Utc::now().to_rfc3339(),
         });
+
+        // MT-01: Check user preferences for MusicBrainz enrichment
+        let enable_mb: bool = sqlx::query_scalar::<_, bool>(
+            "SELECT enable_musicbrainz FROM metadata_preferences WHERE id = 1",
+        )
+        .fetch_optional(&self.db)
+        .await
+        .unwrap_or(None)
+        .unwrap_or(true);
+
+        if !enable_mb {
+            tracing::info!(
+                "Skipping MusicBrainz query for track {} (enable_musicbrainz disabled in settings)",
+                track_id
+            );
+            let _ = sqlx::query(
+                "UPDATE enrichment_progress SET status = 'skipped', completed_at = datetime('now'), last_error = 'MusicBrainz enrichment disabled in settings' WHERE track_id = ? AND service = 'all'"
+            )
+            .bind(track_id)
+            .execute(&self.db)
+            .await;
+
+            self.emit_event(EnrichmentProgressEvent {
+                track_id,
+                title,
+                artist,
+                service: "all".to_string(),
+                status: "skipped".to_string(),
+                message: "MusicBrainz enrichment disabled in settings".to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
+
+            return Ok(true);
+        }
 
         // 3. Acquire rate limiter permit
         self.rate_limiter.acquire("musicbrainz").await;

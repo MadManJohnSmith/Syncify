@@ -104,3 +104,39 @@ async fn unrecognised_values_fall_back_instead_of_silently_disabling() {
         "an unparsable value must not silently hide the window behind the tray"
     );
 }
+
+#[tokio::test]
+async fn notification_categories_round_trip_independently_from_startup_defaults() {
+    let pool = setup_test_db().await;
+    save(&pool, "notify_download_complete", "false").await;
+    save(&pool, "notify_sync_complete", "true").await;
+    save(&pool, "notify_errors", "false").await;
+    save(&pool, "notify_updates", "false").await;
+    save(&pool, "notification_sound", "true").await;
+    save(&pool, "notify_when_visible", "true").await;
+
+    let settings = load_tray_settings(&pool).await;
+    assert!(!settings.notify_download_complete);
+    assert!(settings.notify_sync_complete);
+    assert!(!settings.notify_errors);
+    assert!(!settings.notify_updates);
+    assert!(settings.notification_sound);
+    assert!(settings.notify_when_visible);
+    assert!(settings.notifications_enabled);
+}
+
+#[tokio::test]
+async fn download_success_and_errors_use_independent_notification_preferences() {
+    let pool = setup_test_db().await;
+    save(&pool, "notify_download_complete", "false").await;
+    save(&pool, "notify_errors", "true").await;
+    assert!(
+        !syncify_tauri_lib::tray::notification_category_enabled(&pool, "download", false).await
+    );
+    assert!(syncify_tauri_lib::tray::notification_category_enabled(&pool, "download", true).await);
+
+    save(&pool, "notify_errors", "false").await;
+    assert!(!syncify_tauri_lib::tray::notification_category_enabled(&pool, "download", true).await);
+    save(&pool, "notifications_enabled", "false").await;
+    assert!(!syncify_tauri_lib::tray::notification_category_enabled(&pool, "sync", false).await);
+}

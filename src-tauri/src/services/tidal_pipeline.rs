@@ -130,6 +130,10 @@ pub struct TidalSingleTrackRequest {
     /// same physical download.
     #[serde(default)]
     pub operation_id: Option<String>,
+    /// Specific account ID to attempt first for this download. When None,
+    /// falls back in priority order: active account first, then inactive sibling accounts.
+    #[serde(default)]
+    pub account_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -793,22 +797,21 @@ where
     ));
 
     let http_client = crate::download::http_client::create_http_client();
-    let (resolved_creds, active_account_name) =
-        resolve_and_refresh_gui_credentials(db, &http_client).await;
-    let active_account_region = resolved_creds.as_ref().and_then(|c| c.country_code.clone());
-    let user_token = resolved_creds.as_ref().map(|c| c.access_token.clone());
 
-    if let (Some(ref _creds), Some(ref account_name)) = (&resolved_creds, &active_account_name) {
-        info!(account = ?account_name, region = ?active_account_region, "Tidal active user account resolved and validated");
-        on_progress(
-            PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::AccountResolved)
-                .with_message(format!("Active Tidal account: {}", account_name)),
-        );
-    } else {
+    let candidate_account_ids = crate::commands::accounts::get_service_fallback_account_ids(
+        db,
+        "tidal",
+        request.account_id,
+    )
+    .await
+    .unwrap_or_default();
+
+    if candidate_account_ids.is_empty() {
+        let (resolved_creds, _) = resolve_and_refresh_gui_credentials(db, &http_client).await;
         let err_msg = "RequiresAuth: No active or valid Tidal account credentials available. Please connect or re-authenticate Tidal in Settings > Accounts.".to_string();
         warn!(
             target = %target,
-            token_present = false,
+            token_present = resolved_creds.is_some(),
             credentials_invalid = true,
             endpoint = "execute_tidal_single_track_download",
             "[Tidal Auth Diagnostics] Cannot proceed with Tidal download without valid authenticated account"
@@ -820,32 +823,84 @@ where
         return Err(err_msg);
     }
 
-    let downloader = TidalDownloader::new().with_user_token(user_token.clone());
+    let mut last_error_msg: Option<String> = None;
+    let mut last_resolved_info: Option<ResolvedTrackInfo> = None;
+    let mut resolved_stream_context = None;
 
-    // 2. Searching & Candidate Resolution
-    phase_tracker.start_phase(DownloadPhase::ResolveStream);
-    on_progress(PipelineProgressEvent::new(
-        target,
-        "tidal",
-        PipelineStepStatus::Searching,
-    ));
+    for (attempt_idx, &cand_account_id) in candidate_account_ids.iter().enumerate() {
+        let (cand_creds, cand_account_name) = resolve_and_refresh_gui_credentials_for_account(
+            db,
+            &http_client,
+            Some(cand_account_id),
+            false,
+        )
+        .await;
 
-    let country_code = active_account_region
-        .clone()
-        .unwrap_or_else(|| "US".to_string());
-    let mut is_partial_metadata = false;
+        let creds = match cand_creds {
+            Some(c) => c,
+            None => {
+                let err_msg = format!(
+                    "RequiresAuth: Tidal account '{}' (id={}) has no valid credentials or token refresh failed.",
+                    cand_account_name.as_deref().unwrap_or("unknown"),
+                    cand_account_id
+                );
+                warn!(
+                    account_id = cand_account_id,
+                    error = %err_msg,
+                    "Candidate Tidal account auth resolution failed"
+                );
+                last_error_msg = Some(err_msg);
+                continue;
+            }
+        };
 
-    let track_result: Result<TidalTrack, String> = if let Ok(numeric_id) = target.parse::<i64>() {
-        // 1. Try real Tidal API by track ID
-        match downloader
-            .get_track_with_country(numeric_id, &country_code)
-            .await
+        let active_account_name = cand_account_name;
+        let active_account_region = creds.country_code.clone();
+        let user_token = Some(creds.access_token.clone());
+
+        info!(
+            account = ?active_account_name,
+            account_id = cand_account_id,
+            region = ?active_account_region,
+            attempt = attempt_idx + 1,
+            total_candidates = candidate_account_ids.len(),
+            "Tidal candidate user account resolved and validated"
+        );
+        on_progress(
+            PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::AccountResolved)
+                .with_message(format!(
+                    "Using Tidal account: {}",
+                    active_account_name.as_deref().unwrap_or("tidal_user")
+                )),
+        );
+
+        let downloader = TidalDownloader::new().with_user_token(user_token);
+
+        // 2. Searching & Candidate Resolution
+        phase_tracker.start_phase(DownloadPhase::ResolveStream);
+        on_progress(PipelineProgressEvent::new(
+            target,
+            "tidal",
+            PipelineStepStatus::Searching,
+        ));
+
+        let country_code = active_account_region
+            .clone()
+            .unwrap_or_else(|| "US".to_string());
+        let mut is_partial_metadata = false;
+
+        let track_result: Result<TidalTrack, String> = if let Ok(numeric_id) = target.parse::<i64>()
         {
-            Ok(t) => Ok(t),
-            Err(api_err) => {
-                warn!(track_id = numeric_id, error = %api_err, "Tidal API get_track failed; checking local database and request hints");
-                // 2. Try DB lookup by service_track_id exclusively
-                let db_track: Option<(String, Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<i64>, Option<String>)> = sqlx::query_as(
+            // 1. Try real Tidal API by track ID
+            match downloader
+                .get_track_with_country(numeric_id, &country_code)
+                .await
+            {
+                Ok(t) => Ok(t),
+                Err(api_err) => {
+                    warn!(track_id = numeric_id, error = %api_err, "Tidal API get_track failed; checking local database and request hints");
+                    // 2. Try DB lookup by service_track_id exclusively
+                    let db_track: Option<(String, Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<i64>, Option<String>)> = sqlx::query_as(
                     r#"SELECT t.title, ar.name, al.title, al.release_date, t.track_number, t.disc_number, t.duration_ms, t.isrc
                        FROM tracks t
                        JOIN track_sources ts ON ts.track_id = t.id AND ts.service_id = (SELECT id FROM services WHERE LOWER(name) = 'tidal' LIMIT 1)
@@ -860,10 +915,10 @@ where
                 .await
                 .unwrap_or(None);
 
-                let resolved_track_data = if db_track.is_some() {
-                    db_track
-                } else if let Some(h_tid) = request.hint_track_id {
-                    let candidate: Option<(String, Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<i64>, Option<String>)> = sqlx::query_as(
+                    let resolved_track_data = if db_track.is_some() {
+                        db_track
+                    } else if let Some(h_tid) = request.hint_track_id {
+                        let candidate: Option<(String, Option<String>, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<i64>, Option<String>)> = sqlx::query_as(
                         r#"SELECT t.title, ar.name, al.title, al.release_date, t.track_number, t.disc_number, t.duration_ms, t.isrc
                            FROM tracks t
                            LEFT JOIN albums al ON t.album_id = al.id
@@ -877,202 +932,358 @@ where
                     .await
                     .unwrap_or(None);
 
-                    if let Some(ref cand) = candidate {
-                        let is_valid = if let Some(ref req_title) = request.hint_title {
-                            let c_title = crate::download::qobuz::clean_title(&cand.0);
-                            let r_title = crate::download::qobuz::clean_title(req_title);
-                            c_title == r_title
-                                || c_title.contains(&r_title)
-                                || r_title.contains(&c_title)
+                        if let Some(ref cand) = candidate {
+                            let is_valid = if let Some(ref req_title) = request.hint_title {
+                                let c_title = crate::download::qobuz::clean_title(&cand.0);
+                                let r_title = crate::download::qobuz::clean_title(req_title);
+                                c_title == r_title
+                                    || c_title.contains(&r_title)
+                                    || r_title.contains(&c_title)
+                            } else {
+                                true
+                            };
+                            if is_valid {
+                                candidate
+                            } else {
+                                warn!(hint_track_id = h_tid, "hint_track_id ignored because track title does not match request hints");
+                                None
+                            }
                         } else {
-                            true
-                        };
-                        if is_valid {
-                            candidate
-                        } else {
-                            warn!(hint_track_id = h_tid, "hint_track_id ignored because track title does not match request hints");
                             None
                         }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                };
+                    };
 
-                if let Some((
-                    title,
-                    artist_opt,
-                    album_opt,
-                    rel_date_opt,
-                    trk_num,
-                    disc_num,
-                    dur_ms,
-                    isrc_opt,
-                )) = resolved_track_data
-                {
-                    let art_name = artist_opt
-                        .or_else(|| request.hint_artist.clone())
-                        .unwrap_or_else(|| "Unknown Artist".to_string());
-                    let alb_name = album_opt
-                        .or_else(|| request.hint_album.clone())
-                        .unwrap_or_else(|| "Unknown Album".to_string());
-                    let rel_date = rel_date_opt
-                        .or_else(|| request.hint_release_date.clone())
-                        .unwrap_or_else(|| "2024-01-01".to_string());
-                    let dur_sec = dur_ms.map(|d| (d / 1000) as i32).unwrap_or(180);
-
-                    Ok(TidalTrack {
-                        id: numeric_id,
+                    if let Some((
                         title,
-                        duration: dur_sec,
-                        track_number: trk_num.or(request.hint_track_number).or(Some(1)),
-                        volume_number: disc_num.or(request.hint_disc_number).or(Some(1)),
-                        isrc: isrc_opt.or_else(|| request.hint_isrc.clone()),
-                        audio_quality: Some("lossless".to_string()),
-                        version: None,
-                        artist: Some(syncify_core_domain::metadata::TidalArtist {
-                            id: None,
-                            name: art_name,
-                        }),
-                        artists: None,
-                        album: Some(syncify_core_domain::metadata::TidalAlbum {
-                            id: None,
-                            title: alb_name,
-                            release_date: Some(rel_date),
-                            cover: None,
-                            artist: None,
+                        artist_opt,
+                        album_opt,
+                        rel_date_opt,
+                        trk_num,
+                        disc_num,
+                        dur_ms,
+                        isrc_opt,
+                    )) = resolved_track_data
+                    {
+                        let art_name = artist_opt
+                            .or_else(|| request.hint_artist.clone())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        let alb_name = album_opt
+                            .or_else(|| request.hint_album.clone())
+                            .unwrap_or_else(|| "Unknown Album".to_string());
+                        let rel_date = rel_date_opt
+                            .or_else(|| request.hint_release_date.clone())
+                            .unwrap_or_else(|| "2024-01-01".to_string());
+                        let dur_sec = dur_ms.map(|d| (d / 1000) as i32).unwrap_or(180);
+
+                        Ok(TidalTrack {
+                            id: numeric_id,
+                            title,
+                            duration: dur_sec,
+                            track_number: trk_num.or(request.hint_track_number).or(Some(1)),
+                            volume_number: disc_num.or(request.hint_disc_number).or(Some(1)),
+                            isrc: isrc_opt.or_else(|| request.hint_isrc.clone()),
+                            audio_quality: Some("lossless".to_string()),
+                            version: None,
+                            artist: Some(syncify_core_domain::metadata::TidalArtist {
+                                id: None,
+                                name: art_name,
+                            }),
                             artists: None,
-                            number_of_tracks: None,
-                            number_of_volumes: None,
+                            album: Some(syncify_core_domain::metadata::TidalAlbum {
+                                id: None,
+                                title: alb_name,
+                                release_date: Some(rel_date),
+                                cover: None,
+                                artist: None,
+                                artists: None,
+                                number_of_tracks: None,
+                                number_of_volumes: None,
+                                copyright: None,
+                                upc: None,
+                                album_type: None,
+                                tracks: None,
+                            }),
+                            media_metadata: None,
+                            bpm: None,
                             copyright: None,
-                            upc: None,
-                            album_type: None,
-                            tracks: None,
-                        }),
-                        media_metadata: None,
-                        bpm: None,
-                        copyright: None,
-                        explicit: None,
-                    })
-                } else if let (Some(h_title), Some(h_artist)) =
-                    (request.hint_title.as_ref(), request.hint_artist.as_ref())
-                {
-                    let alb_name = request
-                        .hint_album
-                        .clone()
-                        .unwrap_or_else(|| "Unknown Album".to_string());
-                    let rel_date = request
-                        .hint_release_date
-                        .clone()
-                        .unwrap_or_else(|| "2024-01-01".to_string());
-                    Ok(TidalTrack {
-                        id: numeric_id,
-                        title: h_title.clone(),
-                        duration: 180,
-                        track_number: request.hint_track_number.or(Some(1)),
-                        volume_number: request.hint_disc_number.or(Some(1)),
-                        isrc: request.hint_isrc.clone(),
-                        audio_quality: Some("lossless".to_string()),
-                        version: None,
-                        artist: Some(syncify_core_domain::metadata::TidalArtist {
-                            id: None,
-                            name: h_artist.clone(),
-                        }),
-                        artists: None,
-                        album: Some(syncify_core_domain::metadata::TidalAlbum {
-                            id: None,
-                            title: alb_name,
-                            release_date: Some(rel_date),
-                            cover: None,
-                            artist: None,
+                            explicit: None,
+                        })
+                    } else if let (Some(h_title), Some(h_artist)) =
+                        (request.hint_title.as_ref(), request.hint_artist.as_ref())
+                    {
+                        let alb_name = request
+                            .hint_album
+                            .clone()
+                            .unwrap_or_else(|| "Unknown Album".to_string());
+                        let rel_date = request
+                            .hint_release_date
+                            .clone()
+                            .unwrap_or_else(|| "2024-01-01".to_string());
+                        Ok(TidalTrack {
+                            id: numeric_id,
+                            title: h_title.clone(),
+                            duration: 180,
+                            track_number: request.hint_track_number.or(Some(1)),
+                            volume_number: request.hint_disc_number.or(Some(1)),
+                            isrc: request.hint_isrc.clone(),
+                            audio_quality: Some("lossless".to_string()),
+                            version: None,
+                            artist: Some(syncify_core_domain::metadata::TidalArtist {
+                                id: None,
+                                name: h_artist.clone(),
+                            }),
                             artists: None,
-                            number_of_tracks: None,
-                            number_of_volumes: None,
+                            album: Some(syncify_core_domain::metadata::TidalAlbum {
+                                id: None,
+                                title: alb_name,
+                                release_date: Some(rel_date),
+                                cover: None,
+                                artist: None,
+                                artists: None,
+                                number_of_tracks: None,
+                                number_of_volumes: None,
+                                copyright: None,
+                                upc: None,
+                                album_type: None,
+                                tracks: None,
+                            }),
+                            media_metadata: None,
+                            bpm: None,
                             copyright: None,
-                            upc: None,
-                            album_type: None,
-                            tracks: None,
-                        }),
-                        media_metadata: None,
-                        bpm: None,
-                        copyright: None,
-                        explicit: None,
-                    })
-                } else {
-                    Err(format!("MetadataResolutionFailed: Unable to resolve Tidal track {} from API, database, or request hints", numeric_id))
+                            explicit: None,
+                        })
+                    } else {
+                        Err(format!("MetadataResolutionFailed: Unable to resolve Tidal track {} from API, database, or request hints", numeric_id))
+                    }
                 }
             }
-        }
-    } else {
-        let (artist_part, title_part) = if let Some((art, trk)) = target.split_once(" - ") {
-            (art.trim(), trk.trim())
         } else {
-            ("", target)
+            let (artist_part, title_part) = if let Some((art, trk)) = target.split_once(" - ") {
+                (art.trim(), trk.trim())
+            } else {
+                ("", target)
+            };
+
+            if target.len() == 12 && target.chars().all(|c| c.is_ascii_alphanumeric()) {
+                downloader
+                    .search_by_isrc(target, 0)
+                    .await
+                    .map_err(|e| e.to_string())
+            } else {
+                downloader
+                    .search_by_metadata_with_studio_option(title_part, artist_part, 0, true)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
         };
 
-        if target.len() == 12 && target.chars().all(|c| c.is_ascii_alphanumeric()) {
-            downloader
-                .search_by_isrc(target, 0)
-                .await
-                .map_err(|e| e.to_string())
-        } else {
-            downloader
-                .search_by_metadata_with_studio_option(title_part, artist_part, 0, true)
-                .await
-                .map_err(|e| e.to_string())
-        }
-    };
-
-    let track = match track_result {
-        Ok(t) => {
-            if t.title.trim().is_empty()
-                || t.title.starts_with("Tidal Track ")
-                || t.artist_name().as_deref() == Some("Unknown Artist")
-                || t.album_title().as_deref() == Some("Unknown Album")
-            {
-                error!(target = %target, "Resolved track has insufficient or placeholder metadata");
-                on_progress(
-                    PipelineProgressEvent::new(
-                        target,
-                        "tidal",
-                        PipelineStepStatus::TrackUnresolved,
-                    )
-                    .with_error(
-                        "MetadataResolutionFailed: Incomplete or placeholder metadata received"
-                            .to_string(),
-                    ),
-                );
-                return Err("MetadataResolutionFailed: Candidate track contains placeholder or incomplete metadata".to_string());
+        let track = match track_result {
+            Ok(t) => {
+                if t.title.trim().is_empty()
+                    || t.title.starts_with("Tidal Track ")
+                    || t.artist_name().as_deref() == Some("Unknown Artist")
+                    || t.album_title().as_deref() == Some("Unknown Album")
+                {
+                    error!(target = %target, "Resolved track has insufficient or placeholder metadata");
+                    last_error_msg = Some("MetadataResolutionFailed: Candidate track contains placeholder or incomplete metadata".to_string());
+                    continue;
+                }
+                t
             }
-            t
+            Err(e) => {
+                error!(target = %target, error = %e, account_id = cand_account_id, "Failed to resolve track on Tidal with this account");
+                last_error_msg = Some(format!(
+                    "MetadataResolutionFailed: Failed to resolve candidate track on Tidal: {}",
+                    e
+                ));
+                continue;
+            }
+        };
+
+        let tidal_id = track.id;
+        let artist_name = track.artist_name().unwrap_or_else(|| {
+            request
+                .hint_artist
+                .clone()
+                .unwrap_or_else(|| "Unknown Artist".to_string())
+        });
+        let album_title = track.album_title().unwrap_or_else(|| {
+            request
+                .hint_album
+                .clone()
+                .unwrap_or_else(|| "Unknown Album".to_string())
+        });
+        let isrc_str = track
+            .isrc
+            .clone()
+            .or_else(|| request.hint_isrc.clone())
+            .unwrap_or_default();
+
+        if artist_name == "Unknown Artist"
+            || album_title == "Unknown Album"
+            || track.title.starts_with("Tidal Track ")
+        {
+            is_partial_metadata = true;
         }
-        Err(e) => {
-            error!(target = %target, error = %e, "Failed to resolve track on Tidal");
-            on_progress(
-                PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::TrackUnresolved)
-                    .with_error(e.to_string()),
-            );
-            return Err(format!(
-                "MetadataResolutionFailed: Failed to resolve candidate track on Tidal: {}",
-                e
-            ));
+
+        let resolved_info = ResolvedTrackInfo {
+            provider: "tidal".to_string(),
+            track_id: tidal_id.to_string(),
+            isrc: if isrc_str.is_empty() {
+                None
+            } else {
+                Some(isrc_str.clone())
+            },
+            title: track.title.clone(),
+            artist: artist_name.clone(),
+            album: album_title.clone(),
+            duration_sec: track.duration,
+            requested_quality: quality_req.to_string(),
+            obtained_quality: None,
+            format_id_requested: Some(quality_req.to_string()),
+            format_id_obtained: None,
+            quality_class: None,
+            active_account: active_account_name.clone(),
+            region: active_account_region.clone(),
+            allow_fallback,
+            stream_codec: None,
+            bit_depth: None,
+            sample_rate: None,
+        };
+
+        info!(track_id = tidal_id, title = %track.title, artist = %artist_name, isrc = %isrc_str, "Track candidate successfully resolved on Tidal");
+        on_progress(
+            PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::TrackResolved)
+                .with_resolved_track(resolved_info.clone())
+                .with_message(format!(
+                    "Resolved: {} - {} (ID: {})",
+                    artist_name, track.title, tidal_id
+                )),
+        );
+
+        // 3. Resolving Stream URL & Quality Policy
+        on_progress(
+            PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::ResolvingStream)
+                .with_resolved_track(resolved_info.clone()),
+        );
+
+        let stream_res = match downloader
+            .get_stream_resolution_with_credentials(
+                tidal_id,
+                Some(quality_req),
+                Some(&creds),
+                allow_fallback,
+            )
+            .await
+        {
+            Ok(res) => res,
+            Err(e) => {
+                let err_str = e.to_string();
+                let is_auth_error = err_str.contains("PlaybackUnauthorized")
+                    || err_str.contains("401")
+                    || err_str.contains("RequiresAuth")
+                    || err_str.contains("unauthorized");
+
+                if is_auth_error {
+                    let now_iso = chrono::Utc::now().to_rfc3339();
+                    warn!(
+                    track_id = tidal_id,
+                    account_id = cand_account_id,
+                    token_present = true,
+                    expired = false,
+                    credentials_invalid = false,
+                    endpoint = "playbackinfopostpaywall",
+                    "[Tidal Auth Diagnostics] Tidal playback rejected (HTTP 401/403); recording download entitlement failure on account {}",
+                    cand_account_id
+                );
+                    if let Err(err) = sqlx::query(
+                    "UPDATE accounts SET last_auth_error = ?, last_auth_error_at = ? WHERE id = ?"
+                )
+                .bind(&err_str)
+                .bind(&now_iso)
+                .bind(cand_account_id)
+                .execute(db)
+                .await
+                {
+                    warn!(error = %err, "[Tidal Auth Diagnostics] Failed to record last_auth_error for Tidal account");
+                }
+                }
+
+                let auth_msg = if is_auth_error {
+                    format!(
+                    "Download failed (Tidal stream entitlement/endpoint for account {}): Tidal playback authentication or entitlement failed (HTTP 401/403). Error: {}",
+                    active_account_name.as_deref().unwrap_or("unknown"),
+                    err_str
+                )
+                } else if err_str.contains("requested_lossless_but_received_aac") {
+                    format!(
+                    "TIDAL catalog marks this track as Lossless, but the playback service returned AAC for account {}. The download was rejected to prevent quality downgrade.",
+                    active_account_name.as_deref().unwrap_or("unknown")
+                )
+                } else {
+                    format!(
+                        "Stream resolution rejected or unavailable for account {}: {}",
+                        active_account_name.as_deref().unwrap_or("unknown"),
+                        err_str
+                    )
+                };
+
+                warn!(
+                    track_id = tidal_id,
+                    account_id = cand_account_id,
+                    error = %err_str,
+                    "Candidate Tidal account failed stream resolution"
+                );
+                last_resolved_info = Some(resolved_info);
+                last_error_msg = Some(auth_msg);
+                continue;
+            }
+        };
+
+        resolved_stream_context = Some((
+            downloader,
+            track,
+            tidal_id,
+            artist_name,
+            album_title,
+            country_code,
+            is_partial_metadata,
+            resolved_info,
+            stream_res,
+        ));
+        break;
+    }
+
+    let (
+        downloader,
+        track,
+        tidal_id,
+        artist_name,
+        album_title,
+        country_code,
+        is_partial_metadata,
+        mut resolved_info,
+        mut stream_res,
+    ) = match resolved_stream_context {
+        Some(ctx) => ctx,
+        None => {
+            let err_msg = last_error_msg.unwrap_or_else(|| {
+            "RequiresAuth: No active or valid Tidal account credentials available. Please connect or re-authenticate Tidal in Settings > Accounts.".to_string()
+        });
+            error!(target = %target, error = %err_msg, "All candidate Tidal accounts failed");
+            let mut event =
+                PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::CandidateRejected)
+                    .with_error(err_msg.clone());
+            if let Some(info) = last_resolved_info {
+                event = event.with_resolved_track(info);
+            }
+            on_progress(event);
+            return Err(err_msg);
         }
     };
 
-    let tidal_id = track.id;
-    let artist_name = track.artist_name().unwrap_or_else(|| {
-        request
-            .hint_artist
-            .clone()
-            .unwrap_or_else(|| "Unknown Artist".to_string())
-    });
-    let album_title = track.album_title().unwrap_or_else(|| {
-        request
-            .hint_album
-            .clone()
-            .unwrap_or_else(|| "Unknown Album".to_string())
-    });
     let release_date = track
         .album
         .as_ref()
@@ -1087,120 +1298,6 @@ where
         .clone()
         .or_else(|| request.hint_isrc.clone())
         .unwrap_or_default();
-
-    if artist_name == "Unknown Artist"
-        || album_title == "Unknown Album"
-        || track.title.starts_with("Tidal Track ")
-    {
-        is_partial_metadata = true;
-    }
-
-    let mut resolved_info = ResolvedTrackInfo {
-        provider: "tidal".to_string(),
-        track_id: tidal_id.to_string(),
-        isrc: if isrc_str.is_empty() {
-            None
-        } else {
-            Some(isrc_str.clone())
-        },
-        title: track.title.clone(),
-        artist: artist_name.clone(),
-        album: album_title.clone(),
-        duration_sec: track.duration,
-        requested_quality: quality_req.to_string(),
-        obtained_quality: None,
-        format_id_requested: Some(quality_req.to_string()),
-        format_id_obtained: None,
-        quality_class: None,
-        active_account: active_account_name,
-        region: active_account_region,
-        allow_fallback,
-        stream_codec: None,
-        bit_depth: None,
-        sample_rate: None,
-    };
-
-    info!(track_id = tidal_id, title = %track.title, artist = %artist_name, isrc = %isrc_str, "Track candidate successfully resolved on Tidal");
-    on_progress(
-        PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::TrackResolved)
-            .with_resolved_track(resolved_info.clone())
-            .with_message(format!(
-                "Resolved: {} - {} (ID: {})",
-                artist_name, track.title, tidal_id
-            )),
-    );
-
-    // 3. Resolving Stream URL & Quality Policy
-    on_progress(
-        PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::ResolvingStream)
-            .with_resolved_track(resolved_info.clone()),
-    );
-
-    let mut stream_res = match downloader
-        .get_stream_resolution_with_credentials(
-            tidal_id,
-            Some(quality_req),
-            resolved_creds.as_ref(),
-            allow_fallback,
-        )
-        .await
-    {
-        Ok(res) => res,
-        Err(e) => {
-            let err_str = e.to_string();
-            let is_auth_error = err_str.contains("PlaybackUnauthorized")
-                || err_str.contains("401")
-                || err_str.contains("RequiresAuth")
-                || err_str.contains("unauthorized");
-
-            if is_auth_error {
-                let now_iso = chrono::Utc::now().to_rfc3339();
-                warn!(
-                    track_id = tidal_id,
-                    token_present = resolved_creds.is_some(),
-                    expired = false,
-                    credentials_invalid = false,
-                    endpoint = "playbackinfopostpaywall",
-                    "[Tidal Auth Diagnostics] Tidal playback rejected (HTTP 401/403); recording download entitlement failure without invalidating account"
-                );
-                if let Err(err) = sqlx::query(
-                    "UPDATE accounts SET last_auth_error = ?, last_auth_error_at = ? WHERE service_id = (SELECT id FROM services WHERE LOWER(name) = 'tidal' LIMIT 1) AND is_active = 1"
-                )
-                .bind(&err_str)
-                .bind(&now_iso)
-                .execute(db)
-                .await
-                {
-                    warn!(error = %err, "[Tidal Auth Diagnostics] Failed to record last_auth_error for Tidal account");
-                }
-
-                let auth_msg = format!("Download failed (Tidal stream entitlement/endpoint): Tidal playback authentication or entitlement failed (HTTP 401/403). Error: {}", err_str);
-                on_progress(
-                    PipelineProgressEvent::new(
-                        target,
-                        "tidal",
-                        PipelineStepStatus::CandidateRejected,
-                    )
-                    .with_resolved_track(resolved_info.clone())
-                    .with_error(auth_msg.clone()),
-                );
-                return Err(auth_msg);
-            }
-
-            let user_friendly_msg = if err_str.contains("requested_lossless_but_received_aac") {
-                "TIDAL catalog marks this track as Lossless, but the playback service returned AAC for the current account/client context. The download was rejected to prevent quality downgrade.".to_string()
-            } else {
-                format!("Stream resolution rejected or unavailable: {}", e)
-            };
-            warn!(track_id = tidal_id, error = %e, message = %user_friendly_msg, "Stream resolution rejected or unavailable");
-            on_progress(
-                PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::CandidateRejected)
-                    .with_resolved_track(resolved_info.clone())
-                    .with_error(user_friendly_msg.clone()),
-            );
-            return Err(user_friendly_msg);
-        }
-    };
 
     resolved_info.obtained_quality = Some(stream_res.obtained_quality.clone());
     resolved_info.format_id_requested = Some(stream_res.format_id_requested.clone());
@@ -1614,7 +1711,7 @@ where
                 .with_resolved_track(resolved_info.clone()),
         );
 
-        let enrichment_engine = EnrichmentEngine::new();
+        let enrichment_engine = EnrichmentEngine::with_db(db.clone());
         let origin_meta = OriginTrackMetadata {
             title: Some(track.title.clone()),
             artist: Some(artist_name.clone()),
@@ -2055,7 +2152,7 @@ where
                 .with_resolved_track(resolved_info.clone()),
         );
 
-        let enrichment_engine = EnrichmentEngine::new();
+        let enrichment_engine = EnrichmentEngine::with_db(db.clone());
         let origin_meta = OriginTrackMetadata {
             title: Some(track.title.clone()),
             artist: Some(artist_name.clone()),

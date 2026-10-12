@@ -22,6 +22,16 @@
        />
     </section>
 
+    <section class="space-y-4" data-testid="notification-preferences">
+      <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Notifications</h3>
+      <p class="text-sm text-text-secondary">Choose which events create in-app and tray notifications; downloads continue to update the task list and logs.</p>
+      <BaseToggle title="Enable notifications" :checked="trayNotifications.notificationsEnabled" @click="setNotificationPreference('notificationsEnabled')" />
+      <BaseToggle title="Download completion" :checked="trayNotifications.notifyDownloadComplete" @click="setNotificationPreference('notifyDownloadComplete')" />
+      <BaseToggle title="Sync completion" :checked="trayNotifications.notifySyncComplete" @click="setNotificationPreference('notifySyncComplete')" />
+      <BaseToggle title="Errors" :checked="trayNotifications.notifyErrors" @click="setNotificationPreference('notifyErrors')" />
+      <BaseToggle title="Updates" :checked="trayNotifications.notifyUpdates" @click="setNotificationPreference('notifyUpdates')" />
+    </section>
+
     <section class="space-y-4">
        <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Storage & Database</h3>
        <PathSelector 
@@ -68,13 +78,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 // R13: confirm/alert unificados (antes plugin-dialog nativo, fuera de la ventana).
 import { confirm, alert } from '@/composables/useToast'
 import { useGeneralSettings } from '@/composables/useGeneralSettings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import { useToast } from '@/composables/useToast'
+import { trayApi, type TraySettings } from '@/api/tray'
 import { deriveStagingRoot, settingsApi } from '@/api/settings'
 import BaseToggle from '@/components/settings/BaseToggle.vue'
 import PathSelector from '@/components/settings/PathSelector.vue'
@@ -82,6 +93,25 @@ import PathSelector from '@/components/settings/PathSelector.vue'
 const generalSettings = useGeneralSettings()
 const downloadSettings = useDownloadSettings()
 const toast = useToast()
+const trayNotifications = ref<TraySettings>({
+  closeToTray: true, startMinimized: false, startOnBoot: false,
+  notificationsEnabled: true, notifyDownloadComplete: true,
+  notifySyncComplete: true, notifyErrors: true, notifyUpdates: true,
+  notificationSound: false, notifyWhenVisible: false,
+  showTrayIcon: true, trayIconStyle: 'color',
+})
+
+async function setNotificationPreference(
+  key: 'notificationsEnabled' | 'notifyDownloadComplete' | 'notifySyncComplete' | 'notifyErrors' | 'notifyUpdates',
+) {
+  const next = { ...trayNotifications.value, [key]: !trayNotifications.value[key] }
+  try {
+    await trayApi.updateTraySettings(next)
+    trayNotifications.value = next
+  } catch (error) {
+    toast.error('Could not save notification preferences', String(error))
+  }
+}
 
 const derivedStagingPath = computed(() => {
   const root = generalSettings.settings.download_dir || downloadSettings.downloadDto.library_root
@@ -100,6 +130,8 @@ async function handleDownloadDirChange(newPath: string) {
   }
   generalSettings.settings.download_dir = newPath
   generalSettings.settings.temp_dir = deriveStagingRoot(newPath)
+  downloadSettings.downloadDto.library_root = newPath
+  downloadSettings.downloadDto.staging_root = deriveStagingRoot(newPath)
   await generalSettings.saveSettings()
 }
 
@@ -107,9 +139,7 @@ async function handleDownloadDirReset() {
   try {
     const defaultPath = await settingsApi.getDefaultDownloadPath()
     if (defaultPath) {
-      generalSettings.settings.download_dir = defaultPath
-      generalSettings.settings.temp_dir = deriveStagingRoot(defaultPath)
-      await generalSettings.saveSettings()
+      await handleDownloadDirChange(defaultPath)
     }
   } catch (err) {
     console.error('Failed to reset download dir:', err)
@@ -118,6 +148,22 @@ async function handleDownloadDirReset() {
 
 onMounted(async () => {
   await generalSettings.loadSettings()
+  try {
+    trayNotifications.value = await trayApi.getTraySettings()
+  } catch (error) {
+    console.warn('Could not load notification preferences:', error)
+  }
+  if (downloadSettings.downloadDto.library_root && !generalSettings.settings.download_dir) {
+    generalSettings.settings.download_dir = downloadSettings.downloadDto.library_root
+    generalSettings.settings.temp_dir = deriveStagingRoot(downloadSettings.downloadDto.library_root)
+  }
+})
+
+watch(() => downloadSettings.downloadDto.library_root, (newRoot) => {
+  if (newRoot && newRoot !== generalSettings.settings.download_dir) {
+    generalSettings.settings.download_dir = newRoot
+    generalSettings.settings.temp_dir = deriveStagingRoot(newRoot)
+  }
 })
 
 // Reset database with confirmation (R13: guardia unificado en la app)

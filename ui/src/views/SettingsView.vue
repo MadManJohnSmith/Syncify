@@ -84,7 +84,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { settingsApi } from '@/api/settings'
+import { settingsApi, setGlobalMaxQuality } from '@/api/settings'
 // R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
 import { confirm } from '@/composables/useToast'
 import { useToast } from '@/composables/useToast'
@@ -254,6 +254,9 @@ async function resetCategoryDefaults() {
   await settingsApi
     .updateMetadataPreferences(METADATA_DEFAULTS)
     .catch(() => failures.push('metadata'))
+
+  await setGlobalMaxQuality('any')
+    .catch(() => failures.push('global-ceiling'))
 
   // Priorities only reorder the rows that already exist; sending the seed list
   // alone would silently drop a service the user connected.

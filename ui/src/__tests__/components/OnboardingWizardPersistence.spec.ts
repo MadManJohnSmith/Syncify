@@ -207,6 +207,7 @@ describe('OnboardingWizard persistence (FE-5)', () => {
     vm.importOptions.find((o: any) => o.id === 'playlists').selected = true
     vm.importOptions.find((o: any) => o.id === 'artists').selected = true
     vm.importOptions.find((o: any) => o.id === 'favorites').selected = false
+    vm.importOptions.find((o: any) => o.id === 'albums').selected = false
 
     await vm.completeSetup()
 

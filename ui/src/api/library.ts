@@ -185,6 +185,21 @@ export async function queueDownloads(trackIds: number[]): Promise<string> {
 // LOCAL LIBRARY SCAN COMMANDS
 // ==============================================
 
+export interface LocalSyncOptions {
+    recursive?: boolean;
+    autoResolveDuplicates?: boolean;
+}
+
+export interface LocalSyncReport {
+    success: boolean;
+    directory: string;
+    total_scanned: number;
+    imported: number;
+    duplicates_matched: number;
+    duplicates_skipped: number;
+    errors: string[];
+}
+
 /**
  * Scan a directory for audio files
  */
@@ -223,6 +238,46 @@ export async function scanLocalLibraryWithProgress(
         watchForChanges: options?.watchForChanges ?? false,
         skipSmallFiles: options?.skipSmallFiles ?? false,
     });
+}
+
+/**
+ * Synchronize a local directory into the library as a first-class service.
+ * F-01 & F-02: Performs filesystem scanning, duplicate detection, metadata scoring (SC-03),
+ * physical audio relinking, and duplicate resolution.
+ */
+export async function syncLocalLibrary(
+    directory: string,
+    options?: LocalSyncOptions
+): Promise<LocalSyncReport> {
+    try {
+        const report = await invokeCommand<LocalSyncReport>('sync_local_library_cmd', {
+            directory,
+            recursive: options?.recursive ?? true,
+        });
+
+        if (report?.success && options?.autoResolveDuplicates) {
+            // Esta opción modifica TODA la biblioteca, no sólo la carpeta
+            // importada. Se conserva como opción explícita desactivada por
+            // defecto; no debe ejecutarse silenciosamente en cada importación.
+            try {
+                await invokeCommand<unknown>('auto_resolve_duplicates');
+            } catch (error) {
+                report.errors.push(`Automatic duplicate resolution failed: ${String(error)}`);
+            }
+        }
+
+        return report;
+    } catch (e: any) {
+        return {
+            success: false,
+            directory,
+            total_scanned: 0,
+            imported: 0,
+            duplicates_matched: 0,
+            duplicates_skipped: 0,
+            errors: [String(e?.message || e)],
+        };
+    }
 }
 
 /**
@@ -1329,6 +1384,7 @@ export const libraryApi = {
     normalizeQualityPreference,
     scanLocalLibrary,
     scanLocalLibraryWithProgress,
+    syncLocalLibrary,
     getLocalTrackMetadata,
     removeTrack,
     stopLibraryWatcher,
