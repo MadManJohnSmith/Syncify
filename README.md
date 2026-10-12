@@ -14,10 +14,11 @@ Plexamp, or any player you love.
 **[⬇ Download the latest release](https://github.com/MadManJohnSmith/Syncify/releases/latest)**
 · [Build from source](#building-from-source) · [Documentation](docs/README.en.md)
 
-> **Handoff status (2026-10-12):** The features below describe branch
-> `release/v0.6.0`, open as pull request #26 against main, not necessarily the
-> tagged v0.5.0 release. See [verification and limitations](#verification-and-limitations)
-> before treating this branch as ready to publish.
+> **Release status (2026-10-12):** The features below are released in
+> [Syncify v0.6.0](https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.0)
+> (PR #26 was squash-merged into `main` as `94376b4`). The download link above
+> now points to v0.6.0. See [verification and limitations](#verification-and-limitations)
+> for what has not been verified in a real environment.
 
 [![Release](https://img.shields.io/github/v/release/MadManJohnSmith/Syncify?style=flat-square&logo=github)](https://github.com/MadManJohnSmith/Syncify/releases/latest)
 [![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
@@ -238,42 +239,35 @@ notes which tracks found no source instead of silently skipping them.
 
 **Is the app finished?**
 
-No, and this page does not claim so. Syncify is pre-1.0: feature work is under
-way on this handoff branch and no release has been cut from it. The current
-tag `v0.5.0` predates the full-screen player, the synchronized lyrics viewer,
-and the strict 320 kbps quality cascade described above. A next release needs
-the checks listed below to be extended first.
+No, and this page does not claim so. Syncify is pre-1.0, and the features
+above are released in v0.6.0. The release does not establish the real-world
+behaviour listed under [verification and limitations](#verification-and-limitations).
 
 ### Verification and limitations
 
-The work is committed on branch `release/v0.6.0` and open as pull request
-#26 against main (commit `31b5f49`). Local verification on 2026-10-12:
-Rust `cargo test --workspace --all-features` reported 2452 passed, 0 failed
-and 9 ignored; Vitest passed 996 tests across 121 files; Python reported 279
-OK; `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-and `cargo fmt --check` were clean; the frontend build and type checks passed.
-What has **not** been proven here, and must not be advertised as working:
+PR #26 was squash-merged into `main` as `94376b4`; the follow-up docs
+change from `5dcf4b6` was squash-merged as `ed440a9` (PR #27). Tag `v0.6.0`
+points exactly to `ed440a96f669c264a7e477e76b791e325e900b7f`, and the
+[Syncify v0.6.0 release](https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.0)
+is published with five Linux and Windows assets. Its notes come from
+[the v0.6.0 release notes](docs/RELEASE_NOTES_v0.6.0.md). CI (Rust, Frontend,
+Python), the release gate, and both release builds (Linux and Windows) are
+green on that exact SHA. What has **not** been proven here:
 
 - **The graphical session.** UI layout, audio playback, tray, MPRIS/D-Bus,
-  and window-manager behaviour have not been exercised on a real desktop;
-  the frontend build and type checks do not prove them.
+  and window-manager behaviour have not been exercised on a real desktop.
 - **Live network paths.** No launch login, provider enrichment, download, or
-  lyrics resolution ran against real services; those parts are only tested
-  against fixtures and mocks.
+  lyrics resolution ran against real services.
 - **Ignored Rust tests.** The 9 ignored tests requiring network access or
   credentials have not been exercised.
-- **Windows.** The Windows build path exists in CI, but the Windows installers
-  and the bundled Windows binaries have not been produced or exercised
-  locally; the `x86_64-pc-windows-msvc` target has not been checked on this
-  machine.
-- **The release itself.** Pull request #26 has not merged and no release has
-  been cut from it. The download link above still points at v0.5.0, which
-  predates these changes; the `Release` and `CI` badges describe what last
-  published, not this state.
+- **Windows.** The cross-check for the `x86_64-pc-windows-msvc` target has not
+  been run on this machine, although Windows installers were produced by CI.
 
-Next publication requires, at minimum, these checks to be green on the merged
-revision, plus the release gate's own requirements (a `vX.Y.Z` tag pointing at
-a revision whose CI run succeeded).
+None of that is proven by the release or by the green CI above, so none of it
+should be advertised as working.
+
+The `Release` and `CI` badges above carry no information about the items in
+this list.
 
 ## Building from source
 
