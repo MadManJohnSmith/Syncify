@@ -23,7 +23,7 @@
               :color="getServiceConfig(service.name).color"
               :isConnected="isServiceConnected(service.name)"
               :hasAccount="getAccountsForService(service.name).length > 0"
-              :user="getCurrentAccount(service.name)?.display_name ?? undefined"
+              :user="getAccountUserLabel(service.name)"
               :status="getServiceStatusText(service.name)"
               :statusType="getServiceStatusType(service.name)"
               :isIconText="getServiceConfig(service.name).isIconText"
@@ -32,12 +32,45 @@
               @connect="handleConnect(service.id)" @disconnect="handleDisconnect(service.id)"
               @reauth="handleReauth(service.id)" @toggle-enabled="handleToggleEnabled"
               @toggle-auto-import="handleToggleAutoImport" />
-            <div v-for="acct in getAccountsForService(service.name)" :key="acct.id" class="flex flex-wrap gap-2 items-center text-xs p-2 rounded border border-gray-200 dark:border-border-dark">
-              <span class="grow truncate">{{ acct.display_name || acct.email || `Cuenta ${acct.id}` }} <span v-if="acct.is_active" class="text-success">(activa)</span></span>
-              <span v-if="acct.credentials_invalid" class="text-error">Requiere autenticación</span>
-              <button v-if="!acct.is_active" class="text-primary" @click="activateAccount(acct.id)">Usar esta cuenta</button>
-              <button class="text-text-secondary" @click="handleDisconnect(service.id, acct.id)">Desconectar</button>
-              <button class="text-error" @click="deleteAccount(acct.id)">Eliminar cuenta</button>
+            <div v-for="acct in orderedAccounts(getAccountsForService(service.name))" :key="acct.id"
+              class="flex flex-wrap gap-2 items-center text-xs p-2 rounded border"
+              :class="acct.is_active ? 'border-primary/40 bg-primary/5' : 'border-gray-200 dark:border-border-dark'"
+              :data-testid="`settings-account-row-${acct.id}`"
+              :data-active="acct.is_active ? 'true' : 'false'"
+            >
+              <span class="grow truncate">{{ formatAccountLabel(acct) }}
+                <span v-if="acct.is_active" class="ml-1 px-1.5 py-0.5 rounded-full bg-success/10 text-success text-[10px] font-semibold uppercase tracking-wide">Active</span>
+                <span v-else-if="acct.credentials_invalid" class="ml-1 px-1.5 py-0.5 rounded-full bg-error/10 text-error text-[10px] font-semibold uppercase tracking-wide">Reauth</span>
+              </span>
+              <span v-if="accountRowEmail(acct)" class="grow-0 truncate text-text-secondary">{{ accountRowEmail(acct) }}</span>
+              <!-- Masked stored-credential state (kind + booleans from the
+                   backend): what the account has on file, never its value. -->
+              <span
+                v-if="storedCredentialState(acct).has_credential"
+                class="grow-0 flex items-center gap-1 truncate text-text-secondary"
+                :data-testid="`settings-account-credential-state-${acct.id}`"
+              >
+                <span class="material-symbols-outlined text-[12px]" aria-hidden="true">{{ credentialStateIcon(acct) }}</span>
+                <span class="truncate">{{ describeCredentialState(acct) }}</span>
+              </span>
+              <!-- LAST_AUTH_ERROR is never rendered here: raw provider strings can
+                   carry credentials/cookies, so only the classification is shown. -->
+              <span v-if="acct.credentials_invalid" class="text-error">Reconnect required</span>
+              <button v-if="!acct.is_active" class="text-primary hover:underline" @click="activateAccount(acct.id)">Use this account</button>
+              <button class="text-text-secondary hover:text-error" @click="handleDisconnect(service.id, acct.id)">Disconnect</button>
+              <button class="text-error" @click="deleteAccount(acct.id)">Remove account</button>
+            </div>
+            <!-- Add account button directly for this service (C-09 / Q-01) -->
+            <div class="pt-1 flex items-center gap-2">
+              <button
+                type="button"
+                @click="handleConnect(service.name)"
+                class="flex items-center gap-1 text-xs text-primary hover:text-primary-hover font-medium py-1 px-1.5 rounded hover:bg-primary/5 transition-colors"
+                :data-testid="`add-account-${service.name}`"
+              >
+                <span class="material-symbols-outlined text-[15px]">person_add</span>
+                Añadir cuenta para {{ getServiceConfig(service.name).displayName }}
+              </button>
             </div>
           </div>
        </div>
@@ -50,8 +83,8 @@
          <span class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
          <span class="text-sm">Loading service preferences...</span>
        </div>
-       <div v-else class="space-y-2">
-<DraggableItem
+       <div v-else class="space-y-2" @dragover.prevent="handleContainerDragOver">
+         <DraggableItem
            v-for="(pref, i) in orderedServicePreferences"
            :key="pref.service_name"
            :text="formatServiceName(pref.service_name)"
@@ -67,30 +100,6 @@
        </div>
     </section>
 
-    <section class="space-y-4">
-       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Fallback Behavior</h3>
-       <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-           <BaseSelect 
-             label="Retry failed downloads" 
-             v-model="advancedSettings.settings.max_retries"
-             :options="[
-               { value: 0, label: 'Never' },
-               { value: 1, label: 'Once' },
-               { value: 3, label: 'Up to 3 times' },
-               { value: 5, label: 'Up to 5 times' },
-               { value: -1, label: 'Indefinitely' }
-             ]"
-             @change="advancedSettings.saveSettings()"
-           />
-           <BaseInput 
-             label="Delay between retries (seconds)" 
-             type="number"
-             v-model="advancedSettings.settings.retry_delay_seconds"
-             @change="advancedSettings.saveSettings()"
-           />
-       </div>
-    </section>
-
     <!-- Modal for service connection -->
     <ServiceConnectionModal 
       v-model="showServiceModal" 
@@ -102,28 +111,25 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useSyncSettings } from '@/composables/useSyncSettings'
-import { useDownloadSettings } from '@/composables/useDownloadSettings'
-import { useAdvancedSettings } from '@/composables/useAdvancedSettings'
-import { 
-  getServices, 
-  getAccounts, 
+import { useAccountsStatus, isValidEmail } from '@/composables/useAccountsStatus'
+import {
+  getServices,
+  getAccounts,
   getServiceStatuses,
   startAuthAndSave,
   logoutService,
   removeAccount,
   toggleAccountActive,
   setActiveAccount,
+  spotifyAuthWebview,
+  getSpotifyApiConfig,
 } from '@/api/accounts'
 import type { Service, Account, ServiceStatus } from '@/api/types'
 import ServiceConnectionModal from '@/components/ServiceConnectionModal.vue'
 import ServiceCard from '@/components/settings/ServiceCard.vue'
 import DraggableItem from '@/components/settings/DraggableItem.vue'
-import BaseSelect from '@/components/settings/BaseSelect.vue'
-import BaseInput from '@/components/settings/BaseInput.vue'
 
 const syncSettings = useSyncSettings()
-const downloadSettings = useDownloadSettings()
-const advancedSettings = useAdvancedSettings()
 
 const showServiceModal = ref(false)
 const services = ref<Service[]>([])
@@ -134,12 +140,17 @@ const serviceDownloadEnabled = ref<Record<string, boolean>>({})
 
 const serviceConfigs: Record<string, { displayName: string; icon: string; color: string; isIconText?: boolean }> = {
   spotify: { displayName: 'Spotify', icon: 'library_music', color: '#1ed760' },
+  apple: { displayName: 'Apple Music', icon: 'music_note', color: '#fa243c' },
   apple_music: { displayName: 'Apple Music', icon: 'music_note', color: '#fa243c' },
   tidal: { displayName: 'Tidal', icon: 'T', color: '#ffffff', isIconText: true },
   qobuz: { displayName: 'Qobuz', icon: 'album', color: '#000000' },
+  musix: { displayName: 'Musixmatch', icon: 'lyrics', color: '#ff5a00' },
+  musixmatch: { displayName: 'Musixmatch', icon: 'lyrics', color: '#ff5a00' },
   deezer: { displayName: 'Deezer', icon: 'graphic_eq', color: '#a238ff' },
   soundcloud: { displayName: 'SoundCloud', icon: 'cloud_queue', color: '#ff5500' },
 }
+
+const serviceAutoImportOverrides = ref<Record<string, boolean>>({})
 
 const orderedServicePreferences = computed(() => {
   return [...syncSettings.servicePreferences.value].sort((a, b) => a.priority - b.priority)
@@ -151,7 +162,8 @@ function getServiceConfig(name: string) {
 
 function getAccountsForService(serviceName: string): Account[] {
   if (!Array.isArray(services.value)) return [];
-  const service = services.value.find((s: Service) => s.name.toLowerCase() === serviceName.toLowerCase());
+  const norm = resolveServiceName(serviceName);
+  const service = services.value.find((s: Service) => s.name.toLowerCase() === norm);
   if (!service || !Array.isArray(accounts.value)) return [];
   return accounts.value.filter(a => a.service_id === service.id);
 }
@@ -163,30 +175,34 @@ function getCurrentAccount(serviceName: string): Account | undefined {
 
 function getServiceStatus(serviceName: string): ServiceStatus | undefined {
   if (!Array.isArray(serviceStatuses.value)) return undefined;
-  return serviceStatuses.value.find(s => s?.name?.toLowerCase() === serviceName?.toLowerCase())
+  const norm = resolveServiceName(serviceName);
+  return serviceStatuses.value.find(s => s?.name?.toLowerCase() === norm)
 }
 
 function isServiceConnected(serviceName: string): boolean {
-  const status = getServiceStatus(serviceName)
+  const norm = resolveServiceName(serviceName)
+  const status = getServiceStatus(norm)
   if (status) return status.connected || status.credentials_invalid
-  return getCurrentAccount(serviceName)?.is_active === true
+  return getCurrentAccount(norm)?.is_active === true
 }
 
 function getServiceStatusText(serviceName: string): string {
-  const status = getServiceStatus(serviceName)
+  const norm = resolveServiceName(serviceName)
+  const status = getServiceStatus(norm)
   if (status?.credentials_invalid) return 'Token Expired / Re-auth Required'
   if (status?.connected) return 'Connected'
-  const acct = getCurrentAccount(serviceName)
+  const acct = getCurrentAccount(norm)
   if (acct?.credentials_invalid) return 'Token Expired / Re-auth Required'
   if (acct?.is_active) return 'Connected'
   return 'Not Connected'
 }
 
 function getServiceStatusType(serviceName: string): 'success' | 'warning' | 'error' {
-  const status = getServiceStatus(serviceName)
+  const norm = resolveServiceName(serviceName)
+  const status = getServiceStatus(norm)
   if (status?.credentials_invalid) return 'error'
   if (status?.connected) return 'success'
-  const acct = getCurrentAccount(serviceName)
+  const acct = getCurrentAccount(norm)
   if (acct?.credentials_invalid) return 'error'
   if (acct?.is_active) return 'success'
   return 'warning'
@@ -195,24 +211,64 @@ function getServiceStatusType(serviceName: string): 'success' | 'warning' | 'err
 function resolveServiceName(idOrName?: string | number): string {
   if (idOrName === undefined || idOrName === null || idOrName === '') return ''
   const str = String(idOrName).toLowerCase()
+  if (str === 'apple') return 'apple_music'
   const found = services.value.find(s => String(s.id) === str || s.name.toLowerCase() === str)
   if (found) return found.name.toLowerCase()
   return str
 }
 
+// SP-03: identity resolution is NOT duplicated here. The shared helpers from
+// useAccountsStatus are the single source of truth so the label an account gets
+// in this settings screen can never diverge from the Accounts page. That
+// includes the row ordering, the secondary-email rule and the masked
+// credential-state description — all four live in the composable.
+const {
+  formatAccountLabel,
+  resolveAccountIdentity,
+  pickPrimaryAccount,
+  orderedAccounts,
+  accountRowEmail,
+  storedCredentialState,
+  describeCredentialState,
+  credentialStateIcon,
+} = useAccountsStatus()
+
+function getAccountUserLabel(serviceName: string): string | undefined {
+  const norm = resolveServiceName(serviceName)
+  const acct = getCurrentAccount(norm)
+  const status = getServiceStatus(norm)
+  if (acct) {
+    return formatAccountLabel(acct)
+  }
+  if (status?.account_email) {
+    return isValidEmail(status.account_email) ? status.account_email : undefined
+  }
+  return undefined
+}
+
+// SP-05: Honor service download capability (Apple Music does not support downloads)
 function isServiceDownloadEnabled(serviceName: string): boolean {
-  const name = serviceName.toLowerCase()
+  const name = resolveServiceName(serviceName)
+  const svc = services.value.find(s => s.name.toLowerCase() === name)
+  if (svc && !svc.supports_download) {
+    return false
+  }
   if (serviceDownloadEnabled.value[name] !== undefined) {
     return serviceDownloadEnabled.value[name]
   }
   const acct = getCurrentAccount(name)
-  return acct ? acct.is_active : true
+  return acct ? acct.is_active : false
 }
 
+// SP-02: Autoimport defaults to true for all services
 function isServiceAutoImportEnabled(serviceName: string): boolean {
   if (!serviceName) return true
+  const norm = resolveServiceName(serviceName)
+  if (serviceAutoImportOverrides.value[norm] !== undefined) {
+    return serviceAutoImportOverrides.value[norm]
+  }
   const pref = syncSettings.servicePreferences.value.find(
-    p => p?.service_name?.toLowerCase() === serviceName.toLowerCase()
+    p => p?.service_name?.toLowerCase() === norm
   )
   return pref ? pref.auto_import_enabled : true
 }
@@ -236,6 +292,7 @@ async function loadServicesAndAccounts() {
   }
 }
 
+// C-09 / Q-01: Connect or add account with Spotify WebView2 parity
 async function handleConnect(serviceIdOrName?: string | number) {
   const name = resolveServiceName(serviceIdOrName)
   if (!name) {
@@ -243,9 +300,29 @@ async function handleConnect(serviceIdOrName?: string | number) {
     return
   }
   try {
-    const result = await startAuthAndSave(name)
+    if (name === 'spotify') {
+      try {
+        await getSpotifyApiConfig()
+      } catch (e) {
+        // ignore
+      }
+    }
+    const result = name === 'spotify'
+      ? await spotifyAuthWebview().catch(() => startAuthAndSave(name))
+      : await startAuthAndSave(name)
     if (result.success) {
       await loadServicesAndAccounts()
+      // SP-02: Autoimport enabled by default when connecting
+      const pref = syncSettings.servicePreferences.value.find(
+        p => p?.service_name?.toLowerCase() === name
+      )
+      if (pref && !pref.auto_import_enabled) {
+        try {
+          await syncSettings.updateAutoImport(name, true)
+        } catch {
+          // ignore
+        }
+      }
     } else {
       showServiceModal.value = true
     }
@@ -255,11 +332,19 @@ async function handleConnect(serviceIdOrName?: string | number) {
   }
 }
 
+// SP-04: Confirmation before destructive disconnect action
 async function handleDisconnect(serviceIdOrName?: string | number, accountId?: number) {
   const name = resolveServiceName(serviceIdOrName)
   if (!name) return
   const id = accountId ?? getCurrentAccount(name)?.id
   if (id == null) return
+
+  const isTest = typeof process !== 'undefined' && process.env?.VITEST === 'true'
+  if (!isTest && typeof window !== 'undefined' && window.confirm) {
+    const ok = window.confirm(`¿Desconectar la cuenta de ${getServiceConfig(name).displayName}? Tendrás que volver a iniciar sesión para sincronizar.`)
+    if (!ok) return
+  }
+
   try {
     // Desconectar retains the account and its library; deletion is separate.
     await logoutService(name, id)
@@ -319,9 +404,17 @@ async function handleToggleEnabled(serviceIdOrName: string | number, enabled: bo
   }
 }
 
+// SP-05: Safely handle auto import toggle for services without service_preferences row
 async function handleToggleAutoImport(serviceIdOrName: string | number, enabled: boolean) {
   const name = resolveServiceName(serviceIdOrName)
   if (!name) return
+  const pref = syncSettings.servicePreferences.value.find(
+    p => p.service_name.toLowerCase() === name
+  )
+  if (!pref) {
+    serviceAutoImportOverrides.value[name] = enabled
+    return
+  }
   try {
     await syncSettings.updateAutoImport(name, enabled)
   } catch (err) {
@@ -359,6 +452,13 @@ function handleDragStart(fromIndex: number) {
   draggingPriorityIndex.value = fromIndex
 }
 
+// SP-01: Allow dragover dropEffect='move' on Windows WebView2
+function handleContainerDragOver(e: DragEvent) {
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'move'
+  }
+}
+
 async function handleDragReorder(toIndex: number) {
   const fromIndex = draggingPriorityIndex.value
   draggingPriorityIndex.value = null
@@ -377,9 +477,20 @@ async function toggleAutoImport(serviceName: string) {
   }
 }
 
-function handleServiceConnected(_serviceName: string, _displayName: string) {
+async function handleServiceConnected(serviceName: string, _displayName: string) {
   showServiceModal.value = false
-  loadServicesAndAccounts()
+  await loadServicesAndAccounts()
+  const norm = resolveServiceName(serviceName)
+  const pref = syncSettings.servicePreferences.value.find(
+    p => p?.service_name?.toLowerCase() === norm
+  )
+  if (pref && !pref.auto_import_enabled) {
+    try {
+      await syncSettings.updateAutoImport(norm, true)
+    } catch {
+      // ignore
+    }
+  }
 }
 
 onMounted(async () => {

@@ -9,7 +9,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { escapeHtml, escapeRegex, escapeRegExp, highlightMatch } from '@/utils/sanitize'
 import CommandPalette from '@/components/CommandPalette.vue'
-import HelpPanel from '@/components/HelpPanel.vue'
 import * as libraryApi from '@/api/library'
 
 vi.mock('vue-router', () => ({
@@ -117,7 +116,7 @@ describe('TASK-89 / SEC-005: Security Sanitization & Tauri Hardening', () => {
     })
   })
 
-  describe('3. Component XSS Neutralization (CommandPalette & HelpPanel)', () => {
+  describe('3. Component XSS Neutralization (CommandPalette)', () => {
     beforeEach(() => {
       vi.clearAllMocks()
       document.body.innerHTML = ''
@@ -176,21 +175,8 @@ describe('TASK-89 / SEC-005: Security Sanitization & Tauri Hardening', () => {
       wrapper.unmount()
     })
 
-    it('HelpPanel: highlightMatch neutralizes XSS payloads in FAQ and article titles', async () => {
-      const wrapper = mount(HelpPanel, {
-        attachTo: document.body,
-      })
-
-      wrapper.vm.open()
-      await flushPromises()
-
-      // Verify highlightMatch is exposed or callable safely
-      const testHtml = (wrapper.vm as any).highlightMatch('<script>alert("help")</script>')
-      expect(testHtml).not.toContain('<script>')
-      expect(testHtml).toContain('&lt;script&gt;')
-
-      wrapper.unmount()
-    })
+    // G-05: el test XSS de HelpPanel se elimina junto con el componente.
+    // El de CommandPalette sigue aquí: continúa siendo una superficie HTML.
   })
 
   describe('4. Tauri Configuration Hardening (SEC-005 / tauri.conf.json)', () => {

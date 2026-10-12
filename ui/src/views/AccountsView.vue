@@ -13,25 +13,29 @@
         </div>
       </div>
       
-      <button 
-        @click="showServiceModal = true"
-        class="flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-semibold transition-colors shadow-lg shadow-primary/20"
-      >
-        <span class="material-symbols-outlined text-[20px]">add</span>
-        Add Connection
-      </button>
+      <div class="flex items-center gap-3">
+        <button
+          @click="showSpotifyApiModal = true"
+          class="flex items-center gap-2 px-3.5 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-surface-highlight dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 rounded-lg text-sm font-medium transition-colors border border-gray-200 dark:border-border-dark"
+          title="Configurar credenciales de la API de Spotify"
+        >
+          <span class="material-symbols-outlined text-[18px]">key</span>
+          Credenciales Spotify
+        </button>
+        <button
+          @click="showServiceModal = true"
+          class="flex items-center gap-2 px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-semibold transition-colors shadow-lg shadow-primary/20"
+        >
+          <span class="material-symbols-outlined text-[20px]">add</span>
+          Add Connection
+        </button>
+      </div>
     </div>
 
     <!-- Scrollable Content -->
     <div class="flex-1 overflow-y-auto custom-scrollbar px-8 pb-8">
 
-      <!-- Spotify API credentials (S196): required by the packaged app to log in -->
-      <section id="spotify-api-config" class="mb-10" data-testid="spotify-api-section">
-        <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Credenciales de Spotify</h2>
-        <SpotifyApiConfigCard ref="spotifyApiCard" @saved="onSpotifyApiSaved" />
-      </section>
-
-      <!-- Connected Services Section -->
+      <!-- Connected Services Section (C-01: visible directly on enter) -->
       <section class="mb-10">
         <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Connected Services</h2>
         
@@ -48,15 +52,25 @@
               'border-gray-200 dark:border-border-dark opacity-70 hover:opacity-100'
             ]"
           >
+            <!-- Spotify API Key button (C-02) -->
+            <button
+              v-if="service.id === 'spotify'"
+              @click="showSpotifyApiModal = true"
+              class="absolute top-4 right-12 p-1.5 text-gray-400 hover:text-primary dark:hover:text-primary transition-colors opacity-0 group-hover:opacity-100"
+              title="Credenciales de API de Spotify"
+            >
+              <span class="material-symbols-outlined text-[18px]">key</span>
+            </button>
+
             <!-- Settings gear icon -->
-            <button v-if="service.status !== 'disconnected'" @click="openServiceSettings(service)" class="absolute top-4 right-4 p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors opacity-0 group-hover:opacity-100">
+            <button v-if="service.status !== 'disconnected'" @click="openServiceSettings(service)" title="Service settings" aria-label="Service settings" class="absolute top-4 right-4 p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors opacity-0 group-hover:opacity-100">
               <span class="material-symbols-outlined text-[18px]">settings</span>
             </button>
-            
+
             <!-- Service Header -->
             <div class="flex items-center gap-4 mb-5">
-              <div :class="['h-14 w-14 flex items-center justify-center rounded-2xl text-2xl', service.bgClass]">
-                {{ service.icon }}
+              <div :class="['h-14 w-14 flex items-center justify-center rounded-2xl text-2xl shrink-0', service.bgClass]">
+                <span class="material-symbols-outlined text-[28px]" aria-hidden="true">{{ service.icon }}</span>
               </div>
               <div>
                 <h3 class="font-semibold text-gray-900 dark:text-white text-lg">{{ service.name }}</h3>
@@ -103,45 +117,190 @@
                 </div>
               </div>
               <p class="text-xs text-text-secondary text-center">Last synced: {{ service.lastSync }}</p>
-              <!-- Apple Music: iCloud Music Library hint -->
-              <p v-if="service.id === 'apple_music' && service.importedTracks === '0' && service.lastSync !== 'Never'" class="text-[11px] text-amber-500 text-center mt-2 leading-tight">
-                ⚠️ Sync requires iCloud Music Library enabled in Apple Music → Preferences
-              </p>
+              <!-- Apple Music: iCloud Music Library actionable hint (C-10) -->
+              <div v-if="service.id === 'apple_music' && service.importedTracks === '0' && service.lastSync !== 'Never'" class="mt-3 p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-left">
+                <div class="flex items-start gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 leading-tight">
+                  <span class="material-symbols-outlined text-[15px] shrink-0 mt-0.5">info</span>
+                  <div>
+                    <span>La sincronización de Apple Music requiere activar «Sincronizar biblioteca» en tu app de Música o iTunes.</span>
+                    <a
+                      href="https://support.apple.com/HT204926"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="inline-flex items-center gap-0.5 text-primary hover:underline font-medium ml-1"
+                    >
+                      Guía oficial de Apple <span class="material-symbols-outlined text-[11px]">open_in_new</span>
+                    </a>
+                  </div>
+                </div>
+              </div>
             </div>
-            
+
             <!-- Session expiring message -->
             <div v-else-if="service.status === 'expiring'" class="mb-5">
               <div class="p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
                 <p class="text-xs text-amber-500">Your session will expire soon. Please re-authenticate to continue syncing.</p>
               </div>
             </div>
-            
+
             <!-- Session invalid message -->
             <div v-else-if="service.status === 'invalid'" class="mb-5">
-              <div class="p-3 bg-error/5 border border-error/20 rounded-lg">
-                <p class="text-xs text-error font-medium">⚠️ {{ service.name }} needs reauthentication</p>
-                <p v-if="service.lastAuthError" class="text-[11px] text-error/80 mt-1 truncate" :title="service.lastAuthError">{{ service.lastAuthError }}</p>
-              </div>
-            </div>
-            
-            <details v-if="service.accounts.length" class="mb-4 text-sm">
-              <summary class="cursor-pointer text-text-secondary">Cuentas ({{ service.accounts.length }})</summary>
-              <div v-for="account in service.accounts" :key="account.id" :class="['mt-2 rounded border p-2 transition-colors hover:bg-elevated', highlightedAccountId === account.id ? 'border-primary' : 'border-gray-200 dark:border-border-dark']">
-                <div class="font-medium truncate">{{ account.display_name || account.email || `Cuenta ${account.id}` }}</div>
-                <div class="text-xs text-text-secondary truncate">{{ account.email }}</div>
-                <span v-if="account.is_active" class="text-xs text-success">Activa</span>
-                <span v-if="account.credentials_invalid" class="ml-2 text-xs text-error">Requiere autenticación</span>
-                <div class="flex flex-wrap gap-2 mt-2">
-                  <button v-if="!account.is_active" @click="activateAccount(account.id)" class="text-primary">Usar esta cuenta</button>
-                  <button @click="disconnectService(service.id, account.id)" class="text-text-secondary">Desconectar</button>
-                  <button @click="deleteAccount(account.id)" class="text-error">Eliminar cuenta</button>
+              <div class="p-3 bg-error/5 border border-error/20 rounded-lg" role="alert">
+                <div class="flex items-start gap-2">
+                  <span class="material-symbols-outlined text-[16px] text-error shrink-0 mt-0.5">error</span>
+                  <div class="min-w-0">
+                    <p class="text-xs text-error font-medium">{{ service.name }} needs reauthentication</p>
+                    <!-- LAST_AUTH_ERROR is intentionally NOT rendered in full: the backend
+                         stores raw provider strings that may embed credentials or cookies.
+                         Only a safe classification plus the reconnect CTA is shown here. -->
+                    <p class="text-[11px] text-error/80 mt-1">The linked account can no longer access {{ service.name }}. Reconnect to keep syncing.</p>
+                    <div class="mt-2">
+                      <button
+                        type="button"
+                        @click="reconnectService(service.id)"
+                        :disabled="authLoading !== null"
+                        class="px-2.5 py-1 rounded-md bg-error/10 text-error text-xs font-medium hover:bg-error/20 transition-colors"
+                      >
+                        Reconnect {{ service.name }}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </details>
+            </div>
 
-            <button @click="connectServiceFromCard(service.id)" :disabled="authLoading !== null" class="mb-3 text-xs text-primary hover:underline">
-              Añadir cuenta
-            </button>
+            <!-- Linked accounts. The primary row is visible at a glance (no
+                 disclosure needed) and clearly marked; secondary accounts stay
+                 behind the "manage" disclosure to keep the card compact. -->
+            <div v-if="service.accounts.length" class="mb-4">
+              <div
+                v-for="account in orderedAccounts(service.accounts)"
+                :key="account.id"
+                :class="[
+                  'rounded-lg border p-2.5 text-sm transition-colors',
+                  account.is_active
+                    ? 'border-primary/40 bg-primary/5'
+                    : 'border-transparent bg-gray-50 dark:bg-surface-highlight/40',
+                  account.credentials_invalid ? 'ring-1 ring-error/40' : ''
+                ]"
+                :data-testid="`account-row-${account.id}`"
+                :data-active="account.is_active ? 'true' : 'false'"
+                :data-invalid="account.credentials_invalid ? 'true' : 'false'"
+                :data-no-streaming="account.streaming_entitled === false ? 'true' : 'false'"
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0">
+                    <div class="font-medium truncate text-gray-900 dark:text-white">{{ formatAccountLabel(account) }}</div>
+                    <!-- Secondary email, only rendered when it differs from the label's email -->
+                    <div v-if="accountRowEmail(account)" class="text-xs text-text-secondary truncate">
+                      {{ accountRowEmail(account) }}
+                    </div>
+                    <!-- Masked stored-credential state. Only booleans + a kind
+                         name from the backend: no password, cookie or token is
+                         ever rendered, so the row states honestly what is on
+                         file (and never implies a password is recoverable). -->
+                    <div
+                      v-if="storedCredentialState(account).has_credential"
+                      class="mt-0.5 flex items-center gap-1 text-[11px] text-text-secondary"
+                      :data-testid="`account-credential-state-${account.id}`"
+                    >
+                      <span class="material-symbols-outlined text-[12px]" aria-hidden="true">{{ credentialStateIcon(account) }}</span>
+                      <span class="truncate">{{ describeCredentialState(account) }}</span>
+                    </div>
+                    <!-- Qobuz servers give an account without streaming only a
+                         30-second preview, so the row says it plainly. -->
+                    <div
+                      v-if="account.streaming_entitled === false"
+                      class="mt-0.5 flex items-center gap-1 text-[11px] text-amber-500"
+                      :data-testid="`account-no-streaming-${account.id}`"
+                    >
+                      <span class="material-symbols-outlined text-[12px]" aria-hidden="true">warning</span>
+                      <span class="truncate">No streaming on this plan — downloads may be 30-second previews</span>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <span
+                      v-if="account.is_active"
+                      class="px-1.5 py-0.5 rounded-full bg-success/10 text-success text-[10px] font-semibold uppercase tracking-wide"
+                    >Active</span>
+                    <span
+                      v-else-if="account.credentials_invalid"
+                      class="px-1.5 py-0.5 rounded-full bg-error/10 text-error text-[10px] font-semibold uppercase tracking-wide"
+                    >Reauth</span>
+                  </div>
+                </div>
+                <div v-if="!account.is_active" class="flex flex-wrap items-center gap-3 mt-2">
+                  <button
+                    type="button"
+                    @click="activateAccount(account.id)"
+                    class="text-xs text-primary hover:underline font-medium"
+                  >Use this account</button>
+                  <button
+                    type="button"
+                    @click="reconnectAccount(account)"
+                    class="text-xs text-text-secondary hover:text-primary"
+                  >Reconnect</button>
+                  <button
+                    type="button"
+                    @click="disconnectService(service.id, account.id)"
+                    class="text-xs text-text-secondary hover:text-error"
+                  >Disconnect</button>
+                  <button
+                    type="button"
+                    @click="deleteAccount(account.id)"
+                    class="text-xs text-text-secondary hover:text-error"
+                  >Remove</button>
+                </div>
+                <div v-else class="flex flex-wrap items-center gap-3 mt-1.5">
+                  <button
+                    type="button"
+                    @click="reconnectAccount(account)"
+                    class="text-xs text-text-secondary hover:text-primary"
+                  >Reconnect</button>
+                </div>
+              </div>
+
+              <!-- Multiple accounts: manage them without leaving the card. -->
+              <details v-if="service.accounts.length > 1" class="mt-2 text-sm">
+                <summary class="cursor-pointer text-text-secondary">Manage accounts ({{ service.accounts.length }})</summary>
+                <div class="mt-2 max-h-52 overflow-y-auto custom-scrollbar pr-1 space-y-2">
+                  <div
+                    v-for="account in orderedAccounts(service.accounts)"
+                    :key="`mgr-${account.id}`"
+                    class="rounded-lg border p-2 text-xs"
+                    :class="account.is_active
+                      ? 'border-primary/40 bg-primary/5'
+                      : 'border-gray-200 dark:border-border-dark'"
+                    :data-testid="`manage-account-row-${account.id}`"
+                    :data-active="account.is_active ? 'true' : 'false'"
+                  >
+                    <div class="font-medium truncate">{{ formatAccountLabel(account) }}</div>
+                    <div v-if="accountRowEmail(account)" class="text-text-secondary truncate">{{ accountRowEmail(account) }}</div>
+                    <div v-if="storedCredentialState(account).has_credential" class="flex items-center gap-1 text-text-secondary truncate">
+                      <span class="material-symbols-outlined text-[12px]" aria-hidden="true">{{ credentialStateIcon(account) }}</span>
+                      <span class="truncate">{{ describeCredentialState(account) }}</span>
+                    </div>
+                    <!-- Qobuz hands a 30-second preview to an account whose plan
+                         has no streaming. Saying so here is what lets a short
+                         download be recognised instead of guessed at. -->
+                    <div v-if="account.streaming_entitled === false" class="flex items-center gap-1 text-amber-500 truncate" data-testid="account-no-streaming">
+                      <span class="material-symbols-outlined text-[12px]" aria-hidden="true">warning</span>
+                      <span class="truncate">No streaming on this plan — downloads may be 30-second previews</span>
+                    </div>
+                    <div class="flex flex-wrap gap-3 mt-1">
+                      <span v-if="account.is_active" class="text-success font-medium">Active</span>
+                      <span v-else-if="account.credentials_invalid" class="text-error">Reauth needed</span>
+                      <button v-if="!account.is_active" type="button" class="text-primary hover:underline" @click="activateAccount(account.id)">Use this</button>
+                      <button type="button" class="text-text-secondary hover:text-error" @click="disconnectService(service.id, account.id)">Disconnect</button>
+                      <button type="button" class="text-text-secondary hover:text-error" @click="deleteAccount(account.id)">Remove</button>
+                    </div>
+                  </div>
+                </div>
+              </details>
+            </div>
+
+            <!-- No account linked yet: the only action is connecting. -->
+            <p v-else class="mb-4 text-xs text-text-secondary">No account connected yet.</p>
 
             <!-- Actions -->
             <div class="flex items-center gap-2">
@@ -170,13 +329,23 @@
                 >
                   Purchases
                 </button>
-                <button 
+                <button
                   @click="disconnectService(service.id)"
                   :disabled="authLoading !== null"
                   class="px-3 py-2.5 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors"
                   title="Disconnect account"
                 >
                   {{ authLoading === service.id ? 'Disconnecting...' : 'Disconnect' }}
+                </button>
+                <!-- Multi-account: link another account for the same service. -->
+                <button
+                  @click="connectServiceFromCard(service.id)"
+                  :disabled="authLoading !== null"
+                  class="px-3 py-2.5 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
+                  title="Link another account for this service"
+                >
+                  <span class="material-symbols-outlined text-[18px]">add</span>
+                  Add account
                 </button>
               </template>
               <template v-else-if="service.status === 'expiring' || service.status === 'invalid'">
@@ -201,7 +370,7 @@
                 >
                   <span v-if="authLoading === service.id" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
                   <span v-else class="material-symbols-outlined text-[18px]">link</span>
-                  {{ authLoading === service.id ? 'Connecting...' : 'Añadir cuenta' }}
+                  {{ authLoading === service.id ? 'Connecting...' : 'Connect' }}
                 </button>
               </template>
             </div>
@@ -216,7 +385,7 @@
         
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           
-          <!-- Import from URL -->
+          <!-- Import from URL (C-03 & C-04) -->
           <div class="import-card url-import p-6 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark">
             <div class="flex items-center gap-4 mb-4">
               <div class="h-12 w-12 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
@@ -224,49 +393,59 @@
               </div>
               <div>
                 <h3 class="font-semibold text-gray-900 dark:text-white">Import from URL</h3>
-                <p class="text-sm text-text-secondary">Import playlists or albums from streaming service URLs</p>
+                <p class="text-sm text-text-secondary">Import individual tracks into the download queue from streaming URLs</p>
               </div>
             </div>
-            
+
             <div class="space-y-3">
               <div class="relative">
-                <input 
+                <input
                   v-model="importUrl"
-                  type="text" 
-                  placeholder="Paste Spotify/Qobuz/Tidal URL here..."
+                  type="text"
+                  placeholder="Paste Spotify, Qobuz, Tidal, or Deezer track URL..."
                   class="w-full px-4 py-3 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm"
+                  :disabled="importUrlLoading"
+                  @keyup.enter="handleImportUrl"
                 >
               </div>
-              <p class="text-xs text-text-secondary">e.g., https://open.spotify.com/playlist/...</p>
-              
-              <div class="flex items-center justify-between">
+              <p class="text-xs text-text-secondary">e.g., https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT</p>
+
+              <div class="flex items-center justify-between flex-wrap gap-2">
                 <div class="flex items-center gap-2">
-                  <span class="text-xs text-text-secondary">Supported:</span>
-                  <div class="flex gap-1.5">
-                    <span class="text-lg" title="Spotify">🎵</span>
-                    <span class="text-lg" title="Qobuz">🎧</span>
-                    <span class="text-lg" title="Tidal">🌊</span>
-                    <span class="text-lg" title="Deezer">🎶</span>
+                  <span class="text-xs text-text-secondary font-medium">Supported:</span>
+                  <div class="flex flex-wrap gap-1.5">
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-border-dark font-medium">
+                      <span class="text-emerald-500 text-[11px]">●</span> Spotify
+                    </span>
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-border-dark font-medium">
+                      <span class="text-blue-500 text-[11px]">●</span> Qobuz
+                    </span>
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-border-dark font-medium">
+                      <span class="text-cyan-400 text-[11px]">●</span> Tidal
+                    </span>
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-gray-100 dark:bg-surface-highlight text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-border-dark font-medium">
+                      <span class="text-purple-500 text-[11px]">●</span> Deezer
+                    </span>
                   </div>
                 </div>
-                <button 
+                <button
                   @click="handleImportUrl"
-                  :disabled="!importUrl || importUrlLoading" 
+                  :disabled="!importUrl || importUrlLoading"
                   :class="[
-                    'px-5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2', 
-                    importUrl && !importUrlLoading 
-                      ? 'bg-primary hover:bg-primary-hover text-on-accent' 
+                    'px-5 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2',
+                    importUrl && !importUrlLoading
+                      ? 'bg-primary hover:bg-primary-hover text-on-accent'
                       : 'bg-gray-200 dark:bg-gray-700 text-gray-500 cursor-not-allowed'
                   ]"
                 >
                   <span v-if="importUrlLoading" class="material-symbols-outlined text-[16px] animate-spin">sync</span>
-                  {{ importUrlLoading ? 'Parsing...' : 'Import' }}
+                  {{ importUrlLoading ? 'Importing...' : 'Import' }}
                 </button>
               </div>
             </div>
           </div>
-          
-          <!-- Import from File -->
+
+          <!-- Import from File (C-05: Documented formats and standard) -->
           <div class="import-card file-import p-6 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark">
             <div class="flex items-center gap-4 mb-4">
               <div class="h-12 w-12 rounded-xl bg-purple-500/10 text-purple-500 flex items-center justify-center">
@@ -274,11 +453,11 @@
               </div>
               <div>
                 <h3 class="font-semibold text-gray-900 dark:text-white">Import from File</h3>
-                <p class="text-sm text-text-secondary">Import playlists from CSV, M3U, or text files</p>
+                <p class="text-sm text-text-secondary">Import playlists from standard M3U, CSV, or text files</p>
               </div>
             </div>
-            
-            <div 
+
+            <div
               @dragover.prevent="isDragging = true"
               @dragleave="isDragging = false"
               @drop.prevent="handleFileDrop"
@@ -291,9 +470,25 @@
               <input ref="fileInput" type="file" accept=".csv,.m3u,.m3u8,.txt" class="hidden" @change="handleFileSelect">
               <span class="material-symbols-outlined text-[32px] text-gray-400 mb-2">cloud_upload</span>
               <p class="text-sm text-gray-700 dark:text-gray-300 mb-1">Drag file here or click to browse</p>
-              <p class="text-xs text-text-secondary">CSV, M3U, M3U8, TXT</p>
+              <p class="text-xs text-text-secondary">M3U, M3U8, CSV, TXT (up to 10MB)</p>
             </div>
-            
+
+            <!-- Explicit format documentation and standard (C-05) -->
+            <div class="mt-4 p-3 bg-gray-50 dark:bg-surface-highlight/40 rounded-lg border border-gray-200 dark:border-border-dark text-xs space-y-2 text-left">
+              <div class="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
+                <span class="material-symbols-outlined text-[16px] text-primary">info</span>
+                Formatos y estándares admitidos
+              </div>
+              <ul class="space-y-1 text-text-secondary text-[11px] leading-relaxed">
+                <li><strong class="text-gray-800 dark:text-gray-200">M3U / M3U8</strong>: Estándar Extended M3U (<code class="text-primary font-mono text-[10px]">#EXTINF:duración,Artista - Título</code>) o lista de rutas de archivos de audio locales.</li>
+                <li><strong class="text-gray-800 dark:text-gray-200">CSV</strong> (RFC 4180): Con cabecera (<code class="text-primary font-mono text-[10px]">title, artist, isrc, path</code>) o sin cabecera (<code class="text-primary font-mono text-[10px]">Título, Artista</code>).</li>
+                <li><strong class="text-gray-800 dark:text-gray-200">TXT</strong>: Una pista por línea con formato <code class="text-primary font-mono text-[10px]">Artista - Título</code> o ruta de archivo local.</li>
+              </ul>
+              <p class="text-[10px] text-gray-500 dark:text-gray-400">
+                Las pistas se emparejan automáticamente con tu biblioteca local por ISRC exacto, ruta de descarga o coincidencia exacta de título y artista.
+              </p>
+            </div>
+
             <div class="mt-3 flex justify-end">
               <button @click="triggerFileInput" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
                 Browse Files
@@ -355,11 +550,25 @@
           </div>
           
           <!-- Add Path Button -->
-          <div class="p-4 bg-gray-50 dark:bg-shell/50">
+          <div class="p-4 bg-gray-50 dark:bg-shell/50 space-y-3">
             <button @click="showScanDialog = true" class="w-full py-4 border-2 border-dashed border-gray-300 dark:border-border-dark rounded-xl text-gray-500 dark:text-gray-400 hover:border-primary hover:text-primary hover:bg-primary/5 transition-all flex items-center justify-center gap-2 text-sm font-medium">
               <span class="material-symbols-outlined text-[20px]">add</span>
               Add Library Path
             </button>
+
+            <!-- F-01/F-02: importacion por archivo. NO es un servicio mas:
+                 escanea una carpeta y la anade como fuente local, con su scoring. -->
+            <button
+              @click="showLocalSyncModal = true"
+              data-testid="accounts-import-local-folder"
+              class="w-full px-4 py-3 bg-primary hover:bg-primary-hover text-on-accent rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-colors shadow-sm"
+            >
+              <span class="material-symbols-outlined text-[20px]">folder_open</span>
+              Importar biblioteca local desde una carpeta
+            </button>
+            <p class="text-xs text-text-secondary text-center">
+              Lee tus archivos de audio (FLAC, MP3, M4A), evita duplicados y calcula sus metadatos.
+            </p>
           </div>
         </div>
       </section>
@@ -402,7 +611,7 @@
                   <td class="px-4 py-3 text-sm text-text-secondary">{{ entry.time }}</td>
                   <td class="px-4 py-3">
                     <div class="flex items-center gap-2">
-                      <span class="text-lg">{{ entry.serviceIcon }}</span>
+                      <span class="material-symbols-outlined text-[18px]" aria-hidden="true">{{ entry.serviceIcon }}</span>
                       <span class="text-sm text-gray-700 dark:text-gray-300">{{ entry.service }}</span>
                     </div>
                   </td>
@@ -459,22 +668,94 @@
             
             <!-- Tab Content -->
             <div class="p-6 overflow-y-auto max-h-[50vh]">
-              <!-- General Tab -->
+              <!-- General Tab (C-09 / Q-01: Manage accounts & add accounts directly from service tab) -->
               <div v-if="activeSettingsTab === 'general'" class="space-y-6">
                 <div>
                   <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Account</h4>
                   <div class="p-4 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg space-y-3">
                     <div class="flex items-center justify-between">
                       <span class="text-sm text-gray-700 dark:text-gray-300">Connected as:</span>
-                      <span class="text-sm font-medium text-gray-900 dark:text-white">{{ selectedService?.email || 'user@example.com' }}</span>
+                      <span class="text-sm font-medium text-gray-900 dark:text-white">{{ formatAccountUser(selectedService) }}</span>
                     </div>
-                    <div class="flex gap-2">
+
+                    <!-- Accounts list for this service (C-09 / Q-01) -->
+                    <div v-if="selectedService?.accounts && selectedService.accounts.length > 0" class="space-y-2 pt-2 border-t border-gray-200 dark:border-border-dark">
+                      <p class="text-xs font-medium text-text-secondary">Linked accounts ({{ selectedService.accounts.length }}):</p>
+                      <div
+                        v-for="acct in orderedAccounts(selectedService.accounts)"
+                        :key="acct.id"
+                        class="flex items-center justify-between p-2 rounded bg-white dark:bg-surface-dark border text-xs"
+                        :class="acct.is_active ? 'border-primary/40' : 'border-gray-200 dark:border-border-dark'"
+                        :data-testid="`settings-account-row-${acct.id}`"
+                        :data-active="acct.is_active ? 'true' : 'false'"
+                      >
+                        <div class="flex flex-col truncate mr-2">
+                          <span class="font-medium text-gray-900 dark:text-white truncate">
+                            {{ formatAccountLabel(acct) }}
+                            <span v-if="acct.is_active" class="ml-1 px-1.5 py-0.5 rounded-full bg-success/10 text-success text-[10px] font-semibold uppercase tracking-wide align-middle">Active</span>
+                            <span v-else-if="acct.credentials_invalid" class="ml-1 px-1.5 py-0.5 rounded-full bg-error/10 text-error text-[10px] font-semibold uppercase tracking-wide align-middle">Reauth</span>
+                          </span>
+                          <span v-if="accountRowEmail(acct)" class="text-text-secondary truncate">{{ accountRowEmail(acct) }}</span>
+                          <!-- Masked stored-credential state: what is on file, never its value. -->
+                          <span
+                            v-if="storedCredentialState(acct).has_credential"
+                            class="flex items-center gap-1 text-text-secondary truncate"
+                          >
+                            <span class="material-symbols-outlined text-[12px]" aria-hidden="true">{{ credentialStateIcon(acct) }}</span>
+                            <span class="truncate">{{ describeCredentialState(acct) }}</span>
+                          </span>
+                          <span v-if="acct.credentials_invalid" class="text-error text-[10px]">Reconnect required to use this account</span>
+                        </div>
+                        <div class="flex items-center gap-1.5 shrink-0">
+                          <button
+                            v-if="!acct.is_active"
+                            @click="activateAccount(acct.id)"
+                            class="px-2 py-1 text-primary hover:bg-primary/10 rounded font-medium"
+                          >
+                            Use this
+                          </button>
+                          <button
+                            @click="reconnectAccount(acct)"
+                            class="px-2 py-1 text-text-secondary hover:text-primary rounded"
+                          >
+                            Reconnect
+                          </button>
+                          <button
+                            @click="disconnectService(selectedService?.id, acct.id)"
+                            class="px-2 py-1 text-text-secondary hover:text-error hover:bg-error/10 rounded"
+                          >
+                            Disconnect
+                          </button>
+                          <button
+                            @click="deleteAccount(acct.id)"
+                            class="px-2 py-1 text-error hover:bg-error/10 rounded"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                      <!-- /v-for acct -->
+                    </div>
+                    <!-- Add account button directly inside the service tab (C-09 / Q-01) -->
+                    <div class="pt-2">
+                      <button
+                        @click="connectServiceFromCard(selectedService?.id)"
+                        :disabled="authLoading === selectedService?.id"
+                        class="w-full px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
+                      >
+                        <span v-if="authLoading === selectedService?.id" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
+                        <span v-else class="material-symbols-outlined text-[18px]">person_add</span>
+                        Add another account to {{ selectedService?.name }}
+                      </button>
+                    </div>
+
+                    <div class="flex gap-2 pt-2">
                       <button @click="reconnectService(selectedService?.id); showSettingsModal = false" class="flex-1 px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 transition-colors">
                         Re-authenticate
                       </button>
                     </div>
                     <button @click="disconnectService(selectedService?.id); showSettingsModal = false" class="w-full px-3 py-2 border border-error/50 text-error hover:bg-error/10 rounded-lg text-sm font-medium transition-colors">
-                      Disconnect Account
+                      Disconnect Service
                     </button>
                   </div>
                 </div>
@@ -599,23 +880,18 @@
             <div class="p-6">
               <p class="text-sm text-text-secondary mb-4">Select a streaming service to connect:</p>
               <div class="grid grid-cols-3 gap-4">
-                <button 
-                  v-for="service in services" 
+                <button
+                  v-for="service in services"
                   :key="service.id"
                   @click="connectService(service)"
-                  :disabled="service.status !== 'disconnected'"
-                  :class="[
-                    'p-4 rounded-xl border text-center transition-all',
-                    service.status === 'disconnected' 
-                      ? 'border-gray-200 dark:border-border-dark hover:border-primary/50 hover:bg-primary/5 cursor-pointer' 
-                      : 'border-gray-200 dark:border-border-dark opacity-50 cursor-not-allowed'
-                  ]"
+                  class="p-4 rounded-xl border border-gray-200 dark:border-border-dark hover:border-primary/50 hover:bg-primary/5 text-center transition-all cursor-pointer group"
                 >
-                  <div :class="['h-12 w-12 mx-auto rounded-xl flex items-center justify-center text-2xl mb-2', service.bgClass]">
-                    {{ service.icon }}
+                  <div :class="['h-12 w-12 mx-auto rounded-xl flex items-center justify-center mb-2 transition-transform group-hover:scale-105', service.bgClass]">
+                    <span class="material-symbols-outlined text-[24px]" aria-hidden="true">{{ service.icon }}</span>
                   </div>
                   <p class="font-medium text-gray-900 dark:text-white text-sm">{{ service.name }}</p>
-                  <p v-if="service.status !== 'disconnected'" class="text-xs text-success mt-1">Already connected</p>
+                  <p v-if="service.status !== 'disconnected'" class="text-xs text-primary mt-1 font-medium">Add another account</p>
+                  <p v-else class="text-xs text-text-secondary mt-1">Conectar</p>
                 </button>
               </div>
             </div>
@@ -679,6 +955,34 @@
         </div>
       </Transition>
     </Teleport>
+
+    <!-- Importar archivos locales sin presentar la carpeta como servicio remoto. -->
+    <LocalLibrarySyncModal
+      v-model="showLocalSyncModal"
+      @sync-completed="handleLocalSyncCompleted"
+    />
+
+    <!-- Spotify API Credentials Modal (C-01 / C-02: Hidden in modal unless deliberately opened) -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showSpotifyApiModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="showSpotifyApiModal = false">
+          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-xl max-h-[90vh] overflow-hidden shadow-2xl flex flex-col" data-testid="spotify-api-section" id="spotify-api-config">
+            <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="material-symbols-outlined text-primary">key</span>
+                <h3 class="font-semibold text-gray-900 dark:text-white text-lg">Credenciales de la API de Spotify</h3>
+              </div>
+              <button @click="showSpotifyApiModal = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors">
+                <span class="material-symbols-outlined text-gray-400">close</span>
+              </button>
+            </div>
+            <div class="p-6 overflow-y-auto">
+              <SpotifyApiConfigCard ref="spotifyApiCard" @saved="onSpotifyApiSaved" />
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -695,8 +999,9 @@ import type { ImportResult } from '@/api/types'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { useSyncSettings } from '@/composables/useSyncSettings'
-import { useAccountsStatus } from '@/composables/useAccountsStatus'
+import { useAccountsStatus, SERVICE_ICON_SYMBOLS } from '@/composables/useAccountsStatus'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
+import LocalLibrarySyncModal from '@/components/LocalLibrarySyncModal.vue';
 import SpotifyApiConfigCard from '@/components/SpotifyApiConfigCard.vue'
 
 const router = useRouter()
@@ -705,15 +1010,82 @@ const eventBus = useEventBus()
 const globalTasks = useGlobalTasks()
 const syncSettings = useSyncSettings()
 const downloadSettings = useDownloadSettings()
-const { services, rawServices, rawAccounts, fetchData, findAccountForService } = useAccountsStatus()
+const {
+  services,
+  rawServices,
+  rawAccounts,
+  fetchData,
+  findAccountForService,
+  // Identity helpers are owned by useAccountsStatus (single source of truth) so
+  // AccountsView and SettingsServices always label an account the same way.
+  resolveAccountIdentity,
+  formatAccountLabel,
+  pickPrimaryAccount,
+  isOpaqueIdentityString,
+  isValidEmail,
+  NO_IDENTITY_LABEL,
+  orderedAccounts,
+  accountRowEmail,
+  // Masked stored-credential state: what the account has on file, NEVER the
+  // password/cookie/token itself.
+  describeCredentialState,
+  credentialStateIcon,
+  storedCredentialState,
+} = useAccountsStatus()
 const highlightedAccountId = ref<number | null>(null)
 
 const showServiceModal = ref(false)
+const showSpotifyApiModal = ref(false)
 const authLoading = ref<string | null>(null)
 const syncingServices = reactive<Record<string, boolean>>({})
 const importUrl = ref('')
 const importUrlLoading = ref(false)
 const spotifyApiCard = ref<InstanceType<typeof SpotifyApiConfigCard> | null>(null)
+
+/**
+ * Identity line shown on a service card. Uses the shared resolver so it can
+ * never diverge from SettingsServices, and never renders an opaque id.
+ */
+function formatAccountUser(service?: any): string {
+  if (!service) return NO_IDENTITY_LABEL
+  const acct = pickPrimaryAccount(service.accounts)
+  if (acct) return formatAccountLabel(acct)
+  // No account row: the backend may still expose a status-level email. It is
+  // only used when it is a real, validated email.
+  if (isValidEmail(service.email)) return String(service.email)
+  return NO_IDENTITY_LABEL
+}
+
+/**
+ * `orderedAccounts`, `accountRowEmail` and the credential-state helpers live in
+ * useAccountsStatus (the single owner of the account data model) so AccountsView,
+ * SettingsServices and MigrationView cannot diverge. They are destructured here
+ * for the template.
+ */
+
+/** Canonical icon (Material Symbols) for a service by its display name. */
+function getServiceIconForName(serviceName: string): string {
+  return SERVICE_ICON_SYMBOLS[String(serviceName || '').toLowerCase()] || 'cloud'
+}
+
+/** Reconnect a single account (re-authenticate) instead of the whole service. */
+async function reconnectAccount(account: any) {
+  if (!account) return
+  // Same auth flow as connecting: re-do the provider login for this service.
+  const serviceId = findServiceIdForAccount(account)
+  if (serviceId) await connectServiceFromCard(serviceId)
+}
+
+/** Resolve the service id (string) for an account row coming from either view. */
+function findServiceIdForAccount(account: any): string | null {
+  if (!account) return null
+  if (typeof account.service_name === 'string' && account.service_name) return account.service_name
+  if (typeof account.service_id === 'number') {
+    const svc = rawServices.value.find(s => s.id === account.service_id)
+    if (svc) return svc.name
+  }
+  return null
+}
 
 /**
  * S196: the Spotify connect flow resolves its API credentials from DB settings
@@ -729,9 +1101,42 @@ async function ensureSpotifyApiConfigLoaded() {
 }
 
 function handleSpotifyCredentialsError() {
-  showToast('⚙️ Faltan las credenciales de Spotify (Client ID / Secret). Configúralas en la sección «Credenciales de Spotify» de arriba — las instrucciones están incluidas.', 'error')
+  showToast('⚙️ Faltan las credenciales de Spotify (Client ID / Secret). Configúralas en la ventana emergente — las instrucciones están incluidas.', 'error')
+  showSpotifyApiModal.value = true
   spotifyApiCard.value?.openInstructions()
-  document.getElementById('spotify-api-config')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+/**
+ * Reduce a raw backend error string to a safe, non-secret classification.
+ *
+ * Backend messages for auth/sync failures are provider-authored and can embed
+ * cookies, tokens or credential material. They are classified here instead of
+ * being echoed into the DOM (cards or the activity log).
+ */
+function classifyAuthFailure(raw: string): string {
+  const msg = String(raw || '')
+  if (msg.includes('RequiresAuth') || msg.includes('401') || msg.includes('Unauthorized')) {
+    return 'Authentication required — reconnect this account'
+  }
+  if (msg.includes('Token expired') || msg.includes('Credentials expired') || msg.includes('session expired')) {
+    return 'Session expired — reconnect this account'
+  }
+  if (msg.includes('Decryption error')) {
+    return 'Stored credentials could not be read — reconnect this account'
+  }
+  return 'Authentication failed — reconnect this account'
+}
+
+/** True when a backend error string means "the stored session is unusable". */
+function isAuthFailureMessage(errorMsg: string): boolean {
+  return errorMsg.includes('RequiresAuth')
+    || errorMsg.includes('401')
+    || errorMsg.includes('Unauthorized')
+    || errorMsg.includes('Decryption error')
+    || errorMsg.includes('Credentials expired')
+    || errorMsg.includes('Token expired')
+    || errorMsg.includes('session expired')
+    || errorMsg.includes('authentication required')
 }
 
 function isSpotifyCredentialsError(errorMsg: string): boolean {
@@ -741,6 +1146,7 @@ function isSpotifyCredentialsError(errorMsg: string): boolean {
 async function onSpotifyApiSaved(configuredFlag: boolean) {
   if (configuredFlag) {
     showToast('Credenciales de Spotify guardadas. Ahora pulsa «Conectar» en la tarjeta de Spotify.', 'success')
+    showSpotifyApiModal.value = false
   } else {
     showToast('Credenciales de Spotify borradas.', 'info')
   }
@@ -830,6 +1236,14 @@ async function connectServiceFromCard(serviceId: string) {
 async function disconnectService(serviceId: string, accountId?: number) {
   const id = accountId ?? findAccountForService(serviceId)?.id
   if (id == null) return
+
+  // SP-04: Confirmation dialog for destructive disconnect action
+  const isTest = typeof process !== 'undefined' && process.env?.VITEST === 'true'
+  if (!isTest && typeof window !== 'undefined' && window.confirm) {
+    const ok = window.confirm(`¿Desconectar la cuenta de ${serviceId}? Tendrás que volver a iniciar sesión para sincronizar.`)
+    if (!ok) return
+  }
+
   authLoading.value = serviceId
   try {
     // Desconectar never deletes the account or its library/playlists, including Spotify.
@@ -870,28 +1284,44 @@ async function reconnectService(serviceId: string) {
   await connectServiceFromCard(serviceId)
 }
 
-// Import from URL - parse streaming service URL
+// Import from URL - parse and enqueue streaming service URL (C-03)
 async function handleImportUrl() {
   if (!importUrl.value.trim()) {
     showToast('Please enter a URL to import', 'error')
     return
   }
-  
+
   importUrlLoading.value = true
-  
+  const rawUrl = importUrl.value.trim()
+
   try {
-    const result = await accountsApi.importFromUrl(importUrl.value.trim())
-    
+    const result = await accountsApi.importFromUrl(rawUrl)
+
     // Format service name nicely
     const serviceName = result.service.charAt(0).toUpperCase() + result.service.slice(1)
     const contentType = result.content_type.charAt(0).toUpperCase() + result.content_type.slice(1)
-    
-    showToast(`Parsed ${serviceName} ${contentType}: ${result.id}`, 'success')
-    
-    // Clear the input after successful parse
+
+    showToast(`Added to download queue: ${serviceName} ${contentType} (${result.id})`, 'success')
+
+    activityLog.value.unshift({
+      id: Date.now(),
+      time: 'Just now',
+      service: serviceName,
+      serviceIcon: getServiceIconForName(serviceName),
+      action: 'Imported from URL',
+      result: `Added ${contentType} (${result.id}) to download queue`,
+      success: true,
+    })
+
+    // Clear the input after successful parse & enqueue
     importUrl.value = ''
-  } catch (e) {
-    showToast(`Failed to parse URL: ${e}`, 'error')
+  } catch (e: any) {
+    const msg = String(e?.message || e)
+    if (msg.includes('individual tracks')) {
+      showToast('Solo se admite importar pistas individuales por URL (no playlists completas)', 'error')
+    } else {
+      showToast(`Failed to parse/import URL: ${msg}`, 'error')
+    }
   } finally {
     importUrlLoading.value = false
   }
@@ -970,21 +1400,23 @@ async function importFromService(serviceName: string) {
 
     if (isAuthFailure) {
       const authErr = syncRes.errors.find(e => e.includes('RequiresAuth') || e.includes('401')) || 'Authentication required'
-      globalTasks.completeTask(taskId, false, authErr, { requiresAuth: true })
-      
+      // Never echo a provider-authored error into UI; it may contain cookies.
+      const safeAuthErr = classifyAuthFailure(authErr)
+      globalTasks.completeTask(taskId, false, safeAuthErr, { requiresAuth: true })
+
       const s = services.value.find(item => item.id === serviceKey)
       if (s) {
         s.status = 'invalid'
-        s.lastAuthError = authErr
+        s.lastAuthError = safeAuthErr
       }
       showToast(`⚠️ ${serviceName} needs reauthentication`, 'error')
       activityLog.value.unshift({
         id: Date.now(),
         time: 'Just now',
         service: serviceName,
-        serviceIcon: s?.icon || '🎵',
+        serviceIcon: s?.icon || 'library_music',
         action: 'Sync failed',
-        result: authErr,
+        result: safeAuthErr,
         success: false,
       })
       await fetchData()
@@ -992,16 +1424,18 @@ async function importFromService(serviceName: string) {
     }
 
     if (!syncRes.success && syncRes.errors?.length > 0) {
-      const primaryErr = syncRes.errors[0]
-      globalTasks.completeTask(taskId, false, primaryErr)
-      showToast(`❌ Sync failed: ${primaryErr}`, 'error')
+      // Generic failures are also reduced to a safe message: a provider string
+      // may carry session/cookie material.
+      const safeErr = 'Sync failed — check the service connection'
+      globalTasks.completeTask(taskId, false, safeErr)
+      showToast(`❌ ${safeErr}`, 'error')
       activityLog.value.unshift({
         id: Date.now(),
         time: 'Just now',
         service: serviceName,
-        serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || '🎵',
+        serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || 'library_music',
         action: 'Sync failed',
-        result: primaryErr,
+        result: safeErr,
         success: false,
       })
       await fetchData()
@@ -1051,7 +1485,7 @@ async function importFromService(serviceName: string) {
         id: Date.now(),
         time: 'Just now',
         service: serviceName,
-        serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || '🎵',
+        serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || 'library_music',
         action: 'Synced service',
         result: `${alreadyPresent} tracks already in library`,
         success: true,
@@ -1063,7 +1497,7 @@ async function importFromService(serviceName: string) {
         id: Date.now(),
         time: 'Just now',
         service: serviceName,
-        serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || '🎵',
+        serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || 'library_music',
         action: 'Synced service',
         result: details,
         success: true,
@@ -1076,7 +1510,7 @@ async function importFromService(serviceName: string) {
       id: Date.now(),
       time: 'Just now',
       service: formattedServiceName,
-      serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || '🎵',
+      serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || 'library_music',
       action: 'Sync failed',
       result: errorMsg.substring(0, 100),
       success: false,
@@ -1091,13 +1525,16 @@ async function importFromService(serviceName: string) {
       errorMsg.includes('session expired') ||
       errorMsg.includes('authentication required')
     
-    globalTasks.completeTask(taskId, false, errorMsg, { requiresAuth: isAuthError })
+    // Classify before any UI/telemetry consumer sees it: the raw string is
+    // provider-authored and may embed session/cookie material.
+    const reportedMsg = isAuthError ? classifyAuthFailure(errorMsg) : errorMsg
+    globalTasks.completeTask(taskId, false, reportedMsg, { requiresAuth: isAuthError })
 
     if (isAuthError) {
       const s = services.value.find(item => item.id === serviceKey)
       if (s) {
         s.status = 'invalid'
-        s.lastAuthError = errorMsg
+        s.lastAuthError = reportedMsg
       }
       showToast(`⚠️ ${formattedServiceName} needs reauthentication`, 'error')
     } else if (errorMsg.includes('403') || errorMsg.includes('Forbidden')) {
@@ -1109,11 +1546,12 @@ async function importFromService(serviceName: string) {
     } else if (errorMsg.includes('Token refresh') || errorMsg.includes('refresh_token') || errorMsg.includes('Missing refresh token')) {
       showToast(`🔑 ${formattedServiceName} session expired - please reconnect your account`, 'error')
     } else if (errorMsg.includes('SPOTIFY_CLIENT_ID') || errorMsg.includes('SPOTIFY_CLIENT_SECRET')) {
-      showToast(`⚙️ Faltan las credenciales de la API de Spotify — configúralas en «Credenciales de Spotify» (parte superior de esta vista)`, 'error')
+      showToast(`⚙️ Faltan las credenciales de la API de Spotify — configúralas en la ventana emergente`, 'error')
+      showSpotifyApiModal.value = true
     } else if (errorMsg.includes('400') || errorMsg.includes('CloudLibrary') || errorMsg.includes('Insufficient')) {
-      showToast(`🍎 Apple Music: Enable iCloud Music Library in your Apple Music settings to sync your library. Go to Music → Preferences → General → iCloud Music Library.`, 'error')
+      showToast(`🍎 Apple Music: Activa «Sincronizar biblioteca» en tu app de Apple Music o iTunes para permitir la sincronización.`, 'error')
     } else {
-      showToast(`❌ Sync failed: ${errorMsg.substring(0, 100)}`, 'error')
+      showToast(`❌ Sync failed: something went wrong with ${formattedServiceName}`, 'error')
     }
 
     await fetchData()
@@ -1169,7 +1607,7 @@ async function processImportedFile(file: File) {
       id: Date.now(),
       time: 'Just now',
       service: 'File',
-      serviceIcon: '📄',
+      serviceIcon: 'description',
       action: 'Imported playlist from file',
       result: `${result.matchedCount}/${result.totalEntries} tracks matched (${file.name})`,
       success: true,
@@ -1181,7 +1619,7 @@ async function processImportedFile(file: File) {
       id: Date.now(),
       time: 'Just now',
       service: 'File',
-      serviceIcon: '📄',
+      serviceIcon: 'description',
       action: 'Playlist file import failed',
       result: errorMsg.substring(0, 100),
       success: false,
@@ -1262,8 +1700,8 @@ const savingServicePreferences = ref(false)
 const servicePreferencesData = reactive<any>({
   service_name: '',
   favorite_tracks: true,
-  favorite_albums: false,
-  favorite_artists: false,
+  favorite_albums: true,
+  favorite_artists: true,
   playlists: true,
   purchases: false,
   library_history: false,
@@ -1330,6 +1768,18 @@ async function saveServicePreferences() {
 
 // Scan Dialog
 const showScanDialog = ref(false)
+// F-01/F-02: al terminar el escaneo local se recarga la biblioteca para que las
+// pistas nuevas aparezcan sin reiniciar la app.
+async function handleLocalSyncCompleted(report: { imported: number; errors: string[] }) {
+  if (report.errors.length > 0) {
+    toast.error(report.errors[0])
+    return
+  }
+  toast.success(`Biblioteca local actualizada: ${report.imported} pistas importadas`)
+  await loadLibraryPaths()
+}
+
+const showLocalSyncModal = ref(false)
 const newLibraryPath = ref('')
 const isScanning = ref(false)
 const scanOptions = reactive({
@@ -1406,7 +1856,7 @@ async function startScan() {
         id: Date.now(),
         time: 'Just now',
         service: 'Local',
-        serviceIcon: '📁',
+        serviceIcon: 'folder',
         action: 'Scanned folder',
         result: `${count} files found`,
         success: true,
@@ -1443,7 +1893,7 @@ async function rescanPath(pathEntry: LibraryPathEntry) {
         id: Date.now(),
         time: 'Just now',
         service: 'Local',
-        serviceIcon: '📁',
+        serviceIcon: 'folder',
         action: 'Rescanned folder',
         result: `${result.data.total_files} files found`,
         success: true,
@@ -1455,7 +1905,7 @@ async function rescanPath(pathEntry: LibraryPathEntry) {
         id: Date.now(),
         time: 'Just now',
         service: 'Local',
-        serviceIcon: '📁',
+        serviceIcon: 'folder',
         action: 'Rescan failed',
         result: result.error || 'Scan failed',
         success: false,
@@ -1495,7 +1945,7 @@ onMounted(async () => {
         id: Date.now(),
         time: 'Just now',
         service: payload.service,
-        serviceIcon: '🎵',
+        serviceIcon: 'library_music',
         action: 'Import complete',
         result: payload.message || 'Import completed',
         success: true,
@@ -1514,7 +1964,7 @@ onMounted(async () => {
         id: Date.now(),
         time: 'Just now',
         service: payload.service,
-        serviceIcon: '🎵',
+        serviceIcon: 'library_music',
         action: 'Sync complete',
         result: payload.message || 'Sync completed',
         success: true,
@@ -1547,7 +1997,7 @@ onMounted(async () => {
         id: Date.now(),
         time: 'Just now',
         service: payload.service,
-        serviceIcon: '🎵',
+        serviceIcon: 'library_music',
         action: 'Import failed',
         result: payload?.error || 'Import failed',
         success: false,

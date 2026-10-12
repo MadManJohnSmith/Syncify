@@ -17,7 +17,24 @@
     @click="!disabled && $emit('click')"
   >
     <span class="pr-8 pointer-events-none">
-      <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ title }}</span>
+      <span class="inline-flex items-center gap-1.5 text-sm font-medium text-gray-900 dark:text-white">
+        <span>{{ title }}</span>
+        <span
+          v-if="tooltip"
+          class="relative group/toggle-tip inline-flex items-center pointer-events-auto"
+          :title="tooltip"
+        >
+          <span
+            class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 dark:bg-surface-highlight text-gray-600 dark:text-gray-300 group-hover/toggle-tip:bg-primary/20 group-hover/toggle-tip:text-primary text-[10px] font-bold cursor-help transition-colors"
+          >?</span>
+          <span
+            role="tooltip"
+            class="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 hidden group-hover/toggle-tip:block z-40 w-64 p-2 text-xs font-normal normal-case text-white bg-gray-900 dark:bg-gray-800 rounded-lg shadow-xl pointer-events-none"
+          >
+            {{ tooltip }}
+          </span>
+        </span>
+      </span>
       <span v-if="subtitle" class="block text-xs text-text-secondary mt-0.5">{{ subtitle }}</span>
     </span>
     <span
@@ -26,8 +43,8 @@
     >
       <span
         :class="[
-          'absolute block w-5 h-5 rounded-full bg-white border-4 transition-all duration-200 ease-in',
-          checked ? 'right-0 border-primary' : 'left-0 border-gray-300 dark:border-gray-700'
+          'absolute block w-5 h-5 rounded-full border-4 transition-all duration-200 ease-in',
+          checked ? 'right-0 bg-on-accent border-primary' : 'left-0 bg-white border-gray-300 dark:border-gray-700'
         ]"
       />
       <span
@@ -46,12 +63,14 @@ const props = withDefaults(
   defineProps<{
     title: string
     subtitle?: string
+    tooltip?: string
     checked: boolean
     disabled?: boolean
     testId?: string
   }>(),
   {
     subtitle: '',
+    tooltip: '',
     disabled: false,
     testId: 'settings-toggle',
   }

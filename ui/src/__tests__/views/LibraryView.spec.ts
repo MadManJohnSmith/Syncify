@@ -237,14 +237,88 @@ describe('LibraryView', () => {
 
         const addCall = invokeCalls.find(c => c.cmd === 'add_to_queue');
         expect(addCall).toBeDefined();
+        // TIDAL-QUAL: the library no longer hardcodes 'hires' + allowFallback
+        // when settings can't be read (the mock returns null for
+        // get_effective_download_preferences here). It asks for the top tier
+        // and stops allowing a silent downgrade, so a Tidal answer of AAC
+        // fails loudly instead of being written as m4a.
         expect(addCall?.args).toEqual({
             trackId: 101,
             targetTitle: 'Audited Track',
             targetArtist: 'Audited Artist',
             targetAlbum: 'Audited Album',
             qualityPreference: 'hires',
-            allowFallback: true,
+            allowFallback: false,
         });
+    });
+
+    it('TIDAL-QUAL: honours the configured quality ceiling and downgrade policy', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        const mockTracks = [
+            createTestTrack({ id: 201, title: 'Ceiled Track', artist_name: 'Artist' }),
+        ];
+
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'get_effective_download_preferences') {
+                return {
+                    maxQuality: 'lossless',
+                    strictQuality: true,
+                    fallbackAction: 'skip',
+                    allowDowngrade: false,
+                    preferredFormat: 'flac',
+                    serviceQualities: [],
+                };
+            }
+            if (cmd === 'add_to_queue') return 1;
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+        await wrapper.find('button[title="Download"]').trigger('click');
+        await flushPromises();
+
+        const addCall = invokeCalls.find(c => c.cmd === 'add_to_queue');
+        // The ceiling chosen in Settings wins over the view's "ask for max".
+        expect(addCall?.args.qualityPreference).toBe('lossless');
+        expect(addCall?.args.allowFallback).toBe(false);
+        wrapper.unmount();
+    });
+
+    it('TIDAL-QUAL: allows a downgrade when the user configured fallback', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        const mockTracks = [
+            createTestTrack({ id: 202, title: 'Fallback Track', artist_name: 'Artist' }),
+        ];
+
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'get_effective_download_preferences') {
+                return {
+                    maxQuality: 'hires',
+                    strictQuality: false,
+                    fallbackAction: 'try_next',
+                    allowDowngrade: true,
+                    preferredFormat: 'flac',
+                    serviceQualities: [],
+                };
+            }
+            if (cmd === 'add_to_queue') return 1;
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+        await wrapper.find('button[title="Download"]').trigger('click');
+        await flushPromises();
+
+        const addCall = invokeCalls.find(c => c.cmd === 'add_to_queue');
+        expect(addCall?.args.qualityPreference).toBe('hires');
+        expect(addCall?.args.allowFallback).toBe(true);
+        wrapper.unmount();
     });
 
     it('displays tracks imported from albums (is_favorite = 0) in default library view', async () => {
@@ -405,7 +479,7 @@ describe('LibraryView', () => {
         await flushPromises();
 
         const headers = wrapper.findAll('.column-header').map(h => h.text().trim());
-        expect(headers).toEqual(['#', 'Title', 'Time', 'Services', 'Meta', 'Lyrics', 'DL', 'Quality', 'Special']);
+        expect(headers).toEqual(['#', 'Title', 'Time', 'Services', 'Meta', 'Lyrics', 'DL', 'Quality']);
     });
 
     it('S141: persists column reordering to localStorage', async () => {
@@ -434,7 +508,7 @@ describe('LibraryView', () => {
 
         // Drag column 0 (#) to column 2 (Time)
         const colHeaders = wrapper.findAll('.column-header');
-        expect(colHeaders.length).toBe(9);
+        expect(colHeaders.length).toBe(8);
 
         // Simulate dragstart on first column and drop on third
         await colHeaders[0].trigger('dragstart', { dataTransfer: { effectAllowed: '', setData: vi.fn() } });
@@ -854,5 +928,225 @@ describe('LibraryView quality deep-link (FE-10)', () => {
         await flushPromises();
 
         expect(wrapper.text()).toContain('Any Song');
+    });
+});
+
+describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)', () => {
+    beforeEach(() => {
+        resetMocks();
+        vi.clearAllMocks();
+    });
+
+    it('PR-02: renders virtual scroller with contain: strict, spacer height and window slicing', async () => {
+        // Generate 60 test tracks
+        const mockTracks = Array.from({ length: 60 }, (_, i) =>
+            createTestTrack({ id: i + 1, title: `Track ${i + 1}` })
+        );
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 60, offset: 0, limit: 100, has_more: false };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        // 1. Container has contain: strict
+        const scroller = wrapper.find('.custom-scrollbar[style*="contain: strict"]');
+        expect(scroller.exists()).toBe(true);
+
+        // 2. Spacer height matches 60 * 56px = 3360px (+ 48px end-of-list)
+        const spacer = scroller.find('div[style*="height:"]');
+        expect(spacer.exists()).toBe(true);
+        const style = spacer.attributes('style') || '';
+        expect(style).toContain('height: 3408px');
+
+        // 3. Rendered track rows in DOM is sliced (not rendering all 60 simultaneously at top scrollTop=0)
+        const renderedRows = wrapper.findAll('.track-row');
+        expect(renderedRows.length).toBeLessThan(60);
+        expect(renderedRows.length).toBeGreaterThan(0);
+        expect(wrapper.text()).toContain('Track 1');
+    });
+
+    it('PR-01: handleScroll updates virtual position and throttles loadMore calls', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        const mockTracks = Array.from({ length: 20 }, (_, i) =>
+            createTestTrack({ id: i + 1, title: `Track ${i + 1}` })
+        );
+
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 100, offset: 0, limit: 100, has_more: true };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        const scroller = wrapper.find('.custom-scrollbar[style*="contain: strict"]');
+        expect(scroller.exists()).toBe(true);
+
+        // Simulate scroll event with low scrollBottom (< 300)
+        const el = scroller.element as HTMLElement;
+        Object.defineProperty(el, 'scrollHeight', { value: 2000, configurable: true });
+        Object.defineProperty(el, 'clientHeight', { value: 600, configurable: true });
+        Object.defineProperty(el, 'scrollTop', { value: 1350, writable: true, configurable: true });
+
+        // Use a fixed clock for the burst: on a loaded CI runner, ten synchronous
+        // events can span >120ms of real time and legitimately trigger another
+        // throttle window. We want to check one window, not CPU speed.
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+        try {
+            for (let i = 0; i < 10; i++) {
+                scroller.trigger('scroll');
+            }
+            await flushPromises();
+
+            const getLibraryCalls = invokeCalls.filter(c => c.cmd === 'get_library');
+            // mount (first), plus at most one leading and one trailing load.
+            expect(getLibraryCalls.length).toBeLessThanOrEqual(3);
+        } finally {
+            clock.mockRestore();
+            wrapper.unmount();
+        }
+    });
+
+    it('L-11: batch selection bar is rendered as fixed overlay without Check Availability', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 1, title: 'Track One' }),
+            createTestTrack({ id: 2, title: 'Track Two' }),
+        ];
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 100, has_more: false };
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        // Initially no batch bar
+        expect(wrapper.find('.batch-bar').exists()).toBe(false);
+
+        // Select a track via checkbox
+        const checkboxes = wrapper.findAll('input[type="checkbox"]');
+        expect(checkboxes.length).toBeGreaterThan(0);
+        await checkboxes[0].setValue(true);
+        await flushPromises();
+
+        // Batch bar appears as fixed overlay (floating)
+        const batchBar = wrapper.find('.batch-bar');
+        expect(batchBar.exists()).toBe(true);
+        expect(batchBar.classes()).toContain('fixed');
+        expect(batchBar.classes()).toContain('bottom-20');
+        expect(batchBar.classes()).not.toContain('shrink-0');
+
+        // Check Availability button is NOT present in the batch selection bar
+        expect(batchBar.text()).not.toContain('Check Availability');
+        // Contains Download and Remove
+        expect(batchBar.text()).toContain('Download');
+        expect(batchBar.text()).toContain('Remove');
+    });
+
+    it('Q-04: batch download button reports in-flight state and recovers', async () => {
+        const mockTracks = [
+            createTestTrack({ id: 1, title: 'Track One' }),
+        ];
+        let resolveEnqueue: ((v: unknown) => void) | null = null;
+        let calls = 0;
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 100, has_more: false };
+            if (cmd === 'enqueue_tracks') {
+                calls += 1;
+                return new Promise((res) => { resolveEnqueue = res; });
+            }
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+        await wrapper.findAll('input[type="checkbox"]')[0].setValue(true);
+        await flushPromises();
+
+        const downloadButton = wrapper.findAll('.batch-bar button').find(b => b.text().includes('Download'))!;
+        expect(downloadButton.exists()).toBe(true);
+        expect(downloadButton.text()).not.toContain('Enqueuing');
+        expect((downloadButton.element as HTMLButtonElement).disabled).toBe(false);
+
+        // Click: while the request is in flight the button says so and is
+        // disabled, and a second click cannot fire a second request.
+        await downloadButton.trigger('click');
+        await flushPromises();
+        expect(calls).toBe(1);
+
+        const busy = wrapper.findAll('.batch-bar button').find(b => b.text().includes('Enqueuing'))!;
+        expect(busy.exists()).toBe(true);
+        expect((busy.element as HTMLButtonElement).disabled).toBe(true);
+        expect(busy.attributes('aria-busy')).toBe('true');
+        await busy.trigger('click');
+        await flushPromises();
+        expect(calls).toBe(1);
+
+        // Resolve: the selection is cleared, so the bar goes away entirely and
+        // the pending state cannot linger.
+        resolveEnqueue!({ selected: 1, eligible: 1, enqueued: 1, excluded_preflight: 0, skip_reasons: [] });
+        await flushPromises();
+        expect(wrapper.findAll('.batch-bar button').some(b => b.text().includes('Enqueuing'))).toBe(false);
+        expect(wrapper.find('.batch-bar').exists()).toBe(false);
+        wrapper.unmount();
+    });
+
+    it('L-12: renders download telemetry pills, concurrency selector, and queue reconciliation details', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_library') return { tracks: [], total: 0, offset: 0, limit: 100, has_more: false };
+            if (cmd === 'get_queue_stats') return { total: 10, queued: 4, downloading: 2, completed: 3, failed: 1, paused: 0 };
+            if (cmd === 'get_worker_status') return { running: true, paused: false, active_downloads: 2, max_concurrent: 4 };
+            if (cmd === 'set_max_concurrency') return null;
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        // 1. Header pills rendered
+        const header = wrapper.find('.library-header');
+        expect(header.exists()).toBe(true);
+        expect(header.text()).toContain('Active:');
+        expect(header.text()).toContain('2');
+        expect(header.text()).toContain('Queued:');
+        expect(header.text()).toContain('4');
+        expect(header.text()).toContain('Completed:');
+        expect(header.text()).toContain('3');
+        expect(header.text()).toContain('Failed:');
+        expect(header.text()).toContain('1');
+
+        // 2. Concurrency selector buttons
+        const concurrencyButtons = header.findAll('button[title*="concurrent download thread"]');
+        expect(concurrencyButtons.length).toBe(8); // [1, 2, 3, 4, 5, 6, 8, 10]
+
+        // Click button for 6 threads
+        const btn6 = concurrencyButtons.find(b => b.text().trim() === '6');
+        expect(btn6).toBeDefined();
+        await btn6!.trigger('click');
+        await flushPromises();
+
+        const setConcurrencyCall = invokeCalls.find(c => c.cmd === 'set_max_concurrency');
+        expect(setConcurrencyCall).toBeDefined();
+        expect(setConcurrencyCall?.args).toEqual({ maxConcurrent: 6 });
+
+        // 3. Queue reconciliation strip toggling
+        const toggleBtn = header.find('button[title*="Toggle queue reconciliation"]');
+        expect(toggleBtn.exists()).toBe(true);
+        await toggleBtn.trigger('click');
+        await flushPromises();
+
+        const strip = wrapper.find('.reconciliation-strip');
+        expect(strip.exists()).toBe(true);
+        expect(strip.text()).toContain('Queue Reconciliation');
+        expect(strip.text()).toContain('Elegibles:');
+        expect(strip.text()).toContain('Pendientes:');
     });
 });

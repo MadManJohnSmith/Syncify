@@ -14,6 +14,12 @@ Symfonium, Plexamp o cualquier reproductor que quieras.
 **[⬇ Descarga la última versión](https://github.com/MadManJohnSmith/Syncify/releases/latest)**
 · [Compila desde fuente](#compilar-desde-fuente) · [Documentación](docs/README.md)
 
+> **Estado del traspaso (2026-10-12):** las funciones de abajo describen la rama
+> `release/v0.6.0`, abierta como pull request #26 contra main, no necesariamente
+> la release etiquetada v0.5.0. Consulta
+> [verificación y limitaciones](#verificación-y-limitaciones) antes de dar esta
+> rama por lista para publicar.
+
 [![Release](https://img.shields.io/github/v/release/MadManJohnSmith/Syncify?style=flat-square&logo=github)](https://github.com/MadManJohnSmith/Syncify/releases/latest)
 [![CI](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml/badge.svg)](https://github.com/MadManJohnSmith/Syncify/actions/workflows/ci.yml)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8D8?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
@@ -64,20 +70,22 @@ le da la vuelta: convierte "tu" catálogo en *tu* catálogo.
 
 ## ¿Qué puedes hacer con Syncify?
 
-- **Importa tu biblioteca** de Qobuz, Tidal, Spotify, Deezer, SoundCloud y
-  Apple Music — pistas, álbumes, artistas y playlists. No es la misma
-  profundidad en todos: la API pública de SoundCloud no expone playlists ni
-  historial, Deezer no expone historial de escucha, y el importador de Apple
-  Music lee tu biblioteca de favoritos en vez de tu historial. La
-  [matriz de paridad](docs/MATRIZ_PARIDAD_IMPORTACION.md) es la referencia
-  exacta.
+- **Importa tu biblioteca** de Qobuz, Tidal, Spotify, Deezer, SoundCloud,
+  Apple Music, o tus **carpetas de música locales** — pistas, álbumes,
+  artistas y playlists. Escanea tus archivos físicos del disco y deduplícalos
+  frente a catálogos de streaming por ISRC y hash de audio, con paridad de
+  puntuación de metadatos.
+- **Reproduce con el reproductor integrado**: reproductor unificado centrado en
+  la barra inferior con expansión de carátula al hover, y un reproductor a
+  pantalla completa con letras sincronizadas (`.lrc`) con auto-desplazamiento,
+  visualizador de folletos digitales (`.pdf`) y carátulas animadas.
 - **Migra entre servicios**: elige origen, elige destino, revisa las
   coincidencias y transfiere. Syncify primero empareja por ISRC y después por
   título y artista, y transfiere lo que encuentra como **favoritos en la
   cuenta de destino**. Aún no reconstruye tus playlists allí.
-- **Descarga con cascada de calidad**: el motor siempre apunta al mejor
-  nivel ofrecido para cada pista, baja al siguiente cuando no está y
-  verifica cada archivo que escribe.
+- **Descarga con cascada de calidad estricta**: fallback cruzado sin pérdida
+  (Qobuz ↔ Tidal) que prioriza calidad FLAC/CD entre servicios antes de degradar,
+  imponiendo un piso mínimo estricto de 320 kbps y verificación física en disco.
 - **Metadatos de nivel profesional automáticos**: artistas múltiples,
   colaboraciones y compilaciones bien resueltas, países, BPM, tonalidad y
   energía — desde MusicBrainz, AcoustID y Last.fm.
@@ -111,7 +119,8 @@ le da la vuelta: convierte "tu" catálogo en *tu* catálogo.
 
 Bajo el capó: una app de escritorio **Tauri 2** (núcleo Rust + UI en Vue 3)
 con IPC tipado, un motor de descarga/reparación multihilo y un esquema local
-endurecido a lo largo de **83 migraciones SQL**. Los logins de servicios
+endurecido a lo largo de **91 migraciones SQL en este árbol de trabajo** (87
+confirmadas más 4 nuevas aquí). Los logins de servicios
 corren por puentes Python pequeños y auditados (Playwright, Mutagen, AcoustID).
 
 ### Cómo encaja todo
@@ -171,21 +180,27 @@ Descarga la última build de la página de
 | Plataforma | Archivos |
 |---|---|
 | **Windows** | `Syncify_*_x64-setup.exe` (instalador) · `Syncify-Windows-Portable.zip` |
-| **Linux** | `*.AppImage` · `*.deb` · `Syncify-Linux-x86_64.tar.gz` (binario crudo + puentes) |
+| **Linux** | `*.AppImage` · `*.deb` · `Syncify-Linux-x86_64.tar.gz` (binario crudo + binarios incluidos) |
+
+Las dos plataformas empaquetan sus propias copias de las herramientas
+externas, así que una instalación reciente no tiene nada más que descargar ni
+configurar:
+
+- `ffmpeg`, `ffprobe` y `fpcalc` (Chromaprint) viajan como entradas
+  `bundle.externalBin`; el AppImage de Linux lleva además los plugins mínimos
+  de GStreamer, sin los que arrancaría pero no sonaría.
+- Un runtime de Python privado con los puentes de servicios ya instalados, así
+  que nunca se pide el Python del sistema.
 
 Después:
 
-1. Instala y abre Syncify: `ffmpeg`, `ffprobe` y `fpcalc` (Chromaprint)
-   **viajan dentro de cada paquete**, igual que un runtime de Python privado
-   con los puentes de servicios ya instalados — no hay nada más que
-   descargar, instalar ni configurar.
-2. Corre el asistente de primera ejecución: conecta tus cuentas, elige tu
+1. Corre el asistente de primera ejecución: conecta tus cuentas, elige tu
    carpeta de música, listo. Las credenciales se cifran y se guardan en la
    base de datos SQLite propia de Syncify, dentro de la carpeta de perfil de
    la app. La clave de cifrado vive en el llavero de tu sistema operativo
    cuando hay uno disponible, y si no (Linux sin sesión gráfica, sin Secret
    Service) cae a un archivo `.crypto_key` con permisos `0600` en esa misma
-   carpeta de perfil.
+   carpeta de perfil: en esos Linux esa es la vía prevista, no un fallo.
 
 > ¿Compilando desde fuente? Mira
 > [`src-tauri/binaries/README.md`](src-tauri/binaries/README.md) para saber
@@ -213,13 +228,68 @@ configuración plano.
 **¿Qué calidad puedo esperar?**
 
 El motor apunta al mejor nivel que cada servicio ofrezca (FLAC hasta Hi-Res
-24-bit/192 kHz) y baja de nivel pista por pista. Cada archivo se verifica
-contra lo que el proveedor prometió antes de darse por bueno.
+24-bit/192 kHz) y baja de nivel cuando ese no está. En el fallback cruzado
+Qobuz→Tidal se prefiere la capa sin pérdida antes de cualquier paso con pérdida,
+y un candidato por debajo de 320 kbps se rechaza en vez de escribirse. Cada
+archivo se re-inspecciona en disco y se verifica contra lo que el proveedor
+prometió antes de darse por bueno.
 
 **¿Hay versión para macOS?**
 
-Todavía no. Windows (instalador y portable) y Linux (AppImage, DEB, tarball)
-son las plataformas soportadas hoy.
+No. Windows (instalador y portable) y Linux (AppImage, DEB, tarball) son las
+plataformas soportadas.
+
+**¿Puedo descargar de Spotify, Deezer, SoundCloud o Apple Music?**
+
+De esos servicios, directamente, no. Los motores de descarga funcionan hoy
+encaminando la coincidencia a una tubería nativa de entrega (Qobuz y Tidal) o,
+pasando por una resolución SongLink, a un respaldo de Amazon Music; Spotify,
+Deezer, SoundCloud y Apple Music no ofrecen un flujo descargable. En la
+práctica la app marca qué pistas no encontraron fuente en vez de saltarlas en
+silencio.
+
+**¿Está terminada la app?**
+
+No, y esta página no lo afirma. Syncify es previo a la 1.0: el trabajo de
+features sigue en curso en esta rama de traspaso y no se ha cortado ninguna
+release desde ella. El tag actual `v0.5.0` es anterior al reproductor a
+pantalla completa, al visor de letras sincronizadas y a la cascada estricta de
+calidad de 320 kbps descritos arriba. La siguiente release necesita antes
+ampliar las comprobaciones listadas abajo.
+
+### Verificación y limitaciones
+
+El trabajo está confirmado en la rama `release/v0.6.0` y abierto como pull
+request #26 contra main (commit `31b5f49`). Verificación local el 2026-10-12:
+Rust `cargo test --workspace --all-features` reportó 2452 OK, 0 fallos y 9
+ignorados; Vitest pasó 996 pruebas en 121 archivos; Python reportó 279 OK;
+`cargo clippy --workspace --all-targets --all-features -- -D warnings` y
+`cargo fmt --check` quedaron limpios; el build del frontend y sus comprobaciones
+de tipo pasaron. Lo que **no** se ha demostrado aquí y no debe anunciarse
+como funcionando:
+
+- **La sesión gráfica.** El diseño de la UI, la reproducción de audio, la
+  bandeja, MPRIS/D-Bus y el comportamiento en el gestor de ventanas no se han
+  ejercitado en un escritorio real; el build del frontend y su comprobación de
+  tipos no los demuestran.
+- **La red en vivo.** Ningún login de arranque, enriquecimiento con proveedores,
+  descarga ni resolución de letras ha corrido contra servicios reales; esas
+  partes solo se prueban contra fixtures y mocks.
+- **Tests de Rust ignorados.** Los 9 tests ignorados que necesitan red o
+  credenciales no se han ejercitado.
+- **Windows.** La ruta de build de Windows existe en CI, pero los instaladores
+  de Windows y los binarios empaquetados para Windows no se han producido ni
+  ejercitado localmente; el target `x86_64-pc-windows-msvc` no se ha comprobado
+  en esta máquina.
+- **La release en sí.** El pull request #26 no se ha mergeado y no se ha cortado
+  release desde él. El enlace de descarga de arriba sigue apuntando a v0.5.0,
+  anterior a estos cambios; las insignias `Release` y `CI` describen lo último
+  publicado, no este estado.
+
+La próxima publicación requiere, como mínimo, que estas comprobaciones queden
+en verde sobre la revisión mergeada, más los propios requisitos de la puerta de
+release (un tag `vX.Y.Z` que apunte a una revisión cuya corrida de CI haya
+tenido éxito).
 
 ## Compilar desde fuente
 

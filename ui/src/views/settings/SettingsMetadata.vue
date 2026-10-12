@@ -1,41 +1,63 @@
 <template>
   <div class="space-y-8 animate-in fade-in duration-300">
     <section class="space-y-4">
-      <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
-        Metadata Sources
-      </h3>
-      <BaseToggle 
-        title="Enable MusicBrainz lookups" 
-        subtitle="Use ISRC to fetch canonical metadata" 
+      <div class="flex items-center justify-between pb-2 border-b border-gray-200 dark:border-border-dark">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-white">
+          Metadata Sources
+        </h3>
+        <span class="text-xs text-text-secondary">Enriquecimiento de biblioteca</span>
+      </div>
+      <div class="p-3 bg-gray-50 dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl text-xs text-text-secondary">
+        <p>Fuentes de metadatos canónicos para enriquecer la biblioteca. Las descargas directas de streaming obtienen sus metadatos del proveedor (Tidal/Qobuz); estos ajustes rigen la catalogación y el enriquecimiento posterior.</p>
+      </div>
+      <BaseToggle
+        title="Enable MusicBrainz lookups"
+        subtitle="Use ISRC to fetch canonical metadata during library enrichment"
+        tooltip="Consulta la base de datos abierta MusicBrainz para obtener ISRC, año y etiquetas canónicas. Se ejecuta en segundo plano durante el enriquecimiento de la biblioteca."
         :checked="metadataSettings.settings.enable_musicbrainz"
         @click="metadataSettings.settings.enable_musicbrainz = !metadataSettings.settings.enable_musicbrainz; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Enable Last.fm tags" 
-        subtitle="Fetch genres, moods, and community tags" 
+      <BaseToggle
+        title="Enable Last.fm tags"
+        subtitle="Fetch genres, moods, and community tags (requires Last.fm API key)"
+        tooltip="Consulta Last.fm para rellenar géneros secundarios y estados de ánimo en la biblioteca. Requiere una clave de API configurada."
         :checked="metadataSettings.settings.enable_lastfm"
         @click="metadataSettings.settings.enable_lastfm = !metadataSettings.settings.enable_lastfm; metadataSettings.saveSettings()"
       />
     </section>
-    
+
     <!-- Cat B: Tagging Behavior -->
     <section class="space-y-4">
       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Tagging Behavior</h3>
-      <BaseToggle 
-        title="Overwrite existing tags on re-import" 
+      <BaseToggle
+        title="Overwrite existing tags on re-import"
+        subtitle="Sobrescribir etiquetas locales al volver a importar pistas"
+        tooltip="Al reimportar una pista que ya existía, reemplaza las etiquetas existentes con los valores más recientes."
         :checked="metadataSettings.settings.overwrite_on_reimport"
         @click="metadataSettings.settings.overwrite_on_reimport = !metadataSettings.settings.overwrite_on_reimport; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Preserve custom tags" 
-        subtitle="Keep user-edited tags when refreshing metadata" 
+      <BaseToggle
+        title="Preserve custom tags"
+        subtitle="Keep user-edited tags when refreshing metadata"
+        tooltip="Mantiene las ediciones manuales introducidas por el usuario (títulos, géneros personalizados) al refrescar metadatos."
         :checked="metadataSettings.settings.preserve_custom_tags"
         @click="metadataSettings.settings.preserve_custom_tags = !metadataSettings.settings.preserve_custom_tags; metadataSettings.saveSettings()"
       />
-      
+
       <div class="max-w-md">
-        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Multi-value separator</label>
-        <select 
+        <div class="flex items-center gap-1.5 mb-2">
+          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Multi-value separator</label>
+          <span
+            class="relative group/sep-tip inline-flex items-center"
+            title="Separador para etiquetas de valores múltiples."
+          >
+            <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 dark:bg-surface-highlight text-gray-600 dark:text-gray-300 text-[10px] font-bold cursor-help">?</span>
+            <span role="tooltip" class="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 hidden group-hover/sep-tip:block z-40 w-56 p-2 text-xs font-normal text-white bg-gray-900 dark:bg-gray-800 rounded-lg shadow-xl pointer-events-none">
+              Carácter separador utilizado al escribir etiquetas de múltiples valores (por ejemplo, múltiples artistas o géneros) en archivos de audio.
+            </span>
+          </span>
+        </div>
+        <select
           v-model="metadataSettings.settings.multi_value_separator"
           @change="metadataSettings.saveSettings()"
           class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none"
@@ -50,118 +72,178 @@
 
     <!-- Cat B: Symfonium-Specific Tags -->
     <section class="space-y-4">
-      <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Symfonium-Specific Tags</h3>
-      <BaseToggle 
-        title="Write RELEASETYPE tag" 
-        subtitle="Album / Single / EP / Compilation / Live" 
+      <div class="flex items-center justify-between pb-2 border-b border-gray-200 dark:border-border-dark">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Symfonium-Specific Tags</h3>
+        <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+          Estándar Vorbis FLAC
+        </span>
+      </div>
+      <p class="text-xs text-text-secondary">Etiquetas estándar para compatibilidad con reproductores como Symfonium. El motor de FLAC las incluye automáticamente cuando están disponibles.</p>
+      <BaseToggle
+        title="Write RELEASETYPE tag"
+        subtitle="Album / Single / EP / Compilation / Live"
+        tooltip="Clasifica el tipo de lanzamiento (Album, Single, EP, Compilation, Live) para ordenación por tipo en reproductores móviles."
         :checked="metadataSettings.settings.write_releasetype"
         @click="metadataSettings.settings.write_releasetype = !metadataSettings.settings.write_releasetype; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Write LABEL tag" 
+      <BaseToggle
+        title="Write LABEL tag"
+        subtitle="Record label and organization"
+        tooltip="Escribe el sello discográfico o editor en las etiquetas LABEL y RECORDLABEL."
         :checked="metadataSettings.settings.write_label"
         @click="metadataSettings.settings.write_label = !metadataSettings.settings.write_label; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Write WORK and COMPOSER tags" 
-        subtitle="For classical music organization" 
+      <BaseToggle
+        title="Write WORK and COMPOSER tags"
+        subtitle="For classical music organization"
+        tooltip="Escribe las etiquetas WORK y COMPOSER para la organización por movimientos y obras clásicas."
         :checked="metadataSettings.settings.write_work_composer"
         @click="metadataSettings.settings.write_work_composer = !metadataSettings.settings.write_work_composer; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Write MusicBrainz IDs" 
-        subtitle="MUSICBRAINZ_TRACKID, MUSICBRAINZ_RELEASEID, etc." 
+      <BaseToggle
+        title="Write MusicBrainz IDs"
+        subtitle="MUSICBRAINZ_TRACKID, MUSICBRAINZ_RELEASEID, etc."
+        tooltip="Incrusta los UUIDs canónicos de MusicBrainz (Recording, Release, Artist) para vincular la pista con precisión matemática."
         :checked="metadataSettings.settings.write_musicbrainz_ids"
         @click="metadataSettings.settings.write_musicbrainz_ids = !metadataSettings.settings.write_musicbrainz_ids; metadataSettings.saveSettings()"
       />
     </section>
-    
+
     <!-- Cat B: Custom App Tags -->
     <section class="space-y-4">
-      <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Custom App Tags</h3>
-      <BaseToggle 
-        title="Write DOWNLOAD_SOURCE tag" 
-        subtitle="Which service the file was downloaded from" 
+      <div class="flex items-center justify-between pb-2 border-b border-gray-200 dark:border-border-dark">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Custom App Tags</h3>
+        <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20">
+          Auditoría Interna
+        </span>
+      </div>
+      <p class="text-xs text-text-secondary">Etiquetas extendidas de catalogación de Syncify. Se aplican en operaciones de exportación y mantenimiento de biblioteca.</p>
+      <BaseToggle
+        title="Write DOWNLOAD_SOURCE tag"
+        subtitle="Which service the file was downloaded from (e.g. tidal, qobuz)"
+        tooltip="Guarda el identificador del servicio de descarga original en los metadatos Vorbis."
         :checked="metadataSettings.settings.write_download_source"
         @click="metadataSettings.settings.write_download_source = !metadataSettings.settings.write_download_source; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Write DOWNLOAD_DATE tag" 
+      <BaseToggle
+        title="Write DOWNLOAD_DATE tag"
+        subtitle="Timestamp of when the track was downloaded"
+        tooltip="Registra la fecha y hora exacta de descarga en formato estándar ISO."
         :checked="metadataSettings.settings.write_download_date"
         @click="metadataSettings.settings.write_download_date = !metadataSettings.settings.write_download_date; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Write ONLY_AVAILABLE_ON tag" 
-        subtitle="Mark tracks exclusive to one service" 
+      <BaseToggle
+        title="Write ONLY_AVAILABLE_ON tag"
+        subtitle="Mark tracks exclusive to one service"
+        tooltip="Identifica pistas exclusivas que solo existen en un único proveedor de streaming."
         :checked="metadataSettings.settings.write_only_available_on"
         @click="metadataSettings.settings.write_only_available_on = !metadataSettings.settings.write_only_available_on; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Write NOT_AVAILABLE_STREAMING tag" 
-        subtitle="Mark tracks that are not available in streaming" 
+      <BaseToggle
+        title="Write NOT_AVAILABLE_STREAMING tag"
+        subtitle="Mark tracks that are not available in streaming"
+        tooltip="Señala pistas descatalogadas o no disponibles para streaming."
         :checked="metadataSettings.settings.write_not_available_streaming"
         @click="metadataSettings.settings.write_not_available_streaming = !metadataSettings.settings.write_not_available_streaming; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Write METADATA_QUALITY_SCORE tag" 
-        subtitle="0-100 completeness score" 
+      <BaseToggle
+        title="Write METADATA_QUALITY_SCORE tag"
+        subtitle="0-100 completeness score"
+        tooltip="Escribe la puntuación calculada de calidad de metadatos (0-100) dentro del archivo físico."
         :checked="metadataSettings.settings.write_quality_score"
         @click="metadataSettings.settings.write_quality_score = !metadataSettings.settings.write_quality_score; metadataSettings.saveSettings()"
       />
-      <BaseToggle 
-        title="Write LYRICS_TYPE and LYRICS_SOURCE tags" 
+      <BaseToggle
+        title="Write LYRICS_TYPE and LYRICS_SOURCE tags"
+        subtitle="Record lyrics provider and sync format"
+        tooltip="Escribe si la letra es sincronizada o sin sincronizar y el proveedor que la suministró."
         :checked="metadataSettings.settings.write_lyrics_tags"
         @click="metadataSettings.settings.write_lyrics_tags = !metadataSettings.settings.write_lyrics_tags; metadataSettings.saveSettings()"
       />
     </section>
 
-    <!-- Metadata Quality Scoring (Unlocked Sprint 15) -->
+    <!-- Metadata Quality Scoring (SC-01, SC-02, SC-03, SC-04) -->
     <section class="space-y-4">
-      <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
-        Metadata Quality Scoring
-      </h3>
-      
+      <div class="flex items-center justify-between pb-2 border-b border-gray-200 dark:border-border-dark">
+        <div>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+            <span>Metadata Quality Scoring</span>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-primary/10 text-primary border border-primary/20">
+              Paridad Local y Streaming (SC-03)
+            </span>
+          </h3>
+          <p class="text-xs text-text-secondary mt-0.5">Ponderación para evaluar la completitud de metadatos (0-100%). Aplica con la misma fórmula a descargas y a la biblioteca local.</p>
+        </div>
+      </div>
+
       <div v-if="metadataSettings.isLoading.value" class="flex items-center gap-2 text-text-secondary py-4">
         <span class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
         <span class="text-sm">Loading scoring settings...</span>
       </div>
       <div v-else class="space-y-4">
-        <SliderInput 
-          label="Album Weight" 
-          v-model="metadataSettings.settings.weight_album" 
-          @update:modelValue="metadataSettings.saveSettings()"
-          subtitle="Weight for Album identification" 
+        <div class="flex items-center justify-between text-xs text-text-secondary pb-1">
+          <span>Ajusta la importancia relativa de cada campo (0 a 10).</span>
+          <span v-if="metadataSettings.isSaving.value" class="text-primary font-medium flex items-center gap-1 animate-pulse">
+            <span class="material-symbols-outlined text-[14px]">sync</span> Guardando...
+          </span>
+          <span v-else class="text-emerald-500 font-medium flex items-center gap-1">
+            <span class="material-symbols-outlined text-[14px]">check</span> Cambios guardados
+          </span>
+        </div>
+
+        <SliderInput
+          label="Album Weight"
+          v-model="metadataSettings.settings.weight_album"
+          @update:modelValue="metadataSettings.saveDebounced()"
+          subtitle="Ponderación para la presencia de Álbum"
+          tooltip="Ponderación del campo Álbum. Mayor peso penaliza a las canciones sin álbum asignado."
         />
-        <SliderInput 
-          label="ISRC Weight" 
-          v-model="metadataSettings.settings.weight_isrc" 
-          @update:modelValue="metadataSettings.saveSettings()"
-          subtitle="Weight for ISRC field" 
+        <SliderInput
+          label="ISRC Weight"
+          v-model="metadataSettings.settings.weight_isrc"
+          @update:modelValue="metadataSettings.saveDebounced()"
+          subtitle="Ponderación para código identificador ISRC"
+          tooltip="Ponderación del código internacional ISRC. Esencial para identificación canónica sin ambigüedades."
         />
-        <SliderInput 
-          label="MusicBrainz ID Weight" 
-          v-model="metadataSettings.settings.weight_mb_id" 
-          @update:modelValue="metadataSettings.saveSettings()"
-          subtitle="Weight for MusicBrainz recording ID" 
+        <SliderInput
+          label="MusicBrainz ID Weight"
+          v-model="metadataSettings.settings.weight_mb_id"
+          @update:modelValue="metadataSettings.saveDebounced()"
+          subtitle="Ponderación para MusicBrainz recording ID"
+          tooltip="Ponderación de la coincidencia con MusicBrainz. Clave para metadatos auditados y canónicos."
         />
-        <SliderInput 
-          label="Cover Art Weight" 
-          v-model="metadataSettings.settings.weight_cover" 
-          @update:modelValue="metadataSettings.saveSettings()"
-          subtitle="Weight for album artwork availability" 
+        <SliderInput
+          label="Cover Art Weight"
+          v-model="metadataSettings.settings.weight_cover"
+          @update:modelValue="metadataSettings.saveDebounced()"
+          subtitle="Ponderación para disponibilidad de carátula"
+          tooltip="Ponderación de la disponibilidad de imagen de portada en alta calidad."
         />
-        <SliderInput 
-          label="Release Year Weight" 
-          v-model="metadataSettings.settings.weight_year" 
-          @update:modelValue="metadataSettings.saveSettings()"
-          subtitle="Weight for release year field" 
+        <SliderInput
+          label="Release Year Weight"
+          v-model="metadataSettings.settings.weight_year"
+          @update:modelValue="metadataSettings.saveDebounced()"
+          subtitle="Ponderación para el año de lanzamiento"
+          tooltip="Ponderación del año de lanzamiento original del álbum o tema."
         />
-        <SliderInput 
-          label="Genre Weight" 
-          v-model="metadataSettings.settings.weight_genre" 
-          @update:modelValue="metadataSettings.saveSettings()"
-          subtitle="Weight for genre metadata" 
+        <SliderInput
+          label="Genre Weight"
+          v-model="metadataSettings.settings.weight_genre"
+          @update:modelValue="metadataSettings.saveDebounced()"
+          subtitle="Ponderación para metadatos de género"
+          tooltip="Ponderación del género musical etiquetado."
         />
+
+        <!-- Live Score Simulation Card (SC-02, SC-03) -->
+        <div class="p-3 bg-gray-50 dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl flex items-center justify-between text-xs">
+          <div>
+            <span class="font-medium text-gray-900 dark:text-white block">Simulación en pista de ejemplo (Título + Artista + Álbum + Año + Portada + Género)</span>
+            <span class="text-text-secondary text-[11px]">Calificación resultante: <strong>{{ simulatedScore }}%</strong> · Aplica de forma simétrica a la biblioteca local y streaming (SC-03)</span>
+          </div>
+          <div class="text-base font-bold text-primary px-3 py-1 bg-primary/10 rounded-lg">
+            {{ simulatedScore }}%
+          </div>
+        </div>
       </div>
     </section>
 
@@ -497,7 +579,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useMetadataSettings } from '@/composables/useMetadataSettings'
 import { useIncrementalEnrichment } from '@/composables/useIncrementalEnrichment'
 import { useTempoAnalysis } from '@/composables/useTempoAnalysis'
@@ -514,6 +596,21 @@ const showRepairHistoryModal = ref(false)
 const metadataSettings = useMetadataSettings()
 const enrichment = useIncrementalEnrichment()
 const tempo = useTempoAnalysis()
+
+const simulatedScore = computed(() => {
+  const w = metadataSettings.settings
+  const base = 20
+  const wAlbum = Math.max(0, w.weight_album ?? 1)
+  const wIsrc = Math.max(0, w.weight_isrc ?? 1)
+  const wMb = Math.max(0, w.weight_mb_id ?? 1)
+  const wCover = Math.max(0, w.weight_cover ?? 1)
+  const wYear = Math.max(0, w.weight_year ?? 1)
+  const wGenre = Math.max(0, w.weight_genre ?? 1)
+  const total = wAlbum + wIsrc + wMb + wCover + wYear + wGenre
+  if (total === 0) return 100
+  const earned = wAlbum + wCover + wYear + wGenre
+  return Math.round(base + (earned / total) * 80)
+})
 
 async function changeEnrichmentMode(mode: EnrichmentMode) {
   enrichment.selectedMode.value = mode

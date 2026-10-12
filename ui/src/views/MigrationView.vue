@@ -38,38 +38,87 @@
           </div>
         </div>
 
-        <button @click="scrollToTemplates" class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors">
+        <button @click="scrollToTemplates" title="View reusable transfer presets" class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors">
           <span class="material-symbols-outlined text-[18px]">bookmark</span>
-          Saved templates
+          Saved presets
         </button>
 
         <button
           @click="runSchemaAudit"
           :disabled="migration.isRunningAudit.value"
+          data-testid="schema-audit-btn"
+          title="Verify database tables and credentials readiness for migration"
           class="flex items-center gap-2 px-4 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors disabled:opacity-50"
         >
           <span :class="['material-symbols-outlined text-[18px]', migration.isRunningAudit.value && 'animate-spin']">{{ migration.isRunningAudit.value ? 'progress_activity' : 'fact_check' }}</span>
-          Schema audit
+          Database check
         </button>
       </div>
 
-      <!-- Migration schema audit result (IN-5) -->
-      <div v-if="migration.migrationAudit.value" class="mt-4 rounded-lg border p-4 text-sm" :class="migration.migrationAudit.value.schema_ok ? 'border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400' : 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400'">
-        <div class="flex items-center gap-2 font-semibold">
-          <span class="material-symbols-outlined text-[18px]">{{ migration.migrationAudit.value.schema_ok ? 'check_circle' : 'error' }}</span>
-          {{ migration.migrationAudit.value.summary }}
+      <!-- Migration database diagnostic result (M-06) -->
+      <div v-if="migration.migrationAudit.value" class="mt-4 rounded-xl border p-4 text-sm" :class="migration.migrationAudit.value.schema_ok ? 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300' : 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2 font-semibold">
+            <span class="material-symbols-outlined text-[20px]">{{ migration.migrationAudit.value.schema_ok ? 'check_circle' : 'error' }}</span>
+            <span>{{ migration.migrationAudit.value.schema_ok ? 'Database is healthy and ready for migrations' : 'Database issues detected' }}</span>
+          </div>
+          <span class="text-xs opacity-75 font-mono">v{{ migration.migrationAudit.value.schema_version }}</span>
         </div>
-        <div v-if="migration.migrationAudit.value.missing_tables.length > 0" class="mt-2 text-xs">
+        <p class="mt-1 text-xs opacity-90">
+          {{ migration.migrationAudit.value.schema_ok ? 'Verified all required database tables (services, accounts, jobs, items, templates) and credentials.' : 'Some required database tables are missing or require migration.' }}
+        </p>
+        <div v-if="migration.migrationAudit.value.missing_tables.length > 0" class="mt-2 text-xs font-medium">
           Missing tables: {{ migration.migrationAudit.value.missing_tables.join(', ') }}
         </div>
         <div v-if="migration.migrationAudit.value.legacy_services_detected.length > 0" class="mt-1 text-xs">
-          Legacy services detected: {{ migration.migrationAudit.value.legacy_services_detected.join(', ') }}
+          Legacy credentials detected: {{ migration.migrationAudit.value.legacy_services_detected.join(', ') }}
         </div>
       </div>
     </div>
 
     <!-- Scrollable Content -->
     <div class="flex-1 overflow-y-auto custom-scrollbar px-8 pb-8">
+
+      <!-- In-Flight Migration Banner (M-03 / M-04) -->
+      <div
+        v-if="activeInFlightJob"
+        data-testid="in-flight-migration-banner"
+        class="max-w-[900px] mx-auto mb-6 rounded-2xl border border-primary/30 bg-primary/5 dark:bg-primary/10 p-5 shadow-sm"
+      >
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span class="material-symbols-outlined text-3xl text-primary animate-spin">sync</span>
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="font-bold text-gray-900 dark:text-white">Active Migration in Progress</span>
+                <span class="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-primary/20 text-primary">
+                  {{ realProgress.percent }}%
+                </span>
+              </div>
+              <p class="text-xs text-text-secondary mt-1">
+                {{ activeInFlightJob.source_service }} → {{ activeInFlightJob.destination_service }}:
+                {{ realProgress.current }} / {{ realProgress.total }} tracks
+                <template v-if="realProgress.eta && realProgress.eta !== 'calculating...'"> · ETA: {{ realProgress.eta }}</template>
+                <template v-if="realProgress.speed && realProgress.speed !== '—'"> · Speed: {{ realProgress.speed }} tracks/s</template>
+              </p>
+            </div>
+          </div>
+          <button
+            @click="goToRunningTransfer"
+            data-testid="view-running-transfer-btn"
+            class="px-4 py-2 text-xs font-semibold rounded-lg bg-primary text-on-accent hover:bg-primary-hover transition-colors shadow-sm"
+          >
+            View Transfer
+          </button>
+        </div>
+        <!-- Progress bar line -->
+        <div class="w-full bg-gray-200 dark:bg-gray-700 h-2 rounded-full mt-3 overflow-hidden">
+          <div
+            class="bg-primary h-full transition-all duration-300"
+            :style="{ width: `${realProgress.percent}%` }"
+          ></div>
+        </div>
+      </div>
 
       <!-- Transfer Wizard Card -->
       <div class="transfer-wizard max-w-[900px] mx-auto">
@@ -179,7 +228,7 @@
                 <label v-if="svcSource && accountsForService(svcSource).length > 1" class="block mt-4 text-sm">
                   Cuenta origen
                   <select v-model.number="svcSourceAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="svc-source-account">
-                    <option v-for="a in accountsForService(svcSource)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
+                    <option v-for="a in accountsForService(svcSource)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(activa)' : '' }}</option>
                   </select>
                 </label>
                 <div v-if="sourceServices.length === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center">
@@ -231,7 +280,7 @@
                 <label v-if="svcDestination && accountsForService(svcDestination).length > 1" class="block mt-4 text-sm">
                   Cuenta destino
                   <select v-model.number="svcDestinationAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="svc-destination-account">
-                    <option v-for="a in accountsForService(svcDestination)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
+                    <option v-for="a in accountsForService(svcDestination)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(activa)' : '' }}</option>
                   </select>
                 </label>
                 <div v-if="destinationChoices.length === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center">
@@ -301,7 +350,7 @@
                   <!-- Honest empty source library -->
                   <div v-else-if="previewSummary.total !== null && previewSummary.total === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center mb-6">
                     <span class="material-symbols-outlined text-4xl text-gray-400 mb-2">library_music</span>
-                    <p class="text-sm text-text-secondary">No tracks found in your {{ getServiceName(svcSource) }} library. Sync the source service first to import your tracks.</p>
+                    <p class="text-sm text-text-secondary">No tracks found in your {{ getServiceName(svcSource) }} library. Go to Accounts to sync your {{ getServiceName(svcSource) }} account and import your tracks into Syncify before migrating.</p>
                   </div>
 
                   <!-- Reviewable matches: real items of the last migration on this route -->
@@ -445,7 +494,7 @@
                 <label v-if="sourceService && accountsForService(sourceService).length > 1" class="block mt-4 text-sm">
                   Cuenta origen
                   <select v-model.number="sourceAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="transfer-source-account">
-                    <option v-for="a in accountsForService(sourceService)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
+                    <option v-for="a in accountsForService(sourceService)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(activa)' : '' }}</option>
                   </select>
                 </label>
               </div>
@@ -453,7 +502,7 @@
               <!-- STEP 2: Choose Content to Transfer -->
               <div v-else-if="currentStep === 1" key="step2" class="wizard-step">
                 <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">What do you want to transfer?</h2>
-                <p class="text-text-secondary mb-8">The migration engine transfers your saved tracks; albums and artists are not supported yet</p>
+                <p class="text-text-secondary mb-8">Select the content types to transfer from your source library to the destination service</p>
 
                 <div class="content-cards grid grid-cols-2 gap-4">
                   <button
@@ -530,7 +579,7 @@
                 <label v-for="dest in destinationServices.filter(id => accountsForService(id).length > 1)" :key="dest" class="block mt-4 text-sm">
                   Cuenta destino ({{ dest }})
                   <select v-model.number="destinationAccounts[dest]" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" :data-testid="`transfer-destination-account-${dest}`">
-                    <option v-for="a in accountsForService(dest)" :key="a.id" :value="a.id">{{ a.display_name || a.email || `Cuenta ${a.id}` }} {{ a.is_active ? '(activa)' : '' }}</option>
+                    <option v-for="a in accountsForService(dest)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(activa)' : '' }}</option>
                   </select>
                 </label>
                 <div v-if="destinationChoices.length === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center">
@@ -600,7 +649,7 @@
                   <!-- Honest empty source library -->
                   <div v-else-if="previewSummary.total !== null && previewSummary.total === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center mb-6">
                     <span class="material-symbols-outlined text-4xl text-gray-400 mb-2">library_music</span>
-                    <p class="text-sm text-text-secondary">No tracks found in your {{ getServiceName(sourceService) }} library. Sync the source service first to import your tracks.</p>
+                    <p class="text-sm text-text-secondary">No tracks found in your {{ getServiceName(sourceService) }} library. Go to Accounts to sync your {{ getServiceName(sourceService) }} account and import your tracks into Syncify before migrating.</p>
                   </div>
 
                   <!-- Playlist previews (real, from the backend preview) -->
@@ -778,10 +827,13 @@
         </Transition>
       </div>
 
-      <!-- Migration History -->
+      <!-- Migration History (M-07) -->
       <div class="migration-history max-w-[900px] mx-auto mt-8">
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Migration History</h2>
+          <div>
+            <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Migration History</h2>
+            <p class="text-xs text-text-secondary mt-0.5">Audit log of previous service-to-service transfers (tracks matched, transferred, or failed). Records transfer operations, not listening history.</p>
+          </div>
         </div>
 
         <div class="bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl overflow-hidden">
@@ -789,7 +841,7 @@
           <div v-if="combinedHistory.length === 0" class="empty-state flex flex-col items-center justify-center p-12 text-center" data-testid="migration-history-empty">
             <span class="material-symbols-outlined text-5xl text-gray-300 dark:text-gray-600 mb-3">history</span>
             <h3 class="text-base font-medium text-gray-700 dark:text-gray-300 mb-1">No migration history</h3>
-            <p class="text-sm text-text-secondary">Completed and pending migrations will appear here</p>
+            <p class="text-sm text-text-secondary max-w-md">Completed and pending migrations will appear here. Detailed logs of matched, transferred, and skipped tracks will be recorded after running a transfer.</p>
           </div>
 
           <table v-else class="history-table w-full">
@@ -855,20 +907,23 @@
         </div>
       </div>
 
-      <!-- Saved Templates Section -->
+      <!-- Saved Migration Presets Section (M-01) -->
       <div id="saved-templates" class="saved-templates max-w-[900px] mx-auto mt-8 mb-8">
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Saved Templates</h2>
+          <div>
+            <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Saved Migration Presets</h2>
+            <p class="text-xs text-text-secondary mt-0.5">Save frequent transfer routes (source, destination, and options) as reusable presets to repeat transfers with one click.</p>
+          </div>
           <button @click="openSaveTemplateModal" class="flex items-center gap-2 text-sm text-primary hover:text-primary-hover font-medium">
             <span class="material-symbols-outlined text-[16px]">add</span>
-            Create Template
+            Create Preset
           </button>
         </div>
 
         <!-- Empty State -->
         <div v-if="backendTemplates.length === 0" class="bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl p-10 text-center">
           <span class="material-symbols-outlined text-4xl text-gray-300 dark:text-gray-600 mb-2">bookmark_border</span>
-          <p class="text-sm text-text-secondary">No templates saved yet. Configure a migration in the wizard and save it here for reuse.</p>
+          <p class="text-sm text-text-secondary">No migration presets saved yet. Configure a transfer in the wizard and save it here as a preset for quick reuse.</p>
         </div>
 
         <div v-else class="grid grid-cols-3 gap-4">
@@ -896,11 +951,11 @@
               <span class="text-lg">{{ getServiceIcon(template.source_service) }}</span>
               <span class="material-symbols-outlined text-gray-400 text-sm">arrow_forward</span>
               <span class="text-lg">{{ getServiceIcon(template.destination_service) }}</span>
-              <span class="text-xs text-text-secondary ml-1">{{ template.description || 'Migration template' }}</span>
+              <span class="text-xs text-text-secondary ml-1">{{ template.description || 'Migration preset' }}</span>
             </div>
 
             <button @click="useTemplate(template)" class="w-full px-3 py-2 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-medium transition-colors">
-              Use Template
+              Apply Preset
             </button>
           </div>
         </div>
@@ -1104,22 +1159,22 @@
         <div v-if="showSaveTemplateModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="showSaveTemplateModal = false">
           <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md shadow-2xl">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark">
-              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Save as Template</h3>
-              <p v-if="!sourceService || destinationServices.length === 0" class="text-xs text-amber-500 mt-1">Select a source and at least one destination service in the wizard first — the template stores the current selection.</p>
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Save as Preset</h3>
+              <p v-if="!sourceService || destinationServices.length === 0" class="text-xs text-amber-500 mt-1">Select a source and at least one destination service in the wizard first — the preset stores the current selection.</p>
             </div>
             <div class="p-6 space-y-4">
               <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Template Name</label>
-                <input v-model="newTemplateName" type="text" placeholder="My Migration Template" class="w-full px-4 py-2.5 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/50">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Preset Name</label>
+                <input v-model="newTemplateName" type="text" placeholder="My Migration Preset" class="w-full px-4 py-2.5 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-lg text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/50">
               </div>
-              <p class="text-xs text-text-secondary">Saves the current wizard selection: source {{ sourceService || 'not selected' }}, destination {{ destinationServices[0] || 'not selected' }}, content {{ selectedContent.join(', ') || 'none' }}. Saving with an existing name updates that template.</p>
+              <p class="text-xs text-text-secondary">Saves the current wizard selection: source {{ sourceService || 'not selected' }}, destination {{ destinationServices[0] || 'not selected' }}, content {{ selectedContent.join(', ') || 'none' }}. Saving with an existing name updates that preset.</p>
             </div>
             <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex justify-end gap-3">
               <button @click="showSaveTemplateModal = false" class="px-5 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium transition-colors">
                 Cancel
               </button>
               <button @click="saveTemplate" :disabled="!sourceService || destinationServices.length === 0 || !newTemplateName.trim() || isSavingTemplate" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                {{ isSavingTemplate ? 'Saving...' : 'Save Template' }}
+                {{ isSavingTemplate ? 'Saving...' : 'Save Preset' }}
               </button>
             </div>
           </div>
@@ -1138,6 +1193,10 @@ import { accountsApi } from '../api/accounts'
 import { getMigrationItemsByStatus } from '../api/migration'
 import MigrationTransferPanel, { type MigrationActivityEntry, type MigrationProgressDisplay } from '../components/MigrationTransferPanel.vue'
 import type { MigrationItem, MigrationOptions, MigrationTemplate, ServiceStatus, Account, DestinationTrackMatch } from '../api/types'
+// The account label in a migration dropdown must be the SAME identity the
+// Accounts and Settings screens show, never the raw backend string (which can be
+// an opaque provider id or a session placeholder).
+import { formatAccountLabel } from '../composables/useAccountsStatus'
 
 // Initialize migration composable for backend integration
 const migration = useMigration()
@@ -1154,6 +1213,27 @@ onMounted(async () => {
     loadAccounts(),
   ])
   await migration.setupProgressListener()
+
+  // M-04: Re-engage in-flight migration job on mount
+  const running = migration.getActiveRunningJob()
+  if (running) {
+    sourceService.value = running.source_service
+    sourceAccount.value = running.source_account_id ?? null
+    destinationServices.value = [running.destination_service]
+    if (running.destination_account_id) {
+      destinationAccounts.value[running.destination_service] = running.destination_account_id
+    }
+    svcSource.value = running.source_service
+    svcSourceAccount.value = running.source_account_id ?? null
+    svcDestination.value = running.destination_service
+    svcDestinationAccount.value = running.destination_account_id ?? null
+
+    transferStarted.value = true
+    transferComplete.value = false
+    svcStarted.value = true
+    svcComplete.value = false
+    currentStep.value = 4
+  }
 })
 
 // Cleanup event listener on unmount
@@ -1230,8 +1310,34 @@ watch(() => migration.progress.status, (newStatus) => {
   if (newStatus === 'cancelled') {
     transferStarted.value = false
     svcStarted.value = false
+  } else if (newStatus === 'completed') {
+    transferComplete.value = true
+    svcComplete.value = true
   }
 })
+
+// Active in-flight job for the persistent top banner (M-03 / M-04)
+const activeInFlightJob = computed(() => {
+  const job = migration.getActiveRunningJob()
+  if (job) return job
+  if (migration.progress.status === 'running' && migration.progress.job_id) {
+    return {
+      id: migration.progress.job_id,
+      source_service: sourceService.value || svcSource.value || 'Source',
+      destination_service: destinationServices.value[0] || svcDestination.value || 'Destination'
+    } as any
+  }
+  return null
+})
+
+function goToRunningTransfer(): void {
+  if (assistantMode.value === 'service') {
+    svcStarted.value = true
+  } else {
+    currentStep.value = 4
+    transferStarted.value = true
+  }
+}
 
 // Real progress from the backend (migration-progress events via useMigration)
 const realProgress = computed(() => {
@@ -1516,12 +1622,12 @@ const destinationServices = ref<string[]>([])
 const sourceAccount = ref<number | null>(null)
 const destinationAccounts = ref<Record<string, number | null>>({})
 
-// Content types: honest descriptions; the engine only transfers saved tracks
+// Content types for migration (M-05)
 const contentTypes = [
   { id: 'favorites', label: 'Favorites & Tracks', icon: 'favorite', description: 'Saved tracks and favorites', disabled: false },
-  { id: 'playlists', label: 'Playlists', icon: 'queue_music', description: 'Saved with the migration options', disabled: false },
-  { id: 'albums', label: 'Saved Albums', icon: 'album', description: 'Not supported by the migration engine yet', disabled: true },
-  { id: 'artists', label: 'Followed Artists', icon: 'person', description: 'Not supported by the migration engine yet', disabled: true },
+  { id: 'playlists', label: 'Playlists', icon: 'queue_music', description: 'Playlists and playlist tracks', disabled: false },
+  { id: 'albums', label: 'Saved Albums', icon: 'album', description: 'Tracks from saved albums in your library', disabled: false },
+  { id: 'artists', label: 'Followed Artists', icon: 'person', description: 'Tracks from followed artists in your library', disabled: false },
 ]
 
 const selectedContent = ref<string[]>(['favorites'])

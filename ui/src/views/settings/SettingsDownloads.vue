@@ -81,8 +81,8 @@
       <div class="p-5 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark space-y-4">
         <div class="flex items-center justify-between">
           <div>
-            <h4 class="text-sm font-medium text-gray-900 dark:text-white">Default Quality Preset</h4>
-            <p class="text-xs text-text-secondary">Applies default quality target across all connected streaming services</p>
+            <h4 class="text-sm font-medium text-gray-900 dark:text-white">Presets de calidad por servicio</h4>
+            <p class="text-xs text-text-secondary">Aplica un objetivo de calidad a los servicios conectados (no confundir con el Techo global de Calidad de Audio)</p>
           </div>
           <span class="text-xs px-2 py-0.5 bg-primary/10 text-primary font-semibold rounded uppercase tracking-wider">
             {{ selectedGlobalQuality }}
@@ -93,7 +93,7 @@
           <div>
             <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Max Quality Target</label>
             <div class="relative">
-              <select 
+              <select
                 v-model="selectedGlobalQuality"
                 @change="handleGlobalQualityChange"
                 class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none appearance-none cursor-pointer"
@@ -112,7 +112,7 @@
           <div>
             <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Preferred Format</label>
             <div class="relative">
-              <select 
+              <select
                 v-model="selectedGlobalFormat"
                 @change="handleGlobalQualityChange"
                 class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none appearance-none cursor-pointer"
@@ -128,6 +128,20 @@
               </div>
             </div>
           </div>
+        </div>
+
+        <div class="flex items-center justify-between pt-2">
+          <p class="text-xs text-text-secondary">
+            Aplica este preset de calidad a todos los servicios respetando sus capacidades. Para un tope duro a toda la cola de descargas, usa el Techo global en Audio Quality.
+          </p>
+          <button
+            type="button"
+            @click="handleApplyQualityPreset"
+            class="px-3.5 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs font-medium shadow-sm flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ml-4"
+          >
+            <span class="material-symbols-outlined text-[16px]">done_all</span>
+            Aplicar a servicios
+          </button>
         </div>
 
         <!-- Service-level overrides summary -->
@@ -206,60 +220,6 @@
       </div>
     </section>
 
-    <!-- Section 3b: Global Maximum Download Quality (S203 ceiling) -->
-    <section class="space-y-4">
-      <div class="pb-2 border-b border-gray-200 dark:border-border-dark">
-        <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-          <span class="material-symbols-outlined text-primary text-[22px]">vertical_align_top</span>
-          Calidad máxima global
-        </h3>
-        <p class="text-xs text-text-secondary mt-0.5">Hard download ceiling applied to every queue item: effective cap = min(global, per-service quality limit)</p>
-      </div>
-
-      <div class="p-5 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark space-y-4">
-        <div>
-          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Techo global de calidad de descarga</label>
-          <div class="relative sm:max-w-md">
-            <select
-              v-model="globalMaxQuality"
-              @change="handleGlobalMaxQualityChange"
-              data-testid="global-max-quality-select"
-              class="w-full px-3 py-2.5 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none appearance-none cursor-pointer"
-            >
-              <option value="any">Sin techo (comportamiento por defecto)</option>
-              <option value="hires">Hi-Res máx. (24-bit / hasta 192kHz FLAC)</option>
-              <option value="lossless">Lossless máx. (16-bit / 44.1kHz FLAC)</option>
-              <option value="high">High máx. (320 kbps MP3 / AAC)</option>
-            </select>
-            <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-500">
-              <span class="material-symbols-outlined text-[18px]">expand_more</span>
-            </div>
-          </div>
-        </div>
-
-        <div
-          :class="[
-            'p-3 rounded-lg border text-xs',
-            globalMaxQuality === 'lossless' || globalMaxQuality === 'high'
-              ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30 text-amber-800 dark:text-amber-200'
-              : 'bg-gray-50/70 dark:bg-surface-highlight/30 border-gray-200/80 dark:border-gray-700/60 text-text-secondary'
-          ]"
-        >
-          <span v-if="globalMaxQuality === 'lossless'">
-            Con techo <strong>lossless</strong>, ninguna descarga pedirá 24-bit: Qobuz recibe solo format_id 6 y Tidal el parámetro LOSSLESS (aunque la pista tenga master disponible).
-          </span>
-          <span v-else-if="globalMaxQuality === 'high'">
-            Con techo <strong>high</strong>, todas las descargas se sirven en el tramo 320 kbps (Qobuz format_id 5 / Tidal AAC HIGH).
-          </span>
-          <span v-else-if="globalMaxQuality === 'hires'">
-            Techo <strong>hires</strong>: se permite 24-bit; cada servicio respeta además su propio límite de calidad si es más estricto.
-          </span>
-          <span v-else>
-            Sin techo activo: cada descarga usa su preferencia por servicio y el máximo que la cuenta permita.
-          </span>
-        </div>
-      </div>
-    </section>
 
     <!-- Section 4: Download Concurrency & Performance -->
     <section class="space-y-4">
@@ -278,14 +238,14 @@
         </div>
 
         <div class="flex items-center gap-1.5 p-1 bg-gray-100 dark:bg-surface-highlight/70 rounded-lg border border-gray-200 dark:border-gray-700">
-          <button 
-            v-for="threads in [1, 2, 3, 4, 5, 6, 8, 10]" 
+          <button
+            v-for="threads in [1, 2, 3, 4, 5, 6, 8, 10]"
             :key="threads"
             type="button"
             @click="handleSetConcurrency(threads)"
             :class="[
               'px-3.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer',
-              currentThreads === threads 
+              currentThreads === threads
                 ? 'bg-primary text-on-accent shadow-sm'
                 : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-white/50 dark:hover:bg-white/10'
             ]"
@@ -294,6 +254,31 @@
             {{ threads }} {{ threads === 1 ? 'Thread' : 'Threads' }}
           </button>
         </div>
+      </div>
+
+      <!-- BPM Analysis during download (BPM-02, BPM-03) -->
+      <div class="p-5 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div class="flex items-center gap-2">
+            <h4 class="text-sm font-medium text-gray-900 dark:text-white">Analyze BPM & Tempo during download</h4>
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">Async Background</span>
+          </div>
+          <p class="text-xs text-text-secondary mt-0.5">Extracts BPM, musical key, and acoustic energy in the background as tracks download, without slowing down active download threads.</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          :aria-checked="analyzeBpmOnDownload"
+          @click="toggleAnalyzeBpmOnDownload"
+          class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none"
+          :class="analyzeBpmOnDownload ? 'bg-primary' : 'bg-gray-200 dark:bg-surface-highlight'"
+        >
+          <span
+            aria-hidden="true"
+            class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+            :class="analyzeBpmOnDownload ? 'translate-x-5' : 'translate-x-0'"
+          />
+        </button>
       </div>
     </section>
 
@@ -394,26 +379,35 @@
         <h4 class="font-medium text-gray-900 dark:text-white">File Naming Rules</h4>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
-            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Replace invalid characters with</label>
-            <input 
-              type="text" 
-              v-model="replaceInvalidChars"
+            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Artist Separator</label>
+            <input
+              type="text"
+              v-model="downloadSettings.folderSettings.artist_separator"
+              @change="downloadSettings.saveFolderSettings()"
+              placeholder=", "
               class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary outline-none"
             />
+            <p class="text-[11px] text-text-secondary mt-1">Delimiter for multi-artist tracks (e.g., ', ', '; ', ' / ')</p>
           </div>
           <div>
-            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Truncate long names with</label>
-            <input 
-              type="text" 
-              v-model="truncateChars"
+            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Replace spaces in filenames with</label>
+            <select
+              v-model="downloadSettings.folderSettings.replace_spaces_with"
+              @change="downloadSettings.saveFolderSettings()"
               class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary outline-none"
-            />
+            >
+              <option :value="null">Keep spaces (Default)</option>
+              <option value="_">Underscore (_)</option>
+              <option value="-">Hyphen (-)</option>
+              <option value=".">Dot (.)</option>
+            </select>
+            <p class="text-[11px] text-text-secondary mt-1">Character replacement for whitespace across paths</p>
           </div>
         </div>
         <div>
-          <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Max filename length</label>
-          <input 
-            type="number" 
+          <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Max path / filename length</label>
+          <input
+            type="number"
             v-model="downloadSettings.folderSettings.max_path_length"
             @change="downloadSettings.saveFolderSettings()"
             min="64"
@@ -444,22 +438,19 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
-import { getGlobalMaxQuality, setGlobalMaxQuality, type GlobalMaxQuality } from '@/api/settings'
-import { useToast } from '@/composables/useToast'
+import { settingsApi } from '@/api/settings'
+import { useToast, confirm } from '@/composables/useToast'
 
 const downloadSettings = useDownloadSettings()
 const toast = useToast()
 
 const showVariables = ref(false)
-const selectedPreset = ref('Standard')
-const folderTemplate = ref('{AlbumArtist}/{Album}')
-const fileTemplate = ref('{TrackNumber:pad2} - {Title}.{Format:lower}')
+const selectedPreset = ref('Symfonium-optimized')
+const folderTemplate = ref('{AlbumArtist}/{Album} ({Year})')
+const fileTemplate = ref('{TrackNumber:pad2}. {Title}.{Format:lower}')
 const selectedGlobalQuality = ref('hires')
 const selectedGlobalFormat = ref('flac')
-// S203: global download-quality ceiling (KV global_max_quality)
-const globalMaxQuality = ref<GlobalMaxQuality>('any')
-const replaceInvalidChars = ref('_')
-const truncateChars = ref('...')
+const analyzeBpmOnDownload = ref(false)
 const isSaving = ref(false)
 const saveStatus = ref<string | null>(null)
 
@@ -516,16 +507,15 @@ function handleInputPath(val: string) {
 }
 
 const folderPresets: Record<string, { folder: string, file: string }> = {
-  'Standard': { folder: '{AlbumArtist}/{Album}', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
-  'Audiophile': { folder: '{AlbumArtist}/{Year} - {Album} [{Quality}]', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
   'Symfonium-optimized': { folder: '{AlbumArtist}/{Album} ({Year})', file: '{TrackNumber:pad2}. {Title}.{Format:lower}' },
+  'Audiophile': { folder: '{AlbumArtist}/{Year} - {Album} [{Quality}]', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
   'MusicBrainz-friendly': { folder: '{AlbumArtist}/{MBReleaseID} - {Album}', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
   'Label-centric': { folder: '{Label}/{AlbumArtist}/{Album} ({Year})', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
   'Alphabetized': { folder: '{FirstLetter:upper}/{AlbumArtist}/{Album}', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
   'Quality-Sorted': { folder: '{Quality}/{AlbumArtist}/{Album}', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
   'Source-Based': { folder: '{Source}/{AlbumArtist}/{Album} [{Quality}]', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
   'Genre-Based': { folder: '{Genre}/{AlbumArtist}/{Album}', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
-  'Compilation-Safe': { folder: '{AlbumArtist}/{Album}', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
+  'Compilation-Safe': { folder: 'Compilations/{Album} ({Year})', file: '{TrackNumber:pad2} - {Artist} - {Title}.{Format:lower}' },
   'Classical Music': { folder: '{Composer}/{Work}', file: '{TrackNumber:pad2} - {Title} ({Conductor}, {Orchestra}).{Format:lower}' },
   'Multi-Disc': { folder: '{AlbumArtist}/{Album}/Disc {DiscNumber}', file: '{TrackNumber:pad2} - {Title}.{Format:lower}' },
   'Plex/Jellyfin Compatible': { folder: '{AlbumArtist}/{Album} ({Year})', file: '{AlbumArtist} - {Album} - {TrackNumber:pad2} - {Title}.{Format:lower}' },
@@ -550,10 +540,22 @@ watch(selectedPreset, (newPreset) => {
   }
 })
 
+function syncPresetFromTemplates() {
+  const curFolder = (folderTemplate.value || '').trim()
+  const curFile = (fileTemplate.value || '').trim()
+  for (const [key, val] of Object.entries(folderPresets)) {
+    if (val.folder === curFolder && (val.file === curFile || val.file.replace('.{Format:lower}', '') === curFile.replace('.{Format:lower}', ''))) {
+      selectedPreset.value = key
+      return
+    }
+  }
+  selectedPreset.value = 'Custom'
+}
+
 // Path preview
 const previewPath = computed(() => {
-  let path = `${folderTemplate.value}\\${fileTemplate.value}`
-  
+  let path = `${folderTemplate.value}/${fileTemplate.value}`
+
   const overrides: Record<string, string> = {
     '{Artist}': 'Queen', '{AlbumArtist}': 'Queen', '{Album}': 'A Night at the Opera', '{Title}': 'Bohemian Rhapsody',
     '{TrackNumber}': '1', '{TrackNumber:pad2}': '01', '{Year}': '1975', '{Genre}': 'Rock',
@@ -564,11 +566,11 @@ const previewPath = computed(() => {
     '{Label}': 'EMI', '{MBReleaseID}': '1e0eee38-a9f6-49bf-84de-e53f85bc47b7',
     '{FirstLetter:upper}': 'Q', '{Composer}': 'Freddie Mercury', '{Work}': 'Bohemian Rhapsody'
   }
-  
+
   for (const [key, val] of Object.entries(overrides)) {
     path = path.replaceAll(key, val)
   }
-  
+
   return path
 })
 
@@ -608,6 +610,17 @@ async function handleGlobalQualityChange() {
   triggerSavingFeedback()
 }
 
+async function handleApplyQualityPreset() {
+  const confirmed = await confirm(
+    `¿Deseas aplicar el preset ${selectedGlobalQuality.value} (${selectedGlobalFormat.value}) a todos los servicios conectados? Se actualizarán las preferencias de calidad respetando los límites de cada uno.`,
+    { title: 'Aplicar Preset de Calidad', variant: 'warning' }
+  )
+  if (!confirmed) return
+  await downloadSettings.updateGlobalQuality(selectedGlobalQuality.value, selectedGlobalFormat.value)
+  toast.success('Preset aplicado', `Se configuró ${selectedGlobalQuality.value} en los servicios conectados`)
+  triggerSavingFeedback()
+}
+
 async function handleFallbackActionChange() {
   await downloadSettings.updateFallbackAction(downloadSettings.folderSettings.fallback_action)
   triggerSavingFeedback()
@@ -621,16 +634,6 @@ async function toggleAllowDowngrade() {
 
 async function handleSetConcurrency(threads: number) {
   await downloadSettings.setMaxConcurrent(threads)
-  triggerSavingFeedback()
-}
-
-// S203: persist the global download-quality ceiling
-async function handleGlobalMaxQualityChange() {
-  try {
-    await setGlobalMaxQuality(globalMaxQuality.value)
-  } catch (err) {
-    console.error('Failed to save global max quality:', err)
-  }
   triggerSavingFeedback()
 }
 
@@ -668,20 +671,33 @@ watch([folderTemplate, fileTemplate], () => {
   }, 1000)
 })
 
+async function toggleAnalyzeBpmOnDownload() {
+  analyzeBpmOnDownload.value = !analyzeBpmOnDownload.value
+  await settingsApi.saveSetting('dl_analyze_bpm_on_download', analyzeBpmOnDownload.value ? 'true' : 'false')
+  triggerSavingFeedback()
+}
+
 onMounted(async () => {
   try {
     await downloadSettings.loadSettings()
     if (downloadSettings.folderSettings.folder_template) {
       folderTemplate.value = downloadSettings.folderSettings.folder_template
       fileTemplate.value = downloadSettings.folderSettings.file_template
+      syncPresetFromTemplates()
+    } else {
+      selectedPreset.value = 'Symfonium-optimized'
     }
     const qobuzPref = downloadSettings.getQualityForService('qobuz') || downloadSettings.qualityPreferences.value[0]
     if (qobuzPref) {
       selectedGlobalQuality.value = qobuzPref.max_quality || 'hires'
       selectedGlobalFormat.value = qobuzPref.preferred_format || 'flac'
     }
-    // S203: load the global ceiling last so an explicit KV value always wins
-    globalMaxQuality.value = await getGlobalMaxQuality()
+
+    // BPM-02: Load analyze BPM on download setting
+    const bpmKv = await settingsApi.getSettingsByKeys(['dl_analyze_bpm_on_download']).catch(() => ({} as Record<string, string>))
+    if (bpmKv && bpmKv.dl_analyze_bpm_on_download) {
+      analyzeBpmOnDownload.value = bpmKv.dl_analyze_bpm_on_download === 'true' || bpmKv.dl_analyze_bpm_on_download === '1'
+    }
   } catch (err) {
     console.error('Failed to initialize download settings:', err)
   }

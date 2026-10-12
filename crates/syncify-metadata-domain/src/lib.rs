@@ -7,10 +7,12 @@ pub mod country;
 pub mod fixtures;
 pub mod genre;
 pub mod language;
+pub mod scoring;
 
 pub use country::*;
 pub use genre::*;
 pub use language::*;
+pub use scoring::*;
 
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};

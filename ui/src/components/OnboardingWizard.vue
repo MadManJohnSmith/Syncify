@@ -534,8 +534,8 @@ const qualityLabel = computed(() => {
 const importOptions = ref([
   { id: 'favorites', name: 'My Favorites', icon: 'favorite', selected: true },
   { id: 'playlists', name: 'My Playlists', icon: 'queue_music', selected: false },
-  { id: 'albums', name: 'Saved Albums', icon: 'album', selected: false },
-  { id: 'artists', name: 'Followed Artists', icon: 'person', selected: false },
+  { id: 'albums', name: 'Saved Albums', icon: 'album', selected: true },
+  { id: 'artists', name: 'Followed Artists', icon: 'person', selected: true },
 ])
 const autoDownload = ref(false)
 

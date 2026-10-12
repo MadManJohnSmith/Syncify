@@ -145,6 +145,45 @@ describe('MetadataView (fully wired tab)', () => {
         expect(wrapper.text()).not.toContain('With Isrc');
     });
 
+    it('Q-06: selected track names the missing fields behind its issue count', async () => {
+        const missingTrack = createTestTrack({
+            id: 2,
+            title: 'Incomplete Song',
+            album_name: null,
+            isrc: null,
+            cover_art_url: null,
+            release_year: null,
+            genre: 'Rock',
+            musicbrainz_id: null,
+        });
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return {
+                tracks: [missingTrack],
+                total: 1, offset: 0, limit: 500, has_more: false,
+            };
+            if (cmd === 'get_metadata_stats') return STATS;
+            if (cmd === 'get_metadata_preferences') return PREFS;
+            return null;
+        });
+
+        const wrapper = mount(MetadataView);
+        await flushPromises();
+
+        await wrapper.find('.track-row').trigger('click');
+        await flushPromises();
+
+        const detail = wrapper.find('[data-testid="metadata-issues-detail"]');
+        expect(detail.exists()).toBe(true);
+        const detailText = detail.text();
+        expect(detailText).toContain('Album');
+        expect(detailText).toContain('ISRC');
+        expect(detailText).toContain('MusicBrainz ID');
+        expect(detailText).toContain('Cover art');
+        expect(detailText).toContain('Release year');
+        expect(detailText).not.toContain('Genre');
+        wrapper.unmount();
+    });
+
     it('comparison modal diffs file tags against the database and adopts on click', async () => {
         const updates: Array<{ trackId: number; metadata: Record<string, unknown> }> = [];
         mockInvoke((cmd, args) => {
@@ -354,7 +393,7 @@ describe('MetadataView (fully wired tab)', () => {
         expect(commands).toContain('fetch_missing_cover_art');
     });
 
-    it('surfaces live background enrichment status events in a banner', async () => {
+    it('does not surface background enrichment banner in metadata view (MET-02)', async () => {
         mockInvoke((cmd) => {
             if (cmd === 'get_library') return { tracks: [], total: 0, offset: 0, limit: 500, has_more: false };
             if (cmd === 'get_metadata_stats') return STATS;
@@ -374,7 +413,8 @@ describe('MetadataView (fully wired tab)', () => {
         });
         await flushPromises();
 
-        expect(wrapper.text()).toContain('Enriching from MusicBrainz…');
+        // MET-02: background enrichment tasks belong in StatusBar Sync Details, not here
+        expect(wrapper.text()).not.toContain('Enriching from MusicBrainz…');
     });
 });
 
@@ -527,5 +567,113 @@ describe('S200: Last.fm API key + full tag visibility', () => {
 
         expect(calls.some(c => c.cmd === 'apply_country_tag_repair')).toBe(true);
         expect(wrapper.text()).toContain('Escrituras verificadas en disco');
+    });
+});
+
+describe('MET-01 & MT-02: Lifecycle, Virtualization & Refresh behavior', () => {
+    beforeEach(() => {
+        resetMocks();
+        vi.clearAllMocks();
+        document.body.innerHTML = '';
+    });
+
+    it('MET-01: does not show full-screen loader on background refresh when tracks are loaded', async () => {
+        let loadCount = 0;
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') {
+                loadCount++;
+                return {
+                    tracks: [
+                        createTestTrack({ id: 1, title: 'Track Alpha' }),
+                        createTestTrack({ id: 2, title: 'Track Beta' }),
+                    ],
+                    total: 2, offset: 0, limit: 500, has_more: false,
+                };
+            }
+            if (cmd === 'get_metadata_stats') return STATS;
+            if (cmd === 'get_metadata_preferences') return PREFS;
+            return null;
+        });
+
+        const wrapper = mount(MetadataView);
+        await flushPromises();
+
+        expect(wrapper.text()).toContain('Track Alpha');
+        expect(wrapper.text()).not.toContain('Loading tracks...');
+
+        // Background event queue drained triggers refresh
+        emitMockEvent('background-enrichment-status', {
+            type: 'musicbrainz',
+            status: 'waiting',
+            message: 'Enrichment queue empty',
+        });
+        await flushPromises();
+
+        // Screen does not turn into fullscreen loading overlay
+        expect(wrapper.text()).not.toContain('Loading tracks...');
+        expect(wrapper.text()).toContain('Track Alpha');
+    });
+
+    it('MT-02: unmounting cleans up without throwing or firing on dead component', async () => {
+        let libraryCallsAfterUnmount = 0;
+        let isUnmounted = false;
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') {
+                if (isUnmounted) libraryCallsAfterUnmount++;
+                return {
+                    tracks: [createTestTrack({ id: 1, title: 'Alive Track' })],
+                    total: 1, offset: 0, limit: 500, has_more: false,
+                };
+            }
+            if (cmd === 'get_metadata_stats') return STATS;
+            if (cmd === 'get_metadata_preferences') return PREFS;
+            return null;
+        });
+
+        const wrapper = mount(MetadataView);
+        await flushPromises();
+
+        expect(wrapper.text()).toContain('Alive Track');
+
+        // Unmount component
+        wrapper.unmount();
+        isUnmounted = true;
+
+        // Emit background event after unmount
+        emitMockEvent('background-enrichment-status', {
+            type: 'musicbrainz',
+            status: 'waiting',
+            message: 'Enrichment queue empty',
+        });
+        await flushPromises();
+
+        expect(libraryCallsAfterUnmount).toBe(0);
+    });
+
+    it('MET-01 / PR-03: virtualizes track rows for large lists', async () => {
+        const largeTracks: LibraryTrack[] = [];
+        for (let i = 1; i <= 60; i++) {
+            largeTracks.push(createTestTrack({ id: i, title: `Virtual Track ${i}` }));
+        }
+
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return {
+                tracks: largeTracks,
+                total: largeTracks.length, offset: 0, limit: 500, has_more: false,
+            };
+            if (cmd === 'get_metadata_stats') return { ...STATS, total_tracks: 60 };
+            if (cmd === 'get_metadata_preferences') return PREFS;
+            return null;
+        });
+
+        const wrapper = mount(MetadataView);
+        await flushPromises();
+
+        // 60 total tracks, but virtual window only renders a bounded subset
+        const rows = wrapper.findAll('.track-row');
+        expect(rows.length).toBeLessThan(60);
+        expect(rows.length).toBeGreaterThan(0);
+        expect(wrapper.text()).toContain('Virtual Track 1');
     });
 });

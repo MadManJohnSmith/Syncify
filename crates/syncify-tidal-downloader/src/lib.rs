@@ -30,6 +30,16 @@ pub use syncify_core_domain::quality::{
 /// Alias for compatibility
 pub type TidalStreamResolution = StreamResolution;
 
+/// A `tokio::process::Command` with the shared console-subsystem policy applied.
+///
+/// No local copy of the Windows flag is needed: `std::process::Command` behind
+/// `as_std_mut()` applies the canonical policy from `syncify-core-domain`.
+pub fn hidden_tokio_command<S: AsRef<std::ffi::OsStr>>(program: S) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    syncify_core_domain::process::configure_hidden(cmd.as_std_mut());
+    cmd
+}
+
 /// Tidal Authentication Status Hierarchy
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TidalAuthStatus {
@@ -518,13 +528,17 @@ pub fn parse_tidal_playback_manifest(
             // reported as 24-bit — not even when Tidal answers with a DASH manifest,
             // whose absence of a commercial label used to be read as hi-res evidence.
             let explicit_lossless_cap = target_quality_param == "LOSSLESS";
-            let is_hi_res = !explicit_lossless_cap
-                && (target_quality_param == "HI_RES_LOSSLESS"
-                    || is_dash
-                    || matches!(
-                        declared_audio_quality.as_deref(),
-                        Some("HI_RES_LOSSLESS") | Some("HI_RES")
-                    ));
+            // TIDAL-QUAL: hi-res is only what the response SAYS it is. A DASH
+            // manifest is a container, not a quality: Tidal serves CD-quality
+            // tracks over DASH too, so "is_dash" used to mark 24-bit FLAC on a
+            // plain CD answer. The tier we asked for is likewise not evidence —
+            // if it were, an account without hi-res would get recorded as
+            // hi-res and the user would be told they have what they don't.
+            let declared_hi_res = matches!(
+                declared_audio_quality.as_deref(),
+                Some("HI_RES_LOSSLESS") | Some("HI_RES")
+            );
+            let is_hi_res = !explicit_lossless_cap && declared_hi_res;
             let reported_lossless_cd = matches!(
                 declared_audio_quality.as_deref(),
                 Some("LOSSLESS") | Some("HIGH")
@@ -2007,7 +2021,7 @@ impl TidalDownloader {
             if is_flac_path && is_isobmff {
                 info!("[Tidal] Remuxing ISOBMFF FLAC container to native FLAC container via ffmpeg...");
                 let native_temp_path = output_path.with_extension("native.tmp");
-                let remux_output = tokio::process::Command::new("ffmpeg")
+                let remux_output = hidden_tokio_command("ffmpeg")
                     .args([
                         "-y",
                         "-i",
@@ -2390,12 +2404,51 @@ mod tests {
             downgrade_eval.is_err(),
             "Must reject lossy AAC when lossless was requested without fallback"
         );
-        let err_msg = downgrade_eval.unwrap_err();
-        assert!(
-            err_msg.contains("requested_lossless_but_received_aac"),
-            "Error detail: {}",
-            err_msg
+        assert_eq!(
+            downgrade_eval.unwrap_err(),
+            "Quality rejection: requested_lossless_but_received_aac"
         );
+    }
+
+    #[test]
+    fn test_tidal_qual_hires_request_answer_of_aac_is_rejected() {
+        // TIDAL-QUAL — the reported bug, end to end in the parser: the user asks
+        // for the top tier (what the library sends) and Tidal answers with an
+        // AAC manifest. The answer must come back as AAC (never as FLAC), and a
+        // strict download must REJECT it instead of quietly writing an .m4a.
+        let bts_payload = r#"{"mimeType":"audio/mp4","codecs":"mp4a.40.2","encryptionType":"NONE","urls":["https://sp-pr-cf.audio.tidal.com/data/unrequested.m4a"]}"#;
+        let b64_manifest = BASE64.encode(bts_payload);
+        let resp_json = format!(
+            r#"{{"trackId":80654035,"audioQuality":"HIGH","manifestMimeType":"application/vnd.tidal.bts","manifest":"{}"}}"#,
+            b64_manifest
+        );
+
+        let parsed = parse_tidal_playback_manifest(&resp_json, "HI_RES_LOSSLESS")
+            .expect("Parse AAC under hires");
+        assert_eq!(parsed.codec, "AAC");
+        assert_eq!(parsed.extension, "m4a");
+        assert_eq!(parsed.quality_class, QualityClass::Lossy);
+        assert_eq!(parsed.format_id_obtained, "HIGH");
+
+        let strict = QualityPolicy::evaluate_downgrade(
+            QualityClass::Lossless,
+            parsed.quality_class,
+            &parsed.codec,
+            false,
+        );
+        assert_eq!(
+            strict.unwrap_err(),
+            "Quality rejection: requested_lossless_but_received_aac"
+        );
+
+        // Opting into a downgrade is a user choice, not the default.
+        assert!(QualityPolicy::evaluate_downgrade(
+            QualityClass::Lossless,
+            parsed.quality_class,
+            &parsed.codec,
+            true,
+        )
+        .is_ok());
     }
 
     // ---- S195(a): download-quality cascade regression tests ----
@@ -2526,11 +2579,12 @@ mod tests {
         assert_eq!(parsed.bit_depth, 16);
         assert!((parsed.sample_rate - 44100.0).abs() < f64::EPSILON);
 
-        // Same manifest under an UNCAPPED request keeps the historical hi-res reading.
+        // A DASH container alone does not prove hi-res, even on an uncapped request.
         let parsed_uncapped =
             parse_tidal_playback_manifest(&body, "HI_RES_LOSSLESS").expect("Parse uncapped DASH");
-        assert_eq!(parsed_uncapped.format_id_obtained, "HI_RES_LOSSLESS");
-        assert_eq!(parsed_uncapped.bit_depth, 24);
+        assert_eq!(parsed_uncapped.format_id_obtained, "LOSSLESS");
+        assert_eq!(parsed_uncapped.bit_depth, 16);
+        assert!((parsed_uncapped.sample_rate - 44100.0).abs() < f64::EPSILON);
     }
 
     #[test]

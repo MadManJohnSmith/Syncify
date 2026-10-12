@@ -117,6 +117,43 @@ pub struct LyricsResolutionPayload {
 /// If file_path is provided, verifies & embeds tags with mandatory re-read.
 /// If track_id is provided and resolution is resolved (and file re-read verified),
 /// updates SQLite lyrics record.
+/// Load lyrics configuration from database, applying defaults:
+/// - Preferred language defaults to "original" (CFGL-02)
+/// - Storage format is normalized to "lrc" (CFGL-03)
+pub async fn load_lyrics_engine_config(
+    db: &crate::DbPool,
+) -> crate::download::lyrics::LyricsEngineConfig {
+    let row: Option<(String, String, String, i64, i64, String)> = sqlx::query_as(
+        "SELECT min_sync_level, preferred_language, storage_format, auto_fetch_on_import, retry_failed, retry_frequency FROM lyrics_config WHERE id = 1"
+    )
+    .fetch_optional(db)
+    .await
+    .unwrap_or(None);
+
+    if let Some((min_sync, pref_lang, storage_fmt, auto_fetch, retry_failed, retry_freq)) = row {
+        crate::download::lyrics::LyricsEngineConfig {
+            min_sync_level: min_sync,
+            // CFGL-02: Default = ORIGINAL language, not english
+            preferred_language: if pref_lang.is_empty() || pref_lang.to_lowercase() == "original" {
+                "original".to_string()
+            } else {
+                pref_lang
+            },
+            // CFGL-03: Storage format only LRC, no TTML for player compatibility
+            storage_format: if storage_fmt.to_lowercase() == "ttml" {
+                "lrc".to_string()
+            } else {
+                storage_fmt
+            },
+            auto_fetch_on_import: auto_fetch != 0,
+            retry_failed: retry_failed != 0,
+            retry_frequency: retry_freq,
+        }
+    } else {
+        crate::download::lyrics::LyricsEngineConfig::default()
+    }
+}
+
 /// Command: Resolve lyrics for a track using domain contract orchestrator.
 /// If file_path is provided, verifies & embeds tags with mandatory re-read.
 /// If track_id is provided and resolution is resolved (and file re-read verified),
@@ -131,7 +168,8 @@ pub async fn resolve_track_lyrics(
     file_path: Option<String>,
     track_id: Option<i64>,
 ) -> Result<LyricsResolutionPayload, String> {
-    let lyrics_client = crate::download::LyricsClient::new();
+    let config = load_lyrics_engine_config(&state.db).await;
+    let lyrics_client = crate::download::LyricsClient::with_config(config);
     resolve_track_lyrics_with_client(
         &lyrics_client,
         &state.db,
@@ -249,15 +287,22 @@ pub async fn process_and_persist_resolution(
                 .or(resolution.plain_text.as_deref())
                 .unwrap_or("");
 
+            let detected_lang = if !content.is_empty() {
+                syncify_lyrics_domain::detect_language_heuristic(content)
+            } else {
+                None
+            };
+
             if !content.is_empty() || resolution.is_instrumental {
                 sqlx::query(
                     r#"
                     INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
-                    VALUES (?, ?, ?, ?, ?, NULL, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(track_id, format) DO UPDATE SET
                         content = excluded.content,
                         sync_level = excluded.sync_level,
                         source = excluded.source,
+                        language = COALESCE(excluded.language, lyrics.language),
                         embedded_in_file = excluded.embedded_in_file
                     "#,
                 )
@@ -266,6 +311,7 @@ pub async fn process_and_persist_resolution(
                 .bind(sync_level)
                 .bind(&resolution.provider)
                 .bind(content)
+                .bind(detected_lang.as_deref())
                 .bind(if embedded_in_file { 1 } else { 0 })
                 .execute(db)
                 .await
@@ -309,12 +355,13 @@ pub async fn get_lyrics(
         SELECT id, track_id, format, sync_level, source, content, language, embedded_in_file, created_at
         FROM lyrics
         WHERE track_id = ?
-        ORDER BY
-            CASE format
-                WHEN 'ttml' THEN 1
-                WHEN 'lrc' THEN 2
-                WHEN 'plain' THEN 3
-            END
+            ORDER BY
+                CASE format
+                    WHEN 'lrc' THEN 1
+                    WHEN 'plain' THEN 2
+                    WHEN 'ttml' THEN 3
+                    ELSE 4
+                END
         LIMIT 1
         "#
     )
@@ -781,46 +828,47 @@ pub async fn delete_lyrics(
 // LYRICS FETCHING COMMANDS
 // ==============================================
 
-/// Search for lyrics online (uses existing fetch_lyrics from tools.rs internally)
+/// Search for lyrics online across all available providers (LY-07)
 #[tauri::command]
 pub async fn search_lyrics(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
     title: String,
     artist: String,
-    _album: Option<String>,
-    _duration_ms: Option<i64>,
+    album: Option<String>,
+    duration_ms: Option<i64>,
 ) -> Result<Vec<LyricsSearchResult>, String> {
     tracing::info!("search_lyrics: {} - {}", artist, title);
 
-    // Use the LyricsClient to search
-    let lyrics_client = crate::download::LyricsClient::new();
+    let config = load_lyrics_engine_config(&state.db).await;
+    let lyrics_client = crate::download::LyricsClient::with_config(config);
+    let dur_sec = duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
 
-    match lyrics_client.fetch_all_sources(&artist, &title, 0.0).await {
-        Ok(response) => {
-            // Convert to search result format
-            let synced_lyrics = if !response.lines.is_empty() {
-                Some(crate::download::LyricsClient::to_lrc_string(&response))
-            } else {
-                None
-            };
+    let responses = lyrics_client
+        .search_all_providers(&artist, &title, dur_sec)
+        .await;
 
-            Ok(vec![LyricsSearchResult {
-                source: response.source.clone(),
-                title: title.clone(),
-                artist: artist.clone(),
-                album: None,
-                duration_ms: None,
-                synced_lyrics,
-                plain_lyrics: response.plain_lyrics,
-                sync_type: response.sync_type.clone(),
-                instrumental: response.instrumental,
-            }])
-        }
-        Err(e) => {
-            tracing::warn!("Lyrics search failed: {}", e);
-            Ok(vec![]) // Return empty list on error
-        }
+    let mut out = Vec::new();
+    for response in responses {
+        let synced_lyrics = if !response.lines.is_empty() {
+            Some(crate::download::LyricsClient::to_lrc_string(&response))
+        } else {
+            None
+        };
+
+        out.push(LyricsSearchResult {
+            source: response.source.clone(),
+            title: title.clone(),
+            artist: artist.clone(),
+            album: album.clone(),
+            duration_ms,
+            synced_lyrics,
+            plain_lyrics: response.plain_lyrics.clone(),
+            sync_type: response.sync_type.clone(),
+            instrumental: response.instrumental,
+        });
     }
+
+    Ok(out)
 }
 
 /// Fetch lyrics for a track and save to database
@@ -832,11 +880,12 @@ pub async fn fetch_and_save_lyrics(
     tracing::info!("fetch_and_save_lyrics: track_id={}", track_id);
 
     // Get track info
-    let track: Option<(String, Option<String>)> = sqlx::query_as(
+    let track: Option<(String, Option<String>, Option<i64>)> = sqlx::query_as(
         r#"
         SELECT t.title,
                (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
-                JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist
+                JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
+               t.duration_ms
         FROM tracks t
         WHERE t.id = ?
         "#,
@@ -846,20 +895,27 @@ pub async fn fetch_and_save_lyrics(
     .await
     .map_err(|e| e.to_string())?;
 
-    let (title, artist) = match track {
-        Some((t, a)) => (t, a.unwrap_or_default()),
+    let (title, artist, duration_ms) = match track {
+        Some((t, a, d)) => (t, a.unwrap_or_default(), d),
         None => return Err("Track not found".to_string()),
     };
 
-    // Fetch lyrics from online sources
-    let lyrics_client = crate::download::LyricsClient::new();
+    // Fetch lyrics from online sources using configuration
+    let config = load_lyrics_engine_config(&state.db).await;
+    let lyrics_client = crate::download::LyricsClient::with_config(config);
+    let dur_sec = duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
 
-    match lyrics_client.fetch_all_sources(&artist, &title, 0.0).await {
+    match lyrics_client
+        .fetch_all_sources(&artist, &title, dur_sec)
+        .await
+    {
         Ok(response) => {
             // Determine format and content
             let (format, content, sync_level) = if !response.lines.is_empty() {
                 let lrc = crate::download::LyricsClient::to_lrc_string(&response);
-                let sync = if response.sync_type == "WORD_SYNCED" {
+                let sync = if response.sync_type == "WORD_SYNCED"
+                    || response.sync_type == "KARAOKE_WORD_SYNCED"
+                {
                     "word"
                 } else {
                     "line"
@@ -871,6 +927,8 @@ pub async fn fetch_and_save_lyrics(
                 return Ok(None); // No lyrics found
             };
 
+            let detected_lang = syncify_lyrics_domain::detect_language_heuristic(&content);
+
             // Save to database
             let params = SaveLyricsParams {
                 track_id,
@@ -878,14 +936,14 @@ pub async fn fetch_and_save_lyrics(
                 content,
                 sync_level,
                 source: Some(response.source),
-                language: None,
+                language: detected_lang,
             };
 
             let saved = save_lyrics(state, params).await?;
             Ok(Some(saved))
         }
         Err(e) => {
-            tracing::warn!("Failed to fetch lyrics for track {}: {}", track_id, e);
+            tracing::warn!("Failed to fetch lyrics: {}", e);
             Ok(None)
         }
     }
@@ -2106,7 +2164,8 @@ pub async fn refetch_karaoke_lyrics(
             "",
         );
 
-        let client = crate::download::LyricsClient::new();
+        let config = load_lyrics_engine_config(&state.db).await;
+        let client = crate::download::LyricsClient::with_config(config);
 
         for (idx, tr) in tracks.into_iter().enumerate() {
             if S202_KARAOKE_REFETCH_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {

@@ -9,7 +9,7 @@
    ========================================================================== */
 
 /* dark: sigue al tema de la app (los 3 oscuros), no al sistema operativo */
-@custom-variant dark (&:where([data-theme="camaleon"] *, [data-theme="tinta"] *, [data-theme="consola"] *));
+@custom-variant dark (&:where([data-theme="camaleon"] *, [data-theme="tinta"] *, [data-theme="consola"] *, [data-theme="riso"] *, [data-theme="spotify"] *, [data-theme="apple_music"] *, [data-theme="tidal"] *, [data-theme="qobuz"] *, [data-theme="deezer"] *, [data-theme="soundcloud"] *));
 
 /* ---------- Camaleón (default): se tiñe con la carátula en reproducción ---------- */
 :root,

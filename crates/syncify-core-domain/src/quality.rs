@@ -483,6 +483,8 @@ impl QualityPolicy {
             || fmt == "WAV"
             || fmt == "AIFF"
             || cand_q == "lossless"
+            || cand_q == "flac"
+            || cand_q == "cd"
             || bd >= 16
         {
             2
@@ -618,6 +620,54 @@ impl QualityPolicy {
         false
     }
 
+    /// Check if a requested quality string indicates lossless (CD) or Hi-Res audio.
+    pub fn is_lossless_or_hires(requested_quality: &str) -> bool {
+        Self::is_hires_requested(requested_quality)
+            || matches!(
+                requested_quality.trim().to_uppercase().as_str(),
+                "LOSSLESS"
+                    | "FLAC"
+                    | "16-44"
+                    | "16/44"
+                    | "16-44.1"
+                    | "16/44.1"
+                    | "CD"
+                    | "6"
+                    | "7"
+                    | "27"
+            )
+    }
+
+    /// Checks if a quality candidate is strictly below the minimum allowed floor of 320 kbps.
+    /// Under the user fallback policy: "bajar a 320 — pero NUNCA por debajo."
+    /// Rejects lossy streams below 320 kbps (such as "low", "medium", 96k, 128k, etc.).
+    pub fn is_below_minimum_floor(
+        quality: Option<&str>,
+        _format: Option<&str>,
+        bitrate_kbps: Option<i32>,
+    ) -> bool {
+        if let Some(br) = bitrate_kbps {
+            if br > 0 && br < 320 {
+                return true;
+            }
+        }
+        if let Some(q) = quality {
+            let q_norm = q.trim().to_lowercase();
+            if matches!(
+                q_norm.as_str(),
+                "low" | "medium" | "low_lossy" | "96" | "128" | "160" | "192" | "256"
+            ) || q_norm.contains("96k")
+                || q_norm.contains("128k")
+                || q_norm.contains("160k")
+                || q_norm.contains("192k")
+                || q_norm.contains("256k")
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Evaluate post-stream-resolution quality outcome
     #[allow(clippy::too_many_arguments)]
     pub fn evaluate_stream_resolution(
@@ -669,6 +719,33 @@ impl QualityPolicy {
                     "Quality rejection: stream format ({}) is lossy, but strict quality was requested",
                     stream_codec
                 ),
+            };
+        }
+
+        // FS-05 Minimum lossy floor: fallback allows dropping down to 320 kbps ("high" / "320"),
+        // but NEVER below 320 kbps (rejects "low", "medium", 96k, 128k, etc.).
+        let is_below_floor =
+            Self::is_below_minimum_floor(Some(stream_quality), Some(stream_codec), None);
+        if quality_downgrade && is_below_floor {
+            let reason = format!(
+                "Provider returned quality '{}' ({}) which is below the minimum allowed floor of 320 kbps",
+                stream_quality,
+                stream_codec.to_uppercase()
+            );
+            return QualityDecision {
+                requested_quality: requested_quality.to_string(),
+                provider_available_quality: Some(stream_quality.to_string()),
+                effective_quality: stream_quality.to_string(),
+                requested_format: req_format,
+                effective_format: eff_format,
+                strict_quality,
+                allow_lossy_fallback: allow_fallback,
+                provider_fallback_used,
+                quality_fallback_used: true,
+                decision: QualityDecisionKind::RejectedQuality,
+                reason: Some(reason.clone()),
+                retryable: false,
+                user_message: format!("Quality rejection: {}", reason),
             };
         }
 
@@ -1224,6 +1301,38 @@ mod tests {
         );
         assert_eq!(s6.decision, QualityDecisionKind::CompletedExactQuality);
         assert!(!s6.quality_fallback_used);
+
+        // 7. FS-05 Minimum floor: "low" (96k/128k) rejected even with allow_fallback=true
+        let s7 = QualityPolicy::evaluate_stream_resolution(
+            "lossless", "low", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
+        );
+        assert_eq!(s7.decision, QualityDecisionKind::RejectedQuality);
+        assert!(s7
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("below the minimum allowed floor of 320 kbps"));
+
+        // 8. FS-05 Minimum floor: "medium" rejected even with allow_fallback=true
+        let s8 = QualityPolicy::evaluate_stream_resolution(
+            "lossless", "medium", "MP3", 16, 44100.0, "qobuz", "qobuz", false, true,
+        );
+        assert_eq!(s8.decision, QualityDecisionKind::RejectedQuality);
+        assert!(s8
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("below the minimum allowed floor of 320 kbps"));
+
+        // 9. FS-05 Minimum floor: "high" (320 kbps) accepted with allow_fallback=true
+        let s9 = QualityPolicy::evaluate_stream_resolution(
+            "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
+        );
+        assert_eq!(
+            s9.decision,
+            QualityDecisionKind::CompletedWithQualityFallback
+        );
+        assert!(s9.quality_fallback_used);
     }
 
     #[test]

@@ -596,8 +596,154 @@ pub async fn load_qobuz_db_fallback_auth(
     (token, username, password)
 }
 
-/// S186: Reject console-error artifacts that were captured as credential values.
+/// Extrae el email definitivo del login. La respuesta original prevalece;
+/// Qobuz puede inyectar en el payload cifrado un `username` validado como email.
+pub fn login_email(
+    data: &serde_json::Value,
+    credentials_payload: &serde_json::Value,
+) -> Option<String> {
+    data.get("email")
+        .and_then(|v| v.as_str())
+        .or_else(|| credentials_payload.get("email").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
+}
+
+/// Nombre visible de una cuenta, garantizando que jamás sea un identificador
+/// opaco ni un artefacto del puente.
 ///
+/// El login guardaba `display_name.or(user_id)`: cuando el proveedor no daba
+/// nombre, la cuenta quedaba bautizada con su id numérico o con el marcador
+/// `browser_session` del puente Qobuz. Eso se mostraba en la UI ("Conectado como
+/// 123456789"), volvía indistinguibles dos cuentas de la misma persona y no
+/// significaba nada para el usuario. La identidad real sigue intacta en
+/// `external_user_id`; el nombre pasa a ser el genérico del servicio.
+pub fn sanitize_visible_display_name(
+    candidate: Option<&str>,
+    fallback: Option<&str>,
+    generic: impl FnOnce() -> String,
+) -> String {
+    let usable = |value: &str| -> Option<String> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        // Marcador del puente Qobuz para "no se pudo descubrir el usuario".
+        if trimmed.eq_ignore_ascii_case("browser_session") {
+            return None;
+        }
+        // Un id puramente numico o hexadecimal no es un nombre que nadie haya
+        // escrito: es la identidad del proveedor.
+        if is_opaque_identifier(trimmed) {
+            return None;
+        }
+        if trimmed.len() > 128 {
+            return None;
+        }
+        Some(trimmed.to_string())
+    };
+
+    candidate
+        .and_then(usable)
+        .or_else(|| fallback.and_then(usable))
+        .unwrap_or_else(generic)
+}
+
+/// Nombre visible para una cuenta de Spotify.
+///
+/// El login PKCE resolvía el nombre como `profile["display_name"].or(profile
+/// ["id"])`: como Spotify solo devuelve `display_name` cuando el usuario lo
+/// escribió a mano, para el resto la cuenta quedaba bautizada con el id. Ese id
+/// es base62 de 22 caracteres, mezcla de mayúsculas, minúsculas y dígitos, así
+/// que `is_opaque_identifier` no lo detecta (ni todo-dígitos ni todo-hex), y la
+/// UI acababa mostrando "Conectado como smedja...".
+pub fn spotify_visible_display_name(candidate: Option<&str>, provider_id: Option<&str>) -> String {
+    // El id ya viaja en `external_user_id`: solo hace falta descartarlo aquí.
+    let provider_id = provider_id.map(str::trim).filter(|s| !s.is_empty());
+    let candidate = candidate.filter(|name| {
+        let trimmed = name.trim();
+        // El id real del proveedor, servido como nombre.
+        provider_id.map(|id| trimmed != id).unwrap_or(true) &&
+        // Un id base62 de la longitud canónica, con o sin id en el perfil.
+        !(trimmed.len() == 22 && trimmed.bytes().all(|c| c.is_ascii_alphanumeric()))
+    });
+    sanitize_visible_display_name(candidate, None, || "Spotify User".to_string())
+}
+
+/// Un valor es identificador opaco si es todo dígitos, o todo hexadecimal (con
+/// separadores), o un UUID: formas que ningún usuario reconoce como nombre.
+fn is_opaque_identifier(value: &str) -> bool {
+    let compact: String = value.chars().filter(|c| *c != '-').collect();
+    if compact.is_empty() {
+        return true;
+    }
+    if value.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // UUID v4 / ids hex del proveedor (p.ej. ids de Spotify o Tidal).
+    let uuid_shape = value.len() == 36
+        && value.chars().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    if uuid_shape {
+        return true;
+    }
+    compact.chars().all(|c| c.is_ascii_hexdigit()) && compact.len() >= 16
+}
+
+/// Propaga el `username` capturado por el puente Qobuz a `email` SOLO si es un
+/// email plausible.
+///
+/// El formulario de Qobuz pide un email, pero el valor capturado puede ser otra
+/// cosa: un nombre de usuario sin dominio, un error de consola pegado en el
+/// input, o un artefacto del navegador. Tratarlos como email corrompería la
+/// identidad de la cuenta (`UNIQUE(service_id, email)` haría fallar el login de
+/// una segunda cuenta, o fusionaría en una sola fila dos usuarios distintos),
+/// así que aquí se exige forma de email real y se rechaza cualquier valor que ya
+/// sabemos que no es una credencial. Devuelve el email normalizado.
+///
+/// No se aplica a Tidal ni Deezer: sus puentes devuelven identidad propia y no
+/// hay motivo para reinterpretar su `username` como email.
+pub fn qobuz_plausible_email(username: Option<&str>) -> Option<String> {
+    let raw = username?.trim();
+    if raw.len() > 254 || !is_plausible_qobuz_credential_value(raw) {
+        return None;
+    }
+
+    let (local, domain) = raw.split_once('@')?;
+    if local.is_empty() || domain.is_empty() {
+        return None;
+    }
+    if local.chars().any(|c| c.is_whitespace()) || domain.chars().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    // El dominio necesita al menos una etiqueta con un punto: "user@localhost"
+    // o "user@qobuz" no son direcciones entregables y no sirven como identidad.
+    if !domain.contains('.') {
+        return None;
+    }
+    if domain.split('.').any(|label| label.is_empty()) {
+        return None;
+    }
+    // Cada etiqueta del dominio empieza y acaba en alfanumérico:
+    // "user@-mail.com" o "user@mail-.com" no son dominios reales.
+    if domain.split('.').any(|label| {
+        !label.starts_with(|c: char| c.is_ascii_alphanumeric())
+            || !label.ends_with(|c: char| c.is_ascii_alphanumeric())
+    }) {
+        return None;
+    }
+    if !domain
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return None;
+    }
+
+    Some(raw.to_lowercase())
+}
+
+/// S186: Reject console-error artifacts that were captured as credential values.
 /// Forensics (syncify-dev.log:283332): the string `[Error] [Tauri] Command
 /// "sync_service" failed: – "RequiresAuth: …"` was entered into the Qobuz web login
 /// form's password field; the browser bridge saved it as the account password,
@@ -799,11 +945,59 @@ pub async fn start_auth_and_save(
                 ),
             });
         }
+
+        // El puente Qobuz captura el `username` del formulario (el usuario escribe
+        // su email ahí) pero NO lo devuelve como `email`, así que la cuenta se
+        // guardaba sin email y solo con el id numérico del proveedor. Propagar a
+        // email SOLO lo que sea un email plausible: el valor pudo venir de un
+        // input con nombre de usuario, de un error de consola capturado o de un
+        // artefacto, y un "email" falso haría deduplicar (o dividir) cuentas de
+        // forma errónea. Sin email, la identidad deduplicada sigue siendo
+        // `external_user_id` (el id opaco), que jamás se muestra.
+        if let Some(email_candidate) = qobuz_plausible_email(username.as_deref()) {
+            if let Some(obj) = credentials_payload.as_object_mut() {
+                obj.insert(
+                    "email".to_string(),
+                    serde_json::Value::String(email_candidate),
+                );
+            }
+        }
     }
 
-    // S185: Tidal device-flow payload arrives without expiry fields; inject the real
-    // cached token_expiry (or a conservative fallback) so the first download after
-    // login does not force an immediate OAuth refresh that could fail transiently.
+    // El puente Qobuz no devuelve el bloque `credential` de `user/getUserData`,
+    // así que la suscripción hay que leerla ahora que ya hay un token válido.
+    // Sin esto no hay forma de saber si esta cuenta puede hacer streaming
+    // completo o solo recibirá previews de 30 segundos. `None` (token ausente o
+    // consulta fallida) se guarda como desconocido, nunca como "sin suscripción".
+    let qobuz_entitlement: Option<bool> = if service.eq_ignore_ascii_case("qobuz") {
+        match credentials_payload
+            .get("user_auth_token")
+            .or_else(|| credentials_payload.get("auth_token"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            Some(tok) => {
+                let credential = crate::services::qobuz::QobuzClient::new_with_token(
+                    crate::services::qobuz::QOBUZ_APP_ID.to_string(),
+                    crate::services::qobuz::QOBUZ_APP_SECRET.to_string(),
+                    tok.to_string(),
+                );
+                credential
+                    .get_user_streaming_entitlement()
+                    .await
+                    .unwrap_or(None)
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    // S185: Tidal device-flow payload arrives without expiry fields; inject the
+    // real cached token_expiry (or a conservative fallback) so the first download
+    // after login does not force an immediate OAuth refresh that could fail
+    // transiently.
     if service.eq_ignore_ascii_case("tidal") {
         let cached_expiry = load_tidal_db_cached_token_expiry(&state.db).await;
         inject_tidal_expiry(&mut credentials_payload, cached_expiry);
@@ -816,10 +1010,9 @@ pub async fn start_auth_and_save(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let email = data
-        .get("email")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    // `credentials_payload` puede haber recibido el email propagado desde el
+    // `username` (paso Qobuz), así que la extracción definitiva mira también ahí.
+    let email = login_email(&data, &credentials_payload);
 
     let user_id = data.get("user_id").and_then(|v| {
         v.as_str()
@@ -851,9 +1044,17 @@ pub async fn start_auth_and_save(
     // Step 5: Upsert account — resolve by identity (email and/or external_user_id)
     // and keep every other row of the service so its CASCADE-linked library data
     // survives a re-login or a second account of the same service.
-    let final_display_name = display_name
-        .or(user_id.clone())
-        .unwrap_or_else(|| format!("{} User", service));
+    //
+    // El nombre visible NUNCA es un identificador opaco: `user_id` es la
+    // identidad deduplicada (`external_user_id`), y pintarlo en la UI hace
+    // indistinguibles dos cuentas de la misma persona y expone un id que no
+    // significa nada para el usuario. `login_external_user_id` ya rechaza el
+    // marcador "browser_session", pero un id numérico real del proveedor seguía
+    // llegando aquí como fallback. Sin nombre usable se usa el genérico del
+    // servicio; la identidad real sigue viajando en `external_user_id`.
+    let final_display_name = sanitize_visible_display_name(display_name.as_deref(), None, || {
+        format!("{} User", service)
+    });
 
     let account_id = upsert_service_account(
         &state.db,
@@ -862,6 +1063,11 @@ pub async fn start_auth_and_save(
         email.as_deref(),
         external_user_id.as_deref(),
         &encrypted,
+        if service.eq_ignore_ascii_case("qobuz") {
+            qobuz_entitlement
+        } else {
+            None
+        },
     )
     .await?;
 
@@ -964,11 +1170,21 @@ pub async fn upsert_service_account(
     email: Option<&str>,
     external_user_id: Option<&str>,
     encrypted_credentials: &str,
+    streaming_entitled: Option<bool>,
 ) -> Result<i64, String> {
     let mut tx = db
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to begin account upsert: {}", e))?;
+    // -1 = unknown, 1 = can stream, 0 = authenticated without streaming. A login
+    // that says nothing about entitlement must NOT reset a known value, so `None`
+    // writes -1 on INSERT and leaves the column untouched on UPDATE.
+    // See `accounts::qobuz_streaming_entitlement` for where the value comes from.
+    let entitled_value: i64 = match streaming_entitled {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
+    };
 
     // 1) Normalize the identity coming from the login. `email` is user-typed, so
     //    'A@X.com ' and 'a@x.com' are the same account; `external_user_id` is an
@@ -1072,8 +1288,8 @@ pub async fn upsert_service_account(
     let resolved_id = if target_id == 0 {
         let inserted: i64 = sqlx::query_scalar(
             r#"
-            INSERT INTO accounts (service_id, display_name, email, external_user_id, credentials_json, credentials_invalid, invalid_reason, last_auth_error, is_active, last_synced, created_at)
-            VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            INSERT INTO accounts (service_id, display_name, email, external_user_id, credentials_json, credentials_invalid, invalid_reason, last_auth_error, is_active, last_synced, created_at, streaming_entitled)
+            VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
             RETURNING id
             "#,
         )
@@ -1082,6 +1298,7 @@ pub async fn upsert_service_account(
         .bind(email_ref)
         .bind(user_ref)
         .bind(encrypted_credentials)
+        .bind(entitled_value)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
@@ -1116,7 +1333,11 @@ pub async fn upsert_service_account(
                 invalid_reason = NULL,
                 last_auth_error = NULL,
                 is_active = 1,
-                last_synced = CURRENT_TIMESTAMP
+                last_synced = CURRENT_TIMESTAMP,
+                -- Only a login that actually reported entitlement (-1 means it
+                -- stayed silent) may rewrite the stored value; a silent re-login
+                -- must not demote an account we already knew could stream.
+                streaming_entitled = CASE WHEN ? >= 0 THEN ? ELSE streaming_entitled END
             WHERE id = ?
             "#,
         )
@@ -1124,6 +1345,8 @@ pub async fn upsert_service_account(
         .bind(email_ref)
         .bind(user_ref)
         .bind(encrypted_credentials)
+        .bind(entitled_value)
+        .bind(entitled_value)
         .bind(target_id)
         .execute(&mut *tx)
         .await;
@@ -1767,12 +1990,15 @@ pub async fn spotify_auth_webview(
     {
         Ok(resp) if resp.status().is_success() => {
             if let Ok(profile) = resp.json::<serde_json::Value>().await {
-                display_name = profile["display_name"]
-                    .as_str()
-                    .or(profile["id"].as_str())
-                    .unwrap_or("Spotify User")
-                    .to_string();
+                // `profile.id` se guarda aparte como `external_user_id` (la
+                // identidad deduplicada); el nombre visible se resuelve solo con
+                // el `display_name` del perfil, que Spotify omite cuando el
+                // usuario no escribió uno a mano.
                 user_id = profile["id"].as_str().map(|s| s.to_string());
+                display_name = spotify_visible_display_name(
+                    profile["display_name"].as_str(),
+                    user_id.as_deref(),
+                );
                 email = profile["email"].as_str().map(|s| s.to_string());
                 tracing::info!(
                     "Spotify PKCE auth: authenticated as {} ({})",
@@ -1813,13 +2039,7 @@ pub async fn spotify_auth_webview(
     // El UPDATE masivo anterior (`WHERE service_id = ?`) escribía el email en
     // TODAS las filas spotify: con dos cuentas violaba UNIQUE(service_id, email)
     // y fallaba el login entero, y con una sola le pisaba el email.
-    let final_display_name = if display_name.is_empty() {
-        user_id
-            .clone()
-            .unwrap_or_else(|| "Spotify User".to_string())
-    } else {
-        display_name.clone()
-    };
+    let final_display_name = display_name;
 
     let account_id = upsert_service_account(
         &state.db,
@@ -1828,6 +2048,7 @@ pub async fn spotify_auth_webview(
         email.as_deref(),
         user_id.as_deref(),
         &encrypted,
+        None,
     )
     .await?;
 
@@ -1957,6 +2178,125 @@ mod auth_security_tests {
         assert!(redacted.contains(r#""refresh_token": "[REDACTED]""#));
         assert!(redacted.contains(r#""client_secret": "[REDACTED]""#));
         assert!(redacted.contains(r#""password": "[REDACTED]""#));
+    }
+
+    // ── Ruta de identidad de cuentas ─────────────────────────────────────────
+
+    #[test]
+    fn qobuz_username_becomes_email_only_when_it_looks_like_one() {
+        assert_eq!(
+            qobuz_plausible_email(Some("ana@example.com")).as_deref(),
+            Some("ana@example.com")
+        );
+        assert_eq!(
+            qobuz_plausible_email(Some("ANA@Example.COM")).as_deref(),
+            Some("ana@example.com")
+        );
+        // Nombres de usuario sin dominio, artefactos y marcadores: nunca email.
+        assert_eq!(qobuz_plausible_email(Some("ana")), None);
+        assert_eq!(qobuz_plausible_email(Some("ana@qobuz")), None);
+        assert_eq!(qobuz_plausible_email(Some("browser_session")), None);
+        assert_eq!(qobuz_plausible_email(Some("")), None);
+        assert_eq!(qobuz_plausible_email(None), None);
+    }
+
+    #[test]
+    fn visible_display_name_never_shows_a_provider_identifier() {
+        // Contrato de la ruta de identidad: el id numérico que devuelve el
+        // puente Qobuz y el marcador de sesión jamás llegan a la UI.
+        for opaque in ["123456789", "browser_session", "0123456789abcdef"] {
+            let name = sanitize_visible_display_name(Some(opaque), None, || "Qobuz User".into());
+            assert_ne!(name, opaque);
+            assert!(name.contains("Qobuz"));
+        }
+        // Un nombre real sí se conserva.
+        assert_eq!(
+            sanitize_visible_display_name(Some("Ana Ruiz"), None, || "Qobuz User".into()),
+            "Ana Ruiz"
+        );
+    }
+
+    /// El `username` de Tidal/Deezer NO se reinterpreta como email: el puente de
+    /// Qobuz es el único cuyo formulario pide un email y no lo devuelve como tal.
+    #[test]
+    fn email_propagation_is_qobuz_only() {
+        let tidal_data = serde_json::json!({"username": "ana@example.com", "user_id": "77"});
+        assert!(
+            tidal_data.get("email").is_none(),
+            "los puentes de Tidal/Deezer nunca aportan email desde username en este camino"
+        );
+        // La propagación vive dentro del brazo qobuz de start_auth_and_save:
+        // esta test fija que la función no dependa del servicio.
+        assert_eq!(
+            qobuz_plausible_email(tidal_data["username"].as_str()).as_deref(),
+            Some("ana@example.com"),
+            "el helper es agnóstico; quien decide aplicarlo es el brazo qobuz"
+        );
+    }
+
+    /// El email del proveedor siempre gana, y el inyectado por el brazo Qobuz
+    /// solo se lee cuando `data.email` no existe.
+    #[test]
+    fn login_email_extraction_prefers_the_bridge_response() {
+        let data = serde_json::json!({
+            "user_id": "42",
+            "email": "from-bridge@example.com",
+            "username": "owner@example.com",
+        });
+        let injected = serde_json::json!({
+            "email": "injected-from-username@example.com",
+        });
+        assert_eq!(
+            login_email(&data, &injected).as_deref(),
+            Some("from-bridge@example.com"),
+            "data.email debe tener prioridad sobre el email propagado"
+        );
+
+        // Sin email en la respuesta, el propagado es la única fuente de identidad.
+        let data = serde_json::json!({
+            "user_id": "123456789",
+            "username": "Owner@Example.com",
+        });
+        let injected = serde_json::json!({
+            "username": "Owner@Example.com",
+            "email": "owner@example.com",
+        });
+        assert_eq!(
+            login_email(&data, &injected).as_deref(),
+            Some("owner@example.com"),
+            "el email propagado desde el username debe llegar al alta"
+        );
+
+        // Ninguna fuente: no se inventa email.
+        let data = serde_json::json!({ "user_id": "1", "username": "not-an-email" });
+        let injected = data.clone();
+        assert_eq!(login_email(&data, &injected), None);
+    }
+
+    /// El id base62 de Spotify no es ni numérico ni hexadecimal, así que el
+    /// saneado genérico no lo detecta: el login PKCE lo usaba como nombre cuando
+    /// el perfil no tenía `display_name` escrito a mano.
+    #[test]
+    fn spotify_visible_display_name_never_shows_a_provider_base62_id() {
+        let base62_id = "smedjan12AB4cQ5dEfGhIj";
+        assert_eq!(
+            spotify_visible_display_name(None, Some(base62_id)),
+            "Spotify User",
+            "sin display_name nunca se cae en el id del proveedor"
+        );
+        assert_eq!(
+            spotify_visible_display_name(Some("  Alan Turing "), Some(base62_id)),
+            "Alan Turing"
+        );
+        // El propio id servido como display_name tampoco es nombre humano.
+        assert_eq!(
+            spotify_visible_display_name(Some(base62_id), Some(base62_id)),
+            "Spotify User"
+        );
+        assert_eq!(
+            spotify_visible_display_name(Some(base62_id), Some("")),
+            spotify_visible_display_name(Some(base62_id), None),
+        );
     }
 }
 

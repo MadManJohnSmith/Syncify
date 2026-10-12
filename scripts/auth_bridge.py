@@ -73,6 +73,24 @@ def is_viable_qobuz_token(token) -> bool:
     return True
 
 
+def qobuz_visible_display_name(user_id, username) -> str:
+    """Nombre visible de la cuenta Qobuz, NUNCA el id numérico del proveedor.
+
+    `login_with_browser` devuelve el id capturado ("browser_session" cuando no
+    descubrió ninguno), que el handler guardaba tal cual en `display_name`: la UI
+    lo mostraba como "Conectado como 123456789" y dos cuentas de la misma
+    persona quedaban indistinguibles. Prioridad: marcador de sesión o id opaco ->
+    email capturado; si tampoco hay email, un genérico del servicio.
+
+    El id real sigue saliendo en `user_id`: Rust lo usa como `external_user_id`
+    (identidad deduplicada), nunca como nombre visible.
+    """
+    email = (username or "").strip()
+    if email and "@" in email and "." in email.split("@")[-1]:
+        return email
+    return "Qobuz User"
+
+
 def extract_sp_dc() -> str:
     """Securely retrieve sp_dc session cookie from SYNCIFY_SP_DC or stdin.
 
@@ -309,12 +327,20 @@ def handle_qobuz(action: str):
                         "Please log out from Qobuz in the browser first, then reconnect and enter email/password manually."
                     ),
                 )
-            
+
+            # Identidad VISIBLE jamás el id numérico del proveedor ni un marcador
+            # de sesión: `display_name` se muestra en la UI y se guarda en
+            # accounts.display_name, así que un id opaco ("123456789") o el
+            # placeholder del puente son indistinguibles entre dos cuentas de la
+            # misma persona y dejan de ser legibles. El id real viaja igual como
+            # `user_id` (Rust lo mapea a external_user_id, la identidad
+            # deduplicada), y `username` solo se propaga como email cuando es un
+            # email plausible (lo decide Rust, no este puente).
             json_response(True, {
                 "user_id": result,
                 "user_auth_token": auth_token,  # Key expected by Rust
                 "auth_token": auth_token,
-                "display_name": result,
+                "display_name": qobuz_visible_display_name(result, username),
                 "username": username,
                 "password": password,
             })

@@ -162,7 +162,7 @@ pub async fn get_service_sync_settings(
 
     sqlx::query_as::<_, ServiceSyncSettings>(
         r#"SELECT id, service_name, sync_favorites, sync_playlists, sync_albums,
-                  IFNULL(sync_favorite_artists, 0) as sync_favorite_artists,
+                  IFNULL(sync_favorite_artists, 1) as sync_favorite_artists,
                   IFNULL(sync_purchases, 0) as sync_purchases,
                   IFNULL(sync_library_history, 0) as sync_library_history,
                   IFNULL(sync_include_appearances, 0) as sync_include_appearances,
@@ -198,7 +198,7 @@ pub async fn perform_update_service_sync_settings(
 
     sqlx::query_as::<_, ServiceSyncSettings>(
         r#"SELECT id, service_name, sync_favorites, sync_playlists, sync_albums,
-                  IFNULL(sync_favorite_artists, 0) as sync_favorite_artists,
+                  IFNULL(sync_favorite_artists, 1) as sync_favorite_artists,
                   IFNULL(sync_purchases, 0) as sync_purchases,
                   IFNULL(sync_library_history, 0) as sync_library_history,
                   IFNULL(sync_include_appearances, 0) as sync_include_appearances,
@@ -240,8 +240,8 @@ pub async fn perform_get_service_import_preferences(
 ) -> Result<ImportPreferences, String> {
     let row: Option<(bool, bool, bool, bool, bool, bool, bool, bool)> = sqlx::query_as(
         r#"SELECT IFNULL(sync_favorites, 1),
-                  IFNULL(sync_albums, 0),
-                  IFNULL(sync_favorite_artists, 0),
+                  IFNULL(sync_albums, 1),
+                  IFNULL(sync_favorite_artists, 1),
                   IFNULL(sync_playlists, 1),
                   IFNULL(sync_purchases, 0),
                   IFNULL(sync_library_history, 0),
@@ -425,6 +425,52 @@ pub async fn update_quality_preference(
         fallback_format,
     )
     .await
+}
+
+/// AQ-05: Returns the list of allowable quality options for a given service based on
+/// what is reported in the `services` table.
+/// Options: "inherit", and any quality rank <= service reported max_quality.
+#[allow(dead_code)]
+pub async fn perform_get_available_qualities_for_service(
+    db: &crate::DbPool,
+    service_name: &str,
+) -> Result<Vec<String>, String> {
+    let mut options = vec!["inherit".to_string()];
+    let svc_row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT max_quality FROM services WHERE LOWER(name) = LOWER(?) LIMIT 1")
+            .bind(service_name)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("Database error fetching service capability: {}", e))?;
+
+    let max_q = svc_row
+        .and_then(|(q,)| q)
+        .unwrap_or_else(|| "hires".to_string());
+    let max_rank = service_max_quality_rank(Some(&max_q)).unwrap_or(3);
+
+    // Rank 1: High (320kbps)
+    if max_rank >= 1 {
+        options.push("high".to_string());
+    }
+    // Rank 2: Lossless (16-bit / 44.1kHz FLAC)
+    if max_rank >= 2 {
+        options.push("lossless".to_string());
+    }
+    // Rank 3: Hi-Res (24-bit / up to 192kHz FLAC)
+    if max_rank >= 3 {
+        options.push("hires".to_string());
+    }
+
+    Ok(options)
+}
+
+/// IPC command to get available qualities for a service
+#[tauri::command]
+pub async fn get_available_qualities_for_service(
+    state: State<'_, AppState>,
+    service_name: String,
+) -> Result<Vec<String>, String> {
+    perform_get_available_qualities_for_service(&state.db, &service_name).await
 }
 
 /// Perform get folder settings (singleton)
@@ -1524,11 +1570,23 @@ pub fn global_ceiling_rank(canonical: &str) -> u8 {
     }
 }
 
+/// Check if a service's quality preference delegates/inherits to the global ceiling.
+/// Empty/missing or explicit "inherit", "inherit_global", "global", "default" inherit.
+pub fn is_service_quality_inherited(raw: Option<&str>) -> bool {
+    let Some(v) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    matches!(
+        v.to_ascii_lowercase().as_str(),
+        "inherit" | "inherit_global" | "global" | "default"
+    )
+}
+
 /// Rank of a per-service `quality_preferences.max_quality` row (migration 0009).
 /// Vocabulary there is looser ('master' for Tidal seed, UI also offers
 /// 'normal'), so synonyms map here: 'normal'→high(1) per S203 spec.
-/// Returns None when there is no usable constraint (missing row, empty, or
-/// unknown vocabulary) meaning "this service adds no extra cap".
+/// Returns None when there is no usable constraint (missing row, empty,
+/// explicit inherit, or unknown vocabulary) meaning "this service adds no extra cap".
 pub fn service_max_quality_rank(raw: Option<&str>) -> Option<u8> {
     let v = raw.map(str::trim).filter(|s| !s.is_empty())?;
     match v.to_ascii_lowercase().as_str() {
@@ -1538,6 +1596,8 @@ pub fn service_max_quality_rank(raw: Option<&str>) -> Option<u8> {
         | "24-96" | "24-192" | "flac_24" => Some(3),
         // Explicit "no cap" rows constrain nothing.
         "any" | "best" | "auto" | "unlimited" => Some(3),
+        // Explicit inherit rows delegate to global ceiling.
+        "inherit" | "inherit_global" | "global" | "default" => None,
         _ => None,
     }
 }

@@ -381,7 +381,14 @@ async fn test_migration_0077_recompacts_all_historical_playlists() {
         .filter_map(|e| e.ok())
     {
         let file_name = entry.file_name().into_string().unwrap();
-        if file_name.ends_with(".sql") && !file_name.starts_with("0077") {
+        // The fixture represents the historical database immediately before
+        // migration 0077; copying future migrations into it introduces schema
+        // and checksum mismatches when the canonical migrator applies 0077.
+        let migration_version = file_name
+            .split('_')
+            .next()
+            .and_then(|version| version.parse::<i64>().ok());
+        if file_name.ends_with(".sql") && migration_version.is_some_and(|v| v < 77) {
             fs::copy(entry.path(), mig_temp_dir.path().join(&file_name)).unwrap();
         }
     }

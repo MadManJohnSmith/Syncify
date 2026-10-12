@@ -205,16 +205,38 @@ pub fn apply_bundled_tool_env<C: CommandEnv>(cmd: &mut C) {
     }
 }
 
+/// Applies `CREATE_NO_WINDOW` to a command that has not been spawned yet.
+///
+/// Thin delegation to `syncify_core_domain::process::configure_hidden` for the
+/// blocking flavour. Kept as a no-op on non-Windows targets so a call site needs
+/// no `cfg` at every use, exactly as before: there is no console window to
+/// suppress, and `creation_flags` does not exist in `std::os::unix`.
+///
+/// The constant and its implementation live in `syncify-core-domain` because
+/// `crates/` cannot see this file (the workspace dependency edge runs
+/// `syncify-tauri` → crates, never back). The Tokio flavour shares the very same
+/// `std::process::Command` body via `as_std_mut()` below.
+pub fn configure_hidden(cmd: &mut std::process::Command) {
+    syncify_core_domain::process::configure_hidden(cmd);
+}
+
+/// Applies `CREATE_NO_WINDOW` to a Tokio command that has not been spawned yet.
+///
+/// `tokio::process::Command` always holds a `std::process::Command` inside, and
+/// before spawning the two are exactly the same object: setting `creation_flags`
+/// on the borrowed `&mut std::process::Command` from `as_std_mut()` reaches the
+/// handle the tokio wrapper later spawns. So this is one call into the shared
+/// helper rather than a third copy of the flag (G-01b/G-06b).
+pub fn configure_hidden_tokio(cmd: &mut tokio::process::Command) {
+    syncify_core_domain::process::configure_hidden(cmd.as_std_mut());
+}
+
 /// Creates a `std::process::Command` configured with `CREATE_NO_WINDOW` on Windows
 /// to prevent cmd.exe console popups.
 #[allow(unused_mut)]
 pub fn create_std_command<S: AsRef<OsStr>>(program: S) -> std::process::Command {
     let mut cmd = std::process::Command::new(resolve_known_program(program));
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
+    configure_hidden(&mut cmd);
     cmd
 }
 
@@ -223,10 +245,7 @@ pub fn create_std_command<S: AsRef<OsStr>>(program: S) -> std::process::Command 
 #[allow(unused_mut)]
 pub fn create_tokio_command<S: AsRef<OsStr>>(program: S) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(resolve_known_program(program));
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(0x08000000);
-    }
+    configure_hidden_tokio(&mut cmd);
     cmd
 }
 

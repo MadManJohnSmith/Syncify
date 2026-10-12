@@ -95,14 +95,14 @@ describe('DashboardView without page scroll and with real free space', () => {
     await flushPromises()
 
     const cards = wrapper.findAll('.stat-card')
-    expect(cards.length).toBe(13)
+    expect(cards.length).toBe(12)
     for (const card of cards) {
       expect(card.classes()).toContain('overflow-hidden')
       expect(card.classes()).toContain('min-h-0')
     }
   })
 
-  it('keeps all thirteen sections visible at a glance', async () => {
+  it('keeps all twelve sections visible at a glance', async () => {
     const wrapper = mount(DashboardView)
     await flushPromises()
 
@@ -114,7 +114,6 @@ describe('DashboardView without page scroll and with real free space', () => {
       'service-distribution',
       'queue-stats',
       'recent-activity',
-      'system-diagnostics',
       'metadata-quality',
       'lyrics-coverage',
       'top-artists',

@@ -632,6 +632,19 @@ pub fn classify_operation_error(
         provider.to_lowercase()
     };
 
+    // A successful getFileUrl may still return a short MP3 sample. This is
+    // neither invalid credentials nor malformed JSON: another account/provider
+    // may serve the full track. Recognize the stable marker before generic
+    // transport, auth, quality or identity heuristics (fallback errors can be
+    // appended after the original failure for diagnosis).
+    if error.starts_with("QobuzPreviewPayload:") {
+        return ErrorTaxonomy::QobuzPreviewPayload {
+            requested_format: "requested Qobuz stream".to_string(),
+            obtained_format: "preview/short audio".to_string(),
+            reason: error.to_string(),
+        };
+    }
+
     // Misma regla que worker::classify_session_auth_failure: un fallo de
     // TRANSPORTE (timeout, DNS, 5xx, 429) no es un veredicto de credenciales.
     // Sin esta guarda, un corte de red marcaba la cuenta como AuthInvalid.
@@ -720,6 +733,15 @@ pub fn classify_operation_error(
     }
     if error.contains("cancel") || error.contains("Cancel") {
         return ErrorTaxonomy::Cancelled {
+            reason: error.to_string(),
+        };
+    }
+    if error.starts_with("InvalidAudioPayload:")
+        || error.contains("Downloaded audio failed bit-perfect FLAC magic verification")
+        || error.contains("Downloaded audio failed FLAC/ISOBMFF magic verification")
+    {
+        return ErrorTaxonomy::AudioValidationFailed {
+            format: "unknown".to_string(),
             reason: error.to_string(),
         };
     }

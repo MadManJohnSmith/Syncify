@@ -8,7 +8,9 @@
 //! 4. Verifies persisted timestamp and toggles for service settings (e.g. spotify).
 
 use sqlx::sqlite::SqlitePoolOptions;
-use syncify_tauri_lib::commands::perform_update_service_sync_settings;
+use syncify_tauri_lib::commands::{
+    perform_get_service_import_preferences, perform_update_service_sync_settings,
+};
 use syncify_tauri_lib::crypto;
 
 async fn setup_in_memory_db() -> sqlx::SqlitePool {
@@ -159,4 +161,33 @@ async fn test_service_sync_settings_regression_without_0066() {
         "After migration 0066, updating service sync settings must succeed: {:?}",
         success_result.err()
     );
+}
+
+#[tokio::test]
+async fn new_services_sync_albums_and_artists_by_default_without_resetting_users() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("Failed to connect to in-memory DB");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations");
+
+    // A service that has never been configured gets the new defaults (C-08).
+    let unconfigured = perform_get_service_import_preferences(&pool, "tidal")
+        .await
+        .unwrap();
+    assert!(unconfigured.favorite_albums);
+    assert!(unconfigured.favorite_artists);
+
+    perform_update_service_sync_settings(&pool, "tidal", false, false, false, false)
+        .await
+        .expect("Failed to update existing row");
+    let wtf = perform_get_service_import_preferences(&pool, "tidal")
+        .await
+        .unwrap();
+    // Existing rows keep the user's choices: migration 0092 preserves data.
+    assert!(!wtf.favorite_albums);
 }

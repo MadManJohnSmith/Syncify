@@ -1,23 +1,24 @@
 <template>
   <div class="metadata-page h-full flex bg-background-light dark:bg-background-dark overflow-hidden">
-    
+
     <!-- Left Panel: Track Selector (40%) -->
     <div class="track-selector w-2/5 flex flex-col border-r border-gray-200 dark:border-border-dark">
-      
+
       <!-- Toolbar -->
       <div class="px-4 py-3 border-b border-gray-200 dark:border-border-dark shrink-0">
         <div class="flex items-center gap-3">
           <!-- Search -->
           <div class="relative flex-1">
             <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[18px]">search</span>
-            <input 
+            <input
               v-model="searchQuery"
-              type="text" 
+              type="text"
               placeholder="Search tracks..."
               class="w-full pl-10 pr-4 py-2 bg-gray-100 dark:bg-surface-highlight border-0 rounded-lg text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/50"
             >
+            <span v-if="isRefreshing" class="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 text-primary text-[16px] animate-spin" title="Refreshing tracks...">sync</span>
           </div>
-          
+
           <!-- Filter -->
           <select v-model="filterType" class="px-3 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-900 dark:text-white text-sm rounded-lg border-0 focus:outline-none focus:ring-2 focus:ring-primary/50">
             <option value="all">All Tracks</option>
@@ -27,7 +28,7 @@
             <option value="missing">Missing Metadata</option>
             <option value="no-art">No Album Art</option>
           </select>
-          
+
           <!-- Sort -->
           <select v-model="sortBy" class="px-3 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-900 dark:text-white text-sm rounded-lg border-0 focus:outline-none focus:ring-2 focus:ring-primary/50">
             <option value="title">Title</option>
@@ -36,7 +37,7 @@
             <option value="score">Metadata Score</option>
             <option value="date">Date Added</option>
           </select>
-          
+
           <!-- Quality Analyzer Button -->
           <button @click="showQualityReport = true" class="p-2 bg-purple-500/10 text-purple-500 hover:bg-purple-500/20 rounded-lg transition-colors" title="Analyze Quality">
             <span class="material-symbols-outlined text-[20px]">analytics</span>
@@ -47,12 +48,24 @@
             <span class="material-symbols-outlined text-[20px]">build_circle</span>
           </button>
 
+          <!-- MET-03 / LY-04: barrido de portadas para álbumes descargados -->
+          <button
+            @click="openCoverSweepDialog"
+            :disabled="isCoverSweepRunning"
+            data-testid="open-cover-sweep"
+            class="p-2 bg-purple-500/10 text-purple-500 hover:bg-purple-500/20 rounded-lg transition-colors disabled:opacity-50"
+            title="Barrido de portadas animadas para álbumes descargados: guarda cover.webp y cover.animated.webp junto al audio sin modificar el CoverFront del FLAC."
+            aria-label="Portadas animadas"
+          >
+            <span :class="['material-symbols-outlined text-[20px]', isCoverSweepRunning && 'animate-spin']">{{ isCoverSweepRunning ? 'progress_activity' : 'animation' }}</span>
+          </button>
+
           <!-- S163: Applied Repairs History Button -->
           <button @click="showRepairHistoryModal = true" class="p-2 bg-purple-500/10 text-purple-500 hover:bg-purple-500/20 rounded-lg transition-colors" title="View Applied Repairs History">
             <span class="material-symbols-outlined text-[20px]">history_edu</span>
           </button>
         </div>
-        
+
         <!-- Enhanced Batch Toolbar -->
         <Transition name="slide-down">
           <div v-if="selectedTracks.length > 0" class="batch-toolbar mt-3 p-3 bg-primary/10 rounded-lg">
@@ -83,31 +96,6 @@
           </div>
         </Transition>
       </div>
-      
-      <!-- Background enrichment live status -->
-      <Transition name="slide-down">
-        <div
-          v-if="backgroundEnrichment || enrichProgress"
-          :class="['mx-4 mt-3 shrink-0 rounded-lg border px-4 py-2.5 flex items-center gap-3 text-xs', backgroundEnrichment ? getEnrichmentStatusBg(backgroundEnrichment) : 'bg-primary/5 border-primary/20']"
-        >
-          <template v-if="enrichProgress">
-            <span class="material-symbols-outlined text-[16px] text-primary animate-spin">progress_activity</span>
-            <div class="flex-1 min-w-0">
-              <p class="text-gray-900 dark:text-white font-medium truncate">{{ enrichProgress.currentTrack || 'Enriqueciendo…' }}</p>
-              <div v-if="enrichProgress.total > 0" class="mt-1 h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                <div class="h-full bg-primary rounded-full transition-all" :style="{ width: Math.round((enrichProgress.current / enrichProgress.total) * 100) + '%' }"></div>
-              </div>
-            </div>
-            <span v-if="enrichProgress.total > 0" class="font-mono text-text-secondary shrink-0">{{ enrichProgress.current }}/{{ enrichProgress.total }}</span>
-          </template>
-          <template v-else-if="backgroundEnrichment">
-            <span :class="['material-symbols-outlined text-[16px]', getEnrichmentStatusColor(backgroundEnrichment)]">{{ getEnrichmentIcon(backgroundEnrichment) }}</span>
-            <span class="text-gray-700 dark:text-gray-300 flex-1 truncate">
-              <strong>{{ getEnrichmentTitle(backgroundEnrichment) }}:</strong> {{ backgroundEnrichment.message }}
-            </span>
-          </template>
-        </div>
-      </Transition>
 
       <!-- Library metadata completeness strip (real get_metadata_stats data) -->
       <div
@@ -123,16 +111,16 @@
         <span class="ml-auto font-mono">Completitud media {{ metadataStats.average_completeness.toFixed(1) }}%</span>
       </div>
 
-      <!-- Loading State -->
-      <div v-if="isLoading" class="flex-1 flex items-center justify-center">
+      <!-- Loading State (initial only) -->
+      <div v-if="isLoading && tracks.length === 0" class="flex-1 flex items-center justify-center">
         <div class="text-center">
           <span class="material-symbols-outlined text-4xl text-primary animate-spin">progress_activity</span>
           <p class="text-text-secondary mt-2">Loading tracks...</p>
         </div>
       </div>
-      
+
       <!-- Empty State -->
-      <div v-else-if="tracks.length === 0" class="flex-1 flex items-center justify-center">
+      <div v-else-if="!isLoading && tracks.length === 0" class="flex-1 flex items-center justify-center">
         <div class="text-center p-8">
           <span class="material-symbols-outlined text-5xl text-gray-400 mb-4">library_music</span>
           <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">No tracks in library</h3>
@@ -140,75 +128,91 @@
         </div>
       </div>
 
-      <!-- Track List -->
-      <div v-else class="track-list flex-1 overflow-y-auto custom-scrollbar">
-        <div 
-          v-for="track in filteredTracks" 
-          :key="track.id"
-          @click="selectTrack(track)"
-          :class="[
-            'track-row flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors border-l-2',
-            selectedTracks.includes(track.id) ? 'bg-accent-soft border-l-primary' :
-            track.issues > 0 ? 'border-l-amber-500 hover:bg-gray-50 dark:hover:bg-surface-highlight/50' : 
-            'border-l-transparent hover:bg-gray-50 dark:hover:bg-surface-highlight/50'
-          ]"
-        >
-          <!-- Checkbox -->
-          <input 
-            type="checkbox" 
-            :checked="selectedTracks.includes(track.id)"
-            @click.stop="toggleTrackSelection(track.id)"
-            class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary shrink-0"
-          >
-          
-          <!-- Album Art -->
-          <div class="w-10 h-10 rounded bg-gray-200 dark:bg-surface-highlight shrink-0 overflow-hidden">
-            <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
-            <div v-else class="w-full h-full bg-gradient-to-br from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 flex items-center justify-center">
-              <span class="material-symbols-outlined text-gray-500 dark:text-gray-400 text-[18px]">album</span>
-            </div>
-          </div>
-          
-          <!-- Track Info -->
-          <div class="flex-1 min-w-0">
-            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
-            <p class="text-xs text-text-secondary truncate">{{ track.artist }}</p>
-          </div>
-          
-          <!-- Metadata Score -->
-          <div class="flex items-center gap-2 shrink-0">
-            <div :class="['relative w-9 h-9 rounded-full flex items-center justify-center', getScoreBackground(track.score)]">
-              <svg class="absolute inset-0" viewBox="0 0 36 36">
-                <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-width="3" class="opacity-20" />
-                <circle 
-                  cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-width="3"
-                  :stroke-dasharray="`${track.score} 100`"
-                  stroke-linecap="round"
-                  transform="rotate(-90 18 18)"
-                />
-              </svg>
-              <span class="text-[10px] font-bold">{{ track.score }}%</span>
-            </div>
-            
-            <!-- Issues Badge -->
-            <span v-if="track.issues > 0" class="px-1.5 py-0.5 bg-error/10 text-error text-[10px] font-medium rounded">
-              {{ track.issues }}
-            </span>
+      <!-- Track List with High-Performance Virtual Scrolling -->
+      <div
+        v-else
+        ref="trackContainerRef"
+        @scroll="onTrackScroll"
+        class="track-list flex-1 overflow-y-auto custom-scrollbar relative"
+      >
+        <div v-if="filteredTracks.length === 0" class="p-8 text-center text-text-secondary text-xs">
+          <span class="material-symbols-outlined text-3xl text-gray-300 dark:text-gray-600 mb-1">search_off</span>
+          <p>No tracks match current filters</p>
+        </div>
+        <!-- Virtual scroll spacer -->
+        <div v-else :style="{ height: totalVirtualHeight + 'px', position: 'relative', width: '100%' }">
+          <!-- Rendered visible items window -->
+          <div :style="{ transform: `translateY(${virtualOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
+            <div
+              v-for="track in visibleTracks"
+              :key="track.id"
+              @click="selectTrack(track)"
+              :style="{ height: ROW_HEIGHT + 'px' }"
+              :class="[
+                'track-row flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors border-l-2 box-border',
+                selectedTracks.includes(track.id) ? 'bg-accent-soft border-l-primary' :
+                track.issues > 0 ? 'border-l-amber-500 hover:bg-gray-50 dark:hover:bg-surface-highlight/50' :
+                'border-l-transparent hover:bg-gray-50 dark:hover:bg-surface-highlight/50'
+              ]"
+            >
+              <!-- Checkbox -->
+              <input
+                type="checkbox"
+                :checked="selectedTracks.includes(track.id)"
+                @click.stop="toggleTrackSelection(track.id)"
+                class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary shrink-0"
+              >
 
-            <!-- Inline Action Menu -->
-            <div class="relative group/menu">
-              <button @click.stop="openActionMenu(track, $event)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
-                <span class="material-symbols-outlined text-[20px]">more_vert</span>
-              </button>
+              <!-- Album Art -->
+              <div class="w-10 h-10 rounded bg-gray-200 dark:bg-surface-highlight shrink-0 overflow-hidden">
+                <img v-if="track.coverUrl" :src="track.coverUrl" :alt="track.album" class="w-full h-full object-cover" loading="lazy">
+                <div v-else class="w-full h-full bg-gradient-to-br from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 flex items-center justify-center">
+                  <span class="material-symbols-outlined text-gray-500 dark:text-gray-400 text-[18px]">album</span>
+                </div>
+              </div>
+
+              <!-- Track Info -->
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                <p class="text-xs text-text-secondary truncate">{{ track.artist }}</p>
+              </div>
+
+              <!-- Metadata Score -->
+              <div class="flex items-center gap-2 shrink-0">
+                <div :class="['relative w-9 h-9 rounded-full flex items-center justify-center', getScoreBackground(track.score)]">
+                  <svg class="absolute inset-0" viewBox="0 0 36 36">
+                    <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-width="3" class="opacity-20" />
+                    <circle
+                      cx="18" cy="18" r="15" fill="none" stroke="currentColor" stroke-width="3"
+                      :stroke-dasharray="`${track.score} 100`"
+                      stroke-linecap="round"
+                      transform="rotate(-90 18 18)"
+                    />
+                  </svg>
+                  <span class="text-[10px] font-bold">{{ track.score }}%</span>
+                </div>
+
+                <!-- Issues Badge -->
+                <span v-if="track.issues > 0" class="px-1.5 py-0.5 bg-error/10 text-error text-[10px] font-medium rounded">
+                  {{ track.issues }}
+                </span>
+
+                <!-- Inline Action Menu -->
+                <div class="relative group/menu">
+                  <button @click.stop="openActionMenu(track, $event)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+                    <span class="material-symbols-outlined text-[20px]">more_vert</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       </div>
     </div>
-    
+
     <!-- Right Panel: Metadata Editor (60%) -->
     <div class="metadata-editor w-3/5 flex flex-col overflow-hidden">
-      
+
       <!-- Auto-Fix Tools Panel (Collapsible) -->
       <Transition name="slide-down">
         <div v-if="showAutoFixPanel" class="autofix-panel shrink-0 border-b border-gray-200 dark:border-border-dark">
@@ -220,7 +224,7 @@
             </div>
             <span class="material-symbols-outlined text-gray-400">expand_less</span>
           </button>
-          
+
           <div class="p-4 grid grid-cols-2 gap-3">
             <!-- MusicBrainz Lookup -->
             <div class="fix-tool-card p-4 rounded-xl bg-gray-50 dark:bg-surface-highlight/50 border border-gray-200 dark:border-border-dark hover:border-purple-500/50 transition-colors">
@@ -234,16 +238,25 @@
                   <p class="text-xs text-success mt-1">Available for {{ tracksWithIsrcNoMb }} tracks with ISRC</p>
                 </div>
               </div>
-              <button 
+              <button
                 @click="runMusicBrainzEnrichment"
                 :disabled="isEnriching || tracksWithIsrcNoMb === 0"
-                class="w-full mt-3 px-3 py-2 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                class="w-full mt-3 px-3 py-2 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 disabled:opacity-50 text-xs font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
               >
                 <span v-if="isEnriching" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
                 {{ isEnriching ? 'Enriching...' : 'Fix Selected' }}
               </button>
+              <div v-if="enrichProgress && enrichProgress.total > 0" class="mt-2">
+                <div class="flex justify-between text-[10px] text-text-secondary mb-1">
+                  <span class="truncate">{{ enrichProgress.currentTrack || 'Enriqueciendo…' }}</span>
+                  <span>{{ enrichProgress.current }}/{{ enrichProgress.total }}</span>
+                </div>
+                <div class="h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div class="h-full bg-primary rounded-full transition-all" :style="{ width: Math.round((enrichProgress.current / enrichProgress.total) * 100) + '%' }"></div>
+                </div>
+              </div>
             </div>
-            
+
             <!-- AcoustID Fingerprint -->
             <div class="fix-tool-card p-4 rounded-xl bg-gray-50 dark:bg-surface-highlight/50 border border-gray-200 dark:border-border-dark hover:border-purple-500/50 transition-colors">
               <div class="flex items-start gap-3">
@@ -267,7 +280,7 @@
                 {{ isBatchIdentifying ? `Identificando ${batchIdentifyProgress.done}/${batchIdentifyProgress.total}…` : 'Analyze Selected' }}
               </button>
             </div>
-            
+
             <!-- Last.fm Tags -->
             <div class="fix-tool-card p-4 rounded-xl bg-gray-50 dark:bg-surface-highlight/50 border border-gray-200 dark:border-border-dark hover:border-purple-500/50 transition-colors">
               <div class="flex items-start gap-3">
@@ -317,7 +330,7 @@
                 </p>
               </div>
             </div>
-            
+
             <!-- Album Art Search -->
             <div class="fix-tool-card p-4 rounded-xl bg-gray-50 dark:bg-surface-highlight/50 border border-gray-200 dark:border-border-dark hover:border-purple-500/50 transition-colors">
               <div class="flex items-start gap-3">
@@ -341,7 +354,7 @@
                 {{ isFetchingArt ? 'Buscando…' : 'Find All Missing' }}
               </button>
             </div>
-            
+
             <!-- Fix Common Issues (full width) -->
             <div class="fix-tool-card col-span-2 p-4 rounded-xl bg-gray-50 dark:bg-surface-highlight/50 border border-gray-200 dark:border-border-dark hover:border-purple-500/50 transition-colors">
               <div class="flex items-start gap-3">
@@ -381,7 +394,7 @@
           </div>
         </div>
       </Transition>
-      
+
       <!-- No Selection State -->
       <div v-if="selectedTracks.length === 0" class="flex-1 flex flex-col items-center justify-center text-center p-8">
         <div class="h-20 w-20 rounded-full bg-gray-100 dark:bg-surface-highlight flex items-center justify-center mb-4">
@@ -390,7 +403,7 @@
         <h3 class="text-xl font-semibold text-gray-900 dark:text-white mb-2">Select a Track</h3>
         <p class="text-text-secondary max-w-md">Choose a track from the list to view and edit its metadata</p>
       </div>
-      
+
       <!-- Batch Edit Mode -->
       <div v-else-if="selectedTracks.length > 1" class="flex-1 overflow-y-auto custom-scrollbar">
         <div class="p-6">
@@ -406,7 +419,7 @@
               </div>
             </div>
           </div>
-          
+
           <!-- Batch Fields -->
           <div class="editor-form space-y-6">
             <div class="form-section">
@@ -439,10 +452,10 @@
               </div>
             </div>
           </div>
-          
+
           <!-- Batch Actions -->
           <div class="mt-8 flex items-center gap-3">
-            <button 
+            <button
               @click="saveBatchEdits"
               :disabled="isBatchSaving || !Object.values(batchFields).some(v => v)"
               class="flex-1 px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
@@ -456,7 +469,7 @@
           </div>
         </div>
       </div>
-      
+
       <!-- Single Track Editor -->
       <div v-else class="flex-1 overflow-y-auto custom-scrollbar">
         <div class="p-6">
@@ -473,11 +486,11 @@
                 <span class="text-white text-sm font-medium">Change Art</span>
               </button>
             </div>
-            
+
             <div class="flex-1">
               <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-1">{{ currentTrack?.title }}</h2>
               <p class="text-lg text-text-secondary mb-4">{{ currentTrack?.artist }}</p>
-              
+
               <!-- Quick Stats -->
               <div class="flex items-center gap-4">
                 <div :class="['flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium', getScoreBackground(currentTrack?.score || 0)]">
@@ -489,12 +502,15 @@
                   {{ currentTrack?.issues }} issues
                 </span>
               </div>
+              <p v-if="currentTrack && missingFieldsForMetadataTrack(currentTrack).length" class="mt-2 text-sm text-error" data-testid="metadata-issues-detail">
+                Missing: {{ missingFieldsForMetadataTrack(currentTrack).join(', ') }}
+              </p>
             </div>
           </div>
-          
+
           <!-- Editor Form -->
           <div class="editor-form space-y-6">
-            
+
             <!-- Basic Info -->
             <div class="form-section">
               <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
@@ -534,7 +550,7 @@
                 </div>
               </div>
             </div>
-            
+
             <!-- Details -->
             <div class="form-section">
               <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
@@ -576,7 +592,7 @@
                 </div>
               </div>
             </div>
-            
+
             <!-- Audio Analysis -->
             <div class="form-section">
               <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
@@ -643,7 +659,7 @@
                 </div>
               </div>
             </div>
-            
+
             <!-- Identifiers -->
             <div class="form-section">
               <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
@@ -680,7 +696,7 @@
                 </div>
               </div>
             </div>
-            
+
             <!-- Provider Provenance & Availability -->
             <div class="form-section">
               <div class="flex items-center justify-between mb-3">
@@ -688,8 +704,8 @@
                   <span class="material-symbols-outlined text-[18px] text-gray-400">hub</span>
                   Provider Provenance &amp; Availability
                 </h4>
-                <button 
-                  @click="checkCurrentTrackAvailability" 
+                <button
+                  @click="checkCurrentTrackAvailability"
                   :disabled="isCheckingAvailability"
                   class="px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 disabled:opacity-50"
                 >
@@ -723,9 +739,9 @@
                 <div>
                   <span class="text-xs text-text-secondary font-medium">Linked Provider Sources</span>
                   <div v-if="trackSources.length > 0" class="mt-2 space-y-2">
-                    <div 
-                      v-for="src in trackSources" 
-                      :key="src.id" 
+                    <div
+                      v-for="src in trackSources"
+                      :key="src.id"
                       class="flex items-center justify-between p-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-xs"
                     >
                       <div class="flex items-center gap-2.5">
@@ -886,7 +902,7 @@
 
           <!-- Actions -->
           <div class="mt-8 flex items-center gap-3">
-            <button 
+            <button
               @click="saveTrackMetadata"
               :disabled="isSaving"
               class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
@@ -909,7 +925,7 @@
                 Auto-fix
                 <span class="material-symbols-outlined text-[16px]">expand_more</span>
               </button>
-              
+
               <!-- Auto-fix Dropdown -->
               <Transition name="fade">
                 <div v-if="showAutoFix" class="absolute right-0 top-full mt-2 w-56 bg-white dark:bg-surface-dark rounded-xl shadow-xl border border-gray-200 dark:border-border-dark overflow-hidden z-10">
@@ -936,7 +952,7 @@
         </div>
       </div>
     </div>
-    
+
     <!-- Album Art Picker Modal -->
     <Teleport to="body">
       <Transition name="fade">
@@ -948,7 +964,7 @@
                 <span class="material-symbols-outlined text-gray-400">close</span>
               </button>
             </div>
-            
+
             <div class="p-6">
               <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2" for="album-art-url">Image URL</label>
               <input
@@ -975,7 +991,7 @@
         </div>
       </Transition>
     </Teleport>
-    
+
     <!-- Quality Report Modal -->
     <Teleport to="body">
       <Transition name="fade">
@@ -987,15 +1003,15 @@
                 <span class="material-symbols-outlined text-gray-400">close</span>
               </button>
             </div>
-            
+
             <div class="p-6 overflow-y-auto custom-scrollbar max-h-[calc(85vh-140px)]">
               <!-- Overall Score -->
               <div class="flex items-center gap-6 mb-8">
                 <div class="relative w-28 h-28">
                   <svg class="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
                     <circle cx="50" cy="50" r="45" stroke="currentColor" stroke-width="8" fill="none" class="text-gray-200 dark:text-gray-700" />
-                    <circle cx="50" cy="50" r="45" stroke="currentColor" stroke-width="8" fill="none" 
-                      :class="qualityReportData.averageScore >= 80 ? 'text-success' : qualityReportData.averageScore >= 60 ? 'text-amber-500' : 'text-error'" 
+                    <circle cx="50" cy="50" r="45" stroke="currentColor" stroke-width="8" fill="none"
+                      :class="qualityReportData.averageScore >= 80 ? 'text-success' : qualityReportData.averageScore >= 60 ? 'text-amber-500' : 'text-error'"
                       stroke-dasharray="283"
                       :stroke-dashoffset="283 - (283 * qualityReportData.averageScore / 100)"
                       stroke-linecap="round"
@@ -1015,7 +1031,7 @@
                   </div>
                 </div>
               </div>
-              
+
               <!-- Issues Breakdown -->
               <div class="mb-8">
                 <h5 class="font-semibold text-gray-900 dark:text-white mb-3">Issues Found</h5>
@@ -1057,7 +1073,7 @@
                   </button>
                 </div>
               </div>
-              
+
               <!-- Recommendations -->
               <div class="mb-6">
                 <h5 class="font-semibold text-gray-900 dark:text-white mb-3">Recommendations</h5>
@@ -1080,10 +1096,10 @@
                 </div>
               </div>
             </div>
-            
+
             <!-- Footer -->
             <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex justify-end">
-              <button 
+              <button
                 @click="runMusicBrainzEnrichment(); showQualityReport = false"
                 :disabled="isEnriching"
                 class="px-6 py-2.5 bg-purple-500 hover:bg-purple-600 text-white rounded-lg font-medium transition-colors flex items-center gap-2 disabled:opacity-50"
@@ -1096,7 +1112,7 @@
         </div>
       </Transition>
     </Teleport>
-    
+
     <!-- Comparison Modal: file tags vs database -->
     <Teleport to="body">
       <Transition name="fade">
@@ -1111,7 +1127,7 @@
                 <span class="material-symbols-outlined text-gray-400">close</span>
               </button>
             </div>
-            
+
             <div class="overflow-auto custom-scrollbar flex-1">
               <!-- Loading -->
               <div v-if="isComparingSources" class="py-14 text-center text-sm text-text-secondary flex flex-col items-center gap-2">
@@ -1156,7 +1172,7 @@
                 Selecciona una pista para comparar sus fuentes.
               </p>
             </div>
-            
+
             <!-- Footer -->
             <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex justify-between items-center gap-3 shrink-0">
               <p class="text-xs text-text-secondary">Clic en una fila para adoptar el valor del archivo en el formulario · las filas resaltadas difieren</p>
@@ -1168,13 +1184,13 @@
         </div>
       </Transition>
     </Teleport>
-    
+
     <!-- Toast Notifications -->
     <Teleport to="body">
       <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
         <TransitionGroup name="toast">
-          <div 
-            v-for="toast in toasts" 
+          <div
+            v-for="toast in toasts"
             :key="toast.id"
             :class="['flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg min-w-[280px]', getToastClasses(toast.type)]"
           >
@@ -1189,8 +1205,68 @@
     </Teleport>
 
 
+    <!-- MET-03 / LY-04: barrido de portadas animadas para álbumes descargados -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showCoverSweepDialog" class="cover-sweep-dialog fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="!isCoverSweepRunning && (showCoverSweepDialog = false)">
+          <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Portadas animadas</h3>
+              <button v-if="!isCoverSweepRunning" @click="showCoverSweepDialog = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors" aria-label="Cerrar barrido de portadas">
+                <span class="material-symbols-outlined text-gray-400">close</span>
+              </button>
+            </div>
+
+            <div class="p-6 space-y-4">
+              <p class="text-xs text-text-secondary leading-relaxed">
+                Busca portadas animadas en Apple Music y, como alternativa, en Tidal para los álbumes descargados.
+                Si encuentra una, guarda los sidecars cover.webp y cover.animated.webp junto al audio;
+                no modifica el CoverFront del FLAC. Omite los álbumes con una portada animada válida.
+                Las fuentes públicas pueden fallar; el resumen indicará «Fuente no disponible» si ocurre.
+              </p>
+
+              <label v-if="!isCoverSweepRunning && !coverSweepResult" class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                <input type="checkbox" v-model="coverSweepForce"> Re-descargar aunque ya exista cover.webp
+              </label>
+
+              <div v-if="isCoverSweepRunning">
+                <div class="flex items-center justify-between mb-2 text-sm">
+                  <span class="text-gray-700 dark:text-gray-300">Progreso</span>
+                  <span class="font-medium text-gray-900 dark:text-white">{{ coverSweepProgress.current }} / {{ coverSweepProgress.total }}</span>
+                </div>
+                <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                  <div class="h-full bg-primary rounded-full transition-all" :style="{ width: coverSweepProgress.total ? (coverSweepProgress.current / coverSweepProgress.total * 100) + '%' : '0%' }"></div>
+                </div>
+                <p class="mt-3 text-sm text-text-secondary truncate">{{ coverSweepProgress.currentAlbum || '—' }}</p>
+                <p v-if="coverSweepProgress.message" class="mt-1 text-xs text-text-secondary">{{ coverSweepProgress.message }}</p>
+              </div>
+
+              <div v-if="coverSweepResult" class="cover-sweep-summary grid grid-cols-2 gap-2 text-xs">
+                <span>Álbumes: <b>{{ coverSweepResult.scanned_albums }}</b></span>
+                <span class="text-success">Ya animadas: <b>{{ coverSweepResult.already_animated }}</b></span>
+                <span class="text-success">Descargadas: <b>{{ coverSweepResult.downloaded }}</b></span>
+                <span>Sin animación disponible: <b>{{ coverSweepResult.not_found }}</b></span>
+                <span>Fuente no disponible: <b>{{ coverSweepResult.source_unavailable }}</b></span>
+                <span class="text-error">Fallos: <b>{{ coverSweepResult.failed }}</b></span>
+                <span v-if="coverSweepResult.cancelled" class="col-span-2 text-warning">Barrido cancelado por el usuario.</span>
+              </div>
+            </div>
+
+            <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-end gap-3">
+              <button v-if="isCoverSweepRunning" @click="cancelCoverSweepAction" class="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors text-gray-700 dark:text-gray-300">
+                Cancelar proceso
+              </button>
+              <button v-else @click="runCoverSweep" data-testid="cover-sweep-run" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
+                {{ coverSweepResult ? 'Repetir barrido' : 'Ejecutar' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <!-- Metadata Edit Modal -->
-    <MetadataEditModal 
+    <MetadataEditModal
       v-model="showEditModal"
       :track="currentTrack"
       @saved="onTrackSaved"
@@ -1215,20 +1291,20 @@
     <!-- Context Menu -->
     <Teleport to="body">
       <div v-if="contextMenu.visible" class="fixed inset-0 z-[100]" @click="closeContextMenu" @contextmenu.prevent="closeContextMenu">
-        <div 
+        <div
           class="absolute bg-white dark:bg-surface-dark rounded-lg shadow-xl border border-gray-200 dark:border-border-dark py-1 min-w-[180px]"
-          :style="{ top: `${contextMenu.y}px`, left: `${contextMenu.x - 180}px` }" 
+          :style="{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }"
         >
           <div class="px-3 py-2 border-b border-gray-200 dark:border-border-dark mb-1">
             <p class="text-xs font-semibold text-gray-900 dark:text-white truncate max-w-[160px]">{{ contextMenu.track?.title }}</p>
             <p class="text-[10px] text-text-secondary truncate max-w-[160px]">{{ contextMenu.track?.artist }}</p>
           </div>
-          
+
           <button @click="fetchFromMusicBrainz" class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-surface-highlight flex items-center gap-2">
             <span class="material-symbols-outlined text-[18px] text-purple-500">search</span>
             Fetch from MusicBrainz
           </button>
-          
+
           <button @click="showEditModal = true; contextMenu.visible = false" class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-surface-highlight flex items-center gap-2">
             <span class="material-symbols-outlined text-[18px]">edit</span>
             Edit in Modal
@@ -1241,10 +1317,11 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
-import type { UnlistenFn } from '@tauri-apps/api/event'
+import { listen as listenEvent, type UnlistenFn } from '@tauri-apps/api/event'
 import { useRoute } from 'vue-router'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
+import { lyricsApi, type AnimatedCoverSweepResult } from '@/api/lyrics'
 import { metadataApi } from '@/api/metadata'
 import type { CountryTagRepairReport } from '@/api/metadata'
 import { settingsApi } from '@/api/settings'
@@ -1325,13 +1402,28 @@ interface MetadataStats {
 // STATE
 // ==============================================
 
-// Loading state
+// Lifecycle & Safety (R1 / MT-02)
+let isMounted = true
+const activeToastTimers = new Set<ReturnType<typeof setTimeout>>()
+
+// Loading state (MET-01)
 const isLoading = ref(true)
+const isRefreshing = ref(false)
+let isLoadingTracks = false
 const isSaving = ref(false)
 const isEnriching = ref(false)
 let unlistenEnrichment: UnlistenFn | null = null
+let unlistenBg: UnlistenFn | null = null
 let bgRefreshTimer: ReturnType<typeof setTimeout> | undefined
+let hasPendingBatchRefresh = false
 const enrichProgress = ref<{ current: number; total: number; currentTrack: string } | null>(null)
+
+// Virtual Scrolling (MET-01 / DownloadsView:549-564 parity)
+const ROW_HEIGHT = 64 // px per track row
+const OVERSCAN = 5
+const trackContainerRef = ref<HTMLElement | null>(null)
+const trackScrollTop = ref(0)
+const trackViewportHeight = ref(800)
 
 // Background enrichment status
 interface BackgroundEnrichmentStatus {
@@ -1393,14 +1485,41 @@ const scoreWeights = ref({
 
 // Helper: calculate issues from track data
 function calculateIssues(track: LibraryTrack): number {
-  let issues = 0
-  if (!track.album_name) issues++
-  if (!track.isrc) issues++
-  if (!track.musicbrainz_id) issues++
-  if (!track.cover_art_url) issues++
-  if (!track.release_year) issues++
-  if (!track.genre) issues++
-  return issues
+  return missingMetadataFields(track).length
+}
+
+// Helper: the same missing fields as calculateIssues, named so the badge can
+// say WHICH field is missing instead of only counting them.
+function missingMetadataFields(track: {
+  album_name?: string | null
+  isrc?: string | null
+  musicbrainz_id?: string | null
+  cover_art_url?: string | null
+  release_year?: number | null
+  genre?: string | null
+}): string[] {
+  const fields: Array<[string, unknown]> = [
+    ['Album', track.album_name],
+    ['ISRC', track.isrc],
+    ['MusicBrainz ID', track.musicbrainz_id],
+    ['Cover art', track.cover_art_url],
+    ['Release year', track.release_year],
+    ['Genre', track.genre],
+  ]
+  return fields.filter(([, value]) => !value).map(([label]) => label)
+}
+
+// Helper: the same list expressed on a mapped MetadataTrack, which already
+// carries the values but not the count's provenance.
+function missingFieldsForMetadataTrack(track: MetadataTrack): string[] {
+  return missingMetadataFields({
+    album_name: track.album,
+    isrc: track.isrc,
+    musicbrainz_id: track.musicbrainzId,
+    cover_art_url: track.coverUrl,
+    release_year: track.year,
+    genre: track.genre,
+  })
 }
 
 // Helper: map LibraryTrack to MetadataTrack
@@ -1450,33 +1569,61 @@ function mapToMetadataTrack(item: LibraryTrack): MetadataTrack {
   }
 }
 
-// Load tracks from backend
-async function loadTracks() {
-  isLoading.value = true
+// Load tracks from backend (MET-01: supports silent background refresh)
+async function loadTracks(isRefresh = false) {
+  if (!isMounted) return
+  if (isLoadingTracks) return
+  isLoadingTracks = true
+
+  if (isRefresh && tracks.value.length > 0) {
+    isRefreshing.value = true
+  } else {
+    isLoading.value = true
+  }
+
   try {
+    let nextTracks: MetadataTrack[] = []
+    let nextTotal = 0
+
     // If filtering by "missing", use specialized endpoint
     if (filterType.value === 'missing') {
-       const rawTracks = await metadataApi.getTracksNeedingMetadata(500)
-       tracks.value = rawTracks.map(mapToMetadataTrack)
-       totalTracks.value = rawTracks.length // Estimate
+      const rawTracks = await metadataApi.getTracksNeedingMetadata(500)
+      if (!isMounted) return
+      nextTracks = rawTracks.map(mapToMetadataTrack)
+      nextTotal = rawTracks.length // Estimate
     } else {
-       // Otherwise load general library
-       const page = await libraryApi.getLibrary(0, 500)
-       tracks.value = page.tracks.map(mapToMetadataTrack)
-       totalTracks.value = page.total
+      // Otherwise load general library
+      const page = await libraryApi.getLibrary(0, 500)
+      if (!isMounted) return
+      nextTracks = page.tracks.map(mapToMetadataTrack)
+      nextTotal = page.total
     }
+
+    tracks.value = nextTracks
+    totalTracks.value = nextTotal
+
+    // Preserve selections for tracks that still exist
+    const currentIdSet = new Set(nextTracks.map(t => t.id))
+    selectedTracks.value = selectedTracks.value.filter(id => currentIdSet.has(id))
   } catch (error) {
+    if (!isMounted) return
     console.error('Failed to load tracks:', error)
     showToast('Failed to load tracks', 'error')
   } finally {
-    isLoading.value = false
+    isLoadingTracks = false
+    if (isMounted) {
+      isLoading.value = false
+      isRefreshing.value = false
+    }
   }
 }
 
 // Load metadata stats
 async function loadMetadataStats() {
+  if (!isMounted) return
   try {
     const stats = await metadataApi.getMetadataStats()
+    if (!isMounted) return
     metadataStats.value = {
       total_tracks: stats.total_tracks,
       with_isrc: stats.with_isrc,
@@ -1492,14 +1639,17 @@ async function loadMetadataStats() {
       missing_genre: stats.total_tracks - stats.with_genre,
     }
   } catch (error) {
+    if (!isMounted) return
     console.error('Failed to load metadata stats:', error)
   }
 }
 
 // Load scoring weights from preferences
 async function loadScoreWeights() {
+  if (!isMounted) return
   try {
     const prefs = await settingsApi.getMetadataPreferences()
+    if (!isMounted) return
     scoreWeights.value = {
       weight_album: prefs.weight_album ?? 1,
       weight_isrc:  prefs.weight_isrc  ?? 1,
@@ -1509,61 +1659,115 @@ async function loadScoreWeights() {
       weight_genre: prefs.weight_genre  ?? 1,
     }
   } catch (error) {
+    if (!isMounted) return
     console.error('Failed to load score weights:', error)
   }
 }
 
+// Schedule consolidated batch refresh (MET-01: batches per-track events)
+function scheduleBatchRefresh(delayMs = 15000) {
+  if (!isMounted) return
+  hasPendingBatchRefresh = true
+  if (bgRefreshTimer) {
+    if (delayMs < 1000) {
+      clearTimeout(bgRefreshTimer)
+      bgRefreshTimer = undefined
+    } else {
+      return
+    }
+  }
+  bgRefreshTimer = setTimeout(async () => {
+    bgRefreshTimer = undefined
+    if (!isMounted || !hasPendingBatchRefresh) return
+    hasPendingBatchRefresh = false
+    await Promise.all([loadTracks(true), loadMetadataStats()])
+  }, delayMs)
+}
+
+function handleBackgroundStatus(status: BackgroundEnrichmentStatus) {
+  if (!isMounted) return
+  backgroundEnrichment.value = status
+
+  if (status.status === 'waiting') {
+    // Whole queue drained/batch finished: prompt refresh
+    scheduleBatchRefresh(500)
+  } else if (status.status === 'completed' && status.enriched && status.enriched > 0) {
+    // Individual track completed: consolidate at batch level (interim refresh)
+    scheduleBatchRefresh(15000)
+  }
+}
+
+// Synchronous lifecycle hook registered at setup root (MT-02 fix)
+onUnmounted(() => {
+  isMounted = false
+  if (bgRefreshTimer) {
+    clearTimeout(bgRefreshTimer)
+    bgRefreshTimer = undefined
+  }
+  if (unlistenBg) {
+    unlistenBg()
+    unlistenBg = null
+  }
+  if (unlistenEnrichment) {
+    unlistenEnrichment()
+    unlistenEnrichment = null
+  }
+  if (coverSweepUnlisten) {
+    coverSweepUnlisten()
+    coverSweepUnlisten = null
+  }
+  for (const timer of activeToastTimers) {
+    clearTimeout(timer)
+  }
+  activeToastTimers.clear()
+})
+
 // Initialize on mount
 onMounted(async () => {
-  await Promise.all([loadTracks(), loadMetadataStats(), loadScoreWeights()])
+  isMounted = true
+  try {
+    await Promise.all([loadTracks(), loadMetadataStats(), loadScoreWeights()])
+  } catch (err) {
+    console.error('Failed to load initial metadata:', err)
+  }
+  if (!isMounted) return
+
   void loadLastfmKeyStatus()
-  
+
+  if (trackContainerRef.value && trackContainerRef.value.clientHeight > 0) {
+    trackViewportHeight.value = trackContainerRef.value.clientHeight
+  }
+
   const filterParam = route.query.filter
   if (filterParam === 'needs_work') {
     filterType.value = 'needs_work'
   }
 
-  const trackIdParam = route.query.trackId;
+  const trackIdParam = route.query.trackId
   if (trackIdParam) {
-    const targetId = Number(trackIdParam);
-    const found = tracks.value.find(t => t.id === targetId);
-    if (found) selectTrack(found);
+    const targetId = Number(trackIdParam)
+    const found = tracks.value.find(t => t.id === targetId)
+    if (found) {
+      selectTrack(found)
+      scrollToTrack(targetId)
+    }
   }
-  
+
   // Subscribe to background enrichment status events
   try {
     const { listen } = await import('@tauri-apps/api/event')
-    const unlistenBg = await listen<BackgroundEnrichmentStatus>(TauriEvents.BACKGROUND_ENRICHMENT_STATUS, (event) => {
-      backgroundEnrichment.value = event.payload
-
-      // Auto-refresh tracks when enrichment completes.
-      // Debounced: the background worker emits this event PER TRACK with
-      // status 'completed', not once per batch, so loadTracks() here re-ran
-      // the full query (hundreds of rows) for every enriched track.
-      if (event.payload.status === 'completed' && event.payload.enriched && event.payload.enriched > 0) {
-        if (bgRefreshTimer) clearTimeout(bgRefreshTimer)
-        bgRefreshTimer = setTimeout(() => {
-          bgRefreshTimer = undefined
-          loadTracks()
-        }, 3000)
-      }
+    if (!isMounted) return
+    const unlisten = await listen<BackgroundEnrichmentStatus>(TauriEvents.BACKGROUND_ENRICHMENT_STATUS, (event) => {
+      if (!isMounted) return
+      handleBackgroundStatus(event.payload)
     })
-    onUnmounted(() => {
-      unlistenBg()
-      if (bgRefreshTimer) {
-        clearTimeout(bgRefreshTimer)
-        bgRefreshTimer = undefined
-      }
-    })
+    if (!isMounted) {
+      unlisten()
+    } else {
+      unlistenBg = unlisten
+    }
   } catch (err) {
     console.warn('background-enrichment-status listener unavailable:', err)
-  }
-})
-
-onUnmounted(() => {
-  if (unlistenEnrichment) {
-    unlistenEnrichment()
-    unlistenEnrichment = null
   }
 })
 
@@ -1574,17 +1778,17 @@ onUnmounted(() => {
 // Filtered tracks
 const filteredTracks = computed(() => {
   let result = [...tracks.value]
-  
+
   // Search filter
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase()
-    result = result.filter(t => 
-      t.title.toLowerCase().includes(query) || 
+    result = result.filter(t =>
+      t.title.toLowerCase().includes(query) ||
       t.artist.toLowerCase().includes(query) ||
       t.album.toLowerCase().includes(query)
     )
   }
-  
+
   // Type filter
   switch (filterType.value) {
     case 'downloaded':
@@ -1615,7 +1819,7 @@ const filteredTracks = computed(() => {
       result = result.filter(t => !t.year)
       break
   }
-  
+
   // Sort
   switch (sortBy.value) {
     case 'artist':
@@ -1630,8 +1834,58 @@ const filteredTracks = computed(() => {
     default:
       result.sort((a, b) => a.title.localeCompare(b.title))
   }
-  
+
   return result
+})
+
+// ==============================================
+// VIRTUAL SCROLLING COMPUTEDS (DownloadsView:549-564 parity)
+// ==============================================
+const totalVirtualHeight = computed(() => {
+  return filteredTracks.value.length * ROW_HEIGHT
+})
+
+const virtualStartIndex = computed(() => {
+  return Math.max(0, Math.floor(trackScrollTop.value / ROW_HEIGHT) - OVERSCAN)
+})
+
+const virtualEndIndex = computed(() => {
+  return Math.min(
+    filteredTracks.value.length,
+    Math.ceil((trackScrollTop.value + trackViewportHeight.value) / ROW_HEIGHT) + OVERSCAN
+  )
+})
+
+const virtualOffsetY = computed(() => {
+  return virtualStartIndex.value * ROW_HEIGHT
+})
+
+const visibleTracks = computed(() => {
+  return filteredTracks.value.slice(virtualStartIndex.value, virtualEndIndex.value)
+})
+
+function onTrackScroll(e: Event) {
+  const target = e.target as HTMLElement
+  if (target) {
+    trackScrollTop.value = target.scrollTop
+    trackViewportHeight.value = target.clientHeight || 800
+  }
+}
+
+function scrollToTrack(trackId: number) {
+  const index = filteredTracks.value.findIndex(t => t.id === trackId)
+  if (index !== -1 && trackContainerRef.value) {
+    const targetScrollTop = Math.max(0, (index - 1) * ROW_HEIGHT)
+    trackContainerRef.value.scrollTop = targetScrollTop
+    trackScrollTop.value = targetScrollTop
+  }
+}
+
+watch([searchQuery, filterType, sortBy], () => {
+  trackScrollTop.value = 0
+  if (trackContainerRef.value) {
+    trackContainerRef.value.scrollTop = 0
+  }
 })
 
 // Current track being edited
@@ -2308,7 +2562,7 @@ async function applyAlbumArt() {
 // Save single track metadata
 async function saveTrackMetadata() {
   if (!currentTrack.value) return
-  
+
   isSaving.value = true
   try {
     const updatedTrack = await metadataApi.updateTrackMetadata(currentTrack.value.id, {
@@ -2326,10 +2580,10 @@ async function saveTrackMetadata() {
       mbTrackId: editForm.mbTrackId || undefined,
       label: editForm.label || undefined,
     })
-    
+
     // Refresh the track in our local state using the returned data
     onTrackSaved(updatedTrack)
-    
+
     showToast('Saved metadata successfully', 'success')
   } catch (error) {
     console.error('Failed to save metadata:', error)
@@ -2369,7 +2623,7 @@ function onTrackSaved(updatedTrack: LibraryTrack) {
     // Merge updates into our MetadataTrack shape
     const metaTrack = mapToMetadataTrack(updatedTrack)
     tracks.value[index] = metaTrack
-    
+
     // Also update editForm if it's the current track
     if (currentTrack.value?.id === updatedTrack.id) {
        revertChanges() // This will reload form from currentTrack
@@ -2385,7 +2639,7 @@ function onTrackSaved(updatedTrack: LibraryTrack) {
 async function runMusicBrainzEnrichment() {
   isEnriching.value = true
   enrichProgress.value = { current: 0, total: 0, currentTrack: '' }
-  
+
   try {
     // Listen for progress events
     const { listen } = await import('@tauri-apps/api/event')
@@ -2427,10 +2681,10 @@ async function runMusicBrainzEnrichment() {
     }
 
     console.log(`Enriched ${result.enriched}/${result.total} tracks (${result.failed} failed)`)
-    
+
     // Show toast
     showToast(`Enriched ${result.enriched} tracks successfully`, 'success')
-    
+
     // Reload tracks to show updated scores
     if (result.enriched > 0 || result.failed > 0) {
       await loadTracks()
@@ -2452,21 +2706,28 @@ async function runMusicBrainzEnrichment() {
 function fetchFromMusicBrainz() {
   const track = contextMenu.track || currentTrack.value
   if (!track) return
-  
+
   // If triggered from context menu, set as current track so modal works
   if (contextMenu.track) {
     selectTrack(contextMenu.track)
   }
-  
+
   showMatchModal.value = true
   contextMenu.visible = false
 }
 
 function openActionMenu(track: MetadataTrack, event: MouseEvent) {
   event.preventDefault()
+  const menuWidth = 180
+  const menuHeight = 240
+  const padding = 8
+  const maxX = Math.max(padding, (window.innerWidth || 1200) - menuWidth - padding)
+  const maxY = Math.max(padding, (window.innerHeight || 800) - menuHeight - padding)
   contextMenu.track = track
-  contextMenu.x = event.clientX
-  contextMenu.y = event.clientY
+  // L-13: anclar contra el viewport (flip vertical) para no cortarse en el
+  // borde inferior de la pantalla.
+  contextMenu.x = Math.min(Math.max(padding, event.clientX), maxX)
+  contextMenu.y = Math.min(Math.max(padding, event.clientY), maxY)
   contextMenu.visible = true
 }
 
@@ -2482,7 +2743,7 @@ async function identifyWithAcoustID() {
     showToast('No audio file path available for fingerprinting', 'warning')
     return
   }
-  
+
   isIdentifying.value = true
   try {
     // Bridge contract: identify_audio -> data.matches[] (see scripts/fingerprint_bridge.py).
@@ -2520,15 +2781,15 @@ const batchEditForm = reactive({
 const isBatchSaving = ref(false)
 async function saveBatchEdits() {
   if (selectedTracks.value.length < 2) return
-  
+
   isBatchSaving.value = true
   let successCount = 0
   let failCount = 0
-  
+
   try {
     for (const trackId of selectedTracks.value) {
       const updates: Record<string, unknown> = {}
-      
+
       if (batchFields.album && batchEditForm.album) {
         updates.albumName = batchEditForm.album
       }
@@ -2538,7 +2799,7 @@ async function saveBatchEdits() {
       if (batchFields.genre && batchEditForm.genre) {
         updates.genre = batchEditForm.genre
       }
-      
+
       if (Object.keys(updates).length > 0) {
         try {
           await metadataApi.updateTrackMetadata(trackId, updates as Parameters<typeof metadataApi.updateTrackMetadata>[1])
@@ -2548,7 +2809,7 @@ async function saveBatchEdits() {
         }
       }
     }
-    
+
     if (successCount > 0) {
       showToast(`Updated ${successCount} tracks`, 'success')
       await loadTracks()
@@ -2556,7 +2817,7 @@ async function saveBatchEdits() {
     if (failCount > 0) {
       showToast(`Failed to update ${failCount} tracks`, 'error')
     }
-    
+
     // Clear selection after batch edit
     clearSelection()
   } catch (error) {
@@ -2581,19 +2842,89 @@ const toasts = ref<Toast[]>([])
 let toastIdCounter = 0
 
 function showToast(message: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') {
+  if (!isMounted) return
   const id = ++toastIdCounter
   toasts.value.push({ id, message, type })
-  
-  // Auto-remove after 4 seconds
-  setTimeout(() => {
+
+  // Auto-remove after 4 seconds (tracked in activeToastTimers to clear on unmount)
+  const timer = setTimeout(() => {
+    activeToastTimers.delete(timer)
     removeToast(id)
   }, 4000)
+  activeToastTimers.add(timer)
 }
 
 function removeToast(id: number) {
   const index = toasts.value.findIndex(t => t.id === id)
   if (index !== -1) {
     toasts.value.splice(index, 1)
+  }
+}
+
+// ==============================================
+// MET-03 / LY-04 — BARRIDO DE PORTADAS ANIMADAS
+// ==============================================
+
+const showCoverSweepDialog = ref(false)
+const isCoverSweepRunning = ref(false)
+const coverSweepForce = ref(false)
+const coverSweepResult = ref<AnimatedCoverSweepResult | null>(null)
+const coverSweepProgress = ref({ current: 0, total: 0, currentAlbum: '', message: '' })
+let coverSweepUnlisten: UnlistenFn | null = null
+
+/**
+ * Abre el diálogo del barrido sin comprobar cuentas: el backend extrae el token
+ * JWT del web player de Apple Music y cae en el token público de Tidal como
+ * alternativa, así que una cuenta de Apple Music no es requisito.
+ */
+async function openCoverSweepDialog(): Promise<void> {
+  coverSweepResult.value = null
+  coverSweepForce.value = false
+  showCoverSweepDialog.value = true
+}
+
+async function runCoverSweep(): Promise<void> {
+  if (isCoverSweepRunning.value) return
+  isCoverSweepRunning.value = true
+  coverSweepResult.value = null
+  coverSweepProgress.value = { current: 0, total: 0, currentAlbum: '', message: '' }
+  try {
+    coverSweepUnlisten = await listenEvent<{ status: string; current: number; total: number; album: string; message: string }>(
+      TauriEvents.ANIMATED_COVER_SWEEP_PROGRESS,
+      (event) => {
+        const p = event.payload
+        coverSweepProgress.value.current = p.current
+        coverSweepProgress.value.total = p.total
+        coverSweepProgress.value.currentAlbum = p.album
+        coverSweepProgress.value.message = p.message ?? ''
+      }
+    )
+    const res = await lyricsApi.sweepAnimatedCovers({ force: coverSweepForce.value })
+    coverSweepResult.value = res
+    showToast(
+      res.cancelled
+        ? 'Barrido de portadas cancelado'
+        : `Portadas animadas: ${res.downloaded} descargadas, ${res.already_animated} ya válidas, ${res.not_found} sin animación, ${res.failed} fallos`,
+      res.downloaded > 0 ? 'success' : 'info'
+    )
+  } catch (err) {
+    console.error('Animated cover sweep failed:', err)
+    showToast(err instanceof Error ? err.message : String(err), 'error')
+  } finally {
+    if (coverSweepUnlisten) {
+      coverSweepUnlisten()
+      coverSweepUnlisten = null
+    }
+    isCoverSweepRunning.value = false
+  }
+}
+
+async function cancelCoverSweepAction(): Promise<void> {
+  try {
+    await lyricsApi.cancelAnimatedCoverSweep()
+    showToast('Cancelando tras el álbum actual…', 'info')
+  } catch (err) {
+    console.error('Cover sweep cancel failed:', err)
   }
 }
 
@@ -2699,10 +3030,10 @@ const qualityReportData = computed(() => {
   const complete = tracks.value.filter(t => t.score >= 90).length
   const partial = tracks.value.filter(t => t.score >= 60 && t.score < 90).length
   const poor = tracks.value.filter(t => t.score < 60).length
-  const averageScore = tracks.value.length > 0 
+  const averageScore = tracks.value.length > 0
     ? Math.round(tracks.value.reduce((sum, t) => sum + t.score, 0) / tracks.value.length)
     : 0
-  
+
   return {
     complete,
     partial,

@@ -16,7 +16,8 @@ import {
     getLibraryStats,
     getFavoritesTracks,
     syncFavorites,
-    normalizeQualityPreference
+    normalizeQualityPreference,
+    syncLocalLibrary
 } from '@/api/library';
 import { resetMocks, mockInvoke } from '../setup';
 
@@ -404,6 +405,67 @@ describe('libraryApi', () => {
             expect(report.excluded_preflight).toBe(0);
             expect(report.exclusions).toEqual([]);
             expect(report.breakdown_by_reason).toEqual({});
+        });
+    });
+
+    describe('syncLocalLibrary (F-01 / F-02)', () => {
+        it('synchronizes a local music directory and normalizes the report', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'sync_local_library_cmd') {
+                    return {
+                        success: true,
+                        directory: '/home/music',
+                        total_scanned: 42,
+                        imported: 5,
+                        duplicates_matched: 5,
+                        duplicates_skipped: 10,
+                        errors: [],
+                    };
+                }
+                if (cmd === 'reconcile_library_physical_state') {
+                    return {
+                        executedActions: [],
+                        plannedActions: [],
+                        beforeStats: { physicalAudioFiles: 42, totalDownloadRecords: 10 },
+                        afterStats: { physicalAudioFiles: 42, totalDownloadRecords: 15 },
+                        missingFiles: [],
+                        orphanFiles: [],
+                        ambiguousOrphans: [],
+                        relinkedOrphans: 5,
+                        cleanedStagingResiduals: 0,
+                        failures: []
+                    };
+                }
+                if (cmd === 'auto_resolve_duplicates') {
+                    return { total_clusters_scanned: 1, tracks_merged: 0 };
+                }
+                return null;
+            });
+
+            const res = await syncLocalLibrary('/home/music', { autoResolveDuplicates: true });
+
+            expect(res.success).toBe(true);
+            expect(res.directory).toBe('/home/music');
+            expect(res.total_scanned).toBe(42);
+            expect(res.imported).toBe(5);
+            expect(res.duplicates_matched).toBe(5);
+            expect(res.duplicates_skipped).toBe(10);
+            expect(res.errors).toEqual([]);
+        });
+
+        it('returns failure report on invocation rejection', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'sync_local_library_cmd') {
+                    throw new Error('Directory not found');
+                }
+                return null;
+            });
+
+            const res = await syncLocalLibrary('/non/existent');
+
+            expect(res.success).toBe(false);
+            expect(res.total_scanned).toBe(0);
+            expect(res.errors).toContain('Directory not found');
         });
     });
 });

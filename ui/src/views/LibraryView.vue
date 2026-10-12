@@ -1,13 +1,127 @@
 <template>
   <div class="library-page h-full flex flex-col bg-background-light dark:bg-background-dark overflow-hidden">
     
-    <!-- Page Header -->
-    <div class="library-header px-8 pt-8 pb-2 shrink-0">
-      <div class="flex items-baseline gap-4">
-        <h1 class="text-3xl font-bold tracking-tight text-ink">Library</h1>
-        <span class="text-lg text-text-secondary font-medium">{{ totalTracks.toLocaleString() }} Tracks</span>
+    <!-- Page Header with Download & Queue Status Strip (L-12) -->
+    <div class="library-header px-8 pt-6 pb-2 shrink-0 flex items-center justify-between flex-wrap gap-4">
+      <div>
+        <div class="flex items-baseline gap-4">
+          <h1 class="text-3xl font-bold tracking-tight text-ink">Library</h1>
+          <span class="text-lg text-text-secondary font-medium">{{ totalTracks.toLocaleString() }} Tracks</span>
+        </div>
+        <p class="text-text-secondary mt-1">Your unified music collection from all services</p>
       </div>
-      <p class="text-text-secondary mt-1">Your unified music collection from all services</p>
+
+      <!-- Status Pills, Concurrency & Queue Details (Replicated from DownloadsView.vue) -->
+      <div class="flex items-center gap-2 flex-wrap">
+        <!-- Active Pill -->
+        <div
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold shadow-xs bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark text-gray-700 dark:text-gray-300"
+          title="Active downloads"
+        >
+          <span class="material-symbols-outlined text-[15px] text-primary animate-spin-slow">sync</span>
+          <span>Active:</span>
+          <strong class="font-bold text-gray-900 dark:text-white">{{ queueStats?.active ?? queueStats?.downloading ?? 0 }}</strong>
+        </div>
+
+        <!-- Queued Pill -->
+        <div
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold shadow-xs bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark text-gray-700 dark:text-gray-300"
+          title="Queued tracks"
+        >
+          <span class="material-symbols-outlined text-[15px] text-amber-500">schedule</span>
+          <span>Queued:</span>
+          <strong class="font-bold text-gray-900 dark:text-white">{{ queueStats?.queued ?? 0 }}</strong>
+        </div>
+
+        <!-- Completed Pill -->
+        <button
+          @click="toggleFilter('downloaded')"
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold shadow-xs bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight cursor-pointer"
+          title="Completed downloads (click to filter)"
+        >
+          <span class="material-symbols-outlined text-[15px] text-success">check_circle</span>
+          <span>Completed:</span>
+          <strong class="font-bold text-gray-900 dark:text-white">{{ queueStats?.completed ?? 0 }}</strong>
+        </button>
+
+        <!-- Failed Pill -->
+        <div
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold shadow-xs bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark text-gray-700 dark:text-gray-300"
+          title="Failed downloads"
+        >
+          <span class="material-symbols-outlined text-[15px] text-error">cancel</span>
+          <span>Failed:</span>
+          <strong class="font-bold text-gray-900 dark:text-white">{{ queueStats?.failed ?? 0 }}</strong>
+        </div>
+
+        <!-- Selected Pill -->
+        <div
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold shadow-xs bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark text-gray-700 dark:text-gray-300"
+          title="Selected tracks"
+        >
+          <span class="material-symbols-outlined text-[15px] text-primary">checklist</span>
+          <span>Selected:</span>
+          <strong class="font-bold text-gray-900 dark:text-white">{{ selectedCount }}</strong>
+        </div>
+
+        <div class="h-5 w-px bg-gray-200 dark:bg-border-dark mx-1 hidden sm:block"></div>
+
+        <!-- Concurrency Selector -->
+        <div class="flex items-center gap-1 bg-white dark:bg-surface-dark px-2.5 py-1 rounded-lg border border-gray-200 dark:border-border-dark shadow-xs" title="Concurrent download threads">
+          <span class="material-symbols-outlined text-[16px] text-primary mr-1">bolt</span>
+          <span class="text-[11px] font-bold text-text-secondary mr-1">{{ currentConcurrency }} Threads</span>
+          <button
+            v-for="t in [1, 2, 3, 4, 5, 6, 8, 10]"
+            :key="t"
+            @click="setConcurrency(t)"
+            :title="`Set ${t} concurrent download thread${t > 1 ? 's' : ''}`"
+            :class="[
+              'w-5 h-5 rounded text-[10px] font-bold transition-all flex items-center justify-center cursor-pointer',
+              currentConcurrency === t
+                ? 'bg-primary text-on-accent shadow-xs'
+                : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-surface-highlight'
+            ]"
+          >
+            {{ t }}
+          </button>
+        </div>
+
+        <!-- Queue Details Toggle -->
+        <button
+          @click="showQueueDetails = !showQueueDetails"
+          :class="['p-1.5 rounded-lg border transition-all cursor-pointer', showQueueDetails ? 'bg-primary/15 border-primary text-primary' : 'bg-white dark:bg-surface-dark border-gray-200 dark:border-border-dark text-gray-500 hover:text-gray-700 dark:hover:text-gray-300']"
+          title="Toggle queue reconciliation and telemetry details"
+        >
+          <span class="material-symbols-outlined text-[18px]">tune</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Collapsible Queue Details Panel (Reconciliation Strip) -->
+    <div v-show="showQueueDetails" class="px-8 mb-3 space-y-2 transition-all shrink-0">
+      <div class="reconciliation-strip px-4 py-2 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-xs flex items-center justify-between gap-3 text-xs flex-wrap">
+        <div class="flex items-center gap-1.5 font-semibold text-text-secondary shrink-0">
+          <span class="material-symbols-outlined text-[16px] text-primary">analytics</span>
+          <span class="uppercase tracking-wider text-[10px]">Queue Reconciliation:</span>
+        </div>
+        <div class="flex items-center gap-3 flex-wrap text-text-secondary text-[11px]">
+          <span title="Total tracks requested by user / selection">Seleccionadas: <strong class="text-gray-900 dark:text-white">{{ queueStats?.submitted ?? selectedCount }}</strong></span>
+          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+          <span title="Initial eligible tracks in queue">Elegibles: <strong class="text-indigo-400">{{ (queueStats?.submitted ?? selectedCount) - (queueStats?.skipped ?? 0) - (queueStats?.deduplicated ?? 0) }}</strong></span>
+          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+          <span title="Excluded before queuing due to preflight filter">Excluidas Preflight: <strong class="text-amber-500">{{ (queueStats?.skipped ?? 0) + (queueStats?.deduplicated ?? 0) }}</strong></span>
+          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+          <span title="Tracks currently in queued state">Pendientes: <strong class="text-amber-500">{{ queueStats?.queued ?? 0 }}</strong></span>
+          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+          <span title="Tracks currently downloading concurrently">Activas: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? 0 }}</strong></span>
+          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+          <span title="Finished downloads in queue">Completadas: <strong class="text-success">{{ queueStats?.completed ?? 0 }}</strong></span>
+          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+          <span title="Failed downloads in queue">Fallidas: <strong class="text-error">{{ queueStats?.failed ?? 0 }}</strong></span>
+          <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
+          <span title="Cancelled downloads in queue">Canceladas: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
+        </div>
+      </div>
     </div>
 
     <!-- Filter Pills Row -->
@@ -219,25 +333,29 @@
       </button>
     </div>
 
-    <!-- Batch Selection Bar (appears when items selected) -->
+    <!-- Batch Selection Bar (floating overlay - L-11) -->
     <Transition name="slide-down">
-      <div v-if="selectedCount > 0" class="batch-bar mx-8 mb-4 flex items-center gap-4 px-6 py-3.5 bg-accent-soft rounded-xl shrink-0 shadow-lg">
-        <span class="text-accent font-bold text-sm">{{ selectedCount }} track{{ selectedCount !== 1 ? 's' : '' }} selected</span>
+      <div
+        v-if="selectedCount > 0"
+        class="batch-bar fixed bottom-20 inset-x-8 max-w-xl mx-auto z-40 flex items-center gap-4 px-6 py-3.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl shadow-2xl"
+      >
+        <span class="text-accent font-bold text-sm whitespace-nowrap">{{ selectedCount }} track{{ selectedCount !== 1 ? 's' : '' }} selected</span>
         <div class="flex-1 flex items-center justify-center gap-3 flex-wrap">
-          <button @click="downloadSelectedTracks" class="px-3.5 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs font-semibold shadow-md transition-all flex items-center gap-1.5">
-            <span class="material-symbols-outlined text-[16px]">download</span>
-            Download
+          <button
+            @click="downloadSelectedTracks"
+            :disabled="isEnqueuingSelection"
+            :aria-busy="isEnqueuingSelection"
+            class="px-3.5 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs font-semibold shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+          >
+            <span class="material-symbols-outlined text-[16px]">{{ isEnqueuingSelection ? 'progress_activity' : 'download' }}</span>
+            {{ isEnqueuingSelection ? 'Enqueuing…' : 'Download' }}
           </button>
-          <button @click="checkAvailabilityForSelected" class="px-3.5 py-1.5 bg-purple-600/80 hover:bg-purple-600 text-white rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5">
-            <span class="material-symbols-outlined text-[16px]">verified</span>
-            Check Availability
-          </button>
-          <button @click="handleBulkRemove" class="px-3.5 py-1.5 bg-transparent hover:bg-error/20 text-error border border-error/50 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5">
+          <button @click="handleBulkRemove" class="px-3.5 py-1.5 bg-transparent hover:bg-error/20 text-error border border-error/50 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer">
             <span class="material-symbols-outlined text-[16px]">delete</span>
             Remove
           </button>
         </div>
-        <button @click="clearSelection" class="text-ink-2 hover:text-ink text-xs transition-colors cursor-pointer">
+        <button @click="clearSelection" class="text-ink-2 hover:text-ink text-xs transition-colors cursor-pointer whitespace-nowrap">
           Clear Selection
         </button>
       </div>
@@ -286,7 +404,21 @@
             <div class="absolute left-full top-0 ml-1 w-48 bg-elevated border border-line rounded-xl shadow-2xl py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
               <button @click="handleDownloadBestQuality(contextMenu.track!)" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">Best Quality</button>
               <button v-if="contextMenu.track?.services.includes('Qobuz')" @click="handleDownloadFromService(contextMenu.track!, 'qobuz')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">From Qobuz (24/96)</button>
-              <button v-if="contextMenu.track?.services.includes('Tidal')" @click="handleDownloadFromService(contextMenu.track!, 'tidal')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">From Tidal (16/44.1)</button>
+              <!-- TIDAL-QUAL: pick the tier instead of being locked to one. Tidal
+                   serves Hi-Res FLAC (24-bit), CD FLAC (16/44.1) and AAC 320; a
+                   single hardcoded label meant either a needless downgrade or a
+                   silent lossy fallback. -->
+              <div v-if="contextMenu.track?.services.includes('Tidal')" class="menu-item-submenu relative group">
+                <button class="w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
+                  <span class="flex-1 text-left">From Tidal</span>
+                  <span class="material-symbols-outlined text-[14px] text-gray-400">chevron_right</span>
+                </button>
+                <div class="absolute left-full top-0 ml-1 w-48 bg-elevated border border-line rounded-xl shadow-2xl py-1 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+                  <button @click="handleDownloadFromService(contextMenu.track!, 'tidal', 'HI_RES_LOSSLESS')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">Hi-Res FLAC (24-bit)</button>
+                  <button @click="handleDownloadFromService(contextMenu.track!, 'tidal', 'LOSSLESS')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">FLAC (16/44.1)</button>
+                  <button @click="handleDownloadFromService(contextMenu.track!, 'tidal', 'HIGH')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">AAC 320 (m4a)</button>
+                </div>
+              </div>
               <button v-if="contextMenu.track?.services.includes('Deezer')" @click="handleDownloadFromService(contextMenu.track!, 'deezer')" class="w-full px-4 py-2 text-left text-xs text-gray-200 hover:bg-accent-soft transition-colors">From Deezer (FLAC)</button>
             </div>
           </div>
@@ -339,10 +471,6 @@
           <div class="menu-separator h-px bg-line my-1"></div>
           
           <!-- Metadata actions -->
-          <button @click="handleCheckAvailability(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
-            <span class="material-symbols-outlined text-[16px]">verified</span>
-            <span class="flex-1 text-left">Check Availability</span>
-          </button>
           <button @click="handleShowMetadata(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="material-symbols-outlined text-[16px]">info</span>
             <span class="flex-1 text-left">Show Metadata</span>
@@ -489,7 +617,7 @@
             <input type="checkbox" @change="toggleSelectAll" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
           </div>
 
-          <!-- Dynamic Draggable Columns: # | Title | Time | Services | Meta | Lyrics | DL | Quality | Special -->
+          <!-- Dynamic Draggable Columns: # | Title | Time | Services | Meta | Lyrics | DL | Quality -->
           <template v-for="(col, colIdx) in columns" :key="col.id">
             <div 
               draggable="true"
@@ -515,39 +643,49 @@
           <div class="w-20 shrink-0"></div>
         </div>
 
-        <!-- Scrollable List -->
-        <div class="flex-1 overflow-y-auto custom-scrollbar border-x border-b border-gray-200 dark:border-border-dark rounded-b-xl bg-white dark:bg-surface-dark" @scroll="handleScroll">
-          <div
-            v-for="(track, index) in filteredTracks"
-            :key="track.id"
-            :data-track-id="track.id"
-            @click="handleTrackClick(track)"
-            @dblclick="handleTrackPlay(track)"
-            @contextmenu.prevent="openContextMenu($event, track)"
-            :class="[
-              'track-row flex items-center gap-2 px-3 py-2 border-b border-gray-100 dark:border-border-dark/50 last:border-0 transition-all group cursor-pointer',
-              track.isPlaying ? 'bg-primary/5 border-l-4 border-l-primary' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight/30',
-              track.isSelected ? 'bg-accent-soft' : '',
-              index % 2 === 1 ? 'bg-surface/30' : '',
-              highlightedTrackId === track.id ? 'bg-primary/10 ring-1 ring-inset ring-primary' : ''
-            ]"
-          >
-            <!-- Checkbox Cell -->
-            <div class="track-cell w-10 flex justify-center shrink-0">
-              <input type="checkbox" v-model="track.isSelected" @click.stop class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
-            </div>
+        <!-- Scrollable List (Virtual Scroller for 23,000+ Items - PR-02) -->
+        <div
+          ref="listContainerRef"
+          class="flex-1 min-h-0 overflow-y-auto custom-scrollbar border-x border-b border-gray-200 dark:border-border-dark rounded-b-xl bg-white dark:bg-surface-dark relative"
+          style="contain: strict;"
+          @scroll="handleScroll"
+        >
+          <!-- Virtual scroll spacer -->
+          <div :style="{ height: totalVirtualHeight + 'px', position: 'relative', width: '100%' }">
+            <!-- Rendered visible items window -->
+            <div :style="{ transform: `translateY(${virtualOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
+              <div
+                v-for="(track, index) in visibleTracks"
+                :key="track.id"
+                :data-track-id="track.id"
+                @click="handleTrackClick(track)"
+                @dblclick="handleTrackPlay(track)"
+                @contextmenu.prevent="openContextMenu($event, track)"
+                :style="{ height: ROW_HEIGHT + 'px' }"
+                :class="[
+                  'track-row flex items-center gap-2 px-3 py-2 border-b border-gray-100 dark:border-border-dark/50 last:border-0 transition-all group cursor-pointer box-border',
+                  track.isPlaying ? 'bg-primary/5 border-l-4 border-l-primary' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight/30',
+                  track.isSelected ? 'bg-accent-soft' : '',
+                  (virtualStartIndex + index) % 2 === 1 ? 'bg-surface/30' : '',
+                  highlightedTrackId === track.id ? 'bg-primary/10 ring-1 ring-inset ring-primary' : ''
+                ]"
+              >
+                <!-- Checkbox Cell -->
+                <div class="track-cell w-10 flex justify-center shrink-0">
+                  <input type="checkbox" v-model="track.isSelected" @click.stop class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
+                </div>
 
-            <!-- Dynamic Cells based on Columns Order -->
-            <template v-for="col in columns" :key="col.id">
-              <!-- # (Index) -->
-              <!-- S194: hover play button REMOVED per owner directive. Playback
-                   requires the audio-backend sprint (investigation verdict in
-                   S194): no native audio crate, asset protocol disabled,
-                   no provider stream commands exist yet. -->
-              <div v-if="col.id === 'index'" :class="['track-cell w-10 text-center shrink-0 text-sm text-gray-400 transition-colors', col.hideBreakpoint || '']">
-                <span v-if="track.isPlaying" class="material-symbols-filled text-[20px] text-primary animate-pulse">equalizer</span>
-                <span v-else>{{ index + 1 }}</span>
-              </div>
+                <!-- Dynamic Cells based on Columns Order -->
+                <template v-for="col in columns" :key="col.id">
+                  <!-- # (Index) -->
+                  <!-- S194: hover play button REMOVED per owner directive. Playback
+                       requires the audio-backend sprint (investigation verdict in
+                       S194): no native audio crate, asset protocol disabled,
+                       no provider stream commands exist yet. -->
+                  <div v-if="col.id === 'index'" :class="['track-cell w-10 text-center shrink-0 text-xs text-text-secondary', col.hideBreakpoint || '']">
+                    <span v-if="track.isPlaying" class="material-symbols-filled text-[20px] text-primary animate-pulse">equalizer</span>
+                    <span v-else>{{ virtualStartIndex + index + 1 }}</span>
+                  </div>
 
               <!-- Title (Artwork + Title + Artist + Album) -->
               <div v-else-if="col.id === 'title'" :class="['track-cell flex-1 min-w-[200px] min-w-0 flex items-center gap-3', col.hideBreakpoint || '']">
@@ -634,14 +772,6 @@
                 </span>
                 <span v-else class="text-xs text-gray-400 font-mono" title="Not downloaded">—</span>
               </div>
-
-              <!-- Special -->
-              <div v-else-if="col.id === 'special'" :class="['track-cell w-24 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']">
-                <span v-if="track.specialBadge === 'exclusive'" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30">Exclusive</span>
-                <span v-else-if="track.specialBadge === 'local'" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/15 text-purple-400 border border-purple-500/30">Local</span>
-                <span v-else-if="track.specialBadge === 'multiSource'" class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/15 text-blue-400 border border-blue-500/30">Multi</span>
-                <span v-else class="text-xs text-gray-400">—</span>
-              </div>
             </template>
 
             <!-- Actions Cell -->
@@ -667,15 +797,17 @@
             </div>
           </div>
           
-          <!-- Loading More Indicator -->
-          <div v-if="isLoadingMore" class="py-4 flex items-center justify-center gap-2 text-text-secondary">
-            <span class="material-symbols-outlined text-[20px] animate-spin">progress_activity</span>
-            <span class="text-sm">Loading more tracks...</span>
-          </div>
-          
-          <!-- End of List Indicator -->
-          <div v-else-if="!hasMore && tracks.length > 0" class="py-4 text-center text-sm text-text-secondary">
-            Showing all {{ totalTracks.toLocaleString() }} tracks
+              <!-- Loading More Indicator -->
+              <div v-if="isLoadingMore" class="py-4 flex items-center justify-center gap-2 text-text-secondary">
+                <span class="material-symbols-outlined text-[20px] animate-spin">progress_activity</span>
+                <span class="text-sm">Loading more tracks...</span>
+              </div>
+
+              <!-- End of List Indicator -->
+              <div v-else-if="!hasMore && tracks.length > 0 && virtualEndIndex >= filteredTracks.length" class="py-4 text-center text-sm text-text-secondary">
+                Showing all {{ totalTracks.toLocaleString() }} tracks
+              </div>
+            </div>
           </div>
         </div>
       </template>
@@ -968,9 +1100,10 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
 import { libraryApi, searchTracks, enqueueTracks, reconcileQueue, type DownloadFavoritesResult } from '@/api/library'
-import { addToQueue, addBatchToQueue, enqueueEligibleBatch } from '@/api/queue'
+import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
-import type { LibraryTrack, Playlist, LyricsType } from '@/api/types'
+import { settingsApi } from '@/api/settings'
+import type { LibraryTrack, Playlist, LyricsType, QueueStats, WorkerStatus, EffectiveDownloadPreferences } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
@@ -978,10 +1111,49 @@ import { usePlayer } from '@/composables/usePlayer'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
 import { getArtGradient } from '@/utils/artGradient'
+import { formatServiceName } from '@/composables/useGlobalTasks';
 
 const router = useRouter()
 const route = useRoute()
 const toast = useToast()
+
+// TIDAL-QUAL: the download decision (top tier to ask for, and whether Tidal may
+// answer with a worse one) belongs to Settings, not to this view. `null` means
+// "not loaded yet", which falls back to the historical behaviour so a failed
+// read never blocks downloading.
+let effectivePrefsPromise: Promise<EffectiveDownloadPreferences | null> | null = null
+const effectivePrefs = ref<EffectiveDownloadPreferences | null>(null)
+
+function loadEffectivePrefs(): Promise<EffectiveDownloadPreferences | null> {
+  if (effectivePrefsPromise) return effectivePrefsPromise
+  effectivePrefsPromise = settingsApi
+    .getEffectiveDownloadPreferences()
+    .then((prefs) => {
+      effectivePrefs.value = prefs
+      return prefs
+    })
+    .catch(() => null)
+  return effectivePrefsPromise
+}
+
+/** The quality ceiling the user configured, in the queue's vocabulary. */
+function effectiveMaxQualityLabel(): string {
+  switch (effectivePrefs.value?.maxQuality) {
+    case 'high':
+      return 'high'
+    case 'lossless':
+      return 'lossless'
+    default:
+      // 'hires', 'any'/'max', or "settings unavailable": ask for the top tier
+      // and let the provider serve the best the account entitles.
+      return 'hires'
+  }
+}
+
+/** False when the user chose to skip a track rather than accept a downgrade. */
+function isDowngradeAllowed(): boolean {
+  return effectivePrefs.value?.strictQuality === false
+}
 const eventBus = useEventBus()
 const { activeTasks } = useGlobalTasks()
 
@@ -1176,7 +1348,7 @@ const sortLabel = computed(() => {
 // ==============================================
 // TABLE COLUMN DEFINITIONS & DRAG AND DROP
 // ==============================================
-type ColumnId = 'index' | 'title' | 'time' | 'services' | 'meta' | 'lyrics' | 'dl' | 'quality' | 'special'
+type ColumnId = 'index' | 'title' | 'time' | 'services' | 'meta' | 'lyrics' | 'dl' | 'quality'
 
 interface ColumnDef {
   id: ColumnId
@@ -1195,7 +1367,6 @@ const DEFAULT_COLUMNS: ColumnDef[] = [
   { id: 'lyrics', label: 'Lyrics', widthClass: 'w-14', align: 'center', hideBreakpoint: 'hidden xl:flex' },
   { id: 'dl', label: 'DL', widthClass: 'w-14', align: 'center', hideBreakpoint: 'hidden lg:flex' },
   { id: 'quality', label: 'Quality', widthClass: 'w-20', align: 'center', hideBreakpoint: 'hidden lg:flex' },
-  { id: 'special', label: 'Special', widthClass: 'w-24', align: 'center', hideBreakpoint: 'hidden 2xl:flex' },
 ]
 
 const columns = ref<ColumnDef[]>([...DEFAULT_COLUMNS])
@@ -1284,11 +1455,16 @@ function loadColumnsOrder() {
     }
     const raw = storage.getItem('syncify_library_columns_order')
     if (raw) {
-      const ids: ColumnId[] = JSON.parse(raw)
-      const mapped = ids
+      const ids: unknown[] = JSON.parse(raw)
+      // L-06: purge removed column ids (e.g. 'special') persisted before the
+      // column was retired, so stale local state cannot resurrect it.
+      const sanitizedIds = (Array.isArray(ids) ? ids : [])
+        .filter((id): id is ColumnId => DEFAULT_COLUMNS.some(c => c.id === id))
+
+      const mapped = sanitizedIds
         .map(id => DEFAULT_COLUMNS.find(c => c.id === id))
         .filter((c): c is ColumnDef => !!c)
-      const missing = DEFAULT_COLUMNS.filter(c => !ids.includes(c.id))
+      const missing = DEFAULT_COLUMNS.filter(c => !sanitizedIds.includes(c.id))
       columns.value = [...mapped, ...missing]
       return
     }
@@ -1330,7 +1506,6 @@ interface Track {
   displayTitle?: string | null
   sourceTitle?: string | null
   fileDisambiguator?: string | null
-  specialBadge?: 'exclusive' | 'local' | 'multiSource'
   duration: string
   isFavorite: boolean
   isPlaying: boolean
@@ -1446,51 +1621,104 @@ async function loadMore() {
   }
 }
 
+// ==============================================
+// VIRTUAL SCROLLING LOGIC FOR LIBRARY (23,000+ ROWS)
+// Ported from DownloadsView.vue:549-564, 1768-1807 (PR-02)
+// ==============================================
+const ROW_HEIGHT = 56 // px per table row (40px cover + py-2 padding + 1px border)
+const OVERSCAN = 10   // extra rows above and below visible area
+
+const listContainerRef = ref<HTMLElement | null>(null)
+const libraryScrollTop = ref(0)
+const libraryViewportHeight = ref(800)
+
+// ==============================================
+// DOWNLOAD QUEUE STATS & CONCURRENCY (L-12)
+// Replicated from DownloadsView.vue:1420-1454, 1870-1903
+// ==============================================
+const queueStats = ref<QueueStats>({ total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 })
+const workerStatus = ref<WorkerStatus>({ running: true, paused: false, active_downloads: 0, max_concurrent: 3 })
+const showQueueDetails = ref(false)
+
+const currentConcurrency = computed(() => {
+  return workerStatus.value?.max_concurrent ?? 3
+})
+
+async function setConcurrency(threads: number) {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('set_max_concurrency', { maxConcurrent: threads })
+    workerStatus.value.max_concurrent = threads
+    toast.success('Concurrency Updated', `Max concurrent downloads set to ${threads}`)
+  } catch (err) {
+    console.warn('Failed to set worker live concurrency:', err)
+  }
+}
+
+async function fetchQueueStats() {
+  try {
+    const [stats, worker] = await Promise.all([
+      queueApi.getQueueStats().catch(() => null),
+      queueApi.getWorkerStatus().catch(() => null),
+    ])
+    if (stats) queueStats.value = stats
+    if (worker) workerStatus.value = worker
+  } catch {
+    // Non-blocking in Library
+  }
+}
+
 // Infinite scroll fires a burst of scroll events per flick (B-4).
 //
-// THROTTLE, not debounce: un debounce con clearTimeout+setTimeout NUNCA dispara
-// durante un flick con inercia, porque cada evento reinicia el temporizador —
-// el scroll infinito pasaba de cargar ~6 páginas por flick a cargar 1, que es
-// justo el cambio de comportamiento que este track prohíbe. Este patrón
-// dispara en el PRIMER evento y admite otro cada intervalo, así que el conjunto
-// de páginas cargadas es el mismo que antes.
-//
-// La decisión se toma con el estado del MOMENTO del evento (no dentro del
-// temporizador): si el usuario llega al fondo y escribe en el buscador un
-// instante después, la carga ya salió, igual que antes del cambio.
+// PR-01 / PR-02: Reading layout properties (scrollHeight/scrollTop/clientHeight)
+// BEFORE the throttle cut forces synchronous reflow on every single event frame.
+// We update libraryScrollTop without layout reflow, and move layout reading
+// strictly inside the throttled dispatch.
 let lastScrollCheck = 0;
 const SCROLL_THROTTLE_MS = 120;
 let scrollThrottleTimer: ReturnType<typeof setTimeout> | null = null;
 function handleScroll(event: Event) {
   const target = event.target as HTMLElement;
-  const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
-  if (scrollBottom >= 200) return;
+  if (!target) return;
 
-  // loadMore()/loadMoreSearchResults() son idempotentes (guardan con
-  // isLoadingMore/hasMore), así que la repetición no duplica trabajo.
-  const dispatch = () => {
+  // Immediate reactive update for virtual window slicing (no reflow)
+  libraryScrollTop.value = target.scrollTop;
+  if (target.clientHeight && libraryViewportHeight.value !== target.clientHeight) {
+    libraryViewportHeight.value = target.clientHeight;
+  }
+
+  // Throttle heavy layout measurements (scrollHeight/scrollTop/clientHeight)
+  // PR-01 / PR-02: layout reading is STRICTLY inside the throttle cut
+  const checkAndDispatchLoadMore = (el: HTMLElement) => {
     lastScrollCheck = Date.now();
-    if (searchQuery.value.trim()) {
-      if (hasMoreSearch.value && !isSearching.value) {
-        loadMoreSearchResults();
-      }
-    } else {
-      if (hasMore.value && !isLoadingMore.value) {
-        loadMore();
+    const scrollBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (scrollBottom < 300) {
+      if (searchQuery.value.trim()) {
+        if (hasMoreSearch.value && !isSearching.value) {
+          loadMoreSearchResults();
+        }
+      } else {
+        if (hasMore.value && !isLoadingMore.value) {
+          loadMore();
+        }
       }
     }
   };
 
   const elapsed = Date.now() - lastScrollCheck;
   if (elapsed >= SCROLL_THROTTLE_MS) {
-    dispatch();
+    checkAndDispatchLoadMore(target);
     return;
   }
-  if (scrollThrottleTimer) return;
-  scrollThrottleTimer = setTimeout(() => {
-    scrollThrottleTimer = null;
-    dispatch();
-  }, SCROLL_THROTTLE_MS - elapsed);
+  if (!scrollThrottleTimer) {
+    scrollThrottleTimer = setTimeout(() => {
+      scrollThrottleTimer = null;
+      const el = listContainerRef.value || target;
+      if (el) {
+        checkAndDispatchLoadMore(el);
+      }
+    }, SCROLL_THROTTLE_MS - elapsed);
+  }
 }
 
 // Initialize data
@@ -1595,24 +1823,31 @@ loadPlaylists();
 
 async function addTrackToPlaylist(playlistId: number, trackId: number) {
   try {
+    const track = tracks.value.find(t => t.id === trackId);
     await libraryApi.addToPlaylist(playlistId, [trackId]);
     closeContextMenu();
+    await reconcilePlaylistCounts();
+    // L-02: la pista sí se añadía, pero el usuario no recibía ninguna señal.
+    toast.success('Added to playlist', `"${track?.title ?? 'Track'}" added`);
   } catch (error) {
     console.error('Failed to add to playlist:', error);
+    toast.error('Failed to add to playlist', String(error));
   }
 }
 
 // Track selection & downloads
+// L-05: el contador era O(n) por clic (filter sobre toda la biblioteca). Con
+// 23k pistas eso se notaba al hacer clics seguidos; ahora es incremental.
 function handleTrackClick(track: Track) {
   track.isSelected = !track.isSelected;
-  selectedCount.value = tracks.value.filter(t => t.isSelected).length;
+  selectedCount.value += track.isSelected ? 1 : -1;
 }
 
 const { play, playNext, enqueue, toggle: togglePlayback, current: playerCurrent } = usePlayer();
 
 // S194 residual: double-click plays the LOCAL downloaded file through the
 // syncify-media protocol. Tracks without a local file fail with the backend's
-// honest error: player.error lo muestra la NowPlayingBar mientras hay pista
+// honest error: player.error lo muestra el reproductor de la barra de estado mientras hay pista
 // en curso, y sin current (barra oculta) estos catches lo revelan como toast;
 // provider streaming is out of scope.
 async function handleTrackPlay(track: Track) {
@@ -1686,9 +1921,15 @@ async function handleAddToPlayQueue(track: Track) {
  * eran silenciosos). Con current la barra ya enseña el error; sin ella, toast.
  */
 function surfacePlayFailure(track: Track, error: unknown) {
-  if (playerCurrent.value) return;
-  const message = String((error as { message?: string })?.message || error || '');
-  toast.error(`No se pudo reproducir "${track.title}"`, message);
+  // L-01: el fallo se silenciaba cuando habia algo sonando, asi que el usuario
+  // no sabia por que no cambio de pista. Ahora se muestra siempre con la
+  // causa real y el paso a seguir.
+  const message = String((error as { message?: string })?.message || error || 'Error desconocido');
+  const hasLocalFile = !!track.filePath;
+  const hint = hasLocalFile
+    ? ''
+    : ' Esta pista no esta descargada: la reproduccion local necesita el archivo en disco.';
+  toast.error(`No se pudo reproducir "${track.title}"`, message + hint);
 }
 
 // "Add to Downloads" enqueues the track into the download queue (QueueView /
@@ -1701,13 +1942,18 @@ async function handleAddToQueue(track: Track) {
 
 async function handleDownload(track: Track) {
   try {
+    await loadEffectivePrefs()
     await addToQueue({
       trackId: track.id,
       targetTitle: track.title,
       targetArtist: track.artist,
       targetAlbum: track.album,
-      qualityPreference: 'HI_RES_LOSSLESS',
-      allowFallback: true,
+      qualityPreference: effectiveMaxQualityLabel(),
+      // TIDAL-QUAL: "best possible quality" means asking for the top tier and
+      // NOT letting Tidal silently hand back AAC in its place. The UI used to
+      // pin allowFallback:true, which inverted the download setting: even with
+      // "skip on downgrade" configured, every Tidal download came back m4a.
+      allowFallback: isDowngradeAllowed(),
     });
     track.downloadStatus = 'queued';
     toast.success(`Enqueued "${track.title}" for download`);
@@ -1722,19 +1968,25 @@ async function handleDownload(track: Track) {
   }
 }
 
+const isEnqueuingSelection = ref(false)
+
 async function downloadSelectedTracks() {
+  if (isEnqueuingSelection.value) return
   const selectedTracks = tracks.value.filter(t => t.isSelected)
   if (selectedTracks.length === 0) return
-  
+
+  isEnqueuingSelection.value = true
   try {
+    await loadEffectivePrefs()
     const trackIds = selectedTracks.map(t => t.id)
+    const allowDowngrade = isDowngradeAllowed()
     const res = await enqueueTracks(
       trackIds,
       50,
-      'hires',
+      effectiveMaxQualityLabel(),
       undefined,
-      false,
-      true,
+      !allowDowngrade,
+      allowDowngrade,
       true,
       true
     )
@@ -1781,6 +2033,8 @@ async function downloadSelectedTracks() {
     console.error('Failed to queue bulk download:', error)
     const errStr = String(error?.message || error || '')
     toast.error(`Failed to download selection: ${errStr}`)
+  } finally {
+    isEnqueuingSelection.value = false
   }
 }
 
@@ -1815,13 +2069,14 @@ function closeContextMenu() {
 // Action Handlers
 async function handleDownloadBestQuality(track: Track) {
   try {
+    await loadEffectivePrefs()
     await addToQueue({
       trackId: track.id,
       targetTitle: track.title,
       targetArtist: track.artist,
       targetAlbum: track.album,
-      qualityPreference: 'HI_RES_LOSSLESS',
-      allowFallback: true,
+      qualityPreference: effectiveMaxQualityLabel(),
+      allowFallback: isDowngradeAllowed(),
     });
     track.downloadStatus = 'queued';
     toast.success(`Enqueued "${track.title}" for download`);
@@ -1837,15 +2092,15 @@ async function handleDownloadBestQuality(track: Track) {
   }
 }
 
-async function handleDownloadFromService(track: Track, service: string) {
+async function handleDownloadFromService(track: Track, service: string, tidalQuality?: 'HI_RES_LOSSLESS' | 'LOSSLESS' | 'HIGH') {
   try {
-    await addToQueue({ 
+    await addToQueue({
       trackId: track.id,
       serviceName: service.toLowerCase(),
       targetTitle: track.title,
       targetArtist: track.artist,
       targetAlbum: track.album,
-      qualityPreference: service.toLowerCase() === 'qobuz' ? '24-96' : '16-44',
+      qualityPreference: service.toLowerCase() === 'qobuz' ? '24-96' : service.toLowerCase() === 'tidal' ? (tidalQuality ?? 'HI_RES_LOSSLESS') : '16-44',
       allowFallback: false,
     });
     track.downloadStatus = 'queued';
@@ -1859,39 +2114,6 @@ async function handleDownloadFromService(track: Track, service: string) {
     } else {
       toast.error(`Failed to enqueue: ${errStr}`);
     }
-  }
-}
-
-async function handleCheckAvailability(track: Track) {
-  try {
-    const results = await libraryApi.checkTrackAvailability(track.id);
-    const available = results.filter(r => r.availabilityStatus === 'available').map(r => r.serviceName);
-    track.availableServices = available;
-    const summary = results.map(r => `${r.serviceName}: ${r.availabilityStatus}`).join(', ');
-    track.availabilitySummary = summary;
-    toast.success('Availability Verified', `Checked "${track.title}": ${summary}`);
-    closeContextMenu();
-  } catch (err: any) {
-    toast.error('Check Failed', err?.message || String(err));
-  }
-}
-
-async function checkAvailabilityForSelected() {
-  const selected = tracks.value.filter(t => t.isSelected);
-  if (selected.length === 0) return;
-  try {
-    toast.info('Checking Availability', `Checking availability for ${selected.length} track(s)...`);
-    const resultsMap = await libraryApi.checkTracksAvailability(selected.map(t => t.id));
-    for (const t of selected) {
-      const res = resultsMap[t.id];
-      if (res) {
-        t.availableServices = res.filter(r => r.availabilityStatus === 'available').map(r => r.serviceName);
-        t.availabilitySummary = res.map(r => `${r.serviceName}: ${r.availabilityStatus}`).join(', ');
-      }
-    }
-    toast.success('Availability Checked', `Verified availability for ${selected.length} tracks`);
-  } catch (err: any) {
-    toast.error('Check Failed', err?.message || String(err));
   }
 }
 
@@ -1967,6 +2189,10 @@ async function reconcilePlaylistCounts() {
 }
 
 async function handleRemoveFromLibrary(track: Track) {
+  closeContextMenu();
+  const confirmed = window.confirm(`Remove "${track.title}" from your library? This cannot be undone.`);
+  if (!confirmed) return;
+
   try {
     await libraryApi.removeTrack(track.id);
     const index = tracks.value.findIndex(t => t.id === track.id);
@@ -1974,7 +2200,6 @@ async function handleRemoveFromLibrary(track: Track) {
       tracks.value.splice(index, 1);
       trackCount.value = tracks.value.length;
     }
-    closeContextMenu();
     await reconcilePlaylistCounts();
     toast.success('Track removed', `"${track.title}" removed from library`);
   } catch (error) {
@@ -1985,6 +2210,9 @@ async function handleRemoveFromLibrary(track: Track) {
 async function handleBulkRemove() {
   const selectedTracks = tracks.value.filter(t => t.isSelected);
   if (selectedTracks.length === 0) return;
+
+  const ok = window.confirm(`Remove ${selectedTracks.length} track(s) from your library? This cannot be undone.`);
+  if (!ok) return;
 
   try {
     const ids = selectedTracks.map(t => t.id);
@@ -2026,17 +2254,20 @@ function getServiceStyle(service: string): string {
 }
 
 function getServiceIcon(service: string): string {
-  const normalized = service.toLowerCase().trim();
-  const icons: Record<string, string> = {
-    'spotify': 'S',
-    'qobuz': 'Q',
-    'tidal': 'T',
-    'deezer': 'D',
-    'soundcloud': 'SC',
-    'apple music': '♪',
-    'apple': '♪',
-  }
-  return icons[normalized] || service.charAt(0).toUpperCase();
+  // L-07: el nombre canónico lo decide formatServiceName (el mismo formateador
+  // que usa el resto de la app) y la inicial sale de ahí, así que dos juegos de
+  // alias ('apple' / 'apple music') no pueden divergir entre sí.
+  const canonical = formatServiceName(service).trim();
+  const short: Record<string, string> = {
+    'Spotify': 'S',
+    'Qobuz': 'Q',
+    'Tidal': 'T',
+    'Deezer': 'D',
+    'SoundCloud': 'SC',
+    'Apple Music': '♪',
+    'Local': 'L',
+  };
+  return short[canonical] || canonical.charAt(0).toUpperCase() || '?';
 }
 
 function getQualityStyle(quality: string): string {
@@ -2153,6 +2384,37 @@ const filteredTracks = computed(() => {
   })
   
   return trackList
+})
+
+// Virtual scrolling computed window (PR-02)
+const totalVirtualHeight = computed(() => {
+  return filteredTracks.value.length * ROW_HEIGHT + (!hasMore.value && tracks.value.length > 0 ? 48 : 0)
+})
+
+const virtualStartIndex = computed(() => {
+  return Math.max(0, Math.floor(libraryScrollTop.value / ROW_HEIGHT) - OVERSCAN)
+})
+
+const virtualEndIndex = computed(() => {
+  return Math.min(
+    filteredTracks.value.length,
+    Math.ceil((libraryScrollTop.value + libraryViewportHeight.value) / ROW_HEIGHT) + OVERSCAN
+  )
+})
+
+const virtualOffsetY = computed(() => {
+  return virtualStartIndex.value * ROW_HEIGHT
+})
+
+const visibleTracks = computed(() => {
+  return filteredTracks.value.slice(virtualStartIndex.value, virtualEndIndex.value)
+})
+
+watch([() => filteredTracks.value.length, searchQuery, () => activeFilters.value], () => {
+  if (listContainerRef.value && libraryScrollTop.value > totalVirtualHeight.value) {
+    listContainerRef.value.scrollTop = 0
+    libraryScrollTop.value = 0
+  }
 })
 
 // Album interface for grid view
@@ -2470,6 +2732,12 @@ async function focusTrackFromQuery() {
     pagesLoaded++
   }
 
+  const trackIdx = filteredTracks.value.findIndex(t => t.id === trackId)
+  if (trackIdx >= 0 && listContainerRef.value) {
+    listContainerRef.value.scrollTop = Math.max(0, trackIdx * ROW_HEIGHT - (libraryViewportHeight.value / 2))
+    libraryScrollTop.value = listContainerRef.value.scrollTop
+  }
+
   await nextTick()
   const row = document.querySelector(`[data-track-id="${trackId}"]`)
   if (!row) return
@@ -2486,6 +2754,8 @@ async function focusTrackFromQuery() {
 }
 
 // Lifecycle
+let queueStatsInterval: ReturnType<typeof setInterval> | null = null
+
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleKeydown)
@@ -2493,9 +2763,12 @@ onMounted(async () => {
   applyRouteFilters()
 
   await loadLibrary()
+  await fetchQueueStats()
 
   // Ítem 45: tras la carga inicial, atiende el deep-link ?track=<id>.
   await focusTrackFromQuery()
+
+  queueStatsInterval = setInterval(fetchQueueStats, 4000)
 
   eventBus.on(TauriEvents.LIBRARY_UPDATED, async () => {
     debouncedReloadLibrary()
@@ -2505,6 +2778,9 @@ onMounted(async () => {
   })
   eventBus.on(TauriEvents.SYNC_COMPLETE, async () => {
     debouncedReloadLibrary()
+  })
+  eventBus.on(TauriEvents.DOWNLOAD_PROGRESS, async () => {
+    fetchQueueStats()
   })
 })
 
@@ -2525,6 +2801,10 @@ watch(() => [route?.query?.filter, route?.query?.quality], () => {
 onUnmounted(() => {
   document.removeEventListener('click', closeContextMenu)
   window.removeEventListener('keydown', handleKeydown)
+  if (queueStatsInterval) {
+    clearInterval(queueStatsInterval)
+    queueStatsInterval = null
+  }
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
   }
@@ -2563,6 +2843,20 @@ onUnmounted(() => {
 
 .filter-pills::-webkit-scrollbar {
   height: 4px;
+}
+
+/* Slow spin animation for active icon (L-12) */
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 3s linear infinite;
 }
 
 /* Fade transition for context menu and modals */

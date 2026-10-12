@@ -21,6 +21,14 @@ pub const MAX_EMBEDDED_PICTURE_BYTES: usize = 800 * 1024;
 /// Hard ceiling for FLAC PICTURE metadata block (1 MB / 1,048,576 bytes).
 pub const HARD_CEILING_PICTURE_BYTES: usize = 1024 * 1024;
 
+/// A `std::process::Command` with the shared console-subsystem policy applied.
+/// No local copy of the Windows flag or configuration logic is needed.
+pub fn hidden_std_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    syncify_core_domain::process::configure_hidden(&mut cmd);
+    cmd
+}
+
 /// Pure metadata DTO for FLAC tagging.
 /// Constructed by service-specific builders or enrichment engines,
 /// applied by `apply_flac_tags`.
@@ -960,7 +968,7 @@ pub fn convert_or_extract_to_jpeg(
     quality: u32,
 ) -> Result<Vec<u8>, String> {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     let scale_filter = if let Some(dim) = max_dim {
         format!("scale='min({},iw)':-1", dim)
@@ -970,7 +978,7 @@ pub fn convert_or_extract_to_jpeg(
 
     let q_str = quality.to_string();
 
-    let mut child = Command::new("ffmpeg")
+    let mut child = hidden_std_command("ffmpeg")
         .args([
             "-y",
             "-i",
@@ -1030,7 +1038,7 @@ pub fn convert_or_extract_to_jpeg(
 /// `Err` when even the tolerant decode produces nothing usable.
 pub fn salvage_cover_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     if bytes.is_empty() {
         return Err("salvage rejected an empty payload".to_string());
@@ -1059,7 +1067,7 @@ pub fn salvage_cover_to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
     drop(staged);
 
     let scale_filter = "scale='min(1200,iw)':-1";
-    let child = match Command::new("ffmpeg")
+    let child = match hidden_std_command("ffmpeg")
         .args([
             "-y",
             "-err_detect",
@@ -2230,7 +2238,7 @@ pub struct FlacIntegrityReport {
 /// (`s16le`, `s24le`, `s32le`, `s8`).
 pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     if !flac_path.is_file() {
         return Err(format!(
@@ -2251,7 +2259,7 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
     };
 
     // 1. Try `flac` CLI decoder first (preserves native bit-exact sample formatting per FLAC specification)
-    let flac_spawn = Command::new("flac")
+    let flac_spawn = hidden_std_command("flac")
         .args([
             "-s",
             "-d",
@@ -2266,7 +2274,22 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
         .spawn();
 
     if let Ok(mut child) = flac_spawn {
-        let mut stdout = child.stdout.take().ok_or("Failed to capture flac stdout")?;
+        // G-06b: `flac` is spawned with stderr piped, so an unread pipe would
+        // fill up and block the child mid-decode. Drain it concurrently with
+        // this read of stdout; join after `wait()` never before.
+        let drain = syncify_core_domain::process::spawn_stderr_drain(&mut child);
+        let mut stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let drain_report = syncify_core_domain::process::join_stderr_drain(drain);
+                return Err(format!(
+                    "Failed to capture flac CLI stdout for PCM MD5 (stderr bytes drained: {})",
+                    drain_report.bytes_read
+                ));
+            }
+        };
         let mut ctx = md5::Context::new();
         let mut buffer = [0u8; 65536];
         let mut bytes_read = 0usize;
@@ -2288,16 +2311,22 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
             }
         }
 
-        let status = child
-            .wait()
-            .map_err(|e| format!("Failed to wait for flac: {}", e))?;
+        // Joined on every path, including the error ones above: the child may
+        // still hold the write end and the reader must not outlive this scope.
+        let stderr_report = syncify_core_domain::process::join_stderr_drain(drain);
+        let status = child.wait().map_err(|e| {
+            format!(
+                "Failed to wait for flac: {} (stderr bytes drained: {})",
+                e, stderr_report.bytes_read
+            )
+        })?;
         if !read_err && status.success() && (bytes_read > 0 || total_samples == 0) {
             let digest = ctx.finalize();
             return Ok(digest.0);
         }
         debug!(
-            "flac CLI decoding was not successful (status: {:?}, bytes: {}); trying ffmpeg fallback",
-            status, bytes_read
+            "flac CLI decoding was not successful (status: {:?}, bytes: {}, stderr_bytes: {}, stderr_read_error: {}); trying ffmpeg fallback",
+            status, bytes_read, stderr_report.bytes_read, stderr_report.read_error
         );
     }
 
@@ -2315,7 +2344,7 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
         }
     };
 
-    let mut child = Command::new("ffmpeg")
+    let mut child = hidden_std_command("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(flac_path)
         .args(["-f", pcm_format, "-"])
@@ -2324,10 +2353,18 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
         .spawn()
         .map_err(|e| format!("Failed to spawn ffmpeg for PCM MD5 computation: {}", e))?;
 
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or("Failed to capture ffmpeg stdout")?;
+    // G-06b: drain the piped stderr concurrently with the stdout read below.
+    let drain = syncify_core_domain::process::spawn_stderr_drain(&mut child);
+    let mut stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let drain_report = syncify_core_domain::process::join_stderr_drain(drain);
+            return Err(format!(
+                "Failed to capture ffmpeg stdout (stderr bytes drained: {})",
+                drain_report.bytes_read
+            ));
+        }
+    };
     let mut ctx = md5::Context::new();
     let mut buffer = [0u8; 65536];
     let mut bytes_read = 0usize;
@@ -2341,18 +2378,26 @@ pub fn compute_pcm_stream_md5(flac_path: &Path) -> Result<[u8; 16], String> {
             }
             Err(e) => {
                 let _ = child.kill();
-                return Err(format!("Error reading PCM stream from ffmpeg: {}", e));
+                let report = syncify_core_domain::process::join_stderr_drain(drain);
+                return Err(format!(
+                    "Error reading PCM stream from ffmpeg: {} (stderr bytes drained: {})",
+                    e, report.bytes_read
+                ));
             }
         }
     }
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("Failed to wait for ffmpeg: {}", e))?;
+    let stderr_report = syncify_core_domain::process::join_stderr_drain(drain);
+    let status = child.wait().map_err(|e| {
+        format!(
+            "Failed to wait for ffmpeg: {} (stderr bytes drained: {})",
+            e, stderr_report.bytes_read
+        )
+    })?;
     if !status.success() || (bytes_read == 0 && total_samples > 0) {
         return Err(format!(
-            "ffmpeg failed to decode PCM stream (status: {:?}, bytes: {})",
-            status, bytes_read
+            "ffmpeg failed to decode PCM stream (status: {:?}, bytes: {}, stderr bytes drained: {}, read error: {})",
+            status, bytes_read, stderr_report.bytes_read, stderr_report.read_error
         ));
     }
 
@@ -2487,7 +2532,7 @@ pub fn inspect_and_verify_flac_stream(flac_path: &Path) -> Result<FlacIntegrityR
     } else {
         // MD5 was unset in STREAMINFO; verify using decode-check
         let mut crc_verified = true;
-        if let Ok(status) = std::process::Command::new("flac")
+        if let Ok(status) = hidden_std_command("flac")
             .args(["-t", "-s"])
             .arg(flac_path)
             .status()
@@ -2544,13 +2589,26 @@ pub struct FlacStreaminfoFinalization {
 
 /// Inner decode loop shared by the PCM MD5 + sample-count measurement (TASK-76).
 /// Streams the decoder's raw PCM stdout into an MD5 context while counting bytes.
+///
+/// Callers spawn the decoder with `stderr(Stdio::piped())`, so this function
+/// also drains that pipe concurrently (G-06b): a decoder that fills stderr
+/// would otherwise block forever once nobody reads it. The join happens after
+/// the stdout loop and after a `kill()` on the read-error path, never while
+/// the child could still hold the write end open.
 fn measure_pcm_stream(child: &mut std::process::Child) -> Result<([u8; 16], u64), String> {
     use std::io::Read;
 
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or("Failed to capture decoder stdout for PCM measurement")?;
+    let drain = syncify_core_domain::process::spawn_stderr_drain(child);
+    let mut stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let drain_report = syncify_core_domain::process::join_stderr_drain(drain);
+            return Err(format!(
+                "Failed to capture decoder stdout for PCM measurement (stderr bytes drained: {})",
+                drain_report.bytes_read
+            ));
+        }
+    };
     let mut ctx = md5::Context::new();
     let mut buffer = [0u8; 65536];
     let mut total_bytes = 0usize;
@@ -2564,18 +2622,30 @@ fn measure_pcm_stream(child: &mut std::process::Child) -> Result<([u8; 16], u64)
             }
             Err(e) => {
                 let _ = child.kill();
-                return Err(format!("Error reading PCM stream from decoder: {}", e));
+                let stderr_report = syncify_core_domain::process::join_stderr_drain(drain);
+                return Err(format!(
+                    "Error reading PCM stream from decoder: {} (stderr bytes drained: {})",
+                    e, stderr_report.bytes_read
+                ));
             }
         }
     }
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("Failed to wait for decoder process: {}", e))?;
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(e) => {
+            let drain_report = syncify_core_domain::process::join_stderr_drain(drain);
+            return Err(format!(
+                "Failed to wait for decoder process: {} (stderr bytes drained: {})",
+                e, drain_report.bytes_read
+            ));
+        }
+    };
+    let stderr_report = syncify_core_domain::process::join_stderr_drain(drain);
     if !status.success() {
         return Err(format!(
-            "Decoder exited with non-zero status ({:?}) during PCM measurement",
-            status
+            "Decoder exited with non-zero status ({:?}) during PCM measurement (stderr bytes drained: {}, read error: {})",
+            status, stderr_report.bytes_read, stderr_report.read_error
         ));
     }
 
@@ -2592,7 +2662,7 @@ fn measure_pcm_stream(child: &mut std::process::Child) -> Result<([u8; 16], u64)
 pub fn compute_pcm_stream_md5_and_sample_count(
     flac_path: &Path,
 ) -> Result<([u8; 16], u64), String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     if !flac_path.is_file() {
         return Err(format!(
@@ -2620,7 +2690,7 @@ pub fn compute_pcm_stream_md5_and_sample_count(
     let bytes_per_frame = (bytes_per_sample * (num_channels.max(1) as u64)).max(1);
 
     // 1. Try the `flac` CLI decoder first (native bit-exact sample formatting).
-    if let Ok(mut child) = Command::new("flac")
+    if let Ok(mut child) = hidden_std_command("flac")
         .args([
             "-s",
             "-d",
@@ -2663,7 +2733,7 @@ pub fn compute_pcm_stream_md5_and_sample_count(
         }
     };
 
-    let mut child = Command::new("ffmpeg")
+    let mut child = hidden_std_command("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(flac_path)
         .args(["-f", pcm_format, "-"])
@@ -2820,8 +2890,7 @@ pub fn trim_flac_stream_copy(
     let tmp_path = parent.join(format!("{}.silencetrim.tmp.flac", file_stem));
     let _ = std::fs::remove_file(&tmp_path);
 
-    use std::process::Command;
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = hidden_std_command("ffmpeg");
     cmd.args(["-v", "error", "-y", "-i"]).arg(input_path);
     if let Some(ss) = start_seconds {
         cmd.args(["-ss", &format!("{:.6}", ss.max(0.0))]);
@@ -2917,9 +2986,125 @@ pub fn restore_flac_metadata_blocks(
     }
 
     target_tag
-        .write_to_path(trimmed_path)
+        .save()
         .map_err(|e| format!("Failed to write restored FLAC metadata: {}", e))?;
     Ok(restored)
+}
+
+/// Reads FLAC tags and StreamInfo from an audio file into a structured `FlacMetadata`.
+/// F-01/F-02: Local library scanning and metadata extraction.
+pub fn read_flac_metadata(file_path: &Path) -> Result<FlacMetadata, String> {
+    if !file_path.is_file() {
+        return Err(format!("File does not exist: {:?}", file_path));
+    }
+    let tag = metaflac::Tag::read_from_path(file_path)
+        .map_err(|e| format!("Failed to read FLAC metadata from {:?}: {}", file_path, e))?;
+
+    let mut meta = FlacMetadata::default();
+
+    if let Some(streaminfo) = tag.get_streaminfo() {
+        if streaminfo.sample_rate > 0 {
+            meta.sample_rate = Some(streaminfo.sample_rate as f64);
+        }
+        if streaminfo.bits_per_sample > 0 {
+            meta.bit_depth = Some(streaminfo.bits_per_sample as i32);
+        }
+    }
+
+    if let Some(vorbis) = tag.vorbis_comments() {
+        let get_first = |keys: &[&str]| -> Option<String> {
+            for &k in keys {
+                if let Some(vals) = vorbis.get(k) {
+                    if let Some(v) = vals.first() {
+                        let trimmed = v.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        if let Some(t) = get_first(&["TITLE"]) {
+            meta.title = t;
+        }
+        if let Some(a) = get_first(&["ARTIST"]) {
+            meta.artist = a;
+        }
+        if let Some(alb) = get_first(&["ALBUM"]) {
+            meta.album = alb;
+        }
+        meta.album_artist = get_first(&["ALBUMARTIST", "ALBUM ARTIST"]);
+        meta.composer = get_first(&["COMPOSER"]);
+        meta.performers = get_first(&["PERFORMER"]);
+        meta.genre = get_first(&["GENRE"]);
+        meta.isrc = get_first(&["ISRC"]);
+        meta.release_year =
+            get_first(&["DATE", "YEAR"]).map(|d| if d.len() >= 4 { d[..4].to_string() } else { d });
+        meta.release_date = get_first(&["DATE", "ORIGINALDATE", "YEAR"]);
+        meta.musicbrainz_track_id = get_first(&["MUSICBRAINZ_TRACKID", "MUSICBRAINZ_RECORDINGID"]);
+        meta.musicbrainz_artist_id = get_first(&["MUSICBRAINZ_ARTISTID"]);
+        meta.musicbrainz_album_id = get_first(&["MUSICBRAINZ_ALBUMID"]);
+        meta.initial_key = get_first(&["INITIALKEY", "KEY"]);
+        meta.comment = get_first(&["COMMENT", "DESCRIPTION"]);
+        meta.lyrics_lrc = get_first(&["LYRICS", "UNSYNCEDLYRICS"]);
+
+        if let Some(tn) = get_first(&["TRACKNUMBER"]) {
+            let part = tn.split('/').next().unwrap_or(&tn);
+            if let Ok(num) = part.parse::<u32>() {
+                meta.track_number = num;
+            }
+        }
+        if let Some(tt) = get_first(&["TRACKTOTAL", "TOTALTRACKS"]) {
+            if let Ok(num) = tt.parse::<u32>() {
+                meta.track_total = num;
+            }
+        }
+        if let Some(dn) = get_first(&["DISCNUMBER"]) {
+            let part = dn.split('/').next().unwrap_or(&dn);
+            if let Ok(num) = part.parse::<u32>() {
+                meta.disc_number = num;
+            }
+        }
+        if let Some(dt) = get_first(&["DISCTOTAL", "TOTALDISCS"]) {
+            if let Ok(num) = dt.parse::<u32>() {
+                meta.disc_total = num;
+                meta.total_discs = Some(num);
+            }
+        }
+        if let Some(bpm_str) = get_first(&["BPM", "TEMPO", "TBPM"]) {
+            if let Ok(bpm) = bpm_str.parse::<f64>() {
+                meta.bpm = Some(bpm.round() as u32);
+            }
+        }
+        if let Some(exp_str) = get_first(&["EXPLICIT"]) {
+            meta.explicit = Some(exp_str == "1" || exp_str.eq_ignore_ascii_case("true"));
+        }
+        if let Some(comp_str) = get_first(&["COMPILATION"]) {
+            meta.compilation = Some(comp_str == "1" || comp_str.eq_ignore_ascii_case("true"));
+        }
+    }
+
+    // Cover art extraction
+    if let Some(pic) = tag.pictures().next() {
+        meta.cover_data = Some(pic.data.clone());
+    }
+
+    // Fallbacks if title or artist are missing
+    if meta.title.is_empty() {
+        if let Some(stem) = file_path.file_stem().and_then(|s| s.to_str()) {
+            meta.title = stem.to_string();
+        }
+    }
+    if meta.artist.is_empty() {
+        meta.artist = "Unknown Artist".to_string();
+    }
+    if meta.album.is_empty() {
+        meta.album = "Unknown Album".to_string();
+    }
+
+    Ok(meta)
 }
 
 #[cfg(test)]
@@ -3338,5 +3523,107 @@ mod tests {
             assert_ne!(t.compilation, Some(true));
             assert_eq!(t.album_artist, Some("Solo Artist".to_string()));
         }
+    }
+
+    #[test]
+    fn test_read_flac_metadata_roundtrip() {
+        let temp_file = create_test_flac_file();
+        let path = &temp_file.path;
+
+        let meta = FlacMetadata {
+            title: "Local Track 1".to_string(),
+            artist: "Local Artist".to_string(),
+            album: "Local Album".to_string(),
+            track_number: 5,
+            track_total: 12,
+            disc_number: 1,
+            disc_total: 1,
+            isrc: Some("USABC1234567".to_string()),
+            genre: Some("Rock".to_string()),
+            bpm: Some(128),
+            explicit: Some(true),
+            ..Default::default()
+        };
+        apply_flac_tags(path, &meta).expect("apply_flac_tags failed");
+
+        let read_back = read_flac_metadata(path).expect("read_flac_metadata failed");
+        assert_eq!(read_back.title, "Local Track 1");
+        assert_eq!(read_back.artist, "Local Artist");
+        assert_eq!(read_back.album, "Local Album");
+        assert_eq!(read_back.track_number, 5);
+        assert_eq!(read_back.track_total, 12);
+        assert_eq!(read_back.isrc, Some("USABC1234567".to_string()));
+        assert_eq!(read_back.genre, Some("Rock".to_string()));
+        assert_eq!(read_back.bpm, Some(128));
+        assert_eq!(read_back.explicit, Some(true));
+        assert_eq!(read_back.sample_rate, Some(44100.0));
+        assert_eq!(read_back.bit_depth, Some(16));
+    }
+
+    /// G-06b consumer-side regression for the four PCM decoder paths.
+    ///
+    /// Every one of them spawns a child with `stderr(Stdio::piped())` and then
+    /// streams stdout without ever calling `wait_with_output`. That is exactly
+    /// the shape that deadlocks when nobody reads stderr: the child fills the
+    /// pipe, blocks on its next write, and only stops once the parent reads —
+    /// which the parent never does, because it is blocked reading stdout. The
+    /// `flac` CLI does not produce that much chatter on a normal file, so this
+    /// test reproduces the hazard with a real chatty child and asserts that the
+    /// shared drain from `syncify-core-domain` keeps the pattern completing.
+    #[test]
+    fn chatty_stderr_child_never_deadlocks_the_pcm_decode_pattern() {
+        use std::io::Read;
+        use std::process::Stdio;
+
+        /// Mirror of the production spawn shape: `hidden_std_command`, piped
+        /// stdout read with a streaming loop instead of `wait_with_output`, but
+        /// with a chatty child instead of `flac`. If the drain is ever removed
+        /// again, this test hangs instead of finishing.
+        fn decode_like_the_pcm_paths() -> (String, bool, u64) {
+            let mut child = hidden_std_command("sh")
+                .args([
+                    "-c",
+                    "i=0; while [ \"$i\" -lt 20000 ]; do \
+                     printf 'Authorization: Bearer [REDACTED:auth_header]\\n' 1>&2; \
+                     i=$((i+1)); done; printf 'decoded'",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn chatty child");
+
+            let drain = syncify_core_domain::process::spawn_stderr_drain(&mut child);
+            let mut stdout = child.stdout.take().expect("piped stdout");
+            let mut decoded = String::new();
+            stdout.read_to_string(&mut decoded).expect("stdout");
+            let status = child.wait().expect("wait");
+            let report = syncify_core_domain::process::join_stderr_drain(drain);
+
+            assert!(
+                report.bytes_read > 4 * 1024,
+                "the child emitted far more than one 4 KiB buffer of stderr, \
+                 so the drain is only meaningful if it kept reading (got {} bytes)",
+                report.bytes_read
+            );
+            assert!(
+                !report.read_error,
+                "the drain must not report a read error on a well-behaved pipe"
+            );
+            (decoded, status.success(), report.bytes_read)
+        }
+
+        let (decoded, success, drained) = decode_like_the_pcm_paths();
+        assert_eq!(decoded, "decoded");
+        assert!(success);
+        // The child's stderr was discarded, not forwarded: the report carries
+        // counts only, so no credential-shaped text can reach a log line.
+        assert!(
+            !decoded.contains("Authorization"),
+            "secret-shaped text leaked"
+        );
+        assert!(
+            drained > 0,
+            "a chatty child must have produced drain counters"
+        );
     }
 }

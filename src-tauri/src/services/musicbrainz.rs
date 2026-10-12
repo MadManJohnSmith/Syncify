@@ -244,6 +244,7 @@ pub fn set_cached_musicbrainz_recording(key: &str, recording: Option<MusicBrainz
 pub struct MusicBrainzClient {
     client: Client,
     last_request: std::sync::Mutex<std::time::Instant>,
+    db: Option<crate::db::DbPool>,
 }
 
 impl MusicBrainzClient {
@@ -251,7 +252,45 @@ impl MusicBrainzClient {
         Self {
             client: crate::download::http_client::create_http_client(),
             last_request: std::sync::Mutex::new(std::time::Instant::now() - Duration::from_secs(2)),
+            db: None,
         }
+    }
+
+    /// Create a client with access to the persistent query cache (`mb_query_cache`, L2).
+    pub fn with_db(db: crate::db::DbPool) -> Self {
+        Self {
+            client: crate::download::http_client::create_http_client(),
+            last_request: std::sync::Mutex::new(std::time::Instant::now() - Duration::from_secs(2)),
+            db: Some(db),
+        }
+    }
+
+    /// Cache key for a recording lookup by ISRC (ISRC already trimmed by the caller).
+    ///
+    /// Se mantiene el formato literal `isrc:<ISRC>` que ya usaba `lookup_by_isrc`
+    /// para no invalidar las entradas de la capa L1 ni la paridad con los tests.
+    pub fn isrc_cache_key(isrc: &str) -> String {
+        format!("isrc:{}", isrc)
+    }
+
+    /// Canonical ISRC form used by the library-scoped index: uppercase, without
+    /// separators. It matches how `tracks.isrc` is normalized at runtime
+    /// (`db.rs` re-applies `UPPER(REPLACE(TRIM(isrc), '-', ''))`), so a lookup and
+    /// the ISRC EXISTS check always use the same identity.
+    pub fn normalize_isrc(isrc: &str) -> String {
+        let mut normalized = isrc.trim().to_uppercase();
+        normalized.retain(|c| c != '-' && c != ' ');
+        normalized
+    }
+
+    /// Cache key for a search by artist/title/album (same canonicalization as before).
+    pub fn search_cache_key(artist: &str, title: &str, album: Option<&str>) -> String {
+        format!(
+            "search:{}:::{}:::{}",
+            artist.trim().to_lowercase(),
+            title.trim().to_lowercase(),
+            album.unwrap_or("").trim().to_lowercase()
+        )
     }
 
     /// Enforce MusicBrainz rate limit (1 request per second)
@@ -268,14 +307,172 @@ impl MusicBrainzClient {
         *self.last_request.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
     }
 
-    /// Look up a recording by ISRC with in-memory caching
+    /// Read L2 only after an L1 miss. A NULL payload is a genuine negative.
+    async fn read_persistent_cache(
+        &self,
+        key: &str,
+        kind: &str,
+    ) -> Option<Option<MusicBrainzRecording>> {
+        let db = self.db.as_ref()?;
+        let row: Option<(Option<String>,)> = match sqlx::query_as(
+            "SELECT payload FROM mb_query_cache WHERE cache_key = ? AND kind = ?",
+        )
+        .bind(key)
+        .bind(kind)
+        .fetch_optional(db)
+        .await
+        {
+            Ok(row) => row,
+            Err(error) => {
+                tracing::warn!(%error, "[MusicBrainz] Could not read persistent cache");
+                return None;
+            }
+        };
+        let value = match row?.0 {
+            Some(payload) => match serde_json::from_str(&payload) {
+                Ok(recording) => Some(recording),
+                Err(error) => {
+                    tracing::warn!(%error, "[MusicBrainz] Invalid persistent cache payload");
+                    return None;
+                }
+            },
+            None => None,
+        };
+        set_cached_musicbrainz_recording(key, value.clone());
+        Some(value)
+    }
+
+    /// Persist only successful lookups and confirmed negatives; failures never reach here.
+    async fn write_persistent_cache(
+        &self,
+        key: &str,
+        kind: &str,
+        value: &Option<MusicBrainzRecording>,
+    ) {
+        let Some(db) = self.db.as_ref() else { return };
+        let payload = match value {
+            Some(recording) => match serde_json::to_string(recording) {
+                Ok(json) => Some(json),
+                Err(error) => {
+                    tracing::warn!(%error, "[MusicBrainz] Could not serialize cache payload");
+                    return;
+                }
+            },
+            None => None,
+        };
+        if let Err(error) = sqlx::query(
+            "INSERT INTO mb_query_cache (cache_key, kind, payload) VALUES (?, ?, ?) \
+             ON CONFLICT(cache_key) DO UPDATE SET kind = excluded.kind, \
+             payload = excluded.payload, fetched_at = datetime('now')",
+        )
+        .bind(key)
+        .bind(kind)
+        .bind(payload)
+        .execute(db)
+        .await
+        {
+            tracing::warn!(%error, "[MusicBrainz] Could not write persistent cache");
+        }
+    }
+
+    /// SQLite date modifier for the freshness window of the library-scoped
+    /// MusicBrainz index (`mb_library_index`, migration 0094). Rows older than
+    /// this — or rows whose ISRC is no longer present, after normalization, in
+    /// `tracks` — are ignored at lookup time and are never refreshed without a
+    /// fresh API result.
+    const LIBRARY_INDEX_TTL_DAYS: &str = "-30 days";
+
+    /// Read only fresh index entries still backed by a local track. An index hit
+    /// is deliberately not promoted to L1/L2: doing so would bypass its expiry.
+    async fn read_library_index(&self, isrc: &str) -> Option<MusicBrainzRecording> {
+        let db = self.db.as_ref()?;
+        let row: Option<(String, String)> = match sqlx::query_as(
+            r#"
+            SELECT i.mbid, i.payload
+            FROM mb_library_index i
+            WHERE i.isrc = ?
+              AND i.updated_at >= datetime('now', ?)
+              AND i.updated_at <= datetime('now')
+              AND EXISTS (
+                  SELECT 1 FROM tracks t
+                  WHERE UPPER(REPLACE(REPLACE(TRIM(t.isrc), '-', ''), ' ', '')) = i.isrc
+              )
+            "#,
+        )
+        .bind(isrc)
+        .bind(Self::LIBRARY_INDEX_TTL_DAYS)
+        .fetch_optional(db)
+        .await
+        {
+            Ok(row) => row,
+            Err(error) => {
+                tracing::warn!(%error, "[MusicBrainz] Could not read library index");
+                return None;
+            }
+        };
+
+        let (mbid, payload) = row?;
+        match serde_json::from_str::<MusicBrainzRecording>(&payload) {
+            Ok(recording) if recording.id == mbid => Some(recording),
+            Ok(_) => {
+                tracing::warn!("[MusicBrainz] Library index MBID/payload mismatch");
+                None
+            }
+            Err(error) => {
+                tracing::warn!(%error, "[MusicBrainz] Invalid library index payload");
+                None
+            }
+        }
+    }
+
+    /// Index a positive API result only when the normalized ISRC is in the library.
+    /// This never touches `tracks` or their existing MusicBrainz matches.
+    async fn index_library_recording(&self, isrc: &str, recording: &MusicBrainzRecording) {
+        let Some(db) = self.db.as_ref() else { return };
+        if recording.id.trim().is_empty() {
+            return;
+        }
+        let payload = match serde_json::to_string(recording) {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!(%error, "[MusicBrainz] Could not serialize library index payload");
+                return;
+            }
+        };
+
+        if let Err(error) = sqlx::query(
+            r#"
+            INSERT INTO mb_library_index (isrc, mbid, payload)
+            SELECT ?, ?, ?
+            WHERE EXISTS (
+                SELECT 1 FROM tracks t
+                WHERE UPPER(REPLACE(REPLACE(TRIM(t.isrc), '-', ''), ' ', '')) = ?
+            )
+            ON CONFLICT(isrc) DO UPDATE SET
+                mbid = excluded.mbid,
+                payload = excluded.payload,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(isrc)
+        .bind(&recording.id)
+        .bind(payload)
+        .bind(isrc)
+        .execute(db)
+        .await
+        {
+            tracing::warn!(%error, "[MusicBrainz] Could not write library index");
+        }
+    }
+
+    /// Look up a recording by ISRC with L1 and optional persistent L2 caching
     pub async fn lookup_by_isrc(&self, isrc: &str) -> Result<Option<MusicBrainzRecording>, String> {
         let trimmed_isrc = isrc.trim();
         if trimmed_isrc.is_empty() {
             return Ok(None);
         }
 
-        let cache_key = format!("isrc:{}", trimmed_isrc);
+        let cache_key = Self::isrc_cache_key(trimmed_isrc);
 
         // Check cache
         let cached_opt: Option<Option<MusicBrainzRecording>> =
@@ -295,6 +492,24 @@ impl MusicBrainzClient {
                 trimmed_isrc
             );
             return Ok(cached);
+        }
+
+        if let Some(cached) = self.read_persistent_cache(&cache_key, "isrc").await {
+            tracing::debug!(
+                "[MusicBrainz] Reusing persistent lookup for ISRC {}",
+                trimmed_isrc
+            );
+            return Ok(cached);
+        }
+
+        // L3: library-scoped MusicBrainz index, before any HTTP call.
+        let normalized_isrc = Self::normalize_isrc(trimmed_isrc);
+        if let Some(indexed) = self.read_library_index(&normalized_isrc).await {
+            tracing::debug!(
+                "[MusicBrainz] Reusing library index for ISRC {}",
+                trimmed_isrc
+            );
+            return Ok(Some(indexed));
         }
 
         self.rate_limit().await;
@@ -319,8 +534,9 @@ impl MusicBrainzClient {
             tracing::debug!("ISRC {} not found in MusicBrainz", trimmed_isrc);
             if let Ok(mut guard) = MB_QUERY_CACHE.write() {
                 let cache = guard.get_or_insert_with(HashMap::new);
-                cache.insert(cache_key, None);
+                cache.insert(cache_key.clone(), None);
             }
+            self.write_persistent_cache(&cache_key, "isrc", &None).await;
             return Ok(None);
         }
 
@@ -344,7 +560,13 @@ impl MusicBrainzClient {
         // Cache result
         if let Ok(mut guard) = MB_QUERY_CACHE.write() {
             let cache = guard.get_or_insert_with(HashMap::new);
-            cache.insert(cache_key, result.clone());
+            cache.insert(cache_key.clone(), result.clone());
+        }
+        self.write_persistent_cache(&cache_key, "isrc", &result)
+            .await;
+        if let Some(recording) = &result {
+            self.index_library_recording(&normalized_isrc, recording)
+                .await;
         }
 
         Ok(result)
@@ -412,7 +634,7 @@ impl MusicBrainzClient {
         Ok(result)
     }
 
-    /// Search for recordings by title and artist with in-memory caching
+    /// Search for recordings by title and artist with L1 and optional L2 caching
     pub async fn search_recordings(
         &self,
         title: &str,
@@ -420,12 +642,7 @@ impl MusicBrainzClient {
         album: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MusicBrainzRecording>, String> {
-        let cache_key = format!(
-            "search:{}:::{}:::{}",
-            artist.trim().to_lowercase(),
-            title.trim().to_lowercase(),
-            album.unwrap_or("").trim().to_lowercase()
-        );
+        let cache_key = Self::search_cache_key(artist, title, album);
 
         let cached_search: Option<Option<MusicBrainzRecording>> =
             if let Ok(guard) = MB_QUERY_CACHE.read() {
@@ -441,6 +658,15 @@ impl MusicBrainzClient {
         if let Some(Some(rec)) = cached_search {
             tracing::debug!(
                 "[MusicBrainz] Reusing cached search for {} - {}",
+                artist,
+                title
+            );
+            return Ok(vec![rec]);
+        }
+
+        if let Some(Some(rec)) = self.read_persistent_cache(&cache_key, "search").await {
+            tracing::debug!(
+                "[MusicBrainz] Reusing persistent search for {} - {}",
                 artist,
                 title
             );
@@ -494,8 +720,10 @@ impl MusicBrainzClient {
 
         if let Ok(mut guard) = MB_QUERY_CACHE.write() {
             let cache = guard.get_or_insert_with(HashMap::new);
-            cache.insert(cache_key, list.first().cloned());
+            cache.insert(cache_key.clone(), list.first().cloned());
         }
+        self.write_persistent_cache(&cache_key, "search", &list.first().cloned())
+            .await;
 
         Ok(list)
     }

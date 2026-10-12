@@ -398,8 +398,11 @@ pub async fn get_tracks_needing_metadata(
 }
 
 #[tauri::command]
-pub async fn match_musicbrainz(params: MetadataSearchParams) -> Result<Vec<MetadataMatch>, String> {
-    let client = crate::services::musicbrainz::MusicBrainzClient::new();
+pub async fn match_musicbrainz(
+    state: State<'_, AppState>,
+    params: MetadataSearchParams,
+) -> Result<Vec<MetadataMatch>, String> {
+    let client = crate::services::musicbrainz::MusicBrainzClient::with_db(state.db.clone());
 
     // Use title and artist for search
     let results = client
@@ -657,7 +660,7 @@ pub async fn fetch_missing_cover_art(
     use crate::services::MusicBrainzClient;
 
     let limit = limit.unwrap_or(100).clamp(1, 500);
-    let client = MusicBrainzClient::new();
+    let client = MusicBrainzClient::with_db(state.db.clone());
 
     // One candidate per album that currently lacks artwork.
     let rows: Vec<(i64, Option<String>)> = sqlx::query_as(

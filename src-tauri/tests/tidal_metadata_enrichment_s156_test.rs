@@ -479,6 +479,7 @@ async fn test_s156_request_hints_preservation() {
         hint_release_date: Some("2020-03-27".to_string()),
         hint_track_id: Some(50),
         operation_id: None,
+        account_id: None,
     };
 
     assert_eq!(req.hint_title.as_deref(), Some("12345SEX"));

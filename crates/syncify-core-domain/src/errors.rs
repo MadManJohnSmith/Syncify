@@ -168,6 +168,13 @@ pub enum ErrorTaxonomy {
         field: String,
         reason: String,
     },
+    /// A playable sample was supplied instead of the requested full track.
+    /// Retrying another provider/account is safe; it is not an auth verdict.
+    QobuzPreviewPayload {
+        requested_format: String,
+        obtained_format: String,
+        reason: String,
+    },
     IdentityConflict {
         field: String,
         existing_value: String,
@@ -210,6 +217,7 @@ impl ErrorTaxonomy {
                 | ErrorTaxonomy::RateLimited { .. }
                 | ErrorTaxonomy::TemporaryNetworkFailure { .. }
                 | ErrorTaxonomy::Timeout { .. }
+                | ErrorTaxonomy::QobuzPreviewPayload { .. }
         )
     }
 
@@ -221,6 +229,9 @@ impl ErrorTaxonomy {
             ErrorTaxonomy::TemporaryNetworkFailure { .. } => 3,
             ErrorTaxonomy::Timeout { .. } => 5,
             ErrorTaxonomy::AuthRefreshable { .. } => 1,
+            // Provider/account alternation has its own bounded policy in the caller;
+            // allow only a single later queue retry, not a transport-style loop.
+            ErrorTaxonomy::QobuzPreviewPayload { .. } => 1,
             _ => 0,
         }
     }
@@ -296,6 +307,14 @@ impl ErrorTaxonomy {
                 field,
                 reason,
             } => format!("Malformed {} from {}: {}", field, provider, reason),
+            ErrorTaxonomy::QobuzPreviewPayload {
+                requested_format,
+                obtained_format,
+                reason,
+            } => format!(
+                "QobuzPreviewPayload: Qobuz delivered {} instead of requested {}: {}",
+                obtained_format, requested_format, reason
+            ),
             ErrorTaxonomy::IdentityConflict {
                 field,
                 existing_value,
@@ -359,6 +378,32 @@ impl std::fmt::Display for RequiresAuthReason {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qobuz_preview_taxonomy_is_retryable_but_not_auth() {
+        let preview = ErrorTaxonomy::QobuzPreviewPayload {
+            requested_format: "FLAC format_id=6".to_string(),
+            obtained_format: "MP3".to_string(),
+            reason: "short sample".to_string(),
+        };
+        assert!(preview.is_retryable());
+        assert!(!preview.is_terminal());
+        assert!(!preview.requires_user_action());
+        assert_eq!(preview.max_attempts(), 1);
+        assert!(preview.ui_message().starts_with("QobuzPreviewPayload:"));
+        let serialized = serde_json::to_string(&preview).unwrap();
+        assert!(serialized.contains("qobuz_preview_payload"));
+        assert_eq!(
+            serde_json::from_str::<ErrorTaxonomy>(&serialized).unwrap(),
+            preview
+        );
+        assert!(!ErrorTaxonomy::MalformedProviderPayload {
+            provider: "qobuz".to_string(),
+            field: "unknown".to_string(),
+            reason: "other".to_string(),
+        }
+        .is_retryable());
+    }
 
     #[test]
     fn test_error_serialization() {

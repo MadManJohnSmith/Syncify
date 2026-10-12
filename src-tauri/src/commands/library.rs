@@ -971,7 +971,7 @@ pub async fn enrich_metadata_musicbrainz(
 
     tracing::info!("enrich_metadata_musicbrainz called with limit={:?}", limit);
 
-    let client = MusicBrainzClient::new();
+    let client = MusicBrainzClient::with_db(state.db.clone());
     let limit = limit.unwrap_or(100000); // Process all tracks
 
     // Find tracks with ISRC but no MusicBrainz ID, and fetch their artist name for validation
@@ -1527,10 +1527,23 @@ pub async fn get_playlists(state: State<'_, AppState>) -> Result<Vec<Playlist>, 
             p.id,
             p.name,
             p.description,
-            NULL as owner_name,
+            p.owner_name,
             p.track_count,
-            NULL as image_url,
-            s.name as service_name,
+            COALESCE(
+                p.image_url,
+                (
+                    SELECT al.cover_art_url
+                    FROM playlist_tracks pt
+                    JOIN tracks t ON t.id = pt.track_id
+                    LEFT JOIN albums al ON al.id = t.album_id
+                    WHERE pt.playlist_id = p.id
+                      AND al.cover_art_url IS NOT NULL
+                      AND al.cover_art_url != ''
+                    ORDER BY pt.position ASC
+                    LIMIT 1
+                )
+            ) as image_url,
+            COALESCE(p.source_service, s.name) as service_name,
             p.is_smart,
             p.rules_json
         FROM playlists p
@@ -4534,12 +4547,24 @@ pub async fn perform_reconcile_library_physical_state(
         // 7b. Process orphan items
         if opts.orphan_policy == OrphanPolicy::RelinkIfExactIdentity {
             for item in &exact_orphan_relinks {
-                let service_id: i64 = if item.effective_service == "tidal" {
-                    3
-                } else if item.effective_service == "spotify" {
-                    1
-                } else {
-                    2
+                let service_id: i64 = match sqlx::query_scalar(
+                    "SELECT id FROM services WHERE LOWER(name) = LOWER(?) LIMIT 1",
+                )
+                .bind(&item.effective_service)
+                .fetch_optional(&mut *tx)
+                .await
+                .unwrap_or(None)
+                {
+                    Some(id) => id,
+                    None => {
+                        if item.effective_service == "tidal" {
+                            3
+                        } else if item.effective_service == "spotify" {
+                            1
+                        } else {
+                            2
+                        }
+                    }
                 };
 
                 let res = sqlx::query(
@@ -4996,7 +5021,7 @@ pub async fn reconcile_queue(
 pub async fn resolve_ghost_artists(
     state: State<'_, AppState>,
 ) -> Result<crate::services::musicbrainz::GhostArtistReport, String> {
-    let client = crate::services::MusicBrainzClient::new();
+    let client = crate::services::MusicBrainzClient::with_db(state.db.clone());
     client.resolve_ghost_artists(&state.db).await
 }
 
@@ -5005,7 +5030,7 @@ pub async fn resolve_ghost_artists(
 pub async fn hydrate_stub_albums(
     state: State<'_, AppState>,
 ) -> Result<crate::services::musicbrainz::StubAlbumHydrationReport, String> {
-    let client = crate::services::MusicBrainzClient::new();
+    let client = crate::services::MusicBrainzClient::with_db(state.db.clone());
     client.hydrate_stub_albums(&state.db).await
 }
 
@@ -5243,4 +5268,1595 @@ pub async fn purge_orphan_empty_albums(
     state: State<'_, AppState>,
 ) -> Result<PurgeOrphanEmptyAlbumsReport, String> {
     perform_purge_orphan_empty_albums(&state.db).await
+}
+
+// ==============================================
+// LOCAL LIBRARY AS A SERVICE (F-01 / F-02)
+// ==============================================
+
+/// Ensures the 'local' service and its corresponding account are registered in the database.
+pub async fn ensure_local_service_registered(db: &sqlx::SqlitePool) -> Result<(i64, i64), String> {
+    // 1. Register service 'local'
+    sqlx::query(
+        r#"
+        INSERT INTO services (name, supports_download, max_quality)
+        VALUES ('local', 0, 'hires')
+        ON CONFLICT(name) DO UPDATE SET supports_download = 0, max_quality = 'hires'
+        "#,
+    )
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to register local service: {}", e))?;
+
+    let service_id: i64 =
+        sqlx::query_scalar("SELECT id FROM services WHERE name = 'local' LIMIT 1")
+            .fetch_one(db)
+            .await
+            .map_err(|e| format!("Failed to fetch local service ID: {}", e))?;
+
+    // 2. Register default account for 'local'
+    sqlx::query(
+        r#"
+        INSERT INTO accounts (service_id, display_name, email, is_active)
+        VALUES (?, 'Local Library', 'local@syncify.internal', 1)
+        ON CONFLICT(service_id, email) DO UPDATE SET is_active = 1
+        "#,
+    )
+    .bind(service_id)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to register local library account: {}", e))?;
+
+    let account_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM accounts WHERE service_id = ? AND email = 'local@syncify.internal' LIMIT 1",
+    )
+    .bind(service_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| format!("Failed to fetch local account ID: {}", e))?;
+
+    Ok((service_id, account_id))
+}
+
+/// Metadata extracted from a local audio file on disk during library scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalScannedTrack {
+    pub file_path: String,
+    pub file_name: String,
+    pub file_size_bytes: i64,
+    pub file_hash: String,
+    pub file_format: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_artist: Option<String>,
+    pub track_number: Option<i32>,
+    pub disc_number: Option<i32>,
+    pub release_year: Option<i32>,
+    pub genre: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub bit_depth: Option<i64>,
+    pub sample_rate: Option<i64>,
+    pub isrc: Option<String>,
+    pub musicbrainz_id: Option<String>,
+    pub score: i32,
+}
+
+/// Result of local library synchronization.
+/// snake_case es el contrato que consume la UI (ui/src/api/library.ts).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LocalSyncReport {
+    pub success: bool,
+    pub directory: String,
+    pub total_scanned: usize,
+    pub imported: usize,
+    pub duplicates_matched: usize,
+    pub duplicates_skipped: usize,
+    pub errors: Vec<String>,
+}
+
+/// Hashes an audio file with bounded memory, including files much larger than RAM.
+fn hash_local_audio_file(path: &std::path::Path) -> std::io::Result<String> {
+    use sha2::Digest;
+    use std::io::Read;
+
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
+    let mut buffer = [0u8; 64 * 1024];
+    let mut hasher = sha2::Sha256::new();
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Loads the singleton's six persisted scoring weights. Only a missing row uses
+/// the migration defaults; SQL or decode errors must abort the sync, not hide
+/// corrupt preferences behind a seemingly valid default score.
+async fn load_local_scoring_weights(
+    db: &sqlx::SqlitePool,
+) -> Result<syncify_metadata_domain::scoring::ScoringWeights, String> {
+    use syncify_metadata_domain::scoring::ScoringWeights;
+
+    let row: Option<(i64, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT weight_album, weight_isrc, weight_mb_id, weight_cover, weight_year, weight_genre \
+         FROM metadata_preferences WHERE id = 1",
+    )
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to load metadata scoring weights: {e}"))?;
+
+    Ok(match row {
+        Some((
+            weight_album,
+            weight_isrc,
+            weight_mb_id,
+            weight_cover,
+            weight_year,
+            weight_genre,
+        )) => ScoringWeights {
+            weight_album,
+            weight_isrc,
+            weight_mb_id,
+            weight_cover,
+            weight_year,
+            weight_genre,
+        },
+        None => ScoringWeights::default(),
+    })
+}
+
+/// Scans a directory for audio files and extracts metadata natively.
+/// Only FLAC tags are read; other formats use filename/directory guesses.
+/// Standalone scans keep the default weights; synchronization supplies the
+/// persisted preferences via `scan_local_audio_files_with_weights`.
+/// Kept for external Rust callers; the binary only invokes the sync command.
+#[allow(dead_code)]
+pub fn scan_local_audio_files(
+    dir_path: &std::path::Path,
+    recursive: bool,
+) -> Result<Vec<LocalScannedTrack>, String> {
+    scan_local_audio_files_with_weights(
+        dir_path,
+        recursive,
+        &syncify_metadata_domain::scoring::ScoringWeights::default(),
+    )
+}
+
+fn scan_local_audio_files_with_weights(
+    dir_path: &std::path::Path,
+    recursive: bool,
+    weights: &syncify_metadata_domain::scoring::ScoringWeights,
+) -> Result<Vec<LocalScannedTrack>, String> {
+    if !dir_path.is_dir() {
+        return Err(format!("Not an accessible directory: {:?}", dir_path));
+    }
+
+    let mut walker = walkdir::WalkDir::new(dir_path);
+    if !recursive {
+        walker = walker.max_depth(1);
+    }
+    scan_local_audio_entries(walker, weights)
+}
+
+fn scan_local_audio_entries(
+    entries: impl IntoIterator<Item = Result<walkdir::DirEntry, walkdir::Error>>,
+    weights: &syncify_metadata_domain::scoring::ScoringWeights,
+) -> Result<Vec<LocalScannedTrack>, String> {
+    let mut tracks = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to traverse local library: {}", e))?;
+        let path = entry.path();
+        let metadata = entry
+            .metadata()
+            .map_err(|e| format!("Failed to inspect {:?}: {}", path, e))?;
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let ext = match path.extension().and_then(|e| e.to_str()) {
+            Some(e) => e.to_lowercase(),
+            None => continue,
+        };
+
+        let is_audio = matches!(
+            ext.as_str(),
+            "flac" | "mp3" | "m4a" | "wav" | "ogg" | "opus" | "aac" | "alac"
+        );
+        if !is_audio {
+            continue;
+        }
+
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let file_size_bytes = metadata.len() as i64;
+
+        // Compute SHA-256 streaming (never loads whole file into memory).
+        let file_hash = match hash_local_audio_file(path) {
+            Ok(hash) => hash,
+            Err(e) => {
+                return Err(format!("Failed to read audio file {:?}: {}", path, e));
+            }
+        };
+
+        let file_format = ext.to_uppercase();
+        let mut title = String::new();
+        let mut artist = String::new();
+        let mut album = String::new();
+        let mut album_artist: Option<String> = None;
+        let mut track_number: Option<i32> = None;
+        let mut disc_number: Option<i32> = None;
+        let mut release_year: Option<i32> = None;
+        let mut genre: Option<String> = None;
+        let mut duration_ms: Option<i64> = None;
+        let mut bit_depth: Option<i64> = None;
+        let mut sample_rate: Option<i64> = None;
+        let mut isrc: Option<String> = None;
+        let mut musicbrainz_id: Option<String> = None;
+
+        if ext == "flac" {
+            if let Ok(meta) = syncify_flac_writer::read_flac_metadata(path) {
+                title = meta.title;
+                artist = meta.artist;
+                album = meta.album;
+                album_artist = meta.album_artist;
+                if meta.track_number > 0 {
+                    track_number = Some(meta.track_number as i32);
+                }
+                if meta.disc_number > 0 {
+                    disc_number = Some(meta.disc_number as i32);
+                }
+                if let Some(ref y) = meta.release_year {
+                    release_year = y.parse::<i32>().ok();
+                }
+                genre = meta.genre;
+                isrc = meta.isrc;
+                musicbrainz_id = meta.musicbrainz_track_id;
+                bit_depth = meta.bit_depth.map(|b| b as i64);
+                sample_rate = meta.sample_rate.map(|s| s as i64);
+            }
+            if let Ok(tag) = metaflac::Tag::read_from_path(path) {
+                if let Some(info) = tag.get_streaminfo() {
+                    if info.sample_rate > 0 {
+                        duration_ms = Some(
+                            (info.total_samples as f64 / info.sample_rate as f64 * 1000.0) as i64,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Clean fallbacks if tags are missing
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if title.is_empty() || title == "Unknown Title" {
+            let (clean, _) = syncify_core_domain::metadata::clean_title_and_extract_featured(stem);
+            if !clean.is_empty() {
+                title = clean;
+            } else {
+                title = stem.to_string();
+            }
+        }
+
+        if artist.is_empty() || artist == "Unknown Artist" {
+            if let Some(pos) = stem.find(" - ") {
+                let guessed_artist = stem[..pos].trim();
+                let guessed_title = stem[pos + 3..].trim();
+                if !guessed_artist.is_empty() {
+                    artist = guessed_artist.to_string();
+                    if !guessed_title.is_empty() && title == stem {
+                        title = guessed_title.to_string();
+                    }
+                }
+            }
+            if artist.is_empty() {
+                if let Some(parent) = path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                {
+                    artist = parent.to_string();
+                } else {
+                    artist = "Unknown Artist".to_string();
+                }
+            }
+        }
+
+        if album.is_empty() || album == "Unknown Album" {
+            if let Some(parent) = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+            {
+                album = parent.to_string();
+            } else {
+                album = "Local Music".to_string();
+            }
+        }
+
+        // SC-03: Score calculation using shared scoring engine
+        let score_input = syncify_metadata_domain::scoring::TrackMetadataScoreInput {
+            title: Some(title.clone()),
+            artist: Some(artist.clone()),
+            album: Some(album.clone()),
+            isrc: isrc.clone(),
+            musicbrainz_id: musicbrainz_id.clone(),
+            release_year,
+            genre: genre.clone(),
+            file_path: Some(path.to_string_lossy().to_string()),
+            is_local: true,
+            ..Default::default()
+        };
+        let score =
+            syncify_metadata_domain::scoring::calculate_metadata_score(weights, &score_input)
+                as i32;
+
+        tracks.push(LocalScannedTrack {
+            file_path: path.to_string_lossy().to_string(),
+            file_name,
+            file_size_bytes,
+            file_hash,
+            file_format,
+            title,
+            artist,
+            album,
+            album_artist,
+            track_number,
+            disc_number,
+            release_year,
+            genre,
+            duration_ms,
+            bit_depth,
+            sample_rate,
+            isrc,
+            musicbrainz_id,
+            score,
+        });
+    }
+
+    Ok(tracks)
+}
+
+/// Synchronizes a local directory into the database.
+/// F-01 & F-02: Scans audio files, detects duplicates (ISRC, title+artist, file hash),
+/// inserts into tracks/downloads/track_sources/library_entries, and resolves duplicates.
+pub async fn sync_local_library_inner(
+    db: &sqlx::SqlitePool,
+    directory: &str,
+    recursive: bool,
+    auto_resolve: bool,
+) -> Result<LocalSyncReport, String> {
+    let path = std::path::Path::new(directory);
+    if !path.exists() {
+        return Err(format!("Directory does not exist: {}", directory));
+    }
+
+    // PMS-03: load once before any sync writes or file scoring, so every
+    // file in this run uses the same persisted preferences.
+    let scoring_weights = load_local_scoring_weights(db).await?;
+    let (service_id, account_id) = ensure_local_service_registered(db).await?;
+    let scanned = scan_local_audio_files_with_weights(path, recursive, &scoring_weights)?;
+    let total_scanned = scanned.len();
+
+    let mut imported = 0usize;
+    let mut duplicates_matched = 0usize;
+    let mut duplicates_skipped = 0usize;
+    let mut errors = Vec::new();
+
+    for track in scanned {
+        // Step 1: Check if file already exists in downloads
+        let existing_dl: Result<Option<(i64, Option<i64>)>, sqlx::Error> = sqlx::query_as(
+            "SELECT id, track_id FROM downloads WHERE file_path = ? OR (file_hash = ? AND file_hash != '') LIMIT 1",
+        )
+        .bind(&track.file_path)
+        .bind(&track.file_hash)
+        .fetch_optional(db)
+        .await;
+        let existing_dl = match existing_dl {
+            Ok(existing) => existing,
+            Err(e) => {
+                errors.push(format!(
+                    "Failed to find existing download for {:?}: {}",
+                    track.file_path, e
+                ));
+                continue;
+            }
+        };
+
+        if let Some((dl_id, maybe_tid)) = existing_dl {
+            if let Some(tid) = maybe_tid {
+                let update_dl = sqlx::query(
+                    "UPDATE downloads SET metadata_completeness = MAX(metadata_completeness, ?) WHERE id = ?",
+                )
+                .bind(track.score as i64)
+                .bind(dl_id)
+                .execute(db)
+                .await;
+                if let Err(e) = update_dl {
+                    errors.push(format!(
+                        "Error updating metadata score for track #{}: {}",
+                        tid, e
+                    ));
+                    continue;
+                }
+
+                let link_ts = sqlx::query(
+                    "INSERT OR IGNORE INTO track_sources (track_id, service_id, service_track_id, available, quality_score) VALUES (?, ?, ?, 1, ?)",
+                )
+                .bind(tid)
+                .bind(service_id)
+                .bind(&track.file_path)
+                .bind(track.score as i64)
+                .execute(db)
+                .await;
+                if let Err(e) = link_ts {
+                    errors.push(format!(
+                        "Error linking track source for track #{}: {}",
+                        tid, e
+                    ));
+                    continue;
+                }
+            } else {
+                errors.push(format!(
+                    "Existing download #{} for {:?} has no track_id; cannot link local file",
+                    dl_id, track.file_path
+                ));
+                continue;
+            }
+            duplicates_skipped += 1;
+            continue;
+        }
+
+        // Step 2: Deduplication against existing tracks in DB
+        let mut matched_track_id: Option<i64> = None;
+
+        // 2a. Match by ISRC if present
+        if let Some(ref isrc_code) = track.isrc {
+            if syncify_core_domain::metadata::is_valid_isrc(isrc_code) {
+                let tid_opt = sqlx::query_as("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+                    .bind(isrc_code)
+                    .fetch_optional(db)
+                    .await;
+                match tid_opt {
+                    Ok(Some((tid,))) => matched_track_id = Some(tid),
+                    Ok(None) => {}
+                    Err(e) => {
+                        errors.push(format!(
+                            "Failed to check ISRC {} for {:?}: {}",
+                            isrc_code, track.file_path, e
+                        ));
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // 2b. Match by Title + Primary Artist
+        if matched_track_id.is_none() {
+            let clean_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
+            let clean_artist = syncify_core_domain::metadata::sanitize_artist_name(&track.artist);
+            if !clean_title.is_empty() && !clean_artist.is_empty() {
+                let title_artist_matches = sqlx::query_scalar(
+                    r#"SELECT t.id FROM tracks t
+                       JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'primary'
+                       JOIN artists a ON ta.artist_id = a.id
+                       WHERE LOWER(TRIM(t.title)) = LOWER(?)
+                         AND LOWER(TRIM(a.name)) = LOWER(?)"#,
+                )
+                .bind(&clean_title)
+                .bind(&clean_artist)
+                .fetch_all(db)
+                .await;
+                let title_artist_matches = match title_artist_matches {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        errors.push(format!(
+                            "Failed to look up duplicates for {:?}: {}",
+                            track.file_path, e
+                        ));
+                        continue;
+                    }
+                };
+
+                if title_artist_matches.len() == 1 {
+                    matched_track_id = Some(title_artist_matches[0]);
+                }
+            }
+        }
+
+        // Step 3: Insert or Link
+        if let Some(tid) = matched_track_id {
+            let insert_dl = sqlx::query(
+                r#"INSERT INTO downloads (
+                       track_id, source_service_id, file_path, file_format,
+                       file_size_bytes, file_hash, bit_depth, sample_rate,
+                       metadata_completeness, effective_service
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'local')
+                   ON CONFLICT(track_id) DO UPDATE SET
+                       file_path = excluded.file_path,
+                       file_format = excluded.file_format,
+                       file_size_bytes = excluded.file_size_bytes,
+                       file_hash = excluded.file_hash,
+                       bit_depth = excluded.bit_depth,
+                       sample_rate = excluded.sample_rate,
+                       metadata_completeness = MAX(downloads.metadata_completeness, excluded.metadata_completeness),
+                       effective_service = 'local'"#,
+            )
+            .bind(tid)
+            .bind(service_id)
+            .bind(&track.file_path)
+            .bind(&track.file_format)
+            .bind(track.file_size_bytes)
+            .bind(&track.file_hash)
+            .bind(track.bit_depth)
+            .bind(track.sample_rate)
+            .bind(track.score as i64)
+            .execute(db)
+            .await;
+
+            if let Err(e) = insert_dl {
+                errors.push(format!("Error linking download for track #{}: {}", tid, e));
+                continue;
+            }
+
+            let link_ts = sqlx::query(
+                r#"INSERT INTO track_sources (track_id, service_id, service_track_id, available, quality_score)
+                   VALUES (?, ?, ?, 1, ?)
+                   ON CONFLICT(track_id, service_id) DO UPDATE SET
+                       service_track_id = excluded.service_track_id,
+                       available = 1,
+                       quality_score = excluded.quality_score"#,
+            )
+            .bind(tid)
+            .bind(service_id)
+            .bind(&track.file_path)
+            .bind(track.score as i64)
+            .execute(db)
+            .await;
+            if let Err(e) = link_ts {
+                errors.push(format!(
+                    "Error linking track source for track #{}: {}",
+                    tid, e
+                ));
+                continue;
+            }
+
+            let link_le = sqlx::query(
+                "INSERT OR IGNORE INTO library_entries (account_id, track_id, added_at, is_liked) VALUES (?, ?, CURRENT_TIMESTAMP, 0)",
+            )
+            .bind(account_id)
+            .bind(tid)
+            .execute(db)
+            .await;
+            if let Err(e) = link_le {
+                errors.push(format!(
+                    "Error linking library entry for track #{}: {}",
+                    tid, e
+                ));
+                continue;
+            }
+
+            duplicates_matched += 1;
+        } else {
+            let clean_artist = syncify_core_domain::metadata::sanitize_artist_name(&track.artist);
+            let existing_artist =
+                sqlx::query_scalar("SELECT id FROM artists WHERE LOWER(name) = LOWER(?) LIMIT 1")
+                    .bind(&clean_artist)
+                    .fetch_optional(db)
+                    .await;
+            let artist_id: i64 = match existing_artist {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    match sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
+                        .bind(&clean_artist)
+                        .fetch_one(db)
+                        .await
+                    {
+                        Ok(id) => id,
+                        Err(e) => {
+                            errors
+                                .push(format!("Failed to insert artist '{}': {}", clean_artist, e));
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!(
+                        "Failed to look up artist '{}' for {:?}: {}",
+                        clean_artist, track.file_path, e
+                    ));
+                    continue;
+                }
+            };
+
+            let clean_album = syncify_core_domain::metadata::sanitize_album_title(&track.album);
+            let existing_album = sqlx::query_scalar(
+                "SELECT al.id FROM albums al JOIN album_artists aa ON al.id = aa.album_id WHERE LOWER(al.title) = LOWER(?) AND aa.artist_id = ? LIMIT 1",
+            )
+            .bind(&clean_album)
+            .bind(artist_id)
+            .fetch_optional(db)
+            .await;
+            let album_id: i64 = match existing_album {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    match sqlx::query_scalar(
+                        "INSERT INTO albums (title, release_date, local_track_count) VALUES (?, ?, 1) RETURNING id",
+                    )
+                    .bind(&clean_album)
+                    .bind(track.release_year.map(|y| y.to_string()))
+                    .fetch_one(db)
+                    .await
+                    {
+                        Ok(id) => {
+                            let link_aa = sqlx::query(
+                                "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)",
+                            )
+                            .bind(id)
+                            .bind(artist_id)
+                            .execute(db)
+                            .await;
+                            if let Err(e) = link_aa {
+                                errors.push(format!(
+                                    "Failed to link artist to album '{}' (#{}): {}",
+                                    clean_album, id, e
+                                ));
+                                continue;
+                            }
+                            id
+                        }
+                        Err(e) => {
+                            errors.push(format!("Failed to insert album '{}': {}", clean_album, e));
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!(
+                        "Failed to look up album '{}' for {:?}: {}",
+                        clean_album, track.file_path, e
+                    ));
+                    continue;
+                }
+            };
+
+            let clean_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
+            let new_track_id: i64 = match sqlx::query_scalar(
+                r#"INSERT INTO tracks (title, album_id, duration_ms, track_number, disc_number, isrc, musicbrainz_id, genre, release_year)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"#,
+            )
+            .bind(&clean_title)
+            .bind(album_id)
+            .bind(track.duration_ms)
+            .bind(track.track_number)
+            .bind(track.disc_number.unwrap_or(1))
+            .bind(&track.isrc)
+            .bind(&track.musicbrainz_id)
+            .bind(&track.genre)
+            .bind(track.release_year)
+            .fetch_one(db)
+            .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    errors.push(format!("Failed to insert track '{}': {}", clean_title, e));
+                    continue;
+                }
+            };
+
+            let link_ta = sqlx::query(
+                "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+            )
+            .bind(new_track_id)
+            .bind(artist_id)
+            .execute(db)
+            .await;
+            if let Err(e) = link_ta {
+                errors.push(format!(
+                    "Failed to link artist '{}' to track #{}: {}",
+                    clean_artist, new_track_id, e
+                ));
+                continue;
+            }
+
+            let insert_dl = sqlx::query(
+                r#"INSERT INTO downloads (
+                       track_id, source_service_id, file_path, file_format,
+                       file_size_bytes, file_hash, bit_depth, sample_rate,
+                       metadata_completeness, effective_service
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'local')"#,
+            )
+            .bind(new_track_id)
+            .bind(service_id)
+            .bind(&track.file_path)
+            .bind(&track.file_format)
+            .bind(track.file_size_bytes)
+            .bind(&track.file_hash)
+            .bind(track.bit_depth)
+            .bind(track.sample_rate)
+            .bind(track.score as i64)
+            .execute(db)
+            .await;
+            if let Err(e) = insert_dl {
+                errors.push(format!(
+                    "Failed to insert download for {:?}: {}",
+                    track.file_path, e
+                ));
+                continue;
+            }
+
+            let link_ts = sqlx::query(
+                "INSERT INTO track_sources (track_id, service_id, service_track_id, available, quality_score) VALUES (?, ?, ?, 1, ?)",
+            )
+            .bind(new_track_id)
+            .bind(service_id)
+            .bind(&track.file_path)
+            .bind(track.score as i64)
+            .execute(db)
+            .await;
+            if let Err(e) = link_ts {
+                errors.push(format!(
+                    "Error linking track source for track #{}: {}",
+                    new_track_id, e
+                ));
+                continue;
+            }
+
+            let link_le = sqlx::query(
+                "INSERT OR IGNORE INTO library_entries (account_id, track_id, added_at, is_liked) VALUES (?, ?, CURRENT_TIMESTAMP, 0)",
+            )
+            .bind(account_id)
+            .bind(new_track_id)
+            .execute(db)
+            .await;
+            if let Err(e) = link_le {
+                errors.push(format!(
+                    "Error linking library entry for track #{}: {}",
+                    new_track_id, e
+                ));
+                continue;
+            }
+
+            imported += 1;
+        }
+    }
+
+    // Refresh albums local_track_count
+    let refresh_counts = sqlx::query(
+        "UPDATE albums SET local_track_count = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id)",
+    )
+    .execute(db)
+    .await;
+    if let Err(e) = refresh_counts {
+        errors.push(format!("Failed to refresh album track counts: {}", e));
+    }
+
+    if auto_resolve {
+        if let Err(e) = auto_resolve_duplicates_inner(db).await {
+            errors.push(format!("Failed to auto-resolve duplicates: {}", e));
+        }
+    }
+
+    Ok(LocalSyncReport {
+        success: errors.is_empty(),
+        directory: directory.to_string(),
+        total_scanned,
+        imported,
+        duplicates_matched,
+        duplicates_skipped,
+        errors,
+    })
+}
+
+/// Comando Tauri (F-01/F-02): sincroniza una carpeta local con la biblioteca.
+/// Registra el servicio 'local' y su cuenta, escanea los archivos de audio del
+/// disco (SHA-256 + scoring local, sin duplicar pistas de streaming) y devuelve
+/// un informe. Es la unica frontera entre el backend local y la UI.
+#[tauri::command]
+pub async fn sync_local_library_cmd(
+    state: State<'_, AppState>,
+    directory: String,
+    recursive: bool,
+) -> Result<LocalSyncReport, String> {
+    tracing::info!(
+        "sync_local_library_cmd directory={} recursive={}",
+        directory,
+        recursive
+    );
+    let db = state.db.clone();
+    // El escaneo lee del disco y puede tardar: se ejecuta en un hilo de bloqueo
+    // para no congelar el runtime asincrono.
+    let dir = directory.clone();
+    let handle = tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(sync_local_library(&db, &dir, recursive))
+    });
+    match handle.await {
+        Ok(res) => res,
+        Err(e) => Err(format!("Local library sync task failed: {}", e)),
+    }
+}
+
+/// Public API to synchronize a local music directory.
+pub async fn sync_local_library(
+    db: &sqlx::SqlitePool,
+    directory: &str,
+    recursive: bool,
+) -> Result<LocalSyncReport, String> {
+    sync_local_library_inner(db, directory, recursive, false).await
+}
+
+#[cfg(test)]
+mod local_library_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use tempfile::TempDir;
+
+    async fn create_test_db() -> sqlx::SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::query(
+            r#"
+            CREATE TABLE services (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                supports_download INTEGER DEFAULT 0,
+                max_quality TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+                display_name TEXT,
+                email TEXT,
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(service_id, email)
+            );
+            CREATE TABLE artists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                musicbrainz_id TEXT,
+                spotify_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            -- PMS-03: the six weight columns the sync path reads back
+            -- (migration 0022) so the local sync tests control scoring weights.
+            CREATE TABLE metadata_preferences (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                overwrite_on_reimport BOOLEAN NOT NULL DEFAULT 0,
+                preserve_custom_tags BOOLEAN NOT NULL DEFAULT 1,
+                multi_value_separator TEXT NOT NULL DEFAULT ';',
+                write_releasetype BOOLEAN NOT NULL DEFAULT 1,
+                write_label BOOLEAN NOT NULL DEFAULT 1,
+                write_work_composer BOOLEAN NOT NULL DEFAULT 0,
+                write_musicbrainz_ids BOOLEAN NOT NULL DEFAULT 1,
+                write_download_source BOOLEAN NOT NULL DEFAULT 0,
+                write_download_date BOOLEAN NOT NULL DEFAULT 0,
+                write_only_available_on BOOLEAN NOT NULL DEFAULT 0,
+                write_not_available_streaming BOOLEAN NOT NULL DEFAULT 0,
+                write_quality_score BOOLEAN NOT NULL DEFAULT 0,
+                write_lyrics_tags BOOLEAN NOT NULL DEFAULT 0,
+                enable_musicbrainz INTEGER NOT NULL DEFAULT 1,
+                enable_lastfm INTEGER NOT NULL DEFAULT 0,
+                enable_acoustid INTEGER NOT NULL DEFAULT 0,
+                weight_album INTEGER NOT NULL DEFAULT 1,
+                weight_isrc INTEGER NOT NULL DEFAULT 1,
+                weight_mb_id INTEGER NOT NULL DEFAULT 1,
+                weight_cover INTEGER NOT NULL DEFAULT 1,
+                weight_year INTEGER NOT NULL DEFAULT 1,
+                weight_genre INTEGER NOT NULL DEFAULT 1
+            );
+            INSERT INTO metadata_preferences (id) VALUES (1);
+            CREATE TABLE albums (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                release_date TEXT,
+                musicbrainz_id TEXT UNIQUE,
+                upc TEXT,
+                total_tracks INTEGER,
+                local_track_count INTEGER NOT NULL DEFAULT 0,
+                cover_art_url TEXT,
+                is_stub INTEGER DEFAULT 0,
+                is_compilation INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE album_artists (
+                album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+                artist_id INTEGER NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+                is_primary INTEGER DEFAULT 1,
+                PRIMARY KEY (album_id, artist_id)
+            );
+            CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                album_id INTEGER REFERENCES albums(id) ON DELETE SET NULL,
+                duration_ms INTEGER,
+                track_number INTEGER,
+                disc_number INTEGER DEFAULT 1,
+                isrc TEXT UNIQUE,
+                musicbrainz_id TEXT,
+                genre TEXT,
+                release_year INTEGER,
+                explicit INTEGER DEFAULT 0,
+                play_count INTEGER NOT NULL DEFAULT 0,
+                last_played TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE track_artists (
+                track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+                artist_id INTEGER NOT NULL REFERENCES artists(id) ON DELETE CASCADE,
+                role TEXT DEFAULT 'primary',
+                PRIMARY KEY (track_id, artist_id)
+            );
+            CREATE TABLE track_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+                service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+                service_track_id TEXT NOT NULL,
+                available INTEGER DEFAULT 1,
+                quality_score INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(track_id, service_id)
+            );
+            CREATE TABLE library_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+                added_at TEXT,
+                is_liked INTEGER DEFAULT 0,
+                play_count INTEGER DEFAULT 0,
+                auto_download INTEGER DEFAULT 0,
+                UNIQUE(account_id, track_id)
+            );
+            CREATE TABLE downloads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER UNIQUE REFERENCES tracks(id) ON DELETE SET NULL,
+                source_service_id INTEGER REFERENCES services(id),
+                file_path TEXT NOT NULL,
+                file_format TEXT,
+                file_size_bytes INTEGER,
+                file_hash TEXT,
+                bit_depth INTEGER,
+                sample_rate INTEGER,
+                metadata_completeness INTEGER DEFAULT 0,
+                downloaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                only_available_on TEXT,
+                not_streaming INTEGER DEFAULT 0,
+                effective_service TEXT,
+                effective_service_track_id TEXT
+            );
+            INSERT INTO services (name, supports_download, max_quality) VALUES ('spotify', 0, 'lossy');
+            INSERT INTO services (name, supports_download, max_quality) VALUES ('tidal', 1, 'hires');
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        pool
+    }
+
+    fn create_dummy_flac_with_tags(
+        path: &std::path::Path,
+        title: &str,
+        artist: &str,
+        album: &str,
+        isrc: Option<&str>,
+    ) {
+        let mut flac_bytes = Vec::new();
+        flac_bytes.extend_from_slice(b"fLaC");
+        flac_bytes.extend_from_slice(&[
+            0x80, 0x00, 0x00, 0x22, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x0A, 0xC4, 0x42, 0xF0, // 44.1kHz, 2 channels, 16 bits
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]);
+        std::fs::write(path, &flac_bytes).expect("Failed to write dummy flac");
+
+        let meta = syncify_flac_writer::FlacMetadata {
+            title: title.to_string(),
+            artist: artist.to_string(),
+            album: album.to_string(),
+            isrc: isrc.map(|s| s.to_string()),
+            track_number: 1,
+            track_total: 10,
+            disc_number: 1,
+            disc_total: 1,
+            genre: Some("Rock".to_string()),
+            release_year: Some("2024".to_string()),
+            ..Default::default()
+        };
+        syncify_flac_writer::apply_flac_tags(path, &meta).expect("Failed to apply tags");
+    }
+
+    #[tokio::test]
+    async fn test_ensure_local_service_registered() {
+        let db = create_test_db().await;
+        let (svc_id, acc_id) = ensure_local_service_registered(&db).await.unwrap();
+        assert!(svc_id > 0);
+        assert!(acc_id > 0);
+
+        let svc_name: String = sqlx::query_scalar("SELECT name FROM services WHERE id = ?")
+            .bind(svc_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(svc_name, "local");
+
+        let acc_name: String = sqlx::query_scalar("SELECT display_name FROM accounts WHERE id = ?")
+            .bind(acc_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(acc_name, "Local Library");
+    }
+
+    #[tokio::test]
+    async fn test_sync_local_library_new_tracks_persisted_and_scored() {
+        let db = create_test_db().await;
+        let temp_dir = TempDir::new().unwrap();
+        let flac_file = temp_dir.path().join("track1.flac");
+        create_dummy_flac_with_tags(
+            &flac_file,
+            "Local Anthem",
+            "Indie Band",
+            "Local EP",
+            Some("USLOC2400001"),
+        );
+
+        let report = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap();
+
+        assert_eq!(report.total_scanned, 1);
+        assert_eq!(report.imported, 1);
+        assert_eq!(report.duplicates_matched, 0);
+
+        // Verify tracks row
+        let track_row: (i64, String, Option<String>) =
+            sqlx::query_as("SELECT id, title, isrc FROM tracks WHERE isrc = 'USLOC2400001'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(track_row.1, "Local Anthem");
+
+        // Verify downloads row
+        let dl_row: (String, String, i64, Option<String>) = sqlx::query_as(
+            "SELECT file_path, file_format, metadata_completeness, effective_service FROM downloads WHERE track_id = ?",
+        )
+        .bind(track_row.0)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(dl_row.0, flac_file.to_str().unwrap());
+        assert_eq!(dl_row.1, "FLAC");
+        assert!(dl_row.2 > 0, "SC-03 quality score must be positive");
+        assert_eq!(dl_row.3, Some("local".to_string()));
+
+        // Verify track_sources row
+        let source_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM track_sources WHERE track_id = ? AND service_track_id = ?",
+        )
+        .bind(track_row.0)
+        .bind(flac_file.to_str().unwrap())
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(source_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_local_scoring_weights_use_persisted_nonuniform_values() {
+        use syncify_metadata_domain::scoring::ScoringWeights;
+
+        let db = create_test_db().await; // isolated in-memory database, not the user's data
+        sqlx::query(
+            "UPDATE metadata_preferences SET weight_album = 2, weight_isrc = 3, \
+             weight_mb_id = 9, weight_cover = 4, weight_year = 5, weight_genre = 7 WHERE id = 1",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            load_local_scoring_weights(&db).await.unwrap(),
+            ScoringWeights {
+                weight_album: 2,
+                weight_isrc: 3,
+                weight_mb_id: 9,
+                weight_cover: 4,
+                weight_year: 5,
+                weight_genre: 7,
+            }
+        );
+
+        let temp_dir = TempDir::new().unwrap();
+        let flac = temp_dir.path().join("weighted.flac");
+        create_dummy_flac_with_tags(&flac, "Weighted", "Artist", "Album", Some("USWGT2400001"));
+
+        // Title, artist, album, ISRC, year, and genre; no MBID or cover.
+        // Configured 20 + round(80 * (2+3+5+7) / 30) = 65.
+        let default_score = scan_local_audio_files(temp_dir.path(), true).unwrap()[0].score;
+        assert_eq!(default_score, 73); // six equal weights: 20 + round(80 * 4/6)
+        let report = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap();
+        assert_eq!(report.imported, 1);
+        let stored_score: i64 =
+            sqlx::query_scalar("SELECT metadata_completeness FROM downloads WHERE file_path = ?")
+                .bind(flac.to_str().unwrap())
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(stored_score, 65);
+        assert_ne!(stored_score, default_score as i64);
+    }
+
+    #[tokio::test]
+    async fn test_local_scoring_weights_fallback_only_when_row_missing() {
+        use syncify_metadata_domain::scoring::ScoringWeights;
+
+        let db = create_test_db().await;
+        // A present row uses the migration defaults (all i64), not hard-coded scores.
+        assert_eq!(
+            load_local_scoring_weights(&db).await.unwrap(),
+            ScoringWeights::default()
+        );
+        sqlx::query("DELETE FROM metadata_preferences WHERE id = 1")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            load_local_scoring_weights(&db).await.unwrap(),
+            ScoringWeights::default()
+        );
+
+        // Missing table (or missing column/decoding failure) is an error, never
+        // mistaken for an absent singleton row.
+        sqlx::query("DROP TABLE metadata_preferences")
+            .execute(&db)
+            .await
+            .unwrap();
+        let err = load_local_scoring_weights(&db).await.unwrap_err();
+        assert!(
+            err.contains("Failed to load metadata scoring weights"),
+            "{err}"
+        );
+
+        let temp_dir = TempDir::new().unwrap();
+        create_dummy_flac_with_tags(
+            &temp_dir.path().join("unscored.flac"),
+            "Song",
+            "Artist",
+            "Album",
+            None,
+        );
+        let err = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("Failed to load metadata scoring weights"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_local_library_deduplicates_by_isrc() {
+        let db = create_test_db().await;
+
+        // Simulate an existing track previously imported from streaming (e.g. Spotify)
+        let artist_id: i64 =
+            sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Known Artist') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let album_id: i64 =
+            sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Known Album') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let existing_tid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, isrc) VALUES ('Known Hit', ?, 'USKNO2000001') RETURNING id",
+        )
+        .bind(album_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO track_artists (track_id, artist_id) VALUES (?, ?)")
+            .bind(existing_tid)
+            .bind(artist_id)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        // Now local sync has a physical FLAC with identical ISRC
+        let temp_dir = TempDir::new().unwrap();
+        let flac_file = temp_dir.path().join("local_copy.flac");
+        create_dummy_flac_with_tags(
+            &flac_file,
+            "Known Hit (Remastered)",
+            "Known Artist",
+            "Known Album",
+            Some("USKNO2000001"),
+        );
+
+        let report = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap();
+
+        assert_eq!(report.total_scanned, 1);
+        assert_eq!(
+            report.imported, 0,
+            "No duplicate track row should be created"
+        );
+        assert_eq!(
+            report.duplicates_matched, 1,
+            "Must link to existing track via ISRC"
+        );
+
+        // Total tracks in DB must remain 1
+        let total_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(total_tracks, 1);
+
+        // Downloads row now points to local file
+        let dl_path: String =
+            sqlx::query_scalar("SELECT file_path FROM downloads WHERE track_id = ?")
+                .bind(existing_tid)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(dl_path, flac_file.to_str().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_sync_local_library_deduplicates_by_title_artist() {
+        let db = create_test_db().await;
+
+        // Existing streaming track with no ISRC
+        let artist_id: i64 =
+            sqlx::query_scalar("INSERT INTO artists (name) VALUES ('The Beatles') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let album_id: i64 =
+            sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Abbey Road') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let existing_tid: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id) VALUES ('Come Together', ?) RETURNING id",
+        )
+        .bind(album_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(existing_tid)
+        .bind(artist_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // Local flac with exact title and artist
+        let temp_dir = TempDir::new().unwrap();
+        let flac_file = temp_dir.path().join("come_together.flac");
+        create_dummy_flac_with_tags(
+            &flac_file,
+            "Come Together",
+            "The Beatles",
+            "Abbey Road",
+            None,
+        );
+
+        let report = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap();
+
+        assert_eq!(report.imported, 0);
+        assert_eq!(report.duplicates_matched, 1);
+
+        let total_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(total_tracks, 1);
+    }
+
+    #[tokio::test]
+    async fn test_sync_local_library_skips_already_imported_file() {
+        let db = create_test_db().await;
+        let temp_dir = TempDir::new().unwrap();
+        let flac_file = temp_dir.path().join("song.flac");
+        create_dummy_flac_with_tags(&flac_file, "Song A", "Artist A", "Album A", None);
+
+        // Run 1: import
+        let rep1 = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap();
+        assert_eq!(rep1.imported, 1);
+        assert_eq!(rep1.duplicates_skipped, 0);
+
+        // Run 2: rescan
+        let rep2 = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap();
+        assert_eq!(rep2.imported, 0);
+        assert_eq!(rep2.duplicates_skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn test_local_track_ready_for_playback() {
+        let db = create_test_db().await;
+        let temp_dir = TempDir::new().unwrap();
+        let flac_file = temp_dir.path().join("playable.flac");
+        create_dummy_flac_with_tags(&flac_file, "Playable Track", "Artist", "Album", None);
+
+        let rep = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap();
+        assert_eq!(rep.imported, 1);
+
+        // Fetch track id
+        let tid: i64 = sqlx::query_scalar("SELECT id FROM tracks WHERE title = 'Playable Track'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+
+        // Check downloads row for playback resolution (mirrors playback.rs query)
+        let row: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT file_path, file_format FROM downloads WHERE track_id = ? LIMIT 1",
+        )
+        .bind(tid)
+        .fetch_optional(&db)
+        .await
+        .unwrap();
+
+        assert!(
+            row.is_some(),
+            "Downloads row must exist for playback source resolution"
+        );
+        let (path, format) = row.unwrap();
+        assert_eq!(path, flac_file.to_str().unwrap());
+        assert_eq!(format, Some("FLAC".to_string()));
+        assert!(
+            std::path::Path::new(&path).is_file(),
+            "File must exist on disk"
+        );
+    }
+
+    /// Incremental SHA-256 must equal the digest of the whole file, byte for byte.
+    #[test]
+    fn test_hash_local_audio_file_matches_whole_file_digest() {
+        use sha2::Digest;
+
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("hash_check.bin");
+
+        // Deterministic payload, larger than the internal 64 KiB buffer, so the
+        // hashing loop runs several iterations.
+        let mut payload = Vec::new();
+        for i in 0..200_000u32 {
+            payload.push((i % 251) as u8);
+        }
+        std::fs::write(&file, &payload).unwrap();
+
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&payload);
+        let expected = format!("{:x}", hasher.finalize());
+
+        assert_eq!(hash_local_audio_file(&file).unwrap(), expected);
+
+        // A zero-byte file must hash to the empty input digest, not panic or
+        // yield an empty string.
+        let empty = temp_dir.path().join("empty.bin");
+        std::fs::write(&empty, b"").unwrap();
+        let empty_hasher = sha2::Sha256::new();
+        let empty_digest = format!("{:x}", empty_hasher.finalize());
+        assert_eq!(hash_local_audio_file(&empty).unwrap(), empty_digest);
+        assert_eq!(hash_local_audio_file(&empty).unwrap().len(), 64);
+    }
+
+    /// A missing or unreadable file must surface an Io error (the caller
+    /// propagates it instead of silently storing an unusable hash).
+    #[test]
+    fn test_hash_local_audio_file_errors_are_not_silenced() {
+        let temp_dir = TempDir::new().unwrap();
+        let missing = temp_dir.path().join("does_not_exist.flac");
+        let err = hash_local_audio_file(&missing).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// Traversal failures must abort the scan with a descriptive error rather
+    /// than being swallowed by `filter_map(|e| e.ok())`.
+    #[test]
+    fn test_scan_local_audio_files_reports_traversal_errors() {
+        let temp_dir = TempDir::new().unwrap();
+        let missing_path = temp_dir.path().join("missing_subtree");
+        let entries = walkdir::WalkDir::new(missing_path);
+
+        let result = scan_local_audio_entries(
+            entries,
+            &syncify_metadata_domain::scoring::ScoringWeights::default(),
+        );
+        assert!(result.is_err(), "traversal failure must not be hidden");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("Failed to traverse local library"),
+            "error must name the failing stage, got: {}",
+            msg
+        );
+    }
+
+    /// Unreadable audio files must abort the scan; the previous behaviour of
+    /// storing `String::new()` as the hash silently bypassed hash deduplication.
+    #[test]
+    fn test_scan_local_audio_files_reports_unreadable_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let flac = temp_dir.path().join("unreadable.flac");
+        create_dummy_flac_with_tags(&flac, "Unreadable", "Artist", "Album", None);
+
+        // Chmod 000 makes the file unreadable for non-root users.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o000);
+            std::fs::set_permissions(&flac, perms).unwrap();
+            let is_root = unsafe { libc::geteuid() } == 0;
+            if is_root {
+                return;
+            }
+        }
+
+        let result = scan_local_audio_files(temp_dir.path(), true);
+        assert!(result.is_err(), "unreadable file must fail the scan");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("Failed to read audio file"),
+            "error must name the failing stage, got: {}",
+            msg
+        );
+    }
+
+    /// Non-FLAC formats must fall back to filename/parent-directory guesses, and
+    /// the scan must never invent tag-derived values for them (no ISRC from an
+    /// MP3 the scanner cannot actually read).
+    #[test]
+    fn test_scan_local_audio_files_guesses_metadata_for_non_flac_formats() {
+        let temp_dir = TempDir::new().unwrap();
+        let artist_dir = temp_dir.path().join("Guessed Artist");
+        std::fs::create_dir_all(&artist_dir).unwrap();
+        let mp3 = artist_dir.join("Guessed Title.mp3");
+        std::fs::write(&mp3, b"ID3fake-mp3-payload").unwrap();
+
+        let scanned = scan_local_audio_files(temp_dir.path(), true).unwrap();
+        assert_eq!(scanned.len(), 1);
+        let track = &scanned[0];
+        assert_eq!(track.file_format, "MP3");
+        assert_eq!(track.file_size_bytes, 19);
+        assert_eq!(track.title, "Guessed Title");
+        assert_eq!(track.artist, "Guessed Artist");
+        assert_eq!(track.album, "Guessed Artist");
+        assert!(
+            track.isrc.is_none(),
+            "MP3 tags are not read; ISRC must not be invented"
+        );
+        assert!(track.musicbrainz_id.is_none());
+        assert_eq!(track.file_hash.len(), 64);
+    }
+
+    /// The same content must produce the same hash across two different paths
+    /// (the property hash-based duplicate detection depends on).
+    #[test]
+    fn test_scan_local_audio_files_hash_is_content_addressed() {
+        use std::collections::HashMap;
+
+        let temp_dir = TempDir::new().unwrap();
+        let a = temp_dir.path().join("a.flac");
+        let b = temp_dir.path().join("b.flac");
+        let c = temp_dir.path().join("c.flac");
+        create_dummy_flac_with_tags(&a, "Same", "Artist", "Album", None);
+        std::fs::copy(&a, &b).unwrap();
+        std::fs::write(&c, b"other content entirely").unwrap();
+
+        let scanned = scan_local_audio_files(temp_dir.path(), true).unwrap();
+        assert_eq!(scanned.len(), 3);
+
+        let hashes: HashMap<String, usize> = scanned.iter().fold(HashMap::new(), |mut acc, t| {
+            *acc.entry(t.file_hash.clone()).or_insert(0) += 1;
+            acc
+        });
+        // Two identical files collapse to one hash group, the third is unique.
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.values().any(|count| *count == 2));
+    }
+
+    /// A failed look-up must report an error and not create a duplicate track
+    /// row. Previously `unwrap_or_default()` turned a DB failure into "no match",
+    /// which then inserted a second track for the same recording.
+    #[tokio::test]
+    async fn test_db_lookup_failure_is_not_treated_as_no_match() {
+        let db = create_test_db().await;
+        let temp_dir = TempDir::new().unwrap();
+        let flac_file = temp_dir.path().join("broken_lookup.flac");
+        create_dummy_flac_with_tags(
+            &flac_file,
+            "Broken Lookup",
+            "Broken Artist",
+            "Broken Album",
+            None,
+        );
+
+        // Break the table used by the title+artist de-duplication query so the
+        // SELECT fails while the scan itself still succeeds.
+        sqlx::query("DROP TABLE track_artists")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let report = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap();
+
+        assert!(
+            !report.errors.is_empty(),
+            "a failed de-duplication query must be reported"
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("Failed to look up duplicates")),
+            "errors must name the de-duplication stage, got: {:?}",
+            report.errors
+        );
+        assert_eq!(
+            report.imported, 0,
+            "no track may be imported when its duplicate state is unknown"
+        );
+        assert!(
+            !report.success,
+            "success must not be claimed when the scan produced errors"
+        );
+    }
+
+    /// A successful scan with zero errors reports success:true, so the stricter
+    /// success flag does not regress the happy path.
+    #[tokio::test]
+    async fn test_sync_local_library_success_flag_without_errors() {
+        let db = create_test_db().await;
+        let temp_dir = TempDir::new().unwrap();
+        let flac_file = temp_dir.path().join("ok.flac");
+        create_dummy_flac_with_tags(
+            &flac_file,
+            "Clean Track",
+            "Clean Artist",
+            "Clean Album",
+            None,
+        );
+
+        let report = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap();
+
+        assert!(report.errors.is_empty());
+        assert!(report.success);
+        assert_eq!(report.imported, 1);
+    }
 }
