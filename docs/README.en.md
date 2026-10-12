@@ -57,10 +57,12 @@ Two Spanish documents record it, and they are the authoritative answer to
 - `auditoria/cierre-handoff-2026-10-11.md`: the closing run's evidence and the
   explicit list of things it did **not** verify.
 
-The short version, for anyone reading the public pages: Rust was green on
-2026-10-11; in the 2026-10-12 rerun done ahead of the release, the UI suite
-(993 tests across 121 files) and the Python suite (279 tests) both passed, and
-the frontend build and type checks are OK. The real graphical session, the live
+The short version, for anyone reading the public pages: the 2026-10-12 runs
+that gated the v0.6.0 merge were green — the Rust workspace suite (2452 passed,
+0 failed, 9 ignored tests that need a live network or credentials), the UI suite
+(996 tests across 121 files) and the Python suite (279 tests) — together with
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+`cargo fmt --check` and the frontend build and type checks. The real graphical session, the live
 network and the Windows/MSVC target have not been exercised, which is the honest
 reason the public front pages do not call the app release-ready.
 
