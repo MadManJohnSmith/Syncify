@@ -46,6 +46,12 @@ de pérdida, y sigue siendo verdad el 2026-10-12.
 
 ## 2. Lo que SÍ es alcance beta
 
+**Aclaración de alcance (2026-10-13):** el propietario incluyó en beta la corrección
+de selección de edición e importación que impide asociar o descargar silenciosamente
+una versión incorrecta. Véase [`DECISION_SELECCION_EDICION.md`](DECISION_SELECCION_EDICION.md)
+y ED-01…ED-04 en `auditoria/matriz-ajustes.md`. No añade proveedores ni requiere
+migrar carpetas o bibliotecas de usuarios existentes durante desarrollo.
+
 Beta no significa "el repositorio se congela": significa cerrar lo que ya está empezado
 y verificado solo a medias. Concreto:
 
