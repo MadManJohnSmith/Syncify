@@ -159,7 +159,14 @@ fn tray_menu_no_longer_contains_check_updates_item() {
         !ids.iter().any(|id| id == "check_updates"),
         "'Check for Updates' must be removed (no updater command exists in Rust); got {ids:?}"
     );
-    for expected in ["hide", "resume_downloads", "sync_all", "settings", "quit"] {
+    for expected in [
+        "open",
+        "hide",
+        "resume_downloads",
+        "sync_all",
+        "settings",
+        "quit",
+    ] {
         assert!(
             ids.iter().any(|id| id == expected),
             "tray menu must keep the '{expected}' item; got {ids:?}"
@@ -174,7 +181,14 @@ fn tray_menu_no_longer_contains_check_updates_item() {
         !ids_downloading.iter().any(|id| id == "check_updates"),
         "'Check for Updates' must be removed (no updater command exists in Rust); got {ids_downloading:?}"
     );
-    for expected in ["show", "pause_downloads", "sync_all", "settings", "quit"] {
+    for expected in [
+        "open",
+        "show",
+        "pause_downloads",
+        "sync_all",
+        "settings",
+        "quit",
+    ] {
         assert!(
             ids_downloading.iter().any(|id| id == expected),
             "tray menu must keep the '{expected}' item while downloading; got {ids_downloading:?}"

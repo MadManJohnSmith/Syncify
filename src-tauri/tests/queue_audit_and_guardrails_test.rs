@@ -577,8 +577,15 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
         .execute(&db)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO downloads (track_id, file_path, source_service_id, file_format) VALUES (?, '/music/oasis/01.flac', 2, 'FLAC')")
-        .bind(t1).execute(&db).await.unwrap();
+    let music_dir = tempfile::tempdir().unwrap();
+    let downloaded_file = music_dir.path().join("01.flac");
+    std::fs::write(&downloaded_file, b"fLaC").unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path, source_service_id, file_format) VALUES (?, ?, 2, 'FLAC')")
+        .bind(t1)
+        .bind(downloaded_file.to_str().unwrap())
+        .execute(&db)
+        .await
+        .unwrap();
 
     // Candidate A: Different track ID, but lowercase ISRC with dashes -> MUST match AlreadyDownloaded
     let t_cand_a: i64 = sqlx::query_scalar(
@@ -592,6 +599,40 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
         matches!(res_a, Some(QueueGuardrailMatch::AlreadyDownloaded { track_id, .. }) if track_id == t1),
         "Candidate A with dashed lowercase ISRC must match downloaded track 1"
     );
+
+    std::fs::remove_file(&downloaded_file).unwrap();
+    let missing_file_result = check_queue_guardrail(&db, t_cand_a, None, None, None)
+        .await
+        .unwrap();
+    assert!(
+        !matches!(
+            missing_file_result,
+            Some(QueueGuardrailMatch::AlreadyDownloaded { .. })
+        ),
+        "A download row with a missing file must not block another request"
+    );
+
+    // 2b. The first equivalent row has no file; a different canonical track
+    // with the same ISRC has a surviving file.
+    let surviving_file = music_dir.path().join("02.flac");
+    std::fs::write(&surviving_file, b"fLaC").unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path, source_service_id, file_format) VALUES (?, ?, 2, 'FLAC')")
+        .bind(t_cand_a)
+        .bind(surviving_file.to_str().unwrap())
+        .execute(&db)
+        .await
+        .unwrap();
+    let mixed_rows_result = check_queue_guardrail(&db, t_cand_a, None, None, None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            mixed_rows_result,
+            Some(QueueGuardrailMatch::AlreadyDownloaded { track_id, .. }) if track_id == t_cand_a
+        ),
+        "A surviving file on an equivalent row must keep AlreadyDownloaded"
+    );
+    std::fs::remove_file(&surviving_file).unwrap();
 
     // 3. Track 2: In download_queue (queued) without ISRC
     let t2: i64 = sqlx::query_scalar(

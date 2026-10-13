@@ -386,6 +386,46 @@ describe('DownloadsView.vue', () => {
     expect(wrapper.text()).toContain('15')
   })
 
+  it('marks a terminal sentinel retry count instead of showing 99 attempts', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') {
+        return [{
+          id: 20,
+          track_id: 301,
+          target_title: 'Sentinel Track',
+          target_artist: 'Unknown Band',
+          target_album: 'Broken Edition',
+          service_name: 'tidal',
+          quality_preference: 'lossless',
+          status: 'failed',
+          priority: 50,
+          progress_percent: 0,
+          error_message: 'SourceIdentityMissing: No equivalent Tidal source found for edition identity',
+          last_error: 'identity fallback refused: multiple matches',
+          retry_count: 99,
+          allow_fallback: false,
+          created_at: '2026-08-17T04:00:00Z',
+          started_at: '2026-08-17T04:01:00Z',
+          completed_at: null,
+        }]
+      }
+      if (command === 'get_queue_stats') return { total: 1, queued: 0, downloading: 0, completed: 0, failed: 1, paused: 0 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+    expect(wrapper.text()).toContain('Source identity missing')
+    expect(wrapper.text()).not.toContain('Attempts: 99')
+    expect(wrapper.find('.failed-item').text()).toContain('Review source')
+    expect(wrapper.find('.failed-item').text()).not.toContain('Retry with Fallback')
+
+    const reviewButton = wrapper.findAll('.failed-item button').find(b => b.text().includes('Review source'))
+    expect(reviewButton).toBeDefined()
+    await reviewButton!.trigger('click')
+    expect(wrapper.text()).toContain('Stopped after a terminal failure')
+  })
+
   it('renders differentiated failure categories with metadata, provenance, and contextual retry buttons', async () => {
     const richFailedItems = [
       {
@@ -484,12 +524,26 @@ describe('DownloadsView.vue', () => {
     expect(text).toContain('Requires authentication')
     expect(text).toContain('Rejected quality')
 
-    // 2. Check metadata: Attempts count, Origin, Effective, Fallback
-    expect(text).toContain('Attempts: 3')
-    expect(text).toContain('Attempts: 1')
-    expect(text).toContain('Origin: Spotify')
-    expect(text).toContain('Effective: Tidal')
-    expect(text).toContain('Fallback Allowed')
+    // 2. Metadata is collapsed by default; expanding the row reveals attempts,
+    //    provenance, fallback flag and the quality decision.
+    expect(text).not.toContain('Attempts: 3')
+    expect(text).not.toContain('Attempts: 1')
+
+    const expandButtons = wrapper.findAll('button').filter(b => b.text().includes('Show details'))
+    expect(expandButtons.length).toBeGreaterThan(0)
+    await expandButtons[0].trigger('click')
+
+    const expandedText = wrapper.text()
+    expect(expandedText).toContain('Attempts: 3')
+    expect(expandedText).toContain('Network retry exhausted')
+    expect(expandedText).toContain('Qobuz download failed: error decoding response body')
+    expect(expandedText).toContain('stream timeout after 3 retries')
+
+    const staleCard = expandButtons[1]
+    await staleCard.trigger('click')
+    expect(wrapper.text()).toContain('Origin: Spotify')
+    expect(wrapper.text()).toContain('Effective: Tidal')
+    expect(wrapper.text()).toContain('Fallback Allowed')
 
     // 3. Check contextual buttons:
     // Network error: "Retry original source" present; NO generic "Try another service"

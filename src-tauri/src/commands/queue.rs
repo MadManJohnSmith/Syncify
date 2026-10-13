@@ -226,8 +226,8 @@ pub async fn check_queue_guardrail(
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
 
-    // 1. Check if already downloaded in local library
-    let dl_match: Option<(i64, String)> = sqlx::query_as(
+    // A download row may outlive its file; check every equivalent row before skipping.
+    let dl_matches: Vec<(i64, String)> = sqlx::query_as(
         r#"
         SELECT COALESCE(d.track_id, 0), d.file_path
         FROM downloads d
@@ -254,7 +254,6 @@ pub async fn check_queue_guardrail(
                   )
               )
           )
-        LIMIT 1
         "#,
     )
     .bind(candidate_track_id)
@@ -263,14 +262,19 @@ pub async fn check_queue_guardrail(
     .bind(t_dur)
     .bind(t_art_id)
     .bind(&norm_artist)
-    .fetch_optional(db)
+    .fetch_all(db)
     .await?;
 
-    if let Some((matched_track_id, file_path)) = dl_match {
-        return Ok(Some(QueueGuardrailMatch::AlreadyDownloaded {
-            track_id: matched_track_id,
-            file_path,
-        }));
+    for (matched_track_id, file_path) in dl_matches {
+        if tokio::fs::metadata(&file_path)
+            .await
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            return Ok(Some(QueueGuardrailMatch::AlreadyDownloaded {
+                track_id: matched_track_id,
+                file_path,
+            }));
+        }
     }
 
     // 2. Check if already active in download queue (status not failed/cancelled)
