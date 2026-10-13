@@ -758,14 +758,22 @@
             <h2 class="text-base font-bold text-gray-900 dark:text-white">Failed</h2>
             <span class="px-2 py-0.5 rounded-full bg-error/10 text-error text-xs font-bold">{{ filteredFailedItems.length }}</span>
           </div>
-          <button 
-            v-if="filteredFailedItems.length > 0"
-            @click="retryFailed" 
-            class="flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-xs font-semibold transition-colors"
-          >
-            <span class="material-symbols-outlined text-[14px]">refresh</span>
-            Retry All
-          </button>
+          <div class="flex items-center gap-3">
+            <button
+              @click="clearFailed"
+              :disabled="isProcessing || failedItemsCount === 0"
+              class="text-xs font-semibold text-text-secondary hover:text-error transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >Clear All</button>
+            <button
+              v-if="filteredFailedItems.length > 0"
+              @click="retryFailed"
+              :disabled="isProcessing"
+              class="flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span class="material-symbols-outlined text-[14px]">refresh</span>
+              Retry All
+            </button>
+          </div>
         </div>
         
         <div class="flex flex-col gap-3">
@@ -2124,19 +2132,27 @@ async function retryFailed() {
   }
 }
 
+// WF-DL-01: el backend solo borra `status = 'failed'`; las completadas y las
+// en curso no entran en ese DELETE. El recuento mostrado y el del diálogo son
+// el total de fallidas, no el subconjunto que deja pasar el filtro de búsqueda.
 async function clearFailed() {
-  const confirmed = await confirm('Clear all failed downloads?', {
+  if (isProcessing.value) return
+  const count = failedItemsCount.value
+  if (count === 0) return
+  const confirmed = await confirm(`Are you sure you want to clear all ${count.toLocaleString()} failed downloads?`, {
     title: 'Clear Failed Downloads',
     variant: 'warning'
   })
   if (confirmed !== true) return
-  
+
   isProcessing.value = true
   try {
     await queueApi.clearAllFailed()
     lastProgressTimestamps.clear()
     await fetchData()
-    toast.success('Cleared failed downloads')
+    toast.success(`Cleared ${count.toLocaleString()} failed items`)
+  } catch (e) {
+    toast.error('Failed to clear failed downloads', String(e))
   } finally {
     isProcessing.value = false
   }

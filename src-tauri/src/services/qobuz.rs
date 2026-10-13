@@ -660,8 +660,45 @@ impl QobuzClient {
         })
     }
 
-    /// Login with username/password to get user auth token
+    /// Login with username/password to get user auth token.
     pub async fn login(&self, username: &str, password: &str) -> Result<String, String> {
+        self.login_with_streaming_entitlement(username, password)
+            .await
+            .map(|(token, _)| token)
+    }
+
+    /// Split a `user/login` response into (token, streaming entitlement).
+    ///
+    /// `Ok` only when the provider handed back a token; the entitlement is
+    /// `Some` only when `user.credential` carried at least one streaming flag.
+    /// Both observed token layouts are accepted without assuming a subscription.
+    fn parse_qobuz_login(result: &serde_json::Value) -> Result<(String, Option<bool>), String> {
+        let token = result["user"]["auth_token"]
+            .as_str()
+            .or_else(|| result["user_auth_token"].as_str())
+            .ok_or_else(|| qobuz_login_missing_token_message(result))?
+            .to_string();
+
+        let entitlement = crate::commands::accounts::qobuz_streaming_entitlement(&result["user"]);
+
+        Ok((token, entitlement))
+    }
+
+    /// Login with username/password, returning the auth token together with the
+    /// streaming entitlement reported in the SAME `user/login` response.
+    ///
+    /// The entitlement comes from `user.credential.lossless_streaming` /
+    /// `hires_streaming` / `hires_purchases_streaming`. No separate Qobuz API
+    /// method answers this: the earlier probe was rejected with HTTP 400
+    /// (audit WF-QOB-01), and it cost one extra round-trip per account.
+    ///
+    /// `None` means the provider said nothing usable, which callers must store
+    /// as unknown (`-1`) rather than "no subscription".
+    pub async fn login_with_streaming_entitlement(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<(String, Option<bool>), String> {
         let params = vec![
             ("email", username.to_string()),
             ("password", password.to_string()),
@@ -669,24 +706,7 @@ impl QobuzClient {
 
         let result: serde_json::Value = self.api_request("user/login", params, false).await?;
 
-        let token = result["user"]["auth_token"]
-            .as_str()
-            .ok_or_else(|| qobuz_login_missing_token_message(&result))?;
-
-        Ok(token.to_string())
-    }
-    /// Read a user's streaming entitlement from `user/getUserData`.
-    ///
-    /// A valid Qobuz token can still receive only a 30-second preview. The
-    /// provider's credential flags, not successful authentication, determine
-    /// whether this account can stream full tracks. A response without the
-    /// flags is unknown and must not be treated as "no subscription".
-    pub async fn get_user_streaming_entitlement(&self) -> Result<Option<bool>, String> {
-        let response: serde_json::Value =
-            self.api_request("user/getUserData", vec![], true).await?;
-        Ok(crate::commands::accounts::qobuz_streaming_entitlement(
-            &response["user"],
-        ))
+        Self::parse_qobuz_login(&result)
     }
 
     /// Get user's favorite tracks (paginated)
@@ -1973,5 +1993,35 @@ impl QobuzClient {
         );
 
         Ok(crate::services::ImportResult { imported, skipped })
+    }
+}
+
+#[cfg(test)]
+mod login_entitlement_contract_tests {
+    use super::QobuzClient;
+
+    #[test]
+    fn parses_both_sanitized_login_shapes_without_assuming_token_means_subscription() {
+        let user_token = serde_json::json!({
+            "user": {"auth_token": "fixture-token", "credential": {"lossless_streaming": true}}
+        });
+        assert_eq!(
+            QobuzClient::parse_qobuz_login(&user_token),
+            Ok(("fixture-token".into(), Some(true)))
+        );
+
+        let top_level_token = serde_json::json!({
+            "user_auth_token": "fixture-token", "user": {"credential": {"lossless_streaming": false, "hires_streaming": false}}
+        });
+        assert_eq!(
+            QobuzClient::parse_qobuz_login(&top_level_token),
+            Ok(("fixture-token".into(), Some(false)))
+        );
+
+        let browser_token_only = serde_json::json!({"user_auth_token": "fixture-token"});
+        assert_eq!(
+            QobuzClient::parse_qobuz_login(&browser_token_only),
+            Ok(("fixture-token".into(), None))
+        );
     }
 }

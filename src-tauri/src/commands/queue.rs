@@ -1180,7 +1180,40 @@ async fn evaluate_track_preflight_inner(
                     .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
             });
 
-            let chosen = sorted_active[0].clone();
+            // WF-RES-01: el candidato que presenta este preflight sale del
+            // resolutor único, así que lo que aquí se propone es lo que el worker
+            // volverá a calcular antes de tocar la red. Es una PROPUESTA, no una
+            // promesa de stream: si el proveedor falla, el worker re-resuelve.
+            let resolver_primary = crate::download::resolve_download_plan(
+                db,
+                &crate::download::DownloadIntent {
+                    canonical_track_id: track_id,
+                    requested_service: eff_req_service.clone(),
+                    requested_quality: requested_quality.map(|q| q.to_string()),
+                    strict_quality,
+                    allow_fallback,
+                    locked_track_source_id: None,
+                    preferred_account_id: None,
+                },
+                &crate::download::ResolutionExclusions::default(),
+            )
+            .await
+            .ok()
+            .and_then(|plan| plan.primary().cloned());
+
+            let chosen = match resolver_primary.as_ref().and_then(|candidate| {
+                sorted_active
+                    .iter()
+                    .find(|c| {
+                        c.service_id == candidate.service_id
+                            && c.service_track_id.as_deref()
+                                == Some(candidate.service_track_id.as_str())
+                    })
+                    .cloned()
+            }) {
+                Some(candidate) => candidate,
+                None => sorted_active[0].clone(),
+            };
 
             let cand_tier = classify_audio_tier(
                 chosen.bit_depth.map(|v| v as i32),

@@ -164,3 +164,70 @@ class QobuzLoginPayloadTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class QobuzBrowserEntitlementLimitTest(unittest.TestCase):
+    """Limite OBSERVADO del flujo de navegador (WF-QOB-01).
+
+    `qobuz_service.py:215` lee `user.credential` de la respuesta de
+    `user/login`, que es la UNICA evidencia real de suscripcion. En el flujo
+    de navegador (`qobuz_auth.py`) la sesion se captura de localStorage /
+    cabeceras XHR: no hay respuesta `user/login` a la vista, asi que no existe
+    bloque `credential` que propagar. Inventarlo convertiria una cuenta de
+    solo-token (entitlement desconocido) en "sin suscripcion".
+
+    Estos tests fijan que el puente NUNCA afirma entitlement por su cuenta.
+    """
+
+    def _run_login(self, session):
+        captured = {}
+
+        def fake_json_response(success, data=None, error=None):
+            captured["success"] = success
+            captured["data"] = data
+            captured["error"] = error
+            raise SystemExit(0)
+
+        with patch("services.qobuz_auth.QobuzAuth",
+                   return_value=_FakeQobuzAuth(session)), \
+             patch("asyncio.new_event_loop", return_value=_FakeLoop), \
+             patch.object(auth_bridge, "json_response", fake_json_response):
+            _FakeLoop.result = (True, NUMERIC_ID)
+            try:
+                auth_bridge.handle_qobuz("login")
+            except SystemExit:
+                pass
+        return captured
+
+    def test_browser_payload_never_asserts_streaming_entitlement(self):
+        session = {
+            "auth_token": "viable_browser_token_123456789012",
+            "user_id": NUMERIC_ID,
+            "username": "owner@example.com",
+            "password": "correct-horse-battery",
+        }
+        captured = self._run_login(session)
+        self.assertTrue(captured["success"], captured)
+        data = captured["data"]
+        # Unicamente token + username/password capturados: ninguna clave de
+        # suscripcion, porque el navegador no la produce.
+        for forbidden in ("credential", "streaming_entitled", "entitlement",
+                          "lossless_streaming", "hires_streaming"):
+            self.assertNotIn(
+                forbidden,
+                data,
+                "el flujo de navegador no observa user.credential; afirmarlo seria inventar la suscripcion",
+            )
+        self.assertIn("user_auth_token", data)
+
+    def test_token_only_session_still_reaches_rust_without_credential_block(self):
+        session = {
+            "auth_token": "viable_browser_token_123456789012",
+            "user_id": NUMERIC_ID,
+        }
+        captured = self._run_login(session)
+        data = captured["data"]
+        self.assertTrue(captured["success"])
+        self.assertEqual(data["user_auth_token"], "viable_browser_token_123456789012")
+        self.assertIsNone(data.get("username"))
+        self.assertIsNone(data.get("password"))
+        self.assertNotIn("credential", data)

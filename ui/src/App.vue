@@ -175,22 +175,32 @@
          El unico acceso para colapsar/expandir es la hamburguesa de la cabecera
          (peticion del usuario 12-oct-2026): la franja superior con el boton de
          colapsar se elimino, asi que la navegacion arranca arriba del todo y el
-         lateral ya no reserva esos 64px. -->
+         lateral ya no reserva esos 64px.
+         El alto viene del stretch del contenedor flex (`.flex-1.min-h-0`), NO de
+         `h-full`: `#app` es mas alto que la ventana porque `<main>` reserva abajo
+         `--status-bar-h` para la StatusBar, y con `h-full` el lateral se
+         prolongaba bajo ella tapando su ultimo boton ("Now Playing"). -->
     <aside
       v-if="sidebarVisible"
       id="app-nav-drawer"
       data-testid="nav-drawer"
       aria-label="Main navigation"
       :class="[
-        'bg-shell border-r border-border-dark flex flex-col shrink-0 h-full',
+        'bg-shell border-r border-border-dark flex flex-col shrink-0 min-h-0',
         'fixed lg:static top-16 bottom-0 left-0 z-[180] lg:z-auto',
         sidebarCollapsed ? 'w-16' : 'w-64 max-w-[85vw]',
         sidebarOverlay && 'shadow-2xl'
       ]"
     >
+      <!-- El ultimo boton del lateral ("Now Playing") quedaba debajo de la
+           StatusBar: `<main>` ya reserva su alto con `--status-bar-h`, pero el
+           lateral llegaba hasta el borde inferior de la ventana y la barra fija
+           se le montaba encima. El mismo padding en el scroller lo saca de
+           debajo, tambien cuando el lateral es overlay en pantalla estrecha. -->
       <nav
         class="flex-1 overflow-y-auto overflow-x-hidden p-2 space-y-1 flex flex-col"
-        :class="sidebarCollapsed ? 'items-center' : ''"
+        :class="sidebarCollapsed ? 'items-center' : undefined"
+        style="padding-bottom: calc(var(--status-bar-h, 48px) + 8px)"
         aria-label="Vistas"
       >
         <router-link

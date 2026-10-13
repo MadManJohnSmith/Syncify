@@ -1305,14 +1305,92 @@ impl DownloadWorker {
             }
         };
 
-        // S203: resolve the quality request UNDER the effective ceiling.
-        // effective_ceiling = min(global_max_quality KV, quality_preferences row of
-        // this item's service). The clamped label feeds DownloadRequest.quality and
-        // therefore both provider translations (Qobuz format-id cascade and Tidal
-        // resolve_tidal_quality_request) — see resolve_effective_download_quality.
-        let quality = self
-            .resolve_effective_download_quality(queue_id, s_name.as_deref(), q_pref.as_deref())
-            .await;
+        // WF-RES-01: la decisión se resuelve AQUÍ, justo antes de la red, desde
+        // el resolver único. El preflight solo presenta su resolución como
+        // propuesta; esta llamada es la selección real que corre. Por eso unas
+        // preferencias que cambiaron entre encolar y ejecutar se recogen aquí en
+        // vez de ignorarse en silencio.
+        //
+        // El resolver devuelve el plan completo (primaria + alternativas
+        // ordenadas). Solo la primaria entra en esta petición; las alternativas
+        // viajan en el plan y las consume el orquestador en su re-resolución
+        // explícita tras un fallo clasificado.
+        let locked_track_source_id = crate::download::resolve_locked_track_source_id(
+            &self.db,
+            track_id,
+            s_name.as_deref(),
+            s_track_id.as_deref(),
+        )
+        .await;
+
+        let resolver_intent = crate::download::DownloadIntent {
+            canonical_track_id: track_id,
+            requested_service: s_name.clone(),
+            requested_quality: q_pref.clone(),
+            strict_quality: !is_allowed_fallback,
+            allow_fallback: is_allowed_fallback,
+            locked_track_source_id,
+            preferred_account_id: None,
+        };
+        let (quality, resolution_plan) = match crate::download::resolve_download_plan(
+            &self.db,
+            &resolver_intent,
+            &crate::download::ResolutionExclusions::default(),
+        )
+        .await
+        {
+            Ok(plan) => {
+                let quality = plan.quality.effective.clone();
+                // Registro libre de credenciales: pista, cuenta cuando se
+                // resolvió, calidad e identidad. Sin token ni payloads.
+                if let Some(log) = plan.log(0) {
+                    if let Some(account_id) = log.account_id {
+                        tracing::info!(
+                            queue_id,
+                            canonical_track_id = log.canonical_track_id,
+                            service = %log.service_name,
+                            service_track_id = %log.service_track_id,
+                            account_id,
+                            effective_quality = %log.effective_quality,
+                            candidate_tier = %log.candidate_tier,
+                            alternatives = plan.candidates.len().saturating_sub(1),
+                            "[WF-RES-01] Resolved download plan (single decision)"
+                        );
+                    } else {
+                        tracing::info!(
+                            queue_id,
+                            canonical_track_id = log.canonical_track_id,
+                            service = %log.service_name,
+                            service_track_id = %log.service_track_id,
+                            effective_quality = %log.effective_quality,
+                            candidate_tier = %log.candidate_tier,
+                            "[WF-RES-01] Resolved download plan (no account bound)"
+                        );
+                    }
+                }
+                (quality, Some(plan))
+            }
+            Err(resolution_error) => {
+                // WF-RES-01: un fallo de resolución es ahora explícito y tipado,
+                // no una calidad ausente. La ruta legacy solo se mantiene para
+                // ítems sobre los que el resolutor no tiene opinión (sin filas en
+                // `track_sources`, p. ej. ad-hoc), que resuelven igual que antes.
+                let legacy = self
+                    .resolve_effective_download_quality(
+                        queue_id,
+                        s_name.as_deref(),
+                        q_pref.as_deref(),
+                    )
+                    .await;
+                tracing::debug!(
+                    queue_id,
+                    canonical_track_id = track_id,
+                    reason = %format!("{:?}", resolution_error),
+                    "[WF-RES-01] Resolver produced no plan; falling back to legacy quality resolution"
+                );
+                (legacy, None)
+            }
+        };
         let output_dir = self.resolve_download_output_dir().await;
         let operation_id = format!("op-{}", uuid::Uuid::new_v4());
 
@@ -1371,6 +1449,7 @@ impl DownloadWorker {
                 smart_studio_origin: is_smart_studio,
                 allow_fallback: is_allowed_fallback,
                 strict_quality: !is_allowed_fallback,
+                resolution_plan,
             };
 
             tracing::info!(
@@ -1418,6 +1497,10 @@ impl DownloadWorker {
                 smart_studio_origin: smart_studio.unwrap_or(0) != 0,
                 allow_fallback: allow_fb.unwrap_or(0) != 0,
                 strict_quality: allow_fb.unwrap_or(0) == 0,
+                // Mismo plan que la rama primaria: esta rama solo se alcanza
+                // cuando la fila de pista no tiene metadatos (`track_meta` fue
+                // None), así que el resolutor no tenía nada que resolver.
+                resolution_plan,
             };
 
             tracing::info!(

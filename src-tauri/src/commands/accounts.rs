@@ -507,7 +507,7 @@ fn account_fallback_sort_key(row: &AccountFallbackRow) -> (u8, u8, i64, i64) {
 
 /// Extract the Qobuz streaming entitlement from a login payload.
 ///
-/// The Qobuz bridge returns the `credential` block of `user/getUserData`, whose
+/// A credential-backed `user/login` response may contain `user.credential`, whose
 /// `lossless_streaming` / `hires_streaming` / `hires_purchases_streaming` flags say
 /// whether this specific account can stream. An account that authenticates fine
 /// but has no streaming entitlement gets a valid URL for a 30-second preview from
@@ -541,6 +541,14 @@ mod entitlement_tests {
 
     #[test]
     fn qobuz_entitlement_reads_any_streaming_flag() {
+        // Sanitized login fixtures: Rust's legacy login reads user.auth_token;
+        // Python's login reads top-level user_auth_token. Both carry user.credential.
+        let legacy = serde_json::json!({"user": {"auth_token": "fixture-token", "credential": {"lossless_streaming": true}}});
+        let python = serde_json::json!({"user_auth_token": "fixture-token", "user": {"credential": {"hires_streaming": true}}});
+        assert_eq!(qobuz_streaming_entitlement(&legacy["user"]), Some(true));
+        assert_eq!(qobuz_streaming_entitlement(&python["user"]), Some(true));
+        let token_only = serde_json::json!({"user_auth_token": "fixture-token"});
+        assert_eq!(qobuz_streaming_entitlement(&token_only["user"]), None);
         let base = |cred: serde_json::Value| serde_json::json!({ "credential": cred });
 
         assert_eq!(

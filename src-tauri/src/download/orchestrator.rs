@@ -840,6 +840,50 @@ impl DownloadOrchestrator {
                 return Err(anyhow!("{}", fail_msg));
             }
 
+            // 3.5 WF-RES-01: re-resolución EXPLÍCITA antes de cambiar de servicio.
+            //
+            // El plan dijo que esta cuenta/edición podía servir la petición; el
+            // proveedor no estuvo de acuerdo. Se clasifica el fallo, se excluye
+            // ESE intento y se vuelve a resolver con los mismos techos. Tras un
+            // preview o un 401, primero corren las cuentas hermanas Qobuz del
+            // MISMO service_track_id; Tidal solo entra cuando la política permite
+            // salir del servicio, y siempre por la jerarquía de equivalencia.
+            if let Some(plan) = request.resolution_plan.as_ref() {
+                if let Some(trigger) = crate::download::classify_attempt_failure(&err_msg) {
+                    let service_id = plan.primary().map(|c| c.service_id).unwrap_or_default();
+                    let attempted_track_id = plan
+                        .primary()
+                        .map(|c| c.service_track_id.clone())
+                        .unwrap_or_default();
+                    let attempted_account = plan
+                        .primary()
+                        .and_then(|c| c.account.as_ref().map(|a| a.account_id));
+
+                    let re_resolution = Box::pin(self.reresolve_after_classified_failure(
+                        request,
+                        trigger,
+                        service_id,
+                        &attempted_track_id,
+                        attempted_account,
+                        is_lossless_or_hires,
+                    ))
+                    .await;
+
+                    match re_resolution {
+                        Ok(res) => {
+                            PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+                            return Ok(res);
+                        }
+                        Err(reresolution_err) => {
+                            info!(
+                                "[Orchestrator] WF-RES-01 re-resolution after {:?} exhausted for {} ({})",
+                                trigger, attempted_track_id, reresolution_err
+                            );
+                        }
+                    }
+                }
+            }
+
             if (is_stale || is_rejected_q || is_preview) && request.allow_fallback {
                 info!("[Orchestrator] Qobuz cannot serve requested quality ({}); attempting cross-service fallback to Tidal...", err_msg);
                 PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "tidal"));
@@ -1061,6 +1105,171 @@ impl DownloadOrchestrator {
                 Err(anyhow!("Qobuz download failed: {}", err_msg))
             }
         })
+    }
+
+    /// WF-RES-01: tras un fallo clasificado, resuelve de nuevo y ejecuta la
+    /// secuencia completa del plan excluyendo el intento que falló.
+    ///
+    /// La secuencia es `expand_attempt_sequence`: en cada candidato, su cuenta
+    /// primaria seguida INMEDATAMENTE por las cuentas hermanas del MISMO
+    /// `service_track_id`. Por tanto un preview o un 401 agota las hermanas Qobuz
+    /// antes de que otra edición entre, y nunca se repite una combinación.
+    ///
+    /// La calidad y la edición viajan con el plan: este método no reevalúa
+    /// techos ni reordena cuentas. Tras cruzar de servicio solo se admiten
+    /// candidatos de la jerarquía de equivalencia (ISRC validado), nunca un
+    /// SongLink: no es prueba de audio descargable.
+    #[allow(clippy::too_many_arguments)]
+    async fn reresolve_after_classified_failure(
+        &self,
+        request: &DownloadRequest,
+        trigger: crate::download::ReResolutionTrigger,
+        service_id: i64,
+        attempted_track_id: &str,
+        attempted_account: Option<i64>,
+        is_lossless_or_hires: bool,
+    ) -> Result<DownloadResult> {
+        let canonical_track_id = request.canonical_track_id.unwrap_or_default();
+        let exclusions = crate::download::exclusions_for_failure(
+            trigger,
+            canonical_track_id,
+            service_id,
+            attempted_track_id,
+            attempted_account,
+        );
+
+        // La re-resolución solo tiene sentido con base de datos: sin ella no hay
+        // identidad de edición que reanudar.
+        let Some(db) = self.db.as_ref() else {
+            return Err(anyhow!(
+                "SourceIdentityMissing: cannot re-resolve without a database pool"
+            ));
+        };
+
+        let intent = crate::download::DownloadIntent {
+            canonical_track_id: request.canonical_track_id.unwrap_or_default(),
+            requested_service: request.service_name.clone(),
+            requested_quality: Some(request.quality.clone()),
+            strict_quality: request.strict_quality,
+            allow_fallback: request.allow_fallback,
+            // La edición ya fijada se conserva: no se permite que el reorden
+            // cambie de edición sin pasar por la equivalencia.
+            locked_track_source_id: crate::download::resolve_locked_track_source_id(
+                db,
+                request.canonical_track_id.unwrap_or_default(),
+                request.service_name.as_deref(),
+                request.service_track_id.as_deref(),
+            )
+            .await,
+            preferred_account_id: None,
+        };
+
+        // Misma intención que produjo el plan original, así que el techo de
+        // calidad no puede derivar entre el primer intento y este.
+        let re_plan = crate::download::resolve_download_plan(db, &intent, &exclusions)
+            .await
+            .map_err(|e| anyhow!("{e:?}"))?;
+
+        // Las exclusiones se ACUMULAN entre rondas: cada fallo clasificado se
+        // suma al paquete anterior, así que una ronda nueva no puede reintentar
+        // una combinación que una ronda anterior ya descartó.
+        let mut exclusions = exclusions;
+        let steps = crate::download::expand_attempt_sequence(&re_plan);
+        for step in steps {
+            let Some(candidate) = step.identity(&re_plan) else {
+                continue;
+            };
+            let Some(account) = step.account(&re_plan) else {
+                continue;
+            };
+            // Nunca reintentar la misma combinación.
+            if exclusions.excludes_identity(candidate.service_id, &candidate.service_track_id)
+                || exclusions.excludes_account(
+                    re_plan.canonical_track_id,
+                    candidate.service_id,
+                    account.account_id,
+                )
+            {
+                continue;
+            }
+
+            let mut candidate_req = request.clone();
+            candidate_req.service_name = Some(candidate.service_name.clone());
+            candidate_req.service_track_id = Some(candidate.service_track_id.clone());
+            candidate_req.quality = re_plan.quality.effective.clone();
+            candidate_req.resolution_plan = Some(crate::download::DownloadPlan {
+                canonical_track_id: re_plan.canonical_track_id,
+                candidates: vec![candidate.clone()],
+                quality: re_plan.quality.clone(),
+                strict_quality: re_plan.strict_quality,
+                allow_fallback: re_plan.allow_fallback,
+            });
+            if is_lossless_or_hires {
+                candidate_req.allow_fallback = false;
+            }
+
+            info!(
+                "[Orchestrator] WF-RES-01 re-resolution after {:?}: edition {} on service '{}' with account {}",
+                trigger,
+                candidate.service_track_id,
+                candidate.service_name,
+                account.account_id
+            );
+
+            let outcome = if candidate.service_name.eq_ignore_ascii_case("qobuz") {
+                Box::pin(self.qobuz.download_track(&candidate_req, Some(db))).await
+            } else {
+                Box::pin(self.tidal.download_track(&candidate_req, Some(db))).await
+            };
+
+            match outcome {
+                Ok(mut res) => {
+                    res.origin_service = request.service_name.clone();
+                    res.origin_service_track_id = request.service_track_id.clone();
+                    res.effective_service = Some(candidate.service_name.clone());
+                    res.effective_service_track_id = Some(candidate.service_track_id.clone());
+                    res.fallback_reason = Some(format!(
+                        "Qobuz re-resolution after {:?} on edition {}",
+                        trigger, attempted_track_id
+                    ));
+                    res.match_method = Some("plan_re_resolution".to_string());
+                    res.match_confidence = Some(0.95);
+                    Self::reconcile_physical_audio_quality(&mut res, request);
+                    return Ok(res);
+                }
+                Err(retry_err) => {
+                    // Un fallo no clasificable (cancelación incluida) detiene la
+                    // secuencia en lugar de seguir intentando.
+                    if crate::download::classify_attempt_failure(&retry_err.to_string()).is_none() {
+                        warn!(
+                            "[Orchestrator] WF-RES-01 re-resolution stopped at edition {}: {}",
+                            candidate.service_track_id, retry_err
+                        );
+                        break;
+                    }
+                    // Registrar el nuevo fallo en el paquete acumulado.
+                    let round_exclusions = crate::download::exclusions_for_failure(
+                        crate::download::classify_attempt_failure(&retry_err.to_string())
+                            .unwrap_or(trigger),
+                        re_plan.canonical_track_id,
+                        candidate.service_id,
+                        &candidate.service_track_id,
+                        Some(account.account_id),
+                    );
+                    exclusions.merge(&round_exclusions);
+                    debug!(
+                        "[Orchestrator] WF-RES-01 candidate {} failed again; continuing with the next attempt",
+                        candidate.service_track_id
+                    );
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "Qobuz re-resolution exhausted after {:?} for edition {}",
+            trigger,
+            attempted_track_id
+        ))
     }
 
     fn download_primary_tidal<'a>(

@@ -20,40 +20,44 @@
             <span v-else-if="toast.type === 'error'" class="material-symbols-outlined text-white">error</span>
             <span v-else-if="toast.type === 'warning'" class="material-symbols-outlined text-white">warning</span>
             <span v-else-if="toast.type === 'info'" class="material-symbols-outlined text-white">info</span>
-            <span v-else-if="toast.type === 'progress'" class="material-symbols-outlined text-white animate-spin">sync</span>
+            <span v-else-if="toast.type === 'progress'" class="material-symbols-outlined text-on-accent animate-spin">sync</span>
           </div>
           
           <!-- Message -->
           <div class="toast-message flex-1 min-w-0">
-            <p class="text-sm font-semibold text-white">{{ toast.title }}</p>
-            <p v-if="toast.description" class="text-xs text-white/70 mt-0.5">{{ toast.description }}</p>
+            <p class="text-sm font-semibold" :class="toast.type === 'progress' ? 'text-on-accent' : 'text-white'">{{ toast.title }}</p>
+            <p v-if="toast.description" class="text-xs mt-0.5" :class="toast.type === 'progress' ? 'text-on-accent/70' : 'text-white/70'">{{ toast.description }}</p>
 
             <!-- Aggregated counter (NT-02): one popup stands for many events. -->
-            <p v-if="toast.batchCount && toast.batchCount > 1" class="text-[10px] text-white/60 mt-0.5">
+            <p v-if="toast.batchCount && toast.batchCount > 1" class="text-[10px] mt-0.5" :class="toast.type === 'progress' ? 'text-on-accent/60' : 'text-white/60'">
               {{ toast.batchCount }} events merged · history keeps each one
             </p>
             
             <!-- Progress Bar (for progress type) -->
             <div v-if="toast.type === 'progress' && toast.progress !== undefined" class="mt-2">
-              <div class="toast-progress h-1.5 bg-white/20 rounded-full overflow-hidden">
+              <div class="h-1.5 bg-on-accent/20 rounded-full overflow-hidden">
                 <div 
-                  class="h-full bg-white rounded-full transition-all duration-300"
+                  class="h-full bg-on-accent rounded-full transition-all duration-300"
                   :style="{ width: toast.progress + '%' }"
                 ></div>
               </div>
               <div class="flex justify-between mt-1">
-                <span class="text-[10px] text-white/60">{{ toast.progress }}%</span>
-                <span v-if="toast.timeRemaining" class="text-[10px] text-white/60">{{ toast.timeRemaining }}</span>
+                <span class="text-[10px] text-on-accent/60">{{ toast.progress }}%</span>
+                <span v-if="toast.timeRemaining" class="text-[10px] text-on-accent/60">{{ toast.timeRemaining }}</span>
               </div>
             </div>
           </div>
           
           <!-- Close Button -->
-          <button 
-            @click.stop="dismissToast(toast.id)" 
-            class="shrink-0 p-1 hover:bg-white/20 rounded transition-colors"
+          <button
+            @click.stop="dismissToast(toast.id)"
+            class="shrink-0 p-1 rounded transition-colors"
+            :class="toast.type === 'progress' ? 'hover:bg-on-accent/10' : 'hover:bg-white/20'"
           >
-            <span class="material-symbols-outlined text-white/70 text-[18px]">close</span>
+            <span
+              class="material-symbols-outlined text-[18px]"
+              :class="toast.type === 'progress' ? 'text-on-accent/70' : 'text-white/70'"
+            >close</span>
           </button>
         </div>
         
@@ -65,9 +69,15 @@
             @click.stop="handleAction(toast, action)"
             :class="[
               'px-3 py-1.5 rounded text-xs font-medium transition-colors',
-              action.primary 
-                ? 'bg-white text-gray-900 hover:bg-gray-100' 
-                : 'border border-white/30 text-white hover:bg-white/10'
+              // WF-INK-01: un toast de progreso se pinta con --accent (casi blanco en
+              // Tinta, main.css:58), así que sus botones usan la tinta del token.
+              toast.type === 'progress'
+                ? (action.primary
+                    ? 'bg-on-accent text-accent hover:opacity-90'
+                    : 'border border-on-accent/40 text-on-accent hover:bg-on-accent/10')
+                : (action.primary
+                    ? 'bg-white text-gray-900 hover:bg-gray-100'
+                    : 'border border-white/30 text-white hover:bg-white/10')
             ]"
           >
             {{ action.label }}
@@ -140,7 +150,7 @@
               {{ activeDialog.cancelLabel }}
             </button>
             <button
-              class="dialog-confirm px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors"
+              class="dialog-confirm px-4 py-2 rounded-lg text-sm font-medium transition-colors"
               :class="dialogConfirmClass"
               @click="acceptDialog"
             >
@@ -177,8 +187,11 @@ const dialogIconClass = computed(() => {
 })
 
 const dialogConfirmClass = computed(() => {
-    if (activeDialog.value?.variant === 'danger') return 'bg-error hover:bg-error/80'
-    return 'bg-accent hover:opacity-90'
+    if (activeDialog.value?.variant === 'danger') return 'bg-error text-white hover:bg-error/80'
+    // WF-INK-01: tinta pinta --accent casi blanco (main.css:58) y --on-accent casi
+    // negro (main.css:61). Un text-white fijo sobre bg-accent dejaba el título y el
+    // botón del diálogo invisibles; el par real sale del token del tema.
+    return 'bg-accent text-on-accent hover:bg-accent-hover'
 })
 
 watch(activeDialog, (dialog) => {

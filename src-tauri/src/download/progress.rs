@@ -811,6 +811,13 @@ pub struct DownloadRequest {
     pub allow_fallback: bool,
     #[serde(default)]
     pub strict_quality: bool,
+    /// WF-RES-01: la decisión única que esta petición lleva a los adaptadores.
+    ///
+    /// `None` significa «sin plan resuelto» (ruta ad-hoc legacy). Cuando está
+    /// presente, los adaptadores ejecutan el candidato que se les da y NO pueden
+    /// cambiar en silencio de cuenta, servicio, edición o calidad.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_plan: Option<crate::download::DownloadPlan>,
 }
 
 impl Default for DownloadRequest {
@@ -844,6 +851,7 @@ impl Default for DownloadRequest {
             smart_studio_origin: false,
             allow_fallback: false,
             strict_quality: false,
+            resolution_plan: None,
         }
     }
 }

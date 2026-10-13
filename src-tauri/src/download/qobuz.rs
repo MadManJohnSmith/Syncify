@@ -499,8 +499,25 @@ impl QobuzDownloader {
                 info!("[Qobuz] Performing direct login with stored username/password...");
                 let client =
                     crate::services::QobuzClient::new(self.app_id.clone(), self.app_secret.clone());
-                match client.login(user, pass).await {
-                    Ok(fresh_token) => return Ok(fresh_token),
+                match client.login_with_streaming_entitlement(user, pass).await {
+                    Ok((fresh_token, entitlement)) => {
+                        if let Some(can_stream) = entitlement {
+                            let value: i64 = if can_stream { 1 } else { 0 };
+                            // Login already happened for a missing token. Record only
+                            // evidence from that response; never demote on failure.
+                            if let Err(e) = sqlx::query(
+                                "UPDATE accounts SET streaming_entitled = ? WHERE id = ?",
+                            )
+                            .bind(value)
+                            .bind(_account_id)
+                            .execute(pool)
+                            .await
+                            {
+                                warn!(account_id = _account_id, error = %e, "Could not persist Qobuz streaming entitlement");
+                            }
+                        }
+                        return Ok(fresh_token);
+                    }
                     Err(e) => {
                         return Err(QobuzAuthStatus::RequiresAuth(
                             format!("Qobuz auto-login failed: {}. Please re-authenticate in Settings > Accounts.", e),
@@ -1261,7 +1278,33 @@ impl QobuzDownloader {
             // 1. Auth phase & multi-account fallback resolution
             phase_tracker.start_phase(DownloadPhase::Auth);
 
-            let candidate_account_ids = if let Some(pool) = db_opt {
+            // WF-RES-01: cuando la petición viaja con un plan, la cuenta y la
+            // edición ya están decididas. Re-derivarlas aquí sería una segunda
+            // selección independiente, que es justo lo que este carril elimina.
+            // La política de entitlement sigue viviendo en
+            // `get_service_fallback_account_ids` y el resolutor la reutiliza.
+            let candidate_account_ids = if let Some(plan) = request.resolution_plan.as_ref() {
+                let primary = plan
+                    .primary()
+                    .ok_or_else(|| anyhow!("SourceIdentityMissing: empty resolution plan"))?;
+                let planned_account = primary
+                    .account
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("RequiresAuth: no Qobuz account in resolution plan"))?;
+                if !primary.service_name.eq_ignore_ascii_case("qobuz")
+                    || request.service_track_id.as_deref()
+                        != Some(primary.service_track_id.as_str())
+                    || request.quality != plan.quality.effective
+                {
+                    // El adaptador solo ejecuta el candidato que le dieron; si la
+                    // petición no coincide con el plan, es un bug del llamador, no
+                    // una decisión que este pueda tomar en silencio.
+                    return Err(anyhow!(
+                        "SourceIdentityMissing: Qobuz request does not match its resolution plan"
+                    ));
+                }
+                vec![planned_account.account_id]
+            } else if let Some(pool) = db_opt {
                 crate::commands::accounts::get_service_fallback_account_ids(pool, "qobuz", None)
                     .await
                     .unwrap_or_default()
@@ -1291,50 +1334,8 @@ impl QobuzDownloader {
                             continue;
                         }
                     };
-                    // Entitlement is only written at login, so an account connected
-                    // before that column existed still reads -1 (unknown). Ask once
-                    // per download for those, and only those: the value decides
-                    // whether siblings should be tried first next time.
-                    if matches!(
-                        sqlx::query_scalar::<_, i64>(
-                            "SELECT streaming_entitled FROM accounts WHERE id = ?",
-                        )
-                        .bind(cand_account_id)
-                        .fetch_optional(pool)
-                        .await,
-                        Ok(Some(-1))
-                    ) {
-                        let probe = crate::services::qobuz::QobuzClient::new_with_token(
-                            self.app_id.clone(),
-                            self.app_secret.clone(),
-                            token.clone(),
-                        );
-                        match probe.get_user_streaming_entitlement().await {
-                            Ok(Some(can_stream)) => {
-                                let stored = if can_stream { 1 } else { 0 };
-                                if let Err(e) = sqlx::query(
-                                    "UPDATE accounts SET streaming_entitled = ? WHERE id = ?",
-                                )
-                                .bind(stored)
-                                .bind(cand_account_id)
-                                .execute(pool)
-                                .await
-                                {
-                                    warn!(
-                                        account_id = cand_account_id,
-                                        error = %e,
-                                        "Could not persist Qobuz streaming entitlement"
-                                    );
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(e) => debug!(
-                                account_id = cand_account_id,
-                                error = %e,
-                                "Qobuz entitlement probe failed; leaving account as unknown"
-                            ),
-                        }
-                    }
+                    // A browser token cannot reveal subscription flags. Keep
+                    // unknown accounts unknown; no per-track entitlement probe.
 
                     let token_ref = Some(token.as_str());
 

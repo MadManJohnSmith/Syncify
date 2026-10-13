@@ -964,31 +964,33 @@ pub async fn start_auth_and_save(
         }
     }
 
-    // El puente Qobuz no devuelve el bloque `credential` de `user/getUserData`,
-    // así que la suscripción hay que leerla ahora que ya hay un token válido.
-    // Sin esto no hay forma de saber si esta cuenta puede hacer streaming
-    // completo o solo recibirá previews de 30 segundos. `None` (token ausente o
-    // consulta fallida) se guarda como desconocido, nunca como "sin suscripción".
+    // Only a credential-backed `user/login` response can establish Qobuz
+    // entitlement. Browser-token-only sessions remain unknown; a token is not
+    // evidence of either a subscription or its absence. Do not probe per track.
     let qobuz_entitlement: Option<bool> = if service.eq_ignore_ascii_case("qobuz") {
-        match credentials_payload
-            .get("user_auth_token")
-            .or_else(|| credentials_payload.get("auth_token"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-        {
-            Some(tok) => {
-                let credential = crate::services::qobuz::QobuzClient::new_with_token(
-                    crate::services::qobuz::QOBUZ_APP_ID.to_string(),
-                    crate::services::qobuz::QOBUZ_APP_SECRET.to_string(),
-                    tok.to_string(),
-                );
-                credential
-                    .get_user_streaming_entitlement()
-                    .await
-                    .unwrap_or(None)
+        let from_bridge =
+            crate::commands::accounts::qobuz_streaming_entitlement(&credentials_payload);
+        if from_bridge.is_some() {
+            from_bridge
+        } else {
+            let username = credentials_payload.get("username").and_then(|v| v.as_str());
+            let password = credentials_payload.get("password").and_then(|v| v.as_str());
+            match (username, password) {
+                (Some(user), Some(pass)) if !user.trim().is_empty() && !pass.trim().is_empty() => {
+                    let client = crate::services::qobuz::QobuzClient::new(
+                        crate::services::qobuz::get_qobuz_app_id(),
+                        crate::services::qobuz::get_qobuz_app_secret(),
+                    );
+                    // One login at connection time, not a batch-wide probe. A failed
+                    // login does not demote a previously known entitlement.
+                    client
+                        .login_with_streaming_entitlement(user, pass)
+                        .await
+                        .ok()
+                        .and_then(|(_, entitlement)| entitlement)
+                }
+                _ => None,
             }
-            None => None,
         }
     } else {
         None

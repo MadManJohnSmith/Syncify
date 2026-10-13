@@ -49,6 +49,29 @@ describe('TASK-18: Footer Layout Collision and Dynamic Spacing', () => {
     })
   })
 
+  describe('sidebar bottom controls above StatusBar', () => {
+    it('keeps Now Playing reachable when the fixed status bar grows', async () => {
+      const wrapper = mount(App, {
+        global: {
+          stubs: { RouterView: true, RouterLink: true },
+        },
+      })
+      await flushPromises()
+
+      const sidebar = wrapper.find('[data-testid="nav-drawer"]')
+      const nav = sidebar.find('nav[aria-label="Vistas"]')
+      const openPlayer = sidebar.find('[data-testid="nav-fullscreen-player"]')
+      expect(openPlayer.exists()).toBe(true)
+      expect(nav.exists()).toBe(true)
+      // The bar publishes its measured height as --status-bar-h; the sidebar
+      // scroller reserves that same height plus the 8px visual gutter. This
+      // keeps its final button scrollable above the bar even when it wraps.
+      expect(nav.attributes('style')).toContain('var(--status-bar-h, 48px) + 8px')
+      expect(nav.classes()).toContain('overflow-y-auto')
+      wrapper.unmount()
+    })
+  })
+
   describe('App.vue content bottom padding', () => {
     it('reserves the REAL height of the StatusBar footer, not a fixed pb-8 (UI-CORR-1)', async () => {
       const wrapper = mount(App, {
