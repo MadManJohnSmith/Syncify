@@ -968,6 +968,82 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         expect(wrapper.text()).toContain('Track 1');
     });
 
+    it('FE-PERF-02: appends a page and preserves stable title order across pagination', async () => {
+        const pages = [
+            [createTestTrack({ id: 1, title: 'Zulu' }), createTestTrack({ id: 2, title: 'Alpha' })],
+            [createTestTrack({ id: 3, title: 'Alpha' }), createTestTrack({ id: 4, title: 'Bravo' })],
+        ];
+        const calls: number[] = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_library') {
+                const offset = Number(args?.offset ?? 0);
+                calls.push(offset);
+                return { tracks: pages[offset === 0 ? 0 : 1], total: 4, offset, limit: 100, has_more: offset === 0 };
+            }
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+        // Change the key before appending to exercise merging, including equal-key stability.
+        const vm = wrapper.vm as any;
+        vm.sortBy = 'title';
+        vm.sortDirection = 'asc';
+        await flushPromises();
+        expect(wrapper.findAll('.track-row').map(row => Number(row.attributes('data-track-id')))).toEqual([2, 1]);
+
+        const scroller = wrapper.find('.custom-scrollbar[style*="contain: strict"]');
+        const el = scroller.element as HTMLElement;
+        Object.defineProperty(el, 'scrollHeight', { value: 1000, configurable: true });
+        Object.defineProperty(el, 'clientHeight', { value: 600, configurable: true });
+        Object.defineProperty(el, 'scrollTop', { value: 500, writable: true, configurable: true });
+        await scroller.trigger('scroll');
+        await flushPromises();
+
+        expect(calls).toEqual([0, 0, 2]);
+        expect(wrapper.findAll('.track-row').map(row => Number(row.attributes('data-track-id')))).toEqual([2, 3, 4, 1]);
+        wrapper.unmount();
+    });
+
+    it('FE-PERF-02: appending a page mutates tracks in place instead of cloning the array', async () => {
+        const first = createTestTrack({ id: 1, title: 'Zulu' });
+        const second = createTestTrack({ id: 2, title: 'Bravo' });
+        const third = createTestTrack({ id: 3, title: 'Charlie' });
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_library') {
+                const offset = Number(args?.offset ?? 0);
+                return {
+                    tracks: offset === 0 ? [first, second] : [third],
+                    total: 3,
+                    offset,
+                    limit: 100,
+                    has_more: offset === 0,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+
+        // If loadMore builds a fresh array, this reference goes stale.
+        const vm = wrapper.vm as any;
+        const tracksRef = vm.$.setupState.tracks;
+        const arrayBeforeAppend = tracksRef;
+        expect(arrayBeforeAppend.map((t: any) => t.id)).toEqual([1, 2]);
+
+        const scroller = wrapper.find('.custom-scrollbar[style*="contain: strict"]');
+        const el = scroller.element as HTMLElement;
+        Object.defineProperty(el, 'scrollHeight', { value: 1000, configurable: true });
+        Object.defineProperty(el, 'clientHeight', { value: 600, configurable: true });
+        Object.defineProperty(el, 'scrollTop', { value: 500, writable: true, configurable: true });
+        await scroller.trigger('scroll');
+        await flushPromises();
+
+        expect(arrayBeforeAppend.map((t: any) => t.id)).toEqual([1, 2, 3]);
+        wrapper.unmount();
+    });
+
     it('PR-01: handleScroll updates virtual position and throttles loadMore calls', async () => {
         const invokeCalls: { cmd: string; args: any }[] = [];
         const mockTracks = Array.from({ length: 20 }, (_, i) =>

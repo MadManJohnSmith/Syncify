@@ -1772,6 +1772,15 @@ impl DownloadWorker {
                     || is_ambiguous
                     || error.contains("NetworkExhausted");
 
+                tracing::error!(
+                    queue_id,
+                    service = s_name.as_deref().unwrap_or("unknown"),
+                    track_id,
+                    error = %error,
+                    permanent = is_permanent,
+                    "Download failed"
+                );
+
                 if is_permanent {
                     self.mark_permanent_failure(queue_id, "failed", &error)
                         .await;

@@ -229,6 +229,12 @@ impl LyricsResolution {
             None
         };
 
+        // Clean only the derived/plain copy. Synced content and sidecar remain verbatim.
+        let plain_content = plain_content.and_then(|plain| {
+            let cleaned = strip_lyrics_header(&plain);
+            (!cleaned.trim().is_empty()).then_some(cleaned)
+        });
+
         // 3. Provider source -> SYNCIFY_LYRICS_SOURCE
         let source_content = if !self.provider.is_empty() && self.provider != "None" {
             Some(self.provider.clone())
@@ -838,6 +844,55 @@ mod tests {
         assert_eq!(
             contract_p.sidecar_lrc, None,
             "Sidecar LRC must NOT be created for plain lyrics"
+        );
+    }
+
+    #[test]
+    fn test_tag_contract_cleans_only_unsynced_boundary_copy() {
+        let raw = "[ti:Song]\n[ar:Artist]\n[00:10.00]First line\n[00:20.00]- Keep this verse";
+        let resolution = LyricsResolution::new_resolved(
+            "Provider",
+            "lrc",
+            LyricsSyncType::LineSynced,
+            Some(raw.to_string()),
+            None,
+            vec![],
+            false,
+            "provider",
+        );
+        let tags = resolution.to_tag_contract();
+        assert_eq!(tags.lyrics.as_deref(), Some(raw));
+        assert_eq!(tags.sidecar_lrc.as_deref(), Some(raw));
+        assert_eq!(
+            tags.unsynced_lyrics.as_deref(),
+            Some("First line\n- Keep this verse")
+        );
+        assert_eq!(
+            tags.vorbis_tags
+                .iter()
+                .find(|(key, _)| key == "UNSYNCEDLYRICS")
+                .map(|(_, value)| value.as_str()),
+            Some("First line\n- Keep this verse")
+        );
+
+        let plain = LyricsResolution::new_resolved(
+            "Provider",
+            "plain",
+            LyricsSyncType::Plain,
+            None,
+            Some(
+                "Provided to YouTube by Label\n作词：Composer\n\nTitle\n\nFirst verse".to_string(),
+            ),
+            vec![],
+            false,
+            "provider",
+        );
+        let tags = plain.to_tag_contract();
+        assert_eq!(tags.lyrics, None);
+        assert_eq!(tags.sidecar_lrc, None);
+        assert_eq!(
+            tags.unsynced_lyrics.as_deref(),
+            Some("Title\n\nFirst verse")
         );
     }
 

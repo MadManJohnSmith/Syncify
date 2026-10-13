@@ -1610,7 +1610,8 @@ async function loadMore() {
       : await libraryApi.getLibrary(currentOffset.value, PAGE_SIZE);
       
     const newTracks = page.tracks.map(mapToTrack);
-    tracks.value = [...tracks.value, ...newTracks];
+    tracks.value.push(...newTracks);
+    pageAppendCount.value++;
     trackCount.value = tracks.value.length;
     hasMore.value = page.has_more;
     currentOffset.value = page.offset + page.tracks.length;
@@ -2322,7 +2323,42 @@ function toggleSelectAll() {
   selectedCount.value = allSelected ? 0 : tracks.value.length
 }
 
-// Filtered tracks
+// Only page appends may reuse a sorted prefix; all other invalidations sort anew.
+const pageAppendCount = ref(0)
+let sortedPrefix: Track[] = []
+let previousSortKey = ''
+let previousFilterKey = ''
+let previousSource: Track[] | null = null
+let previousFilteredLength = 0
+let previousAppendCount = -1
+
+function compareTracks(a: Track, b: Track): number {
+  let comparison = 0
+  switch (sortBy.value) {
+    case 'title': comparison = a.title.localeCompare(b.title); break
+    case 'artist': comparison = a.artist.localeCompare(b.artist); break
+    case 'album': comparison = a.album.localeCompare(b.album); break
+    case 'duration': comparison = a.duration.localeCompare(b.duration); break
+    case 'quality': comparison = a.quality.localeCompare(b.quality); break
+    case 'metadataScore': comparison = (a.metadataScore ?? 0) - (b.metadataScore ?? 0); break
+  }
+  return sortDirection.value === 'desc' ? -comparison : comparison
+}
+
+function mergeSorted(prefix: Track[], appended: Track[]): Track[] {
+  const merged: Track[] = []
+  let i = 0
+  let j = 0
+  while (i < prefix.length && j < appended.length) {
+    // Stable sort: earlier pages precede later ones on equal keys.
+    if (compareTracks(prefix[i], appended[j]) <= 0) merged.push(prefix[i++])
+    else merged.push(appended[j++])
+  }
+  while (i < prefix.length) merged.push(prefix[i++])
+  while (j < appended.length) merged.push(appended[j++])
+  return merged
+}
+
 const filteredTracks = computed(() => {
   let trackList = searchQuery.value.trim() ? searchResults.value : tracks.value
   
@@ -2354,36 +2390,35 @@ const filteredTracks = computed(() => {
     })
   }
   
-  // Sorting
-  trackList = [...trackList].sort((a, b) => {
-    let comparison = 0
-    switch (sortBy.value) {
-      case 'title':
-        comparison = a.title.localeCompare(b.title)
-        break
-      case 'artist':
-        comparison = a.artist.localeCompare(b.artist)
-        break
-      case 'album':
-        comparison = a.album.localeCompare(b.album)
-        break
-      case 'duration':
-        comparison = a.duration.localeCompare(b.duration)
-        break
-      case 'quality':
-        comparison = a.quality.localeCompare(b.quality)
-        break
-      case 'metadataScore':
-        comparison = a.metadataScore - b.metadataScore
-        break
-      case 'dateAdded':
-      default:
-        comparison = 0
-    }
-    return sortDirection.value === 'desc' ? -comparison : comparison
-  })
-  
-  return trackList
+  const sortKey = `${sortBy.value}:${sortDirection.value}`
+  const filterKey = JSON.stringify(activeFilters.value) + '|' + qualityFilter.value
+
+  // The sorted prefix can only be reused when the sort key and filters are
+  // unchanged, the previous pass ran over the very same collection (same
+  // identities, same length), and exactly one page was appended since.
+  // Anything else re-sorts the whole list, exactly as before.
+  const isAppendOnly =
+    sortKey === previousSortKey &&
+    filterKey === previousFilterKey &&
+    previousSource === tracks.value &&
+    trackList === tracks.value &&
+    pageAppendCount.value > previousAppendCount &&
+    previousFilteredLength < trackList.length
+
+  previousSortKey = sortKey
+  previousFilterKey = filterKey
+  previousSource = trackList
+  previousFilteredLength = trackList.length
+  previousAppendCount = pageAppendCount.value
+
+  if (isAppendOnly) {
+    const appendedSorted = trackList.slice(sortedPrefix.length).sort(compareTracks)
+    sortedPrefix = mergeSorted(sortedPrefix, appendedSorted)
+    return sortedPrefix
+  }
+
+  sortedPrefix = [...trackList].sort(compareTracks)
+  return sortedPrefix
 })
 
 // Virtual scrolling computed window (PR-02)

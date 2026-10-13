@@ -1189,11 +1189,22 @@ pub async fn embed_lyrics(state: State<'_, AppState>, track_id: i64) -> Result<b
         if lyrics.format == "lrc" || lyrics.content.contains('[') {
             comments.set("LYRICS", vec![lyrics.content.clone()]);
             let clean = crate::download::lyrics::strip_lrc_timestamps(&lyrics.content);
-            if !clean.is_empty() {
+            // LY-02: strip the payload header (LRC id tags, provider credit blocks)
+            // from the derived *plain* copy only. `LYRICS` above stays verbatim.
+            let clean = syncify_lyrics_domain::strip_lyrics_header(&clean);
+            if !clean.trim().is_empty() {
                 comments.set("UNSYNCEDLYRICS", vec![clean]);
             }
         } else {
-            comments.set("UNSYNCEDLYRICS", vec![lyrics.content.clone()]);
+            // LY-02: same boundary rule for the plain branch. Never write an empty
+            // UNSYNCEDLYRICS — fall back to the original content when the cleaner
+            // leaves nothing (a payload that is entirely header credits).
+            let plain = syncify_lyrics_domain::strip_lyrics_header(&lyrics.content);
+            if plain.trim().is_empty() {
+                comments.set("UNSYNCEDLYRICS", vec![lyrics.content.clone()]);
+            } else {
+                comments.set("UNSYNCEDLYRICS", vec![plain]);
+            }
         }
 
         tag.write_to_path(path)
