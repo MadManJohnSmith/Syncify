@@ -166,17 +166,50 @@ describe('SettingsDownloads.vue', () => {
     expect(wrapper.find('select[data-testid="global-max-quality-select"]').exists()).toBe(false)
   })
 
-  it('persists settings when clicking Save Settings button', async () => {
+  it('does not write service presets merely by editing the target selects', async () => {
     const wrapper = mount(SettingsDownloads)
     await flushPromises()
+    vi.mocked(invoke).mockClear()
 
-    const saveBtn = wrapper.findAll('button').find(b => b.text().includes('Save Settings'))
-    expect(saveBtn).toBeDefined()
-
-    await saveBtn!.trigger('click')
+    await wrapper.findAll('select')[0].setValue('lossless')
+    await wrapper.findAll('select')[1].setValue('mp3')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Changes saved')
+    expect(invoke).not.toHaveBeenCalledWith('update_quality_preference', expect.anything())
+    expect(invoke).not.toHaveBeenCalledWith('set_global_max_quality', expect.anything())
+  })
+
+  it('keeps folder templates in shared state for global Save Changes, without a duplicate save button', async () => {
+    const wrapper = mount(SettingsDownloads)
+    await flushPromises()
+    expect(wrapper.findAll('button').some(b => b.text().includes('Save Settings'))).toBe(false)
+    expect(wrapper.text()).toContain('global Save Changes')
+  })
+
+  it('loads and persists boolean sidecar flags independently, including false after remount', async () => {
+    const wrapper = mount(SettingsDownloads)
+    await flushPromises()
+    const toggle = wrapper.find('[data-testid="sidecar-dl_generate_cover_art"]')
+    expect((toggle.element as HTMLInputElement).checked).toBe(true)
+    await toggle.setValue(false)
+    await flushPromises()
+    expect(invoke).toHaveBeenCalledWith('save_setting', { key: 'dl_generate_cover_art', value: 'false' })
+    wrapper.unmount()
+    mockInvoke((command) => {
+      if (command === 'get_kv_settings') return { ...mockKvSettings, dl_generate_cover_art: 'false' }
+      if (command === 'get_folder_settings' || command === 'update_folder_settings') return mockFolderSettings
+      if (command === 'get_quality_preferences') return mockQualityPreferences
+      return null
+    })
+    const restarted = mount(SettingsDownloads)
+    await flushPromises()
+    expect((restarted.find('[data-testid="sidecar-dl_generate_cover_art"]').element as HTMLInputElement).checked).toBe(false)
+    const preset = restarted.findAll('button').find(button => button.text().includes('Symfonium sidecar preset'))
+    expect(preset).toBeDefined()
+    await preset!.trigger('click')
+    await flushPromises()
+    expect(invoke).toHaveBeenCalledWith('save_settings_batch', { settings: expect.objectContaining({ dl_generate_cover_art: 'true', dl_generate_animated_cover: 'true', dl_generate_lyrics_lrc: 'true' }) })
+    expect((restarted.find('[data-testid="sidecar-dl_generate_cover_art"]').element as HTMLInputElement).checked).toBe(true)
   })
 
   it('restores persisted settings upon remounting view', async () => {

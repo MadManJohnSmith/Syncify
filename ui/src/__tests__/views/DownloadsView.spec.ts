@@ -110,6 +110,28 @@ describe('DownloadsView.vue', () => {
     confirmMock.mockResolvedValue(true)
   })
 
+  it('requires confirmation before clearing completed items', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+    const clear = wrapper.find('.completed-section button:last-child')
+    expect(clear).toBeDefined()
+    confirmMock.mockResolvedValue(false)
+    await clear!.trigger('click')
+    await flushPromises()
+    expect(confirmMock).toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalledWith('clear_queue', expect.anything())
+    confirmMock.mockResolvedValue(true)
+    await clear!.trigger('click')
+    await flushPromises()
+    expect(invoke).toHaveBeenCalledWith('clear_queue', { status: 'complete' })
+    wrapper.unmount()
+  })
+
   it('renders downloads view and status cards', async () => {
     mockInvoke((command) => {
       if (command === 'get_queue') return mockQueueItems

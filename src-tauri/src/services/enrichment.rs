@@ -2433,8 +2433,27 @@ impl EnrichmentEngine {
                 }
             }
 
-            // Strategy C: By Album Title + Album Artist ID
+            // An observed release barcode is stronger than a title match. Never
+            // merge two editions merely because their display title/artist agree.
             if album_row.is_none() {
+                if let Some(barcode) = enriched.barcode.value() {
+                    album_row = sqlx::query_as(
+                        "SELECT id FROM albums WHERE upc = ? AND title = ? COLLATE NOCASE ORDER BY id LIMIT 1",
+                    )
+                    .bind(barcode)
+                    .bind(&album_title)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Failed to match release barcode: {e}"))?;
+                }
+            }
+
+            // Strategy C: Only unidentified releases may use weak title matching.
+            // Different UPCs or provider release IDs must retain separate albums.
+            let has_release_identity = enriched.barcode.value().is_some()
+                || enriched.musicbrainz_release_id.value().is_some()
+                || input.album_provider_track_id.is_some();
+            if album_row.is_none() && !has_release_identity {
                 album_row = sqlx::query_as(
                     r#"
                     SELECT a.id FROM albums a
@@ -2452,7 +2471,7 @@ impl EnrichmentEngine {
             }
 
             // Strategy D: If compilation, match existing album with title and "Various Artists" / "Various" / variants
-            if album_row.is_none() && is_compilation {
+            if album_row.is_none() && is_compilation && !has_release_identity {
                 album_row = sqlx::query_as(
                     r#"
                     SELECT a.id FROM albums a
@@ -2471,7 +2490,7 @@ impl EnrichmentEngine {
             }
 
             // Strategy E: Match existing album by title if it belongs to the same provider release
-            if album_row.is_none() && input.album_provider_track_id.is_some() {
+            if album_row.is_none() && !has_release_identity {
                 album_row = sqlx::query_as(
                     "SELECT a.id FROM albums a WHERE a.title = ? COLLATE NOCASE LIMIT 1",
                 )
@@ -2683,53 +2702,47 @@ impl EnrichmentEngine {
             album_id_opt = Some(aid);
         }
 
-        // 5. Find or Create Track with Canonical Identity Check (Source Mapping 1:1 > Valid ISRC > Service ID)
-        let mut existing_track_id: Option<i64> = None;
-
-        // Check A: by service source (service_id, service_track_id) - Rule 1
-        if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>(
-            "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ? LIMIT 1"
+        // ED-02: exact provider item is the only identity proof. ISRC/title
+        // remain discovery hints, never permission to merge distinct editions.
+        let source_tracks: Vec<(i64,)> = sqlx::query_as(
+            "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?",
         )
         .bind(input.service_id)
         .bind(&input.service_track_id)
-        .fetch_optional(&mut *tx)
+        .fetch_all(&mut *tx)
         .await
+        .map_err(|e| format!("ED-02 source lookup failed: {e}"))?;
+        if source_tracks.len() > 1 {
+            return Err("needs_review: provider item maps to multiple tracks".to_string());
+        }
+        let existing_track_id = source_tracks.first().map(|row| row.0);
+        let ledger_tracks: Vec<(i64,)> = sqlx::query_as(
+            "SELECT link.track_id FROM edition_provider_items item JOIN edition_item_tracks link ON link.item_id = item.id WHERE item.service_id = ? AND item.service_track_id = ?"
+        )
+        .bind(input.service_id)
+        .bind(&input.service_track_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("ED-02 item lookup failed: {e}"))?;
+        if ledger_tracks
+            .iter()
+            .any(|row| Some(row.0) != existing_track_id)
         {
-            existing_track_id = Some(tid);
+            return Err("needs_review: provider item identity collision".to_string());
         }
-
-        // Check B: by ISRC (match existing track with this ISRC, and prevent unique constraint collisions)
+        // The legacy UNIQUE(tracks.isrc) prevents two canonical rows with the
+        // same ISRC. Until that constraint changes, fail closed, not merge.
         if existing_track_id.is_none() {
-            if let Some(isrc) = isrc_opt {
-                let trimmed_isrc = isrc.trim();
-                if !trimmed_isrc.is_empty() {
-                    if let Ok(Some((tid,))) =
-                        sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
-                            .bind(trimmed_isrc)
-                            .fetch_optional(&mut *tx)
-                            .await
-                    {
-                        existing_track_id = Some(tid);
-                    }
-                }
-            }
-        }
-
-        // Check C: by service-specific ID column
-        if existing_track_id.is_none() {
-            let col = match input.service_name.as_str() {
-                "qobuz" => Some("qobuz_id"),
-                "spotify" => Some("spotify_id"),
-                _ => None,
-            };
-            if let Some(col_name) = col {
-                let sql = format!("SELECT id FROM tracks WHERE {} = ? LIMIT 1", col_name);
-                if let Ok(Some((tid,))) = sqlx::query_as::<_, (i64,)>(&sql)
-                    .bind(&input.service_track_id)
-                    .fetch_optional(&mut *tx)
+            if let Some(isrc) = isrc_opt.filter(|value| !value.trim().is_empty()) {
+                let matches: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE isrc = ?")
+                    .bind(isrc.trim())
+                    .fetch_all(&mut *tx)
                     .await
-                {
-                    existing_track_id = Some(tid);
+                    .map_err(|e| format!("ED-02 ISRC lookup failed: {e}"))?;
+                if !matches.is_empty() {
+                    return Err(
+                        "needs_review: ISRC alone cannot establish edition identity".to_string()
+                    );
                 }
             }
         }
@@ -3270,19 +3283,26 @@ impl EnrichmentEngine {
         }
 
         // 8. Track Sources & Availability (Explicit Verified Availability for live sync)
-        let source_already_existed: bool = sqlx::query_scalar::<_, i32>(
-            "SELECT 1 FROM track_sources WHERE track_id = ? AND service_id = ? LIMIT 1",
+        let existing_source: Option<(i64, String)> = sqlx::query_as(
+            "SELECT id, service_track_id FROM track_sources WHERE track_id = ? AND service_id = ?",
         )
         .bind(track_id)
         .bind(input.service_id)
         .fetch_optional(&mut *tx)
         .await
-        .ok()
-        .flatten()
-        .is_some();
+        .map_err(|e| format!("ED-02 source slot lookup failed: {e}"))?;
+        if existing_source
+            .as_ref()
+            .is_some_and(|(_, item)| item != &input.service_track_id)
+        {
+            return Err(
+                "needs_review: another edition occupies the legacy source slot".to_string(),
+            );
+        }
+        let source_already_existed = existing_source.is_some();
         let is_new_source_for_service = !source_already_existed;
 
-        let _ = sqlx::query(
+        sqlx::query(
             r#"
             INSERT INTO track_sources (
                 track_id, service_id, service_track_id, format, bit_depth,
@@ -3307,7 +3327,56 @@ impl EnrichmentEngine {
         .bind(input.sample_rate)
         .bind(input.quality_score)
         .execute(&mut *tx)
-        .await;
+        .await
+        .map_err(|e| format!("ED-02 source persistence failed: {e}"))?;
+
+        // The ED-01 ledger is written in the SAME transaction as canonical
+        // track_sources; failures roll back both sides rather than half-activate.
+        let release_id: Option<i64> = if let Some(release) = input
+            .album_provider_track_id
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            sqlx::query("INSERT INTO edition_releases(service_id,provider_release_id,evidence_status,provenance) VALUES (?,?,'observed',?) ON CONFLICT(service_id,provider_release_id) DO NOTHING")
+                .bind(input.service_id).bind(release).bind(&input.service_name)
+                .execute(&mut *tx).await.map_err(|e| format!("ED-02 release persistence failed: {e}"))?;
+            Some(sqlx::query_scalar("SELECT id FROM edition_releases WHERE service_id = ? AND provider_release_id = ?")
+                .bind(input.service_id).bind(release).fetch_one(&mut *tx).await
+                .map_err(|e| format!("ED-02 release lookup failed: {e}"))?)
+        } else {
+            None
+        };
+        let existing_release: Option<Option<i64>> = sqlx::query_scalar("SELECT release_id FROM edition_provider_items WHERE service_id = ? AND service_track_id = ?")
+            .bind(input.service_id).bind(&input.service_track_id).fetch_optional(&mut *tx).await
+            .map_err(|e| format!("ED-02 item lookup failed: {e}"))?;
+        if existing_release.flatten().is_some()
+            && release_id.is_some()
+            && existing_release.flatten() != release_id
+        {
+            return Err("needs_review: provider item release conflict".to_string());
+        }
+        sqlx::query("INSERT INTO edition_provider_items(service_id,service_track_id,release_id,evidence_status,provenance) VALUES (?,?,?,'unknown',?) ON CONFLICT(service_id,service_track_id) DO NOTHING")
+            .bind(input.service_id).bind(&input.service_track_id).bind(release_id).bind(&input.service_name)
+            .execute(&mut *tx).await.map_err(|e| format!("ED-02 item persistence failed: {e}"))?;
+        let item_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM edition_provider_items WHERE service_id = ? AND service_track_id = ?",
+        )
+        .bind(input.service_id)
+        .bind(&input.service_track_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| format!("ED-02 item identity failed: {e}"))?;
+        sqlx::query(
+            "UPDATE edition_provider_items SET release_id = ? WHERE id = ? AND release_id IS NULL",
+        )
+        .bind(release_id)
+        .bind(item_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("ED-02 release link failed: {e}"))?;
+        sqlx::query("INSERT INTO edition_item_tracks(item_id,track_id,validation_status,provenance) VALUES (?,?,'unknown',?) ON CONFLICT(item_id,track_id) DO NOTHING")
+            .bind(item_id).bind(track_id).bind(&input.service_name).execute(&mut *tx).await
+            .map_err(|e| format!("ED-02 identity link failed: {e}"))?;
 
         // Promote tracks.audio_quality if newly inserted/updated source offers a higher tier,
         // unless track has already been downloaded (in which case physical download metrics are authoritative).

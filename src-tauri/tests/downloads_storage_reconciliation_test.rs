@@ -254,37 +254,23 @@ async fn test_reconcile_flac_exact_isrc_and_purge_staging() {
         "Must scan 1 physical audio file"
     );
     assert_eq!(
-        res.relinked_downloads, 1,
-        "Must relink 1 track into downloads"
+        res.relinked_downloads, 0,
+        "ISRC alone cannot prove edition identity"
     );
     assert_eq!(
         res.purged_staging_files, 1,
         "Must purge 1 staging .part file"
     );
-    assert!(
-        res.ambiguous_files.is_empty(),
-        "No files should be ambiguous"
-    );
+    assert_eq!(res.ambiguous_files, vec![flac_path.to_str().unwrap()]);
 
-    // 6. Verify downloads table entry
-    let row: (i64, i64, String, String, i64, String) = sqlx::query_as(
-        "SELECT track_id, source_service_id, file_path, file_format, file_size_bytes, file_hash FROM downloads WHERE track_id = ?"
-    )
-    .bind(track_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    assert_eq!(row.0, track_id);
-    assert_eq!(row.1, 2); // Qobuz service_id
-    assert_eq!(row.2, flac_path.to_str().unwrap());
-    assert_eq!(row.3, "FLAC");
-    assert!(row.4 > 0, "file_size_bytes must be positive");
-    assert_eq!(
-        row.5.len(),
-        64,
-        "SHA-256 hash must be 64 hexadecimal characters"
-    );
+    // Recording identity is review evidence, not permission to attach an edition.
+    let dl_count_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE track_id = ?")
+            .bind(track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(dl_count_after, 0);
 
     // 7. Verify disk state: .part purged, flac preserved
     assert!(!part_file.exists(), ".part staging file must be purged");
@@ -348,17 +334,18 @@ async fn test_reconcile_flac_title_artist_fallback() {
         .unwrap();
 
     assert_eq!(
-        res.relinked_downloads, 1,
-        "Must match via unambiguous title+artist"
+        res.relinked_downloads, 0,
+        "title and artist cannot prove edition identity"
     );
-
-    let registered_track_id: i64 =
-        sqlx::query_scalar("SELECT track_id FROM downloads WHERE file_path = ?")
+    assert_eq!(res.ambiguous_files, vec![flac_path.to_str().unwrap()]);
+    let registered_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE file_path = ? AND track_id = ?")
             .bind(flac_path.to_str().unwrap())
+            .bind(track_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(registered_track_id, track_id);
+    assert_eq!(registered_count, 0);
 }
 
 #[tokio::test]
@@ -417,17 +404,19 @@ async fn test_reconcile_m4a_by_isrc() {
         .await
         .unwrap();
 
-    assert_eq!(res.relinked_downloads, 1, "Must relink M4A file");
-
-    let (file_format, relinked_tid): (String, i64) =
-        sqlx::query_as("SELECT file_format, track_id FROM downloads WHERE file_path = ?")
+    assert_eq!(
+        res.relinked_downloads, 0,
+        "M4A ISRC alone cannot prove edition identity"
+    );
+    assert_eq!(res.ambiguous_files, vec![m4a_path.to_str().unwrap()]);
+    let registered_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM downloads WHERE file_path = ? AND track_id = ?")
             .bind(m4a_path.to_str().unwrap())
+            .bind(track_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-
-    assert_eq!(file_format, "M4A");
-    assert_eq!(relinked_tid, track_id);
+    assert_eq!(registered_count, 0);
 }
 
 #[tokio::test]
@@ -496,25 +485,19 @@ async fn test_integrity_audit_detects_orphans_and_resolves() {
     let rec_res = perform_reconcile_downloads_from_storage(&pool, Some(music_dir_str.to_string()))
         .await
         .expect("Reconciliation must succeed");
-    assert_eq!(rec_res.relinked_downloads, 1);
+    assert_eq!(rec_res.relinked_downloads, 0);
+    assert_eq!(rec_res.ambiguous_files, vec![flac_path.to_str().unwrap()]);
 
-    // 3. Audit after reconciliation: orphan should be resolved
+    // 3. Audit after reconciliation: orphan remains until edition identity is verified
     let audit_after = perform_run_integrity_audit(&pool, Some(music_dir_str.to_string()))
         .await
         .expect("Integrity audit must run");
 
-    assert_eq!(
-        audit_after.orphan_files.len(),
-        0,
-        "No orphan files should remain after reconciliation"
-    );
-    assert_eq!(
-        audit_after.verified_files, 1,
-        "The relinked file must now be verified"
-    );
+    assert_eq!(audit_after.orphan_files, vec![flac_path.to_str().unwrap()]);
+    assert_eq!(audit_after.verified_files, 0);
     assert!(
-        audit_after.is_healthy,
-        "Audit must be healthy after reconciliation"
+        !audit_after.is_healthy,
+        "Unverified orphan remains unhealthy"
     );
 
     // 4. Idempotency: Second reconciliation does nothing

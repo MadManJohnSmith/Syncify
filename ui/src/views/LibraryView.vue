@@ -231,6 +231,15 @@
           <span v-else>Starting...</span>
         </button>
 
+        <!-- MF-BULK-15: no complete account/playlist inventory or safe preview API is exposed yet. -->
+        <button
+          type="button"
+          disabled
+          aria-label="Download complete library including playlists unavailable"
+          title="Unavailable: requires a complete paginated per-account playlist inventory, dry-run preview, confirmation and resumable idempotent batches"
+          class="px-3 py-2 rounded-lg text-xs font-semibold border border-gray-300 opacity-60 cursor-not-allowed"
+        >Download complete library (unavailable)</button>
+
         <!-- Download Favorites Button -->
         <button 
           @click="showDownloadFavoritesModal = true"
@@ -337,7 +346,8 @@
     <Transition name="slide-down">
       <div
         v-if="selectedCount > 0"
-        class="batch-bar fixed bottom-20 inset-x-8 max-w-xl mx-auto z-40 flex items-center gap-4 px-6 py-3.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl shadow-2xl"
+        class="batch-bar fixed inset-x-8 max-w-xl mx-auto z-40 flex items-center gap-4 px-6 py-3.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl shadow-2xl"
+        style="bottom: calc(var(--status-bar-h, 48px) + 16px)"
       >
         <span class="text-accent font-bold text-sm whitespace-nowrap">{{ selectedCount }} track{{ selectedCount !== 1 ? 's' : '' }} selected</span>
         <div class="flex-1 flex items-center justify-center gap-3 flex-wrap">
@@ -450,7 +460,7 @@
           <!-- Favorite -->
           <button @click="handleToggleFavorite(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span :class="['material-symbols-outlined text-[16px]', contextMenu.track?.isFavorite ? 'text-red-500 material-symbols-filled' : '']">{{ contextMenu.track?.isFavorite ? 'favorite' : 'favorite_border' }}</span>
-            <span class="flex-1 text-left">{{ contextMenu.track?.isFavorite ? 'Remove from Favorites' : 'Add to Favorites' }}</span>
+            <span class="flex-1 text-left">{{ contextMenu.track?.isFavorite ? 'Remove from Local Favorites' : 'Add to Local Favorites' }}</span>
             <span class="text-[10px] text-gray-500">F</span>
           </button>
           
@@ -697,6 +707,7 @@
                 />
                 <div class="flex flex-col gap-0.5 overflow-hidden min-w-0">
                   <span class="font-medium text-ink truncate text-sm">{{ track.title }}</span>
+                  <button type="button" class="text-xs text-primary text-left" :aria-label="`Show known origins for ${track.title}`" @click.stop="provenanceTrack = track">Known origins</button>
                   <div class="flex items-center gap-1.5 text-xs text-text-secondary truncate">
                     <span class="truncate">{{ track.artist }} · {{ track.album }}</span>
                     <span v-if="track.bpm" class="px-1.5 py-0.2 text-[9px] font-bold rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0" :title="'BPM: ' + Math.round(track.bpm)">{{ Math.round(track.bpm) }} BPM</span>
@@ -786,7 +797,7 @@
                     ? 'text-red-500 hover:text-red-600'
                     : 'text-gray-400 opacity-60 hover:text-red-400 hover:opacity-100'
                 ]"
-                :title="track.isFavorite ? 'Remove from favorites' : 'Add to favorites'"
+                :title="track.isFavorite ? 'Remove from local favorites' : 'Add to local favorites'"
               >
                 <span :class="['material-symbols-outlined text-[18px]', track.isFavorite ? 'material-symbols-filled text-red-500' : '']">
                   {{ track.isFavorite ? 'favorite' : 'favorite_border' }}
@@ -1085,6 +1096,18 @@
           </div>
         </div>
       </template>
+
+      <!-- Existing summary is service-level only; account/collection provenance needs a new backend contract. -->
+      <div v-if="provenanceTrack" role="dialog" aria-label="Known track origins" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="provenanceTrack = null">
+        <div class="rounded-xl bg-white dark:bg-surface-dark p-6 max-w-md w-full space-y-3 text-ink">
+          <div class="flex justify-between gap-4"><h2 class="font-semibold">Known origins · {{ provenanceTrack.title }}</h2><button type="button" aria-label="Close known origins" @click="provenanceTrack = null">Close</button></div>
+          <p class="text-xs text-text-secondary">Service-level summary only. Accounts, collections and multiple editions are not available from this library response; no single origin is implied.</p>
+          <p v-if="provenanceTrack.importedFrom">Imported from: {{ provenanceTrack.importedFrom }}</p>
+          <p v-if="provenanceTrack.downloadedFrom">Downloaded from: {{ provenanceTrack.downloadedFrom }}</p>
+          <p v-if="provenanceTrack.services.length">Services: {{ provenanceTrack.services.join(', ') }}</p>
+          <p v-else>No service origins recorded.</p>
+        </div>
+      </div>
 
       <!-- Download Favorites Modal -->
       <DownloadFavoritesModal 
@@ -1497,8 +1520,9 @@ interface Track {
   availabilitySummary: string | null
   quality: string
   qualityBucket?: string | null
-  downloadStatus: 'downloaded' | 'queued' | 'not_downloaded'
-  metadataScore?: number
+  downloadStatus: 'downloaded' | 'queued' | 'downloading' | 'failed' | 'stale' | 'not_downloaded'
+  metadataScore: number
+  bpm: number | null
   lyricsType: LyricsType
   spotifyTrackId?: string | null
   genre?: string | null
@@ -1514,6 +1538,7 @@ interface Track {
 
 // Mock tracks data
 const tracks = ref<Track[]>([])
+const provenanceTrack = ref<Track | null>(null)
 
 // Convert LibraryTrack to UI Track
 function mapToTrack(item: LibraryTrack, index: number): Track {
@@ -1550,6 +1575,7 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     qualityBucket: item.quality_bucket ?? null,
     downloadStatus: (item.download_status ?? 'not_downloaded') as Track['downloadStatus'],
     metadataScore: item.metadata_score ?? 0,
+    bpm: item.bpm,
     lyricsType: (item.lyrics_type ?? 'none') as Track['lyricsType'],
     spotifyTrackId: item.spotify_track_id ?? null,
     genre: item.genre || null,
@@ -1908,7 +1934,7 @@ async function handleAddToPlayQueue(track: Track) {
     if (outcome === 'started') {
       toast.success(`Now playing "${track.title}"`);
     } else {
-      toast.success('Added to Play Queue', `"${track.title}" sonará al final de la cola`);
+      toast.success('Added to Play Queue', `"${track.title}" will play at the end of the queue`);
     }
   } catch (error: any) {
     console.error('Failed to add to play queue:', error);
@@ -1925,12 +1951,12 @@ function surfacePlayFailure(track: Track, error: unknown) {
   // L-01: el fallo se silenciaba cuando habia algo sonando, asi que el usuario
   // no sabia por que no cambio de pista. Ahora se muestra siempre con la
   // causa real y el paso a seguir.
-  const message = String((error as { message?: string })?.message || error || 'Error desconocido');
+  const message = String((error as { message?: string })?.message || error || 'Unknown error');
   const hasLocalFile = !!track.filePath;
   const hint = hasLocalFile
     ? ''
-    : ' Esta pista no esta descargada: la reproduccion local necesita el archivo en disco.';
-  toast.error(`No se pudo reproducir "${track.title}"`, message + hint);
+    : ' This track is not downloaded: local playback requires the file on disk.';
+  toast.error(`Could not play "${track.title}"`, message + hint);
 }
 
 // "Add to Downloads" enqueues the track into the download queue (QueueView /
@@ -2126,12 +2152,12 @@ async function handleToggleFavorite(track: Track) {
     const confirmedState = await libraryApi.toggleTrackFavorite(track.id);
     track.isFavorite = confirmedState;
     toast.success(
-      confirmedState ? 'Added to favorites' : 'Removed from favorites',
+      confirmedState ? 'Added to local favorites' : 'Removed from local favorites',
       `"${track.title}"`
     );
   } catch (error) {
     track.isFavorite = previousState;
-    toast.error('Failed to update favorite', String(error));
+    toast.error('Failed to update local favorite', String(error));
   } finally {
     closeContextMenu();
   }

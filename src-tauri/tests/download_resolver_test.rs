@@ -7,6 +7,8 @@
 //! exactamente el intento que falló.
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use syncify_tauri_lib::download::tidal::planned_tidal_account;
+use syncify_tauri_lib::download::DownloadRequest;
 use syncify_tauri_lib::download::{
     classify_attempt_failure, exclusions_for_failure, expand_attempt_sequence,
     resolve_download_plan, DownloadIntent, ReResolutionTrigger, ResolutionError,
@@ -508,6 +510,41 @@ async fn consented_degradation_is_declared() {
         plan.quality.candidate, "lossy",
         "the advertised tier stays honest even when the request was lossless"
     );
+}
+
+#[tokio::test]
+async fn tidal_adapter_preserves_planned_account_and_rejects_source_drift() {
+    let db = create_test_db().await;
+    add_account(&db, 91, 3, "tidal-fixture@test.local", true, false, Some(1)).await;
+    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks(title) VALUES ('T') RETURNING id")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    add_source(&db, track_id, 3, "tidal-locked", "FLAC", 16, 44100).await;
+    let plan = resolve_download_plan(
+        &db,
+        &DownloadIntent {
+            canonical_track_id: track_id,
+            requested_service: Some("tidal".into()),
+            ..Default::default()
+        },
+        &ResolutionExclusions::default(),
+    )
+    .await
+    .unwrap();
+    let mut request = DownloadRequest {
+        service_name: Some("tidal".into()),
+        service_track_id: Some("tidal-locked".into()),
+        quality: plan.quality.effective.clone(),
+        resolution_plan: Some(plan),
+        ..Default::default()
+    };
+    assert_eq!(planned_tidal_account(&request).unwrap(), Some(91));
+    request.service_track_id = Some("another-edition".into());
+    assert!(planned_tidal_account(&request)
+        .unwrap_err()
+        .to_string()
+        .contains("AmbiguousSource"));
 }
 
 /// 10. Preferencias que cambian entre cola y ejecución: el mismo ítem resuelto

@@ -294,8 +294,13 @@ async fn test_library_physical_reconciliation_lifecycle() {
         "Must clean 2 staging residual files"
     );
     assert_eq!(
-        report.verified_total, 2,
-        "Verified total must be 2 after re-linking"
+        report.verified_total, 1,
+        "ISRC alone cannot verify the orphan's edition"
+    );
+    assert_eq!(report.relinked_orphans, 0);
+    assert_eq!(
+        report.ambiguous_orphans,
+        vec![track3_file.to_str().unwrap()]
     );
 
     // Verify downloads row for Track 2 (ghost) is removed
@@ -306,7 +311,7 @@ async fn test_library_physical_reconciliation_lifecycle() {
         .unwrap();
     assert!(ghost_dl.is_none(), "Missing download row must be purged");
 
-    // Verify downloads row for Track 3 (re-linked) is present
+    // Track 3 remains an orphan: ISRC does not prove edition identity.
     let relinked_dl: Option<(String, i64)> =
         sqlx::query_as("SELECT file_path, file_size_bytes FROM downloads WHERE track_id = ?")
             .bind(track_id_3)
@@ -314,8 +319,8 @@ async fn test_library_physical_reconciliation_lifecycle() {
             .await
             .unwrap();
     assert!(
-        relinked_dl.is_some(),
-        "Orphan track must be re-linked in downloads"
+        relinked_dl.is_none(),
+        "Unverified orphan must not be linked in downloads"
     );
 
     // Verify staging directory is clean
@@ -345,7 +350,11 @@ async fn test_library_physical_reconciliation_lifecycle() {
         "Second run must clean 0"
     );
     assert_eq!(
-        report_second.verified_total, 2,
-        "Verified total must remain 2"
+        report_second.verified_total, 1,
+        "Only the existing download is verified"
+    );
+    assert_eq!(
+        report_second.ambiguous_orphans,
+        vec![track3_file.to_str().unwrap()]
     );
 }

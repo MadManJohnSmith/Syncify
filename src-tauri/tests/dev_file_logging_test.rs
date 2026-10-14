@@ -11,6 +11,10 @@
 //! 8. Logging status DTO accurately reflects state for IPC & LogsView UI.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
+
+// Environment overrides are process-global; these tests must not race each other.
+static RUST_LOG_TEST_LOCK: Mutex<()> = Mutex::new(());
 use syncify_tauri_lib::services::logging::effective_target_filter;
 use syncify_tauri_lib::services::logging::{
     get_logging_status, resolve_app_log_dir, resolve_effective_log_config, sanitize_log_message,
@@ -20,6 +24,7 @@ use tracing::Level;
 
 #[test]
 fn test_dev_mode_enables_file_logging_by_default() {
+    let _guard = RUST_LOG_TEST_LOCK.lock().unwrap();
     // In dev mode (cfg!(debug_assertions) is true in test builds),
     // file logging must be enabled even if persisted setting is false.
     let config = resolve_effective_log_config(Some(false), Some("info"));
@@ -36,6 +41,8 @@ fn test_dev_mode_enables_file_logging_by_default() {
 
 #[test]
 fn test_rust_log_precedence_over_default() {
+    let _guard = RUST_LOG_TEST_LOCK.lock().unwrap();
+    let previous = std::env::var_os("RUST_LOG");
     std::env::set_var("RUST_LOG", "warn");
     let config = resolve_effective_log_config(None, None);
     assert_eq!(config.log_level, Level::WARN);
@@ -44,7 +51,11 @@ fn test_rust_log_precedence_over_default() {
     let config = resolve_effective_log_config(None, None);
     assert_eq!(config.log_level, Level::TRACE);
 
-    std::env::remove_var("RUST_LOG");
+    if let Some(value) = previous {
+        std::env::set_var("RUST_LOG", value);
+    } else {
+        std::env::remove_var("RUST_LOG");
+    }
 }
 
 #[test]
@@ -160,6 +171,7 @@ fn test_logging_status_dto_integrity() {
 
 #[test]
 fn test_stored_level_applies_in_development() {
+    let _guard = RUST_LOG_TEST_LOCK.lock().unwrap();
     // Dev mode must not force DEBUG over the user's stored preference.
     let config = resolve_effective_log_config(Some(true), Some("info"));
     assert_eq!(config.log_level, Level::INFO);
@@ -174,10 +186,16 @@ fn test_stored_level_applies_in_development() {
 
 #[test]
 fn test_rust_log_re_raises_verbosity_on_demand() {
+    let _guard = RUST_LOG_TEST_LOCK.lock().unwrap();
+    let previous = std::env::var_os("RUST_LOG");
     std::env::set_var("RUST_LOG", "debug");
     let config = resolve_effective_log_config(Some(true), Some("info"));
     assert_eq!(config.log_level, Level::DEBUG);
-    std::env::remove_var("RUST_LOG");
+    if let Some(value) = previous {
+        std::env::set_var("RUST_LOG", value);
+    } else {
+        std::env::remove_var("RUST_LOG");
+    }
 }
 
 #[test]

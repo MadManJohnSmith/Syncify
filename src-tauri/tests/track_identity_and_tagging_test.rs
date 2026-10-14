@@ -131,14 +131,20 @@ async fn test_same_artist_and_title_in_different_albums() {
         .enrich_and_persist_sync_track(&pool, input1)
         .await
         .unwrap();
-    let res2 = engine
+    let review = engine
         .enrich_and_persist_sync_track(&pool, input2)
         .await
-        .unwrap();
+        .expect_err("Same ISRC in a different album needs edition review");
 
     assert!(res1.is_new_global_track);
-    // Track 2 has same ISRC, so it maps to the canonical track or adds a new source
-    assert!(res2.is_new_source_for_service || res2.is_already_present);
+    assert!(review.starts_with("needs_review:"));
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM track_sources WHERE service_track_id = '35549999'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 0);
 
     // Verify paths in layout
     let layout = LibraryLayout::new("/Music");

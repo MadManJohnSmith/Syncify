@@ -1199,7 +1199,11 @@ impl DownloadOrchestrator {
             candidate_req.quality = re_plan.quality.effective.clone();
             candidate_req.resolution_plan = Some(crate::download::DownloadPlan {
                 canonical_track_id: re_plan.canonical_track_id,
-                candidates: vec![candidate.clone()],
+                candidates: vec![crate::download::PlanCandidate {
+                    account: Some(account.clone()),
+                    sibling_accounts: Vec::new(),
+                    ..candidate.clone()
+                }],
                 quality: re_plan.quality.clone(),
                 strict_quality: re_plan.strict_quality,
                 allow_fallback: re_plan.allow_fallback,
@@ -1618,14 +1622,16 @@ impl DownloadOrchestrator {
                 }
             }
 
-            PROGRESS_TRACKER.update(DownloadProgress::failed(
-                item_id,
-                &format!("Unsupported or unavailable service: {}", primary_service),
-            ));
-            Err(anyhow!(
-                "Unsupported or unavailable service: {}",
-                primary_service
-            ))
+            let diagnosis = if matches!(
+                primary_service,
+                "spotify" | "deezer" | "apple_music" | "soundcloud"
+            ) {
+                format!("NoDownloadableSource: {} is catalog-only; connect Qobuz or Tidal and review the provider item before download", primary_service)
+            } else {
+                format!("Unsupported or unavailable service: {}", primary_service)
+            };
+            PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &diagnosis));
+            Err(anyhow!(diagnosis))
         })
     }
 

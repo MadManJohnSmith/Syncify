@@ -484,24 +484,20 @@ async fn test_exact_orphan_relinked_by_isrc_or_track_id() {
     let report = perform_reconcile_library_physical_state(&pool, Some(opts))
         .await
         .unwrap();
-    assert_eq!(
-        report.relinked_orphans, 3,
-        "All 3 exact orphans must be relinked"
-    );
-    assert_eq!(report.ambiguous_orphans.len(), 0);
+    assert_eq!(report.relinked_orphans, 2, "ISRC-only orphan needs review");
+    assert_eq!(report.ambiguous_orphans.len(), 1);
 
-    // Verify all 3 are in downloads
+    // Only explicit track id and provider source identity may be linked
     let dls: Vec<(i64, String, i64)> = sqlx::query_as("SELECT track_id, effective_service, source_service_id FROM downloads ORDER BY track_id ASC")
         .fetch_all(&pool)
         .await
         .unwrap();
 
-    assert_eq!(dls.len(), 3);
-    assert_eq!(dls[0].0, 201);
-    assert_eq!(dls[1].0, 202);
-    assert_eq!(dls[2].0, 203);
-    assert_eq!(dls[2].1, "tidal");
-    assert_eq!(dls[2].2, 3); // tidal service_id
+    assert_eq!(dls.len(), 2);
+    assert_eq!(dls[0].0, 202);
+    assert_eq!(dls[1].0, 203);
+    assert_eq!(dls[1].1, "tidal");
+    assert_eq!(dls[1].2, 3); // tidal service_id
 }
 
 #[tokio::test]

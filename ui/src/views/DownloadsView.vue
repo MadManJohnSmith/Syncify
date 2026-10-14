@@ -272,15 +272,15 @@
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
             <span title="Tracks currently in queued state">Pendientes: <strong class="text-amber-500">{{ queueStats?.queued ?? queuedCount }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Tracks currently downloading concurrently">Activas: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
+            <span title="Tracks currently downloading concurrently">Active: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Finished downloads in queue">Completadas: <strong class="text-success">{{ queueStats?.completed ?? completedItemsCount }}</strong></span>
+            <span title="Finished downloads in queue">Completed: <strong class="text-success">{{ queueStats?.completed ?? completedItemsCount }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Failed downloads in queue">Fallidas: <strong class="text-error">{{ queueStats?.failed ?? failedItemsCount }}</strong></span>
+            <span title="Failed downloads in queue">Failed: <strong class="text-error">{{ queueStats?.failed ?? failedItemsCount }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Cancelled downloads in queue">Canceladas: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
+            <span title="Cancelled downloads in queue">Cancelled: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Physical audio files saved on disk in downloads library">Archivos Físicos: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItemsCount }}</strong></span>
+            <span title="Physical audio files saved on disk in downloads library">Physical Files: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItemsCount }}</strong></span>
           </div>
         </div>
 
@@ -586,7 +586,7 @@
             <h2 class="text-base font-bold text-gray-900 dark:text-white group-hover:text-primary transition-colors">Completed</h2>
             <span class="px-2 py-0.5 rounded-full bg-success/10 text-success text-xs font-bold">{{ filteredCompletedItems.length }}</span>
           </button>
-          <button @click="clearCompleted" :disabled="filteredCompletedItems.length === 0" class="text-xs font-semibold text-text-secondary hover:text-error transition-colors disabled:opacity-50">Clear All</button>
+          <button @click="clearCompleted" :disabled="completedItemsRaw.length === 0 || isProcessing" class="text-xs font-semibold text-text-secondary hover:text-error transition-colors disabled:opacity-50">Clear All</button>
         </div>
         
         <Transition name="collapse">
@@ -2041,6 +2041,15 @@ async function togglePause() {
 }
 
 async function clearCompleted() {
+  if (isProcessing.value) return
+  const count = completedItemsRaw.value.length
+  if (count === 0) return
+  const confirmed = await confirm(`Clear ${count.toLocaleString()} completed downloads from the queue? Downloaded files will remain on disk.`, {
+    title: 'Clear Completed Downloads',
+    variant: 'warning'
+  })
+  if (confirmed !== true) return
+
   isProcessing.value = true
   try {
     await queueApi.clearQueue('complete')

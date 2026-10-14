@@ -6,13 +6,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Syncify</title>
     <script>
-      // Anti-FOUC: fija el tema guardado antes del primer paint (default: camaleon).
+      // Anti-FOUC: el primer frame usa el mismo default que useTheme (tinta).
       try {
         var t = localStorage.getItem("syncify.theme");
-        var validos = ["camaleon", "tinta", "consola", "riso"];
-        document.documentElement.dataset.theme = validos.indexOf(t) >= 0 ? t : "camaleon";
+        var validos = ["tinta", "camaleon", "consola", "riso", "spotify", "apple_music", "tidal", "qobuz", "deezer", "soundcloud"];
+        document.documentElement.dataset.theme = validos.indexOf(t) >= 0 ? t : "tinta";
       } catch (e) {
-        document.documentElement.dataset.theme = "camaleon";
+        document.documentElement.dataset.theme = "tinta";
       }
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />

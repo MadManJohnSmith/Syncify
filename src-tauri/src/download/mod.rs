@@ -8,6 +8,10 @@ pub mod lyrics;
 pub mod orchestrator;
 pub mod progress;
 pub mod qobuz;
+// ED discovery/selection is an offline-tested policy API not yet wired into
+// the desktop binary; the binary compiles these modules separately from lib.rs.
+// Keep it compiled (and tested) without treating this staged API as production use.
+#[allow(dead_code)]
 pub mod resolver;
 pub mod songlink;
 pub mod tidal;

@@ -76,6 +76,39 @@ describe('LibraryView', () => {
         expect(wrapper.text()).toContain('Song Two');
     });
 
+    it('shows known service origins without claiming account or collection provenance', async () => {
+        mockInvoke((cmd) => cmd === 'get_library'
+            ? { tracks: [createTestTrack({ id: 7, title: 'Overlap', services: 'Spotify, Qobuz', imported_from: 'Spotify', downloaded_from: 'Qobuz' })], total: 1, offset: 0, limit: 50, has_more: false }
+            : null);
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+        await wrapper.get('button[aria-label="Show known origins for Overlap"]').trigger('click');
+        const dialog = wrapper.get('[role="dialog"]');
+        expect(dialog.text()).toContain('Services: Spotify, Qobuz');
+        expect(dialog.text()).toContain('Accounts, collections and multiple editions are not available');
+        expect(dialog.text()).not.toContain('serviceTrackId');
+        await wrapper.get('button[aria-label="Close known origins"]').trigger('click');
+        expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+    });
+
+    it('keeps complete-library download inert even for a synthetic 30k-track inventory with overlaps and cancellation', async () => {
+        const ids = Array.from({ length: 30_000 }, (_, index) => index % 15_000);
+        expect(new Set(ids).size).toBe(15_000);
+        const commands: string[] = [];
+        mockInvoke((cmd) => {
+            commands.push(cmd);
+            if (cmd === 'get_library') return { tracks: [createTestTrack({ id: ids[0] })], total: ids.length, offset: 0, limit: 50, has_more: true };
+            return null;
+        });
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+        const bulk = wrapper.get('button[aria-label="Download complete library including playlists unavailable"]');
+        expect(bulk.attributes('disabled')).toBeDefined();
+        await bulk.trigger('click');
+        wrapper.unmount(); // cancellation/navigation cannot begin a batch
+        expect(commands.filter(cmd => /enqueue|download|playlist_tracks/.test(cmd))).toEqual([]);
+    });
+
     it('shows empty state when no tracks', async () => {
         mockInvoke((cmd) => {
             if (cmd === 'get_library') return { tracks: [], total: 0, offset: 0, limit: 50, has_more: false };
@@ -1114,7 +1147,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         const batchBar = wrapper.find('.batch-bar');
         expect(batchBar.exists()).toBe(true);
         expect(batchBar.classes()).toContain('fixed');
-        expect(batchBar.classes()).toContain('bottom-20');
+        expect(batchBar.attributes('style')).toContain('var(--status-bar-h, 48px)');
         expect(batchBar.classes()).not.toContain('shrink-0');
 
         // Check Availability button is NOT present in the batch selection bar

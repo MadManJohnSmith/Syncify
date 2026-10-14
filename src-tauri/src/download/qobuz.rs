@@ -1272,6 +1272,11 @@ impl QobuzDownloader {
             let mut phase_tracker = DownloadPhaseTracker::new();
             let item_id = &request.item_id;
             let duration_sec = (request.duration_ms / 1000) as i32;
+            // Capture the queue's track identity once. A later deletion/reuse of the
+            // queue row must not redirect lyrics to another track or erase a tombstone.
+            let lyrics_identity =
+                LyricsTrackIdentity::capture(db_opt, request.queue_id, request.canonical_track_id)
+                    .await;
 
             PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "qobuz"));
 
@@ -1568,6 +1573,7 @@ impl QobuzDownloader {
                 phase_tracker,
                 token_ref,
                 db_opt,
+                lyrics_identity,
             )
             .await
         })
@@ -1584,6 +1590,7 @@ impl QobuzDownloader {
         mut phase_tracker: DownloadPhaseTracker,
         token_ref: Option<&'a str>,
         db_opt: Option<&'a sqlx::SqlitePool>,
+        lyrics_identity: LyricsTrackIdentity,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
@@ -1847,7 +1854,10 @@ impl QobuzDownloader {
 
                 // 7b. ResolveLyrics phase
                 phase_tracker.start_phase(DownloadPhase::ResolveLyrics);
-                let lyrics_service = LyricsPipelineService::new();
+                let lyrics_service = match db_opt {
+                    Some(pool) => LyricsPipelineService::from_db(pool).await,
+                    None => LyricsPipelineService::new(),
+                };
                 let duration_sec = if track.duration > 0 {
                     track.duration as f64
                 } else {
@@ -1867,30 +1877,55 @@ impl QobuzDownloader {
                 {
                     Ok((res, sidecar_opt)) => {
                         if res.status == ResolutionStatus::Resolved {
-                            let tags = res.to_tag_contract();
-                            if let Some(ref lyr) = tags.lyrics {
-                                flac_meta.lyrics_lrc = Some(lyr.clone());
-                            }
-                            if let Some(ref src) = tags.source {
-                                flac_meta.lyrics_source = Some(src.clone());
-                            }
-
-                            if let Some(ref lrc_content) = sidecar_opt {
-                                let lrc_staging =
-                                    staging_dir.join(format!("{}.lrc", sanitize_filename(item_id)));
-                                if let Ok(_) = tokio::fs::write(&lrc_staging, lrc_content).await {
-                                    staged_lrc_path = Some(lrc_staging);
-                                    info!("[Qobuz] Synced lyrics acquired from {}: embedded and staged as .lrc", res.provider);
+                            let track_id = lyrics_identity.track_id();
+                            let format = match res.sync_type {
+                                syncify_lyrics_domain::LyricsSyncType::KaraokeWordSynced
+                                | syncify_lyrics_domain::LyricsSyncType::LineSynced => "lrc",
+                                syncify_lyrics_domain::LyricsSyncType::Plain => "plain",
+                                syncify_lyrics_domain::LyricsSyncType::Instrumental => {
+                                    "instrumental"
                                 }
+                                syncify_lyrics_domain::LyricsSyncType::None => "none",
+                            };
+                            let blocked = if lyrics_identity.lyrics_fail_closed() {
+                                true
+                            } else if let (Some(pool), Some(tid)) = (db_opt, track_id) {
+                                crate::commands::lyrics::lyrics_auto_blocked(pool, tid, format)
+                                    .await
+                                    .map_err(anyhow::Error::msg)?
                             } else {
-                                info!(
+                                // A direct download has no persisted deletion intent.
+                                lyrics_blocked_without_db_identity()
+                            };
+                            if blocked {
+                                debug!("[Qobuz] Skipping automatically resolved lyrics for deleted or unattributed track");
+                            } else {
+                                let tags = res.to_tag_contract();
+                                if let Some(ref lyr) = tags.lyrics {
+                                    flac_meta.lyrics_lrc = Some(lyr.clone());
+                                }
+                                if let Some(ref src) = tags.source {
+                                    flac_meta.lyrics_source = Some(src.clone());
+                                }
+
+                                if let Some(ref lrc_content) = sidecar_opt {
+                                    let lrc_staging = staging_dir
+                                        .join(format!("{}.lrc", sanitize_filename(item_id)));
+                                    if let Ok(_) = tokio::fs::write(&lrc_staging, lrc_content).await
+                                    {
+                                        staged_lrc_path = Some(lrc_staging);
+                                        info!("[Qobuz] Synced lyrics acquired from {}: embedded and staged as .lrc", res.provider);
+                                    }
+                                } else {
+                                    info!(
                                     "[Qobuz] Plain lyrics acquired from {} (no sidecar created)",
                                     res.provider
                                 );
-                            }
+                                }
 
-                            has_lyrics_cached = true;
-                            resolved_lyrics_res = Some(res);
+                                has_lyrics_cached = true;
+                                resolved_lyrics_res = Some(res);
+                            }
                         } else {
                             debug!("[Qobuz] Lyrics not resolved (status: {:?})", res.status);
                         }
@@ -2119,6 +2154,47 @@ impl QobuzDownloader {
                     }
                 }
 
+                // Serialize deletion with tagging and promotion, not only staging.
+                let _lyrics_promotion_guard =
+                    crate::commands::lyrics::lyrics_file_guard().lock().await;
+                let lyrics_track_id = lyrics_identity.track_id();
+                let (lrc_blocked, plain_blocked) = if lyrics_identity.lyrics_fail_closed() {
+                    (true, true)
+                } else if let (Some(pool), Some(tid)) = (db_opt, lyrics_track_id) {
+                    (
+                        crate::commands::lyrics::lyrics_auto_blocked(pool, tid, "lrc")
+                            .await
+                            .map_err(anyhow::Error::msg)?,
+                        crate::commands::lyrics::lyrics_auto_blocked(pool, tid, "plain")
+                            .await
+                            .map_err(anyhow::Error::msg)?,
+                    )
+                } else {
+                    // Direct downloads without a DB identity have no deletion mark
+                    // to consult; do not discard freshly resolved lyrics by default.
+                    (
+                        lyrics_blocked_without_db_identity(),
+                        lyrics_blocked_without_db_identity(),
+                    )
+                };
+                // The .lrc sidecar is independent of the resolved tag's format.
+                if lrc_blocked {
+                    staged_lrc_path = None;
+                }
+                let resolved_format_blocked =
+                    resolved_lyrics_res
+                        .as_ref()
+                        .is_some_and(|res| match res.sync_type {
+                            syncify_lyrics_domain::LyricsSyncType::KaraokeWordSynced
+                            | syncify_lyrics_domain::LyricsSyncType::LineSynced => lrc_blocked,
+                            syncify_lyrics_domain::LyricsSyncType::Plain => plain_blocked,
+                            _ => true,
+                        });
+                if resolved_format_blocked || (lrc_blocked && plain_blocked) {
+                    flac_meta.lyrics_lrc = None;
+                    flac_meta.lyrics_source = None;
+                    resolved_lyrics_res = None;
+                }
                 // 7e. Tagging phase
                 phase_tracker.start_phase(DownloadPhase::Tagging);
                 match apply_and_verify_flac_tags(&staging_path, &flac_meta) {
@@ -2298,52 +2374,37 @@ impl QobuzDownloader {
             }
 
             // 9. Promote sidecars (lyrics, cover artwork, booklets)
-            if let Some(ref lrc_staged) = staged_lrc_path {
-                let final_lrc = layout.lyrics_path_for_track(&final_path);
-                if let Err(_) = tokio::fs::rename(lrc_staged, &final_lrc).await {
-                    let _ = tokio::fs::copy(lrc_staged, &final_lrc).await;
-                }
-                let _ = tokio::fs::remove_file(lrc_staged).await;
+            // The tagging-phase guard remains held through this promotion.
+            if request.artifact_policy.lyrics_lrc {
+                if let Some(ref lrc_staged) = staged_lrc_path {
+                    let final_lrc = layout.lyrics_path_for_track(&final_path);
+                    if let Err(_) = tokio::fs::rename(lrc_staged, &final_lrc).await {
+                        let _ = tokio::fs::copy(lrc_staged, &final_lrc).await;
+                    }
+                    let _ = tokio::fs::remove_file(lrc_staged).await;
 
-                // F5.3: Persist synced lyrics (.lrc) in the database upon physical promotion (mitiga A11)
-                if let Some(pool) = db_opt {
-                    let track_id_opt = if let Some(tid) = request.canonical_track_id {
-                        Some(tid)
-                    } else if let Some(qid) = request.queue_id {
-                        sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
-                            .bind(qid)
-                            .fetch_optional(pool)
-                            .await
-                            .ok()
-                            .flatten()
-                    } else if let Some(ref isrc_str) = isrc_val {
-                        sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
-                            .bind(isrc_str)
-                            .fetch_optional(pool)
-                            .await
-                            .ok()
-                            .flatten()
-                    } else {
-                        None
-                    };
+                    // F5.3: Persist synced lyrics (.lrc) in the database upon physical promotion (mitiga A11)
+                    if let Some(pool) = db_opt {
+                        let track_id_opt = lyrics_identity.track_id();
 
-                    if let Some(tid) = track_id_opt {
-                        let content = tokio::fs::read_to_string(&final_lrc)
-                            .await
-                            .unwrap_or_default();
-                        if !content.is_empty() {
-                            let (sync_level, source) = if let Some(ref res) = resolved_lyrics_res {
-                                let s_lvl = match res.sync_type {
-                                    LyricsSyncType::KaraokeWordSynced => "word",
-                                    LyricsSyncType::LineSynced => "line",
-                                    _ => "none",
-                                };
-                                (s_lvl.to_string(), res.provider.clone())
-                            } else {
-                                ("line".to_string(), "qobuz_lyrics".to_string())
-                            };
+                        if let Some(tid) = track_id_opt {
+                            let content = tokio::fs::read_to_string(&final_lrc)
+                                .await
+                                .unwrap_or_default();
+                            if !content.is_empty() {
+                                let (sync_level, source) =
+                                    if let Some(ref res) = resolved_lyrics_res {
+                                        let s_lvl = match res.sync_type {
+                                            LyricsSyncType::KaraokeWordSynced => "word",
+                                            LyricsSyncType::LineSynced => "line",
+                                            _ => "none",
+                                        };
+                                        (s_lvl.to_string(), res.provider.clone())
+                                    } else {
+                                        ("line".to_string(), "qobuz_lyrics".to_string())
+                                    };
 
-                            let lyrics_insert = sqlx::query(
+                                let lyrics_insert = sqlx::query(
                             r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
                                VALUES (?, 'lrc', ?, ?, ?, ?, ?)
                                ON CONFLICT(track_id, format) DO UPDATE SET
@@ -2361,8 +2422,9 @@ impl QobuzDownloader {
                         .execute(pool)
                         .await;
 
-                            if let Err(ref le) = lyrics_insert {
-                                warn!(error = %le, track_id = tid, "[Qobuz] Non-fatal: failed to persist lyrics in DB");
+                                if let Err(ref le) = lyrics_insert {
+                                    warn!(error = %le, track_id = tid, "[Qobuz] Non-fatal: failed to persist lyrics in DB");
+                                }
                             }
                         }
                     }
@@ -2373,39 +2435,45 @@ impl QobuzDownloader {
                 p.exists() && p.metadata().map(|m| m.len() > 0).unwrap_or(false)
             };
 
-            if let Some(ref cov_staged) = staged_cover_jpg_path {
-                let final_cover = target_dir.join("cover.jpg");
-                if !is_valid_file(&final_cover) {
-                    let _ = tokio::fs::copy(cov_staged, &final_cover).await;
-                }
-                if let Some(parent) = target_dir.parent() {
-                    let dir_name = target_dir
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
-                    if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
-                        let parent_cover = parent.join("cover.jpg");
-                        if !is_valid_file(&parent_cover) {
-                            let _ = tokio::fs::copy(cov_staged, &parent_cover).await;
+            if request.artifact_policy.cover_art {
+                if let Some(ref cov_staged) = staged_cover_jpg_path {
+                    let final_cover = target_dir.join("cover.jpg");
+                    if !is_valid_file(&final_cover) {
+                        let _ = tokio::fs::copy(cov_staged, &final_cover).await;
+                    }
+                    if let Some(parent) = target_dir.parent() {
+                        let dir_name = target_dir
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("");
+                        if dir_name.starts_with("Disc") || dir_name.starts_with("CD") {
+                            let parent_cover = parent.join("cover.jpg");
+                            if !is_valid_file(&parent_cover) {
+                                let _ = tokio::fs::copy(cov_staged, &parent_cover).await;
+                            }
                         }
                     }
+                    let _ = tokio::fs::remove_file(cov_staged).await;
                 }
-                let _ = tokio::fs::remove_file(cov_staged).await;
             }
 
-            if let Some(ref webp_staged) = staged_cover_webp_path {
-                let _ = promote_webp_sidecars(webp_staged, target_dir).await;
-                let _ = tokio::fs::remove_file(staging_dir.join("folder.webp")).await;
-                let _ = tokio::fs::remove_file(staging_dir.join("animated.webp")).await;
-                let _ = tokio::fs::remove_file(staging_dir.join("cover.animated.webp")).await;
+            if request.artifact_policy.animated_cover {
+                if let Some(ref webp_staged) = staged_cover_webp_path {
+                    let _ = promote_webp_sidecars(webp_staged, target_dir).await;
+                    let _ = tokio::fs::remove_file(staging_dir.join("folder.webp")).await;
+                    let _ = tokio::fs::remove_file(staging_dir.join("animated.webp")).await;
+                    let _ = tokio::fs::remove_file(staging_dir.join("cover.animated.webp")).await;
+                }
             }
 
-            if let Some(ref booklet_staged) = staged_booklet_path {
-                let final_booklet = target_dir.join("booklet.pdf");
-                if !is_valid_file(&final_booklet) {
-                    let _ = tokio::fs::copy(booklet_staged, &final_booklet).await;
+            if request.artifact_policy.booklet {
+                if let Some(ref booklet_staged) = staged_booklet_path {
+                    let final_booklet = target_dir.join("booklet.pdf");
+                    if !is_valid_file(&final_booklet) {
+                        let _ = tokio::fs::copy(booklet_staged, &final_booklet).await;
+                    }
+                    let _ = tokio::fs::remove_file(booklet_staged).await;
                 }
-                let _ = tokio::fs::remove_file(booklet_staged).await;
             }
 
             // Guard against 0-byte truncated sidecars: regenerate from FLAC PICTURE block if missing or empty
@@ -2445,18 +2513,23 @@ impl QobuzDownloader {
                         warn!(error = %sanitize_err, path = %final_path.display(), "[Qobuz] FLAC cover sanitization failed (non-fatal)");
                     }
                 }
-                if let Ok(repaired) = crate::services::flac_picture::ensure_flac_sidecars_intact(
-                    &final_path,
-                    target_dir,
-                ) {
-                    if !repaired.is_empty() {
-                        info!(count = repaired.len(), "[Qobuz] ✓ Regenerated {} truncated/missing sidecar(s) from FLAC PICTURE block", repaired.len());
+                if request.artifact_policy.cover_art {
+                    if let Ok(repaired) = crate::services::flac_picture::ensure_flac_sidecars_intact(
+                        &final_path,
+                        target_dir,
+                    ) {
+                        if !repaired.is_empty() {
+                            info!(count = repaired.len(), "[Qobuz] ✓ Regenerated {} truncated/missing sidecar(s) from FLAC PICTURE block", repaired.len());
+                        }
                     }
                 }
             }
 
             info!("[Qobuz] Successfully finalized track: {:?}", final_path);
 
+            // DLX-01: separate the post-promotion SQLite work from filesystem promotion.
+            // This phase includes pool acquisition and query time; it is not a pure SQL duration.
+            phase_tracker.start_phase(DownloadPhase::Persisting);
             // TASK-84: Retro-propagate MusicBrainz ID to SQLite database if known or present in physical FLAC Vorbis comments
             if let Some(pool) = db_opt {
                 let track_id_opt = if let Some(tid) = request.canonical_track_id {
@@ -2468,14 +2541,8 @@ impl QobuzDownloader {
                         .await
                         .ok()
                         .flatten()
-                } else if let Some(ref isrc_str) = isrc_val {
-                    sqlx::query_scalar("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
-                        .bind(isrc_str)
-                        .fetch_optional(pool)
-                        .await
-                        .ok()
-                        .flatten()
                 } else {
+                    // ED-02: no retroactive metadata write by ISRC alone.
                     None
                 };
 
@@ -2712,9 +2779,181 @@ pub fn derive_acoustid_id(fingerprint: &str) -> Option<String> {
     ))
 }
 
+/// Immutable identity for lyrics across resolution, tagging and promotion.
+/// A direct request with no persisted identity remains distinct from a queued
+/// request whose identity could not be established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LyricsTrackIdentity {
+    Direct,
+    Persisted(i64),
+    UnattributedQueue,
+}
+
+impl LyricsTrackIdentity {
+    async fn capture(
+        db: Option<&sqlx::SqlitePool>,
+        queue_id: Option<i64>,
+        canonical_track_id: Option<i64>,
+    ) -> Self {
+        let queue_track_id = if let (Some(pool), Some(qid)) = (db, queue_id) {
+            match sqlx::query_scalar::<_, i64>("SELECT track_id FROM download_queue WHERE id = ?")
+                .bind(qid)
+                .fetch_optional(pool)
+                .await
+            {
+                Ok(id) => id,
+                Err(err) => {
+                    warn!(error = %err, "Qobuz queue identity unavailable for lyrics");
+                    return Self::UnattributedQueue;
+                }
+            }
+        } else {
+            None
+        };
+        if queue_id.is_some() && db.is_some() {
+            match (queue_track_id, canonical_track_id) {
+                (Some(id), Some(canonical)) if id != canonical => Self::UnattributedQueue,
+                (Some(id), _) => Self::Persisted(id),
+                (None, _) => Self::UnattributedQueue,
+            }
+        } else if let Some(id) = canonical_track_id {
+            Self::Persisted(id)
+        } else if queue_id.is_some() {
+            Self::UnattributedQueue
+        } else {
+            Self::Direct
+        }
+    }
+
+    fn track_id(self) -> Option<i64> {
+        match self {
+            Self::Persisted(id) => Some(id),
+            Self::Direct | Self::UnattributedQueue => None,
+        }
+    }
+
+    fn lyrics_fail_closed(self) -> bool {
+        matches!(self, Self::UnattributedQueue)
+    }
+}
+
+// Without a database track identity there is no deletion intent to attribute.
+// Keep this decision shared by resolution and the promotion-time recheck.
+fn lyrics_blocked_without_db_identity() -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_download_without_db_identity_keeps_resolved_lyrics() {
+        // Resolution and promotion must agree when neither canonical_track_id
+        // nor queue_id can attribute a persisted deletion mark.
+        assert!(!lyrics_blocked_without_db_identity());
+    }
+
+    #[tokio::test]
+    async fn queued_lyrics_identity_survives_row_deletion_and_reuse() {
+        let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE download_queue (id INTEGER PRIMARY KEY, track_id INTEGER NOT NULL)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query("CREATE TABLE lyrics_deletion_marks (track_id INTEGER, format TEXT)")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE lyrics_restored_formats (track_id INTEGER, format TEXT)")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO download_queue VALUES (7, 101)")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO lyrics_deletion_marks VALUES (101, 'lrc'), (101, 'plain')")
+            .execute(&db)
+            .await
+            .unwrap();
+        let captured = LyricsTrackIdentity::capture(Some(&db), Some(7), None).await;
+        assert_eq!(captured.track_id(), Some(101));
+        for format in ["lrc", "plain"] {
+            assert!(crate::commands::lyrics::lyrics_auto_blocked(
+                &db,
+                captured.track_id().unwrap(),
+                format
+            )
+            .await
+            .unwrap());
+        }
+        sqlx::query("DELETE FROM download_queue WHERE id = 7")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(captured.track_id(), Some(101));
+        assert!(LyricsTrackIdentity::capture(Some(&db), Some(7), None)
+            .await
+            .lyrics_fail_closed());
+        sqlx::query("INSERT INTO download_queue VALUES (7, 202)")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(captured.track_id(), Some(101));
+        assert!(LyricsTrackIdentity::capture(Some(&db), Some(7), Some(101))
+            .await
+            .lyrics_fail_closed());
+        assert_eq!(
+            LyricsTrackIdentity::capture(Some(&db), None, None).await,
+            LyricsTrackIdentity::Direct
+        );
+        assert!(LyricsTrackIdentity::capture(None, Some(7), None)
+            .await
+            .lyrics_fail_closed());
+        let synthetic_flac = b"fLaC\0\0\0\0";
+        assert_eq!(&synthetic_flac[..4], b"fLaC");
+
+        // Separate marks must not be conflated when the queue mutates after capture.
+        sqlx::query("DELETE FROM lyrics_deletion_marks")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO lyrics_deletion_marks VALUES (101, 'lrc')")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(
+            crate::commands::lyrics::lyrics_auto_blocked(&db, 101, "lrc")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !crate::commands::lyrics::lyrics_auto_blocked(&db, 101, "plain")
+                .await
+                .unwrap()
+        );
+        sqlx::query("DELETE FROM lyrics_deletion_marks")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO lyrics_deletion_marks VALUES (101, 'plain')")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(
+            !crate::commands::lyrics::lyrics_auto_blocked(&db, 101, "lrc")
+                .await
+                .unwrap()
+        );
+        assert!(
+            crate::commands::lyrics::lyrics_auto_blocked(&db, 101, "plain")
+                .await
+                .unwrap()
+        );
+    }
 
     #[test]
     fn qobuz_preview_is_not_full_flac_or_320() {
@@ -2820,6 +3059,7 @@ mod tests {
                 DownloadPhaseTracker::new(),
                 None,
                 None,
+                LyricsTrackIdentity::Direct,
             )
             .await
             .expect_err("preview must fail before tagging or promotion");

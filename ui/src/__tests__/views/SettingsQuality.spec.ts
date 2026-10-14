@@ -52,8 +52,8 @@ describe('SettingsQuality.vue (AQ-01, FS-02)', () => {
     const wrapper = mount(SettingsQuality)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Calidad máxima global')
-    expect(wrapper.text()).toContain('Techo efectivo de descarga')
+    expect(wrapper.text()).toContain('Global maximum quality')
+    expect(wrapper.text()).toContain('Effective download ceiling')
     expect(wrapper.text()).toContain('Quality Caps (Per Service)')
 
     const ceilingSelect = wrapper.find('select[data-testid="global-max-quality-select"]')

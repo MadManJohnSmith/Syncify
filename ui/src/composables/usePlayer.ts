@@ -208,7 +208,26 @@ let lastResolvedPath: string | null = null;
 /** Generación de transición: toda continuación asíncrona comprueba que su gen sigue vivo. */
 let transitionGen = 0;
 /** Suprime el informe del listener `error` del elemento cuando el flujo ya gestionó el fallo. */
-let suppressElementError = false;
+let reportedMediaFailure = false;
+
+/** Media errors are mapped to fixed user-facing text; never expose paths or engine diagnostics. */
+function playbackFailureMessage(code?: number): string {
+    switch (code) {
+        case 1: return 'Playback cancelled; please try again';
+        case 2: return 'Could not read the local file; check that it is still available';
+        case 3: return 'Could not decode the audio; check the file or system codecs';
+        case 4: return 'Unsupported audio format; check the system codecs';
+        default: return 'Could not play the audio; check the file and audio output';
+    }
+}
+
+function reportMediaFailure(code?: number): void {
+    if (reportedMediaFailure) return;
+    reportedMediaFailure = true;
+    error.value = playbackFailureMessage(code);
+    isPlaying.value = false;
+    setMediaSessionPlaybackState('paused');
+}
 
 const upNext = computed<PlayerTrack[]>(() =>
     queue.value.map(e => e.track ?? {
@@ -593,7 +612,7 @@ function bindAudioEvents(): void {
     });
     audio.addEventListener('play', () => {
         isPlaying.value = true;
-        suppressElementError = false;
+        reportedMediaFailure = false;
         if (currentEntry.value && !listenSessionId) {
             // Reproducción reanudada tras restaurar: la sesión de escucha nace
             // aquí y el acumulado está a 0 (la posición restaurada no acredita
@@ -611,7 +630,7 @@ function bindAudioEvents(): void {
         persistState();
     });
     audio.addEventListener('canplay', () => {
-        suppressElementError = false;
+        reportedMediaFailure = false;
     });
     audio.addEventListener('ended', () => {
         isPlaying.value = false;
@@ -622,13 +641,7 @@ function bindAudioEvents(): void {
     });
     audio.addEventListener('error', () => {
         if (!audio.src) return; // ruido de teardown
-        if (suppressElementError) {
-            suppressElementError = false;
-            return; // el flujo ya informó por `error`
-        }
-        error.value = 'No se pudo reproducir el archivo de audio';
-        isPlaying.value = false;
-        setMediaSessionPlaybackState('paused');
+        reportMediaFailure(audio.error?.code);
     });
     bindMediaSessionHandlers();
 }
@@ -674,6 +687,7 @@ async function ensureProjection(entry: PlaybackQueueEntry): Promise<ProjectionRe
  */
 async function resolveAndPlay(track: PlayerTrack, gen: number): Promise<'played' | 'failed' | 'aborted'> {
     isLoadingSource.value = true;
+    let playAttempted = false;
     try {
         const src = await invokeCommand<PlaybackSource>('resolve_playback_source', { trackId: track.id });
         if (gen !== transitionGen) return 'aborted';
@@ -683,13 +697,14 @@ async function resolveAndPlay(track: PlayerTrack, gen: number): Promise<'played'
             // latente del elemento.
             audio.currentTime = 0;
         } else {
-            suppressElementError = true;
+            reportedMediaFailure = false;
             audio.src = convertFileSrc(src.file_path, 'syncify-media');
         }
         lastResolvedPath = src.file_path;
         positionSec.value = 0;
         durationSec.value = 0;
         beginListenSession(track.id);
+        playAttempted = true;
         await audio.play();
         if (gen !== transitionGen) return 'aborted';
         // Metadatos al confirmar el inicio de la reproducción. Si stop()
@@ -704,7 +719,8 @@ async function resolveAndPlay(track: PlayerTrack, gen: number): Promise<'played'
         // Un play() interrumpido por stop()/load() se traga: sin error, sin current.
         if (isAbortError(err)) return 'aborted';
         if (gen !== transitionGen) return 'aborted';
-        error.value = messageOf(err);
+        if (playAttempted) reportMediaFailure(audio.error?.code);
+        else error.value = messageOf(err);
         return 'failed';
     } finally {
         if (gen === transitionGen) isLoadingSource.value = false;
@@ -728,7 +744,7 @@ async function advanceFromHead(gen: number): Promise<AdvanceResult> {
             continue;
         }
         if (proj === 'error') {
-            error.value = `No se pudo validar la pista ${entry.trackId} de la cola`;
+            error.value = `Could not validate track ${entry.trackId} in the queue`;
             return 'stopped';
         }
         error.value = null;
@@ -794,7 +810,7 @@ async function playTrack(track: PlayerTrack): Promise<void> {
     const outcome = await resolveAndPlay(track, gen);
     if (gen !== transitionGen) return;
     if (outcome === 'failed') {
-        throw new Error(error.value ?? 'No se pudo reproducir la pista');
+        throw new Error(error.value ?? 'Could not play the track');
     }
     if (outcome === 'played') {
         if (currentEntry.value) pushHistory(currentEntry.value);
@@ -807,7 +823,11 @@ async function playTrack(track: PlayerTrack): Promise<void> {
 async function playIdle(): Promise<void> {
     if (audio.src) {
         if (audio.paused) {
-            void audio.play().catch(() => { isPlaying.value = false; });
+            reportedMediaFailure = false;
+            void audio.play().catch((err: unknown) => {
+                if (isAbortError(err)) return;
+                reportMediaFailure(audio.error?.code);
+            });
         }
         return;
     }
@@ -870,7 +890,7 @@ async function replaceQueueAndPlay(tracks: PlayerTrack[]): Promise<void> {
     const outcome = await resolveAndPlay(tracks[0], gen);
     if (gen !== transitionGen) return;
     if (outcome === 'failed') {
-        throw new Error(error.value ?? 'No se pudo reproducir la pista');
+        throw new Error(error.value ?? 'Could not play the track');
     }
     if (outcome !== 'played') return;
     const entries: PlaybackQueueEntry[] = tracks.map(t => ({ entryId: uuidV4(), trackId: t.id, track: t }));
@@ -927,7 +947,7 @@ async function previous(): Promise<void> {
         if (gen !== transitionGen) return;
         if (proj === 'dead') continue;
         if (proj === 'error') {
-            error.value = `No se pudo validar la pista ${entry.trackId} del historial`;
+            error.value = `Could not validate track ${entry.trackId} in the history`;
             return;
         }
         error.value = null;
@@ -952,7 +972,11 @@ function toggle(): void {
     if (!audio.src) return;
     if (audio.paused) {
         // Reanudar conserva la sesión de escucha (la pausa no la rompe).
-        void audio.play().catch(() => { isPlaying.value = false; });
+        reportedMediaFailure = false;
+        void audio.play().catch((err: unknown) => {
+            if (isAbortError(err)) return;
+            reportMediaFailure(audio.error?.code);
+        });
     } else {
         audio.pause();
     }
@@ -978,7 +1002,7 @@ function stop(): void {
     history.value = [];
     resetListenSession();
     clearMediaSession();
-    suppressElementError = false;
+    reportedMediaFailure = false;
     isLoadingSource.value = false;
     persistState();
 }
@@ -1047,7 +1071,7 @@ function waitForLoadedmetadata(el: HTMLMediaElement): Promise<void> {
     if (el.readyState >= 1) return Promise.resolve();
     return new Promise((resolve, reject) => {
         const ok = () => { cleanup(); resolve(); };
-        const fail = () => { cleanup(); reject(new Error('No se pudo cargar la duración del archivo')); };
+        const fail = () => { cleanup(); reject(new Error('Could not load the file duration')); };
         const cleanup = () => {
             el.removeEventListener('loadedmetadata', ok);
             el.removeEventListener('error', fail);
@@ -1099,7 +1123,7 @@ async function restoreFromPersistence(): Promise<void> {
         const track = projectMetadata(meta);
         const src = await invokeCommand<PlaybackSource>('resolve_playback_source', { trackId: saved.currentTrackId });
         if (gen !== transitionGen) return;
-        suppressElementError = true;
+        reportedMediaFailure = false;
         audio.src = convertFileSrc(src.file_path, 'syncify-media');
         lastResolvedPath = src.file_path;
         await waitForLoadedmetadata(audio);

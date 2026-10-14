@@ -136,6 +136,12 @@ una sesión gráfica real con cuentas reales, salvo donde se dice lo contrario.
 
 ---
 
+## Actualización de cierre documental R1 (corrida posterior)
+
+- **DL-SVC-01, DL-SVC-03 y PLAY-TRACE-02:** abiertos, pendientes de reproducción dirigida, no bloquean otros carriles; los síntomas manuales de D-16/D-18/R-14 no bastan para atribuir causa ni autorizar un arreglo especulativo. Ver preregistros `docs/auditoria/matriz-ajustes.md:508,510-511`. **DL-SVC-02:** política estricta de rechazo AAC decidida en encargo, pero no se comprobó calidad Tidal FLAC servida por una cuenta real (`:509`). **LOG-04:** mínimo técnico aplicado; política de logging a disco por defecto en release pendiente de decisión, sin detener los demás carriles (`docs/auditoria/matriz-ajustes.md:39`).
+- **ED-02 URL:** prueba dirigida comunicada por la corrida (no ejecutada en esta actualización): `cargo test -p syncify-tauri --test url_import_queue_test -- --nocapture 2>&1 | rg 'running [0-9]+ tests|test test_.*\\.\\.\\. (ok|FAILED)|test result:|error:'` → 14/14. Origen nuevo registrado y discordancia preservada (`src-tauri/tests/url_import_queue_test.rs:460-529`); fallo INSERT compensa la pista nueva (`:532-545`). **Parcial reproducido:** fallo de UPDATE de procedencia deja `(1,1,1)` (`:548-564`; `src-tauri/src/commands/url_import.rs:294-361`); no garantiza atomicidad general. ED-03/04 tampoco tienen integración activa acreditada (`src-tauri/src/download/resolver.rs:304`; `docs/DECISION_SELECCION_EDICION.md:233-251`).
+- Puertas de formato/check/clippy/tests Rust, lote 50, UI, build, Python y consistencia documental aportadas en el encargo con exit 0; **no** se ejecutaron aquí. No demuestran cuentas reales, GUI Linux/audio/GStreamer/tray/MPRIS, Windows, frame timing ni upgrades históricos de migración. Nuevas funciones post-beta se mantienen en lista de espera (`docs/DECISION_ALCANCE_BETA.md:18-33`), no se convierten en defectos beta.
+
 ## Registro de pruebas de esta sesión
 
 - `cargo test -p syncify-tauri --test queue_audit_and_guardrails_test --quiet` → 4 pasados.

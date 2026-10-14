@@ -214,17 +214,22 @@ pub async fn check_queue_guardrail(
         ),
     };
 
-    let norm_isrc = t_isrc
-        .map(|s| s.trim().replace('-', "").to_uppercase())
-        .filter(|s| !s.is_empty());
-
-    let norm_title = t_title
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty());
-
-    let norm_artist = t_art_name
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty());
+    // A recording signature is not an edition identity. Only the concrete track
+    // can block this enqueue; ISRC/title/duration may be shared by two releases.
+    let _recording_hint = (
+        t_title,
+        t_dur,
+        t_isrc,
+        t_art_id,
+        t_art_name,
+        fallback_artist,
+        fallback_isrc,
+    );
+    let norm_isrc = None::<String>;
+    let norm_title = None::<String>;
+    let norm_artist = None::<String>;
+    let t_dur = None::<i64>;
+    let t_art_id = None::<i64>;
 
     // A download row may outlive its file; check every equivalent row before skipping.
     let dl_matches: Vec<(i64, String)> = sqlx::query_as(
@@ -266,14 +271,16 @@ pub async fn check_queue_guardrail(
     .await?;
 
     for (matched_track_id, file_path) in dl_matches {
-        if tokio::fs::metadata(&file_path)
-            .await
-            .is_ok_and(|metadata| metadata.is_file())
-        {
-            return Ok(Some(QueueGuardrailMatch::AlreadyDownloaded {
-                track_id: matched_track_id,
-                file_path,
-            }));
+        match tokio::fs::metadata(&file_path).await {
+            Ok(metadata) if metadata.is_file() => {
+                return Ok(Some(QueueGuardrailMatch::AlreadyDownloaded {
+                    track_id: matched_track_id,
+                    file_path,
+                }));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(sqlx::Error::Io(error)),
         }
     }
 

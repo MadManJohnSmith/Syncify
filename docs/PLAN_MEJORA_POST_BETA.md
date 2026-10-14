@@ -160,7 +160,7 @@ _C-04 · `registrado` · **Sistema de extensiones/plugins estilo SpotiFLAC.** Ru
 contenedor `.sflx`, tienda con verificación SHA-256. **Es arquitectura nueva, no un
 hueco que rellenar**: es construir una plataforma. Registrado con sus tres piezas
 reutilizables por si algún día se hace —el contenedor ZIP endurecido
-(`rust_backend/crates/extensions/src/package.rs`, parseo del directorio central con
+(módulo externo de SpotiFLAC rust_backend/crates/extensions/src/package.rs, parseo del directorio central con
 ZIP64, límite de 2048 entradas y rechazo de symlinks), el flujo de registro con SHA-256
 verificado, y el modelo de capacidades por host en lugar de APIs globales— más la
 advertencia de que **el SHA-256 protege integridad pero no intención**: un registro
@@ -169,7 +169,7 @@ malicioso puede servir un plugin válidamente firmado que robe tokens de usuario
 _C-05 · `registrado` · **Proxy de red.** El ajuste `use_proxy`/`proxy_url` existe en la
 configuración pero **ningún código lo consume**: no está implementado, a diferencia del
 proxy real que SpotiFLAC aplica en su política de red
-(`rust_backend/crates/network/src/policy.rs`). Pendiente de decidir si es deuda que se
+(módulo externo de SpotiFLAC rust_backend/crates/network/src/policy.rs). Pendiente de decidir si es deuda que se
 paga en beta (es ajuste visible que no hace nada) o va a este grupo.
 
 _C-06 · `registrado` · **Transcodificación de formato de salida.** No existe. Todos los

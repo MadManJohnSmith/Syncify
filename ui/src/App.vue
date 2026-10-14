@@ -375,7 +375,7 @@
       </div>
 
       <!-- Status Bar -->
-      <StatusBar />
+      <StatusBar :overlay-active="showOnboarding" />
     </main>
     </div>
     <!-- Global Components -->

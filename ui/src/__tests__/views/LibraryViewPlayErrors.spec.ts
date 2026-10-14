@@ -115,9 +115,9 @@ describe('LibraryView — los fallos de reproducción llegan al usuario (regresi
         await wrapper.find('[data-track-id="7"]').trigger('dblclick');
         await flushPromises();
 
-        expect(lastErrorToast().title).toBe('No se pudo reproducir "Song Seven"');
+        expect(lastErrorToast().title).toBe('Could not play "Song Seven"');
         expect(lastErrorToast().description).toContain(BACKEND_MSG);
-        expect(lastErrorToast().description).toContain('no esta descargada');
+        expect(lastErrorToast().description).toContain('not downloaded');
     });
 
     it('fallo de arranque con pista en curso: el usuario sigue viendo el error (L-01)', async () => {
@@ -128,9 +128,9 @@ describe('LibraryView — los fallos de reproducción llegan al usuario (regresi
         await wrapper.find('[data-track-id="7"]').trigger('dblclick');
         await flushPromises();
 
-        expect(lastErrorToast().title).toBe('No se pudo reproducir "Song Seven"');
+        expect(lastErrorToast().title).toBe('Could not play "Song Seven"');
         expect(lastErrorToast().description).toContain(BACKEND_MSG);
-        expect(lastErrorToast().description).toContain('no esta descargada');
+        expect(lastErrorToast().description).toContain('not downloaded');
     });
 
     it('"Play Next" sobre player parado con fallo: toast con el error del backend', async () => {

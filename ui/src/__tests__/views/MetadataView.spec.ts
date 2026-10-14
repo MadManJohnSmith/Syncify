@@ -61,6 +61,22 @@ describe('MetadataView (fully wired tab)', () => {
         document.body.innerHTML = '';
     });
 
+    it('does not expose Check Availability but retains provider provenance', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return { tracks: [createTestTrack()], total: 1, offset: 0, limit: 500, has_more: false };
+            if (cmd === 'get_metadata_stats') return STATS;
+            if (cmd === 'get_metadata_preferences') return PREFS;
+            return null;
+        });
+        const wrapper = mount(MetadataView);
+        await flushPromises();
+        await wrapper.find('.track-row').trigger('click');
+        await flushPromises();
+        expect(wrapper.text()).not.toContain('Check Availability');
+        expect(wrapper.text()).toContain('Provider Provenance & Availability');
+        wrapper.unmount();
+    });
+
     it('renders tracks and real metadata stats', async () => {
         mockInvoke((cmd) => {
             if (cmd === 'get_library') return {

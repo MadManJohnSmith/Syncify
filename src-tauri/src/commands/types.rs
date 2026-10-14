@@ -406,6 +406,17 @@ pub struct Playlist {
     pub rules_json: Option<String>,
 }
 
+/// Per-account provider collection snapshot. Counts include overlaps across accounts.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AccountImportCount {
+    pub account_id: i64,
+    pub collection: String,
+    pub reported_total: Option<i64>,
+    pub imported_total: i64,
+    pub scanned_at: String,
+    pub completeness: String,
+}
+
 /// Service connection status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceStatus {
@@ -413,6 +424,8 @@ pub struct ServiceStatus {
     pub connected: bool,
     pub account_email: Option<String>,
     pub library_count: i64,
+    /// All account snapshots for this service; never deduplicated across accounts.
+    pub account_import_counts: Vec<AccountImportCount>,
     pub favorites_count: i64,
     pub playlists_count: i64,
     pub last_synced: Option<String>,

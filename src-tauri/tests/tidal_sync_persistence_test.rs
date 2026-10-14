@@ -288,61 +288,28 @@ async fn test_shared_isrc_qobuz_and_tidal_creates_separate_sources_without_dupli
         album_provider_track_id: None,
     };
 
-    let tidal_res = engine
+    let review = engine
         .enrich_and_persist_sync_track(&pool, tidal_input)
         .await
-        .unwrap();
-
-    // Critical Invariant Assertions:
-    assert_eq!(
-        tidal_res.track_id, qobuz_res.track_id,
-        "Track IDs must match via shared ISRC"
-    );
-    assert!(
-        !tidal_res.is_new_global_track,
-        "Global track must NOT be duplicated"
-    );
-    assert!(
-        tidal_res.is_new_source_for_service,
-        "Tidal track_source must be newly created"
-    );
-    assert!(
-        tidal_res.is_new_library_entry_for_account,
-        "Tidal library_entry must be newly created"
-    );
-    assert!(
-        !tidal_res.is_already_present,
-        "Must not be considered fully already present since Tidal source & entry are new"
-    );
-    assert!(
-        tidal_res.is_new_import,
-        "Must be classified as new import for Tidal account"
-    );
-
-    // Global tracks count remains 1
-    let tracks_after_tidal: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .expect_err("Shared ISRC without edition evidence must require review");
+    assert!(review.starts_with("needs_review:"));
+    let tracks_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(tracks_after_tidal, 1);
-
-    // Track sources has 2 rows (one for Qobuz, one for Tidal)
-    let sources_total: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
-            .bind(tidal_res.track_id)
+    let tidal_sources: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE service_id = ?")
+            .bind(tidal_svc_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(sources_total, 2);
-
-    // Library entries has 2 rows (one for Qobuz account, one for Tidal account)
-    let entries_total: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE track_id = ?")
-            .bind(tidal_res.track_id)
+    let tidal_entries: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
+            .bind(tidal_acc_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(entries_total, 2);
+    assert_eq!((tracks_total, tidal_sources, tidal_entries), (1, 0, 0));
 }
 
 #[tokio::test]
@@ -1078,37 +1045,28 @@ async fn test_favorite_already_exists_globally_without_tidal_source() {
         album_provider_track_id: None,
     };
 
-    let tidal_res = engine
+    let review = engine
         .enrich_and_persist_sync_track(&pool, tidal_input)
         .await
-        .unwrap();
-
-    assert!(
-        !tidal_res.is_new_global_track,
-        "Global track must not be duplicated"
-    );
-    assert!(
-        tidal_res.is_new_source_for_service,
-        "Tidal source must be new"
-    );
-    assert!(
-        tidal_res.is_new_library_entry_for_account,
-        "Tidal library entry must be new"
-    );
-    assert!(
-        !tidal_res.is_already_present,
-        "Not already present since source & entry are new"
-    );
-    assert!(
-        tidal_res.is_new_import,
-        "Classified as new import for Tidal account"
-    );
-
+        .expect_err("Shared ISRC without edition evidence must require review");
+    assert!(review.starts_with("needs_review:"));
     let global_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(global_tracks, 1);
+    let tidal_sources: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE service_id = ?")
+            .bind(tidal_svc_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let tidal_entries: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
+            .bind(tidal_acc_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((global_tracks, tidal_sources, tidal_entries), (1, 0, 0));
 }
 
 #[tokio::test]

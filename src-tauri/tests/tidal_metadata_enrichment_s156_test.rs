@@ -480,6 +480,8 @@ async fn test_s156_request_hints_preservation() {
         hint_track_id: Some(50),
         operation_id: None,
         account_id: None,
+        locked_account: false,
+        artifact_policy: Default::default(),
     };
 
     assert_eq!(req.hint_title.as_deref(), Some("12345SEX"));

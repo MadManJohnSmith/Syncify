@@ -22,6 +22,38 @@ static AUTH_IN_PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// "Authorization timed out", que sí explica qué pasó.
 pub const AUTH_BRIDGE_TIMEOUT_SECS: u64 = 330;
 
+fn try_begin_spotify_auth(lock: &std::sync::atomic::AtomicBool) -> bool {
+    lock.compare_exchange(
+        false,
+        true,
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+    )
+    .is_ok()
+}
+
+#[cfg(test)]
+mod spotify_auth_concurrency_tests {
+    use super::*;
+
+    #[test]
+    fn simultaneous_login_attempts_admit_one_and_reject_one() {
+        let lock = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let lock = lock.clone();
+                std::thread::spawn(move || try_begin_spotify_auth(&lock))
+            })
+            .collect();
+        let admitted = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(|admitted| *admitted)
+            .count();
+        assert_eq!(admitted, 1);
+    }
+}
+
 struct AuthGuard;
 
 impl Drop for AuthGuard {
@@ -968,29 +1000,26 @@ pub async fn start_auth_and_save(
     // entitlement. Browser-token-only sessions remain unknown; a token is not
     // evidence of either a subscription or its absence. Do not probe per track.
     let qobuz_entitlement: Option<bool> = if service.eq_ignore_ascii_case("qobuz") {
-        let from_bridge =
-            crate::commands::accounts::qobuz_streaming_entitlement(&credentials_payload);
-        if from_bridge.is_some() {
-            from_bridge
-        } else {
-            let username = credentials_payload.get("username").and_then(|v| v.as_str());
-            let password = credentials_payload.get("password").and_then(|v| v.as_str());
-            match (username, password) {
-                (Some(user), Some(pass)) if !user.trim().is_empty() && !pass.trim().is_empty() => {
-                    let client = crate::services::qobuz::QobuzClient::new(
-                        crate::services::qobuz::get_qobuz_app_id(),
-                        crate::services::qobuz::get_qobuz_app_secret(),
-                    );
-                    // One login at connection time, not a batch-wide probe. A failed
-                    // login does not demote a previously known entitlement.
-                    client
-                        .login_with_streaming_entitlement(user, pass)
-                        .await
-                        .ok()
-                        .and_then(|(_, entitlement)| entitlement)
-                }
-                _ => None,
+        // The browser bridge reports a session, not a validated `user/login`
+        // response. Never infer entitlement from arbitrary bridge JSON (even if
+        // it happens to contain a `credential` key).
+        let username = credentials_payload.get("username").and_then(|v| v.as_str());
+        let password = credentials_payload.get("password").and_then(|v| v.as_str());
+        match (username, password) {
+            (Some(user), Some(pass)) if !user.trim().is_empty() && !pass.trim().is_empty() => {
+                let client = crate::services::qobuz::QobuzClient::new(
+                    crate::services::qobuz::get_qobuz_app_id(),
+                    crate::services::qobuz::get_qobuz_app_secret(),
+                );
+                // Only this successful, credential-backed login supplies evidence.
+                // A failed login does not demote a previously known entitlement.
+                client
+                    .login_with_streaming_entitlement(user, pass)
+                    .await
+                    .ok()
+                    .and_then(|(_, entitlement)| entitlement)
             }
+            _ => None,
         }
     } else {
         None
@@ -1631,6 +1660,16 @@ impl std::fmt::Display for SpotifyCallbackError {
 
 impl std::error::Error for SpotifyCallbackError {}
 
+fn spotify_callback_error_kind(error: &SpotifyCallbackError) -> &'static str {
+    match error {
+        SpotifyCallbackError::NotCallback => "not_callback",
+        SpotifyCallbackError::MissingState => "missing_state",
+        SpotifyCallbackError::InvalidState => "invalid_state",
+        SpotifyCallbackError::MissingCode => "missing_code",
+        SpotifyCallbackError::OAuthError(_) => "provider_error",
+    }
+}
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1789,15 +1828,22 @@ pub async fn spotify_auth_webview(
 
     tracing::info!("spotify_auth_webview: starting PKCE auth flow");
 
-    if AUTH_IN_PROGRESS.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        tracing::warn!("spotify_auth_webview: Auth already in progress, blocking concurrent call");
+    if !try_begin_spotify_auth(&AUTH_IN_PROGRESS) {
+        tracing::warn!(
+            stage = "ipc_concurrent",
+            window_present = app.get_webview_window("spotify-auth").is_some(),
+            "spotify_auth_webview rejected concurrent invocation"
+        );
         return Err("Auth already in progress".to_string());
     }
     let _guard = AuthGuard;
 
     // Close any existing auth window to avoid label collision
     if let Some(existing) = app.get_webview_window("spotify-auth") {
-        let _ = existing.close();
+        if let Err(err) = existing.close() {
+            tracing::warn!(stage = "window_close", error_kind = %std::any::type_name_of_val(&err), "Spotify auth window close failed");
+            return Err("Failed to close existing Spotify auth window".into());
+        }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
@@ -1857,7 +1903,11 @@ pub async fn spotify_auth_webview(
     .resizable(false)
     .closable(true)
     .build()
-    .map_err(|e| format!("Failed to create auth window: {}", e))?;
+    .map_err(|e| {
+        tracing::warn!(stage = "window_build", error_kind = %std::any::type_name_of_val(&e), "Spotify auth window build failed");
+        "Failed to create Spotify auth window".to_string()
+    })?;
+    tracing::info!(stage = "window_created", "Spotify auth window ready");
 
     let timeout_duration = std::time::Duration::from_secs(300);
     let mut code_opt = None;
@@ -1889,9 +1939,9 @@ pub async fn spotify_auth_webview(
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "spotify_auth_webview: invalid callback attempt: {:?} (HTTP {})",
-                        e,
-                        status
+                        "spotify_auth_webview: invalid callback attempt (HTTP {}, kind {})",
+                        status,
+                        spotify_callback_error_kind(&e)
                     );
                 }
             }

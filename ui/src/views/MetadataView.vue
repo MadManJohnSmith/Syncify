@@ -704,16 +704,6 @@
                   <span class="material-symbols-outlined text-[18px] text-gray-400">hub</span>
                   Provider Provenance &amp; Availability
                 </h4>
-                <button
-                  @click="checkCurrentTrackAvailability"
-                  :disabled="isCheckingAvailability"
-                  class="px-3 py-1.5 bg-primary/10 text-primary hover:bg-primary/20 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 disabled:opacity-50"
-                >
-                  <span :class="['material-symbols-outlined text-[16px]', isCheckingAvailability ? 'animate-spin' : '']">
-                    {{ isCheckingAvailability ? 'progress_activity' : 'verified' }}
-                  </span>
-                  Check Availability
-                </button>
               </div>
 
               <div class="p-4 bg-gray-50 dark:bg-surface-highlight/50 rounded-xl space-y-4">
@@ -1187,7 +1177,7 @@
 
     <!-- Toast Notifications -->
     <Teleport to="body">
-      <div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+      <div class="fixed right-4 z-50 flex flex-col gap-2" style="bottom: calc(var(--status-bar-h, 48px) + 16px)">
         <TransitionGroup name="toast">
           <div
             v-for="toast in toasts"
@@ -2405,7 +2395,6 @@ const editForm = reactive({
 
 // Track Sources & Availability
 const trackSources = ref<TrackSourceAvailability[]>([])
-const isCheckingAvailability = ref(false)
 
 // Watch for track selection to populate form
 watch(currentTrack, async (track) => {
@@ -2436,20 +2425,6 @@ watch(currentTrack, async (track) => {
     trackSources.value = []
   }
 })
-
-async function checkCurrentTrackAvailability() {
-  if (!currentTrack.value) return
-  isCheckingAvailability.value = true
-  try {
-    const updated = await libraryApi.checkTrackAvailability(currentTrack.value.id)
-    trackSources.value = updated
-    showToast(`Updated availability for ${updated.length} provider source(s)`, 'success')
-  } catch (err: any) {
-    showToast(err?.message || String(err), 'error')
-  } finally {
-    isCheckingAvailability.value = false
-  }
-}
 
 function getServiceBadgeClass(serviceName: string): string {
   const s = (serviceName || '').toLowerCase()

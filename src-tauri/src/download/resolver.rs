@@ -26,7 +26,667 @@
 //!   falla cerrada). `SongLink` nunca es prueba de audio descargable.
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
+
+/// ED-03's bounded discovery policy. Adapters may feed observations, but this
+/// pure accumulator never fetches pages or interprets a single page as complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryBudget {
+    pub max_pages: usize,
+    pub max_detail_calls: usize,
+    pub max_candidates: usize,
+}
+
+impl DiscoveryBudget {
+    pub const DEFAULT: Self = Self {
+        max_pages: 4,
+        max_detail_calls: 12,
+        max_candidates: 100,
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiscoveryCoverage {
+    Complete,
+    Partial,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryLedger {
+    pub budget: DiscoveryBudget,
+    pub pages: usize,
+    pub detail_calls: usize,
+    pub candidates: usize,
+    pub coverage: DiscoveryCoverage,
+}
+
+impl DiscoveryLedger {
+    pub fn new(budget: DiscoveryBudget) -> Self {
+        Self {
+            budget,
+            pages: 0,
+            detail_calls: 0,
+            candidates: 0,
+            coverage: DiscoveryCoverage::Partial,
+        }
+    }
+
+    /// `has_next` must come from the provider's actual pagination response.
+    pub fn observe_page(&mut self, count: usize, has_next: bool) -> bool {
+        if self.coverage != DiscoveryCoverage::Partial {
+            return false;
+        }
+        if self.pages >= self.budget.max_pages
+            || count > self.budget.max_candidates.saturating_sub(self.candidates)
+        {
+            return false;
+        }
+        self.pages += 1;
+        self.candidates += count;
+        self.coverage = if has_next {
+            DiscoveryCoverage::Partial
+        } else {
+            DiscoveryCoverage::Complete
+        };
+        has_next
+            && self.pages < self.budget.max_pages
+            && self.candidates < self.budget.max_candidates
+    }
+
+    pub fn reserve_detail(&mut self, plausible: bool) -> bool {
+        if !plausible
+            || self.coverage == DiscoveryCoverage::Failed
+            || self.detail_calls >= self.budget.max_detail_calls
+        {
+            return false;
+        }
+        self.detail_calls += 1;
+        true
+    }
+
+    pub fn fail(&mut self) {
+        self.coverage = DiscoveryCoverage::Failed;
+    }
+}
+
+/// ED-01 evidence is deliberately not a boolean: missing provider data is unknown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Evidence<T> {
+    Unknown,
+    Observed(T),
+    Verified(T),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingEvidence {
+    pub musicbrainz_recording_id: Evidence<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseEvidence {
+    pub provider_release_id: Evidence<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderItemEvidence {
+    pub service_id: i64,
+    pub service_track_id: String,
+    pub release: ReleaseEvidence,
+    pub recording: RecordingEvidence,
+}
+
+/// A typed lock carries the exact provider item, not a search phrase or ISRC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderItemLock {
+    pub service_id: i64,
+    pub service_track_id: String,
+    pub provider_release_id: Option<String>,
+}
+
+/// ED-03 selector inputs. None is unknown, not a negative observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditionFacts {
+    pub isrc: Option<String>,
+    pub qualified_title: Option<String>,
+    pub artist: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub declared_version: Option<String>,
+    pub confirmed_version: Option<String>,
+    pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EditionScope {
+    Item(ProviderItemLock),
+    Release {
+        service_id: i64,
+        provider_release_id: String,
+    },
+    Recording(EditionFacts),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReleaseKind {
+    Album,
+    Single,
+    Compilation,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EditionCandidate {
+    pub item: ProviderItemLock,
+    pub facts: EditionFacts,
+    /// Verified only when fetched from the provider's release relationship.
+    pub verified_release_id: Option<String>,
+    pub release_kind: ReleaseKind,
+    pub available: bool,
+    pub advertised_tier: Option<AudioTier>,
+    /// Already ordered by the existing account policy, never reordered here.
+    pub accounts: Vec<CandidateAccount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditionSelectionIntent {
+    pub scope: EditionScope,
+    /// Optional trusted metadata for the selected item or release. None means
+    /// unknown, not consent to bypass contradictory provider observations.
+    pub reference_facts: Option<EditionFacts>,
+    pub preferred_account_id: Option<i64>,
+    pub strict_quality: bool,
+    pub minimum_tier: AudioTier,
+    pub replacement_authorized: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EditionRejection {
+    ItemLockMismatch,
+    ReleaseMismatch,
+    RecordingConflict,
+    MissingEvidence,
+    AmbiguousSource,
+    PartialCoverage,
+    Unavailable,
+    QualityBelowFloor,
+    NoAccount,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum EditionDecision {
+    Selected {
+        item: ProviderItemLock,
+        account: CandidateAccount,
+        allowed_tier: AudioTier,
+        advertised_tier: AudioTier,
+        evidence_score: u8,
+        policy_version: u32,
+    },
+    NeedsReview {
+        reason: EditionRejection,
+    },
+    Rejected {
+        reason: EditionRejection,
+    },
+}
+
+pub const EDITION_POLICY_VERSION: u32 = 1;
+/// Identity tolerance: max(1500ms, 1% of the reference duration).
+pub fn duration_tolerance_ms(reference_ms: u64) -> u64 {
+    1_500_u64.max(reference_ms / 100)
+}
+
+fn normalized_isrc(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '-' && !c.is_whitespace())
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+fn evidence_equal(a: &Option<String>, b: &Option<String>) -> Option<bool> {
+    Some(a.as_ref()?.trim().eq_ignore_ascii_case(b.as_ref()?.trim()))
+}
+
+fn contradicts(reference: &EditionFacts, offered: &EditionFacts) -> bool {
+    if reference
+        .isrc
+        .as_deref()
+        .zip(offered.isrc.as_deref())
+        .is_some_and(|(a, b)| normalized_isrc(a) != normalized_isrc(b))
+    {
+        return true;
+    }
+    if [
+        evidence_equal(&reference.qualified_title, &offered.qualified_title),
+        evidence_equal(&reference.artist, &offered.artist),
+        evidence_equal(&reference.confirmed_version, &offered.confirmed_version),
+    ]
+    .contains(&Some(false))
+    {
+        return true;
+    }
+    reference
+        .duration_ms
+        .zip(offered.duration_ms)
+        .is_some_and(|(a, b)| a.abs_diff(b) > duration_tolerance_ms(a))
+}
+
+fn corroborated(reference: &EditionFacts, offered: &EditionFacts) -> bool {
+    reference
+        .isrc
+        .as_deref()
+        .zip(offered.isrc.as_deref())
+        .is_some_and(|(a, b)| {
+            !normalized_isrc(a).is_empty() && normalized_isrc(a) == normalized_isrc(b)
+        })
+        && evidence_equal(&reference.qualified_title, &offered.qualified_title) == Some(true)
+        && evidence_equal(&reference.artist, &offered.artist) == Some(true)
+        && reference
+            .duration_ms
+            .zip(offered.duration_ms)
+            .is_some_and(|(a, b)| a.abs_diff(b) <= duration_tolerance_ms(a))
+        && reference.confirmed_version.is_some()
+        && evidence_equal(&reference.confirmed_version, &offered.confirmed_version) == Some(true)
+}
+
+fn tier_rank(tier: AudioTier) -> u8 {
+    match tier {
+        AudioTier::HiRes => 3,
+        AudioTier::Lossless => 2,
+        AudioTier::Lossy => 1,
+    }
+}
+
+/// Pure, opt-in ED-03 selection. No SQL/network and no invocation from the
+/// production resolver until ED-04 verifies every queue/worker/adapter boundary.
+/// A declared version never substitutes for a confirmed version.
+pub fn select_edition(
+    intent: &EditionSelectionIntent,
+    coverage: DiscoveryCoverage,
+    candidates: &[EditionCandidate],
+) -> EditionDecision {
+    if coverage != DiscoveryCoverage::Complete {
+        return EditionDecision::NeedsReview {
+            reason: EditionRejection::PartialCoverage,
+        };
+    }
+    let mut eligible = Vec::new();
+    let mut conflict = false;
+    let mut release_conflict = false;
+    let mut lock_mismatch = false;
+    for candidate in candidates {
+        let identity = match &intent.scope {
+            EditionScope::Item(lock) => {
+                if candidate.item.service_id != lock.service_id
+                    || candidate.item.service_track_id != lock.service_track_id
+                {
+                    lock_mismatch = true;
+                    continue;
+                }
+                if let Some(release) = lock.provider_release_id.as_deref() {
+                    if candidate.verified_release_id.as_deref() != Some(release) {
+                        release_conflict = true;
+                        continue;
+                    }
+                } else if intent.reference_facts.is_none() {
+                    // An item ID without corroborating observations is a lock,
+                    // not evidence that the observed metadata is compatible.
+                    continue;
+                }
+                if intent
+                    .reference_facts
+                    .as_ref()
+                    .is_some_and(|facts| contradicts(facts, &candidate.facts))
+                {
+                    conflict = true;
+                    continue;
+                }
+                if intent
+                    .reference_facts
+                    .as_ref()
+                    .is_some_and(|facts| !corroborated(facts, &candidate.facts))
+                {
+                    continue;
+                }
+                true
+            }
+            EditionScope::Release {
+                service_id,
+                provider_release_id,
+            } => {
+                if candidate.item.service_id != *service_id {
+                    continue;
+                }
+                if candidate.verified_release_id.as_deref() != Some(provider_release_id.as_str()) {
+                    release_conflict = true;
+                    continue;
+                }
+                if let Some(reference) = intent.reference_facts.as_ref() {
+                    if reference
+                        .track_number
+                        .zip(candidate.facts.track_number)
+                        .is_some_and(|(a, b)| a != b)
+                        || reference
+                            .disc_number
+                            .zip(candidate.facts.disc_number)
+                            .is_some_and(|(a, b)| a != b)
+                    {
+                        conflict = true;
+                        continue;
+                    }
+                }
+                if intent
+                    .reference_facts
+                    .as_ref()
+                    .is_some_and(|facts| contradicts(facts, &candidate.facts))
+                {
+                    conflict = true;
+                    continue;
+                }
+                if intent
+                    .reference_facts
+                    .as_ref()
+                    .is_some_and(|facts| !corroborated(facts, &candidate.facts))
+                {
+                    continue;
+                }
+                true
+            }
+            EditionScope::Recording(reference) => {
+                if contradicts(reference, &candidate.facts) {
+                    conflict = true;
+                    continue;
+                }
+                if !corroborated(reference, &candidate.facts) {
+                    continue;
+                }
+                true
+            }
+        };
+        if identity {
+            eligible.push(candidate);
+        }
+    }
+    if eligible.is_empty() {
+        return EditionDecision::NeedsReview {
+            reason: if conflict {
+                EditionRejection::RecordingConflict
+            } else if release_conflict {
+                EditionRejection::ReleaseMismatch
+            } else if lock_mismatch {
+                EditionRejection::ItemLockMismatch
+            } else {
+                EditionRejection::MissingEvidence
+            },
+        };
+    }
+    if matches!(intent.scope, EditionScope::Item(_)) && eligible.len() != 1 {
+        return EditionDecision::NeedsReview {
+            reason: EditionRejection::AmbiguousSource,
+        };
+    }
+    if matches!(intent.scope, EditionScope::Recording(_)) && eligible.len() > 1 {
+        // A positive album/single classification is a preference only after
+        // identity corroboration; distinct releases remain material ambiguity.
+        let non_compilation = eligible
+            .iter()
+            .filter(|c| matches!(c.release_kind, ReleaseKind::Album | ReleaseKind::Single))
+            .count();
+        if non_compilation != 1 {
+            return EditionDecision::NeedsReview {
+                reason: EditionRejection::AmbiguousSource,
+            };
+        }
+        // Recording-only intent never silently promotes edition preference
+        // into permission to replace a materially different release.
+        if !intent.replacement_authorized {
+            return EditionDecision::NeedsReview {
+                reason: EditionRejection::AmbiguousSource,
+            };
+        }
+        eligible.retain(|c| matches!(c.release_kind, ReleaseKind::Album | ReleaseKind::Single));
+    }
+    if eligible.len() != 1 {
+        return EditionDecision::NeedsReview {
+            reason: EditionRejection::AmbiguousSource,
+        };
+    }
+    // A contradicting candidate cannot disqualify a corroborated version on
+    // recording-only search, but for a concrete release/item it is material.
+    if conflict && !matches!(intent.scope, EditionScope::Recording(_)) {
+        return EditionDecision::NeedsReview {
+            reason: EditionRejection::RecordingConflict,
+        };
+    }
+    let candidate = eligible[0];
+    if !candidate.available {
+        return EditionDecision::Rejected {
+            reason: EditionRejection::Unavailable,
+        };
+    }
+    let Some(tier) = candidate.advertised_tier else {
+        return EditionDecision::NeedsReview {
+            reason: EditionRejection::MissingEvidence,
+        };
+    };
+    if intent.strict_quality && tier_rank(tier) < tier_rank(intent.minimum_tier) {
+        return EditionDecision::Rejected {
+            reason: EditionRejection::QualityBelowFloor,
+        };
+    }
+    let allowed_tier = if tier_rank(tier) < tier_rank(intent.minimum_tier) {
+        tier
+    } else {
+        intent.minimum_tier
+    };
+    let account_usable = |a: &&CandidateAccount| a.is_active && a.streaming_entitled != Some(0);
+    let account = intent
+        .preferred_account_id
+        .and_then(|id| {
+            candidate
+                .accounts
+                .iter()
+                .filter(account_usable)
+                .find(|a| a.account_id == id)
+        })
+        .or_else(|| candidate.accounts.iter().find(account_usable));
+    let Some(account) = account else {
+        return EditionDecision::Rejected {
+            reason: EditionRejection::NoAccount,
+        };
+    };
+    let evidence_score = match &intent.scope {
+        EditionScope::Item(_) => {
+            if intent.reference_facts.is_some() {
+                100
+            } else {
+                80
+            }
+        }
+        EditionScope::Release { .. } => {
+            if intent.reference_facts.is_some() {
+                95
+            } else {
+                75
+            }
+        }
+        EditionScope::Recording(_) => 90,
+    };
+    EditionDecision::Selected {
+        item: candidate.item.clone(),
+        account: account.clone(),
+        allowed_tier,
+        advertised_tier: tier,
+        evidence_score,
+        policy_version: EDITION_POLICY_VERSION,
+    }
+}
+
+/// Future queue/plan identity contract, deliberately separate from the active
+/// DownloadIntent/DownloadPlan until ED-02/03/04 validate their IPC boundaries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditionIntentPlan {
+    pub original: ProviderItemLock,
+    pub selected: ProviderItemLock,
+    pub replacement_authorized: bool,
+}
+
+impl EditionIntentPlan {
+    pub fn preserves_lock(&self) -> bool {
+        self.replacement_authorized || self.original == self.selected
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EditionBridgeOutcome {
+    Linked { item_id: i64, track_source_id: i64 },
+    NeedsReview { reason: &'static str },
+}
+
+/// ED-01 opt-in bridge; never called by the active selector. Both ledgers are
+/// updated together or not at all. Existing conflicting identities are audited,
+/// not reassigned, and an unknown match is never promoted to verified.
+pub async fn bridge_provider_item(
+    db: &SqlitePool,
+    track_id: i64,
+    item: &ProviderItemLock,
+    provenance: &str,
+) -> Result<EditionBridgeOutcome, sqlx::Error> {
+    if track_id <= 0
+        || item.service_id <= 0
+        || item.service_track_id.trim().is_empty()
+        || item.service_track_id != item.service_track_id.trim()
+        || provenance.trim().is_empty()
+    {
+        return Ok(EditionBridgeOutcome::NeedsReview {
+            reason: "invalid_identity",
+        });
+    }
+    let mut tx = db.begin().await?;
+    let collisions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM track_sources WHERE service_id = ? AND service_track_id = ? AND track_id != ?",
+    )
+    .bind(item.service_id).bind(&item.service_track_id).bind(track_id)
+    .fetch_one(&mut *tx).await?;
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM edition_legacy_collisions WHERE service_id = ? AND service_track_id = ?",
+    )
+    .bind(item.service_id).bind(&item.service_track_id)
+    .fetch_one(&mut *tx).await?;
+    let already: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM edition_provider_items WHERE service_id = ? AND service_track_id = ?",
+    )
+    .bind(item.service_id)
+    .bind(&item.service_track_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if collisions > 0
+        || audited > 0
+        || already.is_some()
+            && sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM edition_item_tracks WHERE item_id = ? AND track_id != ?",
+            )
+            .bind(already)
+            .bind(track_id)
+            .fetch_one(&mut *tx)
+            .await?
+                > 0
+    {
+        return Ok(EditionBridgeOutcome::NeedsReview {
+            reason: "identity_collision",
+        });
+    }
+    // Existing legacy mapping for this track must be unique; never silently
+    // replace the UNIQUE(track_id,service_id) source of the old resolver.
+    let existing = sqlx::query(
+        "SELECT id, service_track_id FROM track_sources WHERE track_id = ? AND service_id = ?",
+    )
+    .bind(track_id)
+    .bind(item.service_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if existing
+        .as_ref()
+        .is_some_and(|row| row.get::<String, _>("service_track_id") != item.service_track_id)
+    {
+        return Ok(EditionBridgeOutcome::NeedsReview {
+            reason: "legacy_slot_occupied",
+        });
+    }
+    let release_id = if let Some(release) = item.provider_release_id.as_deref() {
+        if release.trim().is_empty() || release != release.trim() {
+            return Ok(EditionBridgeOutcome::NeedsReview {
+                reason: "invalid_release",
+            });
+        }
+        sqlx::query("INSERT INTO edition_releases(service_id, provider_release_id, evidence_status, provenance) VALUES (?, ?, 'observed', ?) ON CONFLICT(service_id, provider_release_id) DO NOTHING")
+            .bind(item.service_id).bind(release).bind(provenance).execute(&mut *tx).await?;
+        Some(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM edition_releases WHERE service_id = ? AND provider_release_id = ?",
+            )
+            .bind(item.service_id)
+            .bind(release)
+            .fetch_one(&mut *tx)
+            .await?,
+        )
+    } else {
+        None
+    };
+    if let Some(id) = already {
+        let stored: Option<i64> =
+            sqlx::query_scalar("SELECT release_id FROM edition_provider_items WHERE id = ?")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+        if stored.is_some() && release_id.is_some() && stored != release_id {
+            return Ok(EditionBridgeOutcome::NeedsReview {
+                reason: "release_collision",
+            });
+        }
+    }
+    sqlx::query("INSERT INTO edition_provider_items(service_id, service_track_id, release_id, provenance) VALUES (?, ?, ?, ?) ON CONFLICT(service_id, service_track_id) DO NOTHING")
+        .bind(item.service_id).bind(&item.service_track_id).bind(release_id).bind(provenance)
+        .execute(&mut *tx).await?;
+    let item_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM edition_provider_items WHERE service_id = ? AND service_track_id = ?",
+    )
+    .bind(item.service_id)
+    .bind(&item.service_track_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if let Some(release_id) = release_id {
+        sqlx::query(
+            "UPDATE edition_provider_items SET release_id = ? WHERE id = ? AND release_id IS NULL",
+        )
+        .bind(release_id)
+        .bind(item_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query("INSERT INTO edition_item_tracks(item_id, track_id, validation_status, provenance) VALUES (?, ?, 'unknown', ?) ON CONFLICT(item_id,track_id) DO NOTHING")
+        .bind(item_id).bind(track_id).bind(provenance).execute(&mut *tx).await?;
+    let track_source_id = if let Some(row) = existing {
+        row.get::<i64, _>("id")
+    } else {
+        sqlx::query(
+            "INSERT INTO track_sources(track_id,service_id,service_track_id) VALUES (?,?,?)",
+        )
+        .bind(track_id)
+        .bind(item.service_id)
+        .bind(&item.service_track_id)
+        .execute(&mut *tx)
+        .await?
+        .last_insert_rowid()
+    };
+    tx.commit().await?;
+    Ok(EditionBridgeOutcome::Linked {
+        item_id,
+        track_source_id,
+    })
+}
+
 use syncify_core_domain::quality::{classify_audio_tier, AudioTier};
 
 /// Tope de candidatos que un plan puede cargar. Una `track_sources` con muchos

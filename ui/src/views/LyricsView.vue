@@ -224,7 +224,7 @@
                   <span class="material-symbols-outlined text-[12px]">
                     {{ mapLyricsType(track.lyrics_type) === 'synced' ? 'music_note' : mapLyricsType(track.lyrics_type) === 'unsynced' ? 'notes' : 'remove' }}
                   </span>
-                  {{ mapLyricsType(track.lyrics_type) === 'synced' ? 'Synced' : mapLyricsType(track.lyrics_type) === 'unsynced' ? 'Unsynced' : 'None' }}
+                  {{ track.id === selectedTrackId && currentLyrics ? syncLevelLabel(currentLyrics.sync_level) : mapLyricsType(track.lyrics_type) === 'synced' ? 'Synced' : mapLyricsType(track.lyrics_type) === 'unsynced' ? 'Unsynced' : 'None' }}
                 </span>
               </div>
             </div>
@@ -271,7 +271,7 @@
                 'px-2 py-1 text-xs font-medium rounded',
                 currentTrack?.lyricsStatus === 'synced' ? 'bg-blue-500/10 text-blue-500' : 'bg-gray-500/10 text-gray-500'
               ]">
-                {{ currentTrack?.lyricsStatus === 'synced' ? 'Synced · ' + (currentTrack?.syncLevel || 'line') : 'Unsynced' }}
+                {{ currentLyrics ? syncLevelLabel(currentLyrics.sync_level) : currentTrack?.lyricsStatus === 'synced' ? 'Synced · line' : 'Unsynced · none' }}
               </span>
               <span v-if="currentTrack?.source" class="px-2 py-1 bg-purple-500/10 text-purple-500 text-xs font-medium rounded truncate max-w-[160px]" :title="currentTrack?.source">
                 {{ currentTrack?.source }}
@@ -380,7 +380,7 @@
             </div>
 
             <div class="flex-1"></div>
-            <button @click="isEditing = false" class="px-4 py-1.5 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
+            <button @click="cancelLyricsEdit" class="px-4 py-1.5 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors">
               Cancel
             </button>
             <button @click="saveLyricsEdit" :disabled="isSavingEdit || !editableLyrics.trim()" class="px-4 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5">
@@ -395,8 +395,20 @@
             <span class="whitespace-pre-line">{{ validationMessage }}</span>
           </div>
 
+          <!-- Word/syllable tokens retain the exact surrounding LRC/KRC document. -->
+          <div v-if="tokenDocument && editorMode === 'visual'" class="flex-1 p-6 overflow-y-auto custom-scrollbar" data-testid="token-editor">
+            <div v-for="(line, lineIndex) in tokenDocument.lines" :key="lineIndex" class="mb-3">
+              <div v-if="line.tokens.length" class="flex flex-wrap gap-2">
+                <label v-for="(token, tokenIndex) in line.tokens" :key="tokenIndex" class="flex gap-1 items-center">
+                  <input v-model="token.timestamp" :aria-label="`Timestamp token ${lineIndex + 1}-${tokenIndex + 1}`" class="w-24 p-1 border rounded text-xs font-mono" />
+                  <input v-model="token.text" :aria-label="`Texto token ${lineIndex + 1}-${tokenIndex + 1}`" class="w-32 p-1 border rounded text-sm" />
+                </label>
+              </div>
+              <span v-else class="text-xs text-text-secondary whitespace-pre-wrap">{{ line.prefix }}</span>
+            </div>
+          </div>
           <!-- Visual Line Editor (LY-06) -->
-          <div v-if="editorMode === 'visual'" class="flex-1 p-6 pb-3 overflow-y-auto custom-scrollbar">
+          <div v-else-if="editorMode === 'visual'" class="flex-1 p-6 pb-3 overflow-y-auto custom-scrollbar">
             <div class="space-y-2 max-w-3xl mx-auto">
               <div
                 v-for="(line, idx) in visualLines"
@@ -1232,6 +1244,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '../api/library'
 import { lyricsApi, type KaraokeRefetchResult } from '../api/lyrics'
+import { parseTokenDocument, validateTokenDocument, serializeTokenDocument, tokenDocumentChanged, type TokenDocument } from '../api/lyricTokens'
 import { settingsApi } from '../api/settings'
 import { toolsApi } from '../api/tools'
 import { TauriEvents } from '@/api/tauri'
@@ -1994,6 +2007,7 @@ interface VisualLine {
   text: string
 }
 const visualLines = ref<VisualLine[]>([])
+const tokenDocument = ref<TokenDocument | null>(null)
 const editorMode = ref<'visual' | 'text'>('visual')
 
 function parseTimestampSec(label: string): number {
@@ -2048,7 +2062,15 @@ function onTextareaInput() {
 }
 
 function switchEditorMode(mode: 'visual' | 'text') {
-  if (mode === 'visual') {
+  if (tokenDocument.value) {
+    if (mode === 'text') {
+      const error = validateTokenDocument(tokenDocument.value)
+      if (error) { validationOk.value = false; validationMessage.value = error; return }
+      editableLyrics.value = serializeTokenDocument(tokenDocument.value)
+    } else {
+      tokenDocument.value = parseTokenDocument(editableLyrics.value, currentLyrics.value?.sync_level === 'syllable' ? 'syllable' : 'word')
+    }
+  } else if (mode === 'visual') {
     updateVisualLinesFromText()
   } else {
     updateTextFromVisualLines()
@@ -2101,12 +2123,33 @@ const editorFormat = computed<'lrc' | 'plain' | 'ttml'>(() => detectFormat(edita
 
 function startEditing() {
   validationMessage.value = null
-  updateVisualLinesFromText()
-  editorMode.value = detectFormat(editableLyrics.value) === 'lrc' ? 'visual' : 'text'
+  editableLyrics.value = currentLyrics.value?.content ?? ''
+  const level = currentLyrics.value?.sync_level
+  tokenDocument.value = level === 'word' || level === 'syllable'
+    ? parseTokenDocument(editableLyrics.value, level) : null
+  if (tokenDocument.value) {
+    editorMode.value = tokenDocument.value.lines.some(line => line.tokens.length) ? 'visual' : 'text'
+  } else {
+    updateVisualLinesFromText()
+    editorMode.value = detectFormat(editableLyrics.value) === 'lrc' ? 'visual' : 'text'
+  }
   isEditing.value = true
 }
 
+function cancelLyricsEdit() {
+  editableLyrics.value = currentLyrics.value?.content ?? ''
+  tokenDocument.value = null
+  validationMessage.value = null
+  isEditing.value = false
+}
+
 function validateEditor() {
+  if (tokenDocument.value && editorMode.value === 'visual') {
+    const error = validateTokenDocument(tokenDocument.value)
+    validationOk.value = !error
+    validationMessage.value = error ?? 'Tokens temporizados válidos.'
+    return
+  }
   const fmt = editorFormat.value
   if (fmt !== 'lrc') {
     validationOk.value = true
@@ -2123,19 +2166,29 @@ function validateEditor() {
 }
 
 async function saveLyricsEdit() {
-  if (editorMode.value === 'visual') {
+  if (tokenDocument.value && editorMode.value === 'visual') {
+    const error = validateTokenDocument(tokenDocument.value)
+    if (error) { validationOk.value = false; validationMessage.value = error; return }
+    editableLyrics.value = tokenDocumentChanged(tokenDocument.value)
+      ? serializeTokenDocument(tokenDocument.value) : tokenDocument.value.original
+  } else if (editorMode.value === 'visual') {
     updateTextFromVisualLines()
+  }
+  if (tokenDocument.value && editorMode.value === 'text') {
+    const parsed = parseTokenDocument(editableLyrics.value, currentLyrics.value?.sync_level === 'syllable' ? 'syllable' : 'word')
+    const error = validateTokenDocument(parsed)
+    if (error) { validationOk.value = false; validationMessage.value = error; return }
   }
   if (!selectedTrackId.value || !editableLyrics.value.trim()) return
   isSavingEdit.value = true
   try {
-    const fmt = detectFormat(editableLyrics.value)
+    const fmt = currentLyrics.value?.format ?? detectFormat(editableLyrics.value)
     const prevSync = currentLyrics.value?.sync_level
     const result = await lyricsApi.saveLyrics({
       trackId: selectedTrackId.value,
       format: fmt,
       content: editableLyrics.value,
-      syncLevel: fmt === 'lrc' ? (prevSync === 'word' ? 'word' : 'line') : 'none',
+      syncLevel: prevSync ?? (fmt === 'plain' ? 'none' : 'line'),
       source: currentLyrics.value?.source === 'manual' ? 'manual' : (currentLyrics.value?.source ?? 'manual'),
       language: currentLyrics.value?.language ?? undefined,
     })
@@ -2992,7 +3045,7 @@ async function saveSyncEditor() {
       trackId: selectedTrackId.value,
       format: 'lrc',
       content,
-      syncLevel: currentLyrics.value?.sync_level === 'word' ? 'word' : 'line',
+      syncLevel: currentLyrics.value?.sync_level ?? 'line',
       source: 'manual',
       language: currentLyrics.value?.language ?? undefined,
     })
@@ -3031,6 +3084,10 @@ function toggleTrackSelection(trackId: number) {
 
 function clearSelection() {
   selectedTracks.value = []
+}
+
+function syncLevelLabel(level: Lyrics['sync_level']): string {
+  return `Sync · ${level ?? 'none'}`
 }
 
 function mapLyricsType(type: string | null): 'synced' | 'unsynced' | 'none' {

@@ -5,6 +5,49 @@ use super::*;
 //
 // Library CRUD operations, search, playlists
 
+/// Validate only paths present in the returned page. The cache lives for one request,
+/// so a later page refresh observes files removed or restored since the previous call.
+async fn verify_page_files(tracks: &mut [LibraryTrack]) -> Result<(), String> {
+    use futures::stream::{self, StreamExt};
+    use std::collections::HashMap;
+    use std::io::ErrorKind;
+
+    let mut paths = tracks
+        .iter()
+        .filter(|track| track.download_status.as_deref() == Some("downloaded"))
+        .filter_map(|track| track.file_path.as_ref())
+        .filter(|path| !path.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    paths.sort_unstable();
+    paths.dedup();
+    let checks = stream::iter(paths.into_iter().map(|path| async move {
+        let exists = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata.is_file(),
+            Err(error) if error.kind() == ErrorKind::NotFound => false,
+            Err(error) => return Err(format!("Cannot verify local audio file: {error}")),
+        };
+        Ok::<_, String>((path, exists))
+    }))
+    .buffer_unordered(16)
+    .collect::<Vec<_>>()
+    .await;
+    let present: HashMap<String, bool> = checks.into_iter().collect::<Result<_, _>>()?;
+    for track in tracks {
+        if track.download_status.as_deref() == Some("downloaded")
+            && !track
+                .file_path
+                .as_ref()
+                .and_then(|path| present.get(path))
+                .copied()
+                .unwrap_or(false)
+        {
+            track.download_status = Some("not_downloaded".to_owned());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackMetadata {
@@ -156,7 +199,7 @@ async fn get_library_inner(
         .await
         .map_err(|e| format!("Count error: {}", e))?;
 
-    let tracks = sqlx::query_as::<_, LibraryTrack>(
+    let mut tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
         SELECT
             t.id,
@@ -257,6 +300,7 @@ async fn get_library_inner(
     .await
     .map_err(|e| format!("Database error: {}", e))?;
 
+    verify_page_files(&mut tracks).await?;
     let has_more = offset + (tracks.len() as i64) < total.0;
 
     Ok(LibraryPage {
@@ -304,7 +348,7 @@ pub async fn get_duplicate_tracks(
     .await
     .map_err(|e| format!("Count error: {}", e))?;
 
-    let tracks = sqlx::query_as::<_, LibraryTrack>(
+    let mut tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
         SELECT
             t.id,
@@ -399,6 +443,7 @@ pub async fn get_duplicate_tracks(
     .await
     .map_err(|e| format!("Database error: {}", e))?;
 
+    verify_page_files(&mut tracks).await?;
     let has_more = offset + (tracks.len() as i64) < total.0;
 
     Ok(LibraryPage {
@@ -863,7 +908,7 @@ pub async fn fetch_local_playlist_tracks_page(
     offset: i64,
     limit: i64,
 ) -> Result<Vec<LibraryTrack>, String> {
-    sqlx::query_as::<_, LibraryTrack>(
+    let mut tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
         SELECT
             t.id,
@@ -953,7 +998,9 @@ pub async fn fetch_local_playlist_tracks_page(
     .bind(offset)
     .fetch_all(db)
     .await
-    .map_err(|e| format!("Database error: {}", e))
+    .map_err(|e| format!("Database error: {}", e))?;
+    verify_page_files(&mut tracks).await?;
+    Ok(tracks)
 }
 
 /// Enrich track metadata using MusicBrainz ISRC lookups (batch) with progress events
@@ -1403,7 +1450,7 @@ pub async fn search_tracks(
     .await
     .unwrap_or((0,));
 
-    let tracks = sqlx::query_as::<_, LibraryTrack>(
+    let mut tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
         SELECT
             t.id,
@@ -1499,6 +1546,7 @@ pub async fn search_tracks(
     .await
     .map_err(|e| format!("Search error: {}", e))?;
 
+    verify_page_files(&mut tracks).await?;
     let has_more = offset + (tracks.len() as i64) < total.0;
     tracing::info!(
         "search_tracks returned {} results (total: {}, has_more: {})",
@@ -1801,7 +1849,7 @@ pub async fn get_favorite_tracks(
         .await
         .map_err(|e| format!("Count error: {}", e))?;
 
-    let tracks = sqlx::query_as::<_, LibraryTrack>(
+    let mut tracks = sqlx::query_as::<_, LibraryTrack>(
         r#"
         SELECT
             t.id,
@@ -1887,6 +1935,7 @@ pub async fn get_favorite_tracks(
     .await
     .map_err(|e| format!("Database error: {}", e))?;
 
+    verify_page_files(&mut tracks).await?;
     let has_more = offset + (tracks.len() as i64) < total.0;
 
     Ok(LibraryPage {
@@ -1949,6 +1998,60 @@ mod library_tests {
             panic!("Migration failed in test: {}", e);
         }
         pool
+    }
+
+    #[tokio::test]
+    async fn physical_status_page_is_bounded_and_refreshable() {
+        let temp = tempfile::tempdir().unwrap();
+        let existing = temp.path().join("present.flac");
+        std::fs::write(&existing, b"fixture").unwrap();
+        let missing = temp.path().join("missing.flac");
+        let mut tracks = (0..1200)
+            .map(|id| LibraryTrack {
+                id,
+                file_path: Some(if id % 2 == 0 {
+                    existing.to_string_lossy().into_owned()
+                } else {
+                    missing.to_string_lossy().into_owned()
+                }),
+                download_status: Some("downloaded".into()),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        verify_page_files(&mut tracks).await.unwrap();
+        assert_eq!(
+            tracks
+                .iter()
+                .filter(|t| t.download_status.as_deref() == Some("downloaded"))
+                .count(),
+            600
+        );
+        std::fs::write(&missing, b"restored").unwrap();
+        verify_page_files(&mut tracks).await.unwrap();
+        // A fresh SQL page carries the original candidate status on each request.
+        tracks
+            .iter_mut()
+            .for_each(|t| t.download_status = Some("downloaded".into()));
+        verify_page_files(&mut tracks).await.unwrap();
+        assert_eq!(
+            tracks
+                .iter()
+                .filter(|t| t.download_status.as_deref() == Some("downloaded"))
+                .count(),
+            1200
+        );
+        std::fs::remove_file(&existing).unwrap();
+        tracks
+            .iter_mut()
+            .for_each(|t| t.download_status = Some("downloaded".into()));
+        verify_page_files(&mut tracks).await.unwrap();
+        assert_eq!(
+            tracks
+                .iter()
+                .filter(|t| t.download_status.as_deref() == Some("downloaded"))
+                .count(),
+            600
+        );
     }
 
     // FE-10 regression: get_library must expose the same quality-bucket
@@ -4245,8 +4348,9 @@ pub async fn perform_reconcile_library_physical_state(
                                     .fetch_all(db)
                                     .await
                                     .unwrap_or_default();
-                            if isrc_matches.len() == 1 {
-                                matched_track_id = Some(isrc_matches[0]);
+                            // ED-02: ISRC is recording evidence, not a file/edition lock.
+                            if !isrc_matches.is_empty() {
+                                tracing::warn!("Orphan ISRC match requires edition review");
                             }
                         }
                     }
@@ -4273,8 +4377,8 @@ pub async fn perform_reconcile_library_physical_state(
                             .fetch_all(db)
                             .await
                             .unwrap_or_default();
-                    if isrc_matches.len() == 1 {
-                        matched_track_id = Some(isrc_matches[0]);
+                    if !isrc_matches.is_empty() {
+                        tracing::warn!("Orphan MP4 ISRC match requires edition review");
                     }
                 }
 
@@ -4362,8 +4466,8 @@ pub async fn perform_reconcile_library_physical_state(
                     .await
                     .unwrap_or_default();
 
-                    if title_artist_matches.len() == 1 {
-                        matched_track_id = Some(title_artist_matches[0]);
+                    if !title_artist_matches.is_empty() {
+                        tracing::warn!("Orphan title/artist match requires edition review");
                     }
                 }
             }
@@ -5715,19 +5819,27 @@ pub async fn sync_local_library_inner(
             continue;
         }
 
-        // Step 2: Deduplication against existing tracks in DB
-        let mut matched_track_id: Option<i64> = None;
+        // Step 2: Only a stable file identity (already handled above) may
+        // relink a local download. ISRC/title matches are review candidates.
+        let matched_track_id: Option<i64> = None;
 
         // 2a. Match by ISRC if present
         if let Some(ref isrc_code) = track.isrc {
             if syncify_core_domain::metadata::is_valid_isrc(isrc_code) {
-                let tid_opt = sqlx::query_as("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
-                    .bind(isrc_code)
-                    .fetch_optional(db)
-                    .await;
-                match tid_opt {
-                    Ok(Some((tid,))) => matched_track_id = Some(tid),
-                    Ok(None) => {}
+                let candidates: Result<Vec<(i64,)>, _> =
+                    sqlx::query_as("SELECT id FROM tracks WHERE isrc = ?")
+                        .bind(isrc_code)
+                        .fetch_all(db)
+                        .await;
+                match candidates {
+                    Ok(rows) if !rows.is_empty() => {
+                        errors.push(format!(
+                            "needs_review: ISRC is not edition identity for {:?}",
+                            track.file_path
+                        ));
+                        continue;
+                    }
+                    Ok(_) => {}
                     Err(e) => {
                         errors.push(format!(
                             "Failed to check ISRC {} for {:?}: {}",
@@ -5744,7 +5856,7 @@ pub async fn sync_local_library_inner(
             let clean_title = syncify_core_domain::metadata::sanitize_track_title(&track.title);
             let clean_artist = syncify_core_domain::metadata::sanitize_artist_name(&track.artist);
             if !clean_title.is_empty() && !clean_artist.is_empty() {
-                let title_artist_matches = sqlx::query_scalar(
+                let title_artist_matches = sqlx::query_scalar::<_, i64>(
                     r#"SELECT t.id FROM tracks t
                        JOIN track_artists ta ON t.id = ta.track_id AND ta.role = 'primary'
                        JOIN artists a ON ta.artist_id = a.id
@@ -5766,8 +5878,12 @@ pub async fn sync_local_library_inner(
                     }
                 };
 
-                if title_artist_matches.len() == 1 {
-                    matched_track_id = Some(title_artist_matches[0]);
+                if !title_artist_matches.is_empty() {
+                    errors.push(format!(
+                        "needs_review: title/artist is not edition identity for {:?}",
+                        track.file_path
+                    ));
+                    continue;
                 }
             }
         }
@@ -6502,9 +6618,13 @@ mod local_library_tests {
             "No duplicate track row should be created"
         );
         assert_eq!(
-            report.duplicates_matched, 1,
-            "Must link to existing track via ISRC"
+            report.duplicates_matched, 0,
+            "ISRC alone must not link a local file"
         );
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("needs_review")));
 
         // Total tracks in DB must remain 1
         let total_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
@@ -6513,14 +6633,13 @@ mod local_library_tests {
             .unwrap();
         assert_eq!(total_tracks, 1);
 
-        // Downloads row now points to local file
-        let dl_path: String =
-            sqlx::query_scalar("SELECT file_path FROM downloads WHERE track_id = ?")
-                .bind(existing_tid)
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        assert_eq!(dl_path, flac_file.to_str().unwrap());
+        // A tentative ISRC match must not attach a physical file.
+        let attached: i64 = sqlx::query_scalar("SELECT count(*) FROM downloads WHERE track_id = ?")
+            .bind(existing_tid)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(attached, 0);
     }
 
     #[tokio::test]
@@ -6570,13 +6689,20 @@ mod local_library_tests {
             .unwrap();
 
         assert_eq!(report.imported, 0);
-        assert_eq!(report.duplicates_matched, 1);
+        assert_eq!(report.duplicates_matched, 0);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("needs_review")));
 
         let total_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
             .fetch_one(&db)
             .await
             .unwrap();
-        assert_eq!(total_tracks, 1);
+        assert_eq!(
+            total_tracks, 1,
+            "review cannot create a tentative catalog association"
+        );
     }
 
     #[tokio::test]

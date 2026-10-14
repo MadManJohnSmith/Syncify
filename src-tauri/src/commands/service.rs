@@ -1214,6 +1214,37 @@ pub async fn enrich_qobuz_album_metadata(
     Ok(result)
 }
 
+/// Persist a provider pagination snapshot without conflating account occurrences with
+/// globally deduplicated library rows. A failed write fails the sync rather than
+/// silently presenting a stale 'complete' snapshot.
+async fn record_account_import_count(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+    collection: &str,
+    reported_total: Option<i64>,
+    imported_total: i64,
+    completeness: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO account_import_counts (account_id, collection, reported_total, imported_total, scanned_at, completeness)
+         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+         ON CONFLICT(account_id, collection) DO UPDATE SET
+           reported_total = excluded.reported_total,
+           imported_total = excluded.imported_total,
+           scanned_at = excluded.scanned_at,
+           completeness = excluded.completeness",
+    )
+    .bind(account_id)
+    .bind(collection)
+    .bind(reported_total)
+    .bind(imported_total)
+    .bind(completeness)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Import count persistence error: {e}"))?;
+    Ok(())
+}
+
 /// Get all service statuses
 #[tauri::command]
 pub async fn get_service_statuses(
@@ -1254,6 +1285,42 @@ pub async fn get_service_statuses(
     .await
     .map_err(|e| format!("Database error: {}", e))?;
 
+    let snapshots = sqlx::query_as::<_, (String, i64, String, Option<i64>, i64, String, String)>(
+        "SELECT s.name, c.account_id, c.collection, c.reported_total, c.imported_total, c.scanned_at, c.completeness
+         FROM account_import_counts c
+         JOIN accounts a ON a.id = c.account_id
+         JOIN services s ON s.id = a.service_id
+         ORDER BY s.id, a.id, c.collection",
+    )
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| format!("Database error: {e}"))?;
+    let mut snapshots_by_service: std::collections::HashMap<
+        String,
+        Vec<crate::commands::types::AccountImportCount>,
+    > = std::collections::HashMap::new();
+    for (
+        service,
+        account_id,
+        collection,
+        reported_total,
+        imported_total,
+        scanned_at,
+        completeness,
+    ) in snapshots
+    {
+        snapshots_by_service.entry(service).or_default().push(
+            crate::commands::types::AccountImportCount {
+                account_id,
+                collection,
+                reported_total,
+                imported_total,
+                scanned_at,
+                completeness,
+            },
+        );
+    }
+
     Ok(statuses
         .into_iter()
         .map(
@@ -1269,6 +1336,7 @@ pub async fn get_service_statuses(
                 invalid_reason,
                 last_auth_error,
             )| ServiceStatus {
+                account_import_counts: snapshots_by_service.remove(&name).unwrap_or_default(),
                 name,
                 connected: account_id.is_some(),
                 account_email: email,
@@ -3006,7 +3074,16 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     let effective_account =
         resolve_effective_account_id(db, &service_normalized, account_id_opt).await?;
     let _sync_writer_guard =
-        crate::db::SyncWriterLock::acquire(db, &service_normalized, effective_account).await?;
+        crate::db::SyncWriterLock::acquire(db, &service_normalized, effective_account)
+            .await
+            .map_err(|error| {
+                if error.starts_with("Ya existe una sincronización de ") {
+                    "SyncWriterBusy: another sync is writing this account; retry after it finishes"
+                        .to_string()
+                } else {
+                    error
+                }
+            })?;
 
     let emit = |event: SyncProgressEvent| {
         if let Some(e) = emitter {
@@ -3204,6 +3281,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
 
     let mut imported_tracks_total: u64 = 0;
     let mut favorite_tracks_total: u64 = 0;
+    let mut reported_favorites: Option<i64> = None;
+    let mut reported_albums: Option<i64> = None;
+    let mut reported_playlists: Option<i64> = None;
     let mut favorite_albums_total: u64 = 0;
     let mut favorite_artists_total: u64 = 0;
     let mut playlists_total: u64 = 0;
@@ -3230,6 +3310,14 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     let mut playlists_seen: u64 = 0;
     let mut tracks_expanded: u64 = 0;
     let mut tracks_expansion_failed: u64 = 0;
+
+    // A previous completed snapshot cannot certify an in-flight refresh. Keep
+    // its reported figure for context, but mark it partial until re-observed.
+    sqlx::query("UPDATE account_import_counts SET completeness = 'partial', scanned_at = CURRENT_TIMESTAMP WHERE account_id = ?")
+        .bind(account_id)
+        .execute(db)
+        .await
+        .map_err(|e| format!("Import count persistence error: {e}"))?;
 
     // 4. Dispatch sync by service
     // BD-9: auth resolved and preferences loaded — the sync is about to pull the
@@ -3308,6 +3396,16 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.tracks.total as u64;
+                            reported_favorites = Some(page_total as i64);
+                            record_account_import_count(
+                                db,
+                                account_id,
+                                "favorites",
+                                Some(page_total as i64),
+                                favorite_tracks_total as i64,
+                                "partial",
+                            )
+                            .await?;
                             if page.tracks.items.is_empty() {
                                 break;
                             }
@@ -3467,6 +3565,15 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             }
                         }
                         Err(e) => {
+                            record_account_import_count(
+                                db,
+                                account_id,
+                                "favorites",
+                                reported_favorites,
+                                favorite_tracks_total as i64,
+                                "error",
+                            )
+                            .await?;
                             if e.contains("401") || e.contains("User authentication is required") {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on favorites — marking credentials invalid");
                                 let _ = mark_account_credentials_invalid(
@@ -3512,6 +3619,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.albums.total as u64;
+                            reported_albums = Some(page_total as i64);
                             let items_len = page.albums.items.len();
                             if items_len == 0 {
                                 break;
@@ -4031,6 +4139,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.playlists.total as u64;
+                            reported_playlists = Some(page_total as i64);
                             if page.playlists.items.is_empty() {
                                 break;
                             }
@@ -4488,6 +4597,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             let page_total = page.total as u64;
                             favorites_provider_total =
                                 favorites_provider_total.max(page.total as i64);
+                            reported_favorites = Some(favorites_provider_total);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -4695,6 +4805,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.total as u64;
                             albums_provider_total = albums_provider_total.max(page.total as i64);
+                            reported_albums = Some(albums_provider_total);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -5062,6 +5173,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             let page_total = page.total as u64;
                             playlists_provider_total =
                                 playlists_provider_total.max(page.total as i64);
+                            reported_playlists = Some(playlists_provider_total);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -5522,6 +5634,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.total as u64;
+                            reported_favorites = Some(page_total as i64);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -5678,6 +5791,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.total as u64;
+                            reported_albums = Some(page_total as i64);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -5842,6 +5956,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.total as u64;
+                            reported_playlists = Some(page_total as i64);
                             if page.items.is_empty() {
                                 break;
                             }
@@ -6206,7 +6321,8 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                                 duration_ms: Some(track.duration_ms),
                                                 query_musicbrainz: false,
                                                 album_is_favorite: true,
-                                                album_provider_track_id: Some(track.id.clone()),
+                                                // Spotify track id is not a release id.
+                                                album_provider_track_id: None,
                                             };
                                             let _ = enrich_persist_with_locked_retry(
                                                 &enrichment_engine,
@@ -7240,6 +7356,31 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
         }
     }
 
+    // A sync error (including a failed page or entity expansion) never certifies
+    // a complete collection. NULL means no provider total was observed this run.
+    let snapshot_state = if errors.is_empty() {
+        "complete"
+    } else {
+        "error"
+    };
+    for (collection, total, imported) in [
+        ("favorites", reported_favorites, favorite_tracks_total),
+        ("albums", reported_albums, favorite_albums_total),
+        ("playlists", reported_playlists, playlists_total),
+    ] {
+        if total.is_some() {
+            record_account_import_count(
+                db,
+                account_id,
+                collection,
+                total,
+                imported as i64,
+                snapshot_state,
+            )
+            .await?;
+        }
+    }
+
     let sync_outcome = if !errors.is_empty() {
         if tracks_processed > 0 || favorite_tracks_total > 0 || favorite_albums_total > 0 {
             "partial_failure".to_string()
@@ -7393,6 +7534,95 @@ pub async fn sync_service(
 mod service_tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn account_count_snapshots_preserve_overlap_remote_total_and_partial_error() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE accounts (id INTEGER PRIMARY KEY)")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO accounts (id) VALUES (1), (2)")
+            .execute(&db)
+            .await
+            .unwrap();
+        for statement in include_str!("../../migrations/0099_account_import_counts.sql").split(';')
+        {
+            if !statement.trim().is_empty() {
+                sqlx::query(statement).execute(&db).await.unwrap();
+            }
+        }
+        // Both accounts can contain the same unique track; the provider totals
+        // count occurrences per account, and are not inferred from local rows.
+        record_account_import_count(&db, 1, "favorites", Some(12001), 2, "complete")
+            .await
+            .unwrap();
+        record_account_import_count(&db, 2, "favorites", Some(5), 1, "partial")
+            .await
+            .unwrap();
+        record_account_import_count(&db, 2, "albums", Some(9), 3, "error")
+            .await
+            .unwrap();
+        let rows: Vec<(i64, String, Option<i64>, i64, String)> = sqlx::query_as(
+            "SELECT account_id, collection, reported_total, imported_total, completeness FROM account_import_counts ORDER BY account_id, collection"
+        ).fetch_all(&db).await.unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (1, "favorites".into(), Some(12001), 2, "complete".into()),
+                (2, "albums".into(), Some(9), 3, "error".into()),
+                (2, "favorites".into(), Some(5), 1, "partial".into()),
+            ]
+        );
+        record_account_import_count(&db, 2, "favorites", None, 1, "error")
+            .await
+            .unwrap();
+        let status: (Option<i64>, String) = sqlx::query_as("SELECT reported_total, completeness FROM account_import_counts WHERE account_id = 2 AND collection = 'favorites'").fetch_one(&db).await.unwrap();
+        assert_eq!(status, (None, "error".into()));
+        assert!(
+            record_account_import_count(&db, 1, "other", Some(1), 0, "complete")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn tidal_preimport_writer_contention_and_restart_without_provider() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("synthetic.sqlite");
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let db = sqlx::SqlitePool::connect(&url).await.unwrap();
+        let first = crate::db::SyncWriterLock::acquire(&db, "tidal", 7)
+            .await
+            .unwrap();
+        assert!(first.is_some());
+        let concurrent = crate::db::SyncWriterLock::acquire(&db, "tidal", 7).await;
+        assert!(
+            concurrent.is_err(),
+            "same account must not enter preimport concurrently"
+        );
+        // A download has no sync writer lock: a different account/scope proceeds.
+        let different_account = crate::db::SyncWriterLock::acquire(&db, "tidal", 8)
+            .await
+            .unwrap();
+        assert!(different_account.is_some());
+        drop(different_account);
+        drop(first);
+        drop(db);
+        let restarted = sqlx::SqlitePool::connect(&url).await.unwrap();
+        assert!(crate::db::SyncWriterLock::acquire(&restarted, "tidal", 7)
+            .await
+            .unwrap()
+            .is_some());
+    }
 
     /// Create an in-memory test database with schema
     async fn setup_test_db() -> sqlx::SqlitePool {

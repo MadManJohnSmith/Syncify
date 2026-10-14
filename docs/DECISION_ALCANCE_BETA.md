@@ -89,6 +89,23 @@ y verificado solo a medias. Concreto:
    beta honesto necesita esa lista reducida, no ampliada.
 6. **Tests y CI en verde en Windows**, que hoy está bloqueado en esta máquina
    (`HANDOFF-2026-10-11.md:6`).
+7. **Flujo de descargas más eficiente, sin perder corrección.** Por petición expresa
+   del propietario (2026-10-13/14), ejecutar la cola
+   [`COLA_FLUJO_DESCARGAS_PRE_BETA.md`](COLA_FLUJO_DESCARGAS_PRE_BETA.md):
+   medir el orden de etapas dentro de una pista (`DLX-01`), solapar portada y letras
+   con la transferencia cuando la medición lo justifique (`DLX-02`), eliminar
+   relecturas redundantes (`DLX-03`), revisar los segmentos DASH secuenciales de Tidal
+   (`DLX-04`), deduplicar la portada repetida (`DLX-05`) y, solo después, evaluar
+   concurrencia adaptativa bajo el techo del usuario (`DLX-06`). El gate `DFL-01`
+   exige pruebas y medidas antes/después, preservando edición, calidad, archivos
+   físicos, cancelación y recuperación. Esta es una ampliación explícita del alcance
+   beta; **no habilita nuevos proveedores ni descargas paralelas por rangos**. Depende
+   del cierre ED-01…04 y DL-SVC-01…03 según la cola. Sus IDs deben registrarse en
+   `auditoria/matriz-ajustes.md` por el único escritor del workflow antes de modificar
+   código (R1). El workflow que ya está en marcha no recibe automáticamente esta fase:
+   se amplía o se ejecuta un carril posterior bloqueante. Una subfase condicionada por
+   medición solo se descarta con evidencia y decisión documentada del propietario; no
+   se marca hecha por omisión.
 
 ---
 

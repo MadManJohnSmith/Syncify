@@ -774,6 +774,54 @@ impl QueueGlobalProgress {
     }
 }
 
+/// Sidecar policy, independent of embedded FLAC artwork and lyrics.
+/// Missing fields preserve the historical sidecar-generating behaviour.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArtifactPolicy {
+    pub lyrics_lrc: bool,
+    pub cover_art: bool,
+    pub animated_cover: bool,
+    pub booklet: bool,
+    pub artist_sidecars: bool,
+}
+
+impl Default for ArtifactPolicy {
+    fn default() -> Self {
+        Self {
+            lyrics_lrc: true,
+            cover_art: true,
+            animated_cover: true,
+            booklet: true,
+            artist_sidecars: true,
+        }
+    }
+}
+
+impl ArtifactPolicy {
+    pub fn permits_sidecar(&self, name: &str) -> bool {
+        if name.ends_with(".lrc") {
+            self.lyrics_lrc
+        } else if name == "cover.jpg" {
+            self.cover_art
+        } else if matches!(
+            name,
+            "cover.webp" | "cover.animated.webp" | "folder.webp" | "animated.webp"
+        ) {
+            self.animated_cover
+        } else if name == "booklet.pdf" {
+            self.booklet
+        } else if matches!(
+            name,
+            "artist.nfo" | "biography.txt" | "fanart.jpg" | "artist.jpg"
+        ) {
+            self.artist_sidecars
+        } else {
+            false
+        }
+    }
+}
+
 /// Request to download a track with explicit source identity
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadRequest {
@@ -807,6 +855,8 @@ pub struct DownloadRequest {
     pub quality: String,
     pub embed_lyrics: bool,
     pub embed_artwork: bool,
+    #[serde(default)]
+    pub artifact_policy: ArtifactPolicy,
     pub smart_studio_origin: bool,
     pub allow_fallback: bool,
     #[serde(default)]
@@ -848,6 +898,7 @@ impl Default for DownloadRequest {
             quality: "HI_RES_LOSSLESS".to_string(),
             embed_lyrics: false,
             embed_artwork: false,
+            artifact_policy: ArtifactPolicy::default(),
             smart_studio_origin: false,
             allow_fallback: false,
             strict_quality: false,
@@ -1014,6 +1065,39 @@ lazy_static::lazy_static! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artifact_policy_keeps_embedding_independent_of_sidecars() {
+        let policy = ArtifactPolicy {
+            lyrics_lrc: false,
+            cover_art: false,
+            animated_cover: false,
+            booklet: false,
+            artist_sidecars: false,
+        };
+        for name in [
+            "song.lrc",
+            "cover.jpg",
+            "cover.webp",
+            "booklet.pdf",
+            "artist.jpg",
+        ] {
+            assert!(!policy.permits_sidecar(name));
+            assert!(ArtifactPolicy::default().permits_sidecar(name));
+        }
+        let req = DownloadRequest {
+            embed_artwork: true,
+            embed_lyrics: true,
+            artifact_policy: policy,
+            ..Default::default()
+        };
+        assert!(req.embed_artwork && req.embed_lyrics);
+        let serialized = serde_json::to_value(&req).unwrap();
+        let restored: DownloadRequest = serde_json::from_value(serialized).unwrap();
+        assert!(!restored.artifact_policy.cover_art);
+        let legacy: ArtifactPolicy = serde_json::from_str("{}").unwrap();
+        assert!(legacy.cover_art && legacy.lyrics_lrc);
+    }
 
     #[test]
     fn test_progress_tracker() {

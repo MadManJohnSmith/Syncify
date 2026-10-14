@@ -78,8 +78,12 @@ async fn test_preflight_skip_reasons_explicit_recording() {
     .unwrap();
     sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'q_dl_01', 'FLAC', 24, 96000, 150, 1)")
         .bind(tr_downloaded).execute(&db).await.unwrap();
-    sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, 'C:/Music/dl_01.flac')")
+    let downloaded_fixture = tempfile::tempdir().unwrap();
+    let downloaded_path = downloaded_fixture.path().join("dl_01.flac");
+    std::fs::write(&downloaded_path, b"existing-download").unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, ?)")
         .bind(tr_downloaded)
+        .bind(downloaded_path.to_str().unwrap())
         .execute(&db)
         .await
         .unwrap();

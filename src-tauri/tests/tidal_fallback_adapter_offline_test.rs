@@ -7,6 +7,18 @@
 //! 4. Non-recoverable HTTP 404 stream errors are cleanly classified without phantom mutations.
 
 use syncify_core_domain::quality::{QualityClass, QualityPolicy};
+use syncify_tauri_lib::services::tidal_pipeline::validate_tidal_codec;
+
+#[test]
+fn planned_codec_gate_rejects_strict_and_allows_declared_fallback() {
+    for quality in ["LOSSLESS", "HI_RES_LOSSLESS", "24-192"] {
+        assert!(validate_tidal_codec(quality, "AAC", false)
+            .unwrap_err()
+            .contains("RejectedQuality"));
+        assert!(validate_tidal_codec(quality, "FLAC", false).is_ok());
+        assert!(validate_tidal_codec(quality, "AAC", true).is_ok());
+    }
+}
 
 #[test]
 fn test_strict_quality_rejects_aac_downgrade() {
