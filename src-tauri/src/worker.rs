@@ -627,6 +627,47 @@ impl DownloadWorker {
         .flatten()
         .unwrap_or_else(|| "lossless".to_string());
 
+        let current_status: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
+            "SELECT status FROM download_queue WHERE id = ?",
+        )
+        .bind(queue_id)
+        .fetch_optional(&self.db)
+        .await
+        {
+            Ok(status) => status.flatten(),
+            Err(e) => {
+                tracing::error!(
+                    "Cannot read current status for queue_id {} before completion: {}",
+                    queue_id,
+                    e
+                );
+                None
+            }
+        };
+
+        // A user cancel (or any terminal transition) that landed while the
+        // transfer was in flight must never be overwritten by `complete`. The
+        // queue row is the authoritative state, so the promotion is dropped
+        // unless this worker still owns it as `downloading`.
+        match current_status.as_deref() {
+            Some("downloading") => {}
+            Some(other) => {
+                tracing::warn!(
+                    queue_id,
+                    status = other,
+                    "[Worker] Dropping completion: queue row is no longer downloading"
+                );
+                return;
+            }
+            None => {
+                tracing::error!(
+                    queue_id,
+                    "[Worker] Dropping completion: queue row disappeared"
+                );
+                return;
+            }
+        }
+
         let prov_fb = res.origin_service.is_some()
             && res.effective_service.is_some()
             && res.origin_service.as_deref().unwrap_or("").to_lowercase()
@@ -694,7 +735,7 @@ impl DownloadWorker {
         let req_q = req_q_val;
         let eff_fmt = physical_format.clone();
 
-        if let Err(e) = sqlx::query(
+        match sqlx::query(
             r#"
             UPDATE download_queue
             SET status = 'complete',
@@ -717,7 +758,7 @@ impl DownloadWorker {
                 provider_fallback_used = ?,
                 quality_fallback_used = ?,
                 decision_reason = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'downloading'
             "#,
         )
         .bind(&res.origin_service)
@@ -739,12 +780,23 @@ impl DownloadWorker {
         .execute(&self.db)
         .await
         {
-            tracing::error!(
-                "Failed to update download_queue to complete for queue_id {}: {}",
-                queue_id,
-                e
-            );
-        }
+            Ok(result) if result.rows_affected() > 0 => {}
+            Ok(_) => {
+                tracing::warn!(
+                    queue_id,
+                    "[Worker] Completion lost the state race; queue row no longer downloading"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to update download_queue to complete for queue_id {}: {}",
+                    queue_id,
+                    e
+                );
+                return;
+            }
+        };
 
         let file_size = tokio::fs::metadata(&res.file_path)
             .await
