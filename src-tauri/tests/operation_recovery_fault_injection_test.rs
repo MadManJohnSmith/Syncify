@@ -867,6 +867,8 @@ async fn production_tidal_pipeline_reuses_the_worker_journal_entry() {
         hint_track_id: Some(tid),
         operation_id: Some("op-production-download-04".to_string()),
         account_id: None,
+        locked_account: false,
+        artifact_policy: Default::default(),
     };
 
     let pipeline_journal: JournaledOperation = begin_tidal_download_operation(&pool, &request)

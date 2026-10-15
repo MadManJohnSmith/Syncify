@@ -962,3 +962,143 @@ async fn test_five_track_sample_physical_validation_and_staging_lifecycle() {
     // Cleanup temp test directory
     let _ = tokio::fs::remove_dir_all(&base_dir).await;
 }
+
+// ---------------------------------------------------------------------------
+// LY-02 — UNSYNCEDLYRICS boundary cleanup
+// ---------------------------------------------------------------------------
+
+fn read_vorbis(flac_path: &std::path::Path, key: &str) -> Option<String> {
+    metaflac::Tag::read_from_path(flac_path)
+        .ok()
+        .and_then(|t| t.vorbis_comments().cloned())
+        .and_then(|c| c.get(key).and_then(|v| v.first().cloned()))
+}
+
+/// A real-world provider payload carries id tags and a YouTube credit block in front
+/// of the first verse. After LY-02 they must reach the tag neither as LYRICS (verbatim
+/// original) nor as UNSYNCEDLYRICS (derived plain copy).
+#[test]
+fn test_embed_lyrics_strips_header_only_in_unsynced_tag() {
+    let flac = create_dummy_flac();
+    let payload =
+        "[ar:Artist]\n[ti:Song]\nProvided to YouTube by Label\n\n[00:10.00]First verse\n[00:20.00]Second verse";
+
+    let resolution = LyricsResolution::new_resolved(
+        "LRCLIB",
+        "line_search",
+        LyricsSyncType::LineSynced,
+        Some(payload.to_string()),
+        None,
+        vec![LyricsLineDomain {
+            start_time_ms: 10_000,
+            words: "First verse".to_string(),
+            end_time_ms: None,
+        }],
+        false,
+        "lrclib.net",
+    );
+
+    assert!(validate_and_embed_flac_lyrics(&flac.path, &resolution).is_ok());
+
+    assert_eq!(
+        read_vorbis(&flac.path, "LYRICS").as_deref(),
+        Some(payload),
+        "LYRICS must remain the synced original, byte-for-byte"
+    );
+    assert_eq!(
+        read_vorbis(&flac.path, "UNSYNCEDLYRICS").as_deref(),
+        Some("First verse\nSecond verse"),
+        "UNSYNCEDLYRICS is the derived copy: id tags and credits go, verses stay"
+    );
+}
+
+/// UltraStar-style structure is content, not header: `-` line-gap markers and `#BPM`
+/// metadata must survive the default policy, and `[offset:…]` (kept on purpose) must
+/// not be reported as removed either.
+#[test]
+fn test_embed_lyrics_preserves_ultrastar_and_offset_lines() {
+    let flac = create_dummy_flac();
+    let payload = "[offset:+500]\n[00:10.00]First verse\n[00:20.00]- gap\n[00:30.00] #BPM: 120";
+
+    let resolution = LyricsResolution::new_resolved(
+        "NetEase",
+        "elrc",
+        LyricsSyncType::KaraokeWordSynced,
+        Some(payload.to_string()),
+        None,
+        vec![LyricsLineDomain {
+            start_time_ms: 10_000,
+            words: "First verse".to_string(),
+            end_time_ms: None,
+        }],
+        false,
+        "netease.net",
+    );
+
+    assert!(validate_and_embed_flac_lyrics(&flac.path, &resolution).is_ok());
+
+    assert_eq!(read_vorbis(&flac.path, "LYRICS").as_deref(), Some(payload));
+    assert_eq!(
+        read_vorbis(&flac.path, "UNSYNCEDLYRICS").as_deref(),
+        // `[offset:+500]` is a global timing directive, deliberately NOT in the
+        // default id-tag list; `-` and `#BPM:` are content and must survive.
+        Some("[offset:+500]\nFirst verse\n- gap\n#BPM: 120"),
+    );
+}
+
+/// Plain payloads reach UNSYNCEDLYRICS directly, so the same boundary rule applies to
+/// them; the ambiguously-shaped preamble stays by default.
+#[test]
+fn test_embed_lyrics_cleans_plain_payload_header() {
+    let flac = create_dummy_flac();
+    let plain = "作词：Composer\nFirst verse\nSecond verse";
+
+    let resolution = LyricsResolution::new_resolved(
+        "Musixmatch",
+        "plain",
+        LyricsSyncType::Plain,
+        None,
+        Some(plain.to_string()),
+        vec![],
+        false,
+        "musixmatch",
+    );
+
+    assert!(validate_and_embed_flac_lyrics(&flac.path, &resolution).is_ok());
+
+    assert_eq!(
+        read_vorbis(&flac.path, "UNSYNCEDLYRICS").as_deref(),
+        Some("First verse\nSecond verse"),
+    );
+    assert_eq!(
+        read_vorbis(&flac.path, "LYRICS").as_deref(),
+        None,
+        "plain lyrics must never populate LYRICS"
+    );
+}
+
+/// A payload whose header is the whole body must not produce an empty tag that the
+/// re-read verification below compares against.
+#[test]
+fn test_embed_lyrics_never_writes_empty_unsynced_tag() {
+    let flac = create_dummy_flac();
+    let payload = "Provided to YouTube by Label\n";
+
+    let resolution = LyricsResolution::new_resolved(
+        "YouTube Music",
+        "line_search",
+        LyricsSyncType::LineSynced,
+        Some(payload.to_string()),
+        None,
+        vec![],
+        false,
+        "youtube.com",
+    );
+
+    assert!(validate_and_embed_flac_lyrics(&flac.path, &resolution).is_ok());
+
+    assert_eq!(read_vorbis(&flac.path, "LYRICS").as_deref(), Some(payload),);
+    // The sidecar/FLAC embedded copy keeps the provider bytes verbatim; the derived
+    // empty string is simply not written rather than written as an empty tag.
+    assert_eq!(read_vorbis(&flac.path, "UNSYNCEDLYRICS").as_deref(), None);
+}

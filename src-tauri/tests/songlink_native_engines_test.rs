@@ -587,8 +587,8 @@ async fn test_songlink_unsupported_service_when_no_match() {
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("Unsupported or unavailable service") || err_msg.contains("404"),
-        "Expected unsupported or unavailable service error, got: {}",
+        err_msg.contains("NoDownloadableSource") && err_msg.contains("catalog-only"),
+        "Expected actionable catalog-only error, got: {}",
         err_msg
     );
 }

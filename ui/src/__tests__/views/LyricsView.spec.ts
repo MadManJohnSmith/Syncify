@@ -83,6 +83,45 @@ describe('LyricsView (fully wired tab)', () => {
         document.body.innerHTML = '';
     });
 
+    it.each(['word', 'syllable'] as const)('edits %s tokens, rejects invalid timestamps, saves at original granularity and cancels without writes', async (level) => {
+        const content = level === 'word'
+            ? '[00:01.00][00:02.00] <00:01.00>你好 <00:01.50>café'
+            : '[1000,2400]<0,500,0>你<500,700,0>好';
+        const lyric = { ...lrcLyrics(1), sync_level: level, content };
+        const writes: unknown[] = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_library') return { tracks: [createTestTrack({ lyrics_type: 'synced' })], total: 1, offset: 0, limit: 500, has_more: false };
+            if (cmd === 'get_lyrics') return lyric;
+            if (cmd === 'get_lyrics_stats') return { total_tracks: 1, with_lyrics: 1, synced_lyrics: 1, embedded_lyrics: 0 };
+            if (cmd === 'get_lyrics_providers') return PROVIDERS;
+            if (cmd === 'get_lyrics_config') return CONFIG;
+            if (cmd === 'save_lyrics') { writes.push(args); return { ...lyric, content: (args as { params: { content: string } }).params.content }; }
+            return null;
+        });
+        const wrapper = mount(LyricsView);
+        await flushPromises();
+        await wrapper.findAll('.lyrics-track-list .cursor-pointer')[0].trigger('click');
+        await flushPromises();
+        expect(wrapper.text()).toContain(`Sync · ${level}`);
+        await wrapper.find('button[title="Edit"]').trigger('click');
+        expect(wrapper.find('[data-testid="token-editor"]').exists()).toBe(true);
+        await wrapper.find('input[aria-label="Texto token 1-1"]').setValue('改 ');
+        await wrapper.findAll('.lyrics-editor button').find(b => b.text().includes('Cancel'))!.trigger('click');
+        expect(writes).toHaveLength(0);
+        await wrapper.find('button[title="Edit"]').trigger('click');
+        expect((wrapper.find('input[aria-label="Texto token 1-1"]').element as HTMLInputElement).value).not.toBe('改 ');
+        await wrapper.find('input[aria-label="Timestamp token 1-1"]').setValue('bad');
+        await wrapper.findAll('.lyrics-editor button').find(b => b.text().includes('Save Changes'))!.trigger('click');
+        expect(writes).toHaveLength(0);
+        await wrapper.find('input[aria-label="Timestamp token 1-1"]').setValue(level === 'word' ? '00:01.20' : '100,500,0');
+        await wrapper.find('input[aria-label="Texto token 1-1"]').setValue('改 ');
+        await wrapper.findAll('.lyrics-editor button').find(b => b.text().includes('Save Changes'))!.trigger('click');
+        await flushPromises();
+        expect(writes).toHaveLength(1);
+        expect((writes[0] as { params: { syncLevel: string; content: string } }).params).toMatchObject({ syncLevel: level });
+        expect((writes[0] as { params: { content: string } }).params.content).toContain('改 ');
+    });
+
     it('renders tracks from get_library with lyrics status badges', async () => {
         mockInvoke((cmd, args) => {
             if (cmd === 'get_library') return {

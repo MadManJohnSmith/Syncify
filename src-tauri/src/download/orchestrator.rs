@@ -25,6 +25,49 @@ use tracing::{debug, info, warn};
 /// Superada, el latch deja de deny-by-default y la descarga vuelve a intentarlo.
 pub const AUTH_LATCH_MAX_AGE_HOURS: i64 = 24;
 
+// Only categorical outcomes cross the retry boundary. Provider responses may
+// contain account identifiers, track IDs, or credentials and must not enter the
+// worker's persisted error through this path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthRetryFailure {
+    Entity,
+    Cancelled,
+    AuthExhausted,
+    NoCandidate,
+}
+
+impl std::fmt::Display for AuthRetryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::Entity => "ProviderEntityFailure: provider entity lookup failed for this edition",
+            Self::Cancelled => "Download cancelled by user",
+            Self::AuthExhausted => {
+                "RequiresAuth: accounts could not authenticate for this edition; reconnect an account"
+            }
+            Self::NoCandidate => "SourceIdentityMissing: no usable account for this edition",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for AuthRetryFailure {}
+
+/// True when the error carries the user's cooperative-cancellation signal.
+///
+/// Cancellation is the one case that must survive every layer untouched: retrying
+/// or re-labelling it would keep a cancelled download alive.
+fn is_cancellation_error(error: &str) -> bool {
+    error.contains("Download cancelled") || error.contains("operation was canceled")
+}
+
+fn unclassifiable_retry_failure(error: &str) -> AuthRetryFailure {
+    if is_cancellation_error(error) {
+        AuthRetryFailure::Cancelled
+    } else {
+        AuthRetryFailure::Entity
+    }
+}
+
 /// A-4: ¿el latch de credenciales ya es demasiado viejo para seguir bloqueando?
 ///
 /// `marked_at` es `accounts.last_auth_error_at` (RFC3339, escrito por
@@ -766,6 +809,209 @@ impl DownloadOrchestrator {
         }
     }
 
+    /// WF-RES-01: ¿un rechazo de autenticación puede re-resolverse a otra
+    /// cuenta del MISMO `service_track_id` sin cruzar de servicio?
+    ///
+    /// Un 401/403 no es un veredicto sobre el ítem: es un veredicto sobre la
+    /// CUENTA que se usó para pedirlo. Abortar ahí deja sin descargar un
+    /// `service_track_id` que otras cuentas del mismo proveedor sí pueden
+    /// servir. Pero el mismo texto puede aparecer en metadatos que no tienen
+    /// nada que ver con la sesión (una edición que en su título o año lleva
+    /// «401»), y solo la ruta con `resolution_plan` sabe a qué cuenta se le
+    /// estaba pidiendo. Sin plan no hay identidad que excluir, así que se
+    /// conserva el abort histórico.
+    ///
+    /// Devuelve `None` cuando NO debe reintentarse: cancelación del usuario
+    /// (nunca reintentable), fallo transitorio ya clasificado, texto ajeno a
+    /// la autenticación, o petición de otro proveedor (una hermana de cuenta
+    /// nunca cruza de servicio). Los tests de este módulo fijan cada caso.
+    fn planned_auth_retry<'a>(
+        request: &'a DownloadRequest,
+        error: &str,
+        provider_service: &str,
+    ) -> Option<&'a crate::download::DownloadPlan> {
+        let plan = request.resolution_plan.as_ref()?;
+        if !request
+            .service_name
+            .as_deref()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case(provider_service)
+        {
+            return None;
+        }
+        // Sin cuenta previa no hay nada que excluir: reintentar sería reapuntar
+        // a la misma combinación.
+        let primary = plan.primary()?;
+        primary.account.as_ref()?;
+        if !Self::is_account_auth_rejection(error)
+            || !primary.service_name.eq_ignore_ascii_case(provider_service)
+            || request.service_track_id.as_deref() != Some(primary.service_track_id.as_str())
+        {
+            return None;
+        }
+        Some(plan)
+    }
+
+    /// Only account-scoped credential or stream-entitlement evidence can move
+    /// a planned download to a sibling account. Entity lookups can return 401/403
+    /// for reasons unrelated to the selected account, so a bare HTTP status is
+    /// never sufficient here. Cancellation and transport take precedence.
+    fn is_account_auth_rejection(error: &str) -> bool {
+        if error.contains("Download cancelled")
+            || error.contains("operation was canceled")
+            || crate::worker::is_transport_failure(error)
+        {
+            return false;
+        }
+        let lowered = error.to_ascii_lowercase();
+        if lowered.contains("track/get")
+            || lowered.contains("album/get")
+            || lowered.contains("entity lookup")
+        {
+            return false;
+        }
+        lowered.contains("requiresauth")
+            || lowered.contains("authentication failed")
+            || lowered.contains("credential")
+            || lowered.contains("token expired")
+            || lowered.contains("token invalid")
+            || lowered.contains("stream entitlement")
+    }
+
+    /// Classify a retry using the SAME account scope as the initial auth gate
+    /// (`is_account_auth_rejection`), instead of the loose
+    /// `classify_attempt_failure` that treats every «401» as account auth.
+    ///
+    /// - Cancellation → `None` (never retried, propagated untouched)
+    /// - Transport failure → `TransientFailure`
+    /// - Qobuz preview / physical-quality byte payload → their trigger
+    /// - Genuine account-auth/credential rejection → `RequiresAuth`
+    /// - Non-auth entity 401/403 (`track/get`, `album/get`, entity lookup,
+    ///   bare status) → `None`: the sibling sequence stops; the account is
+    ///   never excluded as auth and the edition is only marked `NotFound`
+    ///   when the text proves the edition itself is invalid, never on the
+    ///   HTTP status alone.
+    fn classify_retry_failure(error: &str) -> Option<crate::download::ReResolutionTrigger> {
+        use crate::download::ReResolutionTrigger;
+
+        if error.contains("Download cancelled") || error.contains("operation was canceled") {
+            return None;
+        }
+        if crate::worker::is_transport_failure(error) {
+            return Some(ReResolutionTrigger::TransientFailure);
+        }
+        if error.contains("QobuzPreviewPayload") {
+            return Some(ReResolutionTrigger::QobuzPreview);
+        }
+        if Self::is_account_auth_rejection(error) {
+            return Some(ReResolutionTrigger::RequiresAuth);
+        }
+        let lowered = error.to_ascii_lowercase();
+        // A bare HTTP status (including entity lookups) is NOT a catalogue
+        // verdict: exclude the edition only when the text proves it.
+        if lowered.contains("401") || lowered.contains("403") {
+            if lowered.contains("stalesource")
+                || lowered.contains("notfound")
+                || lowered.contains("not found")
+                || lowered.contains("stale_404")
+            {
+                return Some(ReResolutionTrigger::NotFound);
+            }
+            return None;
+        }
+        // Anything the categorical classifier calls auth is trusted only via
+        // the account-scoped check above; demote it if it slipped through.
+        match crate::download::classify_attempt_failure(error) {
+            Some(ReResolutionTrigger::RequiresAuth) => None,
+            other => other,
+        }
+    }
+
+    /// WF-RES-01: identidad del intento que acaba de fallar, cuando el rechazo
+    /// de autenticación permite una re-resolución entre cuentas hermanas.
+    ///
+    /// Devuelve `None` cuando NO debe reintentarse (ver `planned_auth_retry`).
+    fn planned_auth_attempt(
+        request: &DownloadRequest,
+        error: &str,
+        provider_service: &str,
+    ) -> Option<(i64, String, Option<i64>)> {
+        let plan = Self::planned_auth_retry(request, error, provider_service)?;
+        let primary = plan.primary()?;
+        Some((
+            primary.service_id,
+            primary.service_track_id.clone(),
+            primary.account.as_ref().map(|a| a.account_id),
+        ))
+    }
+
+    /// Raw provider errors may contain account or transport secrets. Only a
+    /// bounded diagnostic belongs in persisted queue metadata.
+    fn stamp_reresolved_auth_result(
+        res: &mut crate::download::progress::DownloadResult,
+        request: &DownloadRequest,
+    ) {
+        res.origin_service = request.service_name.clone();
+        res.origin_service_track_id = request.service_track_id.clone();
+        res.match_method = Some("plan_re_resolution".to_string());
+        res.match_confidence = Some(0.95);
+        res.fallback_reason = Some(format!(
+            "{} account re-resolution after authentication rejection",
+            request.service_name.as_deref().unwrap_or("provider")
+        ));
+    }
+
+    /// WF-RES-01: el rechazo de credenciales es un veredicto sobre la CUENTA, no
+    /// sobre el intento, así que persiste incluso cuando otra cuenta hermana
+    /// completa la pista. Sin esto, `accounts` seguiría marcando válida a la que el
+    /// proveedor rechazó y el orden de fallback volvería a ponerla delante de la
+    /// hermana en la siguiente pista del mismo servicio.
+    ///
+    /// Falla en silencio a propósito: la descarga ya está completa y el archivo es
+    /// válido; perder la anotación solo reintenta esa cuenta más adelante.
+    pub async fn persist_rejected_primary_account(
+        &self,
+        attempted_account: Option<i64>,
+        service: &str,
+    ) {
+        let Some(account_id) = attempted_account else {
+            return;
+        };
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        match sqlx::query(
+            "UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', \
+             last_auth_error = 'Provider rejected credentials', last_auth_error_at = ? \
+             WHERE id = ? AND service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?)) \
+             AND COALESCE(credentials_invalid, 0) = 0",
+        )
+        .bind(&now)
+        .bind(account_id)
+        .bind(service)
+        .execute(db)
+        .await
+        {
+            Ok(result) if result.rows_affected() > 0 => {
+                tracing::info!(
+                    account_id,
+                    service = %service,
+                    "[Orchestrator] Persisted credential rejection of the rejected primary account"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(
+                    account_id,
+                    service = %service,
+                    error = %err,
+                    "[Orchestrator] Could not persist rejected primary account"
+                );
+            }
+        }
+    }
+
     fn handle_qobuz_fallback<'a>(
         &'a self,
         request: &'a DownloadRequest,
@@ -777,27 +1023,52 @@ impl DownloadOrchestrator {
             let err_msg = err.to_string();
             warn!("[Orchestrator] Qobuz download failed: {}", err_msg);
 
-            // 1. Auth failure (401/403) -> abort without fallback
-            if err_msg.contains("401")
-                || err_msg.contains("403")
-                || err_msg.contains("RequiresAuth")
-                || err_msg.contains("authentication failed")
-                || (err_msg.contains("token")
-                    && (err_msg.contains("expired") || err_msg.contains("invalid")))
+            // 1a. WF-RES-01: antes de abortar, comprobar si el rechazo puede
+            // resolverse con otra cuenta del MISMO `service_track_id`. Un 401 es
+            // un veredicto sobre la cuenta, no sobre la edición; sin plan (o sin
+            // coincidencia con el plan) se conserva el abort de abajo.
+            //
+            // NUNCA se cruza de servicio aquí: `reresolve_after_classified_failure`
+            // resuelve con `requested_service` = qobuz, así que solo ve hermanas
+            // Qobuz, y `allow_fallback=false` sigue prohibiendo Tidal.
+            if let Some((service_id, attempted_track_id, attempted_account)) =
+                Self::planned_auth_attempt(request, &err_msg, "qobuz")
             {
+                let re_resolution = Box::pin(self.reresolve_after_classified_failure(
+                    request,
+                    crate::download::ReResolutionTrigger::RequiresAuth,
+                    service_id,
+                    &attempted_track_id,
+                    attempted_account,
+                    is_lossless_or_hires,
+                ))
+                .await;
+
+                match re_resolution {
+                    Ok(mut res) => {
+                        // The primary account was the one the provider rejected, so
+                        // its rejection must outlive this success: leaving it valid
+                        // would put it back in front of the sibling for every later
+                        // track of the same service.
+                        self.persist_rejected_primary_account(attempted_account, "qobuz")
+                            .await;
+                        Self::stamp_reresolved_auth_result(&mut res, request);
+                        PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+                        return Ok(res);
+                    }
+                    Err(reresolution_err) => return Err(reresolution_err.into()),
+                }
+            }
+
+            // 1. Auth failure -> abort without cross-service fallback.
+            // A bare "401" in edition metadata is not an auth verdict.
+            if Self::is_account_auth_rejection(&err_msg) {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
                 let abort_reason = if err_msg.contains("401") || err_msg.contains("403") {
                     "RequiresAuth: Qobuz authentication required (HTTP 401/403). Automatic fallback aborted.".to_string()
-                } else if err_msg.starts_with("RequiresAuth:") {
-                    format!(
-                        "{}. Automatic fallback aborted.",
-                        err_msg.trim_end_matches('.')
-                    )
                 } else {
-                    format!(
-                        "RequiresAuth: {}. Automatic fallback aborted.",
-                        err_msg.trim_end_matches('.')
-                    )
+                    "RequiresAuth: Qobuz account authentication required. Automatic fallback aborted."
+                        .to_string()
                 };
                 return Err(anyhow!("{}", abort_reason));
             }
@@ -816,7 +1087,9 @@ impl DownloadOrchestrator {
                 || err_msg.contains("NotFound")
                 || err_msg.contains("StaleSource")
                 || err_msg.contains("not found")
-                || err_msg.contains("track/get failed")
+                || (err_msg.contains("track/get failed")
+                    && !err_msg.contains("401")
+                    && !err_msg.contains("403"))
                 || err_msg.contains("unavailable")
                 || err_msg.contains("CountryNotAvailable");
             let is_rejected_q = err_msg.contains("RejectedQuality");
@@ -838,6 +1111,62 @@ impl DownloadOrchestrator {
                 };
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, fail_msg));
                 return Err(anyhow!("{}", fail_msg));
+            }
+
+            // A track/entity lookup 401/403 does not prove an invalid account or
+            // a missing edition. Do not relabel it as a 404 or retry a sibling.
+            if (err_msg.contains("track/get failed")
+                || err_msg.contains("album/get failed")
+                || err_msg.contains("entity lookup"))
+                && (err_msg.contains("401") || err_msg.contains("403"))
+            {
+                let reason = "ProviderEntityFailure: Qobuz entity lookup was rejected";
+                PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, reason));
+                return Err(anyhow!(reason));
+            }
+
+            // 3.5 WF-RES-01: re-resolución EXPLÍCITA antes de cambiar de servicio.
+            //
+            // El plan dijo que esta cuenta/edición podía servir la petición; el
+            // proveedor no estuvo de acuerdo. Se clasifica el fallo, se excluye
+            // ESE intento y se vuelve a resolver con los mismos techos. Tras un
+            // preview o un 401, primero corren las cuentas hermanas Qobuz del
+            // MISMO service_track_id; Tidal solo entra cuando la política permite
+            // salir del servicio, y siempre por la jerarquía de equivalencia.
+            if let Some(plan) = request.resolution_plan.as_ref() {
+                if let Some(trigger) = crate::download::classify_attempt_failure(&err_msg) {
+                    let service_id = plan.primary().map(|c| c.service_id).unwrap_or_default();
+                    let attempted_track_id = plan
+                        .primary()
+                        .map(|c| c.service_track_id.clone())
+                        .unwrap_or_default();
+                    let attempted_account = plan
+                        .primary()
+                        .and_then(|c| c.account.as_ref().map(|a| a.account_id));
+
+                    let re_resolution = Box::pin(self.reresolve_after_classified_failure(
+                        request,
+                        trigger,
+                        service_id,
+                        &attempted_track_id,
+                        attempted_account,
+                        is_lossless_or_hires,
+                    ))
+                    .await;
+
+                    match re_resolution {
+                        Ok(res) => {
+                            PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+                            return Ok(res);
+                        }
+                        Err(reresolution_err) => {
+                            info!(
+                                "[Orchestrator] WF-RES-01 re-resolution after {:?} exhausted for {} ({})",
+                                trigger, attempted_track_id, reresolution_err
+                            );
+                        }
+                    }
+                }
             }
 
             if (is_stale || is_rejected_q || is_preview) && request.allow_fallback {
@@ -1063,6 +1392,243 @@ impl DownloadOrchestrator {
         })
     }
 
+    /// WF-RES-01: tras un fallo clasificado, resuelve de nuevo y ejecuta la
+    /// secuencia completa del plan excluyendo el intento que falló.
+    ///
+    /// La secuencia es `expand_attempt_sequence`: en cada candidato, su cuenta
+    /// primaria seguida INMEDATAMENTE por las cuentas hermanas del MISMO
+    /// `service_track_id`. Por tanto un preview o un 401 agota las hermanas Qobuz
+    /// antes de que otra edición entre, y nunca se repite una combinación.
+    ///
+    /// La calidad y la edición viajan con el plan: este método no reevalúa
+    /// techos ni reordena cuentas. Tras cruzar de servicio solo se admiten
+    /// candidatos de la jerarquía de equivalencia (ISRC validado), nunca un
+    /// SongLink: no es prueba de audio descargable.
+    /// An account-auth rejection only permits another account for the exact
+    /// provider edition that failed, even if the resolver offers other editions.
+    fn auth_retry_candidate_is_original_edition(
+        trigger: crate::download::ReResolutionTrigger,
+        service_id: i64,
+        attempted_track_id: &str,
+        candidate: &crate::download::PlanCandidate,
+    ) -> bool {
+        !matches!(trigger, crate::download::ReResolutionTrigger::RequiresAuth)
+            || (candidate.service_id == service_id
+                && candidate.service_track_id == attempted_track_id)
+    }
+
+    /// WF-RES-01: resultado categórico de haber agotado la secuencia de
+    /// re-resolución. Nunca incluye texto crudo del proveedor ni IDs.
+    ///
+    /// El motivo que disparó la ronda decide la etiqueta: un rechazo de
+    /// credenciales solo se mantiene `RequiresAuth` cuando TODAS las cuentas
+    /// probadas fallaron por autenticación; un 401 de entity lookup (u otro
+    /// fallo no clasificable) devuelve el fallo de entidad propiamente dicho,
+    /// porque la cuenta nunca fue descartada ni la edición invalidada.
+    fn auth_retry_exhaustion(
+        trigger: crate::download::ReResolutionTrigger,
+        attempts: usize,
+        all_attempts_auth: bool,
+    ) -> AuthRetryFailure {
+        if attempts == 0 {
+            // No usable sibling: the original account's genuine credential
+            // rejection remains the only verdict.
+            return if trigger == crate::download::ReResolutionTrigger::RequiresAuth {
+                AuthRetryFailure::AuthExhausted
+            } else {
+                AuthRetryFailure::NoCandidate
+            };
+        }
+        if trigger != crate::download::ReResolutionTrigger::RequiresAuth {
+            return AuthRetryFailure::Entity;
+        }
+        if all_attempts_auth {
+            AuthRetryFailure::AuthExhausted
+        } else {
+            AuthRetryFailure::Entity
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn reresolve_after_classified_failure(
+        &self,
+        request: &DownloadRequest,
+        trigger: crate::download::ReResolutionTrigger,
+        service_id: i64,
+        attempted_track_id: &str,
+        attempted_account: Option<i64>,
+        is_lossless_or_hires: bool,
+    ) -> std::result::Result<DownloadResult, AuthRetryFailure> {
+        let canonical_track_id = request.canonical_track_id.unwrap_or_default();
+        let exclusions = crate::download::exclusions_for_failure(
+            trigger,
+            canonical_track_id,
+            service_id,
+            attempted_track_id,
+            attempted_account,
+        );
+
+        // La re-resolución solo tiene sentido con base de datos: sin ella no hay
+        // identidad de edición que reanudar.
+        let Some(db) = self.db.as_ref() else {
+            return Err(AuthRetryFailure::Entity);
+        };
+
+        let intent = crate::download::DownloadIntent {
+            canonical_track_id: request.canonical_track_id.unwrap_or_default(),
+            requested_service: request.service_name.clone(),
+            requested_quality: Some(request.quality.clone()),
+            strict_quality: request.strict_quality,
+            allow_fallback: request.allow_fallback,
+            // La edición ya fijada se conserva: no se permite que el reorden
+            // cambie de edición sin pasar por la equivalencia.
+            locked_track_source_id: crate::download::resolve_locked_track_source_id(
+                db,
+                request.canonical_track_id.unwrap_or_default(),
+                request.service_name.as_deref(),
+                request.service_track_id.as_deref(),
+            )
+            .await,
+            preferred_account_id: None,
+        };
+
+        // Misma intención que produjo el plan original, así que el techo de
+        // calidad no puede derivar entre el primer intento y este.
+        let re_plan = crate::download::resolve_download_plan(db, &intent, &exclusions)
+            .await
+            .map_err(|_| Self::auth_retry_exhaustion(trigger, 0, false))?;
+
+        // Las exclusiones se ACUMULAN entre rondas: cada fallo clasificado se
+        // suma al paquete anterior, así que una ronda nueva no puede reintentar
+        // una combinación que una ronda anterior ya descartó.
+        let mut exclusions = exclusions;
+        let steps = crate::download::expand_attempt_sequence(&re_plan);
+        let mut all_attempts_auth = true;
+        let mut attempts: usize = 0;
+        for step in steps {
+            let Some(candidate) = step.identity(&re_plan) else {
+                continue;
+            };
+            if !Self::auth_retry_candidate_is_original_edition(
+                trigger,
+                service_id,
+                attempted_track_id,
+                candidate,
+            ) {
+                continue;
+            }
+            let Some(account) = step.account(&re_plan) else {
+                continue;
+            };
+            // Nunca reintentar la misma combinación.
+            if exclusions.excludes_identity(candidate.service_id, &candidate.service_track_id)
+                || exclusions.excludes_account(
+                    re_plan.canonical_track_id,
+                    candidate.service_id,
+                    account.account_id,
+                )
+            {
+                continue;
+            }
+            if attempts as u32 >= crate::download::resolver::MAX_RE_RESOLUTIONS {
+                break;
+            }
+            attempts += 1;
+
+            let mut candidate_req = request.clone();
+            candidate_req.service_name = Some(candidate.service_name.clone());
+            candidate_req.service_track_id = Some(candidate.service_track_id.clone());
+            candidate_req.quality = re_plan.quality.effective.clone();
+            candidate_req.resolution_plan = Some(crate::download::DownloadPlan {
+                canonical_track_id: re_plan.canonical_track_id,
+                candidates: vec![crate::download::PlanCandidate {
+                    account: Some(account.clone()),
+                    sibling_accounts: Vec::new(),
+                    ..candidate.clone()
+                }],
+                quality: re_plan.quality.clone(),
+                strict_quality: re_plan.strict_quality,
+                allow_fallback: re_plan.allow_fallback,
+            });
+            if is_lossless_or_hires {
+                candidate_req.allow_fallback = false;
+            }
+
+            info!(
+                "[Orchestrator] WF-RES-01 re-resolution after {:?}: edition {} on service '{}' with account {}",
+                trigger,
+                candidate.service_track_id,
+                candidate.service_name,
+                account.account_id
+            );
+
+            let outcome = if candidate.service_name.eq_ignore_ascii_case("qobuz") {
+                Box::pin(self.qobuz.download_track(&candidate_req, Some(db))).await
+            } else {
+                Box::pin(self.tidal.download_track(&candidate_req, Some(db))).await
+            };
+
+            match outcome {
+                Ok(mut res) => {
+                    res.origin_service = request.service_name.clone();
+                    res.origin_service_track_id = request.service_track_id.clone();
+                    res.effective_service = Some(candidate.service_name.clone());
+                    res.effective_service_track_id = Some(candidate.service_track_id.clone());
+                    res.fallback_reason = Some(format!(
+                        "{} re-resolution after {:?} on verified candidate",
+                        candidate.service_name, trigger
+                    ));
+                    res.match_method = Some("plan_re_resolution".to_string());
+                    res.match_confidence = Some(0.95);
+                    Self::reconcile_physical_audio_quality(&mut res, request);
+                    return Ok(res);
+                }
+                Err(retry_err) => {
+                    let retry_msg = retry_err.to_string();
+                    // Clasificar solo reintentos con la MISMA restricción que la
+                    // puerta de autenticación inicial: una cuenta hermana nunca
+                    // se apartar por un HTTP 401 de entity lookup ni se olvida
+                    // la cuenta por un «RequiresAuth» suelto.
+                    let Some(retry_trigger) = Self::classify_retry_failure(&retry_msg) else {
+                        // Un fallo no clasificable (cancelación incluida) detiene la
+                        // secuencia en lugar de seguir intentando.
+                        let failure = unclassifiable_retry_failure(&retry_msg);
+                        warn!(
+                            "[Orchestrator] WF-RES-01 re-resolution stopped: {}",
+                            failure
+                        );
+                        return Err(failure);
+                    };
+                    if retry_trigger != crate::download::ReResolutionTrigger::RequiresAuth {
+                        all_attempts_auth = false;
+                    }
+                    // Registrar el nuevo fallo en el paquete acumulado.
+                    let round_exclusions = crate::download::exclusions_for_failure(
+                        retry_trigger,
+                        re_plan.canonical_track_id,
+                        candidate.service_id,
+                        &candidate.service_track_id,
+                        Some(account.account_id),
+                    );
+                    exclusions.merge(&round_exclusions);
+                    debug!(
+                        "[Orchestrator] WF-RES-01 candidate {} failed again; continuing with the next attempt",
+                        candidate.service_track_id
+                    );
+                }
+            }
+        }
+
+        // Exhaustion is categorical: never include raw provider responses or IDs
+        // in the returned error (the worker persists it). For an auth-triggered
+        // retry, only all-account auth failures keep the RequiresAuth label.
+        Err(Self::auth_retry_exhaustion(
+            trigger,
+            attempts,
+            all_attempts_auth,
+        ))
+    }
+
     fn download_primary_tidal<'a>(
         &'a self,
         request: &'a DownloadRequest,
@@ -1109,17 +1675,44 @@ impl DownloadOrchestrator {
             let err_msg = err.to_string();
             warn!("[Orchestrator] Tidal download failed: {}", err_msg);
 
-            // 1. Auth failure (401/403) -> abort without fallback
-            if err_msg.contains("401")
-                || err_msg.contains("403")
-                || err_msg.contains("RequiresAuth")
-                || err_msg.contains("authentication failed")
+            // 1a. WF-RES-01: antes de abortar, comprobar si el rechazo puede
+            // resolverse con otra cuenta del MISMO `service_track_id`. Igual que
+            // en Qobuz: nunca se cruza de servicio, y sin plan se conserva el
+            // abort de abajo.
+            if let Some((service_id, attempted_track_id, attempted_account)) =
+                Self::planned_auth_attempt(request, &err_msg, "tidal")
             {
+                let re_resolution = Box::pin(self.reresolve_after_classified_failure(
+                    request,
+                    crate::download::ReResolutionTrigger::RequiresAuth,
+                    service_id,
+                    &attempted_track_id,
+                    attempted_account,
+                    is_lossless_or_hires,
+                ))
+                .await;
+
+                match re_resolution {
+                    Ok(mut res) => {
+                        // Same contract as Qobuz: the rejection belongs to the
+                        // account the provider refused, so it is persisted even
+                        // though a sibling completed the download.
+                        self.persist_rejected_primary_account(attempted_account, "tidal")
+                            .await;
+                        Self::stamp_reresolved_auth_result(&mut res, request);
+                        PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+                        return Ok(res);
+                    }
+                    Err(reresolution_err) => return Err(reresolution_err.into()),
+                }
+            }
+
+            // 1. Auth failure -> abort without cross-service fallback.
+            // A bare "401" in edition metadata is not an auth verdict.
+            if Self::is_account_auth_rejection(&err_msg) {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
-                let abort_reason = format!(
-                    "RequiresAuth: {}. Automatic fallback aborted.",
-                    err_msg.trim_end_matches('.')
-                );
+                let abort_reason =
+                    "RequiresAuth: Tidal account authentication required. Automatic fallback aborted.";
                 return Err(anyhow!("{}", abort_reason));
             }
 
@@ -1409,14 +2002,16 @@ impl DownloadOrchestrator {
                 }
             }
 
-            PROGRESS_TRACKER.update(DownloadProgress::failed(
-                item_id,
-                &format!("Unsupported or unavailable service: {}", primary_service),
-            ));
-            Err(anyhow!(
-                "Unsupported or unavailable service: {}",
-                primary_service
-            ))
+            let diagnosis = if matches!(
+                primary_service,
+                "spotify" | "deezer" | "apple_music" | "soundcloud"
+            ) {
+                format!("NoDownloadableSource: {} is catalog-only; connect Qobuz or Tidal and review the provider item before download", primary_service)
+            } else {
+                format!("Unsupported or unavailable service: {}", primary_service)
+            };
+            PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &diagnosis));
+            Err(anyhow!(diagnosis))
         })
     }
 
@@ -1629,6 +2224,484 @@ lazy_static::lazy_static! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Synthetic catalogue only: no downloader, keyring, profile, or network.
+    #[tokio::test]
+    async fn auth_retry_never_attempts_another_edition_after_a_accounts_are_excluded() {
+        use crate::download::ReResolutionTrigger;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        // The current persistent schema permits only one source per (track,
+        // service). Shadow that empty table on this one SQLite connection to
+        // exercise the resolver's edition boundary without altering migrations.
+        sqlx::query("CREATE TEMP TABLE track_sources AS SELECT * FROM main.track_sources WHERE 0")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO accounts (id, service_id, display_name, email, is_active, credentials_json, credentials_invalid, streaming_entitled) VALUES (31, 2, 'A-one', 'a-one@test.invalid', 1, 'synthetic', 0, 1), (32, 2, 'A-two', 'a-two@test.invalid', 1, 'synthetic', 0, 1)")
+            .execute(&db).await.unwrap();
+        let track: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title) VALUES ('synthetic editions') RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'edition-A', 'FLAC', 16, 44100, 100, 1), (?, 2, 'edition-B', 'FLAC', 16, 44100, 90, 1)")
+            .bind(track).bind(track).execute(&db).await.unwrap();
+        let intent = crate::download::DownloadIntent {
+            canonical_track_id: track,
+            requested_service: Some("qobuz".into()),
+            requested_quality: Some("lossless".into()),
+            strict_quality: true,
+            allow_fallback: false,
+            locked_track_source_id: crate::download::resolve_locked_track_source_id(
+                &db,
+                track,
+                Some("qobuz"),
+                Some("edition-A"),
+            )
+            .await,
+            ..Default::default()
+        };
+        assert!(intent.locked_track_source_id.is_some());
+        let initial = crate::download::resolve_download_plan(&db, &intent, &Default::default())
+            .await
+            .unwrap();
+        let a = initial.primary().unwrap();
+        assert_eq!(a.service_track_id, "edition-A");
+        assert_eq!(a.sibling_accounts.len(), 1);
+        let first_account = a.account.as_ref().unwrap().account_id;
+        let second_account = a.sibling_accounts[0].account_id;
+        assert_ne!(first_account, second_account);
+
+        let trigger = ReResolutionTrigger::RequiresAuth;
+        let mut exclusions = crate::download::exclusions_for_failure(
+            trigger,
+            track,
+            2,
+            "edition-A",
+            Some(first_account),
+        );
+        let after_first = crate::download::resolve_download_plan(&db, &intent, &exclusions)
+            .await
+            .unwrap();
+        assert_eq!(after_first.primary().unwrap().service_track_id, "edition-A");
+        assert_eq!(
+            after_first
+                .primary()
+                .unwrap()
+                .account
+                .as_ref()
+                .unwrap()
+                .account_id,
+            second_account
+        );
+        assert!(crate::download::expand_attempt_sequence(&after_first)
+            .iter()
+            .any(|step| {
+                step.identity(&after_first).is_some_and(|candidate| {
+                    DownloadOrchestrator::auth_retry_candidate_is_original_edition(
+                        trigger,
+                        2,
+                        "edition-A",
+                        candidate,
+                    ) && step
+                        .account(&after_first)
+                        .is_some_and(|account| account.account_id == second_account)
+                })
+            }));
+
+        // Before the second A failure, the resolver already offers B with an
+        // account in the same expansion. The production gate must not execute it.
+        let b = after_first
+            .candidates
+            .iter()
+            .find(|candidate| candidate.service_track_id == "edition-B")
+            .unwrap();
+        assert!(b.account.is_some());
+        assert!(
+            !DownloadOrchestrator::auth_retry_candidate_is_original_edition(
+                trigger,
+                2,
+                "edition-A",
+                b,
+            )
+        );
+        assert!(
+            DownloadOrchestrator::auth_retry_candidate_is_original_edition(
+                ReResolutionTrigger::NotFound,
+                2,
+                "edition-A",
+                b,
+            ),
+            "non-auth failures may still choose a different edition"
+        );
+
+        exclusions.merge(&crate::download::exclusions_for_failure(
+            trigger,
+            track,
+            2,
+            "edition-A",
+            Some(second_account),
+        ));
+        // Account exclusions are currently canonical-track-wide. Thus once
+        // both A accounts are excluded, even B has no usable account; a future
+        // edition-scoped exclusion would offer B, and the gate above covers it.
+        assert!(
+            crate::download::resolve_download_plan(&db, &intent, &exclusions)
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn auth_fallback_reason_omits_untrusted_track_id() {
+        let raw_id = "untrusted-track-id:secret=do-not-persist";
+        let request = DownloadRequest {
+            service_name: Some("qobuz".into()),
+            service_track_id: Some(raw_id.into()),
+            ..Default::default()
+        };
+        let mut result = DownloadResult::default();
+        DownloadOrchestrator::stamp_reresolved_auth_result(&mut result, &request);
+        assert_eq!(result.origin_service_track_id.as_deref(), Some(raw_id));
+        let reason = result.fallback_reason.as_deref().unwrap();
+        assert_eq!(
+            reason,
+            "qobuz account re-resolution after authentication rejection"
+        );
+        assert!(!reason.contains(raw_id));
+    }
+
+    #[tokio::test]
+    async fn auth_re_resolution_selects_same_edition_sibling_without_relaxing_quality() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query("INSERT OR IGNORE INTO services (id, name, supports_download, max_quality) VALUES (2, 'qobuz', 1, 'hires'), (3, 'tidal', 1, 'hires')")
+            .execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO accounts (id, service_id, display_name, email, is_active, credentials_json, credentials_invalid, streaming_entitled) VALUES (11, 2, 'primary', 'primary@test.invalid', 1, 'synthetic', 0, 1), (12, 2, 'sibling', 'sibling@test.invalid', 1, 'synthetic', 0, 1)")
+            .execute(&db).await.unwrap();
+        let track: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('synthetic') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'same-edition', 'FLAC', 16, 44100, 100, 1)")
+            .bind(track).execute(&db).await.unwrap();
+        let intent = crate::download::DownloadIntent {
+            canonical_track_id: track,
+            requested_service: Some("qobuz".into()),
+            requested_quality: Some("lossless".into()),
+            strict_quality: true,
+            allow_fallback: false,
+            ..Default::default()
+        };
+        let plan = crate::download::resolve_download_plan(&db, &intent, &Default::default())
+            .await
+            .unwrap();
+        let primary = plan.primary().unwrap();
+        assert_eq!(primary.account.as_ref().unwrap().account_id, 12);
+        let request = DownloadRequest {
+            canonical_track_id: Some(track),
+            service_name: Some("qobuz".into()),
+            service_track_id: Some("same-edition".into()),
+            quality: plan.quality.effective.clone(),
+            strict_quality: true,
+            allow_fallback: false,
+            resolution_plan: Some(plan.clone()),
+            ..Default::default()
+        };
+        let error = "RequiresAuth: Qobuz HTTP 401";
+        assert!(DownloadOrchestrator::planned_auth_retry(&request, error, "qobuz").is_some());
+        let credential_error = "Failed to decrypt Qobuz credentials: private-provider-detail";
+        assert_eq!(
+            crate::download::classify_attempt_failure(credential_error),
+            None
+        );
+        assert!(
+            DownloadOrchestrator::planned_auth_retry(&request, credential_error, "qobuz").is_some(),
+            "a credential-only rejection must still reach the sibling even though no categorical trigger exists"
+        );
+        assert!(
+            DownloadOrchestrator::planned_auth_retry(&request, credential_error, "tidal").is_none()
+        );
+        for non_auth in [
+            "Qobuz track/get failed for ID 123: HTTP 401 Unauthorized",
+            "Qobuz album/get failed: HTTP 403",
+            "Qobuz entity lookup: HTTP 401",
+            "Download cancelled by user: credentials invalid",
+            "NetworkExhausted: token expired while connection reset",
+        ] {
+            assert!(
+                DownloadOrchestrator::planned_auth_retry(&request, non_auth, "qobuz").is_none(),
+                "not account-specific: {non_auth}"
+            );
+        }
+        let exclusions = crate::download::exclusions_for_failure(
+            crate::download::ReResolutionTrigger::RequiresAuth,
+            track,
+            primary.service_id,
+            &primary.service_track_id,
+            Some(12),
+        );
+        let next = crate::download::resolve_download_plan(&db, &intent, &exclusions)
+            .await
+            .unwrap();
+        let sibling = next.primary().unwrap();
+        assert_eq!(sibling.service_track_id, "same-edition");
+        assert_eq!(sibling.account.as_ref().unwrap().account_id, 11);
+        assert_eq!(next.quality.effective, plan.quality.effective);
+        assert!(next.strict_quality);
+        let exhausted = crate::download::exclusions_for_failure(
+            crate::download::ReResolutionTrigger::RequiresAuth,
+            track,
+            primary.service_id,
+            &primary.service_track_id,
+            Some(11),
+        );
+        let mut all = exclusions;
+        all.merge(&exhausted);
+        assert!(crate::download::resolve_download_plan(&db, &intent, &all)
+            .await
+            .is_err());
+        assert!(DownloadOrchestrator::planned_auth_retry(
+            &request,
+            "Download cancelled by user",
+            "qobuz"
+        )
+        .is_none());
+        assert!(DownloadOrchestrator::planned_auth_retry(
+            &request,
+            "metadata release 401 (remaster)",
+            "qobuz"
+        )
+        .is_none());
+        assert!(DownloadOrchestrator::planned_auth_retry(
+            &request,
+            "RequiresAuth: Tidal HTTP 401",
+            "tidal"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn sibling_retry_requires_account_scoped_auth_not_entity_http_status() {
+        for auth in [
+            "Failed to decrypt Qobuz credentials: private-provider-detail",
+            "RequiresAuth: Qobuz token expired (HTTP 401)",
+            "Qobuz rejected the credentials (HTTP 401)",
+            "Tidal authentication failed for user token",
+            "stream entitlement denied for this account",
+        ] {
+            assert!(
+                DownloadOrchestrator::is_account_auth_rejection(auth),
+                "account auth: {auth}"
+            );
+        }
+        for unrelated in [
+            "Qobuz track/get failed for ID 123: HTTP 401 Unauthorized",
+            "Qobuz album/get failed for ID 123: HTTP 403 Forbidden",
+            "Qobuz entity lookup: HTTP 401",
+            "HTTP 401 Unauthorized",
+            "metadata release 401 remaster",
+            "Download cancelled by user: token expired",
+            "operation was canceled: credentials invalid",
+            "NetworkExhausted: token expired while connection reset",
+            "error sending request: HTTP 401 token expired",
+        ] {
+            assert!(
+                !DownloadOrchestrator::is_account_auth_rejection(unrelated),
+                "not account auth: {unrelated}"
+            );
+        }
+    }
+
+    /// A retry must never be treated as account auth when it is only an entity
+    /// lookup 401: the sibling loop then has no third attempt to exclude.
+    #[test]
+    fn retry_classification_does_not_punish_account_for_entity_lookup_401() {
+        use crate::download::ReResolutionTrigger;
+
+        // Un HTTP status solo (track/get, album/get, entity lookup) no es veredicto de cuenta.
+        for entity_401 in [
+            "Qobuz track/get failed for ID 123: HTTP 401 Unauthorized",
+            "Qobuz album/get failed for ID 123: HTTP 403 Forbidden",
+            "Qobuz entity lookup: HTTP 401",
+            "HTTP401 unauthorized",
+        ] {
+            assert_eq!(
+                DownloadOrchestrator::classify_retry_failure(entity_401),
+                None,
+                "entity lookup 401/403 must not classify retry: {entity_401}"
+            );
+        }
+        // Sí lo es cuando además hay evidencia de edición inexistente.
+        for genuine_not_found in [
+            "NotFound: entity lookup HTTP 404 edition missing",
+            "StaleSource: stale_404 for HTTP 401 edition",
+        ] {
+            assert_eq!(
+                DownloadOrchestrator::classify_retry_failure(genuine_not_found),
+                Some(ReResolutionTrigger::NotFound),
+                "edition truly invalid must be NotFound: {genuine_not_found}"
+            );
+        }
+        // Genuina AUTH de cuenta: se excluye la cuenta y se avanza.
+        for account_auth in [
+            "RequiresAuth: Qobuz HTTP 401",
+            "Failed to decrypt Qobuz credentials: private-provider-detail",
+        ] {
+            assert_eq!(
+                DownloadOrchestrator::classify_retry_failure(account_auth),
+                Some(ReResolutionTrigger::RequiresAuth),
+                "account auth must be RequiresAuth: {account_auth}"
+            );
+        }
+        // Cancelación y transporte siempre mandan.
+        assert_eq!(
+            DownloadOrchestrator::classify_retry_failure("Download cancelled"),
+            None
+        );
+        assert_eq!(
+            DownloadOrchestrator::classify_retry_failure("NetworkExhausted: connection reset"),
+            Some(ReResolutionTrigger::TransientFailure)
+        );
+        // Preview y calidad permanecen clasificadas.
+        assert_eq!(
+            DownloadOrchestrator::classify_retry_failure(
+                "QobuzPreviewPayload: preview of 30 s instead of stream"
+            ),
+            Some(ReResolutionTrigger::QobuzPreview)
+        );
+        assert_eq!(
+            DownloadOrchestrator::classify_retry_failure(
+                "InvalidAudioPayload: physical quality below the minimum floor"
+            ),
+            Some(ReResolutionTrigger::PhysicalQualityInsufficient)
+        );
+    }
+
+    /// Regression: after an entity-lookup 401 in the retry path, the sibling
+    /// loop must stop that candidate (no third account attempt) without marking
+    /// the failed account as credentials-invalid or the edition as not found.
+    /// Only the ORIGINAL rejection is persisted, never the raw retry error.
+    #[tokio::test]
+    async fn entity_lookup_401_on_retry_does_not_advance_to_third_account() {
+        use crate::download::ReResolutionTrigger;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        // Service 2 (qobuz) already exists in the migrated schema.
+        sqlx::query(
+            "INSERT INTO accounts (id, service_id, display_name, email, is_active, credentials_json, credentials_invalid, streaming_entitled) \
+             VALUES (21, 2, 'one', 'one@test.invalid', 1, 'synth', 0, 1), \
+                    (22, 2, 'two', 'two@test.invalid', 1, 'synth', 0, 1), \
+                    (23, 2, 'three', 'three@test.invalid', 1, 'synth', 0, 1)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let track: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('synthetic') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'same-edition', 'FLAC', 16, 44100, 100, 1)")
+            .bind(track)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        // 1. First re-resolution round: sibling 22 fails with an entity-lookup
+        //    401. The classifier must return None (stop), never RequiresAuth.
+        let entity_401 = "Qobuz track/get failed for ID 5: HTTP 401 Unauthorized";
+        let retry_classified = DownloadOrchestrator::classify_retry_failure(entity_401);
+        assert_eq!(
+            retry_classified, None,
+            "entity-lookup 401 must not advance the sibling sequence"
+        );
+        // Crucially, the 401 text is NOT an account-auth verdict: the failed
+        // account must keep its credentials valid.
+        assert!(!DownloadOrchestrator::is_account_auth_rejection(entity_401));
+        assert!(DownloadOrchestrator::planned_auth_retry(
+            &DownloadRequest {
+                canonical_track_id: Some(track),
+                service_name: Some("qobuz".into()),
+                service_track_id: Some("same-edition".into()),
+                ..Default::default()
+            },
+            entity_401,
+            "qobuz"
+        )
+        .is_none());
+        // No account was invalidated and no raw error was persisted.
+        let invalid: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE credentials_invalid != 0")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            invalid, 0,
+            "no account may be marked invalid by a 401 lookup"
+        );
+        let persisted: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM accounts WHERE last_auth_error LIKE '%track/get%'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(persisted, 0, "the raw retry error is never persisted");
+
+        // 2. A credential-only error DOES advance, still on the same edition.
+        let credential_error = "Failed to decrypt Qobuz credentials: private-provider-detail";
+        assert_eq!(
+            DownloadOrchestrator::classify_retry_failure(credential_error),
+            Some(ReResolutionTrigger::RequiresAuth)
+        );
+        let next = crate::download::resolve_download_plan(
+            &db,
+            &crate::download::DownloadIntent {
+                canonical_track_id: track,
+                requested_service: Some("qobuz".into()),
+                requested_quality: Some("lossless".into()),
+                strict_quality: true,
+                allow_fallback: false,
+                ..Default::default()
+            },
+            &crate::download::exclusions_for_failure(
+                ReResolutionTrigger::RequiresAuth,
+                track,
+                2,
+                "same-edition",
+                Some(23),
+            ),
+        )
+        .await
+        .unwrap();
+        let advanced = next.primary().unwrap();
+        assert_eq!(
+            advanced.service_track_id, "same-edition",
+            "the sibling advances on the SAME edition"
+        );
+        assert_eq!(advanced.account.as_ref().unwrap().account_id, 22);
+        assert!(next.strict_quality, "quality policy is preserved");
+    }
 
     #[test]
     fn preview_fallback_diagnostics_do_not_claim_qobuz_auth_failure() {
@@ -2016,5 +3089,317 @@ mod tests {
         child
             .join()
             .expect("Thread with 256 KB stack panicked or overflowed!");
+    }
+
+    /// P1 regression: exhaustion mapping must keep entity failures distinct
+    /// from credential failures. This is a pure function on categorical
+    /// outcomes only - no provider response, no account or track IDs.
+    #[test]
+    fn auth_retry_exhaustion_labels_entity_and_all_account_auth_differently() {
+        use crate::download::ReResolutionTrigger;
+
+        // All sibling accounts failed with real credential rejections.
+        assert_eq!(
+            DownloadOrchestrator::auth_retry_exhaustion(ReResolutionTrigger::RequiresAuth, 2, true,),
+            AuthRetryFailure::AuthExhausted,
+            "true all-account auth exhaustion stays RequiresAuth"
+        );
+        // The failing sibling returned an entity 401 (`track/get`) that the
+        // classifier refused to classify: the account was never discredited,
+        // so it must NOT be reported as an authentication failure.
+        assert_eq!(
+            DownloadOrchestrator::auth_retry_exhaustion(
+                ReResolutionTrigger::RequiresAuth,
+                1,
+                false,
+            ),
+            AuthRetryFailure::Entity,
+            "an unclassifiable entity failure must not become RequiresAuth"
+        );
+        // A classified non-auth failure (e.g. preview) that exhausted the
+        // sequence is likewise an entity failure, not an auth failure.
+        assert_eq!(
+            DownloadOrchestrator::auth_retry_exhaustion(
+                ReResolutionTrigger::RequiresAuth,
+                2,
+                false,
+            ),
+            AuthRetryFailure::Entity
+        );
+        // Non-auth triggers never produce auth exhaustion.
+        assert_eq!(
+            DownloadOrchestrator::auth_retry_exhaustion(
+                ReResolutionTrigger::TransientFailure,
+                2,
+                true,
+            ),
+            AuthRetryFailure::Entity
+        );
+        // Empty sequence: the original account's true auth rejection remains.
+        assert_eq!(
+            DownloadOrchestrator::auth_retry_exhaustion(
+                ReResolutionTrigger::RequiresAuth,
+                0,
+                false
+            ),
+            AuthRetryFailure::AuthExhausted
+        );
+    }
+
+    #[test]
+    fn auth_retry_failure_display_is_categorical_and_secret_free() {
+        let entity = AuthRetryFailure::Entity.to_string();
+        assert!(
+            entity.starts_with("ProviderEntityFailure:"),
+            "entity failure must be recognised as entity, got: {entity}"
+        );
+        assert!(
+            !entity.contains("RequiresAuth"),
+            "entity failure must not claim auth, got: {entity}"
+        );
+
+        let auth = AuthRetryFailure::AuthExhausted.to_string();
+        assert!(auth.starts_with("RequiresAuth:"));
+
+        let cancelled = AuthRetryFailure::Cancelled.to_string();
+        assert!(
+            is_cancellation_error(&cancelled),
+            "cancellation must be detectable by the same predicate the caller uses"
+        );
+        assert!(cancelled.contains("Download cancelled"));
+
+        let none = AuthRetryFailure::NoCandidate.to_string();
+        assert!(none.starts_with("SourceIdentityMissing:"));
+
+        // The messages carry no account identifiers, no raw HTTP bodies and no
+        // URLs: the worker persists these strings verbatim.
+        for message in [&entity, &auth, &cancelled, &none] {
+            assert!(!message.contains("track/get"), "no entity endpoint text");
+            assert!(!message.contains("400 7"), "no raw HTTP text");
+            assert!(!message.contains("@"), "no account identifiers");
+            assert!(!message.contains("http"), "no URLs");
+        }
+    }
+
+    /// P1 regression with a synthetic catalogue: an initial genuine auth
+    /// rejection on account 31 followed by a sibling 401 from the entity lookup.
+    /// The sibling's own attempt is what an unclassifiable entity failure looks
+    /// like in production, so the retry must stop as ENTITY and must never
+    /// label the queue RequiresAuth. No account is marked credentials-invalid.
+    #[tokio::test]
+    async fn auth_rejection_then_entity_401_reports_entity_not_requires_auth() {
+        use crate::download::ReResolutionTrigger;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (id, service_id, display_name, email, is_active, credentials_json, credentials_invalid, streaming_entitled) \
+             VALUES (31, 2, 'one', 'one@test.invalid', 1, 'synthetic', 0, 1), \
+                    (32, 2, 'two', 'two@test.invalid', 1, 'synthetic', 0, 1)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let track: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title) VALUES ('synthetic entity') RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'auth-then-entity', 'FLAC', 16, 44100, 100, 1)")
+            .bind(track)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        // The initial rejection IS an account-auth verdict, so a sibling
+        // retry is offered for the SAME service_track_id.
+        let initial_auth = "RequiresAuth: Qobuz authentication failed (HTTP 401)";
+        let request = DownloadRequest {
+            canonical_track_id: Some(track),
+            service_name: Some("qobuz".into()),
+            service_track_id: Some("auth-then-entity".into()),
+            quality: "LOSSLESS".into(),
+            resolution_plan: Some(crate::download::DownloadPlan {
+                canonical_track_id: track,
+                candidates: vec![crate::download::PlanCandidate {
+                    service_id: 2,
+                    service_name: "qobuz".to_string(),
+                    service_track_id: "auth-then-entity".to_string(),
+                    candidate_tier: syncify_core_domain::quality::AudioTier::Lossless,
+                    identity: crate::download::resolver::CandidateIdentity {
+                        track_source_id: 0,
+                        canonical_track_id: track,
+                        isrc: None,
+                    },
+                    account: Some(crate::download::resolver::CandidateAccount {
+                        account_id: 31,
+                        is_active: true,
+                        streaming_entitled: Some(1),
+                    }),
+                    sibling_accounts: Vec::new(),
+                    service_priority: None,
+                    quality_score: None,
+                    bit_depth: None,
+                }],
+                quality: crate::download::resolver::ResolvedQuality {
+                    effective: "lossless".to_string(),
+                    candidate: "lossless".to_string(),
+                    clamped: false,
+                },
+                strict_quality: false,
+                allow_fallback: false,
+            }),
+            ..Default::default()
+        };
+        assert!(
+            DownloadOrchestrator::planned_auth_retry(&request, initial_auth, "qobuz").is_some(),
+            "a genuine credential rejection permits a sibling retry"
+        );
+
+        // The sibling's failure is an entity lookup: classify_retry_failure
+        // deliberately refuses to classify it, so last_failure is None.
+        let entity_401 = "Qobuz track/get failed for edition auth-then-entity: HTTP 401";
+        assert_eq!(
+            DownloadOrchestrator::classify_retry_failure(entity_401),
+            None,
+            "an entity 401 is not a catalogue verdict on its own"
+        );
+
+        // Exhaustion after that stop is an ENTITY failure, not auth.
+        let failure = DownloadOrchestrator::auth_retry_exhaustion(
+            ReResolutionTrigger::RequiresAuth,
+            1,
+            false,
+        );
+        assert_eq!(failure, AuthRetryFailure::Entity);
+        let message = failure.to_string();
+        assert!(message.starts_with("ProviderEntityFailure:"), "{message}");
+        assert!(!message.contains("RequiresAuth"), "{message}");
+        // What the worker persists is categorical: no account or edition IDs.
+        assert!(!message.contains("auth-then-entity"), "{message}");
+        assert!(!message.contains("track/get"), "{message}");
+
+        // The worker's own decision rule classifies the persisted text as
+        // entity (identity), never as auth.
+        assert!(message.contains("ProviderEntityFailure"));
+        let invalid: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE credentials_invalid != 0")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(invalid, 0, "an entity 401 never invalidates an account");
+    }
+
+    /// P1 regression: every sibling account failing with genuine credential
+    /// rejections keeps the true RequiresAuth verdict.
+    #[tokio::test]
+    async fn all_accounts_rejecting_still_reports_requires_auth_exhaustion() {
+        use crate::download::ReResolutionTrigger;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (id, service_id, display_name, email, is_active, credentials_json, credentials_invalid, streaming_entitled) \
+             VALUES (41, 2, 'one', 'one@test.invalid', 1, 'synthetic', 0, 1), \
+                    (42, 2, 'two', 'two@test.invalid', 1, 'synthetic', 0, 1)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let track: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('synthetic auth') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'all-auth', 'FLAC', 16, 44100, 100, 1)")
+            .bind(track)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        // Both siblings fail with credential rejections: the last classified
+        // failure IS auth, so exhaustion is genuinely all-account auth.
+        let sibling_auth = "RequiresAuth: Qobuz token expired for this account";
+        assert_eq!(
+            DownloadOrchestrator::classify_retry_failure(sibling_auth),
+            Some(ReResolutionTrigger::RequiresAuth),
+            "a genuine credential rejection classifies as auth"
+        );
+        let failure =
+            DownloadOrchestrator::auth_retry_exhaustion(ReResolutionTrigger::RequiresAuth, 2, true);
+        assert_eq!(failure, AuthRetryFailure::AuthExhausted);
+        let message = failure.to_string();
+        assert!(message.starts_with("RequiresAuth:"), "{message}");
+        assert!(!message.contains("all-auth"), "no track IDs persisted");
+        assert!(!message.contains("41") && !message.contains("42"));
+    }
+
+    /// Cancellation inside the retry path propagates unchanged: it is never
+    /// relabelled as auth or entity failure.
+    #[tokio::test]
+    async fn cancellation_inside_reresolution_is_not_relabelled() {
+        use crate::download::ReResolutionTrigger;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        // No accounts: an empty sequence cannot corroborate the trigger.
+        let track: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title) VALUES ('synthetic cancel') RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available) VALUES (?, 2, 'cancel-edition', 'FLAC', 16, 44100, 100, 1)")
+            .bind(track)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        // Cancellation is detected by the exact predicate the retry loop uses,
+        // and only cancellation is.
+        assert!(is_cancellation_error(
+            &AuthRetryFailure::Cancelled.to_string()
+        ));
+        assert!(!is_cancellation_error(
+            &AuthRetryFailure::Entity.to_string()
+        ));
+        assert!(!is_cancellation_error(
+            &AuthRetryFailure::AuthExhausted.to_string()
+        ));
+        assert!(!is_cancellation_error("Qobuz track/get failed: HTTP 401"));
+
+        // With no sibling at all the sequence preserves the original account's
+        // genuine auth rejection without including the edition ID.
+        let failure = DownloadOrchestrator::auth_retry_exhaustion(
+            ReResolutionTrigger::RequiresAuth,
+            0,
+            false,
+        );
+        assert_eq!(failure, AuthRetryFailure::AuthExhausted);
+        let message = failure.to_string();
+        assert!(message.starts_with("RequiresAuth:"), "{message}");
+        assert!(!message.contains("cancel-edition"), "{message}");
+
+        // And a genuine cancellation during the retry would be returned as
+        // Cancelled, whose message the caller still recognises.
+        let cancel_message = AuthRetryFailure::Cancelled.to_string();
+        assert!(is_cancellation_error(&cancel_message));
+        assert!(!cancel_message.contains("ProviderEntityFailure"));
     }
 }

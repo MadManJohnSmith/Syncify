@@ -148,6 +148,25 @@ beforeEach(() => {
   document.body.innerHTML = ''
 })
 
+describe('account snapshots and distinct account rows', () => {
+  it('keeps overlapping provider totals per account and shows partial snapshot time', async () => {
+    installBackend(buildAccounts([{ display_name: null, email: null }, { display_name: null, email: null }]), [
+      { ...buildStatus()[0], account_import_counts: [
+        { account_id: 100, collection: 'favorites', reported_total: 12, imported_total: 7, scanned_at: '2026-10-13 10:00:00', completeness: 'complete' },
+        { account_id: 101, collection: 'favorites', reported_total: 12, imported_total: 3, scanned_at: '2026-10-13 11:00:00', completeness: 'partial' },
+      ] },
+    ] as unknown as ServiceStatus[])
+    const wrapper = await mountAccounts()
+    expect(wrapper.text()).toContain('Favoritos reportados: 24')
+    expect(wrapper.text()).toContain('2026-10-13 11:00:00')
+    expect(wrapper.text()).toContain('desactualizado')
+    expect(wrapper.find('[data-testid="account-row-100"]').text()).toContain('cuenta 100')
+    expect(wrapper.find('[data-testid="account-row-101"]').text()).toContain('cuenta 101')
+    expect(wrapper.find('[data-testid="account-count-100"]').text()).toContain('Favoritos importados: 7')
+    wrapper.unmount()
+  })
+})
+
 describe('account identity resolution (pure helpers)', () => {
   it('prefers a validated email over the display name', () => {
     const identity = resolveAccountIdentity({ display_name: 'Ana', email: 'ana@spotify.com' })

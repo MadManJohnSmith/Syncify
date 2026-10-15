@@ -9,6 +9,13 @@ use super::*;
 // Only import what's specifically needed here
 use sqlx::FromRow;
 
+/// Serializes automatic file writes and deletion across command and download paths.
+/// Hold through the final file mutation, not merely through the SQLite predicate.
+pub(crate) fn lyrics_file_guard() -> &'static tokio::sync::Mutex<()> {
+    static GUARD: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GUARD.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 // ==============================================
 // LYRICS PROGRESS EVENTS
 // ==============================================
@@ -130,6 +137,12 @@ pub async fn load_lyrics_engine_config(
     .await
     .unwrap_or(None);
 
+    let sources: Vec<crate::download::lyrics::LyricsSourceSetting> = sqlx::query_as::<_, (String, bool, i64)>(
+        "SELECT provider_id, enabled, priority FROM lyrics_provider_settings ORDER BY priority, provider_id"
+    ).fetch_all(db).await.unwrap_or_default().into_iter().map(|(provider_id, enabled, priority)| {
+        crate::download::lyrics::LyricsSourceSetting { provider_id, enabled, priority }
+    }).collect();
+
     if let Some((min_sync, pref_lang, storage_fmt, auto_fetch, retry_failed, retry_freq)) = row {
         crate::download::lyrics::LyricsEngineConfig {
             min_sync_level: min_sync,
@@ -148,9 +161,13 @@ pub async fn load_lyrics_engine_config(
             auto_fetch_on_import: auto_fetch != 0,
             retry_failed: retry_failed != 0,
             retry_frequency: retry_freq,
+            sources,
         }
     } else {
-        crate::download::lyrics::LyricsEngineConfig::default()
+        crate::download::lyrics::LyricsEngineConfig {
+            sources,
+            ..Default::default()
+        }
     }
 }
 
@@ -222,6 +239,37 @@ pub async fn process_and_persist_resolution(
     track_id: Option<i64>,
 ) -> Result<LyricsResolutionPayload, String> {
     let mut embedded_in_file = false;
+    let _file_guard = lyrics_file_guard().lock().await;
+
+    // The deletion intent is persistent and takes precedence over both file writes
+    // and the later conditional SQLite INSERT.
+    if let Some(tid) = track_id {
+        if resolution.status == ResolutionStatus::Resolved {
+            let format = match resolution.sync_type {
+                LyricsSyncType::KaraokeWordSynced | LyricsSyncType::LineSynced => "lrc",
+                LyricsSyncType::Plain => "plain",
+                LyricsSyncType::Instrumental => "instrumental",
+                LyricsSyncType::None => "none",
+            };
+            if lyrics_auto_blocked(db, tid, format).await? {
+                return Ok(LyricsResolutionPayload {
+                    status: resolution.status,
+                    provider: resolution.provider,
+                    strategy: resolution.strategy,
+                    sync_type: resolution.sync_type,
+                    format: resolution.format,
+                    synced_content: None,
+                    plain_text: None,
+                    is_instrumental: resolution.is_instrumental,
+                    fallback_applied: resolution.fallback_applied,
+                    error: resolution.error,
+                    duration_ms: latency_ms,
+                    provenance: resolution.provenance,
+                    embedded_in_file: false,
+                });
+            }
+        }
+    }
 
     // Phase 4: File validation and embedding
     if let Some(path) = file_path {
@@ -297,7 +345,8 @@ pub async fn process_and_persist_resolution(
                 sqlx::query(
                     r#"
                     INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    SELECT ?, ?, ?, ?, ?, ?, ?
+                    WHERE NOT EXISTS (SELECT 1 FROM lyrics_deletion_marks m WHERE m.track_id = ? AND (m.format = ? OR (m.format = '*' AND NOT EXISTS (SELECT 1 FROM lyrics_restored_formats r WHERE r.track_id = ? AND r.format = ?))))
                     ON CONFLICT(track_id, format) DO UPDATE SET
                         content = excluded.content,
                         sync_level = excluded.sync_level,
@@ -313,6 +362,7 @@ pub async fn process_and_persist_resolution(
                 .bind(content)
                 .bind(detected_lang.as_deref())
                 .bind(if embedded_in_file { 1 } else { 0 })
+                .bind(tid).bind(format).bind(tid).bind(format)
                 .execute(db)
                 .await
                 .map_err(|e| format!("Database error persisting lyrics: {}", e))?;
@@ -484,13 +534,55 @@ pub async fn save_lyrics(
     upsert_lyrics(&state.db, &params).await
 }
 
+pub(crate) async fn lyrics_auto_blocked(
+    db: &crate::DbPool,
+    track_id: i64,
+    format: &str,
+) -> Result<bool, String> {
+    let blocked: (i64,) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM lyrics_deletion_marks m WHERE m.track_id = ? AND (m.format = ? OR (m.format = '*' AND NOT EXISTS (SELECT 1 FROM lyrics_restored_formats r WHERE r.track_id = ? AND r.format = ?))))"
+    )
+    .bind(track_id).bind(format).bind(track_id).bind(format)
+    .fetch_one(db).await.map_err(|e| e.to_string())?;
+    Ok(blocked.0 != 0)
+}
+
+async fn auto_upsert_lyrics(
+    db: &crate::DbPool,
+    params: &SaveLyricsParams,
+) -> Result<Option<Lyrics>, String> {
+    if lyrics_auto_blocked(db, params.track_id, &params.format).await? {
+        return Ok(None);
+    }
+    let row: Option<Lyrics> = sqlx::query_as(
+        "INSERT INTO lyrics (track_id, format, sync_level, source, content, language, created_at) \
+         SELECT ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP WHERE NOT EXISTS (SELECT 1 FROM lyrics_deletion_marks m WHERE m.track_id = ? AND (m.format = ? OR (m.format = '*' AND NOT EXISTS (SELECT 1 FROM lyrics_restored_formats r WHERE r.track_id = ? AND r.format = ?)))) \
+         ON CONFLICT(track_id, format) DO UPDATE SET sync_level = excluded.sync_level, source = excluded.source, content = excluded.content, language = excluded.language, created_at = CURRENT_TIMESTAMP \
+         RETURNING id, track_id, format, sync_level, source, content, language, embedded_in_file, created_at"
+    )
+    .bind(params.track_id).bind(&params.format).bind(&params.sync_level).bind(&params.source)
+    .bind(&params.content).bind(&params.language).bind(params.track_id).bind(&params.format)
+    .bind(params.track_id).bind(&params.format)
+    .fetch_optional(db).await.map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
 /// Shared INSERT..ON CONFLICT upsert used by `save_lyrics`, the S200 probe
 /// and the harvest sweep. Returns the freshly-read row.
 pub(crate) async fn upsert_lyrics(
     db: &crate::DbPool,
     params: &SaveLyricsParams,
 ) -> Result<Lyrics, String> {
-    // Upsert lyrics (INSERT OR REPLACE based on UNIQUE(track_id, format))
+    // Explicit save/import restores only the selected format, atomically with the row.
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM lyrics_deletion_marks WHERE track_id = ? AND format = ?")
+        .bind(params.track_id)
+        .bind(&params.format)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("INSERT OR IGNORE INTO lyrics_restored_formats (track_id, format) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM lyrics_deletion_marks WHERE track_id = ? AND format = '*')")
+        .bind(params.track_id).bind(&params.format).bind(params.track_id).execute(&mut *tx).await.map_err(|e| e.to_string())?;
     sqlx::query(
         r#"
         INSERT INTO lyrics (track_id, format, sync_level, source, content, language, created_at)
@@ -509,9 +601,10 @@ pub(crate) async fn upsert_lyrics(
     .bind(&params.source)
     .bind(&params.content)
     .bind(&params.language)
-    .execute(db)
+    .execute(&mut *tx)
     .await
     .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
 
     // Return the saved lyrics
     let lyrics: Lyrics = sqlx::query_as(
@@ -804,23 +897,142 @@ pub async fn delete_lyrics(
 ) -> Result<(), String> {
     tracing::info!("delete_lyrics: track_id={}, format={:?}", track_id, format);
 
+    delete_lyrics_with_files(&state.db, track_id, format.as_deref()).await
+}
+
+/// Keep deletion intent even if a file is temporarily inaccessible. A failed file
+/// cleanup is reported, so a successful command always means both stores agree.
+async fn delete_lyrics_with_files(
+    db: &crate::DbPool,
+    track_id: i64,
+    format: Option<&str>,
+) -> Result<(), String> {
+    let _file_guard = lyrics_file_guard().lock().await;
+    delete_lyrics_in_db(db, track_id, format).await?;
+    let paths: Vec<(String,)> = sqlx::query_as(
+        "SELECT file_path FROM downloads WHERE track_id = ? AND file_path IS NOT NULL",
+    )
+    .bind(track_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut failures = Vec::new();
+    for (file_path,) in paths {
+        let path = std::path::Path::new(&file_path);
+        if format.is_none() || format == Some("lrc") || format == Some("plain") {
+            for sidecar in sidecar_candidates(&file_path)
+                .into_iter()
+                .filter(|candidate| match format {
+                    Some("lrc") => candidate
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("lrc")),
+                    Some("plain") => candidate
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("txt")),
+                    _ => true,
+                })
+            {
+                // Only remove the adjacent, enumerated sidecars; never follow a symlink.
+                match tokio::fs::symlink_metadata(&sidecar).await {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        failures.push(format!(
+                            "Sidecar simbólico no permitido: {}",
+                            sidecar.display()
+                        ));
+                        continue;
+                    }
+                    Ok(_) => (),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => {
+                        failures.push(format!("No se pudo inspeccionar sidecar: {e}"));
+                        continue;
+                    }
+                }
+                if let Err(e) = tokio::fs::remove_file(&sidecar).await {
+                    failures.push(format!(
+                        "No se pudo eliminar sidecar {}: {e}",
+                        sidecar.display()
+                    ));
+                }
+            }
+        }
+        if !path.exists() {
+            continue;
+        }
+        let result = (|| -> Result<(), String> {
+            let mut tag = metaflac::Tag::read_from_path(path)
+                .map_err(|e| format!("No se pudo leer FLAC para borrar letras: {e}"))?;
+            let comments = tag.vorbis_comments_mut();
+            if format.is_none() || format == Some("lrc") {
+                comments.remove("LYRICS");
+            }
+            if format.is_none() || format == Some("plain") {
+                comments.remove("UNSYNCEDLYRICS");
+            }
+            if format.is_none()
+                || (comments.get("LYRICS").is_none() && comments.get("UNSYNCEDLYRICS").is_none())
+            {
+                comments.remove("SYNCIFY_LYRICS_SOURCE");
+            }
+            tag.write_to_path(path)
+                .map_err(|e| format!("No se pudo actualizar FLAC para borrar letras: {e}"))
+        })();
+        if let Err(e) = result {
+            failures.push(format!("{}: {e}", path.display()));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+async fn delete_lyrics_in_db(
+    db: &crate::DbPool,
+    track_id: i64,
+    format: Option<&str>,
+) -> Result<(), String> {
+    let marker = format.unwrap_or("*");
+    if marker.is_empty() || (format.is_some() && marker == "*") {
+        return Err("Formato de letras inválido".into());
+    }
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    // FK rejects unknown tracks rather than silently storing an orphan intent.
+    sqlx::query(
+        "INSERT INTO lyrics_deletion_marks (track_id, format) VALUES (?, ?) ON CONFLICT DO NOTHING",
+    )
+    .bind(track_id)
+    .bind(marker)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
     if let Some(fmt) = format {
-        // Delete specific format
+        sqlx::query("DELETE FROM lyrics_restored_formats WHERE track_id = ? AND format = ?")
+            .bind(track_id)
+            .bind(fmt)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
         sqlx::query("DELETE FROM lyrics WHERE track_id = ? AND format = ?")
             .bind(track_id)
             .bind(fmt)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
     } else {
-        // Delete all formats for this track
+        sqlx::query("DELETE FROM lyrics_restored_formats WHERE track_id = ?")
+            .bind(track_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
         sqlx::query("DELETE FROM lyrics WHERE track_id = ?")
             .bind(track_id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
     }
-
+    tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1189,11 +1401,22 @@ pub async fn embed_lyrics(state: State<'_, AppState>, track_id: i64) -> Result<b
         if lyrics.format == "lrc" || lyrics.content.contains('[') {
             comments.set("LYRICS", vec![lyrics.content.clone()]);
             let clean = crate::download::lyrics::strip_lrc_timestamps(&lyrics.content);
-            if !clean.is_empty() {
+            // LY-02: strip the payload header (LRC id tags, provider credit blocks)
+            // from the derived *plain* copy only. `LYRICS` above stays verbatim.
+            let clean = syncify_lyrics_domain::strip_lyrics_header(&clean);
+            if !clean.trim().is_empty() {
                 comments.set("UNSYNCEDLYRICS", vec![clean]);
             }
         } else {
-            comments.set("UNSYNCEDLYRICS", vec![lyrics.content.clone()]);
+            // LY-02: same boundary rule for the plain branch. Never write an empty
+            // UNSYNCEDLYRICS — fall back to the original content when the cleaner
+            // leaves nothing (a payload that is entirely header credits).
+            let plain = syncify_lyrics_domain::strip_lyrics_header(&lyrics.content);
+            if plain.trim().is_empty() {
+                comments.set("UNSYNCEDLYRICS", vec![lyrics.content.clone()]);
+            } else {
+                comments.set("UNSYNCEDLYRICS", vec![plain]);
+            }
         }
 
         tag.write_to_path(path)
@@ -1274,6 +1497,35 @@ mod lyrics_commands_tests {
         LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus,
     };
 
+    #[tokio::test]
+    async fn source_preferences_survive_pool_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lyrics-policy.sqlite");
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE lyrics_provider_settings (provider_id TEXT, enabled INTEGER, priority INTEGER)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO lyrics_provider_settings VALUES ('lrclib_plain', 0, 2), ('spotify_color', 1, 1)")
+            .execute(&pool).await.unwrap();
+        let config = load_lyrics_engine_config(&pool).await;
+        assert_eq!(config.sources.len(), 2);
+        assert_eq!(config.sources[0].provider_id, "spotify_color");
+        drop(pool);
+        let reopened = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        let config = load_lyrics_engine_config(&reopened).await;
+        assert_eq!(config.sources.len(), 2);
+        assert!(!config.sources[1].enabled);
+        assert_eq!(config.sources[0].priority, 1);
+    }
+
     async fn setup_test_lyrics_db() -> sqlx::SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -1300,6 +1552,8 @@ mod lyrics_commands_tests {
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(track_id, format)
             );
+            CREATE TABLE lyrics_deletion_marks (track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE, format TEXT NOT NULL, PRIMARY KEY(track_id, format));
+            CREATE TABLE lyrics_restored_formats (track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE, format TEXT NOT NULL, PRIMARY KEY(track_id, format));
             INSERT INTO tracks (id, title, isrc) VALUES (1, 'Test Track', 'USRC12345678');
             "#,
         )
@@ -1310,8 +1564,8 @@ mod lyrics_commands_tests {
         pool
     }
 
-    struct TempFlacFile {
-        path: std::path::PathBuf,
+    pub(super) struct TempFlacFile {
+        pub(super) path: std::path::PathBuf,
     }
 
     impl Drop for TempFlacFile {
@@ -1320,7 +1574,7 @@ mod lyrics_commands_tests {
         }
     }
 
-    fn create_valid_test_flac() -> TempFlacFile {
+    pub(super) fn create_valid_test_flac() -> TempFlacFile {
         let path = std::env::temp_dir().join(format!(
             "syncify_cmd_test_{}.flac",
             std::time::SystemTime::now()
@@ -1724,6 +1978,11 @@ pub async fn probe_track_lyrics(
     let Some((file_path,)) = row else {
         return Ok(None);
     };
+    if lyrics_auto_blocked(&state.db, track_id, "lrc").await?
+        && lyrics_auto_blocked(&state.db, track_id, "plain").await?
+    {
+        return Ok(None);
+    }
 
     // Embedded probe (blocking metaflac read off the async runtime).
     let probe_path = std::path::PathBuf::from(&file_path);
@@ -1752,7 +2011,7 @@ pub async fn probe_track_lyrics(
                         cand.display(),
                         if synced { "lrc" } else { "plain" }
                     );
-                    return upsert_lyrics(
+                    return auto_upsert_lyrics(
                         &state.db,
                         &SaveLyricsParams {
                             track_id,
@@ -1763,8 +2022,7 @@ pub async fn probe_track_lyrics(
                             language: None,
                         },
                     )
-                    .await
-                    .map(Some);
+                    .await;
                 }
             }
         }
@@ -1772,7 +2030,7 @@ pub async fn probe_track_lyrics(
     };
 
     match found {
-        Some(params) => upsert_lyrics(&state.db, &params).await.map(Some),
+        Some(params) => auto_upsert_lyrics(&state.db, &params).await,
         None => Ok(None),
     }
 }
@@ -1793,6 +2051,8 @@ pub async fn harvest_missing_lyrics(
         SELECT d.track_id, d.file_path
         FROM downloads d
         WHERE NOT EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = d.track_id)
+          AND NOT EXISTS (SELECT 1 FROM lyrics_deletion_marks m WHERE m.track_id = d.track_id AND m.format = '*'
+            AND NOT EXISTS (SELECT 1 FROM lyrics_restored_formats r WHERE r.track_id = d.track_id))
         ORDER BY d.track_id
         LIMIT ?
         "#,
@@ -1853,8 +2113,16 @@ pub async fn harvest_missing_lyrics(
             }
         };
 
-        if upsert_lyrics(&state.db, &params).await.is_err() {
-            // De-count on persist failure so counts stay honest.
+        if lyrics_auto_blocked(&state.db, track_id, &params.format).await? {
+            if params.source.as_deref() == Some("embedded") {
+                result.embedded_found -= 1;
+            } else {
+                result.sidecar_found -= 1;
+            }
+            continue;
+        }
+        if !matches!(auto_upsert_lyrics(&state.db, &params).await, Ok(Some(_))) {
+            // De-count when suppressed by a concurrent delete or persistence fails.
             if params.source.as_deref() == Some("embedded") {
                 result.embedded_found -= 1;
             } else {
@@ -1865,6 +2133,365 @@ pub async fn harvest_missing_lyrics(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod durable_deletion_tests {
+    use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
+
+    async fn fixture() -> crate::DbPool {
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .foreign_keys(true);
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE tracks (id INTEGER PRIMARY KEY); CREATE TABLE lyrics (id INTEGER PRIMARY KEY, track_id INTEGER REFERENCES tracks(id) ON DELETE CASCADE, format TEXT NOT NULL, sync_level TEXT, source TEXT, content TEXT NOT NULL, language TEXT, embedded_in_file INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(track_id,format)); CREATE TABLE lyrics_deletion_marks (track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE, format TEXT NOT NULL, PRIMARY KEY(track_id,format)); CREATE TABLE lyrics_restored_formats (track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE, format TEXT NOT NULL, PRIMARY KEY(track_id,format)); INSERT INTO tracks VALUES (1)")
+            .execute(&db).await.unwrap();
+        db
+    }
+    fn params(format: &str) -> SaveLyricsParams {
+        SaveLyricsParams {
+            track_id: 1,
+            format: format.into(),
+            content: "[00:01.00]present".into(),
+            sync_level: Some("line".into()),
+            source: Some("sidecar".into()),
+            language: None,
+        }
+    }
+    #[tokio::test]
+    async fn deletion_removes_existing_sidecar_and_flac_tags() {
+        let db = fixture().await;
+        sqlx::query("CREATE TABLE downloads (track_id INTEGER, file_path TEXT NOT NULL)")
+            .execute(&db)
+            .await
+            .unwrap();
+        let flac = super::lyrics_commands_tests::create_valid_test_flac();
+        let sidecar = flac.path.with_extension("lrc");
+        let resolution = syncify_lyrics_domain::LyricsResolution::new_resolved(
+            "synthetic",
+            "synthetic",
+            LyricsSyncType::LineSynced,
+            Some("[00:01.00]synthetic".into()),
+            Some("synthetic".into()),
+            vec![],
+            false,
+            "synthetic",
+        );
+        process_and_persist_resolution(&db, resolution.clone(), 0, Some(&flac.path), Some(1))
+            .await
+            .unwrap();
+        assert!(sidecar.exists());
+        sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (1, ?)")
+            .bind(flac.path.to_string_lossy().as_ref())
+            .execute(&db)
+            .await
+            .unwrap();
+        delete_lyrics_with_files(&db, 1, None).await.unwrap();
+        assert!(!sidecar.exists());
+        let tag = metaflac::Tag::read_from_path(&flac.path).unwrap();
+        let comments = tag.vorbis_comments().unwrap();
+        assert!(comments.get("LYRICS").is_none());
+        assert!(comments.get("UNSYNCEDLYRICS").is_none());
+        assert!(comments.get("SYNCIFY_LYRICS_SOURCE").is_none());
+        process_and_persist_resolution(&db, resolution, 0, Some(&flac.path), Some(1))
+            .await
+            .unwrap();
+        assert!(!sidecar.exists());
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM lyrics WHERE track_id = 1")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0);
+    }
+
+    #[tokio::test]
+    async fn global_deletion_removes_every_sidecar_variant_and_does_not_reimport() {
+        let db = fixture().await;
+        sqlx::query("CREATE TABLE downloads (track_id INTEGER, file_path TEXT NOT NULL)")
+            .execute(&db)
+            .await
+            .unwrap();
+        let flac = super::lyrics_commands_tests::create_valid_test_flac();
+        let path = flac.path.to_string_lossy().to_string();
+        sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (1, ?)")
+            .bind(&path)
+            .execute(&db)
+            .await
+            .unwrap();
+        let sidecars = sidecar_candidates(&path);
+        for sidecar in &sidecars {
+            tokio::fs::write(sidecar, "[00:01.00]synthetic")
+                .await
+                .unwrap();
+        }
+        delete_lyrics_with_files(&db, 1, None).await.unwrap();
+        for sidecar in &sidecars {
+            assert!(!sidecar.exists());
+        }
+        assert!(lyrics_auto_blocked(&db, 1, "lrc").await.unwrap());
+        assert!(auto_upsert_lyrics(&db, &params("lrc"))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn deletion_between_resolution_and_file_write_blocks_reappearance() {
+        let db = fixture().await;
+        sqlx::query("CREATE TABLE downloads (track_id INTEGER, file_path TEXT NOT NULL)")
+            .execute(&db)
+            .await
+            .unwrap();
+        let flac = super::lyrics_commands_tests::create_valid_test_flac();
+        sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (1, ?)")
+            .bind(flac.path.to_string_lossy().as_ref())
+            .execute(&db)
+            .await
+            .unwrap();
+        let resolution = syncify_lyrics_domain::LyricsResolution::new_resolved(
+            "synthetic",
+            "synthetic",
+            LyricsSyncType::LineSynced,
+            Some("[00:01.00]synthetic".into()),
+            Some("synthetic".into()),
+            vec![],
+            false,
+            "synthetic",
+        );
+        // A synthetic barrier holds the same guard at the last interleaving point.
+        let guard = lyrics_file_guard().lock().await;
+        let db_writer = db.clone();
+        let path = flac.path.clone();
+        let writer = tokio::spawn(async move {
+            process_and_persist_resolution(&db_writer, resolution, 0, Some(&path), Some(1)).await
+        });
+        delete_lyrics_in_db(&db, 1, None).await.unwrap();
+        drop(guard);
+        writer.await.unwrap().unwrap();
+        assert!(!flac.path.with_extension("lrc").exists());
+        assert!(metaflac::Tag::read_from_path(&flac.path)
+            .unwrap()
+            .vorbis_comments()
+            .unwrap()
+            .get("LYRICS")
+            .is_none());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM lyrics")
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn each_format_deletion_preserves_the_other_sidecar_and_tag() {
+        for deleted in ["lrc", "plain"] {
+            let db = fixture().await;
+            sqlx::query("CREATE TABLE downloads (track_id INTEGER, file_path TEXT NOT NULL)")
+                .execute(&db)
+                .await
+                .unwrap();
+            let flac = super::lyrics_commands_tests::create_valid_test_flac();
+            sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (1, ?)")
+                .bind(flac.path.to_string_lossy().as_ref())
+                .execute(&db)
+                .await
+                .unwrap();
+            let lrc = flac.path.with_extension("lrc");
+            let txt = flac.path.with_extension("txt");
+            tokio::fs::write(&lrc, "synthetic synced").await.unwrap();
+            tokio::fs::write(&txt, "synthetic plain").await.unwrap();
+            let mut tag = metaflac::Tag::read_from_path(&flac.path).unwrap();
+            tag.set_vorbis("LYRICS", vec!["synthetic synced"]);
+            tag.set_vorbis("UNSYNCEDLYRICS", vec!["synthetic plain"]);
+            tag.write_to_path(&flac.path).unwrap();
+            delete_lyrics_with_files(&db, 1, Some(deleted))
+                .await
+                .unwrap();
+            let tag = metaflac::Tag::read_from_path(&flac.path).unwrap();
+            let comments = tag.vorbis_comments().unwrap();
+            assert_eq!(lrc.exists(), deleted != "lrc");
+            assert_eq!(txt.exists(), deleted != "plain");
+            assert_eq!(comments.get("LYRICS").is_some(), deleted != "lrc");
+            assert_eq!(comments.get("UNSYNCEDLYRICS").is_some(), deleted != "plain");
+            assert!(lyrics_auto_blocked(&db, 1, deleted).await.unwrap());
+            let surviving = if deleted == "lrc" { "plain" } else { "lrc" };
+            assert!(!lyrics_auto_blocked(&db, 1, surviving).await.unwrap());
+            assert!(auto_upsert_lyrics(&db, &params(deleted))
+                .await
+                .unwrap()
+                .is_none());
+            assert!(auto_upsert_lyrics(&db, &params(surviving))
+                .await
+                .unwrap()
+                .is_some());
+            delete_lyrics_with_files(&db, 1, Some(surviving))
+                .await
+                .unwrap();
+            assert!(!lrc.exists() && !txt.exists());
+            assert!(lyrics_auto_blocked(&db, 1, "lrc").await.unwrap());
+            assert!(lyrics_auto_blocked(&db, 1, "plain").await.unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn writer_then_delete_under_the_same_guard_does_not_reappear() {
+        let db = fixture().await;
+        sqlx::query("CREATE TABLE downloads (track_id INTEGER, file_path TEXT NOT NULL)")
+            .execute(&db)
+            .await
+            .unwrap();
+        let flac = super::lyrics_commands_tests::create_valid_test_flac();
+        sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (1, ?)")
+            .bind(flac.path.to_string_lossy().as_ref())
+            .execute(&db)
+            .await
+            .unwrap();
+        let resolution = syncify_lyrics_domain::LyricsResolution::new_resolved(
+            "synthetic",
+            "synthetic",
+            LyricsSyncType::LineSynced,
+            Some("[00:01.00]synthetic".into()),
+            Some("synthetic".into()),
+            vec![],
+            false,
+            "synthetic",
+        );
+        process_and_persist_resolution(&db, resolution, 0, Some(&flac.path), Some(1))
+            .await
+            .unwrap();
+        assert!(flac.path.with_extension("lrc").exists());
+        delete_lyrics_with_files(&db, 1, Some("lrc")).await.unwrap();
+        assert!(!flac.path.with_extension("lrc").exists());
+        assert!(metaflac::Tag::read_from_path(&flac.path)
+            .unwrap()
+            .vorbis_comments()
+            .unwrap()
+            .get("LYRICS")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn deletion_continues_after_bad_flac_and_retry_keeps_intent() {
+        let db = fixture().await;
+        sqlx::query("CREATE TABLE downloads (track_id INTEGER, file_path TEXT NOT NULL)")
+            .execute(&db)
+            .await
+            .unwrap();
+        let bad = tempfile::tempdir().unwrap();
+        let bad_path = bad.path().join("bad.flac");
+        tokio::fs::write(&bad_path, b"not flac").await.unwrap();
+        let good = super::lyrics_commands_tests::create_valid_test_flac();
+        let resolution = syncify_lyrics_domain::LyricsResolution::new_resolved(
+            "synthetic",
+            "synthetic",
+            LyricsSyncType::LineSynced,
+            Some("[00:01.00]synthetic".into()),
+            Some("synthetic".into()),
+            vec![],
+            false,
+            "synthetic",
+        );
+        process_and_persist_resolution(&db, resolution, 0, Some(&good.path), Some(1))
+            .await
+            .unwrap();
+        for path in [&bad_path, &good.path] {
+            sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (1, ?)")
+                .bind(path.to_string_lossy().as_ref())
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        assert!(delete_lyrics_with_files(&db, 1, None).await.is_err());
+        assert!(lyrics_auto_blocked(&db, 1, "lrc").await.unwrap());
+        assert!(!good.path.with_extension("lrc").exists());
+        assert!(metaflac::Tag::read_from_path(&good.path)
+            .unwrap()
+            .vorbis_comments()
+            .unwrap()
+            .get("LYRICS")
+            .is_none());
+        tokio::fs::remove_file(&bad_path).await.unwrap();
+        delete_lyrics_with_files(&db, 1, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleted_track_skips_file_writes_on_re_resolution() {
+        let db = fixture().await;
+        delete_lyrics_in_db(&db, 1, None).await.unwrap();
+        let file =
+            std::env::temp_dir().join(format!("syncify-deleted-{}.flac", std::process::id()));
+        let sidecar = file.with_extension("lrc");
+        let resolution = syncify_lyrics_domain::LyricsResolution::new_resolved(
+            "synthetic",
+            "synthetic",
+            LyricsSyncType::LineSynced,
+            Some("[00:01.00]synthetic".into()),
+            Some("synthetic".into()),
+            vec![],
+            false,
+            "synthetic",
+        );
+        let result = process_and_persist_resolution(&db, resolution, 0, Some(&file), Some(1))
+            .await
+            .unwrap();
+        assert!(!result.embedded_in_file);
+        assert!(!sidecar.exists());
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM lyrics WHERE track_id = 1")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0);
+    }
+
+    #[tokio::test]
+    async fn format_and_all_deletions_survive_repeated_automatic_import_and_restore() {
+        let db = fixture().await;
+        assert!(auto_upsert_lyrics(&db, &params("lrc"))
+            .await
+            .unwrap()
+            .is_some());
+        delete_lyrics_in_db(&db, 1, Some("lrc")).await.unwrap();
+        for _ in 0..2 {
+            assert!(auto_upsert_lyrics(&db, &params("lrc"))
+                .await
+                .unwrap()
+                .is_none());
+        }
+        assert!(auto_upsert_lyrics(&db, &params("plain"))
+            .await
+            .unwrap()
+            .is_some());
+        delete_lyrics_in_db(&db, 1, None).await.unwrap();
+        for _ in 0..2 {
+            assert!(auto_upsert_lyrics(&db, &params("plain"))
+                .await
+                .unwrap()
+                .is_none());
+        }
+        upsert_lyrics(&db, &params("lrc")).await.unwrap();
+        assert!(!lyrics_auto_blocked(&db, 1, "lrc").await.unwrap());
+        assert!(lyrics_auto_blocked(&db, 1, "plain").await.unwrap());
+        assert!(auto_upsert_lyrics(&db, &params("plain"))
+            .await
+            .unwrap()
+            .is_none());
+        delete_lyrics_in_db(&db, 1, Some("lrc")).await.unwrap();
+        assert!(lyrics_auto_blocked(&db, 1, "lrc").await.unwrap());
+        sqlx::query("DELETE FROM tracks WHERE id = 1")
+            .execute(&db)
+            .await
+            .unwrap();
+        let count: (i64,) = sqlx::query_as("SELECT (SELECT count(*) FROM lyrics_deletion_marks) + (SELECT count(*) FROM lyrics_restored_formats) + (SELECT count(*) FROM lyrics)").fetch_one(&db).await.unwrap();
+        assert_eq!(count.0, 0);
+    }
 }
 
 #[cfg(test)]

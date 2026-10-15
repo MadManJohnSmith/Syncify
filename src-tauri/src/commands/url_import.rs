@@ -1,6 +1,6 @@
 #[allow(unused_imports)]
 use super::*;
-use crate::commands::queue::perform_add_to_queue;
+use crate::commands::queue::normalize_queue_quality_preference;
 use crate::commands::types::ParsedUrl;
 use crate::download::orchestrator::DownloadOrchestrator;
 use crate::download::songlink::SongLinkClient;
@@ -54,7 +54,7 @@ pub async fn perform_import_from_url_with_quality(
     url: &str,
     requested_quality: Option<&str>,
 ) -> Result<ParsedUrl, String> {
-    tracing::info!("perform_import_from_url called with: {}", url);
+    tracing::debug!("perform_import_from_url called");
 
     // 1. Parse URL
     let parsed = parse_streaming_url(url)?;
@@ -96,13 +96,7 @@ pub async fn perform_import_from_url_with_quality(
 
     let (target_service, target_track_id, title, artist, is_cross_platform) = match songlink_res {
         Ok(avail) => {
-            tracing::info!(
-                "[import_from_url] SongLink resolved: title={:?}, artist={:?}, tidal={:?}, qobuz={:?}",
-                avail.title,
-                avail.artist_name,
-                avail.tidal_id,
-                avail.qobuz_id
-            );
+            tracing::debug!("[import_from_url] SongLink resolution succeeded");
 
             // Determine candidate download service
             let (chosen_service, chosen_track_id, cross) = if parsed.service == "spotify" {
@@ -165,11 +159,9 @@ pub async fn perform_import_from_url_with_quality(
                 cross,
             )
         }
-        Err(e) => {
+        Err(_) => {
             tracing::warn!(
-                "[import_from_url] SongLink resolution failed for URL '{}': {}. Falling back to parsed URL.",
-                url,
-                e
+                "[import_from_url] SongLink resolution failed; falling back to parsed URL"
             );
             (
                 parsed.service.clone(),
@@ -186,14 +178,12 @@ pub async fn perform_import_from_url_with_quality(
         .bind(&target_service)
         .fetch_optional(db)
         .await
-        .unwrap_or(None)
-        .unwrap_or(match target_service.as_str() {
-            "spotify" => 1,
-            "qobuz" => 2,
-            "tidal" => 3,
-            "deezer" => 4,
-            _ => 1,
-        });
+        .map_err(|e| format!("Failed to resolve target service: {e}"))?
+        .ok_or_else(|| format!("Target service is not configured: {target_service}"))?;
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to begin URL import: {e}"))?;
 
     // Check if track already exists via track_sources
     let existing_track_id: Option<i64> = sqlx::query_scalar(
@@ -206,9 +196,9 @@ pub async fn perform_import_from_url_with_quality(
     )
     .bind(service_id)
     .bind(&target_track_id)
-    .fetch_optional(db)
+    .fetch_optional(&mut *tx)
     .await
-    .unwrap_or(None);
+    .map_err(|e| format!("Failed to look up track source: {e}"))?;
 
     let track_id = if let Some(tid) = existing_track_id {
         tid
@@ -218,139 +208,162 @@ pub async fn perform_import_from_url_with_quality(
             "INSERT INTO tracks (title, created_at) VALUES (?, CURRENT_TIMESTAMP) RETURNING id",
         )
         .bind(&title)
-        .fetch_one(db)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| format!("Failed to create track entry: {}", e))?;
 
         // Link artist if valid
         if !artist.is_empty() && artist != "Unknown Artist" {
-            let _ = sqlx::query("INSERT OR IGNORE INTO artists (name) VALUES (?)")
+            sqlx::query("INSERT OR IGNORE INTO artists (name) VALUES (?)")
                 .bind(&artist)
-                .execute(db)
-                .await;
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to insert artist: {e}"))?;
 
             let artist_id: Option<i64> =
                 sqlx::query_scalar("SELECT id FROM artists WHERE name = ?")
                     .bind(&artist)
-                    .fetch_optional(db)
+                    .fetch_optional(&mut *tx)
                     .await
-                    .unwrap_or(None);
+                    .map_err(|e| format!("Failed to look up artist: {e}"))?;
 
             if let Some(aid) = artist_id {
-                let _ = sqlx::query(
+                sqlx::query(
                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
                 )
                 .bind(tid)
                 .bind(aid)
-                .execute(db)
-                .await;
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to link artist: {e}"))?;
             }
         }
 
         // Insert track_sources entry
-        let _ = sqlx::query(
-            r#"
-            INSERT INTO track_sources (track_id, service_id, service_track_id, available)
-            VALUES (?, ?, ?, 1)
-            ON CONFLICT(track_id, service_id) DO UPDATE SET service_track_id = excluded.service_track_id
-            "#,
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, available) VALUES (?, ?, ?, 1)",
         )
         .bind(tid)
         .bind(service_id)
         .bind(&target_track_id)
-        .execute(db)
-        .await;
-
-        // If origin service is different, record origin track source as well
-        if parsed.service != target_service {
-            if let Ok(Some(orig_sid)) =
-                sqlx::query_scalar::<_, i64>("SELECT id FROM services WHERE name = ?")
-                    .bind(&parsed.service)
-                    .fetch_optional(db)
-                    .await
-            {
-                let _ = sqlx::query(
-                    r#"
-                    INSERT INTO track_sources (track_id, service_id, service_track_id, available)
-                    VALUES (?, ?, ?, 1)
-                    ON CONFLICT(track_id, service_id) DO UPDATE SET service_track_id = excluded.service_track_id
-                    "#,
-                )
-                .bind(tid)
-                .bind(orig_sid)
-                .bind(&parsed.id)
-                .execute(db)
-                .await;
-            }
-        }
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to link target track source: {e}"))?;
 
         tid
     };
-
-    // 4. Enqueue into download_queue using perform_add_to_queue
-    let final_quality = requested_quality.unwrap_or("lossless");
-
-    let queue_id = perform_add_to_queue(
-        db,
-        track_id,
-        Some(50),
-        Some(final_quality.to_string()),
-        None,
-        Some(service_id),
-        Some(target_service.clone()),
-        None,
-        Some(target_track_id.clone()),
-        None,
-        Some(title.clone()),
-        Some(artist.clone()),
-        None,
-        None,
-        Some(false),
-        Some(true),
-        None,
-    )
-    .await
-    .map_err(|e| format!("Failed to enqueue track: {}", e))?;
-
-    // Record fallback provenance & requested_quality
-    let _ = sqlx::query(
-        r#"
-        UPDATE download_queue
-        SET requested_quality = COALESCE(requested_quality, quality_preference),
-            origin_service = ?,
-            origin_service_track_id = ?,
-            effective_service = ?,
-            effective_service_track_id = ?,
-            fallback_reason = ?,
-            match_method = ?
-        WHERE id = ?
-        "#,
-    )
-    .bind(&parsed.service)
-    .bind(&parsed.id)
-    .bind(&target_service)
-    .bind(&target_track_id)
-    .bind(if is_cross_platform {
-        Some("SongLink cross-platform URL import")
-    } else {
-        None::<&str>
-    })
-    .bind(if is_cross_platform {
-        Some("songlink_cross_platform")
-    } else {
-        None::<&str>
-    })
-    .bind(queue_id)
-    .execute(db)
-    .await;
-
-    // Fetch actual queue status
-    let q_status: Option<String> =
-        sqlx::query_scalar("SELECT status FROM download_queue WHERE id = ?")
-            .bind(queue_id)
-            .fetch_optional(db)
+    // Record the origin even when the resolved target source already existed.
+    // A conflicting origin identity must remain unchanged and require review.
+    if parsed.service != target_service {
+        let orig_sid: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
+            .bind(&parsed.service)
+            .fetch_optional(&mut *tx)
             .await
-            .unwrap_or(None);
+            .map_err(|e| format!("Failed to resolve origin service: {e}"))?
+            .ok_or_else(|| format!("Origin service is not configured: {}", parsed.service))?;
+        sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id, available) VALUES (?, ?, ?, 1) ON CONFLICT(track_id, service_id) DO NOTHING")
+            .bind(track_id)
+            .bind(orig_sid)
+            .bind(&parsed.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to link origin track source: {e}"))?;
+        let recorded: String = sqlx::query_scalar(
+            "SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = ?",
+        )
+        .bind(track_id)
+        .bind(orig_sid)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to verify origin track source: {e}"))?;
+        if recorded != parsed.id {
+            return Err(
+                "Origin source identity conflicts with existing track; review required".to_string(),
+            );
+        }
+    }
+    // URL imports own their queue insert: the generic queue helper uses a pool and
+    // cannot join this transaction. Never expose track/source rows before provenance
+    // is durably recorded. Reuse only an active row whose complete identity
+    // belongs to this exact URL; another origin or terminal state needs review.
+    let final_quality = normalize_queue_quality_preference(Some(
+        requested_quality.unwrap_or("lossless").to_string(),
+    ));
+    let existing_queue: Option<(i64, String, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, status, service_id, service_name, service_track_id, effective_service, effective_service_track_id, origin_service, origin_service_track_id FROM download_queue WHERE track_id = ? ORDER BY id DESC LIMIT 1",
+    )
+    .bind(track_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to look up URL import queue: {e}"))?;
+    let (queue_id, q_status) = if let Some((
+        id,
+        status,
+        sid,
+        service,
+        service_track,
+        effective,
+        effective_track,
+        origin,
+        origin_track,
+    )) = existing_queue
+    {
+        if !matches!(status.as_str(), "queued" | "downloading")
+            || sid != Some(service_id)
+            || service.as_deref() != Some(target_service.as_str())
+            || service_track.as_deref() != Some(target_track_id.as_str())
+            || effective.as_deref() != Some(target_service.as_str())
+            || effective_track.as_deref() != Some(target_track_id.as_str())
+            || origin.as_deref() != Some(parsed.service.as_str())
+            || origin_track.as_deref() != Some(parsed.id.as_str())
+        {
+            return Err(
+                "Existing queue identity or state conflicts with URL import; review required"
+                    .to_string(),
+            );
+        }
+        (id, status)
+    } else {
+        let position: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM download_queue WHERE status = 'queued'",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to determine URL queue position: {e}"))?;
+        let id: i64 = sqlx::query_scalar(
+            r#"INSERT INTO download_queue (
+                track_id, priority, quality_preference, requested_quality, status,
+                progress_percent, retry_count, position, resumable,
+                service_id, service_name, service_track_id, target_title, target_artist,
+                smart_studio_origin, allow_fallback,
+                origin_service, origin_service_track_id, effective_service,
+                effective_service_track_id, fallback_reason, match_method, created_at
+            ) VALUES (?, 50, ?, ?, 'queued', 0.0, 0, ?, 1, ?, ?, ?, ?, ?, 0, 1,
+                      ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id"#,
+        )
+        .bind(track_id)
+        .bind(&final_quality)
+        .bind(&final_quality)
+        .bind(position)
+        .bind(service_id)
+        .bind(&target_service)
+        .bind(&target_track_id)
+        .bind(&title)
+        .bind(&artist)
+        .bind(&parsed.service)
+        .bind(&parsed.id)
+        .bind(&target_service)
+        .bind(&target_track_id)
+        .bind(is_cross_platform.then_some("SongLink cross-platform URL import"))
+        .bind(is_cross_platform.then_some("songlink_cross_platform"))
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to enqueue URL import with provenance: {e}"))?;
+        (id, "queued".to_string())
+    };
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit URL import: {e}"))?;
 
     Ok(ParsedUrl {
         service: parsed.service,
@@ -361,14 +374,14 @@ pub async fn perform_import_from_url_with_quality(
         track_id: Some(track_id),
         title: Some(title),
         artist: Some(artist),
-        status: q_status.or_else(|| Some("queued".to_string())),
+        status: Some(q_status),
     })
 }
 
 /// Parse a streaming service URL and enqueue it into download_queue (Tauri command)
 #[tauri::command]
 pub async fn import_from_url(url: String, state: State<'_, AppState>) -> Result<ParsedUrl, String> {
-    tracing::info!("import_from_url called with: {}", url);
+    tracing::debug!("import_from_url called");
     let res = perform_import_from_url(&state.db, None, &url).await?;
     state.worker_state.notify_available();
     Ok(res)

@@ -272,15 +272,15 @@
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
             <span title="Tracks currently in queued state">Pendientes: <strong class="text-amber-500">{{ queueStats?.queued ?? queuedCount }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Tracks currently downloading concurrently">Activas: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
+            <span title="Tracks currently downloading concurrently">Active: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Finished downloads in queue">Completadas: <strong class="text-success">{{ queueStats?.completed ?? completedItemsCount }}</strong></span>
+            <span title="Finished downloads in queue">Completed: <strong class="text-success">{{ queueStats?.completed ?? completedItemsCount }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Failed downloads in queue">Fallidas: <strong class="text-error">{{ queueStats?.failed ?? failedItemsCount }}</strong></span>
+            <span title="Failed downloads in queue">Failed: <strong class="text-error">{{ queueStats?.failed ?? failedItemsCount }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Cancelled downloads in queue">Canceladas: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
+            <span title="Cancelled downloads in queue">Cancelled: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Physical audio files saved on disk in downloads library">Archivos Físicos: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItemsCount }}</strong></span>
+            <span title="Physical audio files saved on disk in downloads library">Physical Files: <strong class="text-emerald-400">{{ queueStats?.physical_files ?? queueStats?.downloads_count ?? completedItemsCount }}</strong></span>
           </div>
         </div>
 
@@ -586,7 +586,7 @@
             <h2 class="text-base font-bold text-gray-900 dark:text-white group-hover:text-primary transition-colors">Completed</h2>
             <span class="px-2 py-0.5 rounded-full bg-success/10 text-success text-xs font-bold">{{ filteredCompletedItems.length }}</span>
           </button>
-          <button @click="clearCompleted" :disabled="filteredCompletedItems.length === 0" class="text-xs font-semibold text-text-secondary hover:text-error transition-colors disabled:opacity-50">Clear All</button>
+          <button @click="clearCompleted" :disabled="completedItemsRaw.length === 0 || isProcessing" class="text-xs font-semibold text-text-secondary hover:text-error transition-colors disabled:opacity-50">Clear All</button>
         </div>
         
         <Transition name="collapse">
@@ -758,17 +758,25 @@
             <h2 class="text-base font-bold text-gray-900 dark:text-white">Failed</h2>
             <span class="px-2 py-0.5 rounded-full bg-error/10 text-error text-xs font-bold">{{ filteredFailedItems.length }}</span>
           </div>
-          <button 
-            v-if="filteredFailedItems.length > 0"
-            @click="retryFailed" 
-            class="flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-xs font-semibold transition-colors"
-          >
-            <span class="material-symbols-outlined text-[14px]">refresh</span>
-            Retry All
-          </button>
+          <div class="flex items-center gap-3">
+            <button
+              @click="clearFailed"
+              :disabled="isProcessing || failedItemsCount === 0"
+              class="text-xs font-semibold text-text-secondary hover:text-error transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >Clear All</button>
+            <button
+              v-if="filteredFailedItems.length > 0"
+              @click="retryFailed"
+              :disabled="isProcessing"
+              class="flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span class="material-symbols-outlined text-[14px]">refresh</span>
+              Retry All
+            </button>
+          </div>
         </div>
         
-        <div class="flex flex-col gap-3">
+        <div class="flex flex-col gap-2">
           <div v-if="filteredFailedItems.length === 0" class="p-6 text-center text-text-secondary text-xs rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark">
             <p>No failed downloads</p>
           </div>
@@ -792,13 +800,13 @@
               ]"
             ></div>
             
-            <div class="flex items-start gap-4 p-4 pl-5">
-              <!-- Album Art (52x52) -->
+            <div class="flex items-start gap-3 p-2.5 pl-4">
+              <!-- Album Art -->
               <TrackCover
                 :src="item.coverUrl"
                 :item-id="item.id"
                 :alt="item.album || item.title"
-                size-class="w-13 h-13"
+                size-class="w-10 h-10"
                 rounded="rounded-lg"
                 icon="album"
               />
@@ -819,85 +827,41 @@
                   </span>
                 </div>
 
-                <p class="text-xs text-text-secondary truncate mb-2">{{ item.artist }} • {{ item.album }}</p>
+                <p class="text-xs text-text-secondary truncate mb-1">{{ item.artist }} • {{ item.album }}</p>
                 
-                <!-- Failure Metadata Grid: Attempts, Provenance/Origin, Effective, Fallback, Timestamp -->
-                <div class="flex items-center gap-2.5 flex-wrap text-[11px] text-text-secondary mb-2 bg-gray-50 dark:bg-surface-highlight/40 px-2.5 py-1.5 rounded-lg border border-gray-100 dark:border-border-dark/40">
-                  <span class="font-mono text-gray-700 dark:text-gray-300">
-                    <strong>Attempts:</strong> {{ item.retryCount }}
-                  </span>
-                  <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-                  <span>
-                    Origin: <strong class="text-gray-900 dark:text-white capitalize">{{ formatServiceName(item.originalService) }}</strong>
-                  </span>
-                  <template v-if="item.effectiveService && item.effectiveService.toLowerCase() !== item.originalService.toLowerCase()">
-                    <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-                    <span>
-                      Effective: <strong class="text-primary capitalize">{{ formatServiceName(item.effectiveService) }}</strong>
-                    </span>
-                  </template>
-                  <template v-if="item.failure.reason === 'stale_source'">
-                    <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-                    <span :class="['px-1.5 py-0.2 rounded text-[10px] font-semibold', item.allowFallback ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 'bg-gray-500/10 text-gray-400 border border-gray-500/20']">
-                      {{ item.allowFallback ? 'Fallback Allowed' : 'Fallback Disabled' }}
-                    </span>
-                  </template>
-                  <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-                  <span class="text-gray-500 dark:text-gray-400 flex items-center gap-0.5">
-                    <span class="material-symbols-outlined text-[13px]">schedule</span>
-                    Last attempt: {{ item.failedAt }}
-                  </span>
+                <div class="error-message text-error text-xs truncate mb-1" :title="item.errorMessage">
+                  {{ item.errorMessage }}
                 </div>
 
-                <!-- Structured Quality & Failure Decision Details -->
-                <div class="quality-decision-box p-2.5 rounded-lg bg-gray-50 dark:bg-surface-highlight/40 border border-gray-200 dark:border-border-dark space-y-1.5 mb-2" :aria-label="`Quality decision for ${item.title}`">
-                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
-                    <div>
-                      <span class="text-text-secondary">Requested:</span> 
-                      <strong class="text-gray-900 dark:text-white ml-1">{{ item.requestedQualityLabel }}</strong>
-                    </div>
-                    <div>
-                      <span class="text-text-secondary">Provider:</span> 
-                      <strong class="text-gray-900 dark:text-white capitalize ml-1">{{ formatServiceName(item.service) }}</strong>
-                    </div>
-                    <div v-if="item.receivedQualityLabel">
-                      <span class="text-text-secondary">Received:</span> 
-                      <strong class="text-amber-500 ml-1">{{ item.receivedQualityLabel }}</strong>
-                    </div>
-                    <div>
-                      <span class="text-text-secondary">Result:</span> 
-                      <strong :class="item.failure.reason === 'rejected_quality' ? 'text-purple-400 font-semibold' : 'text-error font-semibold'" class="ml-1">{{ item.resultLabel }}</strong>
-                    </div>
-                    <div v-if="item.failure.reason === 'rejected_quality'" class="col-span-full text-text-secondary font-medium">
-                      No file was saved
-                    </div>
-                    <div v-if="item.decisionReason" class="col-span-full">
-                      <span class="text-text-secondary">Reason:</span> 
-                      <span class="text-gray-700 dark:text-gray-300 font-mono ml-1">{{ item.decisionReason }}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Error Message Banner -->
-                <div class="error-message flex items-center gap-1.5 text-error text-xs mb-1.5">
-                  <span class="material-symbols-outlined text-[14px]">error</span>
-                  <span class="font-medium truncate">{{ item.errorMessage }}</span>
-                </div>
-                
                 <!-- Expandable Error Details -->
                 <button 
-                  @click="item.showDetails = !item.showDetails"
+                  @click="toggleFailedDetails(item.id)"
                   class="flex items-center gap-1 text-[11px] text-text-secondary hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
                 >
-                  <span class="material-symbols-outlined text-[14px]">{{ item.showDetails ? 'expand_less' : 'expand_more' }}</span>
-                  {{ item.showDetails ? 'Hide details' : 'Show details' }}
+                  <span class="material-symbols-outlined text-[14px]">{{ expandedFailedDetails.has(item.id) ? 'expand_less' : 'expand_more' }}</span>
+                  {{ expandedFailedDetails.has(item.id) ? 'Hide details' : 'Show details' }}
                 </button>
                 
                 <Transition name="expand">
-                  <div v-if="item.showDetails" class="mt-2 p-2.5 rounded-lg bg-gray-100 dark:bg-gray-800/50 border border-gray-200 dark:border-border-dark space-y-1">
-                    <p class="text-[11px] text-gray-700 dark:text-gray-300">{{ item.failure.description }}</p>
-                    <p class="text-[11px] font-mono text-text-secondary break-all">{{ item.errorDetails }}</p>
-                    <p class="text-[10px] text-text-secondary">Failed at {{ item.failedAt }}</p>
+                  <div v-if="expandedFailedDetails.has(item.id)" class="mt-2 p-2.5 rounded-lg bg-gray-100 dark:bg-gray-800/50 border border-gray-200 dark:border-border-dark space-y-2 text-[11px] text-text-secondary">
+                    <p>{{ item.failure.description }}</p>
+                    <div class="flex flex-wrap gap-x-3 gap-y-1">
+                      <span v-if="item.retryCount < 99"><strong>Attempts:</strong> {{ item.retryCount }}</span>
+                      <span v-else>Stopped after a terminal failure (attempt count unavailable)</span>
+                      <span>Origin: <strong>{{ formatServiceName(item.originalService) }}</strong></span>
+                      <span v-if="item.effectiveService && item.effectiveService.toLowerCase() !== item.originalService.toLowerCase()">Effective: <strong>{{ formatServiceName(item.effectiveService) }}</strong></span>
+                      <span v-if="item.failure.reason === 'stale_source'">Fallback {{ item.allowFallback ? 'Allowed' : 'Disabled' }}</span>
+                      <span>Last attempt: {{ item.failedAt }}</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-1">
+                      <span>Requested: {{ item.requestedQualityLabel }}</span>
+                      <span>Provider: {{ formatServiceName(item.service) }}</span>
+                      <span v-if="item.receivedQualityLabel">Received: {{ item.receivedQualityLabel }}</span>
+                      <span>Result: {{ item.resultLabel }}</span>
+                    </div>
+                    <p v-if="item.isRejectedQuality">No file was saved</p>
+                    <p v-if="item.decisionReason">Decision: <span class="font-mono break-all">{{ item.decisionReason }}</span></p>
+                    <p v-if="item.errorDetails && item.errorDetails !== item.errorMessage">Last error: <span class="font-mono break-all">{{ item.errorDetails }}</span></p>
                   </div>
                 </Transition>
               </div>
@@ -959,7 +923,18 @@
                   <span>Retry Quality</span>
                 </button>
 
-                <!-- 5. Default Retry -->
+                <!-- Identity errors need review before retrying -->
+                <button
+                  v-else-if="item.failure.reason === 'ambiguous_source'"
+                  @click="toggleFailedDetails(item.id)"
+                  class="flex items-center justify-center gap-1 px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-xs"
+                  title="Review source identity before retrying"
+                >
+                  <span class="material-symbols-outlined text-[14px]">info</span>
+                  <span>Review source</span>
+                </button>
+
+                <!-- Default Retry -->
                 <button 
                   v-else
                   @click="retryItem(item.id)" 
@@ -1272,6 +1247,16 @@ const route = useRoute()
 
 // Phase timings & details expansion state
 const expandedItemDetails = ref<Set<number>>(new Set())
+const expandedFailedDetails = ref<Set<number>>(new Set())
+
+function toggleFailedDetails(id: number) {
+  if (expandedFailedDetails.value.has(id)) {
+    expandedFailedDetails.value.delete(id)
+  } else {
+    expandedFailedDetails.value.add(id)
+  }
+}
+
 
 function toggleItemDetails(id: number) {
   if (expandedItemDetails.value.has(id)) {
@@ -1576,9 +1561,9 @@ function mapFailedItem(item: EnrichedQueueItem) {
     const failure = classifyFailureReason(item.error_message, item.last_error)
     const isRejectedQuality = failure.reason === 'rejected_quality' || item.quality_decision === 'RejectedQuality'
     const requestedQualityLabel = formatQualityLabel(item.requested_quality || item.quality_preference || item.quality)
-    const receivedQualityLabel = isRejectedQuality ? (item.effective_quality ? formatQualityLabel(item.effective_quality) : 'AAC 320 kbps') : null
+    const receivedQualityLabel = isRejectedQuality && item.effective_quality ? formatQualityLabel(item.effective_quality) : null
     const resultLabel = isRejectedQuality ? 'Rejected quality' : (failure.label || 'Failed')
-    const decisionReason = item.decision_reason || item.error_message || null
+    const decisionReason = item.decision_reason && item.decision_reason !== item.error_message ? item.decision_reason : null
 
     return {
       id: item.id,
@@ -1599,7 +1584,6 @@ function mapFailedItem(item: EnrichedQueueItem) {
       retryCount,
       allowFallback: item.allow_fallback ?? true,
       failedAt: formatTime(item.completed_at ?? item.started_at ?? item.created_at ?? undefined),
-      showDetails: false,
       timeline: item.timeline || [],
       phaseTimings: item.phase_timings || null,
       isRejectedQuality,
@@ -2057,6 +2041,15 @@ async function togglePause() {
 }
 
 async function clearCompleted() {
+  if (isProcessing.value) return
+  const count = completedItemsRaw.value.length
+  if (count === 0) return
+  const confirmed = await confirm(`Clear ${count.toLocaleString()} completed downloads from the queue? Downloaded files will remain on disk.`, {
+    title: 'Clear Completed Downloads',
+    variant: 'warning'
+  })
+  if (confirmed !== true) return
+
   isProcessing.value = true
   try {
     await queueApi.clearQueue('complete')
@@ -2124,19 +2117,27 @@ async function retryFailed() {
   }
 }
 
+// WF-DL-01: el backend solo borra `status = 'failed'`; las completadas y las
+// en curso no entran en ese DELETE. El recuento mostrado y el del diálogo son
+// el total de fallidas, no el subconjunto que deja pasar el filtro de búsqueda.
 async function clearFailed() {
-  const confirmed = await confirm('Clear all failed downloads?', {
+  if (isProcessing.value) return
+  const count = failedItemsCount.value
+  if (count === 0) return
+  const confirmed = await confirm(`Are you sure you want to clear all ${count.toLocaleString()} failed downloads?`, {
     title: 'Clear Failed Downloads',
     variant: 'warning'
   })
   if (confirmed !== true) return
-  
+
   isProcessing.value = true
   try {
     await queueApi.clearAllFailed()
     lastProgressTimestamps.clear()
     await fetchData()
-    toast.success('Cleared failed downloads')
+    toast.success(`Cleared ${count.toLocaleString()} failed items`)
+  } catch (e) {
+    toast.error('Failed to clear failed downloads', String(e))
   } finally {
     isProcessing.value = false
   }

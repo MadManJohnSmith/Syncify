@@ -155,6 +155,43 @@ pub struct LyricsEngineConfig {
     pub auto_fetch_on_import: bool,
     pub retry_failed: bool,
     pub retry_frequency: String,
+    /// Stable source variants in user priority order. Empty means no network sources.
+    #[serde(default = "default_lyrics_sources")]
+    pub sources: Vec<LyricsSourceSetting>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LyricsSourceSetting {
+    pub provider_id: String,
+    pub enabled: bool,
+    pub priority: i64,
+}
+
+pub const LYRICS_SOURCE_IDS: &[&str] = &[
+    "apple_music_ttml",
+    "spotify_color",
+    "musixmatch_richsync",
+    "ultrastar",
+    "kugou",
+    "qqmusic",
+    "netease_synced",
+    "lyricsplus",
+    "lrclib_synced",
+    "musixmatch_plain",
+    "lrclib_plain",
+    "tekstowo_plain",
+];
+
+fn default_lyrics_sources() -> Vec<LyricsSourceSetting> {
+    LYRICS_SOURCE_IDS
+        .iter()
+        .enumerate()
+        .map(|(i, id)| LyricsSourceSetting {
+            provider_id: (*id).to_string(),
+            enabled: true,
+            priority: i as i64 + 1,
+        })
+        .collect()
 }
 
 impl Default for LyricsEngineConfig {
@@ -166,6 +203,7 @@ impl Default for LyricsEngineConfig {
             auto_fetch_on_import: true,
             retry_failed: true,
             retry_frequency: "weekly".to_string(),
+            sources: default_lyrics_sources(),
         }
     }
 }
@@ -355,342 +393,132 @@ impl LyricsClient {
         self.parse_response(best)
     }
 
-    /// Search across all available lyrics providers in parallel and return all valid results.
-    /// This allows the user / UI to compare and choose lyrics from any responding provider (LY-07).
+    /// Source policy shared by interactive search and automatic downloads.
+    fn ordered_sources(&self) -> Vec<LyricsSourceSetting> {
+        let mut sources = self.config().sources;
+        sources.retain(|s| s.enabled && LYRICS_SOURCE_IDS.contains(&s.provider_id.as_str()));
+        sources.sort_by(|a, b| {
+            a.priority
+                .cmp(&b.priority)
+                .then_with(|| a.provider_id.cmp(&b.provider_id))
+        });
+        sources
+    }
+
+    fn policy_accepts(&self, lyrics: &LyricsResponse, title: &str) -> bool {
+        if !is_valid_lyrics(lyrics, title) {
+            return false;
+        }
+        let config = self.config();
+        let rank = if lyrics.elrc_content.as_ref().is_some_and(|s| !s.is_empty())
+            || matches!(
+                lyrics.sync_type.as_str(),
+                "KARAOKE_WORD_SYNCED" | "WORD_SYNCED"
+            ) {
+            3
+        } else if lyrics.sync_type == "LINE_SYNCED" || !lyrics.lines.is_empty() {
+            2
+        } else {
+            1
+        };
+        let minimum = match config.min_sync_level.as_str() {
+            "syllable" | "word" => 3,
+            "line" => 2,
+            _ => 1,
+        };
+        if rank < minimum {
+            return false;
+        }
+        let lang = config.preferred_language.trim();
+        // Unknown languages cannot prove a requested language; original accepts any language.
+        if lang.is_empty()
+            || lang.eq_ignore_ascii_case("original")
+            || lang.eq_ignore_ascii_case("any")
+        {
+            return true;
+        }
+        let content = lyrics
+            .plain_lyrics
+            .as_deref()
+            .or(lyrics.elrc_content.as_deref())
+            .or_else(|| lyrics.lines.first().map(|line| line.words.as_str()));
+        content
+            .and_then(detect_language_heuristic)
+            .is_some_and(|detected| detected.eq_ignore_ascii_case(lang))
+    }
+
+    async fn fetch_source(
+        &self,
+        id: &str,
+        artist: &str,
+        track: &str,
+        duration: f64,
+    ) -> Result<LyricsResponse> {
+        match id {
+            "apple_music_ttml" => self.fetch_apple_music_ttml(artist, track, duration).await,
+            "spotify_color" => self.fetch_spotify_lyrics(artist, track, duration).await,
+            "musixmatch_richsync" => {
+                self.fetch_musixmatch_richsync(artist, track, duration)
+                    .await
+            }
+            "ultrastar" => self.fetch_ultrastar_karaoke(artist, track).await,
+            "kugou" => self.fetch_kugou_karaoke(artist, track, duration).await,
+            "qqmusic" => self.fetch_qqmusic_lyrics(artist, track, duration).await,
+            "netease_synced" => self.fetch_netease_lyrics(artist, track, duration).await,
+            "lyricsplus" => self.fetch_lyricsplus(artist, track, duration).await,
+            "lrclib_synced" => {
+                self.search_lyrics(&format!("{} {}", artist, track), duration)
+                    .await
+            }
+            "musixmatch_plain" => self.fetch_musixmatch_plain(artist, track, duration).await,
+            "lrclib_plain" => self.fetch_lrclib_plain(artist, track).await,
+            "tekstowo_plain" => self.fetch_tekstowo_plain(artist, track).await,
+            _ => Err(anyhow!("Unknown lyrics source")),
+        }
+    }
+
+    /// All enabled candidates, ordered by user priority; disabled sources are never contacted.
     pub async fn search_all_providers(
         &self,
         artist: &str,
         track: &str,
         duration_sec: f64,
     ) -> Vec<LyricsResponse> {
-        info!(
-            "[LyricsEngine] Searching ALL providers for '{} - {}' ({:.1}s)",
-            artist, track, duration_sec
-        );
-
-        let simplified = simplify_track_name(track);
-        let lrclib_query = format!("{} {}", artist, track);
-
-        // Run provider searches concurrently
-        let (
-            am_res,
-            spot_res,
-            mxm_rich_res,
-            mxm_plain_res,
-            lrclib_res,
-            lrclib_plain_res,
-            netease_res,
-            kugou_res,
-            qq_res,
-            ultrastar_res,
-            lyricsplus_res,
-            tekstowo_res,
-        ) = tokio::join!(
-            self.fetch_apple_music_ttml(artist, track, duration_sec),
-            self.fetch_spotify_lyrics(artist, track, duration_sec),
-            self.fetch_musixmatch_richsync(artist, track, duration_sec),
-            self.fetch_musixmatch_plain(artist, track, duration_sec),
-            self.search_lyrics(&lrclib_query, duration_sec),
-            self.fetch_lrclib_plain(artist, track),
-            self.fetch_netease_lyrics(artist, track, duration_sec),
-            self.fetch_kugou_karaoke(artist, track, duration_sec),
-            self.fetch_qqmusic_lyrics(artist, track, duration_sec),
-            self.fetch_ultrastar_karaoke(artist, track),
-            self.fetch_lyricsplus(artist, track, duration_sec),
-            self.fetch_tekstowo_plain(artist, track),
-        );
-
-        let all_candidates = vec![
-            am_res,
-            spot_res,
-            mxm_rich_res,
-            lrclib_res,
-            kugou_res,
-            qq_res,
-            netease_res,
-            lyricsplus_res,
-            ultrastar_res,
-            mxm_plain_res,
-            lrclib_plain_res,
-            tekstowo_res,
-        ];
-
         let mut results = Vec::new();
-        let mut seen_keys = std::collections::HashSet::new();
-
-        for mut lyrics in all_candidates.into_iter().flatten() {
-            if is_valid_lyrics(&lyrics, track)
-                || (!simplified.is_empty() && is_valid_lyrics(&lyrics, &simplified))
+        for source in self.ordered_sources() {
+            if let Ok(mut lyrics) = self
+                .fetch_source(&source.provider_id, artist, track, duration_sec)
+                .await
             {
-                if !lyrics.lines.is_empty() {
-                    lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                }
-                let key = format!("{}:{}", lyrics.provider, lyrics.sync_type);
-                if seen_keys.insert(key) {
+                if self.policy_accepts(&lyrics, track) {
+                    lyrics.lines.sort_by_key(|line| line.start_time_ms);
                     results.push(lyrics);
                 }
             }
         }
-
-        // Rank by sync capability: syllable/word > line > plain
-        results.sort_by(|a, b| {
-            let rank = |res: &LyricsResponse| -> u8 {
-                if res.sync_type == "KARAOKE_WORD_SYNCED" || res.sync_type == "WORD_SYNCED" {
-                    3
-                } else if res.sync_type == "LINE_SYNCED" || !res.lines.is_empty() {
-                    2
-                } else {
-                    1
-                }
-            };
-            rank(b).cmp(&rank(a))
-        });
-
-        info!(
-            "[LyricsEngine] Search complete for '{} - {}': {} valid results found across all providers",
-            artist,
-            track,
-            results.len()
-        );
-
         results
     }
 
-    /// Fetch from all sources with Karaoke-First priority fallbacks and strict duration matching
+    /// Automatic fetch uses the same enabled/priority/sync/language policy as search.
     pub async fn fetch_all_sources(
         &self,
         artist: &str,
         track: &str,
         duration_sec: f64,
     ) -> Result<LyricsResponse> {
-        info!("[LyricsEngine] Fetching lyrics for '{} - {}' ({:.1}s expected, Karaoke-First Priority)", artist, track, duration_sec);
-
-        let simplified = simplify_track_name(track);
-
-        // =========================================================================
-        // TIER 1: KARAOKE WORD-SYNCED (eLRC) PROVIDERS ONLY
-        // =========================================================================
-
-        // =========================================================================
-        // TIER 1: KARAOKE WORD-SYNCED / SYLLABLE-SYNCED (eLRC) PROVIDERS
-        // Priority Ordered by Studio Master Precision & Timing Quality
-        // =========================================================================
-
-        // 1. Apple Music TTML (Exact Title) -> PRIORITY 1 (Studio Master XML - Highest Precision)
-        if let Ok(mut lyrics) = self
-            .fetch_apple_music_ttml(artist, track, duration_sec)
-            .await
-        {
-            if is_valid_lyrics(&lyrics, track) {
-                lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 1: Apple Music TTML (Studio Master Syllable-Synced)");
-                return Ok(lyrics);
-            }
-        }
-
-        // 2. Spotify Color Lyrics (Official Word-Synced & Line-Synced) -> PRIORITY 2
-        if let Ok(mut lyrics) = self.fetch_spotify_lyrics(artist, track, duration_sec).await {
-            if is_valid_lyrics(&lyrics, track) {
-                lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                info!(
-                    "[LyricsEngine] ✓ Acquired PRIORITY 2: Spotify Color Lyrics ({})",
-                    lyrics.sync_type
-                );
-                return Ok(lyrics);
-            }
-        }
-
-        // 3. Musixmatch Richsync (Exact Title) -> PRIORITY 3 (Official Studio Timed)
-        if let Ok(mut lyrics) = self
-            .fetch_musixmatch_richsync(artist, track, duration_sec)
-            .await
-        {
-            if is_valid_lyrics(&lyrics, track) {
-                lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 3: Musixmatch Richsync (Word-Synced)");
-                return Ok(lyrics);
-            }
-        }
-
-        // 4. UltraStar Karaoke (USDB Syllable-Synced .txt) -> PRIORITY 4 (Human Beat-Clock Timed)
-        if let Ok(lyrics) = self.fetch_ultrastar_karaoke(artist, track).await {
-            if is_valid_lyrics(&lyrics, track) {
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 4: UltraStar Karaoke (Beat-Clock Syllable-Synced)");
-                return Ok(lyrics);
-            }
-        }
-
-        // 5. Kugou Real Karaoke (KRC Word-Synced, 100% Open Database) -> PRIORITY 5
-        if let Ok(lyrics) = self.fetch_kugou_karaoke(artist, track, duration_sec).await {
-            if is_valid_lyrics(&lyrics, track) {
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 5: Kugou Real Karaoke (Word-Synced)");
-                return Ok(lyrics);
-            }
-        }
-
-        // 6. QQ Music Synced & Karaoke Lyrics -> PRIORITY 6
-        if let Ok(lyrics) = self.fetch_qqmusic_lyrics(artist, track, duration_sec).await {
-            if lyrics.sync_type == "KARAOKE_WORD_SYNCED" && is_valid_lyrics(&lyrics, track) {
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 6: QQ Music Karaoke (Word-Synced)");
-                return Ok(lyrics);
-            }
-        }
-
-        // 7. NetEase klyric Karaoke (Exact Title) -> PRIORITY 7
-        if let Ok(mut lyrics) = self.fetch_netease_lyrics(artist, track, duration_sec).await {
-            if lyrics.sync_type == "KARAOKE_WORD_SYNCED" && is_valid_lyrics(&lyrics, track) {
-                lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 7: NetEase Cloud Music Karaoke (Word-Synced)");
-                return Ok(lyrics);
-            }
-        }
-
-        // 8. LyricsPlus Karaoke (Exact Title) -> PRIORITY 8
-        if let Ok(lyrics) = self.fetch_lyricsplus(artist, track, duration_sec).await {
-            if lyrics.sync_type == "KARAOKE_WORD_SYNCED" && is_valid_lyrics(&lyrics, track) {
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 8: LyricsPlus Karaoke (Word-Synced)");
-                return Ok(lyrics);
-            }
-        }
-
-        // --- SIMPLIFIED TITLE FALLBACKS FOR TIER 1 KARAOKE ---
-        if simplified != track {
+        for source in self.ordered_sources() {
             if let Ok(mut lyrics) = self
-                .fetch_apple_music_ttml(artist, &simplified, duration_sec)
+                .fetch_source(&source.provider_id, artist, track, duration_sec)
                 .await
             {
-                if is_valid_lyrics(&lyrics, &simplified) {
-                    lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                    info!("[LyricsEngine] ✓ Acquired PRIORITY 1 (simplified): Apple Music TTML");
-                    return Ok(lyrics);
-                }
-            }
-            if let Ok(mut lyrics) = self
-                .fetch_musixmatch_richsync(artist, &simplified, duration_sec)
-                .await
-            {
-                if is_valid_lyrics(&lyrics, &simplified) {
-                    lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                    info!("[LyricsEngine] ✓ Acquired PRIORITY 3 (simplified): Musixmatch Richsync");
-                    return Ok(lyrics);
-                }
-            }
-            if let Ok(lyrics) = self
-                .fetch_kugou_karaoke(artist, &simplified, duration_sec)
-                .await
-            {
-                if is_valid_lyrics(&lyrics, &simplified) {
-                    info!("[LyricsEngine] ✓ Acquired PRIORITY 5 (simplified): Kugou Real Karaoke");
+                if self.policy_accepts(&lyrics, track) {
+                    lyrics.lines.sort_by_key(|line| line.start_time_ms);
                     return Ok(lyrics);
                 }
             }
         }
-
-        // =========================================================================
-        // TIER 2: LINE-SYNCED & PLAIN FALLBACK PROVIDERS
-        // =========================================================================
-
-        // 8. LyricsPlus Line-Synced (Exact Title) -> PRIORITY 8
-        if let Ok(mut lyrics) = self.fetch_lyricsplus(artist, track, duration_sec).await {
-            if is_valid_lyrics(&lyrics, track) {
-                lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 8: LyricsPlus Line-Synced");
-                return Ok(lyrics);
-            }
-        }
-
-        // 9. LRCLIB Line-Synced (Exact Title) -> PRIORITY 9
-        let query = format!("{} {}", artist, track);
-        if let Ok(mut lyrics) = self.search_lyrics(&query, duration_sec).await {
-            if is_valid_lyrics(&lyrics, track) {
-                lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 9: LRCLIB Line-Synced");
-                return Ok(lyrics);
-            }
-        }
-
-        // 10. LRCLIB Line-Synced (Simplified Title) -> PRIORITY 10
-        if simplified != track {
-            let query_simp = format!("{} {}", artist, simplified);
-            if let Ok(mut lyrics) = self.search_lyrics(&query_simp, duration_sec).await {
-                if is_valid_lyrics(&lyrics, &simplified) {
-                    lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                    info!("[LyricsEngine] ✓ Acquired PRIORITY 10 (simplified): LRCLIB Line-Synced");
-                    return Ok(lyrics);
-                }
-            }
-        }
-
-        // 11. NetEase Line-Synced (Exact Title) -> PRIORITY 11
-        if let Ok(mut lyrics) = self.fetch_netease_lyrics(artist, track, duration_sec).await {
-            if is_valid_lyrics(&lyrics, track) {
-                lyrics.lines.sort_by_key(|l| l.start_time_ms);
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 11: NetEase Line-Synced");
-                return Ok(lyrics);
-            }
-        }
-
-        // =========================================================================
-        // TIER 3: PLAIN / UNSYNCED LYRICS UNIVERSAL FALLBACK
-        // (Ensures 100% of songs with published lyrics get lyrics in Symfonium/Plex/Kodi)
-        // =========================================================================
-
-        // 12. Musixmatch Official Plain Lyrics (Exact Title) -> PRIORITY 12
-        if let Ok(lyrics) = self
-            .fetch_musixmatch_plain(artist, track, duration_sec)
-            .await
-        {
-            if is_valid_lyrics(&lyrics, track) {
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 12: Musixmatch Official Plain Lyrics");
-                return Ok(lyrics);
-            }
-        }
-
-        // 13. LRCLIB Plain Lyrics (Exact Title) -> PRIORITY 13
-        if let Ok(lyrics) = self.fetch_lrclib_plain(artist, track).await {
-            if is_valid_lyrics(&lyrics, track) {
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 13: LRCLIB Plain Lyrics");
-                return Ok(lyrics);
-            }
-        }
-
-        // 14. Musixmatch Official Plain Lyrics (Simplified Title) -> PRIORITY 14
-        if simplified != track {
-            if let Ok(lyrics) = self
-                .fetch_musixmatch_plain(artist, &simplified, duration_sec)
-                .await
-            {
-                if is_valid_lyrics(&lyrics, &simplified) {
-                    info!("[LyricsEngine] ✓ Acquired PRIORITY 14 (simplified): Musixmatch Official Plain Lyrics");
-                    return Ok(lyrics);
-                }
-            }
-        }
-
-        // 15. LRCLIB Plain Lyrics (Simplified Title) -> PRIORITY 15
-        if simplified != track {
-            if let Ok(lyrics) = self.fetch_lrclib_plain(artist, &simplified).await {
-                if is_valid_lyrics(&lyrics, &simplified) {
-                    info!(
-                        "[LyricsEngine] ✓ Acquired PRIORITY 15 (simplified): LRCLIB Plain Lyrics"
-                    );
-                    return Ok(lyrics);
-                }
-            }
-        }
-
-        // 16. Tekstowo.pl Polish Plain Lyrics Fallback -> PRIORITY 16
-        if let Ok(lyrics) = self.fetch_tekstowo_plain(artist, track).await {
-            if is_valid_lyrics(&lyrics, track) {
-                info!("[LyricsEngine] ✓ Acquired PRIORITY 16: Tekstowo.pl Polish Plain Lyrics");
-                return Ok(lyrics);
-            }
-        }
-
         Err(anyhow!(
-            "Lyrics not found from any source for {} - {}",
-            artist,
-            track
+            "No lyrics matched enabled sources and lyrics policy"
         ))
     }
 
@@ -2270,11 +2098,15 @@ impl LyricsPipelineService {
         }
     }
 
-    #[allow(dead_code)]
     pub fn with_config(config: LyricsEngineConfig) -> Self {
         Self {
             client: LyricsClient::with_config(config),
         }
+    }
+
+    /// Download callers must use this constructor to consume the persisted source policy.
+    pub async fn from_db(db: &crate::DbPool) -> Self {
+        Self::with_config(crate::commands::lyrics::load_lyrics_engine_config(db).await)
     }
 
     /// Resolve lyrics and extract optional sidecar LRC content without touching audio files.
@@ -2546,6 +2378,65 @@ fn parse_krc_to_elrc(krc_text: &str) -> (Vec<LyricsLine>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_policy_preserves_enabled_and_user_priority() {
+        let mut config = LyricsEngineConfig::default();
+        config.sources = vec![
+            LyricsSourceSetting {
+                provider_id: "lrclib_plain".into(),
+                enabled: true,
+                priority: 1,
+            },
+            LyricsSourceSetting {
+                provider_id: "apple_music_ttml".into(),
+                enabled: false,
+                priority: 0,
+            },
+            LyricsSourceSetting {
+                provider_id: "spotify_color".into(),
+                enabled: true,
+                priority: 2,
+            },
+            LyricsSourceSetting {
+                provider_id: "genius".into(),
+                enabled: true,
+                priority: 0,
+            },
+        ];
+        let client = LyricsClient::with_config(config);
+        let ids: Vec<_> = client
+            .ordered_sources()
+            .into_iter()
+            .map(|source| source.provider_id)
+            .collect();
+        assert_eq!(ids, ["lrclib_plain", "spotify_color"]);
+    }
+
+    #[test]
+    fn sync_and_language_policy_reject_unmatched_candidates() {
+        let mut config = LyricsEngineConfig::default();
+        config.min_sync_level = "line".into();
+        config.preferred_language = "es".into();
+        let client = LyricsClient::with_config(config);
+        let mut candidate = LyricsResponse {
+            lines: vec![],
+            sync_type: "UNSYNCED".into(),
+            instrumental: false,
+            plain_lyrics: Some("Esta es una letra larga de una canción que cantamos juntos".into()),
+            provider: "fixture".into(),
+            source: "fixture".into(),
+            elrc_content: None,
+        };
+        assert!(!client.policy_accepts(&candidate, "Canción"));
+        candidate.sync_type = "LINE_SYNCED".into();
+        candidate.plain_lyrics = Some(
+            "These words are written in English, and they describe a song that we sing together"
+                .into(),
+        );
+        assert!(!client.policy_accepts(&candidate, "Canción"));
+    }
+
     use syncify_lyrics_domain::{
         fixtures::*, LyricsLineDomain, LyricsResolution, LyricsSyncType, ResolutionStatus,
     };

@@ -191,8 +191,11 @@ async fn test_6_already_downloaded_track_is_separated() {
             .fetch_one(&db)
             .await
             .unwrap();
-    sqlx::query("INSERT INTO downloads (track_id, file_path, source_service_id, file_format) VALUES (?, 'C:/Music/song.flac', 2, 'FLAC')")
-        .bind(track_id).execute(&db).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("song.flac");
+    std::fs::write(&file, b"existing").unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path, source_service_id, file_format) VALUES (?, ?, 2, 'FLAC')")
+        .bind(track_id).bind(file.to_str().unwrap()).execute(&db).await.unwrap();
 
     let res = evaluate_track_preflight(&db, track_id, None, None, false, true)
         .await
@@ -262,8 +265,12 @@ async fn test_8_exact_summary_counts_match_evaluations() {
         .fetch_one(&db)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, 'C:/Music/t4.flac')")
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("t4.flac");
+    std::fs::write(&file, b"existing").unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, ?)")
         .bind(t4)
+        .bind(file.to_str().unwrap())
         .execute(&db)
         .await
         .unwrap();
@@ -335,8 +342,12 @@ async fn test_9_batch_enqueues_only_eligible_tracks_into_download_queue() {
             .fetch_one(&db)
             .await
             .unwrap();
-    sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, 'C:/Music/t3.flac')")
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("t3.flac");
+    std::fs::write(&file, b"existing").unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, ?)")
         .bind(t3)
+        .bind(file.to_str().unwrap())
         .execute(&db)
         .await
         .unwrap();
@@ -478,15 +489,18 @@ async fn test_10_50_mixed_tracks_comprehensive_preflight_and_enqueue_audit() {
     }
 
     // 5. 5 Already downloaded (AlreadyDownloaded)
+    let downloaded_dir = tempfile::tempdir().unwrap();
     for i in 1..=5 {
         let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES (?) RETURNING id")
             .bind(format!("Downloaded Track {}", i))
             .fetch_one(&db)
             .await
             .unwrap();
+        let file = downloaded_dir.path().join(format!("dl_{}.flac", i));
+        std::fs::write(&file, b"existing").unwrap();
         sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, ?)")
             .bind(tid)
-            .bind(format!("C:/Music/dl_{}.flac", i))
+            .bind(file.to_str().unwrap())
             .execute(&db)
             .await
             .unwrap();
@@ -723,15 +737,18 @@ async fn test_10_large_500_track_batch_preflight() {
     }
 
     // 4. 40 Already downloaded tracks (AlreadyDownloaded)
+    let downloaded_dir = tempfile::tempdir().unwrap();
     for i in 1..=40 {
         let tid: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES (?) RETURNING id")
             .bind(format!("Downloaded Song {}", i))
             .fetch_one(&db)
             .await
             .unwrap();
+        let file = downloaded_dir.path().join(format!("dl_{}.flac", i));
+        std::fs::write(&file, b"existing").unwrap();
         sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, ?)")
             .bind(tid)
-            .bind(format!("C:/Music/dl_{}.flac", i))
+            .bind(file.to_str().unwrap())
             .execute(&db)
             .await
             .unwrap();

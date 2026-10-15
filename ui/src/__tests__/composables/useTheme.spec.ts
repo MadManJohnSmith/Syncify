@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { runInNewContext } from 'node:vm'
 import { mount } from '@vue/test-utils'
 import {
   useTheme,
@@ -18,6 +21,33 @@ describe('useTheme composable and appearance settings (G-02, AJ-05, AJ-06)', () 
     localStorage.clear()
     delete document.documentElement.dataset.theme
     delete document.documentElement.dataset.dynamicCover
+  })
+
+  it('first frame matches composable default and preserves each service theme', () => {
+    const html = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    expect(script).toBeDefined()
+    for (const stored of [null, 'not-a-theme', ...SERVICE_THEMES.map(theme => theme.id)]) {
+      const root = { dataset: {} as Record<string, string> }
+      runInNewContext(script!, {
+        localStorage: { getItem: () => stored },
+        document: { documentElement: root },
+      })
+      expect(root.dataset.theme).toBe(stored && SERVICE_THEMES.some(theme => theme.id === stored) ? stored : 'tinta')
+    }
+  })
+
+  it('service themes define different full token palettes', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/styles/main.css'), 'utf8')
+    const palettes = SERVICE_THEMES.map(theme => {
+      const block = css.match(new RegExp(`\\[data-theme="${theme.id}"\\] \\{([^}]+)\\}`))?.[1]
+      expect(block).toBeDefined()
+      for (const token of ['--bg-base', '--surface-1', '--text-1', '--accent', '--on-accent']) {
+        expect(block).toContain(token + ':')
+      }
+      return block!.match(/--accent:\s*([^;]+)/)?.[1]
+    })
+    expect(new Set(palettes).size).toBe(SERVICE_THEMES.length)
   })
 
   it('G-02: defaults to "tinta" when no theme is stored or preset', () => {

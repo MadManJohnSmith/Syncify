@@ -294,6 +294,8 @@ async fn test_s161_live_network_single_track_creation() {
         hint_isrc: Some(isrc_before.clone()),
         operation_id: None,
         account_id: None,
+        locked_account: false,
+        artifact_policy: Default::default(),
     };
 
     println!(

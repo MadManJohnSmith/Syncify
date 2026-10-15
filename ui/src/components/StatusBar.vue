@@ -18,7 +18,7 @@
     :class="[
       'status-bar fixed bottom-0 left-0 right-0 h-auto min-h-12 bg-shell border-t border-line',
       'flex items-center gap-x-3 gap-y-1 flex-wrap px-3 py-1 text-xs',
-      (showSyncPopover || showNetworkPopover || showStoragePopover) ? 'z-[160]' : 'z-[50]'
+      overlayActive ? 'z-0' : (showSyncPopover || showNetworkPopover || showStoragePopover) ? 'z-[160]' : 'z-[50]'
     ]"
   >
     <!-- Left Section: Background Processes (BP-02/BP-04).
@@ -397,6 +397,9 @@ import {
   isTerminalDownloadStatus,
   parseSqliteUtc,
 } from '../utils/statusTelemetry'
+
+// The footer must not cover shell-level modals when one is open.
+withDefaults(defineProps<{ overlayActive?: boolean }>(), { overlayActive: false })
 
 // State
 const showSyncPopover = ref(false)

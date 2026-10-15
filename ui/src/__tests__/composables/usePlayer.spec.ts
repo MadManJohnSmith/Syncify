@@ -8,11 +8,15 @@ import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 const playStub = vi.fn(() => Promise.resolve())
 const pauseStub = vi.fn()
 const loadStub = vi.fn()
+let playerAudio: HTMLMediaElement | undefined
 
 beforeAll(() => {
     Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
         configurable: true,
-        value: playStub,
+        value: function(this: HTMLMediaElement) {
+            playerAudio = this;
+            return playStub();
+        },
     });
     Object.defineProperty(window.HTMLMediaElement.prototype, 'pause', {
         configurable: true,
@@ -48,6 +52,35 @@ describe('usePlayer', () => {
         playStub.mockClear();
         pauseStub.mockClear();
         loadStub.mockClear();
+    });
+
+    it('reports one sanitized actionable message for a rejected play and its media error', async () => {
+        const player = usePlayer();
+        mockInvoke.mockResolvedValueOnce({ track_id: 7, file_path: '/private/song.flac', format: 'FLAC' });
+        playStub.mockRejectedValueOnce(new Error('private path /private/song.flac and token=secret'));
+        const playing = player.play({ id: 7, title: 'Song', artist: 'Artist' });
+        await expect(playing).rejects.toThrow();
+        expect(player.error.value).toContain('audio output');
+        expect(player.error.value).not.toContain('/private');
+        expect(player.error.value).not.toContain('secret');
+        expect(playerAudio).toBeDefined();
+        Object.defineProperty(playerAudio, 'error', { configurable: true, value: { code: 3, message: 'private path' } });
+        playerAudio!.dispatchEvent(new Event('error'));
+        expect(player.error.value).toContain('audio output'); // same failure, no second message
+        Object.defineProperty(playerAudio, 'error', { configurable: true, value: null });
+    });
+
+    it('maps MediaError.code without leaking engine diagnostics', async () => {
+        const player = usePlayer();
+        mockInvoke.mockResolvedValueOnce({ track_id: 8, file_path: '/private/broken.flac', format: 'FLAC' });
+        await player.play({ id: 8, title: 'Broken', artist: 'Artist' });
+        Object.defineProperty(playerAudio, 'error', { configurable: true, value: { code: 4, message: '/private/broken.flac' } });
+        playerAudio!.dispatchEvent(new Event('error'));
+        expect(player.error.value).toContain('Unsupported audio format');
+        expect(player.error.value).not.toContain('/private');
+        playerAudio!.dispatchEvent(new Event('error'));
+        expect(player.error.value).toContain('Unsupported audio format');
+        Object.defineProperty(playerAudio, 'error', { configurable: true, value: null });
     });
 
     it('resolves the source and starts playback of a downloaded file', async () => {

@@ -100,6 +100,7 @@
                   </div>
                   <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ service.importedTracks }}</p>
                   <p class="text-[10px] text-text-secondary uppercase">Imported</p>
+                  <p class="text-[10px] text-text-secondary">Favoritos reportados: {{ service.reportedTracks }}</p>
                 </div>
                 <div class="text-center p-2 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg">
                   <div class="flex items-center justify-center gap-1 mb-1">
@@ -190,7 +191,12 @@
               >
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
-                    <div class="font-medium truncate text-gray-900 dark:text-white">{{ formatAccountLabel(account) }}</div>
+                    <div class="font-medium truncate text-gray-900 dark:text-white">{{ formatAccountLabel(account) }} <span v-if="accountLabelCollision(service.accounts, account)" class="text-xs text-text-secondary">(cuenta {{ account.id }})</span></div>
+                    <div v-if="accountCount(service, account.id)" class="text-xs text-text-secondary" :data-testid="`account-count-${account.id}`">
+                      Favoritos reportados: {{ accountCount(service, account.id)?.reported }} · Favoritos importados: {{ accountCount(service, account.id)?.imported }}
+                      · {{ accountCount(service, account.id)?.completeness }}<span v-if="accountCount(service, account.id)?.stale"> · desactualizado</span>
+                      · {{ accountCount(service, account.id)?.scannedAt || 'sin hora' }}
+                    </div>
                     <!-- Secondary email, only rendered when it differs from the label's email -->
                     <div v-if="accountRowEmail(account)" class="text-xs text-text-secondary truncate">
                       {{ accountRowEmail(account) }}
@@ -1046,6 +1052,14 @@ const spotifyApiCard = ref<InstanceType<typeof SpotifyApiConfigCard> | null>(nul
  * Identity line shown on a service card. Uses the shared resolver so it can
  * never diverge from SettingsServices, and never renders an opaque id.
  */
+function accountCount(service: { accountCounts: { accountId: number; reported: string; imported: string; completeness: string; stale: boolean; scannedAt: string | null }[] }, accountId: number) {
+  return service.accountCounts.find(item => item.accountId === accountId)
+}
+
+function accountLabelCollision(accounts: { id: number; display_name?: string | null; email?: string | null }[], account: { id: number; display_name?: string | null; email?: string | null }) {
+  return accounts.filter(item => formatAccountLabel(item) === formatAccountLabel(account)).length > 1
+}
+
 function formatAccountUser(service?: any): string {
   if (!service) return NO_IDENTITY_LABEL
   const acct = pickPrimaryAccount(service.accounts)
@@ -1164,6 +1178,16 @@ function showToast(message: string, type: 'success' | 'error' | 'info' = 'succes
 
 
 
+// Preserve the actual IPC error message, but never render tokens, URLs with query
+// parameters, or credential-bearing provider responses in a toast.
+function safeAuthError(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : 'Error de autenticación desconocido'
+  return message
+    .replace(/https?:\/\/\S+/gi, '[URL omitida]')
+    .replace(/\b(?:Bearer\s+|sp_dc\s*[=:]\s*|sp_key\s*[=:]\s*|access_token\s*[=:]\s*|refresh_token\s*[=:]\s*|client_secret\s*[=:]\s*)\S+/gi, '[credencial omitida]')
+    .slice(0, 300)
+}
+
 // Connect service
 async function connectService(service: { id: string; name: string }) {
   authLoading.value = service.id
@@ -1181,7 +1205,7 @@ async function connectService(service: { id: string; name: string }) {
       await fetchData()
       highlightedAccountId.value = typeof result.data?.account_id === 'number' ? result.data.account_id : null
     } else {
-      showToast(`Auth failed: ${result.error || 'Unknown error'}`, 'error')
+      showToast(`Auth failed: ${safeAuthError(result.error)}`, 'error')
       if (service.id === 'spotify' && result.error && isSpotifyCredentialsError(result.error)) {
         handleSpotifyCredentialsError()
       }
@@ -1191,7 +1215,7 @@ async function connectService(service: { id: string; name: string }) {
     if (isSpotifyCredentialsError(errorMsg)) {
       handleSpotifyCredentialsError()
     } else {
-      showToast(`Failed to connect service: ${e}`, 'error')
+      showToast(`Failed to connect service: ${safeAuthError(e)}`, 'error')
     }
   } finally {
     authLoading.value = null
@@ -1215,7 +1239,7 @@ async function connectServiceFromCard(serviceId: string) {
       highlightedAccountId.value = typeof result.data?.account_id === 'number' ? result.data.account_id : null
       showToast(`Connected to ${serviceId} successfully!`, 'success')
     } else {
-      showToast(`Failed to connect: ${result.error || 'Unknown error'}`, 'error')
+      showToast(`Failed to connect: ${safeAuthError(result.error)}`, 'error')
       if (serviceId === 'spotify' && result.error && isSpotifyCredentialsError(result.error)) {
         handleSpotifyCredentialsError()
       }
@@ -1225,7 +1249,7 @@ async function connectServiceFromCard(serviceId: string) {
     if (isSpotifyCredentialsError(errorMsg)) {
       handleSpotifyCredentialsError()
     } else {
-      showToast(`Connection error: ${e}`, 'error')
+      showToast(`Connection error: ${safeAuthError(e)}`, 'error')
     }
   } finally {
     authLoading.value = null

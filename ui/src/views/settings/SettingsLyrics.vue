@@ -2,7 +2,7 @@
   <div class="space-y-8">
     <section class="space-y-4">
       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Lyrics Sources (Priority Order)</h3>
-      <p class="text-sm text-text-secondary">Syncify will try sources in this order. Drag a row, or use its arrow buttons, to reorder.</p>
+      <p class="text-sm text-text-secondary">Manual search and automatic fetch try enabled source variants in this order, subject to minimum sync level and language. Download pipeline integration is pending; its current source order may differ. Drag a row, or use its arrow buttons, to reorder.</p>
       <div v-if="lyricsSettings.isLoading.value" class="flex items-center gap-2 text-text-secondary">
         <span class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
         <span class="text-sm">Loading lyrics providers...</span>
@@ -22,7 +22,6 @@
         >
           <template #actions>
             <button
-              :disabled="!provider.enabled"
               :aria-label="provider.enabled ? `Disable ${provider.provider_name}` : `Enable ${provider.provider_name}`"
               @click.stop="lyricsSettings.toggleProvider(provider.provider_id)"
               class="p-1 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded transition-colors"

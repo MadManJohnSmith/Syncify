@@ -56,13 +56,13 @@ pub async fn resolve_playback_source(
     };
 
     let path = std::path::PathBuf::from(&file_path);
-    if !path.exists() {
-        return Err(format!("El archivo ya no existe en disco: {}", file_path));
-    }
+    // A downloads row can outlive its file or point at a directory/empty file.
+    // Never grant those paths to the custom protocol.
+    validate_playback_file(&path)?;
 
     // Canonicalize once here; the handler compares canonicalized too.
     let canonical = std::fs::canonicalize(&path)
-        .map_err(|e| format!("No se pudo resolver la ruta del archivo: {}", e))?;
+        .map_err(|_| "No se pudo resolver el archivo local".to_string())?;
     {
         let mut set = grants()
             .lock()
@@ -78,6 +78,19 @@ pub async fn resolve_playback_source(
         file_path,
         format,
     })
+}
+
+fn validate_playback_file(path: &std::path::Path) -> Result<(), String> {
+    let metadata = std::fs::metadata(path).map_err(|_| {
+        "El archivo local no está disponible; vuelve a descargar la pista".to_string()
+    })?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(
+            "El archivo local no es un archivo de audio válido; vuelve a descargar la pista"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +385,17 @@ pub fn handle_media_protocol_request(request: Request<Vec<u8>>) -> Response<Vec<
     let Ok(meta) = std::fs::metadata(&canonical) else {
         return simple_response(404, "Archivo no encontrado");
     };
+    if !meta.is_file() {
+        return simple_response(404, "Archivo no disponible");
+    }
     let total_len = meta.len();
+    if total_len == 0 {
+        return Response::builder()
+            .status(416)
+            .header("Content-Range", "bytes */0")
+            .body(Vec::new())
+            .unwrap_or_else(|_| simple_response(500, "Respuesta mal formada"));
+    }
 
     // Range handling for HTML5 audio seeking: "bytes=start[-end]".
     let range_header = request
@@ -381,14 +404,15 @@ pub fn handle_media_protocol_request(request: Request<Vec<u8>>) -> Response<Vec<
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let (start, end) = match range_header.as_deref().and_then(parse_bytes_range) {
+    let requested_range = range_header.as_deref().and_then(parse_bytes_range);
+    let (start, end) = match requested_range {
         Some((s, e)) => {
             if s >= total_len {
                 return Response::builder()
                     .status(416)
                     .header("Content-Range", format!("bytes */{}", total_len))
                     .body(Vec::new())
-                    .unwrap();
+                    .unwrap_or_else(|_| simple_response(500, "Respuesta mal formada"));
             }
             let end = e.unwrap_or(total_len - 1).min(total_len - 1);
             (s, end)
@@ -417,7 +441,7 @@ pub fn handle_media_protocol_request(request: Request<Vec<u8>>) -> Response<Vec<
         return simple_response(500, "Lectura truncada");
     }
 
-    let partial = !(start == 0 && end == total_len - 1);
+    let partial = requested_range.is_some() || !(start == 0 && end == total_len - 1);
     let mut builder = Response::builder()
         .status(if partial { 206 } else { 200 })
         .header("Content-Type", content_type_for(&raw_path))
@@ -466,7 +490,71 @@ fn chunk_len_for(start: u64, end: u64) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{chunk_len_for, extract_file_path, parse_bytes_range};
+    use super::{
+        chunk_len_for, extract_file_path, handle_media_protocol_request, parse_bytes_range,
+        validate_playback_file,
+    };
+    use tauri::http::Request;
+
+    fn media_request(
+        path: &std::path::Path,
+        range: Option<&str>,
+    ) -> tauri::http::Response<Vec<u8>> {
+        let url = format!(
+            "syncify-media://localhost/{}",
+            urlencoding::encode(&path.to_string_lossy())
+        );
+        let mut builder = Request::builder().uri(url);
+        if let Some(range) = range {
+            builder = builder.header("Range", range);
+        }
+        handle_media_protocol_request(builder.body(Vec::new()).unwrap())
+    }
+
+    #[test]
+    fn playback_grants_require_nonempty_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate_playback_file(dir.path()).is_err());
+        assert!(validate_playback_file(&dir.path().join("missing.flac")).is_err());
+        let path = dir.path().join("audio.flac");
+        std::fs::write(&path, []).unwrap();
+        assert!(validate_playback_file(&path).is_err());
+        std::fs::write(&path, [1, 2, 3, 4]).unwrap();
+        assert!(validate_playback_file(&path).is_ok());
+    }
+
+    #[test]
+    fn media_protocol_reports_ranges_and_truncated_files_honestly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.flac");
+        std::fs::write(&path, [1, 2, 3, 4]).unwrap();
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        super::grants()
+            .lock()
+            .unwrap()
+            .insert(canonical.to_string_lossy().into_owned());
+        let full = media_request(&path, None);
+        assert_eq!(full.status(), 200);
+        assert_eq!(full.body(), &[1, 2, 3, 4]);
+        let entire_range = media_request(&path, Some("bytes=0-3"));
+        assert_eq!(entire_range.status(), 206);
+        assert_eq!(entire_range.headers()["Content-Range"], "bytes 0-3/4");
+        let partial = media_request(&path, Some("bytes=1-2"));
+        assert_eq!(partial.status(), 206);
+        assert_eq!(partial.headers()["Content-Range"], "bytes 1-2/4");
+        assert_eq!(partial.body(), &[2, 3]);
+        let beyond = media_request(&path, Some("bytes=4-"));
+        assert_eq!(beyond.status(), 416);
+        assert_eq!(beyond.headers()["Content-Range"], "bytes */4");
+        std::fs::write(&path, []).unwrap();
+        let empty = media_request(&path, None);
+        assert_eq!(empty.status(), 416);
+        assert_eq!(empty.headers()["Content-Range"], "bytes */0");
+        super::grants()
+            .lock()
+            .unwrap()
+            .remove(&canonical.to_string_lossy().to_string());
+    }
 
     // S200: convertFileSrc on Linux/macOS keeps the WHOLE absolute path
     // percent-encoded after `localhost/`. The old blanket-trim destroyed the

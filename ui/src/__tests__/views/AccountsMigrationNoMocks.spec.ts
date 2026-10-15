@@ -525,7 +525,7 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
     const description = wrapper.find('[data-testid="preview-description"]').text()
     expect(description).toContain('against Qobuz')
     expect(description).not.toContain('against Qobuz, Tidal')
-    expect(description).toContain('each additional destination is matched when its own migration runs')
+    expect(description).toContain('other selected destinations have no verified preview and cannot be started as a batch')
   })
 
   it('Search Manually opens a real modal wired to search_destination_track and manual_match_item (FE-2)', async () => {
@@ -584,7 +584,7 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
     expect(wrapper.find('[data-testid="manual-match-modal"]').exists()).toBe(false)
   })
 
-  it('starts one real migration per selected destination, passing skipNotFound and the content selection (FE-4)', async () => {
+  it('blocks batch writes when only the first selected destination has been previewed (FE-4)', async () => {
     const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = []
     backend(
       {
@@ -621,15 +621,9 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
     await flushPromises()
 
     const startCalls = calls.filter(c => c.cmd === 'start_migration')
-    expect(startCalls.length).toBe(2)
-    expect(startCalls[0].args?.sourceService).toBe('spotify')
-    expect(startCalls[0].args?.destinationService).toBe('qobuz')
-    expect(startCalls[1].args?.destinationService).toBe('tidal')
-    const options = startCalls[0].args?.options as Record<string, unknown>
-    expect(options.skip_unmatched).toBe(true)
-    expect(options.create_playlists).toBe(true)
-
-    expect(wrapper.find('[data-testid="transfer-complete"]').exists()).toBe(true)
+    expect(startCalls).toHaveLength(0)
+    expect(wrapper.find('[data-testid="batch-blocked"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="transfer-complete"]').exists()).toBe(false)
   })
 
   it('shows a real error and returns to the ready screen when the backend refuses to start (FE-4)', async () => {
@@ -643,6 +637,7 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
     await clickNext(wrapper) // -> transfer
     await flushPromises()
 
+    await wrapper.find('[data-testid="confirm-transfer"]').setValue(true)
     await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
     await flushPromises()
 
@@ -662,6 +657,7 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
       }
       if (cmd === 'get_service_statuses') return connectedStatuses
       if (cmd === 'get_migration_destinations') return ['qobuz', 'tidal', 'spotify', 'deezer', 'soundcloud']
+      if (cmd === 'preview_migration') return { total_tracks: 100, matched_tracks: 90, unmatched_tracks: 10, playlists: [] }
       return []
     })
     const wrapper = mount(MigrationView, { global: { stubs } })
@@ -670,6 +666,7 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
     await clickNext(wrapper) // -> transfer
     await flushPromises()
 
+    await wrapper.find('[data-testid="confirm-transfer"]').setValue(true)
     await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="transfer-progress"]').exists()).toBe(true)

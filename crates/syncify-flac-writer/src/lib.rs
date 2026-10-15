@@ -759,10 +759,13 @@ pub fn apply_flac_tags(
         if !lyrics.trim().is_empty() {
             comments.set("LYRICS", vec![lyrics.clone()]);
             let clean_plain = strip_lrc_timestamps(lyrics);
-            if !clean_plain.is_empty() {
+            // LY-02: the header of a derived payload is not lyrics. `LYRICS` above keeps
+            // the provider's bytes verbatim; only the unsynced copy passes the
+            // boundary cleaner, whose default policy removes LRC id tags and
+            // provider credit blocks and nothing else.
+            let clean_plain = syncify_lyrics_domain::strip_lyrics_header(&clean_plain);
+            if !clean_plain.trim().is_empty() {
                 comments.set("UNSYNCEDLYRICS", vec![clean_plain]);
-            } else {
-                comments.set("UNSYNCEDLYRICS", vec![lyrics.clone()]);
             }
         }
     }
@@ -3251,6 +3254,74 @@ mod tests {
         assert_eq!(
             comments.get("ORIGINALDATE"),
             Some(&vec!["1973-03-01".to_string()])
+        );
+    }
+
+    /// LY-02: the derived UNSYNCEDLYRICS copy is the only thing that passes through
+    /// the boundary header cleaner. LYRICS must stay byte-identical to the provider
+    /// payload, and UltraStar-style `-` / `#` lines must survive the cleanup.
+    #[test]
+    fn test_apply_flac_tags_cleans_unsynced_lyrics_header_only() {
+        let temp_file = create_test_flac_file();
+        let path = &temp_file.path;
+
+        let payload =
+            "[ti:Song]\n[by:Someone]\n[00:10.00] First verse\n[00:20.00]- gap marker\n[00:30.00] #BPM: 120";
+        let meta = FlacMetadata {
+            title: "Track".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            lyrics_lrc: Some(payload.to_string()),
+            ..Default::default()
+        };
+
+        apply_flac_tags(path, &meta).expect("apply_flac_tags failed");
+
+        let comments = metaflac::Tag::read_from_path(path)
+            .expect("Failed to read FLAC tag")
+            .vorbis_comments()
+            .expect("No vorbis comments")
+            .clone();
+
+        assert_eq!(
+            comments.get("LYRICS").map(|v| v.as_slice()),
+            Some([payload.to_string()].as_slice()),
+            "LYRICS must preserve the synced original verbatim"
+        );
+        assert_eq!(
+            comments.get("UNSYNCEDLYRICS").map(|v| v.as_slice()),
+            Some(["First verse\n- gap marker\n#BPM: 120".to_string()].as_slice()),
+            "only the id-tag header is removed; verses and metadata content stay"
+        );
+    }
+
+    /// A payload with no removable header must produce the same UNSYNCEDLYRICS as
+    /// plain timestamp stripping did before LY-02.
+    #[test]
+    fn test_apply_flac_tags_keeps_unsynced_lyrics_when_no_header() {
+        let temp_file = create_test_flac_file();
+        let path = &temp_file.path;
+
+        let payload = "[00:10.00] First verse\n[00:20.00] Second verse";
+        let meta = FlacMetadata {
+            title: "Track".to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            lyrics_lrc: Some(payload.to_string()),
+            ..Default::default()
+        };
+
+        apply_flac_tags(path, &meta).expect("apply_flac_tags failed");
+
+        let comments = metaflac::Tag::read_from_path(path)
+            .expect("Failed to read FLAC tag")
+            .vorbis_comments()
+            .expect("No vorbis comments")
+            .clone();
+
+        assert_eq!(
+            comments.get("UNSYNCEDLYRICS").map(|v| v.as_slice()),
+            Some(["First verse\nSecond verse".to_string()].as_slice())
         );
     }
 

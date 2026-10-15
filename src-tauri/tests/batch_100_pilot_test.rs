@@ -432,9 +432,11 @@ async fn test_100_track_pilot_batch_preflight_concurrency_and_14_phase_telemetry
         "INSERT INTO tracks (title, album_id, duration_ms, track_number, isrc) VALUES ('Already Downloaded Track', ?, 200000, 99, 'USDL100099') RETURNING id"
     )
     .bind(album2_id).fetch_one(&db).await.unwrap();
+    let downloaded_file = base_music_dir.join("dl_99.flac");
+    std::fs::write(&downloaded_file, b"fLaC").unwrap();
     sqlx::query("INSERT INTO downloads (track_id, file_path) VALUES (?, ?)")
         .bind(tid_99)
-        .bind("C:/Music/dl_99.flac")
+        .bind(downloaded_file.to_str().unwrap())
         .execute(&db)
         .await
         .unwrap();

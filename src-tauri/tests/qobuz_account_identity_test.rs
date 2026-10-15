@@ -32,6 +32,103 @@ use syncify_tauri_lib::commands::{
 use syncify_tauri_lib::crypto;
 use syncify_tauri_lib::services::qobuz::qobuz_login_missing_token_message;
 
+// ── Contratos de entitlement Qobuz (WF-QOB-01) ──────────────────────────────
+
+/// Helper to read the persisted tri-state.
+async fn stored_entitlement(pool: &sqlx::SqlitePool, account_id: i64) -> Option<i64> {
+    sqlx::query_scalar("SELECT streaming_entitled FROM accounts WHERE id = ?")
+        .bind(account_id)
+        .fetch_one(pool)
+        .await
+        .expect("entitlement read")
+}
+
+#[tokio::test]
+async fn browser_token_only_account_stays_unknown() {
+    let pool = setup_test_db().await;
+    let service_id = qobuz_service_id(&pool).await;
+    let encrypted = crypto::encrypt(
+        &serde_json::json!({"user_auth_token": "browser_token_1234567890"}).to_string(),
+    )
+    .expect("encrypt");
+
+    let id = upsert_service_account(
+        &pool,
+        service_id,
+        "Token Only",
+        None,
+        Some("tok_only_1"),
+        &encrypted,
+        // The bridge says nothing about `user.credential` here, so the caller
+        // hands None. That must persist as unknown, not as "no subscription".
+        None,
+    )
+    .await
+    .expect("upsert");
+
+    assert_eq!(
+        stored_entitlement(&pool, id).await,
+        Some(-1),
+        "a token-only login must persist unknown (-1)"
+    );
+}
+
+#[tokio::test]
+async fn silent_relogin_never_demotes_a_known_entitlement() {
+    let pool = setup_test_db().await;
+    let service_id = qobuz_service_id(&pool).await;
+    let encrypted = crypto::encrypt(&serde_json::json!({"user_auth_token": "tok"}).to_string())
+        .expect("encrypt");
+
+    let id = upsert_service_account(
+        &pool,
+        service_id,
+        "Streamer",
+        None,
+        Some("streamer_1"),
+        &encrypted,
+        Some(true),
+    )
+    .await
+    .expect("first");
+    assert_eq!(stored_entitlement(&pool, id).await, Some(1));
+
+    // Re-login where the provider did not report flags (None): the stored value
+    // must survive untouched.
+    let id2 = upsert_service_account(
+        &pool,
+        service_id,
+        "Streamer",
+        None,
+        Some("streamer_1"),
+        &encrypted,
+        None,
+    )
+    .await
+    .expect("second");
+    assert_eq!(id2, id, "misma identidad reutiliza la fila");
+    assert_eq!(
+        stored_entitlement(&pool, id).await,
+        Some(1),
+        "un re-login silencioso no debe degradar known=1"
+    );
+
+    // A login that DID report "no streaming" is allowed to write 0.
+    let id3 = upsert_service_account(
+        &pool,
+        service_id,
+        "Streamer",
+        None,
+        Some("streamer_1"),
+        &encrypted,
+        Some(false),
+    )
+    .await
+    .expect("third");
+    assert_eq!(id3, id);
+    assert_eq!(stored_entitlement(&pool, id).await, Some(0));
+}
+
 async fn setup_test_db() -> sqlx::SqlitePool {
     let _ = crypto::init_crypto([23u8; 32]);
 

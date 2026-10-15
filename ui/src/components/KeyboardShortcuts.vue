@@ -92,7 +92,8 @@
     <Transition name="fade">
       <div 
         v-if="showFirstTimeHint && !hasSeenHint"
-        class="fixed bottom-20 right-6 z-50 bg-accent text-on-accent px-4 py-3 rounded-xl shadow-xl max-w-xs"
+        class="fixed right-6 z-50 bg-accent text-on-accent px-4 py-3 rounded-xl shadow-xl max-w-xs"
+        style="bottom: calc(var(--status-bar-h, 48px) + 16px)"
       >
         <button @click="dismissHint" class="absolute -top-2 -right-2 w-6 h-6 bg-surface text-ink-2 rounded-full shadow flex items-center justify-center hover:bg-elevated">
           <span class="material-symbols-outlined text-[14px]">close</span>

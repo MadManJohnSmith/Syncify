@@ -13,19 +13,19 @@ export interface ThemeMeta {
 }
 
 export const STANDARD_THEMES: ThemeMeta[] = [
-  { id: "tinta", name: "Tinta", description: "Monocromo: el único color llega de la carátula." },
-  { id: "camaleon", name: "Camaleón", description: "La interfaz se tiñe con el color del disco en reproducción." },
-  { id: "consola", name: "Consola", description: "Ámbar sobre carbón neutro." },
-  { id: "riso", name: "Riso", description: "Papel frío con dos tintas: azul y rosa." },
+  { id: "tinta", name: "Ink", description: "Monochrome: the only color comes from the cover art." },
+  { id: "camaleon", name: "Chameleon", description: "The interface takes on the color of the playing album." },
+  { id: "consola", name: "Console", description: "Amber on neutral charcoal." },
+  { id: "riso", name: "Riso", description: "Cool paper with two inks: blue and pink." },
 ];
 
 export const SERVICE_THEMES: ThemeMeta[] = [
-  { id: "spotify", name: "Spotify", description: "Verde vibrante sobre fondo negro azabache.", isService: true },
-  { id: "apple_music", name: "Apple Music", description: "Rojo carmesí sobre gris medianoche pulido.", isService: true },
-  { id: "tidal", name: "Tidal", description: "Cian de alta resolución sobre negro absoluto.", isService: true },
-  { id: "qobuz", name: "Qobuz", description: "Azul profundo audiófilo sobre zafiro oscuro.", isService: true },
-  { id: "deezer", name: "Deezer", description: "Púrpura neón dinámico sobre antracita.", isService: true },
-  { id: "soundcloud", name: "SoundCloud", description: "Naranja cálido sobre carbono mate.", isService: true },
+  { id: "spotify", name: "Spotify", description: "Vibrant green on jet black.", isService: true },
+  { id: "apple_music", name: "Apple Music", description: "Crimson red on polished midnight gray.", isService: true },
+  { id: "tidal", name: "Tidal", description: "High-resolution cyan on pure black.", isService: true },
+  { id: "qobuz", name: "Qobuz", description: "Deep audiophile blue on dark sapphire.", isService: true },
+  { id: "deezer", name: "Deezer", description: "Dynamic neon purple on charcoal.", isService: true },
+  { id: "soundcloud", name: "SoundCloud", description: "Warm orange on matte carbon.", isService: true },
 ];
 
 export const THEMES: ThemeMeta[] = [...STANDARD_THEMES, ...SERVICE_THEMES];

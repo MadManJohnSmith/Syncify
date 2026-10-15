@@ -577,10 +577,17 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
         .execute(&db)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO downloads (track_id, file_path, source_service_id, file_format) VALUES (?, '/music/oasis/01.flac', 2, 'FLAC')")
-        .bind(t1).execute(&db).await.unwrap();
+    let music_dir = tempfile::tempdir().unwrap();
+    let downloaded_file = music_dir.path().join("01.flac");
+    std::fs::write(&downloaded_file, b"fLaC").unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path, source_service_id, file_format) VALUES (?, ?, 2, 'FLAC')")
+        .bind(t1)
+        .bind(downloaded_file.to_str().unwrap())
+        .execute(&db)
+        .await
+        .unwrap();
 
-    // Candidate A: Different track ID, but lowercase ISRC with dashes -> MUST match AlreadyDownloaded
+    // Candidate A: same recording ISRC does not prove this remaster is the downloaded edition.
     let t_cand_a: i64 = sqlx::query_scalar(
         "INSERT INTO tracks (title, duration_ms, isrc) VALUES ('Wonderwall (Remaster)', 258100, 'us-rc1-76-07839') RETURNING id"
     )
@@ -589,9 +596,43 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
         .await
         .unwrap();
     assert!(
-        matches!(res_a, Some(QueueGuardrailMatch::AlreadyDownloaded { track_id, .. }) if track_id == t1),
-        "Candidate A with dashed lowercase ISRC must match downloaded track 1"
+        !matches!(res_a, Some(QueueGuardrailMatch::AlreadyDownloaded { .. })),
+        "A remaster must not be tombstoned by recording ISRC alone"
     );
+
+    std::fs::remove_file(&downloaded_file).unwrap();
+    let missing_file_result = check_queue_guardrail(&db, t_cand_a, None, None, None)
+        .await
+        .unwrap();
+    assert!(
+        !matches!(
+            missing_file_result,
+            Some(QueueGuardrailMatch::AlreadyDownloaded { .. })
+        ),
+        "A download row with a missing file must not block another request"
+    );
+
+    // 2b. The first equivalent row has no file; a different canonical track
+    // with the same ISRC has a surviving file.
+    let surviving_file = music_dir.path().join("02.flac");
+    std::fs::write(&surviving_file, b"fLaC").unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path, source_service_id, file_format) VALUES (?, ?, 2, 'FLAC')")
+        .bind(t_cand_a)
+        .bind(surviving_file.to_str().unwrap())
+        .execute(&db)
+        .await
+        .unwrap();
+    let mixed_rows_result = check_queue_guardrail(&db, t_cand_a, None, None, None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            mixed_rows_result,
+            Some(QueueGuardrailMatch::AlreadyDownloaded { track_id, .. }) if track_id == t_cand_a
+        ),
+        "A surviving file on an equivalent row must keep AlreadyDownloaded"
+    );
+    std::fs::remove_file(&surviving_file).unwrap();
 
     // 3. Track 2: In download_queue (queued) without ISRC
     let t2: i64 = sqlx::query_scalar(
@@ -604,12 +645,12 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
         .execute(&db)
         .await
         .unwrap();
-    let q2_id: i64 = sqlx::query_scalar(
+    let _q2_id: i64 = sqlx::query_scalar(
         "INSERT INTO download_queue (track_id, status, priority, position) VALUES (?, 'queued', 50, 1) RETURNING id"
     )
     .bind(t2).fetch_one(&db).await.unwrap();
 
-    // Candidate B: Canonical signature match (same title lower, same primary artist, |Δdur| = 1000 <= 2000) -> MUST match AlreadyQueued
+    // Candidate B: title/artist/duration similarity alone is not an exact queue identity.
     let t_cand_b: i64 = sqlx::query_scalar(
         "INSERT INTO tracks (title, duration_ms) VALUES ('don''t look back in anger', 289000) RETURNING id"
     )
@@ -624,8 +665,8 @@ async fn test_guardrail_c3_isrc_and_canonical_signature() {
         .await
         .unwrap();
     assert!(
-        matches!(res_b, Some(QueueGuardrailMatch::AlreadyQueued { queue_id, .. }) if queue_id == q2_id),
-        "Candidate B with canonical signature match must match queued item 2"
+        !matches!(res_b, Some(QueueGuardrailMatch::AlreadyQueued { .. })),
+        "A similar recording must not tombstone a distinct queue item"
     );
 
     // Candidate C: Same title and artist, but duration difference > 2000 ms (|300000 - 288000| = 12000) -> MUST NOT match

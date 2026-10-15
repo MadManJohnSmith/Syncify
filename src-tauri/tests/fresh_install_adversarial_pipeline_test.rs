@@ -402,9 +402,13 @@ async fn test_04_c3_preventive_queue_guardrail_isrc_and_canonical_signature() {
         .await
         .unwrap();
 
-    // Simulate track A already downloaded in local library
-    sqlx::query("INSERT INTO downloads (track_id, file_path, file_format) VALUES (?, '/music/Kavinsky/Nightcall.flac', 'FLAC')")
+    // A recording match is not an edition lock, even with a real local file.
+    let fixture = tempfile::tempdir().unwrap();
+    let audio = fixture.path().join("Nightcall.flac");
+    std::fs::write(&audio, b"fixture audio").unwrap();
+    sqlx::query("INSERT INTO downloads (track_id, file_path, file_format) VALUES (?, ?, 'FLAC')")
         .bind(t_a_id)
+        .bind(audio.to_string_lossy().as_ref())
         .execute(&pool)
         .await
         .unwrap();
@@ -414,8 +418,8 @@ async fn test_04_c3_preventive_queue_guardrail_isrc_and_canonical_signature() {
         .await
         .expect("Guardrail check should succeed");
     assert!(
-        matches!(match_isrc, Some(QueueGuardrailMatch::AlreadyDownloaded { track_id, .. }) if track_id == t_a_id),
-        "Guardrail must detect duplicate by case-insensitive, unhyphenated ISRC"
+        match_isrc.is_none(),
+        "ISRC does not identify a release edition"
     );
 
     // Also verify candidate with uppercase and hyphens matches
@@ -423,8 +427,14 @@ async fn test_04_c3_preventive_queue_guardrail_isrc_and_canonical_signature() {
         .await
         .expect("Guardrail check should succeed");
     assert!(
-        matches!(match_isrc_upper, Some(QueueGuardrailMatch::AlreadyDownloaded { track_id, .. }) if track_id == t_a_id),
-        "Guardrail must detect duplicate by formatted ISRC"
+        match_isrc_upper.is_none(),
+        "formatted ISRC does not identify an edition"
+    );
+    let exact = check_queue_guardrail(&pool, t_a_id, None, None, None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(exact, Some(QueueGuardrailMatch::AlreadyDownloaded { track_id, .. }) if track_id == t_a_id)
     );
 
     // 2. Guardrail Canonical Signature test:
@@ -473,8 +483,14 @@ async fn test_04_c3_preventive_queue_guardrail_isrc_and_canonical_signature() {
         .await
         .expect("Guardrail signature check for track C must execute");
     assert!(
-        matches!(match_sig_c, Some(QueueGuardrailMatch::AlreadyQueued { queue_id, .. }) if queue_id == q_b_id),
-        "Guardrail must detect active queued duplicate by canonical signature (same artist, title, |Δdur| <= 2000 ms)"
+        match_sig_c.is_none(),
+        "a same-title recording may be another edition"
+    );
+    let exact_queue = check_queue_guardrail(&pool, t_b_id, None, None, None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(exact_queue, Some(QueueGuardrailMatch::AlreadyQueued { queue_id, .. }) if queue_id == q_b_id)
     );
 
     // Candidate D: title 'roadgame', artist 'kavinsky', duration 226000 ms (|Δdur| = 6000 ms > 2000 ms)

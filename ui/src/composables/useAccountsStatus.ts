@@ -46,6 +46,25 @@ const SERVICE_BG_CLASSES: Record<string, string> = {
 
 export type ServiceAccountStatus = 'connected' | 'disconnected' | 'expiring' | 'invalid' | 'syncing' | 'error'
 
+interface AccountImportSnapshot {
+  account_id: number
+  collection: string
+  reported_total: number | null
+  imported_total: number
+  scanned_at: string
+  completeness: string
+}
+
+export interface AccountCountDisplay {
+  accountId: number
+  label: string
+  reported: string
+  imported: string
+  completeness: string
+  stale: boolean
+  scannedAt: string | null
+}
+
 export interface ServiceCardData {
   id: string
   name: string
@@ -53,6 +72,9 @@ export interface ServiceCardData {
   bgClass: string
   status: 'connected' | 'disconnected' | 'expiring' | 'invalid'
   importedTracks: string
+  /** Provider snapshots count occurrences; overlap across accounts is intentional. */
+  reportedTracks: string
+  accountCounts: AccountCountDisplay[]
   favoriteTracks: string
   playlists: string
   lastSync: string
@@ -335,6 +357,27 @@ export function useAccountsStatus(customToast?: ReturnType<typeof useToast>) {
 
       const serviceAccounts = accountsForService(status.name)
       const identity = resolveAccountIdentity(pickPrimaryAccount(serviceAccounts))
+      // Rust ServiceStatus serializes this additive snake_case field; older builds omit it.
+      const snapshots = (status as ServiceStatus & { account_import_counts?: AccountImportSnapshot[] }).account_import_counts ?? []
+      // Provider currently persists favorites/albums/playlists snapshots, not a
+      // whole-library total. Show favorites as such, never invent a library total.
+      const librarySnapshots = snapshots.filter(snapshot => snapshot.collection === 'favorites')
+      const reported = librarySnapshots.every(snapshot => snapshot.reported_total != null)
+        && librarySnapshots.length > 0
+        ? librarySnapshots.reduce((sum, snapshot) => sum + (snapshot.reported_total ?? 0), 0).toLocaleString()
+        : 'No disponible'
+      const accountCounts: AccountCountDisplay[] = orderedAccounts(serviceAccounts).map(account => {
+        const snapshot = librarySnapshots.find(item => item.account_id === account.id)
+        return {
+          accountId: account.id,
+          label: formatAccountLabel(account),
+          reported: snapshot?.reported_total == null ? 'No disponible' : snapshot.reported_total.toLocaleString(),
+          imported: snapshot ? snapshot.imported_total.toLocaleString() : 'No disponible',
+          completeness: snapshot?.completeness ?? 'sin datos',
+          stale: !snapshot || snapshot.completeness !== 'complete',
+          scannedAt: snapshot?.scanned_at ?? null,
+        }
+      })
 
       return {
         id: status.name.toLowerCase(),
@@ -343,6 +386,8 @@ export function useAccountsStatus(customToast?: ReturnType<typeof useToast>) {
         bgClass: getServiceBgClass(status.name),
         status: cardStatus,
         importedTracks: (status.library_count ?? 0).toLocaleString(),
+        reportedTracks: reported,
+        accountCounts,
         favoriteTracks: (status.favorites_count ?? 0).toLocaleString(),
         playlists: (status.playlists_count ?? 0).toLocaleString(),
         lastSync: status.last_synced ? formatTimeAgo(status.last_synced) : 'Never',
