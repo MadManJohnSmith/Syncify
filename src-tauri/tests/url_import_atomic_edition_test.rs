@@ -139,8 +139,10 @@ async fn existing_target_failure_preserves_existing_source_and_queue() {
 
 #[tokio::test]
 async fn concurrent_imports_reuse_one_source_and_queue_after_restart() {
-    let root = std::path::PathBuf::from(std::env::var("TMPDIR").expect("isolated TMPDIR required"));
-    let fixture = tempfile::tempdir_in(&root).unwrap();
+    // Separate connections to one disposable file exercise SQLite writer
+    // contention. The temp dir is self-contained so the test does not depend on
+    // the runner defining an isolated TMPDIR.
+    let fixture = tempfile::tempdir().expect("isolated test directory");
     let path = fixture.path().join("url-import.sqlite");
     let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
         .unwrap()
