@@ -134,6 +134,12 @@ pub struct TidalSingleTrackRequest {
     /// falls back in priority order: active account first, then inactive sibling accounts.
     #[serde(default)]
     pub account_id: Option<i64>,
+    /// A resolved plan forbids silently trying a different account inside the
+    /// pipeline. The orchestrator must re-resolve after a failed attempt.
+    #[serde(default)]
+    pub locked_account: bool,
+    #[serde(default)]
+    pub artifact_policy: crate::download::progress::ArtifactPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -770,6 +776,25 @@ where
     }
 }
 
+/// Separate provider-reported codec from requested quality. No advertised
+/// quality can authorize a lossy file under strict lossless/Hi-Res policy.
+pub fn validate_tidal_codec(
+    requested: &str,
+    codec: &str,
+    allow_lossy_fallback: bool,
+) -> Result<(), String> {
+    let lossless_requested = !matches!(
+        requested.to_ascii_lowercase().as_str(),
+        "low" | "high" | "lossy" | "mp3" | "aac"
+    );
+    if lossless_requested && !allow_lossy_fallback && matches!(codec, "AAC" | "MP3") {
+        return Err(format!(
+            "RejectedQuality: strict {requested} requested but Tidal manifest selected {codec}"
+        ));
+    }
+    Ok(())
+}
+
 /// Pipeline body. `journal` is `Some` whenever a recovery-journal entry is open
 /// for this download; every milestone is reported through it.
 async fn execute_tidal_single_track_download_inner<F>(
@@ -798,13 +823,14 @@ where
 
     let http_client = crate::download::http_client::create_http_client();
 
-    let candidate_account_ids = crate::commands::accounts::get_service_fallback_account_ids(
-        db,
-        "tidal",
-        request.account_id,
-    )
-    .await
-    .unwrap_or_default();
+    let candidate_account_ids = if request.locked_account {
+        // The plan's one account is the whole attempt; no internal fallback.
+        request.account_id.into_iter().collect::<Vec<_>>()
+    } else {
+        crate::commands::accounts::get_service_fallback_account_ids(db, "tidal", request.account_id)
+            .await
+            .unwrap_or_default()
+    };
 
     if candidate_account_ids.is_empty() {
         let (resolved_creds, _) = resolve_and_refresh_gui_credentials(db, &http_client).await;
@@ -1299,6 +1325,9 @@ where
         .or_else(|| request.hint_isrc.clone())
         .unwrap_or_default();
 
+    // Gate before downloading, tagging or promoting. A manifest claiming FLAC
+    // while yielding AAC must not satisfy a strict lossless/hires request.
+    validate_tidal_codec(quality_req, &stream_res.codec, allow_fallback)?;
     resolved_info.obtained_quality = Some(stream_res.obtained_quality.clone());
     resolved_info.format_id_requested = Some(stream_res.format_id_requested.clone());
     resolved_info.format_id_obtained = Some(stream_res.format_id_obtained.clone());
@@ -1423,7 +1452,7 @@ where
     let is_valid = match stream_res.codec.as_str() {
         "FLAC" => AudioByteValidator::is_flac_magic(&payload_bytes),
         "MP3" => AudioByteValidator::is_mp3_magic(&payload_bytes),
-        "AAC" => AudioByteValidator::is_m4a_magic(&payload_bytes),
+        "AAC" => payload_bytes.get(4..8) == Some(&b"ftyp"[..]),
         _ => !payload_bytes.is_empty(),
     };
 
@@ -1641,7 +1670,7 @@ where
                 .with_resolved_track(resolved_info.clone()),
         );
 
-        let lyrics_service = LyricsPipelineService::new();
+        let lyrics_service = LyricsPipelineService::from_db(db).await;
         let duration_sec = track.duration as f64;
         let mut resolved_lyrics_res: Option<LyricsResolution> = None;
 
@@ -2091,7 +2120,7 @@ where
         );
 
         let mut m4a_lyrics_str: Option<String> = None;
-        let lyrics_service = LyricsPipelineService::new();
+        let lyrics_service = LyricsPipelineService::from_db(db).await;
         let duration_sec = track.duration as f64;
         match lyrics_service
             .resolve_lyrics_and_sidecar(
@@ -2584,6 +2613,9 @@ where
                 if entry_path.is_file() {
                     let file_name = entry.file_name();
                     let file_name_str = file_name.to_string_lossy();
+                    if !request.artifact_policy.permits_sidecar(&file_name_str) {
+                        continue;
+                    }
                     if file_name_str.ends_with(".lrc") {
                         let dest_lrc = final_path.with_extension("lrc");
                         let is_valid = dest_lrc.exists() && dest_lrc.metadata().map(|m| m.len() > 0).unwrap_or(false);
@@ -2742,18 +2774,21 @@ where
         .map(|e| e.eq_ignore_ascii_case("flac"))
         .unwrap_or(false)
     {
-        if let Ok(repaired) =
-            crate::services::flac_picture::ensure_flac_sidecars_intact(&final_path, &target_dir)
-        {
-            if !repaired.is_empty() {
-                info!(count = repaired.len(), "[Pipeline §8] ✓ Regenerated {} truncated/missing sidecar(s) from FLAC PICTURE block", repaired.len());
+        if request.artifact_policy.cover_art {
+            if let Ok(repaired) =
+                crate::services::flac_picture::ensure_flac_sidecars_intact(&final_path, &target_dir)
+            {
+                if !repaired.is_empty() {
+                    info!(count = repaired.len(), "[Pipeline §8] ✓ Regenerated {} truncated/missing sidecar(s) from FLAC PICTURE block", repaired.len());
+                }
             }
         }
-    } else if final_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("m4a") || e.eq_ignore_ascii_case("aac"))
-        .unwrap_or(false)
+    } else if request.artifact_policy.cover_art
+        && final_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("m4a") || e.eq_ignore_ascii_case("aac"))
+            .unwrap_or(false)
     {
         if let Ok(repaired) =
             crate::services::mp4_writer::ensure_m4a_sidecars_intact(&final_path, &target_dir)
@@ -4312,7 +4347,7 @@ pub async fn reenrich_download_file_with_baseline(
         }
     }
 
-    let lyrics_service = LyricsPipelineService::new();
+    let lyrics_service = LyricsPipelineService::from_db(db).await;
     let lyrics_res = lyrics_service
         .resolve_lyrics_and_sidecar(&final_artist, &final_title, Some(&final_album), 180.0)
         .await

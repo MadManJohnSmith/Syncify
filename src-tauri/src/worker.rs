@@ -12,7 +12,18 @@ use crate::services::operation_recovery::classify_operation_error;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
+
+// BPM DSP is CPU intensive; never run more than one analysis per worker process.
+static BPM_ANALYSIS_SLOTS: Semaphore = Semaphore::const_new(1);
+
+fn bpm_postprocess_key(queue_id: i64) -> String {
+    format!("bpm_postprocess_queue_{queue_id}")
+}
+
+fn bpm_enabled(value: Option<&str>) -> bool {
+    matches!(value, Some("true" | "1"))
+}
 
 /// S185: Decide whether a download error is EVIDENCE of a dead auth session and
 /// therefore justifies permanently marking the service account credentials_invalid.
@@ -100,13 +111,40 @@ pub fn classify_auth_verdict(error: &str) -> AuthVerdict {
     // Se compara en minúsculas: los mensajes reales mezclan mayúsculas
     // ("Authentication failed for user token").
     let e = error.to_lowercase();
-    let revoked = e.contains("oauth token refresh failed")
+    // A status alone (or an English word from an edition policy) is not a
+    // provider credential verdict. Require an explicit provider/auth context.
+    let provider = [
+        "qobuz",
+        "tidal",
+        "spotify",
+        "deezer",
+        "soundcloud",
+        "apple music",
+    ]
+    .iter()
+    .any(|name| e.contains(name));
+    let auth_context = [
+        "credential",
+        "token",
+        "oauth",
+        "login",
+        "session",
+        "authentication",
+    ]
+    .iter()
+    .any(|marker| e.contains(marker));
+    let rejected = e.contains("http 401")
+        || e.contains("http 403")
+        || e.contains("status 401")
+        || e.contains("status 403")
+        || e.contains("401 login")
+        || e.contains("401 oauth")
         || e.contains("invalid_grant")
-        || e.contains("401")
-        || e.contains("403")
-        || e.contains("authentication failed")
-        || e.contains("unauthorized")
-        || e.contains("forbidden");
+        || e.contains("rejected the credentials")
+        || (e.contains("oauth") && e.contains("token has expired"));
+    let revoked = rejected
+        && ((auth_context && (provider || e.contains("oauth") || e.contains("login")))
+            || (provider && e.contains("invalid_grant") && e.contains("refresh")));
     if revoked {
         AuthVerdict::Revoked
     } else {
@@ -116,6 +154,26 @@ pub fn classify_auth_verdict(error: &str) -> AuthVerdict {
         AuthVerdict::UnverifiedTransient(error.to_string())
     }
 }
+/// Mark only the resolved candidate, and only when the caller has already
+/// established an explicit provider credential rejection.
+async fn invalidate_rejected_account(
+    db: &SqlitePool,
+    service: &str,
+    account_id: i64,
+    at: &str,
+) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+    sqlx::query(
+        "UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', \
+         last_auth_error = 'Provider rejected credentials', last_auth_error_at = ? \
+         WHERE id = ? AND service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?))",
+    )
+    .bind(at)
+    .bind(account_id)
+    .bind(service)
+    .execute(db)
+    .await
+}
+
 /// S185: True when the error describes a transport/availability problem rather
 /// than a rejection by the provider.
 ///
@@ -569,6 +627,47 @@ impl DownloadWorker {
         .flatten()
         .unwrap_or_else(|| "lossless".to_string());
 
+        let current_status: Option<String> = match sqlx::query_scalar::<_, Option<String>>(
+            "SELECT status FROM download_queue WHERE id = ?",
+        )
+        .bind(queue_id)
+        .fetch_optional(&self.db)
+        .await
+        {
+            Ok(status) => status.flatten(),
+            Err(e) => {
+                tracing::error!(
+                    "Cannot read current status for queue_id {} before completion: {}",
+                    queue_id,
+                    e
+                );
+                None
+            }
+        };
+
+        // A user cancel (or any terminal transition) that landed while the
+        // transfer was in flight must never be overwritten by `complete`. The
+        // queue row is the authoritative state, so the promotion is dropped
+        // unless this worker still owns it as `downloading`.
+        match current_status.as_deref() {
+            Some("downloading") => {}
+            Some(other) => {
+                tracing::warn!(
+                    queue_id,
+                    status = other,
+                    "[Worker] Dropping completion: queue row is no longer downloading"
+                );
+                return;
+            }
+            None => {
+                tracing::error!(
+                    queue_id,
+                    "[Worker] Dropping completion: queue row disappeared"
+                );
+                return;
+            }
+        }
+
         let prov_fb = res.origin_service.is_some()
             && res.effective_service.is_some()
             && res.origin_service.as_deref().unwrap_or("").to_lowercase()
@@ -636,7 +735,7 @@ impl DownloadWorker {
         let req_q = req_q_val;
         let eff_fmt = physical_format.clone();
 
-        if let Err(e) = sqlx::query(
+        match sqlx::query(
             r#"
             UPDATE download_queue
             SET status = 'complete',
@@ -659,7 +758,7 @@ impl DownloadWorker {
                 provider_fallback_used = ?,
                 quality_fallback_used = ?,
                 decision_reason = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'downloading'
             "#,
         )
         .bind(&res.origin_service)
@@ -681,12 +780,23 @@ impl DownloadWorker {
         .execute(&self.db)
         .await
         {
-            tracing::error!(
-                "Failed to update download_queue to complete for queue_id {}: {}",
-                queue_id,
-                e
-            );
-        }
+            Ok(result) if result.rows_affected() > 0 => {}
+            Ok(_) => {
+                tracing::warn!(
+                    queue_id,
+                    "[Worker] Completion lost the state race; queue row no longer downloading"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to update download_queue to complete for queue_id {}: {}",
+                    queue_id,
+                    e
+                );
+                return;
+            }
+        };
 
         let file_size = tokio::fs::metadata(&res.file_path)
             .await
@@ -1123,6 +1233,29 @@ impl DownloadWorker {
         })
     }
 
+    async fn resolve_artifact_policy(
+        &self,
+    ) -> Result<crate::download::progress::ArtifactPolicy, String> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT key, value FROM settings WHERE key LIKE 'dl_generate_%'")
+                .fetch_all(&self.db)
+                .await
+                .map_err(|e| format!("Cannot read artifact settings: {e}"))?;
+        let mut policy = crate::download::progress::ArtifactPolicy::default();
+        for (key, value) in rows {
+            let enabled = value == "true" || value == "1";
+            match key.as_str() {
+                "dl_generate_lyrics_lrc" => policy.lyrics_lrc = enabled,
+                "dl_generate_cover_art" => policy.cover_art = enabled,
+                "dl_generate_animated_cover" => policy.animated_cover = enabled,
+                "dl_generate_booklet" => policy.booklet = enabled,
+                "dl_generate_artist_sidecars" => policy.artist_sidecars = enabled,
+                _ => {}
+            }
+        }
+        Ok(policy)
+    }
+
     async fn process_download_internal(
         &self,
         queue_id: i64,
@@ -1132,6 +1265,16 @@ impl DownloadWorker {
     ) {
         let (embed_lyrics, embed_artwork) = match self.resolve_embed_preferences().await {
             Ok(settings) => settings,
+            Err(error) => {
+                tracing::error!(queue_id, "{error}");
+                self.mark_permanent_failure(queue_id, "failed", &error)
+                    .await;
+                return;
+            }
+        };
+
+        let artifact_policy = match self.resolve_artifact_policy().await {
+            Ok(policy) => policy,
             Err(error) => {
                 tracing::error!(queue_id, "{error}");
                 self.mark_permanent_failure(queue_id, "failed", &error)
@@ -1305,14 +1448,102 @@ impl DownloadWorker {
             }
         };
 
-        // S203: resolve the quality request UNDER the effective ceiling.
-        // effective_ceiling = min(global_max_quality KV, quality_preferences row of
-        // this item's service). The clamped label feeds DownloadRequest.quality and
-        // therefore both provider translations (Qobuz format-id cascade and Tidal
-        // resolve_tidal_quality_request) — see resolve_effective_download_quality.
-        let quality = self
-            .resolve_effective_download_quality(queue_id, s_name.as_deref(), q_pref.as_deref())
-            .await;
+        // WF-RES-01: la decisión se resuelve AQUÍ, justo antes de la red, desde
+        // el resolver único. El preflight solo presenta su resolución como
+        // propuesta; esta llamada es la selección real que corre. Por eso unas
+        // preferencias que cambiaron entre encolar y ejecutar se recogen aquí en
+        // vez de ignorarse en silencio.
+        //
+        // El resolver devuelve el plan completo (primaria + alternativas
+        // ordenadas). Solo la primaria entra en esta petición; las alternativas
+        // viajan en el plan y las consume el orquestador en su re-resolución
+        // explícita tras un fallo clasificado.
+        let locked_track_source_id = crate::download::resolve_locked_track_source_id(
+            &self.db,
+            track_id,
+            s_name.as_deref(),
+            s_track_id.as_deref(),
+        )
+        .await;
+
+        let resolver_intent = crate::download::DownloadIntent {
+            canonical_track_id: track_id,
+            requested_service: s_name.clone(),
+            requested_quality: q_pref.clone(),
+            strict_quality: !is_allowed_fallback,
+            allow_fallback: is_allowed_fallback,
+            locked_track_source_id,
+            preferred_account_id: None,
+        };
+        let (quality, resolution_plan) = match crate::download::resolve_download_plan(
+            &self.db,
+            &resolver_intent,
+            &crate::download::ResolutionExclusions::default(),
+        )
+        .await
+        {
+            Ok(plan) => {
+                let quality = plan.quality.effective.clone();
+                // Registro libre de credenciales: pista, cuenta cuando se
+                // resolvió, calidad e identidad. Sin token ni payloads.
+                if let Some(log) = plan.log(0) {
+                    if let Some(account_id) = log.account_id {
+                        tracing::info!(
+                            queue_id,
+                            canonical_track_id = log.canonical_track_id,
+                            service = %log.service_name,
+                            service_track_id = %log.service_track_id,
+                            account_id,
+                            effective_quality = %log.effective_quality,
+                            candidate_tier = %log.candidate_tier,
+                            alternatives = plan.candidates.len().saturating_sub(1),
+                            "[WF-RES-01] Resolved download plan (single decision)"
+                        );
+                    } else {
+                        tracing::info!(
+                            queue_id,
+                            canonical_track_id = log.canonical_track_id,
+                            service = %log.service_name,
+                            service_track_id = %log.service_track_id,
+                            effective_quality = %log.effective_quality,
+                            candidate_tier = %log.candidate_tier,
+                            "[WF-RES-01] Resolved download plan (no account bound)"
+                        );
+                    }
+                }
+                (quality, Some(plan))
+            }
+            Err(resolution_error) => {
+                // A queued item with an explicit provider identity must never
+                // bypass failed identity/account/quality resolution and search
+                // for a different edition through the legacy ad-hoc path.
+                if s_track_id
+                    .as_deref()
+                    .is_some_and(|id| !id.trim().is_empty())
+                {
+                    let reason = format!("{:?}", resolution_error);
+                    self.mark_permanent_failure(queue_id, "failed", &reason)
+                        .await;
+                    return;
+                }
+                // Only a genuinely ad-hoc item without an identity can use
+                // the legacy resolver until every ED-04 boundary is verified.
+                let legacy = self
+                    .resolve_effective_download_quality(
+                        queue_id,
+                        s_name.as_deref(),
+                        q_pref.as_deref(),
+                    )
+                    .await;
+                tracing::debug!(
+                    queue_id,
+                    canonical_track_id = track_id,
+                    reason = %format!("{:?}", resolution_error),
+                    "[WF-RES-01] Resolver produced no plan; falling back to legacy quality resolution"
+                );
+                (legacy, None)
+            }
+        };
         let output_dir = self.resolve_download_output_dir().await;
         let operation_id = format!("op-{}", uuid::Uuid::new_v4());
 
@@ -1339,6 +1570,16 @@ impl DownloadWorker {
             j.checkpoint_transfer(Some("transfer started")).await;
         }
 
+        // A multi-candidate failure cannot identify its rejecting account.
+        let attributable_account_id = resolution_plan.as_ref().and_then(|plan| {
+            if plan.candidates.len() == 1 {
+                plan.candidates
+                    .first()
+                    .and_then(|candidate| candidate.account.as_ref().map(|a| a.account_id))
+            } else {
+                None
+            }
+        });
         let result: Result<crate::download::DownloadResult, String> = if let Some(meta) = track_meta
         {
             // Create download request with locked source identity
@@ -1368,9 +1609,11 @@ impl DownloadWorker {
                 quality: quality.clone(),
                 embed_lyrics,
                 embed_artwork,
+                artifact_policy,
                 smart_studio_origin: is_smart_studio,
                 allow_fallback: is_allowed_fallback,
                 strict_quality: !is_allowed_fallback,
+                resolution_plan,
             };
 
             tracing::info!(
@@ -1415,9 +1658,14 @@ impl DownloadWorker {
                 quality,
                 embed_lyrics,
                 embed_artwork,
+                artifact_policy,
                 smart_studio_origin: smart_studio.unwrap_or(0) != 0,
                 allow_fallback: allow_fb.unwrap_or(0) != 0,
                 strict_quality: allow_fb.unwrap_or(0) == 0,
+                // Mismo plan que la rama primaria: esta rama solo se alcanza
+                // cuando la fila de pista no tiene metadatos (`track_meta` fue
+                // None), así que el resolutor no tenía nada que resolver.
+                resolution_plan,
             };
 
             tracing::info!(
@@ -1508,6 +1756,7 @@ impl DownloadWorker {
                 }
 
                 self.mark_complete(queue_id, &download_result).await;
+                self.schedule_bpm_postprocess(queue_id, track_id).await;
 
                 // BD-9: cerrar la entrada del journal. Sin esto la operación
                 // quedaba 'persisting' para siempre y el reconcilador la trataba
@@ -1687,7 +1936,17 @@ impl DownloadWorker {
                     || taxonomy.requires_user_action()
                     || is_auth_error
                     || is_ambiguous
-                    || error.contains("NetworkExhausted");
+                    || error.contains("NetworkExhausted")
+                    || error.starts_with("NoDownloadableSource:");
+
+                tracing::error!(
+                    queue_id,
+                    service = s_name.as_deref().unwrap_or("unknown"),
+                    track_id,
+                    error = %error,
+                    permanent = is_permanent,
+                    "Download failed"
+                );
 
                 if is_permanent {
                     self.mark_permanent_failure(queue_id, "failed", &error)
@@ -1722,64 +1981,68 @@ impl DownloadWorker {
 
                 let now_iso = chrono::Utc::now().to_rfc3339();
 
+                // The orchestrator can try alternatives; its string error does not
+                // identify which account failed. Only a single bound candidate is
+                // attributable. Otherwise leave every account unchanged.
                 if is_session_auth_invalid {
-                    if let Some(ref srv) = target_service {
-                        let update_res = sqlx::query(
-                            r#"
-                            UPDATE accounts
-                            SET credentials_invalid = 1,
-                                invalid_reason = 'token_expired',
-                                last_auth_error = ?,
-                                last_auth_error_at = ?
-                            WHERE service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?))
-                            "#
-                        )
-                        .bind(&error)
-                        .bind(&now_iso)
-                        .bind(srv)
-                        .execute(&self.db)
-                        .await;
+                    if let (Some(ref srv), Some(account_id)) =
+                        (&target_service, attributable_account_id)
+                    {
+                        let update_res =
+                            invalidate_rejected_account(&self.db, srv, account_id, &now_iso).await;
 
-                        if let Ok(affected) = update_res {
-                            tracing::info!(
-                                "[Worker] Marked {} account(s) as credentials_invalid due to auth session failure on {}",
-                                affected.rows_affected(), srv
-                            );
-                        }
+                        let affected = match update_res {
+                            Ok(result) if result.rows_affected() == 1 => {
+                                tracing::info!(account_id, service = %srv, "[Worker] Invalidated rejected account");
+                                true
+                            }
+                            Ok(_) => false,
+                            Err(ref err) => {
+                                tracing::warn!(service = %srv, error = %err, "[Worker] Account invalidation failed");
+                                false
+                            }
+                        };
 
-                        if let Some(handle) = &self.app_handle {
-                            use tauri::Emitter;
-                            let _ = handle.emit(
-                                "auth-session-expired",
-                                serde_json::json!({
-                                    "service": srv,
-                                    "error": error,
-                                    "reason": "token_expired",
-                                }),
-                            );
-                            let _ = handle.emit(
-                                "auth-state-updated",
-                                serde_json::json!({
-                                    "service": srv,
-                                    "status": "expired",
-                                    "error": error,
-                                    "reason": "token_expired",
-                                }),
-                            );
+                        if affected {
+                            if let Some(handle) = &self.app_handle {
+                                use tauri::Emitter;
+                                let _ = handle.emit(
+                                    "auth-session-expired",
+                                    serde_json::json!({
+                                        "service": srv,
+                                        "account_id": account_id,
+                                        "error": "Provider rejected credentials",
+                                        "reason": "token_expired",
+                                    }),
+                                );
+                                let _ = handle.emit(
+                                    "auth-state-updated",
+                                    serde_json::json!({
+                                        "service": srv,
+                                        "status": "expired",
+                                        "account_id": account_id,
+                                        "error": "Provider rejected credentials",
+                                        "reason": "token_expired",
+                                    }),
+                                );
+                            }
                         }
                     }
                 } else if is_stream_entitlement_error {
-                    if let Some(ref srv) = target_service {
+                    if let (Some(ref srv), Some(account_id)) =
+                        (&target_service, attributable_account_id)
+                    {
                         let _ = sqlx::query(
                             r#"
                             UPDATE accounts
                             SET last_auth_error = ?,
                                 last_auth_error_at = ?
-                            WHERE service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?)) AND is_active = 1
+                            WHERE id = ? AND service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?))
                             "#
                         )
-                        .bind(&error)
+                        .bind("Playback entitlement unavailable")
                         .bind(&now_iso)
+                        .bind(account_id)
                         .bind(srv)
                         .execute(&self.db)
                         .await;
@@ -1861,6 +2124,130 @@ impl DownloadWorker {
         }
     }
 
+    /// Persist post-download work independently from the successful download state.
+    /// The settings key is per queue item, so a restart can recover an interrupted analysis.
+    async fn schedule_bpm_postprocess(&self, queue_id: i64, track_id: i64) {
+        let enabled: Result<Option<String>, _> = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'dl_analyze_bpm_on_download'",
+        )
+        .fetch_optional(&self.db)
+        .await;
+        let enabled = match enabled {
+            Ok(value) => bpm_enabled(value.as_deref()),
+            Err(error) => {
+                tracing::warn!(queue_id, %error, "Unable to read BPM download preference");
+                return;
+            }
+        };
+        if !enabled {
+            return;
+        }
+        let key = bpm_postprocess_key(queue_id);
+        let inserted = sqlx::query(
+            "INSERT INTO settings (key, value) SELECT ?, 'pending' WHERE EXISTS (SELECT 1 FROM download_queue q JOIN downloads d ON d.track_id = q.track_id WHERE q.id = ? AND q.track_id = ? AND q.status = 'complete') ON CONFLICT(key) DO NOTHING",
+        )
+        .bind(&key)
+        .bind(queue_id)
+        .bind(track_id)
+        .execute(&self.db)
+        .await;
+        match inserted {
+            Ok(result) if result.rows_affected() == 1 => {
+                self.spawn_bpm_postprocess(queue_id, track_id)
+            }
+            Ok(_) => {} // Already scheduled, or ledger/queue was not persisted.
+            Err(error) => tracing::warn!(queue_id, %error, "Unable to schedule BPM analysis"),
+        }
+    }
+
+    fn spawn_bpm_postprocess(&self, queue_id: i64, track_id: i64) {
+        let db = self.db.clone();
+        tokio::spawn(async move {
+            let key = bpm_postprocess_key(queue_id);
+            let Ok(permit) = BPM_ANALYSIS_SLOTS.acquire().await else {
+                return;
+            };
+            let claimed = sqlx::query(
+                "UPDATE settings SET value = 'running' WHERE key = ? AND value IN ('pending', 'retry')",
+            )
+            .bind(&key)
+            .execute(&db)
+            .await;
+            if !matches!(claimed, Ok(ref result) if result.rows_affected() == 1) {
+                return;
+            }
+            // The analyzer performs synchronous DSP after asynchronous ffmpeg decoding.
+            // Keep that computation off Tokio's core executor threads.
+            let analysis_db = db.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                tokio::runtime::Handle::current().block_on(
+                    crate::services::tempo_analyzer::TempoAnalyzer::analyze_and_retag_track(
+                        &analysis_db,
+                        track_id,
+                        0.35,
+                        false,
+                    ),
+                )
+            })
+            .await;
+            let (state, message) = match result {
+                Ok(Ok(_)) => ("complete", None),
+                Ok(Err(error)) => {
+                    tracing::warn!(queue_id, %error, "BPM analysis failed after download completed");
+                    ("failed", Some("BPM analysis failed; retry on next startup"))
+                }
+                Err(error) => {
+                    tracing::warn!(queue_id, %error, "BPM analysis task stopped");
+                    (
+                        "failed",
+                        Some("BPM analysis interrupted; retry on next startup"),
+                    )
+                }
+            };
+            // Publish the queue detail before the terminal state: readers that observe
+            // 'failed' must also see the corresponding postprocess error.
+            if let Some(message) = message {
+                // The queue remains complete; expose the postprocess error separately.
+                let _ = sqlx::query("UPDATE download_queue SET error_message = ? WHERE id = ? AND status = 'complete'")
+                    .bind(message).bind(queue_id).execute(&db).await;
+            } else {
+                let _ = sqlx::query("UPDATE download_queue SET error_message = NULL WHERE id = ? AND status = 'complete'")
+                    .bind(queue_id).execute(&db).await;
+            }
+            if let Err(error) =
+                sqlx::query("UPDATE settings SET value = ? WHERE key = ? AND value = 'running'")
+                    .bind(state)
+                    .bind(&key)
+                    .execute(&db)
+                    .await
+            {
+                tracing::warn!(queue_id, %error, "Unable to persist BPM analysis result");
+            }
+            drop(permit);
+        });
+    }
+
+    async fn recover_bpm_postprocess(&self) {
+        // Bounded restart scan; failed/interrupted tasks are retried without downloading again.
+        let rows: Result<Vec<(String, i64, i64)>, _> = sqlx::query_as(
+            "SELECT s.key, q.id, q.track_id FROM settings s JOIN download_queue q ON s.key = 'bpm_postprocess_queue_' || q.id JOIN downloads d ON d.track_id = q.track_id WHERE s.value IN ('pending', 'running', 'failed') AND q.status = 'complete' LIMIT 100",
+        )
+        .fetch_all(&self.db)
+        .await;
+        match rows {
+            Ok(rows) => {
+                for (key, queue_id, track_id) in rows {
+                    let result = sqlx::query("UPDATE settings SET value = 'retry' WHERE key = ? AND value IN ('pending', 'running', 'failed')")
+                    .bind(&key).execute(&self.db).await;
+                    if matches!(result, Ok(ref result) if result.rows_affected() == 1) {
+                        self.spawn_bpm_postprocess(queue_id, track_id);
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "Unable to recover BPM postprocessing"),
+        }
+    }
+
     /// Run the background worker loop
     pub async fn run(&self) {
         tracing::info!("Download worker started");
@@ -1875,6 +2262,7 @@ impl DownloadWorker {
         // re-queue rows the reconciliation had just resolved, and the download would be
         // retried twice or the row would end up in two states at once.
         crate::services::operation_recovery::reconcile_downloads_on_startup(&self.db).await;
+        self.recover_bpm_postprocess().await;
 
         // Reset remaining interrupted downloads on startup back to queued so worker resumes them
         let reset_count = sqlx::query(
@@ -2065,17 +2453,73 @@ mod session_auth_tests {
         }
     }
 
+    #[test]
+    fn edition_policy_and_bare_status_do_not_revoke_accounts() {
+        for error in [
+            "AmbiguousSource: Automatic download forbidden",
+            "SourceIdentityMissing: unauthorized edition",
+            "IdentityConflict: forbidden fallback",
+            "Service said HTTP 403",
+            "401",
+            "Forbidden",
+            "PlaybackUnauthorized: Tidal stream entitlement",
+        ] {
+            assert!(
+                !classify_session_auth_failure(error),
+                "policy/status is not provider auth: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn four_accounts_only_rejected_candidate_is_invalidated() {
+        let db = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE services (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE accounts (id INTEGER PRIMARY KEY, service_id INTEGER NOT NULL, credentials_invalid INTEGER NOT NULL DEFAULT 0, invalid_reason TEXT, last_auth_error TEXT, last_auth_error_at TEXT)").execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO services VALUES (1, 'tidal'), (2, 'qobuz')")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO accounts (id, service_id) VALUES (1,1), (2,1), (3,1), (4,2)")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(!super::classify_session_auth_failure(
+            "AmbiguousSource: Automatic download forbidden"
+        ));
+        let affected = super::invalidate_rejected_account(&db, "tidal", 2, "synthetic-time")
+            .await
+            .unwrap();
+        assert_eq!(affected.rows_affected(), 1);
+        let states: Vec<(i64, i64)> =
+            sqlx::query_as("SELECT id, credentials_invalid FROM accounts ORDER BY id")
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        assert_eq!(states, vec![(1, 0), (2, 1), (3, 0), (4, 0)]);
+        assert_eq!(
+            super::invalidate_rejected_account(&db, "tidal", 4, "synthetic-time")
+                .await
+                .unwrap()
+                .rows_affected(),
+            0
+        );
+    }
+
     /// La otra mitad del contrato: un rechazo REAL del proveedor SIGUE
     /// invalidando. Si esto pasara, el usuario no podría recuperar la cuenta.
     #[test]
     fn real_credential_rejection_still_marks_session_dead() {
         let auth_errors = [
             "OAuth token refresh failed: invalid_grant",
-            "invalid_grant",
+            "OAuth token rejected: invalid_grant",
             "401 login required",
             "401 oauth token rejected",
             "Qobuz rejected the credentials (HTTP 401)",
-            "Authentication failed for user token",
+            "Spotify authentication failed for user token (HTTP 401)",
         ];
         for err in auth_errors {
             assert!(
@@ -2161,7 +2605,11 @@ mod session_auth_tests {
     #[test]
     fn auth_verdict_separates_verified_valid_from_unverified() {
         // Rechazo explícito: revoca, y el bool legacy lo refleja igual que antes.
-        for e in ["401 unauthorized", "invalid_grant", "authentication failed"] {
+        for e in [
+            "401 login required",
+            "OAuth token rejected: invalid_grant",
+            "Qobuz rejected the credentials (HTTP 403)",
+        ] {
             assert_eq!(classify_auth_verdict(e), AuthVerdict::Revoked, "{}", e);
             assert!(classify_session_auth_failure(e), "bool legacy: {}", e);
         }
@@ -2219,7 +2667,7 @@ mod session_auth_tests {
             "OAuth token refresh failed: invalid_grant",
             "Qobuz rejected the credentials (HTTP 401)",
             "Service said HTTP 403",
-            "Authentication failed for user token",
+            "Spotify authentication failed for user token (HTTP 401)",
             "Unauthorized",
             "Forbidden",
             "NetworkError: request failed",
@@ -2246,7 +2694,227 @@ mod session_auth_tests {
 }
 
 #[cfg(test)]
+mod bpm_postprocess_tests {
+    use super::{bpm_enabled, bpm_postprocess_key, DownloadWorker, DownloadWorkerState};
+    use sqlx::SqlitePool;
+
+    async fn fixture() -> (SqlitePool, DownloadWorker) {
+        let db = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        for ddl in [
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "CREATE TABLE download_queue (id INTEGER PRIMARY KEY, track_id INTEGER NOT NULL, status TEXT, error_message TEXT)",
+            "CREATE TABLE downloads (track_id INTEGER PRIMARY KEY, file_path TEXT NOT NULL)",
+        ] {
+            sqlx::query(ddl).execute(&db).await.unwrap();
+        }
+        sqlx::query("INSERT INTO download_queue VALUES (42, 5, 'complete', NULL)")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO downloads VALUES (5, '/nonexistent/bpm-postprocess-test.flac')")
+            .execute(&db)
+            .await
+            .unwrap();
+        let worker = DownloadWorker::new(db.clone(), DownloadWorkerState::new(1));
+        (db, worker)
+    }
+
+    async fn status(db: &SqlitePool) -> Option<String> {
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(bpm_postprocess_key(42))
+            .fetch_optional(db)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn disabled_setting_does_not_schedule_or_change_success() {
+        let (db, worker) = fixture().await;
+        worker.schedule_bpm_postprocess(42, 5).await;
+        assert_eq!(status(&db).await, None);
+        sqlx::query("INSERT INTO settings VALUES ('dl_analyze_bpm_on_download', 'false')")
+            .execute(&db)
+            .await
+            .unwrap();
+        worker.schedule_bpm_postprocess(42, 5).await;
+        assert_eq!(status(&db).await, None);
+        assert!(!bpm_enabled(Some("FALSE")));
+        assert!(bpm_enabled(Some("true")));
+        assert!(bpm_enabled(Some("1")));
+    }
+
+    #[tokio::test]
+    async fn enabled_failure_preserves_download_and_does_not_duplicate() {
+        let (db, worker) = fixture().await;
+        sqlx::query("INSERT INTO settings VALUES ('dl_analyze_bpm_on_download', 'true')")
+            .execute(&db)
+            .await
+            .unwrap();
+        worker.schedule_bpm_postprocess(42, 5).await;
+        worker.schedule_bpm_postprocess(42, 5).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while status(&db).await.as_deref() != Some("failed") {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let row: (String, Option<String>) =
+            sqlx::query_as("SELECT status, error_message FROM download_queue WHERE id = 42")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(row.0, "complete");
+        assert!(row.1.is_some());
+        worker.schedule_bpm_postprocess(42, 5).await;
+        assert_eq!(status(&db).await.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn failed_analysis_keeps_existing_audio_bytes() {
+        let (db, worker) = fixture().await;
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("untouched.flac");
+        let original = b"not a valid audio container";
+        tokio::fs::write(&audio, original).await.unwrap();
+        sqlx::query("UPDATE downloads SET file_path = ? WHERE track_id = 5")
+            .bind(audio.to_str().unwrap())
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO settings VALUES ('dl_analyze_bpm_on_download', 'true')")
+            .execute(&db)
+            .await
+            .unwrap();
+        worker.schedule_bpm_postprocess(42, 5).await;
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            while !matches!(status(&db).await.as_deref(), Some("failed" | "complete")) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(tokio::fs::read(&audio).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn cancelled_or_missing_ledger_never_schedules_analysis() {
+        let (db, worker) = fixture().await;
+        sqlx::query("INSERT INTO settings VALUES ('dl_analyze_bpm_on_download', 'true')")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE download_queue SET status = 'failed' WHERE id = 42")
+            .execute(&db)
+            .await
+            .unwrap();
+        worker.schedule_bpm_postprocess(42, 5).await;
+        assert_eq!(status(&db).await, None);
+        sqlx::query("UPDATE download_queue SET status = 'complete' WHERE id = 42")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM downloads WHERE track_id = 5")
+            .execute(&db)
+            .await
+            .unwrap();
+        worker.schedule_bpm_postprocess(42, 5).await;
+        assert_eq!(status(&db).await, None);
+    }
+
+    #[tokio::test]
+    async fn interrupted_postprocess_recovers_after_restart_without_redownload() {
+        let (db, worker) = fixture().await;
+        sqlx::query("INSERT INTO settings VALUES (?, 'running')")
+            .bind(bpm_postprocess_key(42))
+            .execute(&db)
+            .await
+            .unwrap();
+        worker.recover_bpm_postprocess().await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while status(&db).await.as_deref() != Some("failed") {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let state: String = sqlx::query_scalar("SELECT status FROM download_queue WHERE id = 42")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(state, "complete");
+    }
+}
+
+#[cfg(test)]
 mod embed_preferences_tests {
+    #[tokio::test]
+    async fn catalog_only_terminal_queue_does_not_rearm_on_restart() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE download_queue (id INTEGER PRIMARY KEY, status TEXT, error_message TEXT, last_error TEXT, retry_count INTEGER NOT NULL DEFAULT 0, quality_decision TEXT, decision_reason TEXT, started_at TEXT)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO download_queue (id, status) VALUES (7, 'downloading')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let worker = super::DownloadWorker::new(pool.clone(), super::DownloadWorkerState::new(1));
+        worker
+            .mark_permanent_failure(7, "failed", "NoDownloadableSource: deezer is catalog-only")
+            .await;
+        // The startup reset deliberately targets only downloading rows.
+        sqlx::query("UPDATE download_queue SET status = 'queued' WHERE status = 'downloading'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let state: (String, i64) =
+            sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = 7")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, ("failed".to_string(), 99));
+    }
+
+    #[tokio::test]
+    async fn persisted_sidecar_flags_reach_worker_policy() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let worker = super::DownloadWorker::new(pool.clone(), super::DownloadWorkerState::new(1));
+        let defaults = worker.resolve_artifact_policy().await.unwrap();
+        assert!(
+            defaults.lyrics_lrc
+                && defaults.cover_art
+                && defaults.animated_cover
+                && defaults.booklet
+                && defaults.artist_sidecars
+        );
+        for key in [
+            "dl_generate_lyrics_lrc",
+            "dl_generate_cover_art",
+            "dl_generate_animated_cover",
+            "dl_generate_booklet",
+            "dl_generate_artist_sidecars",
+        ] {
+            sqlx::query("INSERT INTO settings (key, value) VALUES (?, 'false')")
+                .bind(key)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let disabled = worker.resolve_artifact_policy().await.unwrap();
+        for name in [
+            "track.lrc",
+            "cover.jpg",
+            "cover.webp",
+            "booklet.pdf",
+            "artist.jpg",
+        ] {
+            assert!(!disabled.permits_sidecar(name), "{name}");
+        }
+    }
+
     /// La lectura de ajustes alimenta los flags de incrustación de ambos caminos
     /// de descarga; una fila ausente usa los defaults del esquema.
     #[tokio::test]

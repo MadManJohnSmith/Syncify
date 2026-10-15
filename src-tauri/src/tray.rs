@@ -436,6 +436,10 @@ pub fn build_tray_menu<R: Runtime>(
         "Show Syncify"
     };
     let toggle_id = if is_visible { "hide" } else { "show" };
+    // Keep the open action available even while the window is already visible.
+    let open_item = MenuItem::with_id(app, "open", "Open Syncify", true, None::<&str>)?;
+    menu.append(&open_item)?;
+
     let toggle_item = MenuItem::with_id(app, toggle_id, toggle_text, true, None::<&str>)?;
     menu.append(&toggle_item)?;
 
@@ -705,7 +709,7 @@ pub fn handle_menu_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
         "toggle" => {
             toggle_main_window(app);
         }
-        "show" => {
+        "open" | "show" => {
             show_main_window(app);
         }
         "hide" => {

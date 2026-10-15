@@ -214,20 +214,25 @@ pub async fn check_queue_guardrail(
         ),
     };
 
-    let norm_isrc = t_isrc
-        .map(|s| s.trim().replace('-', "").to_uppercase())
-        .filter(|s| !s.is_empty());
+    // A recording signature is not an edition identity. Only the concrete track
+    // can block this enqueue; ISRC/title/duration may be shared by two releases.
+    let _recording_hint = (
+        t_title,
+        t_dur,
+        t_isrc,
+        t_art_id,
+        t_art_name,
+        fallback_artist,
+        fallback_isrc,
+    );
+    let norm_isrc = None::<String>;
+    let norm_title = None::<String>;
+    let norm_artist = None::<String>;
+    let t_dur = None::<i64>;
+    let t_art_id = None::<i64>;
 
-    let norm_title = t_title
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty());
-
-    let norm_artist = t_art_name
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty());
-
-    // 1. Check if already downloaded in local library
-    let dl_match: Option<(i64, String)> = sqlx::query_as(
+    // A download row may outlive its file; check every equivalent row before skipping.
+    let dl_matches: Vec<(i64, String)> = sqlx::query_as(
         r#"
         SELECT COALESCE(d.track_id, 0), d.file_path
         FROM downloads d
@@ -254,7 +259,6 @@ pub async fn check_queue_guardrail(
                   )
               )
           )
-        LIMIT 1
         "#,
     )
     .bind(candidate_track_id)
@@ -263,14 +267,21 @@ pub async fn check_queue_guardrail(
     .bind(t_dur)
     .bind(t_art_id)
     .bind(&norm_artist)
-    .fetch_optional(db)
+    .fetch_all(db)
     .await?;
 
-    if let Some((matched_track_id, file_path)) = dl_match {
-        return Ok(Some(QueueGuardrailMatch::AlreadyDownloaded {
-            track_id: matched_track_id,
-            file_path,
-        }));
+    for (matched_track_id, file_path) in dl_matches {
+        match tokio::fs::metadata(&file_path).await {
+            Ok(metadata) if metadata.is_file() => {
+                return Ok(Some(QueueGuardrailMatch::AlreadyDownloaded {
+                    track_id: matched_track_id,
+                    file_path,
+                }));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(sqlx::Error::Io(error)),
+        }
     }
 
     // 2. Check if already active in download queue (status not failed/cancelled)
@@ -1180,7 +1191,40 @@ async fn evaluate_track_preflight_inner(
                     .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
             });
 
-            let chosen = sorted_active[0].clone();
+            // WF-RES-01: el candidato que presenta este preflight sale del
+            // resolutor único, así que lo que aquí se propone es lo que el worker
+            // volverá a calcular antes de tocar la red. Es una PROPUESTA, no una
+            // promesa de stream: si el proveedor falla, el worker re-resuelve.
+            let resolver_primary = crate::download::resolve_download_plan(
+                db,
+                &crate::download::DownloadIntent {
+                    canonical_track_id: track_id,
+                    requested_service: eff_req_service.clone(),
+                    requested_quality: requested_quality.map(|q| q.to_string()),
+                    strict_quality,
+                    allow_fallback,
+                    locked_track_source_id: None,
+                    preferred_account_id: None,
+                },
+                &crate::download::ResolutionExclusions::default(),
+            )
+            .await
+            .ok()
+            .and_then(|plan| plan.primary().cloned());
+
+            let chosen = match resolver_primary.as_ref().and_then(|candidate| {
+                sorted_active
+                    .iter()
+                    .find(|c| {
+                        c.service_id == candidate.service_id
+                            && c.service_track_id.as_deref()
+                                == Some(candidate.service_track_id.as_str())
+                    })
+                    .cloned()
+            }) {
+                Some(candidate) => candidate,
+                None => sorted_active[0].clone(),
+            };
 
             let cand_tier = classify_audio_tier(
                 chosen.bit_depth.map(|v| v as i32),

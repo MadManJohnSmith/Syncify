@@ -69,10 +69,10 @@
       <div v-if="showImportConfirm" class="p-4 bg-sky-500/10 border border-sky-500/30 rounded-xl space-y-3">
         <div class="flex items-center gap-2 text-sky-600 dark:text-sky-400 font-semibold text-sm">
           <span class="material-symbols-outlined text-[20px]">help</span>
-          <span>¿Confirmar restauración de la biblioteca?</span>
+          <span>Restore the library from this backup?</span>
         </div>
         <p class="text-xs text-text-secondary">
-          Se importarán las pistas, álbumes, favoritos y listas del archivo <code class="font-mono text-gray-800 dark:text-gray-200">{{ importFilePath }}</code>. Los datos existentes no se duplicarán y la operación es atómica.
+          Tracks, albums, favorites, and playlists will be imported from <code class="font-mono text-gray-800 dark:text-gray-200">{{ importFilePath }}</code>. Existing data will not be duplicated, and the operation is atomic.
         </p>
         <div class="flex items-center gap-3">
           <button
@@ -81,7 +81,7 @@
             class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
           >
             <span class="material-symbols-outlined text-[16px]" :class="{ 'animate-spin': isImporting }">check</span>
-            {{ isImporting ? 'Restaurando...' : 'Sí, Restaurar Ahora' }}
+            {{ isImporting ? 'Restoring...' : 'Yes, Restore Now' }}
           </button>
           <button
             @click="showImportConfirm = false"
@@ -109,8 +109,8 @@
             <span class="material-symbols-outlined text-[24px]">verified_user</span>
           </div>
           <div>
-            <h3 class="text-lg font-bold text-gray-900 dark:text-white">Integridad y Sincronización de Archivos en Disco (Physical Library)</h3>
-            <p class="text-sm text-text-secondary">Comprueba que tus archivos de audio en disco coincidan con tu biblioteca de Syncify. Rescata canciones huérfanas, detecta archivos movidos y limpia temporales.</p>
+            <h3 class="text-lg font-bold text-gray-900 dark:text-white">On-Disk File Integrity and Synchronization (Physical Library)</h3>
+            <p class="text-sm text-text-secondary">Check that audio files on disk match your Syncify library. Recover orphaned tracks, detect moved files, and clean up temporary files.</p>
           </div>
         </div>
         <span class="px-3 py-1 text-xs font-semibold rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
@@ -122,19 +122,19 @@
       <div class="p-4 rounded-xl bg-amber-500/5 border border-amber-500/20 text-xs text-text-secondary space-y-2">
         <div class="flex items-center gap-1.5 font-bold text-gray-900 dark:text-white">
           <span class="material-symbols-outlined text-[16px] text-amber-500">help</span>
-          <span>¿Cómo funciona la sincronización de archivos físicos?</span>
+          <span>How does physical file synchronization work?</span>
         </div>
         <p class="leading-relaxed">
-          Esta función analiza la carpeta de descargas de tu ordenador frente a los registros de Syncify para mantener ambos sincronizados de forma segura:
+          This feature compares your downloads folder with Syncify records to keep both safely synchronized:
         </p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-[11px]">
           <div class="p-2 rounded-lg bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark">
-            <strong class="text-gray-900 dark:text-white block mb-0.5">🔍 Modo Auditoría (DryRun):</strong>
-            Escanea tu disco y te muestra una lista previa de cambios necesarios <em>sin modificar ni borrar nada</em>.
+            <strong class="text-gray-900 dark:text-white block mb-0.5">🔍 Audit mode (DryRun):</strong>
+            Scans your disk and previews necessary changes <em>without modifying or deleting anything</em>.
           </div>
           <div class="p-2 rounded-lg bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark">
-            <strong class="text-gray-900 dark:text-white block mb-0.5">⚡ Modo Aplicar (Execute):</strong>
-            Ejecuta las correcciones: re-vincula canciones huérfanas encontradas por ISRC o elimina registros rotos si lo autorizas.
+            <strong class="text-gray-900 dark:text-white block mb-0.5">⚡ Apply mode (Execute):</strong>
+            Applies corrections: relinks orphaned tracks found by ISRC or removes broken records if you authorize it.
           </div>
         </div>
       </div>

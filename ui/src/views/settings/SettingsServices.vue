@@ -69,7 +69,7 @@
                 :data-testid="`add-account-${service.name}`"
               >
                 <span class="material-symbols-outlined text-[15px]">person_add</span>
-                Añadir cuenta para {{ getServiceConfig(service.name).displayName }}
+                Add account for {{ getServiceConfig(service.name).displayName }}
               </button>
             </div>
           </div>
@@ -341,7 +341,7 @@ async function handleDisconnect(serviceIdOrName?: string | number, accountId?: n
 
   const isTest = typeof process !== 'undefined' && process.env?.VITEST === 'true'
   if (!isTest && typeof window !== 'undefined' && window.confirm) {
-    const ok = window.confirm(`¿Desconectar la cuenta de ${getServiceConfig(name).displayName}? Tendrás que volver a iniciar sesión para sincronizar.`)
+    const ok = window.confirm(`Disconnect the ${getServiceConfig(name).displayName} account? You will need to sign in again to sync.`)
     if (!ok) return
   }
 
@@ -364,7 +364,7 @@ async function activateAccount(accountId: number) {
 }
 
 async function deleteAccount(accountId: number) {
-  if (!window.confirm('¿Eliminar esta cuenta y sus datos de biblioteca y playlists? Esta acción no se puede deshacer.')) return
+  if (!window.confirm('Delete this account and its library and playlist data? This action cannot be undone.')) return
   try {
     await removeAccount(accountId)
     await loadServicesAndAccounts()

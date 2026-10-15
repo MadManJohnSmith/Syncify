@@ -243,6 +243,65 @@ async fn test_malformed_url_returns_error_and_no_ghost_queue() {
 }
 
 #[tokio::test]
+async fn test_import_source_failure_rolls_back_track_and_reports_error() {
+    let pool = setup_test_db().await;
+    sqlx::query("CREATE TRIGGER reject_url_source BEFORE INSERT ON track_sources BEGIN SELECT RAISE(FAIL, 'fixture source failure'); END")
+        .execute(&pool).await.unwrap();
+    let result =
+        perform_import_from_url(&pool, None, "https://tidal.com/browse/track/34782012").await;
+    assert!(
+        result.is_err(),
+        "source insertion failure must be visible: {result:?}"
+    );
+    let tracks: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM download_queue")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        (tracks, queued),
+        (0, 0),
+        "failed import must leave no ghost track or queue row"
+    );
+}
+
+#[tokio::test]
+async fn test_cross_platform_origin_collision_does_not_replace_source_or_leave_track() {
+    let pool = setup_test_db().await;
+    let (base_url, _server) = spawn_mock_songlink_server().await;
+    let songlink = Arc::new(SongLinkClient::new().with_base_url(base_url));
+    let orchestrator = DownloadOrchestrator::new().with_songlink(songlink);
+    let existing: i64 =
+        sqlx::query_scalar("INSERT INTO tracks(title) VALUES ('existing') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO track_sources(track_id,service_id,service_track_id,available) VALUES (?, 1, 'spotify_tidal_match', 1)")
+        .bind(existing).execute(&pool).await.unwrap();
+    let result = perform_import_from_url(
+        &pool,
+        Some(&orchestrator),
+        "https://open.spotify.com/track/spotify_tidal_match",
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "origin collision must be reported: {result:?}"
+    );
+    let tracks: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let source: i64 = sqlx::query_scalar("SELECT track_id FROM track_sources WHERE service_id = 1 AND service_track_id = 'spotify_tidal_match'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(tracks, 1, "target track must roll back");
+    assert_eq!(source, existing, "origin item must retain original owner");
+}
+
+#[tokio::test]
 async fn test_import_tidal_url_resolves_and_enqueues_into_download_queue() {
     let pool = setup_test_db().await;
 
@@ -398,6 +457,165 @@ async fn test_import_spotify_url_without_songlink_falls_back_gracefully() {
 }
 
 #[tokio::test]
+async fn test_existing_target_records_new_cross_platform_origin() {
+    let pool = setup_test_db().await;
+    let (base_url, _server) = spawn_mock_songlink_server().await;
+    let orchestrator = DownloadOrchestrator::new()
+        .with_songlink(Arc::new(SongLinkClient::new().with_base_url(base_url)));
+    let track_id: i64 =
+        sqlx::query_scalar("INSERT INTO tracks(title) VALUES ('existing') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO track_sources(track_id,service_id,service_track_id,available) VALUES (?, 3, '34782012', 1)")
+        .bind(track_id).execute(&pool).await.unwrap();
+
+    perform_import_from_url(
+        &pool,
+        Some(&orchestrator),
+        "https://open.spotify.com/track/spotify_tidal_match",
+    )
+    .await
+    .expect("cross-platform import must reuse target");
+    let origin: Option<(i64, String)> = sqlx::query_as(
+        "SELECT track_id, service_track_id FROM track_sources WHERE service_id = 1 AND track_id = ?",
+    ).bind(track_id).fetch_optional(&pool).await.unwrap();
+    assert_eq!(origin, Some((track_id, "spotify_tidal_match".to_string())));
+}
+
+#[tokio::test]
+async fn test_existing_queue_with_different_origin_is_not_reused() {
+    let pool = setup_test_db().await;
+    let first = perform_import_from_url(&pool, None, "https://tidal.com/track/34782012")
+        .await
+        .unwrap();
+    let original_id = first.queue_id.unwrap();
+    // The target identity is unchanged, but the existing queue belongs to a
+    // different URL origin. Reusing its id would falsely acknowledge this URL.
+    sqlx::query("UPDATE download_queue SET origin_service = 'spotify', origin_service_track_id = 'other-url' WHERE id = ?")
+        .bind(original_id).execute(&pool).await.unwrap();
+    let result = perform_import_from_url(&pool, None, "https://tidal.com/track/34782012").await;
+    assert!(
+        result.is_err(),
+        "an incompatible queue origin requires review"
+    );
+    let origin: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT origin_service, origin_service_track_id FROM download_queue WHERE id = ?",
+    )
+    .bind(original_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(origin, (Some("spotify".into()), Some("other-url".into())));
+}
+
+#[tokio::test]
+async fn test_terminal_queue_is_not_acknowledged_as_new_import() {
+    let pool = setup_test_db().await;
+    let first = perform_import_from_url(&pool, None, "https://tidal.com/track/34782012")
+        .await
+        .unwrap();
+    let id = first.queue_id.unwrap();
+    sqlx::query("UPDATE download_queue SET status = 'complete' WHERE id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let result = perform_import_from_url(&pool, None, "https://tidal.com/track/34782012").await;
+    assert!(
+        result.is_err(),
+        "terminal work must not be acknowledged as queued"
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM download_queue WHERE id = ?")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "complete");
+}
+
+#[tokio::test]
+async fn test_existing_target_conflicting_origin_requires_review() {
+    let pool = setup_test_db().await;
+    let (base_url, _server) = spawn_mock_songlink_server().await;
+    let orchestrator = DownloadOrchestrator::new()
+        .with_songlink(Arc::new(SongLinkClient::new().with_base_url(base_url)));
+    let target: i64 =
+        sqlx::query_scalar("INSERT INTO tracks(title) VALUES ('target') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO track_sources(track_id,service_id,service_track_id) VALUES (?, 3, '34782012')",
+    )
+    .bind(target)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO track_sources(track_id,service_id,service_track_id) VALUES (?, 1, 'other_spotify_id')")
+        .bind(target).execute(&pool).await.unwrap();
+    let result = perform_import_from_url(
+        &pool,
+        Some(&orchestrator),
+        "https://open.spotify.com/track/spotify_tidal_match",
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "conflicting origin must require review: {result:?}"
+    );
+    let source: String = sqlx::query_scalar(
+        "SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = 1",
+    )
+    .bind(target)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(source, "other_spotify_id");
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM download_queue")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(queued, 0);
+}
+
+#[tokio::test]
+async fn test_queue_insert_failure_does_not_leave_import_sources() {
+    let pool = setup_test_db().await;
+    sqlx::query("CREATE TRIGGER reject_url_queue BEFORE INSERT ON download_queue BEGIN SELECT RAISE(FAIL, 'fixture queue failure'); END")
+        .execute(&pool).await.unwrap();
+    let result =
+        perform_import_from_url(&pool, None, "https://tidal.com/browse/track/34782012").await;
+    assert!(
+        result.is_err(),
+        "queue insertion failure must be visible: {result:?}"
+    );
+    let counts: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM track_sources), (SELECT count(*) FROM download_queue)")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(counts, (0, 0, 0), "failed import must be atomic");
+}
+
+#[tokio::test]
+async fn test_provenance_insert_failure_rolls_back_import() {
+    let pool = setup_test_db().await;
+    sqlx::query("CREATE TRIGGER reject_url_provenance BEFORE INSERT ON download_queue WHEN NEW.origin_service IS NOT NULL BEGIN SELECT RAISE(FAIL, 'fixture provenance failure'); END")
+        .execute(&pool).await.unwrap();
+    let result =
+        perform_import_from_url(&pool, None, "https://tidal.com/browse/track/34782012").await;
+    assert!(
+        result.is_err(),
+        "provenance failure must be visible: {result:?}"
+    );
+    let counts: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM tracks), (SELECT count(*) FROM track_sources), (SELECT count(*) FROM download_queue)")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        counts,
+        (0, 0, 0),
+        "failed provenance update must roll back track, source and queue together"
+    );
+}
+
+#[tokio::test]
 async fn test_import_url_idempotency_reuses_existing_queue_item() {
     let pool = setup_test_db().await;
 
@@ -422,6 +640,39 @@ async fn test_import_url_idempotency_reuses_existing_queue_item() {
         total_queued, 1,
         "Exactly 1 row must exist in download_queue without duplicate entries"
     );
+}
+
+#[tokio::test]
+async fn test_concurrent_same_url_import_reuses_one_queue_row() {
+    // Separate connections to one disposable file exercise SQLite writer contention.
+    // TMPDIR is supplied by the isolated test environment.
+    let dir = tempfile::tempdir().expect("isolated test directory");
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(dir.path().join("concurrent.sqlite"))
+        .create_if_missing(true)
+        .busy_timeout(std::time::Duration::from_secs(10));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    for (id, name) in [(3, "tidal")] {
+        sqlx::query("INSERT OR IGNORE INTO services (id, name, supports_download, max_quality) VALUES (?, ?, 1, 'hires')")
+            .bind(id).bind(name).execute(&pool).await.unwrap();
+    }
+    let (left, right) = tokio::join!(
+        perform_import_from_url(&pool, None, "https://tidal.com/browse/track/99887766"),
+        perform_import_from_url(&pool, None, "https://tidal.com/browse/track/99887766")
+    );
+    let left = left.expect("first concurrent import");
+    let right = right.expect("second concurrent import");
+    assert_eq!(left.queue_id, right.queue_id);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
 }
 
 #[tokio::test]

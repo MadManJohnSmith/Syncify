@@ -958,63 +958,40 @@ pub async fn update_lyrics_config(
     get_lyrics_config(state).await
 }
 
-/// Test a lyrics provider connection (calls Python bridge)
+/// Check a legacy lyrics provider through the Python bridge. The Rust download
+/// source IDs are a separate namespace; do not reject legacy settings IDs here.
 #[tauri::command]
 pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
-    tracing::info!("test_lyrics_provider: {}", provider_id);
-
+    if crate::download::lyrics::LYRICS_SOURCE_IDS.contains(&provider_id.as_str()) {
+        return Err(
+            "Provider connectivity test is unavailable for this Rust lyrics source".to_string(),
+        );
+    }
     let python_cmd = crate::commands::get_python_executable();
     let project_root = crate::commands::get_project_root();
     let script_path = crate::cmd_utils::find_scripts_dir(&project_root).join("lyrics_bridge.py");
 
-    let output = crate::cmd_utils::create_std_command(&python_cmd)
-        .arg(&script_path)
-        .args(["test", "--provider", &provider_id])
-        .current_dir(&project_root)
-        .output()
-        .map_err(|e| format!("Failed to run Python: {}", e))?;
+    let output = tokio::task::spawn_blocking(move || {
+        crate::cmd_utils::create_std_command(&python_cmd)
+            .arg(&script_path)
+            .args(["test", "--provider", &provider_id])
+            .current_dir(&project_root)
+            .output()
+    })
+    .await
+    .map_err(|_| "Lyrics bridge task failed".to_string())?
+    .map_err(|_| "Failed to run lyrics bridge".to_string())?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if !stderr.is_empty() {
-        tracing::warn!("lyrics_bridge test stderr: {}", stderr);
-    }
-
-    let trimmed_stdout = stdout.trim();
-    let trimmed_stderr = stderr.trim();
-
-    if !output.status.success() && trimmed_stdout.is_empty() {
-        let err_detail = if !trimmed_stderr.is_empty() {
-            trimmed_stderr.to_string()
-        } else {
-            format!("Process exited with status {}", output.status)
-        };
-        return Err(format!("Lyrics bridge failed: {}", err_detail));
-    }
-
-    if trimmed_stdout.is_empty() {
-        if !trimmed_stderr.is_empty() {
-            return Err(format!(
-                "Lyrics bridge produced no output. Error: {}",
-                trimmed_stderr
-            ));
-        }
-        return Err("Lyrics bridge produced empty output".to_string());
-    }
-
-    let result: serde_json::Value = serde_json::from_str(trimmed_stdout).map_err(|e| {
-        if !trimmed_stderr.is_empty() {
-            format!("Parse error: {} (stderr: {})", e, trimmed_stderr)
-        } else {
-            format!("Parse error: {} (output: {})", e, trimmed_stdout)
-        }
-    })?;
-
-    Ok(result
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "Lyrics bridge returned invalid JSON".to_string())?;
+    let success = result
         .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false))
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| "Lyrics bridge returned no success flag".to_string())?;
+    if !output.status.success() && success {
+        return Err("Lyrics bridge exited unsuccessfully".to_string());
+    }
+    Ok(success)
 }
 
 // ==============================================

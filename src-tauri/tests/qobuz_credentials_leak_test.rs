@@ -177,3 +177,49 @@ fn test_qobuz_bridges_keep_env_override_contract() {
         );
     }
 }
+
+/// WF-QOB-01: el método de datos de usuario no existe en la API de Qobuz.
+/// Responde HTTP 400 "Invalid Method given"; durante un lote de 100 pistas
+/// produjo 42 errores seguidos, dejando a NINGUNA cuenta con su entitlement.
+/// La evidencia real de suscripción vive en `user.credential`, que la respuesta
+/// de `user/login` transporta cuando se conectó con email/contraseña. Cero
+/// referencias al método inexistente en todo el árbol (Rust y Python).
+///
+/// El nombre del método se ensambla en tiempo de ejecución para que el propio
+/// test no sea un falso positivo de la expresión que busca.
+#[test]
+fn test_no_user_get_user_data_call_anywhere() {
+    const METHOD_PARTS: [&str; 2] = ["user", "getUserData"];
+    let forbidden = format!("{}/{}", METHOD_PARTS[0], METHOD_PARTS[1]);
+
+    let repo_root = get_repo_root();
+    let mut files = Vec::new();
+    collect_files_recursive(&repo_root, &mut files);
+
+    let mut hits: Vec<String> = Vec::new();
+    for file in files {
+        // Excluir artefactos de compilación (pueden contener el string viejo)
+        let path = file.to_string_lossy();
+        if path.contains("/target/") || path.contains("/node_modules/") || path.contains("/.git/") {
+            continue;
+        }
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "rs" | "py" | "toml" | "json") {
+            continue;
+        }
+        if let Ok(content) = fs::read_to_string(&file) {
+            if content.contains(&forbidden) {
+                hits.push(
+                    file.strip_prefix(&repo_root)
+                        .unwrap_or(&file)
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "El método inexistente `{forbidden}` no debe aparecer en el árbol: {hits:?}"
+    );
+}

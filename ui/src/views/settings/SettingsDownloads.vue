@@ -95,7 +95,6 @@
             <div class="relative">
               <select
                 v-model="selectedGlobalQuality"
-                @change="handleGlobalQualityChange"
                 class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none appearance-none cursor-pointer"
               >
                 <option value="hires">Hi-Res Lossless (24-bit / 96kHz+ FLAC)</option>
@@ -114,7 +113,6 @@
             <div class="relative">
               <select
                 v-model="selectedGlobalFormat"
-                @change="handleGlobalQualityChange"
                 class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none appearance-none cursor-pointer"
               >
                 <option value="flac">FLAC (Free Lossless Audio Codec)</option>
@@ -282,6 +280,20 @@
       </div>
     </section>
 
+    <!-- Output flags are persisted as dl_generate_* settings used by the download worker. -->
+    <section class="space-y-4" data-testid="sidecar-settings">
+      <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Download sidecars</h3>
+      <p class="text-xs text-text-secondary">Controls new output only; disabling a sidecar does not delete existing files. Animated artwork is a separate sidecar, not an animated FLAC cover embed.</p>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label v-for="flag in sidecarFlags" :key="flag.key" class="flex items-center gap-3 p-3 rounded-lg bg-surface border border-line text-sm text-ink">
+          <input type="checkbox" :data-testid="`sidecar-${flag.key}`" :checked="sidecars[flag.key]" @change="toggleSidecar(flag.key, $event)" />
+          {{ flag.label }}
+        </label>
+      </div>
+      <button type="button" class="px-3 py-2 rounded-lg bg-accent text-on-accent text-sm" @click="applySymfoniumSidecars">Use Symfonium sidecar preset</button>
+      <p v-if="sidecarError" role="alert" class="text-sm text-red-500">{{ sidecarError }}</p>
+    </section>
+
     <!-- Section 5: Folder & File Structure (Template Editor) -->
     <section class="space-y-4">
       <div class="pb-2 border-b border-gray-200 dark:border-border-dark">
@@ -418,19 +430,7 @@
       </div>
     </section>
 
-    <!-- Save Settings Button -->
-    <div class="pt-4 flex justify-end gap-3 border-t border-gray-200 dark:border-border-dark">
-      <button 
-        type="button"
-        @click="handleManualSave"
-        :disabled="isSaving"
-        class="px-6 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-semibold shadow-lg shadow-primary/20 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        <span v-if="isSaving" class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
-        <span v-else class="material-symbols-outlined text-[18px]">save</span>
-        {{ isSaving ? 'Saving...' : 'Save Settings' }}
-      </button>
-    </div>
+    <p class="text-xs text-text-secondary">Folder templates are included in the global Save Changes button; other download controls apply immediately.</p>
 
   </div>
 </template>
@@ -451,7 +451,42 @@ const fileTemplate = ref('{TrackNumber:pad2}. {Title}.{Format:lower}')
 const selectedGlobalQuality = ref('hires')
 const selectedGlobalFormat = ref('flac')
 const analyzeBpmOnDownload = ref(false)
-const isSaving = ref(false)
+const sidecarFlags = [
+  { key: 'dl_generate_lyrics_lrc', label: 'Lyrics (.lrc)' },
+  { key: 'dl_generate_cover_art', label: 'Cover artwork sidecar' },
+  { key: 'dl_generate_animated_cover', label: 'Animated cover sidecar (when available)' },
+  { key: 'dl_generate_booklet', label: 'Booklet' },
+  { key: 'dl_generate_artist_sidecars', label: 'Artist sidecars' },
+] as const
+type SidecarKey = (typeof sidecarFlags)[number]['key']
+const sidecars = ref<Record<SidecarKey, boolean>>({
+  dl_generate_lyrics_lrc: true,
+  dl_generate_cover_art: true,
+  dl_generate_animated_cover: true,
+  dl_generate_booklet: true,
+  dl_generate_artist_sidecars: true,
+})
+const sidecarError = ref<string | null>(null)
+async function applySymfoniumSidecars() {
+  sidecarError.value = null
+  try {
+    await settingsApi.saveSettingsBatch(Object.fromEntries(sidecarFlags.map(flag => [flag.key, 'true'])))
+    for (const flag of sidecarFlags) sidecars.value[flag.key] = true
+  } catch (error) {
+    sidecarError.value = `Could not apply sidecar preset: ${String(error)}`
+  }
+}
+async function toggleSidecar(key: SidecarKey, event: Event) {
+  const checked = (event.target as HTMLInputElement).checked
+  sidecarError.value = null
+  try {
+    await settingsApi.saveSetting(key, String(checked))
+    sidecars.value[key] = checked
+  } catch (error) {
+    (event.target as HTMLInputElement).checked = sidecars.value[key]
+    sidecarError.value = `Could not save sidecar setting: ${String(error)}`
+  }
+}
 const saveStatus = ref<string | null>(null)
 
 const currentThreads = computed(() => {
@@ -605,19 +640,14 @@ async function handleResetPath() {
   triggerSavingFeedback()
 }
 
-async function handleGlobalQualityChange() {
-  await downloadSettings.updateGlobalQuality(selectedGlobalQuality.value, selectedGlobalFormat.value)
-  triggerSavingFeedback()
-}
-
 async function handleApplyQualityPreset() {
   const confirmed = await confirm(
-    `¿Deseas aplicar el preset ${selectedGlobalQuality.value} (${selectedGlobalFormat.value}) a todos los servicios conectados? Se actualizarán las preferencias de calidad respetando los límites de cada uno.`,
-    { title: 'Aplicar Preset de Calidad', variant: 'warning' }
+    `Apply the ${selectedGlobalQuality.value} (${selectedGlobalFormat.value}) preset to all connected services? Quality preferences will be updated within each service's limits.`,
+    { title: 'Apply Quality Preset', variant: 'warning' }
   )
   if (!confirmed) return
   await downloadSettings.updateGlobalQuality(selectedGlobalQuality.value, selectedGlobalFormat.value)
-  toast.success('Preset aplicado', `Se configuró ${selectedGlobalQuality.value} en los servicios conectados`)
+  toast.success('Preset applied', `Set ${selectedGlobalQuality.value} for connected services`)
   triggerSavingFeedback()
 }
 
@@ -637,21 +667,6 @@ async function handleSetConcurrency(threads: number) {
   triggerSavingFeedback()
 }
 
-async function handleManualSave() {
-  isSaving.value = true
-  try {
-    downloadSettings.folderSettings.folder_template = folderTemplate.value
-    downloadSettings.folderSettings.file_template = fileTemplate.value
-    await downloadSettings.saveDownloadSettings()
-    saveStatus.value = 'saved'
-    setTimeout(() => { saveStatus.value = null }, 2500)
-  } catch (err) {
-    console.error('Failed to save download settings:', err)
-  } finally {
-    isSaving.value = false
-  }
-}
-
 function triggerSavingFeedback() {
   saveStatus.value = 'saved'
   setTimeout(() => {
@@ -659,16 +674,10 @@ function triggerSavingFeedback() {
   }, 2000)
 }
 
-// Auto-save folder templates after debounce
-let folderSaveTimeout: number | null = null
+// Keep the shared settings object dirty until the global Save Changes commits it.
 watch([folderTemplate, fileTemplate], () => {
-  if (folderSaveTimeout) clearTimeout(folderSaveTimeout)
-  folderSaveTimeout = window.setTimeout(async () => {
-    downloadSettings.folderSettings.folder_template = folderTemplate.value
-    downloadSettings.folderSettings.file_template = fileTemplate.value
-    await downloadSettings.saveFolderSettings()
-    triggerSavingFeedback()
-  }, 1000)
+  downloadSettings.folderSettings.folder_template = folderTemplate.value
+  downloadSettings.folderSettings.file_template = fileTemplate.value
 })
 
 async function toggleAnalyzeBpmOnDownload() {
@@ -691,6 +700,12 @@ onMounted(async () => {
     if (qobuzPref) {
       selectedGlobalQuality.value = qobuzPref.max_quality || 'hires'
       selectedGlobalFormat.value = qobuzPref.preferred_format || 'flac'
+    }
+
+    const sidecarKv = await settingsApi.getSettingsByKeys(sidecarFlags.map(flag => flag.key))
+    for (const flag of sidecarFlags) {
+      const value = sidecarKv[flag.key]
+      if (value !== undefined) sidecars.value[flag.key] = value === 'true' || value === '1'
     }
 
     // BPM-02: Load analyze BPM on download setting

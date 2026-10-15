@@ -21,6 +21,12 @@ logueadas en Spotify, Qobuz y Tidal (varias cuentas por servicio, incluidas las 
   entre el contenido con scroll y la barra: los clics aciertan en la barra, no en el
   elemento que el usuario ve debajo. Revisar el z-index/espaciado inferior de todos los
   overlays flotantes (nav drawer, batch-bar de descargas) respecto a `.status-bar`.
+  **Arreglado el caso del lateral (12-oct-2026):** el `<nav>` del lateral ahora
+  reserva `padding-bottom: calc(var(--status-bar-h, 48px) + 8px)`, igual que
+  `#page-content`, de forma que "Now Playing" se puede desplazar por encima de
+  la barra inferior aunque esta crezca. Cubierto por `LayoutSpacing.spec.ts`
+  (8/8), suite UI completa 997/997 y build en verde. El caso general de otros
+  overlays flotantes queda pendiente de su propia comprobación visual.
 
 ## Cuentas (Accounts)
 

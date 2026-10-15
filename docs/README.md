@@ -15,6 +15,7 @@ Esta carpeta centraliza las especificaciones funcionales y decisiones de diseño
   - `settings-system.md`: Configuración jerárquica y persistencia en SQLite.
   - `PLAYER_PHASE1_MPRIS.md`: fase 1 del reproductor integrado — integración con MediaSession y spike de MPRIS. Su propio sello advierte de que la parte MPRIS **no** está verificada en sesión gráfica, y sigue siendo así: en este repo nunca se ha ejecutado una comprobación real de D-Bus.
 - **`DECISION_IDENTIDAD_TRACKS.md`**: Registro de decisión arquitectónica (ADR) sobre la clave canónica `track_sources(service_id, service_track_id)`.
+- **`DECISION_SELECCION_EDICION.md`**: Decisión beta y contexto verificable para evitar descargas/importaciones de una edición incorrecta; contratos de identidad, bloques ED-01…ED-04 y pruebas de aceptación.
 - **`PLAN_UNIFICACION_IMPORTACION.md`**: Plan maestro de paridad de importación entre los 6 servicios de streaming.
 - **`MATRIZ_PARIDAD_IMPORTACION.md`**: Matriz viva de compatibilidad por servicio.
 - **`LYRICS_16_PROVIDER_MATRIX.md`**: Matriz técnica de cascada de resolución de letras (16 estrategias).

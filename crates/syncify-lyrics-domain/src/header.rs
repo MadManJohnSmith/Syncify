@@ -2,17 +2,26 @@
 //!
 //! # Where this runs
 //!
-//! This module is a **boundary** utility: it must be applied when a lyrics payload
-//! *enters* the domain, never when it is rendered or written to a tag. The raw
-//! payload keeps its headers, so `LYRICS` / the `.lrc` sidecar / the provenance
-//! fields can still carry exactly what the provider sent.
+//! This module is a **boundary** utility for the *derived* copy of a payload, never
+//! for the payload itself. The synced original keeps its headers byte for byte, so
+//! `LYRICS` / the `.lrc` sidecar / the provenance fields still carry exactly what the
+//! provider sent.
 //!
-//! Nothing else in this crate calls it: `strip_lrc_timestamps()`
-//! (`crate::strip_lrc_timestamps`, `lib.rs:294-303`) is left untouched on purpose,
-//! because it is used at *render* time to build `UNSYNCEDLYRICS`
-//! (`src-tauri/src/commands/lyrics.rs:1133`) and changing it would silently alter
-//! the embedded payload instead of the boundary copy. Wiring this module into the
-//! provider parsers belongs to whoever owns `src-tauri/src/download/lyrics.rs`.
+//! Applied today at every UNSYNCEDLYRICS writing boundary:
+//!
+//! * `crate::LyricsResolution::to_tag_contract` (`lib.rs:214-220`) — cleans only
+//!   `plain_content`, so both the LRC and the plain branches are covered for every
+//!   consumer of the contract (Qobuz, Tidal, `validate_and_embed_flac_lyrics`).
+//! * `syncify_flac_writer::apply_flac_tags` (`crates/syncify-flac-writer/src/lib.rs:758`)
+//!   — the direct `lyrics_lrc` path that bypasses the contract.
+//! * `syncify_tauri_lib::commands::lyrics::embed_lyrics`
+//!   (`src-tauri/src/commands/lyrics.rs:1189`) — the per-track DB-row FLAC path.
+//!
+//! `strip_lrc_timestamps()` (`crate::strip_lrc_timestamps`, `lib.rs:294-303`) is left
+//! untouched on purpose: it removes *timestamps* at render time, while this module
+//! removes *headers*, and the two compose (strip timestamps first, then the header).
+//! Wiring the cleaner into provider parsers instead of tag writers remains a
+//! decision for whoever owns `src-tauri/src/download/lyrics.rs`.
 //!
 //! # Why a criterion and not a filter
 //!

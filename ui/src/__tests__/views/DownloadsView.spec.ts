@@ -5,6 +5,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createRouter, createMemoryHistory } from 'vue-router'
+
+const confirmMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<boolean>>())
+vi.mock('@/composables/useToast', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/composables/useToast')>()
+  return { ...actual, confirm: confirmMock }
+})
+
+import { useToast } from '@/composables/useToast'
 import DownloadsView from '../../views/DownloadsView.vue'
 import { mockInvoke, resetMocks, emitMockEvent } from '../setup'
 import { invoke } from '@tauri-apps/api/core'
@@ -98,6 +106,30 @@ const mockWorkerStatus = {
 describe('DownloadsView.vue', () => {
   beforeEach(() => {
     resetMocks()
+    confirmMock.mockReset()
+    confirmMock.mockResolvedValue(true)
+  })
+
+  it('requires confirmation before clearing completed items', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+    const clear = wrapper.find('.completed-section button:last-child')
+    expect(clear).toBeDefined()
+    confirmMock.mockResolvedValue(false)
+    await clear!.trigger('click')
+    await flushPromises()
+    expect(confirmMock).toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalledWith('clear_queue', expect.anything())
+    confirmMock.mockResolvedValue(true)
+    await clear!.trigger('click')
+    await flushPromises()
+    expect(invoke).toHaveBeenCalledWith('clear_queue', { status: 'complete' })
+    wrapper.unmount()
   })
 
   it('renders downloads view and status cards', async () => {
@@ -376,6 +408,46 @@ describe('DownloadsView.vue', () => {
     expect(wrapper.text()).toContain('15')
   })
 
+  it('marks a terminal sentinel retry count instead of showing 99 attempts', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') {
+        return [{
+          id: 20,
+          track_id: 301,
+          target_title: 'Sentinel Track',
+          target_artist: 'Unknown Band',
+          target_album: 'Broken Edition',
+          service_name: 'tidal',
+          quality_preference: 'lossless',
+          status: 'failed',
+          priority: 50,
+          progress_percent: 0,
+          error_message: 'SourceIdentityMissing: No equivalent Tidal source found for edition identity',
+          last_error: 'identity fallback refused: multiple matches',
+          retry_count: 99,
+          allow_fallback: false,
+          created_at: '2026-08-17T04:00:00Z',
+          started_at: '2026-08-17T04:01:00Z',
+          completed_at: null,
+        }]
+      }
+      if (command === 'get_queue_stats') return { total: 1, queued: 0, downloading: 0, completed: 0, failed: 1, paused: 0 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+    expect(wrapper.text()).toContain('Source identity missing')
+    expect(wrapper.text()).not.toContain('Attempts: 99')
+    expect(wrapper.find('.failed-item').text()).toContain('Review source')
+    expect(wrapper.find('.failed-item').text()).not.toContain('Retry with Fallback')
+
+    const reviewButton = wrapper.findAll('.failed-item button').find(b => b.text().includes('Review source'))
+    expect(reviewButton).toBeDefined()
+    await reviewButton!.trigger('click')
+    expect(wrapper.text()).toContain('Stopped after a terminal failure')
+  })
+
   it('renders differentiated failure categories with metadata, provenance, and contextual retry buttons', async () => {
     const richFailedItems = [
       {
@@ -474,12 +546,26 @@ describe('DownloadsView.vue', () => {
     expect(text).toContain('Requires authentication')
     expect(text).toContain('Rejected quality')
 
-    // 2. Check metadata: Attempts count, Origin, Effective, Fallback
-    expect(text).toContain('Attempts: 3')
-    expect(text).toContain('Attempts: 1')
-    expect(text).toContain('Origin: Spotify')
-    expect(text).toContain('Effective: Tidal')
-    expect(text).toContain('Fallback Allowed')
+    // 2. Metadata is collapsed by default; expanding the row reveals attempts,
+    //    provenance, fallback flag and the quality decision.
+    expect(text).not.toContain('Attempts: 3')
+    expect(text).not.toContain('Attempts: 1')
+
+    const expandButtons = wrapper.findAll('button').filter(b => b.text().includes('Show details'))
+    expect(expandButtons.length).toBeGreaterThan(0)
+    await expandButtons[0].trigger('click')
+
+    const expandedText = wrapper.text()
+    expect(expandedText).toContain('Attempts: 3')
+    expect(expandedText).toContain('Network retry exhausted')
+    expect(expandedText).toContain('Qobuz download failed: error decoding response body')
+    expect(expandedText).toContain('stream timeout after 3 retries')
+
+    const staleCard = expandButtons[1]
+    await staleCard.trigger('click')
+    expect(wrapper.text()).toContain('Origin: Spotify')
+    expect(wrapper.text()).toContain('Effective: Tidal')
+    expect(wrapper.text()).toContain('Fallback Allowed')
 
     // 3. Check contextual buttons:
     // Network error: "Retry original source" present; NO generic "Try another service"
@@ -791,5 +877,237 @@ describe('DownloadsView deep-link (FE-10)', () => {
     const failedTab = wrapper.findAll('button').find(b => b.text().includes('Failed'))
     expect(failedTab).toBeDefined()
     expect(failedTab!.classes()).not.toContain('bg-error/15')
+  })
+})
+
+/**
+ * WF-DL-01 — botón "Clear All" de la sección Failed.
+ *
+ * `clearFailed()` existía desde antes pero no tenía botón: la cabecera de
+ * Failed solo ofrecía "Retry All". El botón debe borrar únicamente las
+ * fallidas —nunca las completadas ni las en curso— siguiendo el mismo
+ * patrón que las demás categorías: confirmación, estado ocupado, manejo de
+ * error y aviso al terminar.
+ */
+describe('DownloadsView — Clear All on Failed (WF-DL-01)', () => {
+  const failedItems = [...mockQueueItems, {
+    id: 5,
+    track_id: 105,
+    target_title: 'Auth Expired Track',
+    target_artist: 'Secured Band',
+    target_album: 'Protected Vault',
+    service_name: 'tidal',
+    quality_preference: 'hires',
+    status: 'failed',
+    priority: 50,
+    progress_percent: 0,
+    error_message: 'RequiresAuth: HTTP 401 Unauthorized token expired',
+    created_at: '2026-08-17T04:30:00Z',
+    started_at: '2026-08-17T04:31:00Z',
+    completed_at: null,
+  }]
+
+  function findClearAllButton(wrapper: ReturnType<typeof mount>) {
+    const failedHeader = wrapper.find('.failed-section')?.findAll('button')
+      .find(b => b.text().trim() === 'Clear All')
+    return failedHeader
+  }
+
+  beforeEach(() => {
+    resetMocks()
+    confirmMock.mockReset()
+    confirmMock.mockResolvedValue(true)
+  })
+
+  it('renders a Clear All button in the Failed header and keeps Retry All', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return failedItems
+      if (command === 'get_queue_stats') return { ...mockStats, failed: 2 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    const clearBtn = findClearAllButton(wrapper)
+    expect(clearBtn, 'Failed header must expose Clear All').toBeTruthy()
+    expect(clearBtn!.attributes('disabled')).toBeUndefined()
+
+    const retryBtn = wrapper.findAll('.failed-section button').find(b => b.text().includes('Retry All'))
+    expect(retryBtn, 'Retry All must survive alongside Clear All').toBeTruthy()
+  })
+
+  it('disables Clear All when there are no failed downloads', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return mockQueueItems.filter(i => i.status !== 'failed')
+      if (command === 'get_queue_stats') return { ...mockStats, failed: 0 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    const clearBtn = findClearAllButton(wrapper)
+    expect(clearBtn, 'Clear All must always exist').toBeTruthy()
+    expect(clearBtn!.attributes('disabled')).toBeDefined()
+  })
+
+  it('counts every failed download, not just the search-filtered ones', async () => {
+    const invoked: Array<{ command: string; args?: Record<string, unknown> }> = []
+    mockInvoke((command, args) => {
+      invoked.push({ command, args })
+      if (command === 'get_queue') return failedItems
+      if (command === 'get_queue_stats') return { ...mockStats, failed: 2 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    const searchInput = wrapper.find('input[placeholder*="Filter queue"]')
+    expect(searchInput.exists(), 'the queue search box must be reachable').toBe(true)
+    await searchInput.setValue('Auth Expired')
+    await flushPromises()
+
+    await findClearAllButton(wrapper)!.trigger('click')
+    await flushPromises()
+
+    // El borrado es total: el diálogo y el aviso citan las 2 fallidas
+    // existentes, aunque el filtro de búsqueda solo deje pasar una.
+    expect(confirmMock.mock.calls[0]?.[0]).toContain('2 failed')
+    const successToasts = useToast().toasts.value.filter(t => t.type === 'success')
+    expect(successToasts.some(t => t.title.includes('Cleared 2 failed'))).toBe(true)
+    expect(invoked.filter(c => c.command === 'clear_failed_downloads')).toHaveLength(1)
+  })
+
+  it('invokes clear_failed_downloads after confirming, and reports the count', async () => {
+    const invoked: Array<{ command: string; args?: Record<string, unknown> }> = []
+    mockInvoke((command, args) => {
+      invoked.push({ command, args })
+      if (command === 'get_queue') return failedItems
+      if (command === 'get_queue_stats') return { ...mockStats, failed: 2 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    expect(confirmMock).not.toHaveBeenCalled()
+    await findClearAllButton(wrapper)!.trigger('click')
+    await flushPromises()
+
+    // Confirmación obligatoria, con el mismo patrón que las demás categorías.
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    expect(confirmMock.mock.calls[0]?.[0]).toContain('2 failed')
+    expect(confirmMock.mock.calls[0]?.[1]).toMatchObject({ title: 'Clear Failed Downloads', variant: 'warning' })
+
+    // Un único comando, sin argumentos: no puede llevar ningún otro estado.
+    const cleared = invoked.filter(c => c.command === 'clear_failed_downloads')
+    expect(cleared).toHaveLength(1)
+    expect(cleared[0]!.args).toBeUndefined()
+
+    // Aviso al terminar, como el resto de las secciones.
+    const successToasts = useToast().toasts.value.filter(t => t.type === 'success')
+    expect(successToasts.some(t => t.title.includes('Cleared 2 failed'))).toBe(true)
+  })
+
+  it('does not clear anything when the confirmation is cancelled', async () => {
+    confirmMock.mockResolvedValue(false)
+    const invoked: string[] = []
+    mockInvoke((command) => {
+      invoked.push(command)
+      if (command === 'get_queue') return failedItems
+      if (command === 'get_queue_stats') return { ...mockStats, failed: 2 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    await findClearAllButton(wrapper)!.trigger('click')
+    await flushPromises()
+
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    expect(invoked).not.toContain('clear_failed_downloads')
+  })
+
+  it('clears only failed items: queued, downloading and completed stay untouched', async () => {
+    // Una sola petición tras el borrado: el backend devuelve la cola sin las
+    // dos fallidas, y las completadas/en curso siguen renderizadas.
+    let cleared = false
+    mockInvoke((command) => {
+      if (command === 'clear_failed_downloads') { cleared = true; return 'Cleared 2 failed downloads' }
+      if (command === 'get_queue') return cleared ? failedItems.filter(i => i.status !== 'failed') : failedItems
+      if (command === 'get_queue_stats') return cleared ? { ...mockStats, failed: 0 } : { ...mockStats, failed: 2 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    expect(wrapper.find('.failed-section').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Corrupted Source')
+
+    await findClearAllButton(wrapper)!.trigger('click')
+    await flushPromises()
+
+    expect(cleared).toBe(true)
+
+    const failedSection = wrapper.find('.failed-section')
+    // Las fallidas desaparecen de la sección Failed…
+    expect(failedSection.text()).not.toContain('Corrupted Source')
+    expect(failedSection.text()).not.toContain('Auth Expired Track')
+    expect(failedSection.text()).toContain('No failed downloads')
+    // …y ni completadas ni en curso ni encoladas se han borrado.
+    expect(wrapper.text()).toContain('Finished Track 3')
+    expect(wrapper.text()).toContain('Synchronize')
+    expect(wrapper.text()).toContain('Mass Track 2')
+  })
+
+  it('shows an error toast when clearing fails and stays usable', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_queue') return failedItems
+      if (command === 'get_queue_stats') return { ...mockStats, failed: 2 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+      if (command === 'clear_failed_downloads') throw new Error('Database error: locked')
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    const clearBtn = findClearAllButton(wrapper)!
+    await clearBtn.trigger('click')
+    await flushPromises()
+
+    const errorToasts = useToast().toasts.value.filter(t => t.type === 'error')
+    expect(errorToasts.some(t => t.title.includes('Failed to clear failed downloads') && t.description?.includes('Database error: locked'))).toBe(true)
+    // El estado ocupado se libera: el botón vuelve a estar operativo.
+    expect(clearBtn.attributes('disabled')).toBeUndefined()
+  })
+
+  it('blocks a second Clear All while the first one is in flight', async () => {
+    let releaseClear: (() => void) | undefined
+    mockInvoke((command) => {
+      if (command === 'get_queue') return failedItems
+      if (command === 'get_queue_stats') return { ...mockStats, failed: 2 }
+      if (command === 'get_worker_status') return mockWorkerStatus
+      if (command === 'clear_failed_downloads') return new Promise((resolve) => { releaseClear = () => resolve('Cleared 2 failed downloads') })
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    const clearBtn = findClearAllButton(wrapper)!
+    await clearBtn.trigger('click')
+    await flushPromises()
+
+    // Mientras opera: botón deshabilitado (sin doble clic) y Retry All también.
+    expect(clearBtn.attributes('disabled')).toBeDefined()
+    const retryBtn = wrapper.findAll('.failed-section button').find(b => b.text().includes('Retry All'))
+    expect(retryBtn!.attributes('disabled')).toBeDefined()
+
+    releaseClear?.()
+    await flushPromises()
+    expect(clearBtn.attributes('disabled')).toBeUndefined()
   })
 })

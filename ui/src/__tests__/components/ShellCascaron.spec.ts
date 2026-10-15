@@ -34,7 +34,7 @@ function mountApp() {
       props: ['to', 'title'],
       template: '<a :to="to" :title="title" class="router-link-stub" v-bind="$attrs"><slot /></a>',
     },
-    StatusBar: true,
+    StatusBar: { props: ['overlayActive'], template: '<div data-testid="footer-stub" :data-overlay-active="overlayActive" />' },
     ToastNotifications: true, CommandPalette: true, KeyboardShortcuts: true,
     OnboardingWizard: true,
   } } })
@@ -51,6 +51,16 @@ describe('Ola 1 — cascarón', () => {
   afterEach(() => {
     resetGlobalTasks()
     usePlayer().stop()
+  })
+
+  it('lowers the footer beneath onboarding when the shell overlay opens', async () => {
+    const wrapper = mountApp()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="footer-stub"]').attributes('data-overlay-active')).toBe('false')
+    wrapper.vm.showOnboarding = true
+    await flushPromises()
+    expect(wrapper.find('[data-testid="footer-stub"]').attributes('data-overlay-active')).toBe('true')
+    wrapper.unmount()
   })
 
   it('keeps a classic always-visible sidebar below the full-width header, with no dark backdrop', async () => {

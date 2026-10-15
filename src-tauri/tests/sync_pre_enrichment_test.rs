@@ -345,7 +345,15 @@ async fn test_sync_pre_enrichment_manual_precedence_preservation() {
     .execute(&pool)
     .await;
 
-    // 2. Incoming streaming sync with different title/year for the same ISRC
+    // 2. Explicit provider mapping proves the same item; ISRC alone would not.
+    sqlx::query("INSERT INTO track_sources(track_id,service_id,service_track_id) VALUES(?,?,?)")
+        .bind(track_id)
+        .bind(service_id)
+        .bind("qobuz-999")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Incoming streaming sync with different title/year for the mapped item.
     let input = SyncTrackInput {
         origin_meta: OriginTrackMetadata {
             title: Some("Streaming Title Overwrite Attempt".to_string()),

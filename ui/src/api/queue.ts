@@ -518,7 +518,27 @@ export interface FailureInfo {
  * Classify error message into standardized failure categories.
  */
 export function classifyFailureReason(errorMessage?: string | null, lastError?: string | null): FailureInfo {
+  const primary = (errorMessage || lastError || '').toLowerCase();
   const text = `${errorMessage || ''} ${lastError || ''}`.toLowerCase();
+
+  if (
+    primary.includes('ambiguoussource') ||
+    primary.includes('ambiguous_source') ||
+    primary.includes('sourceidentitymissing') ||
+    primary.includes('identityconflict') ||
+    primary.includes('multiple matches')
+  ) {
+    return {
+      reason: 'ambiguous_source',
+      label: primary.includes('sourceidentitymissing') ? 'Source identity missing' : 'Ambiguous source',
+      description: 'No verified equivalent edition was found. Select a source or improve track identity before retrying.',
+      badgeClass: 'bg-yellow-500/10 text-yellow-500 border border-yellow-500/30',
+      icon: 'alt_route',
+      isRetryableOriginal: false,
+      canUseFallback: false,
+      requiresAuth: false,
+    };
+  }
 
   // 1. Authentication (401, 403, unauthorized, token expired, forbidden, login required)
   if (
@@ -598,7 +618,6 @@ export function classifyFailureReason(errorMessage?: string | null, lastError?: 
     text.includes('track not found') ||
     text.includes('source missing') ||
     text.includes('resource not found') ||
-    text.includes('sourceidentitymissing') ||
     text.includes('no source track')
   ) {
     return {

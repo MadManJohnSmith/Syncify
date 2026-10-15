@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-8 animate-in fade-in duration-300">
     <p class="text-sm text-text-secondary">
-      El tema se aplica al instante y queda guardado para las próximas sesiones (no pasa por «Save Changes»).
+      The theme applies immediately and is saved for future sessions (without using “Save Changes”).
     </p>
 
     <!-- Temas estándar del sistema (G-02: default Tinta) -->
@@ -24,7 +24,7 @@
           <span
             v-if="current === theme.id"
             class="material-symbols-outlined text-accent text-[20px] shrink-0"
-            title="Tema activo"
+            title="Active theme"
           >check_circle</span>
         </div>
 
@@ -49,13 +49,13 @@
           :aria-pressed="current === theme.id"
           @click="setTheme(theme.id)"
         >
-          {{ current === theme.id ? 'Tema activo' : 'Usar este tema' }}
+          {{ current === theme.id ? 'Active theme' : 'Use this theme' }}
         </button>
 
         <!-- Control exclusivo de Camaleón: escala la saturación de sus tokens -->
         <label v-if="theme.id === 'camaleon'" class="block mt-4 text-xs text-ink-2">
           <span class="flex items-center justify-between">
-            <span>Intensidad del tinte</span>
+            <span>Tint intensity</span>
             <span class="font-mono tabular-nums" data-testid="tint-intensity-value">{{ tintPercent }}%</span>
           </span>
           <input
@@ -66,7 +66,7 @@
             step="1"
             :value="tintPercent"
             class="w-full mt-1 h-1 accent-primary cursor-pointer"
-            aria-label="Intensidad del tinte de Camaleón"
+            aria-label="Chameleon tint intensity"
             @input="onTintInput"
           >
         </label>
@@ -76,9 +76,9 @@
     <!-- Temas por servicio musical (AJ-05) - Colocados debajo y separados -->
     <div class="pt-6 border-t border-line space-y-6">
       <div class="flex flex-col gap-1">
-        <h2 class="text-base font-semibold text-ink">Temas por servicio</h2>
+        <h2 class="text-base font-semibold text-ink">Service themes</h2>
         <p class="text-xs text-ink-2">
-          Paletas de colores diseñadas a partir de la identidad de cada servicio de streaming musical disponible.
+          Color palettes based on the identity of each available music streaming service.
         </p>
       </div>
 
@@ -87,10 +87,10 @@
         <div class="space-y-0.5 pr-4">
           <div class="flex items-center gap-2">
             <span class="material-symbols-outlined text-accent text-[20px]">palette</span>
-            <span class="text-sm font-medium text-ink">Color dinámico por carátula</span>
+            <span class="text-sm font-medium text-ink">Dynamic cover color</span>
           </div>
           <p class="text-xs text-ink-2">
-            Permite que los temas de servicio adapten dinámicamente sus tonos de acento al color de la portada en reproducción.
+            Lets service themes adapt their accent colors to the cover art of the playing track.
           </p>
         </div>
         <button
@@ -133,7 +133,7 @@
             <span
               v-if="current === theme.id"
               class="material-symbols-outlined text-accent text-[20px] shrink-0"
-              title="Tema activo"
+              title="Active theme"
             >check_circle</span>
           </div>
 
@@ -157,7 +157,7 @@
             :aria-pressed="current === theme.id"
             @click="setTheme(theme.id)"
           >
-            {{ current === theme.id ? 'Tema activo' : 'Usar este tema' }}
+            {{ current === theme.id ? 'Active theme' : 'Use this theme' }}
           </button>
         </article>
       </section>

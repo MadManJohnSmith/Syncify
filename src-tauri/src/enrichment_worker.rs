@@ -93,6 +93,64 @@ impl EnrichmentWorkerState {
     }
 }
 
+fn require_one_row(rows: u64, operation: &str) -> Result<(), String> {
+    if rows == 1 {
+        Ok(())
+    } else {
+        Err(format!("{operation}: expected one row, updated {rows}"))
+    }
+}
+
+async fn finish_enrichment(
+    db: &SqlitePool,
+    track_id: i64,
+    mb_id: Option<&str>,
+) -> Result<(), String> {
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    let updated_track = sqlx::query(
+        "UPDATE tracks SET musicbrainz_id = ?, enrichment_status = 'enriched', enriched_at = datetime('now') WHERE id = ?",
+    )
+    .bind(mb_id)
+    .bind(track_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    require_one_row(updated_track.rows_affected(), "tracks enrichment")?;
+
+    let updated_progress = sqlx::query(
+        "UPDATE enrichment_progress SET status = 'completed', completed_at = datetime('now'), last_error = NULL WHERE track_id = ? AND service = 'all' AND status = 'in_progress'",
+    )
+    .bind(track_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    require_one_row(
+        updated_progress.rows_affected(),
+        "enrichment_progress completion",
+    )?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn skip_enrichment(db: &SqlitePool, track_id: i64) -> Result<(), String> {
+    // The schema has no 'skipped' status; record the terminal no-op as completed.
+    let updated = sqlx::query(
+        "UPDATE enrichment_progress SET status = 'completed', completed_at = datetime('now'), last_error = 'MusicBrainz enrichment disabled in settings' WHERE track_id = ? AND service = 'all' AND status = 'in_progress'",
+    )
+    .bind(track_id)
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    require_one_row(updated.rows_affected(), "enrichment_progress skip")
+}
+
+async fn recover_interrupted_jobs(db: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE enrichment_progress SET status = 'pending' WHERE service = 'all' AND status = 'in_progress'")
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 /// Background enrichment worker
 pub struct EnrichmentWorker {
     db: SqlitePool,
@@ -100,6 +158,15 @@ pub struct EnrichmentWorker {
     rate_limiter: Arc<RateLimiter>,
     engine: EnrichmentEngine,
     app_handle: Option<tauri::AppHandle>,
+}
+
+// Keep the counter balanced on every return path, including database errors.
+struct ActiveJob<'a>(&'a AtomicUsize);
+
+impl Drop for ActiveJob<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl EnrichmentWorker {
@@ -149,6 +216,12 @@ impl EnrichmentWorker {
     /// Run the enrichment worker loop
     pub async fn run(&self) {
         tracing::info!("EnrichmentWorker started");
+
+        // A prior process may have exited mid-request. Requeue only this worker's claims.
+        if let Err(error) = recover_interrupted_jobs(&self.db).await {
+            tracing::error!("Unable to recover enrichment jobs: {error}");
+            return;
+        }
 
         let mut had_work = false;
         while !self.state.is_stopped() {
@@ -239,6 +312,9 @@ impl EnrichmentWorker {
         .await
         .map_err(|e| e.to_string())?;
 
+        self.state.active_count.fetch_add(1, Ordering::SeqCst);
+        let _active_job = ActiveJob(&self.state.active_count);
+
         self.emit_event(EnrichmentProgressEvent {
             track_id,
             title: title.clone(),
@@ -255,7 +331,7 @@ impl EnrichmentWorker {
         )
         .fetch_optional(&self.db)
         .await
-        .unwrap_or(None)
+        .map_err(|e| e.to_string())?
         .unwrap_or(true);
 
         if !enable_mb {
@@ -263,12 +339,7 @@ impl EnrichmentWorker {
                 "Skipping MusicBrainz query for track {} (enable_musicbrainz disabled in settings)",
                 track_id
             );
-            let _ = sqlx::query(
-                "UPDATE enrichment_progress SET status = 'skipped', completed_at = datetime('now'), last_error = 'MusicBrainz enrichment disabled in settings' WHERE track_id = ? AND service = 'all'"
-            )
-            .bind(track_id)
-            .execute(&self.db)
-            .await;
+            skip_enrichment(&self.db, track_id).await?;
 
             self.emit_event(EnrichmentProgressEvent {
                 track_id,
@@ -294,27 +365,7 @@ impl EnrichmentWorker {
 
         // 5. Update database on success
         let mb_id = result.musicbrainz_recording_id.value();
-        let _ = sqlx::query(
-            "UPDATE tracks SET musicbrainz_id = ?, enrichment_status = 'enriched', enriched_at = datetime('now') WHERE id = ?"
-        )
-        .bind(mb_id)
-        .bind(track_id)
-        .execute(&self.db)
-        .await;
-
-        sqlx::query(
-            r#"
-            UPDATE enrichment_progress SET
-                status = 'completed',
-                completed_at = datetime('now'),
-                last_error = NULL
-            WHERE track_id = ? AND service = 'all'
-            "#,
-        )
-        .bind(track_id)
-        .execute(&self.db)
-        .await
-        .map_err(|e| e.to_string())?;
+        finish_enrichment(&self.db, track_id, mb_id).await?;
 
         self.emit_event(EnrichmentProgressEvent {
             track_id,
@@ -334,9 +385,9 @@ impl EnrichmentWorker {
         let stats: (i64, i64, i64) = sqlx::query_as(
             r#"
             SELECT
-                (SELECT COUNT(*) FROM tracks t LEFT JOIN enrichment_progress ep ON ep.track_id = t.id WHERE ep.status IS NULL OR ep.status = 'pending') as pending,
-                (SELECT COUNT(*) FROM enrichment_progress WHERE status = 'completed') as completed,
-                (SELECT COUNT(*) FROM enrichment_progress WHERE status = 'failed') as failed
+                (SELECT COUNT(*) FROM tracks t LEFT JOIN enrichment_progress ep ON ep.track_id = t.id AND ep.service = 'all' WHERE ep.status IS NULL OR ep.status = 'pending' OR (ep.status = 'failed' AND ep.retry_count < 3)) as pending,
+                (SELECT COUNT(*) FROM enrichment_progress WHERE service = 'all' AND status = 'completed') as completed,
+                (SELECT COUNT(*) FROM enrichment_progress WHERE service = 'all' AND status = 'failed') as failed
             "#
         )
         .fetch_one(&self.db)
@@ -350,5 +401,136 @@ impl EnrichmentWorker {
             completed_count: stats.1,
             failed_count: stats.2,
         })
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn db() -> SqlitePool {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE tracks (id INTEGER PRIMARY KEY, musicbrainz_id TEXT, enrichment_status TEXT, enriched_at TEXT)").execute(&db).await.unwrap();
+        sqlx::query("CREATE TABLE enrichment_progress (track_id INTEGER NOT NULL, service TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'in_progress', 'completed', 'failed', 'rate_limited')), last_error TEXT, completed_at TEXT)").execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO tracks(id, enrichment_status) VALUES (1, 'pending')")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO enrichment_progress(track_id, service, status) VALUES (1, 'all', 'in_progress'), (1, 'spotify', 'completed')").execute(&db).await.unwrap();
+        db
+    }
+
+    #[tokio::test]
+    async fn completion_is_atomic_when_progress_write_fails() {
+        let db = db().await;
+        sqlx::query("CREATE TRIGGER fail_progress BEFORE UPDATE ON enrichment_progress WHEN NEW.status = 'completed' AND NEW.service = 'all' BEGIN SELECT RAISE(ABORT, 'injected write failure'); END").execute(&db).await.unwrap();
+        assert!(finish_enrichment(&db, 1, Some("mb-test")).await.is_err());
+        let row: (Option<String>, String, String) = sqlx::query_as("SELECT t.musicbrainz_id, t.enrichment_status, ep.status FROM tracks t JOIN enrichment_progress ep ON ep.track_id=t.id AND ep.service='all' WHERE t.id=1").fetch_one(&db).await.unwrap();
+        assert_eq!(row, (None, "pending".into(), "in_progress".into()));
+    }
+
+    #[tokio::test]
+    async fn missing_track_or_progress_cannot_complete() {
+        let db = db().await;
+        assert!(finish_enrichment(&db, 42, Some("mb-test")).await.is_err());
+        sqlx::query("DELETE FROM enrichment_progress WHERE service='all'")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(finish_enrichment(&db, 1, Some("mb-test")).await.is_err());
+        let row: (Option<String>, String) =
+            sqlx::query_as("SELECT musicbrainz_id, enrichment_status FROM tracks WHERE id=1")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(row, (None, "pending".into()));
+        assert!(skip_enrichment(&db, 1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn skipped_event_requires_persisted_terminal_state() {
+        let db = db().await;
+        sqlx::query("CREATE TRIGGER fail_skip BEFORE UPDATE ON enrichment_progress WHEN NEW.service='all' BEGIN SELECT RAISE(ABORT, 'injected skip failure'); END").execute(&db).await.unwrap();
+        assert!(skip_enrichment(&db, 1).await.is_err());
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM enrichment_progress WHERE service='all'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(status, "in_progress");
+        sqlx::query("DROP TRIGGER fail_skip")
+            .execute(&db)
+            .await
+            .unwrap();
+        skip_enrichment(&db, 1).await.unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM enrichment_progress WHERE service='all'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(status, "completed");
+    }
+
+    #[tokio::test]
+    async fn status_counts_only_all_and_retryable_jobs() {
+        let db = db().await;
+        sqlx::query("INSERT INTO tracks(id, enrichment_status) VALUES (2, 'pending'), (3, 'pending'), (4, 'pending')")
+            .execute(&db).await.unwrap();
+        sqlx::query(
+            "ALTER TABLE enrichment_progress ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO enrichment_progress(track_id, service, status, retry_count) VALUES (2, 'all', 'failed', 2), (3, 'all', 'failed', 3)")
+            .execute(&db).await.unwrap();
+        let worker = EnrichmentWorker::new(
+            db.clone(),
+            EnrichmentWorkerState::new(),
+            Arc::new(RateLimiter::new()),
+        );
+        let status = worker.get_status().await.unwrap();
+        assert_eq!(
+            (
+                status.pending_count,
+                status.completed_count,
+                status.failed_count,
+                status.active_jobs
+            ),
+            (2, 0, 2, 0)
+        );
+        finish_enrichment(&db, 1, None).await.unwrap();
+        let status = worker.get_status().await.unwrap();
+        assert_eq!(
+            (
+                status.pending_count,
+                status.completed_count,
+                status.failed_count
+            ),
+            (2, 1, 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_requeues_only_all_in_progress() {
+        let db = db().await;
+        recover_interrupted_jobs(&db).await.unwrap();
+        let statuses: Vec<(String, String)> =
+            sqlx::query_as("SELECT service,status FROM enrichment_progress ORDER BY service")
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            statuses,
+            vec![
+                ("all".into(), "pending".into()),
+                ("spotify".into(), "completed".into())
+            ]
+        );
     }
 }

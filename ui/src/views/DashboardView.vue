@@ -181,15 +181,16 @@
 
         <!-- Row 2: Sources / Services (3 cols - D-05: nombre formateado centralizadamente) -->
         <div class="stat-card service-distribution xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
-          <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Sources</h3>
+          <h3 class="text-xs font-semibold text-ink mb-1 shrink-0">Sources</h3>
+          <p class="text-[11px] text-gray-500 mb-2 shrink-0">Active account tracks / unique library tracks per service. Coverage overlaps; bars do not sum to 100%.</p>
           <div v-if="stats.services.length > 0" class="flex-1 min-h-0 space-y-2 overflow-y-auto custom-scrollbar">
             <div v-for="service in stats.services" :key="service.name">
               <div class="flex justify-between text-[11px] mb-0.5">
                 <span class="text-ink truncate pr-2">{{ service.name }}</span>
-                <span class="text-gray-500 shrink-0">{{ service.percent }}%</span>
+                <span class="text-gray-500 shrink-0">{{ service.libraryCount.toLocaleString() }} / {{ service.percent }}%</span>
               </div>
               <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                <div :class="[service.color, 'h-full rounded-full']" :style="{ width: service.percent + '%' }"></div>
+                <div :class="service.color" class="h-full rounded-full" :style="{ width: service.percent + '%' }"></div>
               </div>
             </div>
           </div>
@@ -431,6 +432,27 @@ const isFetchingLyrics = ref(false)
 const isAutoResolving = ref(false)
 const recentActivity = ref<{id: number, icon: string, color: string, text: string, time: string}[]>([])
 
+/**
+ * Color de la barra asignado por NOMBRE de servicio normalizado, nunca por
+ * posición: si el backend reordena los servicios (ORDER BY s.id) los colores no
+ * deben permutarse. `formatServiceName` ya normaliza el nombre a su forma
+ * canónica, así que ambos caminos caen en la misma clave.
+ */
+function serviceColorFor(serviceName: string): string {
+  const normalized = formatServiceName((serviceName || '').trim()).toLowerCase()
+  const colors: Record<string, string> = {
+    'spotify': 'bg-green-500',
+    'qobuz': 'bg-blue-600',
+    'tidal': 'bg-black',
+    'deezer': 'bg-purple-500',
+    'soundcloud': 'bg-orange-500',
+    'apple music': 'bg-pink-500',
+    'musicbrainz': 'bg-amber-500',
+    'last.fm': 'bg-red-500',
+  }
+  return colors[normalized] ?? 'bg-gray-500'
+}
+
 // Helper to format bytes
 function formatBytes(bytes: number, decimals = 2) {
   if (!bytes) return '0 Bytes'
@@ -487,11 +509,27 @@ const stats = computed(() => {
     perTrackSize: (lib?.total_tracks ?? 0) > 0 && storageData.value
       ? formatBytes(storageData.value.used_bytes / lib!.total_tracks)
       : '—',
-    services: serviceStatuses.value.map((s, i) => ({
-      name: formatServiceName(s.name),
-      percent: s.library_count > 0 ? Math.round((s.library_count / (lib?.total_tracks || 1)) * 100) : 0,
-      color: ['bg-blue-500', 'bg-green-500', 'bg-gray-900', 'bg-gray-400'][i] || 'bg-gray-400'
-    })),
+    services: serviceStatuses.value.map(s => {
+      // Denominador único: pistas únicas de la biblioteca (`COUNT(*) FROM tracks`,
+      // ver la VIEW library_stats en migrations/0085_alignment_audit.sql:213-218).
+      // NO se usa `COUNT(*) FROM library_entries` porque una misma pista puede
+      // estar en varias cuentas (UNIQUE(account_id, track_id)) y sumaría más
+      // que las pistas únicas.
+      const uniqueTracks = lib && lib.total_tracks > 0 ? lib.total_tracks : 0
+      // library_count son entradas de biblioteca de LA cuenta activa de ese
+      // servicio (service.rs:1230-1251), así que una pista presente en dos
+      // servicios cuenta 1 en cada uno. Esto mide cobertura, no reparto
+      // exclusivo: los porcentajes pueden solaparse y no suman 100 %.
+      const libraryEntries = s.library_count > 0 ? s.library_count : 0
+      const percent = uniqueTracks > 0 ? Math.round((libraryEntries / uniqueTracks) * 100) : 0
+      return {
+        name: formatServiceName(s.name),
+        color: serviceColorFor(s.name),
+        libraryCount: libraryEntries,
+        uniqueTracks,
+        percent
+      }
+    }),
     topArtists: topArtistsData.value.map((a, i, arr) => ({
       name: a.name,
       tracks: a.track_count,
@@ -699,7 +737,9 @@ function exportReport() {
     },
     services: stats.value.services.map(s => ({
       name: s.name,
-      libraryPercent: s.percent
+      libraryEntries: s.libraryCount,
+      uniqueTracks: s.uniqueTracks,
+      libraryCoveragePercent: s.percent
     })),
     queueStatus: {
       queued: queueStats.value?.queued ?? 0,

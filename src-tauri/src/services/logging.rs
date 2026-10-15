@@ -485,16 +485,12 @@ pub fn resolve_effective_log_config(
         persisted_log_to_file.unwrap_or(false)
     };
 
-    // Precedence: RUST_LOG override > if dev: DEBUG > if prod: persisted level or INFO
-    let log_level = if let Ok(env_filter) = std::env::var("RUST_LOG") {
-        parse_level_from_str(&env_filter).unwrap_or(if is_dev { Level::DEBUG } else { Level::INFO })
-    } else if is_dev {
-        Level::DEBUG
-    } else {
-        persisted_log_level
-            .and_then(parse_level_from_str)
-            .unwrap_or(Level::INFO)
-    };
+    // The stored level applies in development too; verbose diagnostics are opt-in.
+    let log_level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|value| parse_level_from_str(&value))
+        .or_else(|| persisted_log_level.and_then(parse_level_from_str))
+        .unwrap_or(Level::INFO);
 
     let log_dir = resolve_app_log_dir();
     let filename = if is_dev {
@@ -685,6 +681,22 @@ pub fn get_logging_status() -> LoggingStatusDto {
     }
 }
 
+/// Keep dependency internals quiet unless explicitly selected for diagnosis.
+pub fn effective_target_filter(level: Level) -> tracing_subscriber::EnvFilter {
+    let default = format!("warn,syncify_tauri={level}");
+    let fallback = default.clone();
+    let requested = std::env::var("RUST_LOG").unwrap_or_default();
+    let directives = if requested.trim().is_empty() {
+        default
+    } else if let Some(simple_level) = parse_level_from_str(&requested) {
+        format!("warn,syncify_tauri={simple_level}")
+    } else {
+        format!("{default},{requested}")
+    };
+    tracing_subscriber::EnvFilter::try_new(directives)
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(fallback))
+}
+
 /// Initialize tracing subscriber with unified console, in-memory ring buffer, and rotating file logging
 pub fn init_logging_system(
     persisted_to_file: Option<bool>,
@@ -705,11 +717,11 @@ pub fn init_logging_system(
         let log_buffer = get_global_log_buffer();
         let buffer_layer = LogBufferLayer::new(log_buffer.clone());
 
-        let filter = tracing_subscriber::filter::LevelFilter::from_level(config.log_level);
+        let filter = effective_target_filter(config.log_level);
 
         let registry = tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().with_filter(filter))
-            .with(buffer_layer.with_filter(filter));
+            .with(tracing_subscriber::fmt::layer().with_filter(filter.clone()))
+            .with(buffer_layer.with_filter(filter.clone()));
 
         if config.log_to_file {
             let filename = if config.is_development {

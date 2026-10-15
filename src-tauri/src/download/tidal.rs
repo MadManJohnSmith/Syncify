@@ -10,6 +10,31 @@ use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 
 pub use syncify_tidal_downloader::*;
 
+/// Validate the legacy plan at the adapter boundary before any network call.
+/// The pipeline then receives exactly one account and one provider item.
+pub fn planned_tidal_account(request: &DownloadRequest) -> Result<Option<i64>> {
+    let Some(plan) = request.resolution_plan.as_ref() else {
+        return Ok(None);
+    };
+    let primary = plan
+        .primary()
+        .ok_or_else(|| anyhow!("AmbiguousSource: empty Tidal plan"))?;
+    if primary.service_name != "tidal"
+        || request.service_track_id.as_deref() != Some(primary.service_track_id.as_str())
+        || request.quality != plan.quality.effective
+    {
+        return Err(anyhow!(
+            "AmbiguousSource: Tidal request differs from resolved plan"
+        ));
+    }
+    primary
+        .account
+        .as_ref()
+        .map(|a| a.account_id)
+        .map(Some)
+        .ok_or_else(|| anyhow!("RequiresAuth: Tidal plan has no selected account"))
+}
+
 pub trait TidalOrchestratorExt {
     fn download_track(
         &self,
@@ -27,6 +52,15 @@ impl TidalOrchestratorExt for TidalDownloader {
         let item_id = &request.item_id;
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "tidal"));
 
+        // ED-04: an attached plan is an execution lock, not a hint. Fail
+        // before network or DB side effects if dispatch disagrees with it.
+        let planned = planned_tidal_account(request)?;
+        if request.resolution_plan.is_some() && db_opt.is_none() {
+            return Err(anyhow!(
+                "AmbiguousSource: planned Tidal download requires database verification"
+            ));
+        }
+
         if let Some(db) = db_opt {
             let req = crate::services::tidal_pipeline::TidalSingleTrackRequest {
                 track_id_or_query: if let Some(ref s_track_id) = request.service_track_id {
@@ -38,7 +72,8 @@ impl TidalOrchestratorExt for TidalDownloader {
                 },
                 requested_quality: Some(request.quality.clone()),
                 output_dir: Some(request.output_dir.clone()),
-                allow_lossy_fallback: Some(request.allow_fallback || !request.strict_quality),
+                // Service fallback does not authorize a quality downgrade.
+                allow_lossy_fallback: Some(request.allow_fallback && !request.strict_quality),
                 hint_title: if request.track_name.is_empty() {
                     None
                 } else {
@@ -71,7 +106,9 @@ impl TidalOrchestratorExt for TidalDownloader {
                 // download; hand its id over so the pipeline checkpoints the SAME row
                 // instead of opening a competing second entry.
                 operation_id: request.operation_id.clone(),
-                account_id: None,
+                account_id: planned,
+                locked_account: planned.is_some(),
+                artifact_policy: request.artifact_policy,
             };
 
             let item_id_clone = item_id.clone();

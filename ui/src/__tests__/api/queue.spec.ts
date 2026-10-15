@@ -20,6 +20,7 @@ import {
     enqueueEligibleBatch,
     cancelItem,
     queueApi,
+    classifyFailureReason,
 } from '@/api/queue';
 import { mockInvoke, resetMocks } from '../setup';
 
@@ -250,3 +251,28 @@ describe('queue_handles_missing_fields_test', () => {
         expect(res.tracks).toEqual([]);
     });
 });
+
+describe('classifyFailureReason precedence', () => {
+  it('labels IdentityMissing as ambiguous, not authentication or 404', () => {
+    const info = classifyFailureReason(
+      'SourceIdentityMissing: No equivalent Tidal source found for edition identity',
+      'Considered a401-like token string, SKU 404 response'
+    )
+    expect(info.reason).toBe('ambiguous_source')
+    expect(info.label).toBe('Source identity missing')
+    expect(info.requiresAuth).toBe(false)
+    expect(info.canUseFallback).toBe(false)
+  })
+
+  it('keeps a real 401 as authentication', () => {
+    const info = classifyFailureReason('RequiresAuth: HTTP 401 Unauthorized token expired', 'Invalid session credentials')
+    expect(info.reason).toBe('requires_auth')
+    expect(info.requiresAuth).toBe(true)
+  })
+
+  it('still labels a genuine 404 as stale source', () => {
+    const info = classifyFailureReason('StaleSource: 404 not found on primary CDN', 'source deleted from catalog')
+    expect(info.reason).toBe('stale_source')
+    expect(info.canUseFallback).toBe(true)
+  })
+})

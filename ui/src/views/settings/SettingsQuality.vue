@@ -5,14 +5,14 @@
       <div class="pb-2 border-b border-gray-200 dark:border-border-dark">
         <h3 class="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
           <span class="material-symbols-outlined text-primary text-[22px]">vertical_align_top</span>
-          Calidad máxima global
+          Global maximum quality
         </h3>
-        <p class="text-xs text-text-secondary mt-0.5">Límite estricto aplicado a toda descarga: la calidad efectiva es min(techo global, límite del servicio)</p>
+        <p class="text-xs text-text-secondary mt-0.5">Strict limit for every download: effective quality is min(global ceiling, service limit)</p>
       </div>
 
       <div class="p-5 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark space-y-4">
         <div>
-          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Techo efectivo de descarga</label>
+          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Effective download ceiling</label>
           <div class="relative sm:max-w-md">
             <select
               v-model="globalCeiling"
@@ -20,17 +20,17 @@
               data-testid="global-max-quality-select"
               class="w-full px-3 py-2.5 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none appearance-none cursor-pointer"
             >
-              <option value="any">Sin techo (comportamiento por defecto)</option>
-              <option value="hires">Hi-Res máx. (24-bit / hasta 192kHz FLAC)</option>
-              <option value="lossless">Lossless máx. (16-bit / 44.1kHz FLAC)</option>
-              <option value="high">High máx. (320 kbps MP3 / AAC)</option>
+              <option value="any">No ceiling (default)</option>
+              <option value="hires">Hi-Res max. (24-bit / up to 192kHz FLAC)</option>
+              <option value="lossless">Lossless max. (16-bit / 44.1kHz FLAC)</option>
+              <option value="high">High max. (320 kbps MP3 / AAC)</option>
             </select>
             <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-500">
               <span class="material-symbols-outlined text-[18px]">expand_more</span>
             </div>
           </div>
           <p class="text-xs text-text-secondary mt-2">
-            Aplica a todas las descargas un límite estricto: ninguna pista pedirá una calidad superior a la elegida aquí, sin importar la configuración por servicio ni el tier de la cuenta.
+            Applies a strict limit to all downloads: no track will request a higher quality than selected here, regardless of per-service settings or account tier.
           </p>
         </div>
 
@@ -43,16 +43,16 @@
           ]"
         >
           <span v-if="globalCeiling === 'lossless'" data-testid="effective-ceiling-text">
-            Con techo <strong>lossless</strong>, ninguna descarga pedirá 24-bit: Qobuz recibe solo format_id 6 y Tidal el parámetro LOSSLESS (aunque la pista tenga master disponible).
+            With a <strong>lossless</strong> ceiling, no download requests 24-bit: Qobuz receives only format_id 6 and Tidal the LOSSLESS parameter (even when a master is available).
           </span>
           <span v-else-if="globalCeiling === 'high'" data-testid="effective-ceiling-text">
-            Con techo <strong>high</strong>, todas las descargas se sirven en el tramo 320 kbps (Qobuz format_id 5 / Tidal AAC HIGH).
+            With a <strong>high</strong> ceiling, all downloads use the 320 kbps tier (Qobuz format_id 5 / Tidal AAC HIGH).
           </span>
           <span v-else-if="globalCeiling === 'hires'" data-testid="effective-ceiling-text">
-            Techo <strong>hires</strong>: se permite 24-bit; cada servicio respeta además su propio límite de calidad si es más estricto.
+            <strong>Hi-res</strong> ceiling: 24-bit is allowed; each service also respects its own quality limit if stricter.
           </span>
           <span v-else data-testid="effective-ceiling-text">
-            Sin techo activo. Cada servicio descargará a la calidad configurada en su preferencia individual (o el máximo que permita la cuenta conectada).
+            No ceiling active. Each service downloads at its configured quality (or the maximum allowed by the connected account).
           </span>
         </div>
       </div>

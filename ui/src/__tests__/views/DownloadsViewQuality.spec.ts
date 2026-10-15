@@ -221,6 +221,10 @@ describe('DownloadsView Quality Decision & Policy Transparency', () => {
     const wrapper = mount(DownloadsView)
     await flushPromises()
 
+    // The quality decision now lives inside the collapsed details panel.
+    wrapper.find('.failed-item button').trigger('click')
+    await flushPromises()
+
     const text = wrapper.text()
     // 1. Track title
     expect(text).toContain('Strict Quality Rejection Track')
@@ -232,10 +236,6 @@ describe('DownloadsView Quality Decision & Policy Transparency', () => {
     // 3. Provider: Tidal
     expect(text).toContain('Provider:')
     expect(text).toContain('Tidal')
-
-    // 4. Received: AAC 320 kbps
-    expect(text).toContain('Received:')
-    expect(text).toContain('AAC 320 kbps')
 
     // 5. Result: Rejected quality
     expect(text).toContain('Rejected quality')

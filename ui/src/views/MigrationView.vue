@@ -1,8 +1,8 @@
 <template>
-  <div class="migrate-page h-full flex flex-col bg-background-light dark:bg-background-dark overflow-hidden">
+  <div class="migrate-page h-full min-w-0 flex flex-col bg-background-light dark:bg-background-dark overflow-hidden">
 
     <!-- Page Header -->
-    <div class="px-8 pt-8 pb-6 flex items-center justify-between shrink-0">
+    <div class="px-4 sm:px-8 pt-6 sm:pt-8 pb-6 flex flex-wrap items-center justify-between gap-4 shrink-0">
       <div class="flex items-center gap-4">
         <div class="h-12 w-12 rounded-full bg-gradient-to-br from-primary to-blue-400 text-on-accent flex items-center justify-center">
           <span class="material-symbols-outlined text-[28px]">swap_horiz</span>
@@ -77,13 +77,13 @@
     </div>
 
     <!-- Scrollable Content -->
-    <div class="flex-1 overflow-y-auto custom-scrollbar px-8 pb-8">
+    <div class="flex-1 min-w-0 overflow-y-auto custom-scrollbar px-4 sm:px-8 pb-8">
 
       <!-- In-Flight Migration Banner (M-03 / M-04) -->
       <div
         v-if="activeInFlightJob"
         data-testid="in-flight-migration-banner"
-        class="max-w-[900px] mx-auto mb-6 rounded-2xl border border-primary/30 bg-primary/5 dark:bg-primary/10 p-5 shadow-sm"
+        class="w-full mb-6 rounded-2xl border border-primary/30 bg-primary/5 dark:bg-primary/10 p-5 shadow-sm"
       >
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-3">
@@ -92,12 +92,12 @@
               <div class="flex items-center gap-2">
                 <span class="font-bold text-gray-900 dark:text-white">Active Migration in Progress</span>
                 <span class="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-primary/20 text-primary">
-                  {{ realProgress.percent }}%
+                  {{ realProgress.total > 0 ? `${realProgress.percent}%` : 'Waiting for total' }}
                 </span>
               </div>
               <p class="text-xs text-text-secondary mt-1">
                 {{ activeInFlightJob.source_service }} → {{ activeInFlightJob.destination_service }}:
-                {{ realProgress.current }} / {{ realProgress.total }} tracks
+                {{ realProgress.total > 0 ? `${realProgress.current} / ${realProgress.total} tracks` : 'Awaiting track count' }}
                 <template v-if="realProgress.eta && realProgress.eta !== 'calculating...'"> · ETA: {{ realProgress.eta }}</template>
                 <template v-if="realProgress.speed && realProgress.speed !== '—'"> · Speed: {{ realProgress.speed }} tracks/s</template>
               </p>
@@ -121,11 +121,11 @@
       </div>
 
       <!-- Transfer Wizard Card -->
-      <div class="transfer-wizard max-w-[900px] mx-auto">
+      <div class="transfer-wizard w-full min-w-0">
         <div class="bg-white dark:bg-surface-dark rounded-2xl border border-gray-200 dark:border-border-dark shadow-lg overflow-hidden">
 
           <!-- Assistant Mode Switch: direct service → service migration or the transfer wizard -->
-          <div class="assistant-mode px-8 pt-6 pb-1">
+          <div class="assistant-mode px-4 sm:px-8 pt-6 pb-1">
             <div class="inline-flex rounded-lg border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-1">
               <button
                 data-testid="mode-service-to-service"
@@ -160,7 +160,7 @@
           </div>
 
           <!-- Step Progress Indicator -->
-          <div class="step-progress px-8 py-6 border-b border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30">
+          <div class="step-progress px-4 sm:px-8 py-6 overflow-x-auto border-b border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30">
             <div class="flex items-center justify-between relative">
               <!-- Progress Line Background -->
               <div class="absolute top-5 left-0 right-0 h-0.5 bg-gray-200 dark:bg-gray-700"></div>
@@ -194,7 +194,7 @@
                 <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Select source service</h2>
                 <p class="text-text-secondary mb-8">Your saved tracks from this service are migrated to the destination you pick next</p>
 
-                <div class="service-grid grid grid-cols-3 gap-4">
+                <div class="service-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                   <button
                     v-for="service in sourceServices"
                     :key="service.id"
@@ -242,7 +242,7 @@
                 <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Transfer to...</h2>
                 <p class="text-text-secondary mb-8">Pick one destination service — the migration engine adds your saved tracks there</p>
 
-                <div class="service-grid grid grid-cols-3 gap-4">
+                <div class="service-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                   <button
                     v-for="service in destinationChoices"
                     :key="service.id"
@@ -311,7 +311,7 @@
 
                 <template v-else>
                   <!-- Summary Cards (real preview numbers) -->
-                  <div v-if="previewSummary.total !== null && previewSummary.total > 0" class="grid grid-cols-3 gap-4 mb-6">
+                  <div v-if="previewSummary.total !== null && previewSummary.total > 0" class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
                     <div class="p-4 rounded-xl bg-primary/5 border border-primary/20">
                       <div class="flex items-center gap-3">
                         <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -461,7 +461,7 @@
                 <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Select source service</h2>
                 <p class="text-text-secondary mb-8">Choose where to transfer from</p>
 
-                <div class="service-grid grid grid-cols-3 gap-4">
+                <div class="service-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                   <button
                     v-for="service in sourceServices"
                     :key="service.id"
@@ -541,7 +541,7 @@
                 <h2 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Transfer to...</h2>
                 <p class="text-text-secondary mb-8">Select one or more destination services (a separate migration runs for each)</p>
 
-                <div class="service-grid grid grid-cols-3 gap-4">
+                <div class="service-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                   <button
                     v-for="service in destinationChoices"
                     :key="service.id"
@@ -610,7 +610,7 @@
 
                 <template v-else>
                   <!-- Summary Cards (real preview numbers) -->
-                  <div v-if="previewSummary.total !== null && previewSummary.total > 0" class="grid grid-cols-3 gap-4 mb-6">
+                  <div v-if="previewSummary.total !== null && previewSummary.total > 0" class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
                     <div class="p-4 rounded-xl bg-primary/5 border border-primary/20">
                       <div class="flex items-center gap-3">
                         <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -752,13 +752,27 @@
 
               <!-- STEP 5: Transfer in Progress (shared panel, real progress events) -->
               <div v-else-if="currentStep === 4" key="step5" class="wizard-step">
+                <div class="mx-4 sm:mx-8 mt-5 rounded-xl border border-amber-400/40 bg-amber-400/5 p-4 text-sm text-gray-800 dark:text-gray-200" data-testid="transfer-safety-review">
+                  <p class="font-semibold">Destination review · no changes made yet</p>
+                  <p class="mt-2">Source: {{ getServiceName(sourceService) }} · account {{ sourceAccount ?? 'service-wide' }}</p>
+                  <p v-for="dest in destinationServices" :key="dest" class="mt-1">
+                    Destination: {{ getServiceName(dest) }} · account {{ destinationAccounts[dest] ?? 'default' }}
+                    · {{ previewedPairMatches(dest) ? `${previewSummary.total ?? 0} items previewed` : 'not previewed' }}
+                  </p>
+                  <p class="mt-2">Content selected: {{ selectedContent.join(', ') }}. The existing engine does not filter every content category independently; the preview is for its actual source selection.</p>
+                  <p v-if="destinationServices.length !== 1" class="mt-2 font-medium text-amber-700 dark:text-amber-300" data-testid="batch-blocked">Batch writes are disabled: each destination account needs a verified preview and explicit confirmation.</p>
+                  <label v-else class="mt-3 flex items-start gap-2 cursor-pointer">
+                    <input v-model="transferConfirmed" type="checkbox" data-testid="confirm-transfer" class="mt-1" :disabled="!previewedPairMatches(destinationServices[0])">
+                    <span>I confirm writing to this specific {{ getServiceName(destinationServices[0]) }} destination account {{ destinationAccounts[destinationServices[0]] ?? 'default' }} after reviewing its preview.</span>
+                  </label>
+                </div>
                 <MigrationTransferPanel
                   :started="transferStarted"
                   :complete="transferComplete"
                   :starting="migration.isStartingMigration.value"
                   :error="transferError"
                   :ready-description="`Click &quot;Start Transfer&quot; to begin migrating ${readyTrackCount} to ${destinationNames}.`"
-                  :ready-hint="destinationServices.length > 1 ? 'A separate migration job runs for each destination service.' : ''"
+                  :ready-hint="destinationServices.length > 1 ? 'Multiple destinations are preview-only until each account has its own verified dry run; no remote write will start.' : 'This preview covers one destination only. Confirm the account and service before starting.'"
                   :progress="realProgress"
                   :activity-log="activityLog"
                   @start="startTransfer"
@@ -800,7 +814,7 @@
       </div>
 
       <!-- Info Panel (Collapsible) -->
-      <div class="max-w-[900px] mx-auto mt-8">
+      <div class="w-full min-w-0 mt-8">
         <button @click="showInfoPanel = !showInfoPanel" class="w-full flex items-center justify-between px-6 py-4 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors">
           <div class="flex items-center gap-3">
             <span class="material-symbols-outlined text-primary">help_outline</span>
@@ -828,7 +842,7 @@
       </div>
 
       <!-- Migration History (M-07) -->
-      <div class="migration-history max-w-[900px] mx-auto mt-8">
+      <div class="migration-history w-full min-w-0 mt-8">
         <div class="flex items-center justify-between mb-4">
           <div>
             <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Migration History</h2>
@@ -908,7 +922,7 @@
       </div>
 
       <!-- Saved Migration Presets Section (M-01) -->
-      <div id="saved-templates" class="saved-templates max-w-[900px] mx-auto mt-8 mb-8">
+      <div id="saved-templates" class="saved-templates w-full min-w-0 mt-8 mb-8">
         <div class="flex items-center justify-between mb-4">
           <div>
             <h2 class="text-xl font-semibold text-gray-900 dark:text-white">Saved Migration Presets</h2>
@@ -926,7 +940,7 @@
           <p class="text-sm text-text-secondary">No migration presets saved yet. Configure a transfer in the wizard and save it here as a preset for quick reuse.</p>
         </div>
 
-        <div v-else class="grid grid-cols-3 gap-4">
+        <div v-else class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           <div
             v-for="template in backendTemplates"
             :key="template.id"
@@ -987,7 +1001,7 @@
             <!-- Modal Content -->
             <div class="p-6 overflow-y-auto max-h-[60vh]">
               <!-- Summary Stats -->
-              <div class="grid grid-cols-4 gap-4 mb-6">
+              <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
                 <div class="text-center p-4 bg-gray-50 dark:bg-surface-highlight/50 rounded-xl">
                   <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ selectedMigration?.totalCount }}</p>
                   <p class="text-xs text-text-secondary">Total Items</p>
@@ -1554,6 +1568,7 @@ const svcSteps = [
 
 /** Switch assistant mode; each mode keeps its own selection and progress. */
 function setAssistantMode(mode: AssistantMode): void {
+  transferConfirmed.value = false
   assistantMode.value = mode
 }
 
@@ -1774,6 +1789,12 @@ function toggleInfoItem(index: number) {
 const matchFilter = ref<'all' | 'matched' | 'review' | 'notfound'>('all')
 const skipNotFound = ref(false)
 const previewError = ref<string | null>(null)
+const transferConfirmed = ref(false)
+const previewedPair = ref<string | null>(null)
+const pairKey = (source: string, sourceAccountId: number | null, dest: string, destAccountId: number | null) =>
+  JSON.stringify([source, sourceAccountId, dest, destAccountId])
+const previewedPairMatches = (dest: string) =>
+  previewedPair.value !== null && previewedPair.value === pairKey(sourceService.value, sourceAccount.value, dest, destinationAccounts.value[dest] ?? null) && migration.previewResult.value !== null
 const visibleReviewCount = ref(25)
 
 const previewSummary = computed(() => {
@@ -1812,7 +1833,7 @@ const previewedDestinationName = computed(() =>
 const previewDescription = computed(() => {
   const base = `The preview really matches your ${getServiceName(sourceService.value)} tracks against ${previewedDestinationName.value} (ISRC and metadata search) without adding anything`
   if (destinationServices.value.length > 1) {
-    return `${base}. ${destinationNames.value} are all selected, so each additional destination is matched when its own migration runs.`
+    return `${base}. Only ${previewedDestinationName.value} has a dry run. The other selected destinations have no verified preview and cannot be started as a batch.`
   }
   return `${base}.`
 })
@@ -1820,6 +1841,9 @@ const previewDescription = computed(() => {
 /** Load the real preview from the backend when the wizard reaches step 4. */
 async function loadPreview(): Promise<void> {
   previewError.value = null
+  transferConfirmed.value = false
+  previewedPair.value = null
+  migration.previewResult.value = null
   const destination = destinationServices.value[0] || ''
   if (!accountSelectionValid(sourceService.value, sourceAccount.value) ||
       !accountSelectionValid(destination, destinationAccounts.value[destination] ?? null) ||
@@ -1832,6 +1856,7 @@ async function loadPreview(): Promise<void> {
     previewError.value = 'Could not load the match preview. Check that the destination service is connected and try again.'
     return
   }
+  previewedPair.value = pairKey(sourceService.value, sourceAccount.value, destination, destinationAccounts.value[destination] ?? null)
   await loadReviewItems(sourceService.value, destination)
 }
 
@@ -1923,8 +1948,12 @@ const readyTrackCount = computed(() => {
 })
 
 async function startTransfer(): Promise<void> {
-  if (!sourceService.value || !accountSelectionValid(sourceService.value, sourceAccount.value) || destinationServices.value.length === 0 ||
-      destinationServices.value.some(id => !accountSelectionValid(id, destinationAccounts.value[id] ?? null) || unsafeSameServicePair(id, sourceService.value, sourceAccount.value, destinationAccounts.value[id] ?? null))) return
+  if (!sourceService.value || !accountSelectionValid(sourceService.value, sourceAccount.value) || destinationServices.value.length !== 1 ||
+      destinationServices.value.some(id => !accountSelectionValid(id, destinationAccounts.value[id] ?? null) || unsafeSameServicePair(id, sourceService.value, sourceAccount.value, destinationAccounts.value[id] ?? null)) ||
+      !transferConfirmed.value || !previewedPairMatches(destinationServices.value[0])) {
+    transferError.value = 'No transfer started. Review a current dry run for exactly one destination account and confirm it explicitly.'
+    return
+  }
 
   transferError.value = null
   transferComplete.value = false
@@ -1938,7 +1967,7 @@ async function startTransfer(): Promise<void> {
     create_playlists: selectedContent.value.includes('playlists'),
   }
 
-  // The backend takes one destination per job: run one real migration per selected service.
+  // One verified account pair per job; a multi-destination batch has no atomic preview/confirm API.
   const failedDestinations: string[] = []
   for (const dest of destinationServices.value) {
     if (migration.progress.status === 'cancelled') break

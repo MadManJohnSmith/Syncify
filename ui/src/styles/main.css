@@ -2,10 +2,10 @@
 
 /* ==========================================================================
    Syncify — sistema de temas en runtime
-   Una capa de tokens semánticos + 4 skins. Cambiar data-theme en <html>
+   Una capa de tokens semánticos + 4 skins base y 6 paletas de servicio. Cambiar data-theme en <html>
    re-tematiza la app al vuelo: los colores van con @theme inline y las
    utilidades referencian variables, no valores.
-   Temas: camaleon (default) · tinta · consola · riso
+   Temas: tinta (default) · camaleon · consola · riso · servicios
    ========================================================================== */
 
 /* dark: sigue al tema de la app (los 3 oscuros), no al sistema operativo */
@@ -128,6 +128,51 @@
   --font-display: "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
   --shadow-card: 0 2px 0 rgba(20, 22, 26, 0.08);
   --shadow-pop: 0 16px 40px rgba(20, 22, 26, 0.16);
+}
+
+/* Paletas de servicio: superficie, tinta y acento propios, sin heredar
+   silenciosamente el camaleón (que usa un tono dinámico de carátula). */
+[data-theme="spotify"] {
+  --bg-base: #101713; --bg-shell: #0b110e; --surface-1: #19241c;
+  --surface-2: #263b2b; --border: #395440; --border-strong: #598466;
+  --text-1: #f2fff4; --text-2: #b2cdb8; --text-3: #829d89;
+  --accent: #1ed760; --accent-hover: #53ef85; --accent-soft: #1ed76025;
+  --on-accent: #06120a; --prog: #1ed760;
+}
+[data-theme="apple_music"] {
+  --bg-base: #171014; --bg-shell: #110d11; --surface-1: #261a22;
+  --surface-2: #382632; --border: #593b4c; --border-strong: #80546d;
+  --text-1: #fff2f6; --text-2: #d0abbc; --text-3: #a0788c;
+  --accent: #ff5574; --accent-hover: #ff8095; --accent-soft: #ff557426;
+  --on-accent: #23070d; --prog: #ff5574;
+}
+[data-theme="tidal"] {
+  --bg-base: #071619; --bg-shell: #061012; --surface-1: #10272b;
+  --surface-2: #1a3b40; --border: #30575e; --border-strong: #457b83;
+  --text-1: #eeffff; --text-2: #a9d3d7; --text-3: #739fa5;
+  --accent: #4bdbe6; --accent-hover: #83f0f3; --accent-soft: #4bdbe626;
+  --on-accent: #042124; --prog: #4bdbe6;
+}
+[data-theme="qobuz"] {
+  --bg-base: #0c1427; --bg-shell: #090f20; --surface-1: #172542;
+  --surface-2: #22365d; --border: #3c5582; --border-strong: #5774a9;
+  --text-1: #f1f5ff; --text-2: #afbfdf; --text-3: #8194b8;
+  --accent: #79a7ff; --accent-hover: #a4c5ff; --accent-soft: #79a7ff26;
+  --on-accent: #081736; --prog: #79a7ff;
+}
+[data-theme="deezer"] {
+  --bg-base: #181022; --bg-shell: #120c1b; --surface-1: #271a38;
+  --surface-2: #392650; --border: #59406f; --border-strong: #80609a;
+  --text-1: #faf2ff; --text-2: #cdb4de; --text-3: #a087b1;
+  --accent: #c488f7; --accent-hover: #dcacff; --accent-soft: #c488f726;
+  --on-accent: #220d32; --prog: #c488f7;
+}
+[data-theme="soundcloud"] {
+  --bg-base: #20140e; --bg-shell: #180f0b; --surface-1: #302017;
+  --surface-2: #493022; --border: #694832; --border-strong: #936447;
+  --text-1: #fff6ed; --text-2: #d9bca4; --text-3: #aa8971;
+  --accent: #ff8a3d; --accent-hover: #ffad73; --accent-soft: #ff8a3d26;
+  --on-accent: #2c1105; --prog: #ff8a3d;
 }
 
 /* ---------- puente Tailwind: utilidades de color → variables ---------- */
