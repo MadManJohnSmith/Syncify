@@ -135,11 +135,11 @@ jobs:
           Write-Host ">>> Descargando FFmpeg (win64)..."
           # Release fechada de BtbN pineada: "latest" es rolling y su hash cambia
           # con cada build, lo que rompe la verificación SHA-256 (fallo del 2026-10-03).
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-01-13-06/ffmpeg-N-127054-g9d3f0f2c58-win64-gpl.zip" -OutFile "ffmpeg.zip"
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-N-127021-ge0c94b2d1c-win64-gpl.zip" -OutFile "ffmpeg.zip"
           Write-Host ">>> Verificando integridad SHA-256 de FFmpeg..."
           $ffmpegHash = (Get-FileHash -Path "ffmpeg.zip" -Algorithm SHA256).Hash.ToLower()
           $knownFfmpegHashes = @(
-            "c1bb626bca84c6f471a04c13a90af68e406c631cf8f9ea2f1a141d4a71adcf52"
+            "85c4a4636b93d681a07588ffa6f1d8f5c064d9c3fb0622066662906b6fd718a1"
           )
           if ($knownFfmpegHashes -notcontains $ffmpegHash) {
             Remove-Item -Force "ffmpeg.zip"
