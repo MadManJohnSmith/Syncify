@@ -1123,14 +1123,20 @@ fn service_cap_from_preferences(raw: Option<&str>) -> Option<u8> {
     crate::commands::settings::service_max_quality_rank(raw)
 }
 
-/// Ordena candidatos con la MISMA política que ya usaba el preflight
-/// (`queue.rs:1154-1181` y `1259-1262`): `service_preferences.priority`, luego
-/// `quality_score`, luego `bit_depth`.
+/// Ordena candidatos con la matriz de fallback aprobada por el usuario:
+/// CALIDAD descendente primero (24-bit/hires → 16-bit/lossless → lossy), y
+/// dentro de la misma calidad, el orden de servicios configurado
+/// (`service_preferences.priority`), `quality_score` y `bit_depth`.
+/// La edición fijada (`locked_track_source_id`) sigue mandando por encima.
 fn rank_candidates(candidates: &mut [PlanCandidate]) {
     candidates.sort_by(|a, b| {
-        a.service_priority
-            .unwrap_or(999)
-            .cmp(&b.service_priority.unwrap_or(999))
+        b.candidate_tier
+            .cmp(&a.candidate_tier)
+            .then_with(|| {
+                a.service_priority
+                    .unwrap_or(999)
+                    .cmp(&b.service_priority.unwrap_or(999))
+            })
             .then_with(|| {
                 b.quality_score
                     .unwrap_or(0)
@@ -1188,8 +1194,12 @@ async fn build_candidates(
         if source_track_id.is_empty() {
             continue;
         }
+        // Con fallback permitido, el servicio solicitado ya no es un candado:
+        // todos los servicios descargables compiten y decide el orden
+        // (calidad descendente, luego `service_preferences.priority`). Con
+        // fallback prohibido la petición queda restringida a ese servicio.
         if let Some(ref requested) = intent.requested_service {
-            if !row.service_name.eq_ignore_ascii_case(requested) {
+            if !intent.allow_fallback && !row.service_name.eq_ignore_ascii_case(requested) {
                 continue;
             }
         }

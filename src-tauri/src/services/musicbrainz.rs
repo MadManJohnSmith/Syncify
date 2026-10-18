@@ -104,6 +104,8 @@ pub struct MusicBrainzGenre {
 pub struct MusicBrainzRecordingDetail {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub length: Option<u64>,
     pub genres: Option<Vec<MusicBrainzGenre>>,
     pub isrcs: Option<Vec<String>>,
 }
@@ -728,7 +730,7 @@ impl MusicBrainzClient {
         Ok(list)
     }
 
-    /// Get detailed recording info including genres and ISRCs
+    /// Get detailed recording info including genres, length and ISRCs
     pub async fn get_recording_details(
         &self,
         mbid: &str,
@@ -737,35 +739,43 @@ impl MusicBrainzClient {
             return Err("Empty MBID".to_string());
         }
 
-        self.rate_limit().await;
-
         let url = format!(
             "{}/recording/{}?inc=genres+isrcs&fmt=json",
             MUSICBRAINZ_API_BASE, mbid
         );
 
-        tracing::debug!("MusicBrainz detail lookup: {}", url);
+        let mut last_err = String::new();
+        for attempt in 1..=3u64 {
+            self.rate_limit().await;
+            tracing::debug!("MusicBrainz detail lookup (attempt {}): {}", attempt, url);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("MusicBrainz request failed: {}", e))?;
+            match self.client.get(&url).send().await {
+                Ok(response) if response.status().is_success() => {
+                    return response
+                        .json::<MusicBrainzRecordingDetail>()
+                        .await
+                        .map_err(|e| format!("Failed to parse MusicBrainz response: {}", e));
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    tracing::debug!("MusicBrainz error: {}", body);
+                    last_err = format!("MusicBrainz returned {}", status);
+                    if status.as_u16() != 503 && status.as_u16() != 429 && !status.is_server_error() {
+                        return Err(last_err);
+                    }
+                }
+                Err(e) => {
+                    last_err = format!("MusicBrainz request failed: {}", e);
+                }
+            }
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::debug!("MusicBrainz error: {}", body);
-            return Err(format!("MusicBrainz returned {}", status));
+            if attempt < 3 {
+                sleep(Duration::from_millis(1200 * attempt)).await;
+            }
         }
 
-        let data: MusicBrainzRecordingDetail = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse MusicBrainz response: {}", e))?;
-
-        Ok(data)
+        Err(last_err)
     }
 
     /// Search for an artist by name

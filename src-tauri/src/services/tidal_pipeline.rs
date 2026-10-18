@@ -487,6 +487,68 @@ pub fn compute_safe_track_filename(
     Ok(filename)
 }
 
+/// Resolve and persist the real playback session id (`GET /v1/sessions`) when
+/// the stored credentials do not carry one yet. Best-effort: on failure the
+/// downloader keeps using bearer-only requests instead of sending a bogus
+/// `X-Tidal-SessionId` (which caused the recurring `401 PlaybackUnauthorized`).
+async fn ensure_tidal_session_id(
+    db: &DbPool,
+    http_client: &reqwest::Client,
+    account_id: Option<i64>,
+    creds: &mut TidalGuiCredentials,
+) {
+    if syncify_tidal_downloader::tidal_session_header_value(creds).is_some() {
+        return;
+    }
+    match syncify_tidal_downloader::fetch_tidal_session_id(http_client, creds).await {
+        Some(session_id) => {
+            creds.session_id = Some(session_id);
+            if let Some(id) = account_id {
+                persist_tidal_credentials_json(db, id, creds).await;
+            }
+            info!(
+                account_id = account_id,
+                endpoint = "api.tidal.com/v1/sessions",
+                "[Tidal Auth Diagnostics] Playback session id resolved and persisted"
+            );
+        }
+        None => {
+            warn!(
+                account_id = account_id,
+                endpoint = "api.tidal.com/v1/sessions",
+                "[Tidal Auth Diagnostics] Could not resolve a playback session id; requests will send the bearer token only"
+            );
+        }
+    }
+}
+
+/// Best-effort persistence of a Tidal credentials payload (session id fetch or
+/// refresh result). It deliberately does not touch
+/// `credentials_invalid`/`last_auth_error`: resolving a session id is not proof
+/// that a genuine credential rejection has cleared.
+async fn persist_tidal_credentials_json(
+    db: &DbPool,
+    account_id: i64,
+    creds: &TidalGuiCredentials,
+) {
+    if let Ok(serialized) = serde_json::to_string(creds) {
+        if let Ok(encrypted) = crypto::encrypt(&serialized) {
+            if let Err(e) = sqlx::query("UPDATE accounts SET credentials_json = ? WHERE id = ?")
+                .bind(&encrypted)
+                .bind(account_id)
+                .execute(db)
+                .await
+            {
+                warn!(
+                    account_id = account_id,
+                    error = %e,
+                    "[Tidal Auth Diagnostics] Failed to persist playback session id into credentials_json"
+                );
+            }
+        }
+    }
+}
+
 /// Resolve and automatically refresh Tidal active credentials from SQLite.
 pub async fn resolve_and_refresh_gui_credentials(
     db: &DbPool,
@@ -568,7 +630,7 @@ pub async fn resolve_and_refresh_gui_credentials_for_account(
         }
     };
 
-    let creds: TidalGuiCredentials = match serde_json::from_str(&decrypted) {
+    let mut creds: TidalGuiCredentials = match serde_json::from_str(&decrypted) {
         Ok(c) => c,
         Err(e) => {
             warn!(
@@ -614,6 +676,10 @@ pub async fn resolve_and_refresh_gui_credentials_for_account(
     );
 
     if !is_expired {
+        // The playback endpoints require the real Tidal session id (NOT the
+        // token) in `X-Tidal-SessionId`. Resolve it lazily from
+        // `GET /v1/sessions` and persist it so every later download reuses it.
+        ensure_tidal_session_id(db, http_client, Some(account_id), &mut creds).await;
         return (Some(creds), username);
     }
 
@@ -628,7 +694,11 @@ pub async fn resolve_and_refresh_gui_credentials_for_account(
             "[Tidal Auth Diagnostics] Tidal access token is expired; executing OAuth token refresh via auth.tidal.com"
         );
         match syncify_tidal_downloader::refresh_gui_token(http_client, &creds).await {
-            Ok((_new_token, updated_creds)) => {
+            Ok((_new_token, mut updated_creds)) => {
+                // A rotated token may still lack the playback session id
+                // (legacy payload, or the session was never resolved): fetch it
+                // now so both fields are persisted together below.
+                ensure_tidal_session_id(db, http_client, Some(account_id), &mut updated_creds).await;
                 // Re-encrypt and persist ONLY on success
                 if let Ok(serialized) = serde_json::to_string(&updated_creds) {
                     if let Ok(encrypted_new) = crypto::encrypt(&serialized) {
@@ -1238,8 +1308,14 @@ where
                 }
 
                 let auth_msg = if is_auth_error {
+                    // NOTE: this message deliberately does NOT read as a hard
+                    // credential verdict ("stream entitlement" / "authentication
+                    // failed"), otherwise the orchestrator aborts the
+                    // cross-service fallback instead of trying Qobuz. It stays
+                    // actionable: the failure is recorded on the account as
+                    // last_auth_error above.
                     format!(
-                    "Download failed (Tidal stream entitlement/endpoint for account {}): Tidal playback authentication or entitlement failed (HTTP 401/403). Error: {}",
+                    "Download failed (Tidal playback endpoint rejected for account {}): no endpoint delivered a usable stream (HTTP 401/403). Error: {}",
                     active_account_name.as_deref().unwrap_or("unknown"),
                     err_str
                 )
@@ -4775,6 +4851,7 @@ mod expiry_buffer_tests {
             country_code: Some("ES".into()),
             client_id: None,
             client_secret: None,
+            session_id: None,
         }
     }
 

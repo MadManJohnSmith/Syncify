@@ -417,6 +417,22 @@ pub struct TidalMediaMetadata {
 #[derive(Debug, Deserialize)]
 pub struct TidalSearchResponse {
     pub tracks: Option<TidalSearchTracks>,
+    #[serde(default)]
+    pub items: Option<Vec<TidalTrack>>,
+}
+
+impl TidalSearchResponse {
+    /// Extract track items regardless of whether the payload came from
+    /// `/v1/search?types=TRACKS` (`{"tracks":{"items":[...]}}`) or
+    /// `/v1/search/tracks` (`{"items":[...]}`).
+    pub fn into_items(self) -> Vec<TidalTrack> {
+        if let Some(tracks) = self.tracks {
+            if !tracks.items.is_empty() {
+                return tracks.items;
+            }
+        }
+        self.items.unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -561,20 +577,36 @@ pub fn clean_title(title: &str) -> String {
 }
 
 pub fn title_matches(expected: &str, candidate: &str) -> bool {
-    let clean_exp = clean_title(expected).to_lowercase();
-    let clean_cand = clean_title(candidate).to_lowercase();
+    let clean_exp = clean_title(expected).to_lowercase().replace(" & ", " and ");
+    let clean_cand = clean_title(candidate).to_lowercase().replace(" & ", " and ");
     clean_exp == clean_cand || clean_cand.contains(&clean_exp) || clean_exp.contains(&clean_cand)
 }
 
 pub fn artist_matches(expected: &str, candidate: &str) -> bool {
     let exp_low = expected.to_lowercase();
     let cand_low = candidate.to_lowercase();
-    exp_low == cand_low || cand_low.contains(&exp_low) || exp_low.contains(&cand_low)
+    exp_low == cand_low || cand_low.contains(&exp_low) || clean_artist_parts_match(&exp_low, &cand_low)
+}
+
+fn clean_artist_parts_match(expected_lower: &str, found_lower: &str) -> bool {
+    if found_lower.contains(expected_lower) {
+        return true;
+    }
+    let sep = [',', ';', '&', '/', '|'];
+    for ep in expected_lower.split(&sep[..]).map(str::trim).filter(|s| !s.is_empty()) {
+        for fp in found_lower.split(&sep[..]).map(str::trim).filter(|s| !s.is_empty()) {
+            if ep == fp {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub fn score_tidal_release(track: &TidalTrack, expected_artist: &str) -> i32 {
     let alb_title = track.album.as_ref().map(|a| a.title.as_str()).unwrap_or("");
-    let perf_name = track.artist.as_ref().map(|a| a.name.as_str()).unwrap_or("");
+    let perf_owned = track.artist_name().unwrap_or_default();
+    let perf_name = perf_owned.as_str();
     let is_hires = track
         .audio_quality
         .as_deref()
