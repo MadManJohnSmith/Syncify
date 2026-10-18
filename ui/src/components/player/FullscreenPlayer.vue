@@ -115,7 +115,7 @@
       <!-- Main Body Container -->
       <main class="relative z-10 flex-1 grid grid-cols-1 lg:grid-cols-12 gap-8 p-6 lg:p-10 min-h-0 overflow-y-auto lg:overflow-hidden">
         <!-- Left Column: Artwork & Playback Transport -->
-        <section class="lg:col-span-5 flex flex-col justify-between max-w-lg mx-auto w-full min-h-0 space-y-6">
+        <section class="lg:col-span-5 flex flex-col justify-between max-w-2xl mx-auto w-full min-h-0 space-y-6">
           <!-- Artwork / Animated Cover Section (PL-04) -->
           <div class="flex flex-col items-center">
             <!-- Cover View Switcher (Animated vs Static HD) -->
@@ -148,19 +148,36 @@
             </div>
 
             <!-- Cover Box -->
+            <!-- UI-CORR-2: la carátula crece ~50% en cada breakpoint y queda
+                 completamente libre: la etiqueta de calidad vive FUERA de este
+                 contenedor (debajo), nunca encima del arte. -->
             <div
               data-testid="fullscreen-cover-container"
-              class="relative w-64 h-64 sm:w-80 sm:h-80 md:w-96 md:h-96 rounded-2xl overflow-hidden shadow-2xl border border-line/60 bg-surface flex items-center justify-center group"
+              class="relative w-full aspect-square max-w-[24rem] sm:max-w-[30rem] md:max-w-[36rem] rounded-2xl overflow-hidden shadow-2xl border border-line/60 bg-surface flex items-center justify-center group"
             >
-              <!-- Animated Cover (WebP / Video) -->
+              <!-- Animated Cover (WebP) -->
               <img
-                v-if="hasAnimatedCover && coverViewMode === 'animated'"
+                v-if="hasAnimatedCover && coverViewMode === 'animated' && !animatedCoverIsVideo"
                 :src="animatedCoverUrl!"
                 alt="Animated cover"
                 data-testid="animated-cover-img"
                 class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-                @error="onAnimatedCoverError"
+                @error="onAnimatedCoverError()"
               />
+
+              <!-- Animated Cover (MP4 sidecar: `animated_cover.mp4`) -->
+              <video
+                v-else-if="hasAnimatedCover && coverViewMode === 'animated'"
+                :src="animatedCoverUrl!"
+                data-testid="animated-cover-video"
+                class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                autoplay
+                loop
+                muted
+                playsinline
+                preload="metadata"
+                @error="onAnimatedCoverError"
+              ></video>
 
               <!-- Static HD Cover / Fallback (TrackCover) -->
               <template v-else>
@@ -181,16 +198,28 @@
                   rounded="rounded-2xl"
                 />
               </template>
+            </div>
 
-              <!-- Audio Quality Badge -->
-              <div
-                v-if="qualityBadge"
-                class="absolute bottom-3 left-3 bg-black/75 backdrop-blur-md px-2.5 py-1 rounded-md text-[11px] font-mono font-medium text-emerald-400 border border-emerald-500/30 shadow-lg flex items-center gap-1"
+            <!-- Audio Quality Badge: fuera de la carátula (nada la tapa) -->
+            <div
+              v-if="qualityBadge"
+              class="mt-3 flex flex-wrap items-center justify-center gap-2"
+            >
+              <span
+                class="bg-black/75 backdrop-blur-md px-2.5 py-1 rounded-md text-[11px] font-mono font-medium text-emerald-400 border border-emerald-500/30 shadow-lg flex items-center gap-1"
                 data-testid="audio-quality-badge"
+                :title="qualityBadgeTitle"
               >
                 <span class="material-symbols-outlined text-xs">graphic_eq</span>
                 <span>{{ qualityBadge }}</span>
-              </div>
+              </span>
+              <span
+                v-if="qualityBadgeSource"
+                class="px-2 py-1 rounded-md text-[10px] font-medium bg-surface border border-line text-text-secondary"
+                data-testid="audio-quality-source"
+              >
+                {{ qualityBadgeSource }}
+              </span>
             </div>
           </div>
 
@@ -454,6 +483,10 @@
                   <p class="font-medium text-ink truncate">{{ metadata?.artist_name || current?.artist || '—' }}</p>
                 </div>
                 <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                  <span class="text-text-secondary">Album Artist</span>
+                  <p class="font-medium text-ink truncate">{{ metadata?.album_artist || '—' }}</p>
+                </div>
+                <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
                   <span class="text-text-secondary">Album</span>
                   <p class="font-medium text-ink truncate">{{ metadata?.album_name || current?.album || '—' }}</p>
                 </div>
@@ -461,16 +494,37 @@
                   <span class="text-text-secondary">Track / Disc</span>
                   <p class="font-medium text-ink">
                     {{ metadata?.track_number ? `#${metadata.track_number}` : '—' }}
-                    {{ metadata?.disc_number ? `(Disc ${metadata.disc_number})` : '' }}
+                    <span v-if="metadata?.total_tracks" class="text-text-secondary">/ {{ metadata.total_tracks }}</span>
+                    {{ metadata?.disc_number ? `(Disc ${metadata.disc_number}${metadata?.total_discs ? `/${metadata.total_discs}` : ''})` : '' }}
                   </p>
                 </div>
                 <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
-                  <span class="text-text-secondary">Release Year</span>
-                  <p class="font-medium text-ink">{{ metadata?.release_year || '—' }}</p>
+                  <span class="text-text-secondary">Release Date</span>
+                  <p class="font-medium text-ink">{{ metadata?.release_date || metadata?.release_year || '—' }}</p>
                 </div>
                 <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
                   <span class="text-text-secondary">Genre</span>
                   <p class="font-medium text-ink truncate">{{ metadata?.genre || '—' }}</p>
+                </div>
+                <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                  <span class="text-text-secondary">Label</span>
+                  <p class="font-medium text-ink truncate">{{ metadata?.label || '—' }}</p>
+                </div>
+                <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                  <span class="text-text-secondary">Duration</span>
+                  <p class="font-mono text-ink">{{ formatDurationLabel(metadata?.duration_ms ?? durationSec * 1000) }}</p>
+                </div>
+                <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                  <span class="text-text-secondary">Explicit</span>
+                  <p class="font-medium text-ink">{{ metadata?.explicit === null || metadata?.explicit === undefined ? '—' : (metadata.explicit ? 'Yes' : 'No') }}</p>
+                </div>
+                <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                  <span class="text-text-secondary">Added from</span>
+                  <p class="font-medium text-ink truncate">{{ metadata?.imported_from || metadata?.downloaded_from || '—' }}</p>
+                </div>
+                <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                  <span class="text-text-secondary">Downloaded from</span>
+                  <p class="font-medium text-ink truncate">{{ metadata?.downloaded_from || '—' }}</p>
                 </div>
               </div>
 
@@ -484,15 +538,82 @@
                   </div>
                   <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
                     <span class="text-text-secondary">BPM</span>
-                    <p class="font-mono text-ink">{{ metadata?.bpm || '—' }}</p>
+                    <p class="font-mono text-ink">{{ metadata?.bpm ?? '—' }}</p>
+                    <span v-if="metadata?.tempo_source" class="text-[10px] text-ink-3 truncate">
+                      {{ metadata.tempo_source }}<template v-if="metadata?.tempo_confidence"> · {{ Math.round(metadata.tempo_confidence * 100) }}%</template>
+                    </span>
                   </div>
                   <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
                     <span class="text-text-secondary">Key</span>
                     <p class="font-mono text-ink">{{ metadata?.musical_key || '—' }}</p>
                   </div>
                   <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
-                    <span class="text-text-secondary">MusicBrainz ID</span>
+                    <span class="text-text-secondary">UPC / EAN</span>
+                    <p class="font-mono text-ink text-[11px] truncate select-all">{{ metadata?.upc || '—' }}</p>
+                  </div>
+                  <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                    <span class="text-text-secondary">Track MBID</span>
                     <p class="font-mono text-ink text-[11px] truncate select-all">{{ metadata?.musicbrainz_id || '—' }}</p>
+                  </div>
+                  <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                    <span class="text-text-secondary">Album MBID</span>
+                    <p class="font-mono text-ink text-[11px] truncate select-all">{{ metadata?.album_musicbrainz_id || '—' }}</p>
+                  </div>
+                  <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                    <span class="text-text-secondary">Release MBID</span>
+                    <p class="font-mono text-ink text-[11px] truncate select-all">{{ metadata?.musicbrainz_release_id || '—' }}</p>
+                  </div>
+                  <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                    <span class="text-text-secondary">File disambiguator</span>
+                    <p class="font-mono text-ink text-[11px] truncate">{{ metadata?.file_disambiguator || '—' }}</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Local file technical data (from the downloaded file row) -->
+              <div v-if="metadata?.file_path || metadata?.file_format">
+                <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Local File</h3>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                    <span class="text-text-secondary">Format</span>
+                    <p class="font-mono text-ink">{{ metadata?.file_format || '—' }}</p>
+                  </div>
+                  <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                    <span class="text-text-secondary">Bit depth</span>
+                    <p class="font-mono text-ink">{{ metadata?.bit_depth ? `${metadata.bit_depth}-bit` : '—' }}</p>
+                  </div>
+                  <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                    <span class="text-text-secondary">Sample rate</span>
+                    <p class="font-mono text-ink">{{ metadata?.sample_rate ? `${(metadata.sample_rate / 1000).toFixed(1)} kHz` : '—' }}</p>
+                  </div>
+                  <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                    <span class="text-text-secondary">File size</span>
+                    <p class="font-mono text-ink">{{ formatFileSize(metadata?.file_size_bytes) }}</p>
+                  </div>
+                  <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                    <span class="text-text-secondary">Downloaded at</span>
+                    <p class="font-mono text-ink">{{ formatTimestamp(metadata?.downloaded_at) }}</p>
+                  </div>
+                  <div class="p-3 rounded-xl bg-surface border border-line space-y-1">
+                    <span class="text-text-secondary">Cover type</span>
+                    <p class="font-mono text-ink">{{ coverKindLabel }}</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Raw container tags (read straight from the audio file) -->
+              <div v-if="fileTagEntries.length > 0">
+                <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
+                  Tags in file ({{ fileTagEntries.length }})
+                </h3>
+                <div class="p-3 rounded-xl bg-surface border border-line space-y-1.5">
+                  <div
+                    v-for="tag in fileTagEntries"
+                    :key="tag.key"
+                    class="flex items-start justify-between gap-4 border-b border-line/40 last:border-0 pb-1.5 last:pb-0"
+                  >
+                    <span class="font-mono text-[11px] text-text-secondary shrink-0 pt-0.5">{{ tag.key }}</span>
+                    <span class="font-mono text-[11px] text-ink text-right break-all select-all">{{ tag.value }}</span>
                   </div>
                 </div>
               </div>
@@ -549,6 +670,7 @@
               <div v-if="hasBooklet" class="flex items-center gap-2">
                 <button
                   @click="openBookletExternal"
+                  data-testid="booklet-open-external"
                   class="px-3 py-1 rounded-lg bg-surface hover:bg-elevated text-ink text-xs transition-colors flex items-center gap-1 border border-line"
                   title="Open in system viewer"
                 >
@@ -566,7 +688,27 @@
                   data-testid="booklet-iframe"
                   class="w-full flex-1 rounded-xl border border-line bg-surface"
                   title="Digital Booklet viewer"
+                  @load="bookletLoadFailed = false"
+                  @error="bookletLoadFailed = true"
                 ></iframe>
+                <!-- Fallback honesto: si el visor embebido no pinta el PDF
+                     (WebKit sin PDF.js, CSP estricta…), se dice y se ofrece
+                     abrirlo fuera en vez de dejar un iframe en blanco. -->
+                <div
+                  v-if="bookletLoadFailed"
+                  data-testid="booklet-viewer-fallback"
+                  class="mt-2 flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300"
+                >
+                  <span>
+                    The embedded viewer could not render this PDF. Open it with the system viewer.
+                  </span>
+                  <button
+                    @click="openBookletExternal"
+                    class="px-2.5 py-1 rounded-md bg-surface hover:bg-elevated text-ink transition-colors border border-line shrink-0"
+                  >
+                    Open Externally
+                  </button>
+                </div>
               </template>
 
               <!-- Booklet Not Found State -->
@@ -658,6 +800,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { usePlayer } from '../../composables/usePlayer'
 import { getTrackMetadata, type TrackMetadataWithSources } from '../../api/library'
+import { readTrackTags } from '../../api/metadata'
 import { getLyrics } from '../../api/lyrics'
 import type { Lyrics } from '../../api/types'
 import { invokeCommand } from '../../api/tauri'
@@ -702,15 +845,18 @@ const activeTab = ref<'lyrics' | 'metadata' | 'booklet' | 'queue'>('lyrics')
 const coverViewMode = ref<'animated' | 'hd'>('animated')
 const hasAnimatedCover = ref(false)
 const animatedCoverUrl = ref<string | null>(null)
+const animatedCoverIsVideo = ref(false)
 const hdCoverUrl = ref<string | null>(null)
 
 // Booklet
 const hasBooklet = ref(false)
 const bookletUrl = ref<string | null>(null)
 const bookletPath = ref<string | null>(null)
+const bookletLoadFailed = ref(false)
 
 // Metadata & Lyrics
 const metadata = ref<TrackMetadataWithSources | null>(null)
+const fileTags = ref<Record<string, string[]>>({})
 const lyrics = ref<Lyrics | null>(null)
 const lyricsLoading = ref(false)
 const isNativeFullscreen = ref(false)
@@ -752,17 +898,104 @@ watch(activeLyricIndex, (newIdx) => {
   }
 })
 
-// Audio Quality formatted badge
+// Audio Quality formatted badge.
+// Streaming wins: the honest label reflects what the engine really decodes
+// (the backend verifies the stream header and rejects 30 s previews), not what
+// the library row promised. Falls back to the best available source row.
+const streamQuality = player.streamQuality ?? ref(null)
+
 const qualityBadge = computed<string | null>(() => {
-  if (!metadata.value?.sources || metadata.value.sources.length === 0) return null
-  const src = metadata.value.sources[0]
-  const parts: string[] = []
-  if (src.format) parts.push(src.format)
-  if (src.bitDepth && src.sampleRate) {
-    parts.push(`${src.bitDepth}-bit / ${(src.sampleRate / 1000).toFixed(0)}kHz`)
+  const stream = streamQuality.value
+  if (stream?.qualityLabel) return stream.qualityLabel
+
+  const src = metadata.value?.sources?.[0]
+  if (src) {
+    const parts: string[] = []
+    if (src.format) parts.push(src.format)
+    if (src.bitDepth && src.sampleRate) {
+      parts.push(`${src.bitDepth}-bit / ${(src.sampleRate / 1000).toFixed(0)}kHz`)
+    }
+    if (parts.length > 0) return parts.join(' · ')
   }
-  return parts.length > 0 ? parts.join(' · ') : null
+
+  // No source rows (e.g. a bare streamed track): use the local file row.
+  if (metadata.value?.file_format) {
+    const bits: string[] = [metadata.value.file_format]
+    if (metadata.value.bit_depth && metadata.value.sample_rate) {
+      bits.push(
+        `${metadata.value.bit_depth}-bit / ${(metadata.value.sample_rate / 1000).toFixed(0)}kHz`,
+      )
+    }
+    return bits.join(' · ')
+  }
+  return null
 })
+
+const qualityBadgeTitle = computed(() =>
+  streamQuality.value
+    ? `Streaming from ${streamQuality.value.serviceName} · obtained quality (verified stream)`
+    : 'Best available source quality for this track',
+)
+
+const qualityBadgeSource = computed<string | null>(() => {
+  const stream = streamQuality.value
+  if (stream) {
+    const tier = stream.qualityTier
+    const tierLabel = tier === 'hires' ? 'Hi-Res' : tier === 'lossless' ? 'Lossless' : 'Lossy'
+    return `${stream.serviceName.toUpperCase()} · ${tierLabel}`
+  }
+  const src = metadata.value?.sources?.[0]
+  if (src?.serviceName) return src.serviceName.toUpperCase()
+  return metadata.value?.downloaded_from?.toUpperCase() ?? null
+})
+
+const coverKindLabel = computed<string>(() => {
+  if (animatedCoverUrl.value && hasAnimatedCover.value) {
+    return animatedCoverIsVideo.value ? 'Animated (MP4)' : 'Animated (WebP)'
+  }
+  if (metadata.value?.hd_cover_path) return 'Static (sidecar)'
+  if (metadata.value?.file_path) return 'Embedded (audio file)'
+  return metadata.value?.cover_art_url ? 'Remote artwork' : '—'
+})
+
+const fileTagEntries = computed<Array<{ key: string; value: string }>>(() => {
+  const entries: Array<{ key: string; value: string }> = []
+  for (const key of Object.keys(fileTags.value).sort()) {
+    const values = fileTags.value[key]
+    if (!Array.isArray(values) || values.length === 0) continue
+    entries.push({ key, value: values.join(' / ') })
+  }
+  return entries
+})
+
+function formatDurationLabel(ms: number | null | undefined): string {
+  if (!ms || !Number.isFinite(ms) || ms <= 0) return '—'
+  const totalSec = Math.round(ms / 1000)
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  return h > 0
+    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`
+}
+
+function formatFileSize(bytes: number | null | undefined): string {
+  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return '—'
+  const mb = bytes / (1024 * 1024)
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`
+}
+
+function formatTimestamp(value: string | null | undefined): string {
+  if (!value) return '—'
+  // SQLite CURRENT_TIMESTAMP is `YYYY-MM-DD HH:MM:SS` (UTC); Date parses it.
+  const date = new Date(value.includes('T') ? value : value.replace(' ', 'T') + 'Z')
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
+
+function isVideoPath(path: string | null | undefined): boolean {
+  return !!path && /\.(mp4|m4v|webm|mov)$/i.test(path)
+}
 
 function formatClockTime(sec: number): string {
   if (!Number.isFinite(sec) || sec <= 0) return '0:00'
@@ -787,72 +1020,165 @@ function getAlbumDirectory(filePath: string): string {
   return lastIdx >= 0 ? filePath.substring(0, lastIdx) : ''
 }
 
-// Fetch metadata, lyrics, and check sidecars (booklet, animated cover)
+/**
+ * Turns a backend filesystem path into a URL the webview actually PAINTS.
+ *
+ * Why not `convertFileSrc` directly: on Linux/WebKitGTK a custom scheme
+ * (`asset://…`) answers `fetch()` with 200 and the right `Content-Type`, but the
+ * same URL used as a subresource (`<img>`, `<iframe>`, `<video>`) fails — the
+ * webview refuses to display custom-scheme resources loaded from an http(s)
+ * page. Fetching the bytes and wrapping them in a `blob:` URL is portable
+ * (WebKitGTK, WebView2, WKWebView) and keeps animation/PDF/video intact. The
+ * `asset://` URL is still returned as a fallback when the fetch fails.
+ *
+ * Object URLs are cached per path and revoked when the track changes to keep
+ * memory bounded (a booklet can be tens of MB).
+ */
+const sidecarObjectUrls = new Map<string, string>()
+
+function revokeSidecarUrls(): void {
+  for (const url of sidecarObjectUrls.values()) {
+    try {
+      URL.revokeObjectURL(url)
+    } catch {
+      /* not a blob URL: nothing to revoke */
+    }
+  }
+  sidecarObjectUrls.clear()
+}
+
+async function displayableUrl(path: string | null | undefined): Promise<string | null> {
+  if (!path) return null
+  const cached = sidecarObjectUrls.get(path)
+  if (cached) return cached
+
+  const assetUrl = convertFileSrc(path)
+  try {
+    const response = await fetch(assetUrl)
+    if (!response.ok) return assetUrl
+    const blob = await response.blob()
+    const objectUrl = URL.createObjectURL(blob)
+    sidecarObjectUrls.set(path, objectUrl)
+    return objectUrl
+  } catch {
+    // Environments without the asset protocol (unit tests, plain browser):
+    // keep the original URL so callers can still decide what to do.
+    return assetUrl
+  }
+}
+
+// Fetch metadata, lyrics, sidecar paths and raw file tags for the current track.
+//
+// Sidecar discovery (booklet PDF, animated WebP/MP4, HD cover) now happens in
+// the backend (`fetch_track_metadata`) against the real filesystem: the webview
+// only receives absolute paths that exist. That removes the old `fetch(HEAD)`
+// probe, which could never work because the asset protocol only answers GET.
+// The legacy probes below stay as a best-effort fallback for environments that
+// do not provide the new fields (older mocks, remote artwork only).
 async function loadCurrentTrackDetails() {
   if (!current.value) {
     metadata.value = null
     lyrics.value = null
+    fileTags.value = {}
     hasBooklet.value = false
     bookletUrl.value = null
+    bookletPath.value = null
+    bookletLoadFailed.value = false
     hasAnimatedCover.value = false
     animatedCoverUrl.value = null
+    animatedCoverIsVideo.value = false
     hdCoverUrl.value = null
     return
   }
 
   const trackId = current.value.id
+  revokeSidecarUrls()
   try {
     const [metaResult, lyrResult] = await Promise.all([
       getTrackMetadata(trackId).catch(() => null),
       getLyrics(trackId).catch(() => null),
     ])
 
+    // A slower response from a previous track must not overwrite this one.
+    if (current.value?.id !== trackId) return
+
     metadata.value = metaResult
     lyrics.value = lyrResult
+    bookletLoadFailed.value = false
 
-    // Check files beside audio file
-    if (metaResult?.file_path) {
+    // 1. Digital booklet: authoritative path from the backend.
+    if (metaResult?.booklet_path) {
+      bookletPath.value = metaResult.booklet_path
+      bookletUrl.value = await displayableUrl(metaResult.booklet_path)
+      hasBooklet.value = Boolean(bookletUrl.value)
+    } else if (metaResult?.file_path) {
       const sep = metaResult.file_path.includes('\\') ? '\\' : '/'
       const albumDir = getAlbumDirectory(metaResult.file_path)
+      bookletPath.value = `${albumDir}${sep}booklet.pdf`
+      bookletUrl.value = null
+      hasBooklet.value = false
+    } else {
+      bookletPath.value = null
+      bookletUrl.value = null
+      hasBooklet.value = false
+    }
 
-      // 1. Digital Booklet (.pdf)
-      const potentialBookletPath = `${albumDir}${sep}booklet.pdf`
-      bookletPath.value = potentialBookletPath
-      const potentialBookletUrl = convertFileSrc(potentialBookletPath)
-      bookletUrl.value = potentialBookletUrl
-
-      // Probe booklet presence
-      try {
-        const resp = await fetch(potentialBookletUrl, { method: 'HEAD' })
-        hasBooklet.value = resp.ok
-      } catch {
-        // If fetch HEAD fails or in mock test env, assume booklet exists if test mock dictates
-        hasBooklet.value = false
-      }
-
-      // 2. Animated Cover (.webp / .animated.webp)
+    // 2. Animated cover: WebP (`cover.animated.webp`, `animated.webp`, or an
+    //    animated `cover.webp`) or the `animated_cover.mp4` sidecar.
+    if (metaResult?.animated_cover_path) {
+      animatedCoverUrl.value = await displayableUrl(metaResult.animated_cover_path)
+      animatedCoverIsVideo.value = isVideoPath(metaResult.animated_cover_path)
+      hasAnimatedCover.value = Boolean(animatedCoverUrl.value)
+      coverViewMode.value = 'animated'
+    } else if (metaResult?.file_path) {
+      const sep = metaResult.file_path.includes('\\') ? '\\' : '/'
+      const albumDir = getAlbumDirectory(metaResult.file_path)
       const potentialAnimPath = `${albumDir}${sep}cover.webp`
       const potentialAnimUrl = convertFileSrc(potentialAnimPath)
       animatedCoverUrl.value = potentialAnimUrl
+      animatedCoverIsVideo.value = false
+      hasAnimatedCover.value = false
 
-      // 3. HD Static Cover
-      hdCoverUrl.value = metaResult.cover_art_url || convertFileSrc(`${albumDir}${sep}cover.jpg`)
-
-      // Test animated cover via Image probe
+      // Fallback probe for environments without backend sidecar discovery.
       if (typeof Image !== 'undefined') {
         const testImg = new Image()
         testImg.onload = () => {
-          hasAnimatedCover.value = true
+          if (current.value?.id === trackId) {
+            hasAnimatedCover.value = true
+            coverViewMode.value = 'animated'
+          }
         }
         testImg.onerror = () => {
-          hasAnimatedCover.value = false
+          if (current.value?.id === trackId) hasAnimatedCover.value = false
         }
         testImg.src = potentialAnimUrl
       }
     } else {
-      hdCoverUrl.value = metaResult?.cover_art_url || current.value.coverUrl || null
+      animatedCoverUrl.value = null
+      animatedCoverIsVideo.value = false
       hasAnimatedCover.value = false
-      hasBooklet.value = false
+    }
+
+    // 3. Static HD cover: local sidecar first, then the remote artwork URL,
+    //    then whatever the queue projection already had.
+    if (metaResult?.hd_cover_path) {
+      hdCoverUrl.value = await displayableUrl(metaResult.hd_cover_path)
+    } else {
+      hdCoverUrl.value =
+        metaResult?.cover_art_url || current.value.coverUrl || null
+    }
+
+    // 4. Raw container tags (only for downloaded files; honest failure = empty).
+    fileTags.value = {}
+    if (metaResult?.file_path) {
+      try {
+        const snapshot = await readTrackTags(trackId)
+        if (current.value?.id === trackId) {
+          fileTags.value = snapshot?.all_tags ?? {}
+        }
+      } catch {
+        fileTags.value = {}
+      }
     }
   } catch (err) {
     console.warn('[FullscreenPlayer] Error loading track details:', err)
@@ -887,7 +1213,23 @@ async function refreshLyrics() {
   }
 }
 
-function openBookletExternal() {
+/**
+ * Opens the booklet with the system's default PDF viewer.
+ *
+ * `window.open` on an `asset:` URL is unreliable (the webview is expected to
+ * navigate to a non-http scheme), so the native command is the primary route.
+ * The `window.open` fallback keeps the button useful in environments where the
+ * command is unavailable (dev web preview, tests).
+ */
+async function openBookletExternal() {
+  const path = bookletPath.value
+  if (!path) return
+  try {
+    await invokeCommand('open_local_sidecar', { path })
+    return
+  } catch (err) {
+    console.warn('[FullscreenPlayer] open_local_sidecar failed, falling back:', err)
+  }
   if (bookletUrl.value && typeof window !== 'undefined') {
     window.open(bookletUrl.value, '_blank')
   }
@@ -944,6 +1286,7 @@ onUnmounted(() => {
   if (typeof window !== 'undefined') {
     window.removeEventListener('keydown', handleKeydown)
   }
+  revokeSidecarUrls()
 })
 </script>
 

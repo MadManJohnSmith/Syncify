@@ -4,17 +4,17 @@
  *
  * Singleton driven by the native engine (`syncify-player` in Rust,
  * rodio + symphonia) through the typed transport in `api/player.ts`: the
- * backend command `resolve_playback_source` verifies the track has a
- * downloaded file and the engine loads and plays it. The legacy HTML5 Audio
- * + `syncify-media://` path was removed after Fase 0 proved the WebKitGTK
+ * backend command `player_load_track` picks the downloaded file when it
+ * exists and otherwise resolves a progressive Qobuz/Tidal stream (Fase 2;
+ * the URL never leaves the backend). The legacy HTML5 Audio +
+ * `syncify-media://` path was removed after Fase 0 proved the WebKitGTK
  * media engine cannot consume custom-scheme audio (see
- * `docs/auditoria/playback-fase0-evidencia-2026-10-17.md`). Provider
- * streaming is still out of scope.
+ * `docs/auditoria/playback-fase0-evidencia-2026-10-17.md`).
  *
  * Phase rules:
  * - Restoring after a restart ALWAYS resolves again with
- *   `resolve_playback_source`: localStorage never stores `file_path`, the
- *   full track DTO, or engine state. The engine loads the file paused at the
+ *   `player_load_track`: localStorage never stores `file_path`, the full
+ *   track DTO, or engine state. The engine loads the track paused at the
  *   saved position.
  * - Listen crediting uses 30 s of real playback accumulated per
  *   tick; never `position >= 30`. The restored position does not credit
@@ -25,13 +25,13 @@
  *   track is discarded.
  */
 import { computed, ref } from 'vue'
-import { invokeCommand } from '../api/tauri'
 import { getTrackMetadata, recordLocalPlay, type TrackMetadataWithSources } from '../api/library'
 import {
     onMprisAction,
     onPlayerEnded,
+    onPlayerStreamState,
     onPlayerTick,
-    playerLoad,
+    playerLoadTrack,
     playerMprisUpdate,
     playerPause,
     playerResume,
@@ -40,6 +40,7 @@ import {
     playerSetVolume,
     playerStop,
     type PlayerEngineState,
+    type PlayerStreamQuality,
 } from '../api/player'
 
 /**
@@ -74,12 +75,6 @@ export interface PendingListen {
     trackId: number;
     listenSessionId: string;
     attempts: number;
-}
-
-interface PlaybackSource {
-    track_id: number;
-    file_path: string;
-    format?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +185,12 @@ const durationSec = ref(0);
 const playbackRate = ref(1);
 const error = ref<string | null>(null);
 const isLoadingSource = ref(false);
+/** Streaming: pausa por buffer (el motor espera a que la descarga avance). */
+const isBuffering = ref(false);
+/** Calidad realmente en reproducción (etiqueta honesta), si es streaming. */
+const streamQuality = ref<PlayerStreamQuality | null>(null);
+/** Error de descarga del stream (se limpia en la siguiente carga). */
+const streamError = ref<string | null>(null);
 
 // PL-09 / PL-10: Fullscreen / expanded player state and actions
 const isFullscreenOpen = ref(false);
@@ -642,8 +643,13 @@ function bindEngineEvents(): void {
     void onPlayerTick(tick => {
         // Stale events from an already replaced track are discarded.
         if (tick.seq !== engineSeq) return;
+        const wasPlaying = isPlaying.value;
         engineState = tick.state;
-        isPlaying.value = tick.state === 'playing';
+        // Pausa por buffer: el motor está pausado pero la intención del usuario
+        // sigue siendo reproducir. Un pause manual (isPlaying ya `false`) no se
+        // revierte con ticks posteriores.
+        isPlaying.value = tick.state === 'playing'
+            || (tick.state === 'paused' && isBuffering.value && wasPlaying);
         positionSec.value = tick.positionSec;
         if (tick.durationSec !== null && tick.durationSec > 0) {
             durationSec.value = tick.durationSec;
@@ -652,6 +658,18 @@ function bindEngineEvents(): void {
         updateMediaSessionPosition();
     }).catch((err: unknown) => {
         console.warn(`[player] could not subscribe to player:tick: ${messageOf(err)}`);
+    });
+    void onPlayerStreamState(state => {
+        if (state.seq !== engineSeq) return;
+        isBuffering.value = state.buffering;
+        streamError.value = state.error ?? null;
+        streamQuality.value = {
+            serviceName: state.serviceName,
+            qualityLabel: state.qualityLabel,
+            qualityTier: state.qualityTier,
+        };
+    }).catch((err: unknown) => {
+        console.warn(`[player] could not subscribe to player:stream-state: ${messageOf(err)}`);
     });
     void onPlayerEnded(seq => {
         if (seq !== engineSeq) return;
@@ -746,13 +764,21 @@ async function ensureProjection(entry: PlaybackQueueEntry): Promise<ProjectionRe
  */
 async function resolveAndPlay(track: PlayerTrack, gen: number): Promise<'played' | 'failed' | 'aborted'> {
     isLoadingSource.value = true;
+    streamQuality.value = null;
+    streamError.value = null;
+    isBuffering.value = false;
     try {
-        const src = await invokeCommand<PlaybackSource>('resolve_playback_source', { trackId: track.id });
-        if (gen !== transitionGen) return 'aborted';
-        const result = await playerLoad(src.file_path, true, effectiveEngineVolume());
+        const result = await playerLoadTrack(track.id, true, effectiveEngineVolume());
         if (gen !== transitionGen) return 'aborted';
         engineSeq = result.seq;
-        loadedPath = src.file_path;
+        loadedPath = result.stream ? `stream:${track.id}` : `track:${track.id}`;
+        streamQuality.value = result.stream
+            ? {
+                serviceName: result.stream.serviceName,
+                qualityLabel: result.stream.qualityLabel,
+                qualityTier: result.stream.qualityTier,
+            }
+            : null;
         engineState = 'playing';
         isPlaying.value = true;
         setMediaSessionPlaybackState('playing');
@@ -1083,6 +1109,9 @@ function stop(): void {
     positionSec.value = 0;
     durationSec.value = 0;
     error.value = null;
+    isBuffering.value = false;
+    streamQuality.value = null;
+    streamError.value = null;
     queue.value = [];
     baseOrder = [];
     history.value = [];
@@ -1170,10 +1199,10 @@ let restoreStarted = false;
 /**
  * Restores the persisted state. It is only invoked explicitly (the status bar player
  * on mount); importing the module touches no localStorage and fires no invokes.
- * Resolves `resolve_playback_source` again (never reuses grants or paths) and
- * loads the file into the engine PAUSED at the saved position: reading the
- * saved state plays nothing and the restored position does not credit
- * previous listening time.
+ * Resolves the source again with `player_load_track` (never reuses paths or
+ * stream URLs) and loads it into the engine PAUSED at the saved position:
+ * reading the saved state plays nothing and the restored position does not
+ * credit previous listening time.
  */
 async function restoreFromPersistence(): Promise<void> {
     if (restoreStarted) return;
@@ -1205,12 +1234,19 @@ async function restoreFromPersistence(): Promise<void> {
         const meta = await getTrackMetadata(saved.currentTrackId);
         if (gen !== transitionGen) return;
         const track = projectMetadata(meta);
-        const src = await invokeCommand<PlaybackSource>('resolve_playback_source', { trackId: saved.currentTrackId });
-        if (gen !== transitionGen) return;
-        const result = await playerLoad(src.file_path, false, effectiveEngineVolume());
+        const result = await playerLoadTrack(saved.currentTrackId, false, effectiveEngineVolume());
         if (gen !== transitionGen) return;
         engineSeq = result.seq;
-        loadedPath = src.file_path;
+        loadedPath = result.stream ? `stream:${track.id}` : `track:${track.id}`;
+        streamQuality.value = result.stream
+            ? {
+                serviceName: result.stream.serviceName,
+                qualityLabel: result.stream.qualityLabel,
+                qualityTier: result.stream.qualityTier,
+            }
+            : null;
+        streamError.value = null;
+        isBuffering.value = false;
         engineState = 'paused';
         const maxPos = result.durationSec !== null && result.durationSec > 0 ? result.durationSec : saved.positionSec;
         const pos = Math.min(saved.positionSec, maxPos);
@@ -1244,6 +1280,7 @@ export function usePlayer() {
     return {
         // Previous state (surface unchanged)
         current, isPlaying, positionSec, durationSec, playbackRate, error, isLoadingSource,
+        isBuffering, streamQuality, streamError,
         upNext,
         // New state (phase 1)
         queue, history, shuffle, repeat, volume, muted, pendingListens,

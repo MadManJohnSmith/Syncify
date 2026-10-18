@@ -18,6 +18,7 @@ vi.mock('../../api/tauri', () => ({
 
 vi.mock('../../api/player', () => ({
     playerLoad: vi.fn(),
+    playerLoadTrack: vi.fn(),
     playerPause: vi.fn(),
     playerResume: vi.fn(),
     playerStop: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('../../api/player', () => ({
     playerSetVolume: vi.fn(),
     playerSetRate: vi.fn(),
     onPlayerTick: vi.fn(),
+    onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
@@ -55,8 +57,8 @@ function engine(): ReturnType<typeof vi.mocked<PlayerModule>> {
 
 function configureEngineMocks(): void {
     seq = 0;
-    engine().playerLoad.mockReset().mockImplementation(() =>
-        Promise.resolve({ seq: ++seq, durationSec: 200 }));
+    engine().playerLoadTrack.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 200, stream: null }));
     engine().playerPause.mockReset().mockResolvedValue(undefined);
     engine().playerResume.mockReset().mockResolvedValue(undefined);
     engine().playerStop.mockReset().mockResolvedValue(undefined);
@@ -67,6 +69,7 @@ function configureEngineMocks(): void {
         tickCb = cb;
         return Promise.resolve(() => {});
     });
+    engine().onPlayerStreamState.mockReset().mockResolvedValue(() => {});
     engine().onPlayerEnded.mockReset().mockResolvedValue(() => {});
 }
 
@@ -120,7 +123,7 @@ describe('usePlayer — persistencia y restauración (fase 1)', () => {
     it('importar el módulo no dispara invokes ni reproducción (restauración perezosa)', async () => {
         await freshPlayer();
         expect(mockInvoke()).not.toHaveBeenCalled();
-        expect(engine().playerLoad).not.toHaveBeenCalled();
+        expect(engine().playerLoadTrack).not.toHaveBeenCalled();
     });
 
     it('restaura track/cola/posición/modos PAUSADO, proyectando sin file_path', async () => {
@@ -150,9 +153,6 @@ describe('usePlayer — persistencia y restauración (fase 1)', () => {
                     sources: [],
                 });
             }
-            if (cmd === 'resolve_playback_source') {
-                return Promise.resolve({ track_id: 7, file_path: '/lib/a.flac' });
-            }
             return Promise.resolve(null);
         });
 
@@ -160,9 +160,8 @@ describe('usePlayer — persistencia y restauración (fase 1)', () => {
         await flushPromises();
 
         expect(mockInvoke()).toHaveBeenCalledWith('get_track_metadata', { trackId: 7 });
-        expect(mockInvoke()).toHaveBeenCalledWith('resolve_playback_source', { trackId: 7 });
         // Cargado en PAUSA (autoplay=false) y con el volumen efectivo (muted → 0).
-        expect(engine().playerLoad).toHaveBeenCalledWith('/lib/a.flac', false, 0);
+        expect(engine().playerLoadTrack).toHaveBeenCalledWith(7, false, 0);
         expect(engine().playerSeek).toHaveBeenCalledWith(42.5);
         // Proyección estricta: sin file_path ni DTO completo.
         expect(player.current.value).toEqual({
@@ -192,7 +191,6 @@ describe('usePlayer — persistencia y restauración (fase 1)', () => {
             if (cmd === 'get_track_metadata') {
                 return Promise.resolve({ track_id: 7, title: 'Song', artist_name: 'Artist', album_name: null, cover_art_url: null, file_path: '/lib/a.flac' });
             }
-            if (cmd === 'resolve_playback_source') return Promise.resolve({ track_id: 7, file_path: '/lib/a.flac' });
             if (cmd === 'record_local_play') return Promise.resolve({ track_id: 7, play_count: 1, last_played: null, counted: true });
             return Promise.resolve(null);
         });
@@ -237,8 +235,7 @@ describe('usePlayer — persistencia y restauración (fase 1)', () => {
 
         expect(player.current.value).toBeNull();
         expect(player.queue.value.map(e => e.trackId)).toEqual([2]);
-        expect(mockInvoke().mock.calls.some(c => c[0] === 'resolve_playback_source')).toBe(false);
-        expect(engine().playerLoad).not.toHaveBeenCalled();
+        expect(engine().playerLoadTrack).not.toHaveBeenCalled();
     });
 
     it('estado corrupto o de versión desconocida se descarta completo sin bloquear', async () => {
@@ -287,12 +284,6 @@ describe('usePlayer — persistencia y restauración (fase 1)', () => {
 
     it('la clave persistida nunca contiene file_path, URLs de archivo ni el DTO completo', async () => {
         const player = (await freshPlayer()).usePlayer();
-        mockInvoke().mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-            if (cmd === 'resolve_playback_source') {
-                return Promise.resolve({ track_id: args?.trackId, file_path: `/lib/secret-${args?.trackId}.flac` });
-            }
-            return Promise.resolve(null);
-        });
         await player.play({ id: 7, title: 'Song', artist: 'Artist' });
         await player.enqueue({ id: 8, title: 'Other', artist: 'Artist' });
 
@@ -323,7 +314,6 @@ describe('usePlayer — persistencia y restauración (fase 1)', () => {
                 if (args?.trackId === 999) return Promise.reject(new Error('El track 999 no existe en la biblioteca'));
                 return Promise.resolve({ track_id: 5, title: 'Five', artist_name: 'Artist', album_name: null, cover_art_url: null, file_path: '/lib/5.flac' });
             }
-            if (cmd === 'resolve_playback_source') return Promise.resolve({ track_id: 5, file_path: '/lib/5.flac' });
             return Promise.resolve(null);
         });
 
@@ -336,17 +326,14 @@ describe('usePlayer — persistencia y restauración (fase 1)', () => {
         await flushPromises();
 
         const tracked = mockInvoke().mock.calls.map(c => `${c[0]}:${(c[1] as Record<string, unknown> | undefined)?.trackId}`);
-        expect(tracked).toEqual(['get_track_metadata:999', 'get_track_metadata:5', 'resolve_playback_source:5']);
+        expect(tracked).toEqual(['get_track_metadata:999', 'get_track_metadata:5']);
+        expect(engine().playerLoadTrack).toHaveBeenLastCalledWith(5, true, 1);
         expect(player.current.value?.id).toBe(5);
         expect(player.queue.value).toHaveLength(0);
     });
 
     it('visibilitychange (hidden) persiste el estado', async () => {
         const player = (await freshPlayer()).usePlayer();
-        mockInvoke().mockImplementation((cmd: string) => {
-            if (cmd === 'resolve_playback_source') return Promise.resolve({ track_id: 7, file_path: '/lib/7.flac' });
-            return Promise.resolve(null);
-        });
         await player.play({ id: 7, title: 'Song', artist: 'Artist' });
         localStorage.removeItem(KEY);
 

@@ -29,6 +29,50 @@ export interface PlayerLoadResult {
     durationSec: number | null;
 }
 
+/**
+ * Calidad realmente obtenida al resolver una fuente de streaming.
+ * `qualityLabel` es la etiqueta honesta que debe mostrar la UI: refleja lo
+ * obtenido (p. ej. `FLAC 16 bits / 44.1 kHz`), no lo pedido.
+ */
+export interface PlayerStreamInfo {
+    serviceName: string;
+    serviceTrackId: string;
+    format: string;
+    codec: string | null;
+    container: string | null;
+    extension: string;
+    bitDepth: number | null;
+    sampleRate: number | null;
+    qualityLabel: string;
+    qualityTier: string;
+    sourceName: string;
+}
+
+/** Subconjunto de la calidad para badges/indicadores de la UI. */
+export interface PlayerStreamQuality {
+    serviceName: string;
+    qualityLabel: string;
+    qualityTier: string;
+}
+
+/** Resultado de `player_load_track` (local o streaming). */
+export interface PlayerTrackLoadResult extends PlayerLoadResult {
+    /** `null` cuando la pista se reprodujo desde un archivo local. */
+    stream: PlayerStreamInfo | null;
+}
+
+/** Payload de `player:stream-state` (backend camelCase). */
+export interface PlayerStreamState extends PlayerStreamQuality {
+    seq: number;
+    trackId: number;
+    buffering: boolean;
+    downloadedBytes: number;
+    totalBytes: number | null;
+    complete: boolean;
+    pendingSeekSec: number | null;
+    error: string | null;
+}
+
 interface RawTick {
     seq: number;
     state: PlayerEngineState;
@@ -39,11 +83,33 @@ interface RawTick {
 interface RawLoadResult {
     seq: number;
     duration_sec: number | null;
+    stream?: PlayerStreamInfo | null;
 }
 
 export function playerLoad(path: string, autoplay: boolean, volume: number): Promise<PlayerLoadResult> {
     return invokeCommand<RawLoadResult>('player_load', { path, autoplay, volume })
         .then(r => ({ seq: r.seq, durationSec: r.duration_sec }));
+}
+
+/**
+ * Carga una pista de la biblioteca: usa el archivo descargado si existe y, si
+ * no, resuelve streaming (Qobuz/Tidal) en el backend. La URL y las
+ * credenciales nunca viajan al webview.
+ *
+ * Puede tardar mientras se llena el buffer inicial (`isLoadingSource`), pero
+ * el resultado ya trae la calidad obtenida para la etiqueta honesta.
+ */
+export function playerLoadTrack(
+    trackId: number,
+    autoplay: boolean,
+    volume: number,
+): Promise<PlayerTrackLoadResult> {
+    return invokeCommand<RawLoadResult>('player_load_track', { trackId, autoplay, volume })
+        .then(r => ({
+            seq: r.seq,
+            durationSec: r.duration_sec,
+            stream: r.stream ?? null,
+        }));
 }
 
 export function playerPause(): Promise<void> {
@@ -82,6 +148,17 @@ export function onPlayerTick(cb: (tick: PlayerTick) => void): Promise<UnlistenFn
 export function onPlayerEnded(cb: (seq: number) => void): Promise<UnlistenFn> {
     return listen<{ seq: number }>(TauriEvents.PLAYER_ENDED, (event) => {
         cb(event.payload.seq);
+    });
+}
+
+/**
+ * Suscripción a `player:stream-state`: progreso de la caché progresiva,
+ * pausas por buffer y errores de descarga. `seq` identifica la carga, igual
+ * que en el resto de eventos del motor.
+ */
+export function onPlayerStreamState(cb: (state: PlayerStreamState) => void): Promise<UnlistenFn> {
+    return listen<PlayerStreamState>(TauriEvents.PLAYER_STREAM_STATE, (event) => {
+        cb(event.payload);
     });
 }
 

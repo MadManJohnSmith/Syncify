@@ -14,6 +14,7 @@ vi.mock('../../api/tauri', () => ({
 
 vi.mock('../../api/player', () => ({
     playerLoad: vi.fn(),
+    playerLoadTrack: vi.fn(),
     playerPause: vi.fn(),
     playerResume: vi.fn(),
     playerStop: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock('../../api/player', () => ({
     playerSetVolume: vi.fn(),
     playerSetRate: vi.fn(),
     onPlayerTick: vi.fn(),
+    onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
@@ -33,11 +35,11 @@ import { usePlayer } from '../../composables/usePlayer'
 const mockInvoke = vi.mocked(invokeCommand);
 const engine = vi.mocked(playerApi);
 
-/** Engine mocks with resolved defaults; `playerLoad` assigns increasing seqs. */
+/** Engine mocks with resolved defaults; `playerLoadTrack` assigns increasing seqs. */
 function configureEngineMocks(): void {
     let seq = 0;
-    engine.playerLoad.mockReset().mockImplementation(() =>
-        Promise.resolve({ seq: ++seq, durationSec: 180 }));
+    engine.playerLoadTrack.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 180, stream: null }));
     engine.playerPause.mockReset().mockResolvedValue(undefined);
     engine.playerResume.mockReset().mockResolvedValue(undefined);
     engine.playerStop.mockReset().mockResolvedValue(undefined);
@@ -45,6 +47,7 @@ function configureEngineMocks(): void {
     engine.playerSetVolume.mockReset().mockResolvedValue(undefined);
     engine.playerSetRate.mockReset().mockResolvedValue(undefined);
     engine.onPlayerTick.mockReset().mockResolvedValue(() => {});
+    engine.onPlayerStreamState.mockReset().mockResolvedValue(() => {});
     engine.onPlayerEnded.mockReset().mockResolvedValue(() => {});
 }
 
@@ -58,51 +61,76 @@ describe('usePlayer', () => {
         engine.playerStop.mockClear();
     });
 
-    it('resolves the source and starts engine playback of a downloaded file', async () => {
-        mockInvoke.mockResolvedValueOnce({
-            track_id: 7,
-            file_path: '/lib/Artist - Song.flac',
-            format: 'FLAC',
-        });
+    it('loads a library track through the backend (local file or stream)', async () => {
         const player = usePlayer();
 
         await player.play({ id: 7, title: 'Song', artist: 'Artist' });
 
-        expect(mockInvoke).toHaveBeenCalledWith('resolve_playback_source', { trackId: 7 });
-        // The engine owns the path; the frontend never converts or mints URLs.
-        expect(engine.playerLoad).toHaveBeenCalledWith('/lib/Artist - Song.flac', true, 1);
+        // The backend picks the downloaded file or resolves streaming; the
+        // frontend never sees paths or stream URLs.
+        expect(engine.playerLoadTrack).toHaveBeenCalledWith(7, true, 1);
+        expect(player.isBuffering.value).toBe(false);
+        expect(player.streamQuality.value).toBeNull();
         expect(player.current.value?.title).toBe('Song');
         expect(player.isPlaying.value).toBe(true);
         expect(player.durationSec.value).toBe(180);
         expect(player.error.value).toBeNull();
     });
 
-    it('reloads the engine on a same-file replay (no element to inherit)', async () => {
-        mockInvoke.mockResolvedValue({ track_id: 7, file_path: '/lib/7.flac' });
+    it('reloads the engine on a same-track replay (no element to inherit)', async () => {
         const player = usePlayer();
 
         await player.play({ id: 7, title: 'Song', artist: 'Artist' });
         await player.play({ id: 7, title: 'Song', artist: 'Artist' });
 
-        expect(engine.playerLoad).toHaveBeenCalledTimes(2);
+        expect(engine.playerLoadTrack).toHaveBeenCalledTimes(2);
     });
 
-    it('surfaces backend errors honestly when the track has no local file', async () => {
-        mockInvoke.mockRejectedValueOnce(new Error('El track 9 no tiene archivo local descargado; descárgalo primero'));
+    it('exposes the honest stream quality and buffering state', async () => {
+        engine.playerLoadTrack.mockResolvedValueOnce({
+            seq: 3,
+            durationSec: 210,
+            stream: {
+                serviceName: 'qobuz',
+                serviceTrackId: '123',
+                format: 'FLAC',
+                codec: 'flac',
+                container: 'FLAC',
+                extension: 'flac',
+                bitDepth: 24,
+                sampleRate: 192000,
+                qualityLabel: 'FLAC 24 bits / 192 kHz',
+                qualityTier: 'hires',
+                sourceName: 'Qobuz API oficial',
+            },
+        });
+        const player = usePlayer();
+
+        await player.play({ id: 11, title: 'Hi-Res', artist: 'Artist' });
+
+        expect(player.streamQuality.value).toEqual({
+            serviceName: 'qobuz',
+            qualityLabel: 'FLAC 24 bits / 192 kHz',
+            qualityTier: 'hires',
+        });
+    });
+
+    it('surfaces backend errors honestly when no source can be resolved', async () => {
+        engine.playerLoadTrack.mockRejectedValueOnce(
+            new Error('No se pudo resolver ninguna fuente reproducible: qobuz: cuenta Qobuz desconectada')
+        );
         const player = usePlayer();
 
         await expect(
             player.play({ id: 9, title: 'X', artist: 'Y' })
-        ).rejects.toThrow(/no tiene archivo local/);
+        ).rejects.toThrow(/ninguna fuente reproducible/);
 
-        expect(player.error.value).toContain('no tiene archivo local');
-        expect(engine.playerLoad).not.toHaveBeenCalled();
+        expect(player.error.value).toContain('ninguna fuente reproducible');
         expect(player.current.value).toBeNull();
     });
 
     it('shows the engine failure sanitized by the backend (never a path)', async () => {
-        mockInvoke.mockResolvedValueOnce({ track_id: 8, file_path: '/private/broken.flac', format: 'FLAC' });
-        engine.playerLoad.mockRejectedValueOnce(new Error('audio output unavailable: device busy'));
+        engine.playerLoadTrack.mockRejectedValueOnce(new Error('audio output unavailable: device busy'));
         const player = usePlayer();
 
         await expect(
@@ -116,7 +144,6 @@ describe('usePlayer', () => {
     });
 
     it('pause/resume via toggle drives the engine and the state', async () => {
-        mockInvoke.mockResolvedValueOnce({ track_id: 7, file_path: '/lib/7.flac' });
         const player = usePlayer();
         await player.play({ id: 7, title: 'Song', artist: 'Artist' });
 
@@ -139,7 +166,6 @@ describe('usePlayer', () => {
     });
 
     it('stop resets state and stops the engine', async () => {
-        mockInvoke.mockResolvedValueOnce({ track_id: 1, file_path: '/lib/a.flac' });
         const player = usePlayer();
         await player.play({ id: 1, title: 'a', artist: 'b' });
 
@@ -150,5 +176,7 @@ describe('usePlayer', () => {
         expect(player.positionSec.value).toBe(0);
         expect(player.durationSec.value).toBe(0);
         expect(player.isPlaying.value).toBe(false);
+        expect(player.isBuffering.value).toBe(false);
+        expect(player.streamQuality.value).toBeNull();
     });
 });

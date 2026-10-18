@@ -14,6 +14,7 @@ vi.mock('../../api/tauri', () => ({
 
 vi.mock('../../api/player', () => ({
     playerLoad: vi.fn(),
+    playerLoadTrack: vi.fn(),
     playerPause: vi.fn(),
     playerResume: vi.fn(),
     playerStop: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock('../../api/player', () => ({
     playerSetVolume: vi.fn(),
     playerSetRate: vi.fn(),
     onPlayerTick: vi.fn(),
+    onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
@@ -40,8 +42,8 @@ let mprisCb: ((action: MprisActionPayload) => void) | null = null;
 
 function configureEngineMocks(): void {
     seq = 0;
-    engine.playerLoad.mockReset().mockImplementation(() =>
-        Promise.resolve({ seq: ++seq, durationSec: 180 }));
+    engine.playerLoadTrack.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 180, stream: null }));
     engine.playerPause.mockReset().mockResolvedValue(undefined);
     engine.playerResume.mockReset().mockResolvedValue(undefined);
     engine.playerStop.mockReset().mockResolvedValue(undefined);
@@ -53,6 +55,7 @@ function configureEngineMocks(): void {
         tickCb = cb;
         return Promise.resolve(() => {});
     });
+    engine.onPlayerStreamState.mockReset().mockResolvedValue(() => {});
     engine.onPlayerEnded.mockReset().mockImplementation(() => Promise.resolve(() => {}));
     engine.onMprisAction.mockReset().mockImplementation((cb) => {
         mprisCb = cb;
@@ -66,7 +69,6 @@ function lastMprisUpdate(): MprisStateUpdate | undefined {
 }
 
 async function startTrack(id = 1): Promise<ReturnType<typeof usePlayer>> {
-    mockInvoke.mockResolvedValueOnce({ track_id: id, file_path: `/lib/${id}.flac`, format: 'FLAC' });
     const player = usePlayer();
     await player.play({ id, title: `Track ${id}`, artist: 'Artist' });
     await flushPromises();
@@ -153,18 +155,17 @@ describe('usePlayer × MPRIS (Fase 1)', () => {
         expect(engine.playerSeek).toHaveBeenCalledWith(42);
     });
 
-    it('next del panel avanza la cola sin resolver la fuente actual otra vez', async () => {
-        mockInvoke.mockImplementation((_cmd: string, args?: Record<string, unknown>) =>
-            Promise.resolve({ track_id: args?.trackId, file_path: `/lib/${args?.trackId}.flac` }));
+    it('next del panel avanza la cola sin recargar la fuente actual', async () => {
         const player = usePlayer();
         await player.play({ id: 1, title: 'One', artist: 'X' });
         await player.playNext({ id: 2, title: 'Two', artist: 'X' });
-        const resolvesBefore = mockInvoke.mock.calls.filter(c => c[0] === 'resolve_playback_source').length;
+        const loadsBefore = engine.playerLoadTrack.mock.calls.length;
 
         mprisCb!({ action: 'next' });
         await flushPromises();
 
-        expect(mockInvoke.mock.calls.filter(c => c[0] === 'resolve_playback_source').length).toBe(resolvesBefore + 1);
+        expect(engine.playerLoadTrack.mock.calls.length).toBe(loadsBefore + 1);
+        expect(engine.playerLoadTrack).toHaveBeenLastCalledWith(2, true, 1);
         expect(player.current.value?.id).toBe(2);
     });
 

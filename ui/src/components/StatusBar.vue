@@ -256,11 +256,17 @@ Open Accounts to Sync
         <button
           @click="toggle"
           class="p-0.5 rounded hover:bg-elevated text-ink hover:text-accent transition-colors"
-          :title="isPlaying ? 'Pause' : 'Play'"
-          :aria-label="isPlaying ? 'Pause' : 'Play'"
+          :title="isBuffering ? 'Buffering…' : (isPlaying ? 'Pause' : 'Play')"
+          :aria-label="isBuffering ? 'Buffering' : (isPlaying ? 'Pause' : 'Play')"
           data-testid="status-bar-toggle"
         >
-          <span class="material-symbols-outlined text-sm">{{ isPlaying ? 'pause' : 'play_arrow' }}</span>
+          <span
+            v-if="isBuffering"
+            class="block h-3.5 w-3.5 border-2 border-current border-t-transparent rounded-full animate-spin"
+            data-testid="status-bar-buffering"
+            aria-hidden="true"
+          ></span>
+          <span v-else class="material-symbols-outlined text-sm">{{ isPlaying ? 'pause' : 'play_arrow' }}</span>
         </button>
         <button
           @click="next"
@@ -470,6 +476,7 @@ const toast = useToast()
 const player = usePlayer()
 const current = player.current ?? ref(null)
 const isPlaying = player.isPlaying ?? ref(false)
+const isBuffering = player.isBuffering ?? ref(false)
 const positionSec = player.positionSec ?? ref(0)
 const durationSec = player.durationSec ?? ref(0)
 const toggle = player.toggle ?? (() => {})

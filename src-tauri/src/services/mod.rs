@@ -31,6 +31,8 @@ pub mod repair_history;
 pub mod silence_trimmer;
 pub mod soundcloud;
 pub mod spotify;
+pub mod stream_cache;
+pub mod streaming;
 pub mod tag_writer;
 pub mod tempo_analyzer;
 pub mod tidal;

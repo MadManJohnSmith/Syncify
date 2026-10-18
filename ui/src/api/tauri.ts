@@ -276,6 +276,8 @@ export const TauriEvents = {
     PLAYER_TICK: 'player:tick',
     PLAYER_ENDED: 'player:ended',
     PLAYER_MPRIS_ACTION: 'player:mpris-action',
+    // Fase 2: estado de la caché de streaming (buffer, calidad obtenida)
+    PLAYER_STREAM_STATE: 'player:stream-state',
 } as const;
 
 export type TauriEventName = typeof TauriEvents[keyof typeof TauriEvents];

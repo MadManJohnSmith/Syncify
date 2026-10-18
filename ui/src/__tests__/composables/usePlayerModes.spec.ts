@@ -16,6 +16,7 @@ vi.mock('../../api/tauri', () => ({
 
 vi.mock('../../api/player', () => ({
     playerLoad: vi.fn(),
+    playerLoadTrack: vi.fn(),
     playerPause: vi.fn(),
     playerResume: vi.fn(),
     playerStop: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('../../api/player', () => ({
     playerSetVolume: vi.fn(),
     playerSetRate: vi.fn(),
     onPlayerTick: vi.fn(),
+    onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
@@ -54,8 +56,8 @@ function engine(): ReturnType<typeof vi.mocked<PlayerModule>> {
 
 function configureEngineMocks(): void {
     seq = 0;
-    engine().playerLoad.mockReset().mockImplementation(() =>
-        Promise.resolve({ seq: ++seq, durationSec: 200 }));
+    engine().playerLoadTrack.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 200, stream: null }));
     engine().playerPause.mockReset().mockResolvedValue(undefined);
     engine().playerResume.mockReset().mockResolvedValue(undefined);
     engine().playerStop.mockReset().mockResolvedValue(undefined);
@@ -66,6 +68,7 @@ function configureEngineMocks(): void {
         tickCb = cb;
         return Promise.resolve(() => {});
     });
+    engine().onPlayerStreamState.mockReset().mockResolvedValue(() => {});
     engine().onPlayerEnded.mockReset().mockImplementation((cb) => {
         endedCb = cb;
         return Promise.resolve(() => {});
@@ -82,9 +85,6 @@ function ended(): void {
 
 function resolveByTrackId(): void {
     mockInvoke().mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-        if (cmd === 'resolve_playback_source') {
-            return Promise.resolve({ track_id: args?.trackId, file_path: `/lib/${args?.trackId}.flac` });
-        }
         if (cmd === 'get_track_metadata') {
             // DTO mínimo para la validación justamente-antes-de-sonar (entradas
             // del historial/restauradas sin proyección).
@@ -101,10 +101,9 @@ function resolveByTrackId(): void {
     });
 }
 
+/** Una carga del motor por pista: `player_load_track` decide local o streaming. */
 function resolveCalls(): number[] {
-    return mockInvoke().mock.calls
-        .filter(c => c[0] === 'resolve_playback_source')
-        .map(c => (c[1] as Record<string, unknown> | undefined)?.trackId as number);
+    return engine().playerLoadTrack.mock.calls.map(c => c[0] as number);
 }
 
 describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
@@ -252,11 +251,16 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
 
     it('fallo de avance conserva la cabeza, detiene la cadena y muestra el error', async () => {
         mockInvoke().mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-            if (cmd === 'resolve_playback_source') {
-                if (args?.trackId === 2) return Promise.reject(new Error('El track 2 no tiene archivo local descargado; descárgalo primero'));
-                return Promise.resolve({ track_id: args?.trackId, file_path: `/lib/${args?.trackId}.flac` });
+            if (cmd === 'get_track_metadata') {
+                return Promise.resolve({ track_id: args?.trackId, title: `Track ${args?.trackId}`, artist_name: 'X', album_name: null, cover_art_url: null, file_path: null });
             }
             return Promise.resolve(null);
+        });
+        engine().playerLoadTrack.mockImplementation((trackId: number) => {
+            if (trackId === 2) {
+                return Promise.reject(new Error('No se pudo resolver ninguna fuente reproducible: qobuz: sin cuenta conectada'));
+            }
+            return Promise.resolve({ seq: ++seq, durationSec: 200, stream: null });
         });
         const player = usePlayer();
 
@@ -264,43 +268,38 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
         await player.playNext(B);
         ended(); await flushPromises();
 
-        expect(player.error.value).toContain('no tiene archivo local');
+        expect(player.error.value).toContain('ninguna fuente reproducible');
         expect(player.current.value?.id).toBe(1); // la actual no se toca
         expect(player.upNext.value.map(t => t.id)).toEqual([2]); // la cabeza se conserva
     });
 
-    it('carrera resolver–stop: sin error y sin current', async () => {
-        let release!: (v: unknown) => void;
-        mockInvoke().mockImplementation((cmd: string) => {
-            if (cmd === 'resolve_playback_source') {
-                return new Promise(res => { release = res; });
-            }
-            return Promise.resolve(null);
-        });
+    it('carrera carga–stop: sin error y sin current', async () => {
+        let release!: (v: import('../../api/player').PlayerTrackLoadResult) => void;
+        engine().playerLoadTrack.mockImplementationOnce(() =>
+            new Promise<import('../../api/player').PlayerTrackLoadResult>(res => { release = res; }));
         const player = usePlayer();
 
         const pending = player.play(A);
         player.stop();
-        release({ track_id: 1, file_path: '/lib/1.flac' });
+        release({ seq: 1, durationSec: 100, stream: null });
         await pending;
         await flushPromises();
 
         expect(player.error.value).toBeNull();
         expect(player.current.value).toBeNull();
-        expect(engine().playerLoad).not.toHaveBeenCalled();
     });
 
-    it('carrera playerLoad–stop: la carga que llega tarde no toca el estado', async () => {
+    it('carrera playerLoadTrack–stop: la carga que llega tarde no toca el estado', async () => {
         resolveByTrackId();
-        let releaseLoad!: (v: import('../../api/player').PlayerLoadResult) => void;
-        engine().playerLoad.mockImplementationOnce(() =>
-            new Promise<import('../../api/player').PlayerLoadResult>(res => { releaseLoad = res; }));
+        let releaseLoad!: (v: import('../../api/player').PlayerTrackLoadResult) => void;
+        engine().playerLoadTrack.mockImplementationOnce(() =>
+            new Promise<import('../../api/player').PlayerTrackLoadResult>(res => { releaseLoad = res; }));
         const player = usePlayer();
 
         const pending = player.play(A);
-        await flushPromises(); // resolve hecho, playerLoad pendiente
+        await flushPromises(); // carga pendiente
         player.stop();
-        releaseLoad({ seq: 99, durationSec: 100 });
+        releaseLoad({ seq: 99, durationSec: 100, stream: null });
         await pending;
         await flushPromises();
 

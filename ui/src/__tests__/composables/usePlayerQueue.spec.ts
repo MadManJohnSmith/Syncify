@@ -18,6 +18,7 @@ vi.mock('../../api/tauri', () => ({
 
 vi.mock('../../api/player', () => ({
     playerLoad: vi.fn(),
+    playerLoadTrack: vi.fn(),
     playerPause: vi.fn(),
     playerResume: vi.fn(),
     playerStop: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('../../api/player', () => ({
     playerSetVolume: vi.fn(),
     playerSetRate: vi.fn(),
     onPlayerTick: vi.fn(),
+    onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
@@ -45,8 +47,8 @@ let endedCb: ((seq: number) => void) | null = null;
 
 function configureEngineMocks(): void {
     seq = 0;
-    engine.playerLoad.mockReset().mockImplementation(() =>
-        Promise.resolve({ seq: ++seq, durationSec: 200 }));
+    engine.playerLoadTrack.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 200, stream: null }));
     engine.playerPause.mockReset().mockResolvedValue(undefined);
     engine.playerResume.mockReset().mockResolvedValue(undefined);
     engine.playerStop.mockReset().mockResolvedValue(undefined);
@@ -57,6 +59,7 @@ function configureEngineMocks(): void {
         tickCb = cb;
         return Promise.resolve(() => {});
     });
+    engine.onPlayerStreamState.mockReset().mockResolvedValue(() => {});
     engine.onPlayerEnded.mockReset().mockImplementation((cb) => {
         endedCb = cb;
         return Promise.resolve(() => {});
@@ -76,20 +79,17 @@ describe('usePlayer playback queue (FE-9)', () => {
     });
 
     it('starts the track right away when nothing is loaded', async () => {
-        mockInvoke.mockResolvedValueOnce({ track_id: 5, file_path: '/lib/a.flac', format: 'FLAC' });
         const player = usePlayer();
 
         const outcome = await player.playNext({ id: 5, title: 'A', artist: 'X' });
 
         expect(outcome).toBe('started');
-        expect(mockInvoke).toHaveBeenCalledWith('resolve_playback_source', { trackId: 5 });
-        expect(engine.playerLoad).toHaveBeenCalledWith('/lib/a.flac', true, 1);
+        expect(engine.playerLoadTrack).toHaveBeenCalledWith(5, true, 1);
         expect(player.current.value?.id).toBe(5);
         expect(player.upNext.value).toHaveLength(0);
     });
 
     it('inserts "Play Next" at the front of the queue while playing', async () => {
-        mockInvoke.mockResolvedValueOnce({ track_id: 1, file_path: '/lib/1.flac' });
         const player = usePlayer();
         await player.play({ id: 1, title: 'One', artist: 'X' });
 
@@ -103,8 +103,6 @@ describe('usePlayer playback queue (FE-9)', () => {
     });
 
     it('auto-advances to the queued track when the current one ends', async () => {
-        mockInvoke.mockImplementation((_cmd: string, args?: Record<string, unknown>) =>
-            Promise.resolve({ track_id: args?.trackId, file_path: `/lib/${args?.trackId}.flac` }));
         const player = usePlayer();
         await player.play({ id: 1, title: 'One', artist: 'X' });
         await player.playNext({ id: 2, title: 'Two', artist: 'X' });
@@ -112,13 +110,12 @@ describe('usePlayer playback queue (FE-9)', () => {
         ended();
         await flushPromises();
 
-        expect(mockInvoke).toHaveBeenCalledWith('resolve_playback_source', { trackId: 2 });
+        expect(engine.playerLoadTrack).toHaveBeenLastCalledWith(2, true, 1);
         expect(player.current.value?.id).toBe(2);
         expect(player.upNext.value).toHaveLength(0);
     });
 
     it('stop clears the up-next queue', async () => {
-        mockInvoke.mockResolvedValueOnce({ track_id: 1, file_path: '/lib/1.flac' });
         const player = usePlayer();
         await player.play({ id: 1, title: 'One', artist: 'X' });
         await player.playNext({ id: 2, title: 'Two', artist: 'X' });

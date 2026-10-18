@@ -1174,6 +1174,29 @@ export interface TrackMetadataWithSources {
     cover_art_url: string | null;
     file_path: string | null;
     sources?: TrackSourceAvailability[] | null;
+    // PL-04 full metadata tab: album/download/file details plus the sidecar
+    // paths resolved by the backend against the real filesystem.
+    album_artist?: string | null;
+    label?: string | null;
+    upc?: string | null;
+    release_date?: string | null;
+    total_tracks?: number | null;
+    total_discs?: number | null;
+    album_musicbrainz_id?: string | null;
+    musicbrainz_release_id?: string | null;
+    file_format?: string | null;
+    file_size_bytes?: number | null;
+    bit_depth?: number | null;
+    sample_rate?: number | null;
+    downloaded_at?: string | null;
+    imported_from?: string | null;
+    downloaded_from?: string | null;
+    tempo_source?: string | null;
+    tempo_confidence?: number | null;
+    file_disambiguator?: string | null;
+    animated_cover_path?: string | null;
+    booklet_path?: string | null;
+    hd_cover_path?: string | null;
 }
 
 function normalizeTrackMetadata(raw: unknown): TrackMetadataWithSources {
@@ -1214,6 +1237,27 @@ function normalizeTrackMetadata(raw: unknown): TrackMetadataWithSources {
         cover_art_url: optStr(['cover_art_url', 'coverArtUrl']),
         file_path: optStr(['file_path', 'filePath']),
         sources: Array.isArray(sources) ? (sources as TrackSourceAvailability[]) : null,
+        album_artist: optStr(['album_artist', 'albumArtist']),
+        label: optStr(['label']),
+        upc: optStr(['upc']),
+        release_date: optStr(['release_date', 'releaseDate']),
+        total_tracks: optNum(['total_tracks', 'totalTracks']),
+        total_discs: optNum(['total_discs', 'totalDiscs']),
+        album_musicbrainz_id: optStr(['album_musicbrainz_id', 'albumMusicbrainzId']),
+        musicbrainz_release_id: optStr(['musicbrainz_release_id', 'musicbrainzReleaseId']),
+        file_format: optStr(['file_format', 'fileFormat']),
+        file_size_bytes: optNum(['file_size_bytes', 'fileSizeBytes']),
+        bit_depth: optNum(['bit_depth', 'bitDepth']),
+        sample_rate: optNum(['sample_rate', 'sampleRate']),
+        downloaded_at: optStr(['downloaded_at', 'downloadedAt']),
+        imported_from: optStr(['imported_from', 'importedFrom']),
+        downloaded_from: optStr(['downloaded_from', 'downloadedFrom']),
+        tempo_source: optStr(['tempo_source', 'tempoSource']),
+        tempo_confidence: optNum(['tempo_confidence', 'tempoConfidence']),
+        file_disambiguator: optStr(['file_disambiguator', 'fileDisambiguator']),
+        animated_cover_path: optStr(['animated_cover_path', 'animatedCoverPath']),
+        booklet_path: optStr(['booklet_path', 'bookletPath']),
+        hd_cover_path: optStr(['hd_cover_path', 'hdCoverPath']),
     };
 }
 

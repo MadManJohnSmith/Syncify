@@ -81,6 +81,38 @@ pub struct TrackMetadata {
     pub source_title: Option<String>,
     #[sqlx(default)]
     pub file_disambiguator: Option<String>,
+    #[sqlx(default)]
+    pub album_artist: Option<String>,
+    #[sqlx(default)]
+    pub label: Option<String>,
+    #[sqlx(default)]
+    pub upc: Option<String>,
+    #[sqlx(default)]
+    pub release_date: Option<String>,
+    #[sqlx(default)]
+    pub total_tracks: Option<i32>,
+    #[sqlx(default)]
+    pub total_discs: Option<i32>,
+    #[sqlx(default)]
+    pub album_musicbrainz_id: Option<String>,
+    #[sqlx(default)]
+    pub musicbrainz_release_id: Option<String>,
+    #[sqlx(default)]
+    pub file_format: Option<String>,
+    #[sqlx(default)]
+    pub file_size_bytes: Option<i64>,
+    #[sqlx(default)]
+    pub bit_depth: Option<i32>,
+    #[sqlx(default)]
+    pub sample_rate: Option<i32>,
+    #[sqlx(default)]
+    pub downloaded_at: Option<String>,
+    #[sqlx(default)]
+    pub animated_cover_path: Option<String>,
+    #[sqlx(skip)]
+    pub booklet_path: Option<String>,
+    #[sqlx(skip)]
+    pub hd_cover_path: Option<String>,
     #[sqlx(skip)]
     pub sources: Option<Vec<TrackSourceAvailability>>,
 }
@@ -126,7 +158,24 @@ async fn fetch_track_metadata(
             t.tempo_source,
             t.display_title,
             COALESCE(t.source_title, t.title) as source_title,
-            COALESCE(t.file_disambiguator, d.file_disambiguator) as file_disambiguator
+            COALESCE(t.file_disambiguator, d.file_disambiguator) as file_disambiguator,
+            (SELECT a3.name FROM album_artists aa
+             JOIN artists a3 ON a3.id = aa.artist_id
+             WHERE aa.album_id = al.id
+             LIMIT 1) as album_artist,
+            al.label,
+            al.upc,
+            al.release_date,
+            al.total_tracks,
+            al.total_discs,
+            al.musicbrainz_id as album_musicbrainz_id,
+            d.musicbrainz_release_id,
+            d.file_format,
+            d.file_size_bytes,
+            d.bit_depth,
+            d.sample_rate,
+            d.downloaded_at,
+            al.animated_cover_path
         FROM tracks t
         LEFT JOIN albums al ON al.id = t.album_id
         LEFT JOIN downloads d ON d.track_id = t.id
@@ -158,7 +207,159 @@ async fn fetch_track_metadata(
     .unwrap_or_default();
 
     metadata.sources = Some(sources);
+
+    let sibling_file_path = if metadata.file_path.is_none() {
+        if let Some(album_id) = metadata.album_id {
+            sqlx::query_scalar::<_, String>(
+                r#"
+                SELECT d2.file_path
+                FROM downloads d2
+                JOIN tracks t2 ON t2.id = d2.track_id
+                WHERE t2.album_id = ? AND d2.file_path IS NOT NULL
+                LIMIT 1
+                "#,
+            )
+            .bind(album_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let primary_path = metadata.file_path.clone().or(sibling_file_path);
+    let db_animated_path = metadata.animated_cover_path.clone();
+    if primary_path.is_some() || db_animated_path.is_some() {
+        if let Ok((booklet, animated, hd_cover)) = tokio::task::spawn_blocking(move || {
+            resolve_track_sidecars(primary_path.as_deref(), db_animated_path.as_deref())
+        })
+        .await
+        {
+            metadata.booklet_path = booklet;
+            metadata.animated_cover_path = animated;
+            metadata.hd_cover_path = hd_cover;
+        }
+    }
+
     Ok(metadata)
+}
+
+fn resolve_track_sidecars(
+    file_path: Option<&str>,
+    db_animated_cover_path: Option<&str>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    use std::path::{Path, PathBuf};
+    use syncify_core_domain::byte_validators::WebpByteValidator;
+    use syncify_core_domain::CoverType;
+
+    let mut dirs: Vec<PathBuf> = Vec::with_capacity(3);
+    let mut push_dir = |dir: &Path| {
+        if dir.is_dir() && !dirs.iter().any(|d| d == dir) {
+            dirs.push(dir.to_path_buf());
+        }
+        if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
+            let lower = name.to_ascii_lowercase();
+            if lower.starts_with("disc") || lower.starts_with("cd") {
+                if let Some(parent) = dir.parent() {
+                    if parent.is_dir() && !dirs.iter().any(|d| d == parent) {
+                        dirs.push(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+    };
+
+    if let Some(fp) = file_path {
+        if let Some(parent) = Path::new(fp).parent() {
+            push_dir(parent);
+        }
+    }
+    if let Some(ap) = db_animated_cover_path {
+        if let Some(parent) = Path::new(ap).parent() {
+            push_dir(parent);
+        }
+    }
+
+    let mut booklet_path: Option<String> = None;
+    for dir in &dirs {
+        let standard = dir.join("booklet.pdf");
+        if standard.is_file() {
+            booklet_path = Some(standard.to_string_lossy().into_owned());
+            break;
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            if let Some(pdf) = entries.filter_map(Result::ok).map(|e| e.path()).find(|p| {
+                p.is_file()
+                    && p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+            }) {
+                booklet_path = Some(pdf.to_string_lossy().into_owned());
+                break;
+            }
+        }
+    }
+
+    let mut animated_path: Option<String> = None;
+    for dir in &dirs {
+        for name in ["cover.animated.webp", "animated.webp"] {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                animated_path = Some(candidate.to_string_lossy().into_owned());
+                break;
+            }
+        }
+        if animated_path.is_some() {
+            break;
+        }
+        let cover_webp = dir.join("cover.webp");
+        if cover_webp.is_file() {
+            if let Ok(bytes) = std::fs::read(&cover_webp) {
+                if WebpByteValidator::detect_cover_type(&bytes) == CoverType::AnimatedWebp {
+                    animated_path = Some(cover_webp.to_string_lossy().into_owned());
+                    break;
+                }
+            }
+        }
+        let mp4 = dir.join("animated_cover.mp4");
+        if mp4.is_file() {
+            animated_path = Some(mp4.to_string_lossy().into_owned());
+            break;
+        }
+    }
+    if animated_path.is_none() {
+        if let Some(ap) = db_animated_cover_path {
+            if Path::new(ap).is_file() {
+                animated_path = Some(ap.to_string());
+            }
+        }
+    }
+
+    let mut hd_cover_path: Option<String> = None;
+    for dir in &dirs {
+        for name in [
+            "cover.jpg",
+            "cover.png",
+            "folder.jpg",
+            "folder.webp",
+            "cover.webp",
+        ] {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                hd_cover_path = Some(candidate.to_string_lossy().into_owned());
+                break;
+            }
+        }
+        if hd_cover_path.is_some() {
+            break;
+        }
+    }
+
+    (booklet_path, animated_path, hd_cover_path)
 }
 
 #[tauri::command]
@@ -2069,6 +2270,42 @@ pub async fn show_in_folder(state: State<'_, AppState>, track_id: i64) -> Result
     Ok(())
 }
 
+/// Extensions a sidecar path may have to be handed to the OS default handler.
+/// The list is deliberately narrow: this command must not become a generic
+/// "execute any local path" entry point reachable from the webview.
+const OPENABLE_SIDECAR_EXTENSIONS: [&str; 7] = ["pdf", "jpg", "jpeg", "png", "webp", "mp4", "lrc"];
+
+/// Open a local sidecar file (booklet PDF, cover image/video, lyrics) with the
+/// system's default application. Only existing files with a known sidecar
+/// extension are accepted; everything else is refused with an honest message.
+#[tauri::command]
+pub async fn open_local_sidecar(path: String) -> Result<(), String> {
+    let trimmed = path.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("Ruta vacía: no hay archivo que abrir".to_string());
+    }
+
+    let candidate = std::path::Path::new(&trimmed);
+    if !candidate.is_file() {
+        return Err(format!("El archivo no existe: {}", trimmed));
+    }
+
+    let extension = candidate
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if !OPENABLE_SIDECAR_EXTENSIONS.contains(&extension.as_str()) {
+        return Err(format!(
+            "Extensión no permitida para abrir externamente: .{}",
+            extension
+        ));
+    }
+
+    tracing::info!("open_local_sidecar: abriendo {}", trimmed);
+    opener::open(candidate).map_err(|e| format!("No se pudo abrir el archivo: {}", e))
+}
+
 #[cfg(test)]
 mod library_tests {
     // Note: These tests validate SQL logic using in-memory SQLite.
@@ -2960,6 +3197,256 @@ mod library_tests {
                 .unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].0, id2);
+    }
+
+    // ---- UI-CORR-2: resolución de sidecars (booklet / portada animada / HD) ----
+
+    /// Builds a structurally valid animated WebP (same shape the domain
+    /// validator accepts: RIFF/WEBP + VP8X with the animation bit + ANMF frames).
+    fn animated_webp_bytes() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"RIFF");
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(b"WEBP");
+        data.extend_from_slice(b"VP8X");
+        data.extend_from_slice(&10u32.to_le_bytes());
+        data.push(0x02); // animation bit
+        data.extend_from_slice(&[0u8; 3]);
+        data.extend_from_slice(&(400u32 - 1).to_le_bytes()[..3]);
+        data.extend_from_slice(&(300u32 - 1).to_le_bytes()[..3]);
+        data.extend_from_slice(b"ANIM");
+        data.extend_from_slice(&6u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 6]);
+        data.extend_from_slice(b"ANMF");
+        data.extend_from_slice(&16u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 16]);
+        data
+    }
+
+    /// Static WebP (VP8X without the animation bit): must never be reported as
+    /// an animated cover, even when it is named `cover.webp`.
+    fn static_webp_bytes() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"RIFF");
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(b"WEBP");
+        data.extend_from_slice(b"VP8X");
+        data.extend_from_slice(&10u32.to_le_bytes());
+        data.push(0x00); // no animation bit
+        data.extend_from_slice(&[0u8; 3]);
+        data.extend_from_slice(&(400u32 - 1).to_le_bytes()[..3]);
+        data.extend_from_slice(&(300u32 - 1).to_le_bytes()[..3]);
+        data
+    }
+
+    #[test]
+    fn sidecars_resolve_from_the_album_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let album_dir = temp.path().join("The Weeknd").join("Starboy");
+        std::fs::create_dir_all(&album_dir).unwrap();
+        let track_path = album_dir.join("01 - Starboy.flac");
+        std::fs::write(&track_path, b"fLaC").unwrap();
+        std::fs::write(album_dir.join("booklet.pdf"), b"%PDF-1.4").unwrap();
+        std::fs::write(album_dir.join("cover.animated.webp"), animated_webp_bytes()).unwrap();
+        std::fs::write(album_dir.join("cover.jpg"), b"\xff\xd8\xff").unwrap();
+
+        let (booklet, animated, hd) =
+            resolve_track_sidecars(Some(&track_path.to_string_lossy()), None);
+
+        assert_eq!(
+            booklet.as_deref(),
+            Some(album_dir.join("booklet.pdf").to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            animated.as_deref(),
+            Some(
+                album_dir
+                    .join("cover.animated.webp")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            hd.as_deref(),
+            Some(album_dir.join("cover.jpg").to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn sidecars_accept_alternate_names_and_reject_static_webp_as_animated() {
+        let temp = tempfile::tempdir().unwrap();
+        let album_dir = temp.path().join("Album");
+        std::fs::create_dir_all(&album_dir).unwrap();
+        let track_path = album_dir.join("track.flac");
+        std::fs::write(&track_path, b"fLaC").unwrap();
+        // Alternate booklet name + `animated.webp` + animated `cover.webp` absent.
+        std::fs::write(album_dir.join("digital-booklet.pdf"), b"%PDF-1.4").unwrap();
+        std::fs::write(album_dir.join("animated.webp"), animated_webp_bytes()).unwrap();
+        std::fs::write(album_dir.join("cover.webp"), static_webp_bytes()).unwrap();
+
+        let (booklet, animated, hd) =
+            resolve_track_sidecars(Some(&track_path.to_string_lossy()), None);
+
+        assert_eq!(
+            booklet.as_deref(),
+            Some(
+                album_dir
+                    .join("digital-booklet.pdf")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            animated.as_deref(),
+            Some(album_dir.join("animated.webp").to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            hd.as_deref(),
+            Some(album_dir.join("cover.webp").to_string_lossy().as_ref())
+        );
+
+        // Same album without `animated.webp`: the static `cover.webp` must not be
+        // promoted to the animated slot (that was the old bug: any existing
+        // cover.webp flipped the player into "Animated").
+        std::fs::remove_file(album_dir.join("animated.webp")).unwrap();
+        let (_, animated_only_static, _) =
+            resolve_track_sidecars(Some(&track_path.to_string_lossy()), None);
+        assert_eq!(animated_only_static, None);
+    }
+
+    #[test]
+    fn sidecars_look_in_the_parent_for_disc_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let album_dir = temp.path().join("Rush").join("Chronicles");
+        let disc_dir = album_dir.join("Disc 2");
+        std::fs::create_dir_all(&disc_dir).unwrap();
+        let track_path = disc_dir.join("01 - Track.flac");
+        std::fs::write(&track_path, b"fLaC").unwrap();
+        std::fs::write(album_dir.join("booklet.pdf"), b"%PDF-1.4").unwrap();
+
+        let (booklet, _, _) = resolve_track_sidecars(Some(&track_path.to_string_lossy()), None);
+        assert_eq!(
+            booklet.as_deref(),
+            Some(album_dir.join("booklet.pdf").to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn sidecars_pick_up_the_mp4_fallback_and_missing_files_stay_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let album_dir = temp.path().join("Album");
+        std::fs::create_dir_all(&album_dir).unwrap();
+        let track_path = album_dir.join("track.flac");
+        std::fs::write(&track_path, b"fLaC").unwrap();
+        std::fs::write(
+            album_dir.join("animated_cover.mp4"),
+            b"\x00\x00\x00\x18ftyp",
+        )
+        .unwrap();
+
+        let (booklet, animated, hd) =
+            resolve_track_sidecars(Some(&track_path.to_string_lossy()), None);
+        assert_eq!(booklet, None);
+        assert_eq!(
+            animated.as_deref(),
+            Some(
+                album_dir
+                    .join("animated_cover.mp4")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(hd, None);
+
+        // A track without sidecars and without a path resolves to nothing.
+        let (b, a, h) = resolve_track_sidecars(None, None);
+        assert_eq!((b, a, h), (None, None, None));
+    }
+
+    #[tokio::test]
+    async fn fetch_track_metadata_exposes_album_file_and_sidecar_fields() {
+        let pool = setup_test_db().await;
+        let temp = tempfile::tempdir().unwrap();
+        let album_dir = temp.path().join("Artist").join("Album");
+        std::fs::create_dir_all(&album_dir).unwrap();
+        let track_path = album_dir.join("01 - Track.flac");
+        std::fs::write(&track_path, b"fLaC").unwrap();
+        std::fs::write(album_dir.join("booklet.pdf"), b"%PDF-1.4").unwrap();
+        std::fs::write(album_dir.join("cover.animated.webp"), animated_webp_bytes()).unwrap();
+
+        let album_id: i64 = sqlx::query_scalar(
+            "INSERT INTO albums (title, upc, label, release_date, total_tracks, total_discs, musicbrainz_id) \
+             VALUES ('Album', '0602557234567', 'XO', '2016-11-25', 18, 2, 'mb-album-uuid') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let track_id: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, duration_ms) VALUES ('Track', ?, 230000) RETURNING id",
+        )
+        .bind(album_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format, file_size_bytes, bit_depth, sample_rate, musicbrainz_release_id) \
+             VALUES (?, ?, 'FLAC', 52428800, 24, 96000, 'mb-release-uuid')",
+        )
+        .bind(track_id)
+        .bind(track_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let metadata = fetch_track_metadata(&pool, track_id).await.unwrap();
+
+        assert_eq!(metadata.label.as_deref(), Some("XO"));
+        assert_eq!(metadata.upc.as_deref(), Some("0602557234567"));
+        assert_eq!(metadata.release_date.as_deref(), Some("2016-11-25"));
+        assert_eq!(metadata.total_tracks, Some(18));
+        assert_eq!(metadata.total_discs, Some(2));
+        assert_eq!(
+            metadata.album_musicbrainz_id.as_deref(),
+            Some("mb-album-uuid")
+        );
+        assert_eq!(
+            metadata.musicbrainz_release_id.as_deref(),
+            Some("mb-release-uuid")
+        );
+        assert_eq!(metadata.file_format.as_deref(), Some("FLAC"));
+        assert_eq!(metadata.file_size_bytes, Some(52_428_800));
+        assert_eq!(metadata.bit_depth, Some(24));
+        assert_eq!(metadata.sample_rate, Some(96_000));
+        assert_eq!(
+            metadata.booklet_path.as_deref(),
+            Some(album_dir.join("booklet.pdf").to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            metadata.animated_cover_path.as_deref(),
+            Some(
+                album_dir
+                    .join("cover.animated.webp")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(metadata.downloaded_at.is_some());
+    }
+
+    #[test]
+    fn open_local_sidecar_extension_allowlist_is_narrow() {
+        for ext in ["pdf", "jpg", "jpeg", "png", "webp", "mp4", "lrc"] {
+            assert!(
+                OPENABLE_SIDECAR_EXTENSIONS.contains(&ext),
+                "{ext} must be openable"
+            );
+        }
+        for ext in ["sh", "exe", "bat", "ps1", "dll", "so"] {
+            assert!(
+                !OPENABLE_SIDECAR_EXTENSIONS.contains(&ext),
+                "{ext} must never be handed to the OS handler"
+            );
+        }
     }
 }
 

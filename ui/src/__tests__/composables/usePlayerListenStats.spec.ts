@@ -16,6 +16,7 @@ vi.mock('../../api/tauri', () => ({
 
 vi.mock('../../api/player', () => ({
     playerLoad: vi.fn(),
+    playerLoadTrack: vi.fn(),
     playerPause: vi.fn(),
     playerResume: vi.fn(),
     playerStop: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('../../api/player', () => ({
     playerSetVolume: vi.fn(),
     playerSetRate: vi.fn(),
     onPlayerTick: vi.fn(),
+    onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
@@ -44,8 +46,8 @@ let endedCb: ((seq: number) => void) | null = null;
 
 function configureEngineMocks(): void {
     seq = 0;
-    engine.playerLoad.mockReset().mockImplementation(() =>
-        Promise.resolve({ seq: ++seq, durationSec: 200 }));
+    engine.playerLoadTrack.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 200, stream: null }));
     engine.playerPause.mockReset().mockResolvedValue(undefined);
     engine.playerResume.mockReset().mockResolvedValue(undefined);
     engine.playerStop.mockReset().mockResolvedValue(undefined);
@@ -56,6 +58,7 @@ function configureEngineMocks(): void {
         tickCb = cb;
         return Promise.resolve(() => {});
     });
+    engine.onPlayerStreamState.mockReset().mockResolvedValue(() => {});
     engine.onPlayerEnded.mockReset().mockImplementation((cb) => {
         endedCb = cb;
         return Promise.resolve(() => {});
@@ -80,9 +83,6 @@ function recordCalls(): Array<{ args?: Record<string, unknown> }> {
 
 function mockHappyPath(): void {
     mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-        if (cmd === 'resolve_playback_source') {
-            return Promise.resolve({ track_id: args?.trackId, file_path: `/lib/${args?.trackId}.flac`, format: 'FLAC' });
-        }
         if (cmd === 'record_local_play') {
             return Promise.resolve({ track_id: args?.trackId, play_count: 1, last_played: '2026-10-06T00:00:00Z', counted: true });
         }
@@ -261,7 +261,6 @@ describe('usePlayer — acreditación de escucha (30 s reales)', () => {
 
     it('error transitorio: reintenta el mismo token con backoff hasta el tope de 5 y descarta', async () => {
         mockInvoke.mockImplementation((cmd: string) => {
-            if (cmd === 'resolve_playback_source') return Promise.resolve({ track_id: 7, file_path: '/lib/7.flac' });
             if (cmd === 'record_local_play') return Promise.reject(new Error('database is locked'));
             return Promise.resolve(null);
         });
@@ -287,7 +286,6 @@ describe('usePlayer — acreditación de escucha (30 s reales)', () => {
     it('error transitorio seguido de éxito: el pendiente se confirma y se elimina', async () => {
         let recordAttempts = 0;
         mockInvoke.mockImplementation((cmd: string) => {
-            if (cmd === 'resolve_playback_source') return Promise.resolve({ track_id: 7, file_path: '/lib/7.flac' });
             if (cmd === 'record_local_play') {
                 recordAttempts++;
                 return recordAttempts === 1
@@ -310,7 +308,6 @@ describe('usePlayer — acreditación de escucha (30 s reales)', () => {
 
     it('error definitivo (pista borrada): descarta sin reintentar', async () => {
         mockInvoke.mockImplementation((cmd: string) => {
-            if (cmd === 'resolve_playback_source') return Promise.resolve({ track_id: 7, file_path: '/lib/7.flac' });
             if (cmd === 'record_local_play') return Promise.reject(new Error('El track 7 no existe en la biblioteca'));
             return Promise.resolve(null);
         });

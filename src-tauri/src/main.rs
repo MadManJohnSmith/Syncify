@@ -227,6 +227,8 @@ fn main() {
             // Fase 1 del player: motor nativo (rodio + symphonia). El motor de
             // audio se abre perezosamente en el primer `player_load`.
             app.manage(commands::player::PlayerState::default());
+            // Fase 2: sesión de streaming progresivo (caché temporal Qobuz/Tidal).
+            app.manage(services::stream_cache::StreamCacheState::default());
             // MPRIS (Linux): panel de medios del escritorio para el motor nativo.
             app.manage(services::mpris::MprisService::start(&init_handle));
             commands::player::spawn_player_ticker(&init_handle);
@@ -1007,6 +1009,7 @@ fn main() {
             commands::import_library,
             commands::emit_test_notification,
             commands::show_in_folder,
+            commands::open_local_sidecar,
             commands::get_track_metadata,
             commands::get_track_sources_availability,
             commands::check_track_availability,
@@ -1112,6 +1115,7 @@ fn main() {
             commands::resolve_playback_source,
             // Fase 1 del player: motor nativo (rodio + symphonia)
             commands::player_load,
+            commands::player_load_track,
             commands::player_pause,
             commands::player_resume,
             commands::player_stop,
