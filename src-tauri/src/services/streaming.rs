@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::collections::HashSet;
 use syncify_core_domain::byte_validators::AudioByteValidator;
 
 use crate::download::qobuz::{QobuzAuthStatus, QobuzDownloader};
@@ -68,28 +69,31 @@ const STREAMABLE_EXTENSIONS: &[&str] = &["flac", "mp3", "m4a", "mp4", "aac", "og
 
 /// Resuelve la mejor fuente de streaming reproducible para `track_id`.
 ///
-/// Recorre las fuentes Qobuz/Tidal disponibles del track ordenadas por
-/// `quality_score`, verifica la cabecera física del stream (rechazando previews
-/// de 30 s y manifiestos DASH/HLS) y prioriza fuentes lossless/hi-res frente a
-/// candidatos lossy de duración completa. Todos los fallos se agregan para
-/// poder mostrar un mensaje honesto.
+/// Orden de trabajo:
+/// 1. Fuentes Qobuz/Tidal directas del track (`track_sources`, por `quality_score`).
+/// 2. Si no hay lossless, **cascada ISRC** (Fase 3): busca la misma grabación en
+///    Qobuz/Tidal por ISRC —preguntando a Spotify el ISRC cuando la pista no lo
+///    tiene— para que una pista importada sólo de Spotify suene igual de bien.
+/// 3. Reserva lossy de duración completa, con etiqueta honesta.
+///
+/// Cada stream se verifica por cabecera física (previews de 30 s rechazados).
 pub async fn resolve_stream_for_track(
     db: &SqlitePool,
     http: &reqwest::Client,
     track_id: i64,
 ) -> Result<ResolvedStream, String> {
     let candidates = load_candidates(db, track_id).await?;
-    if candidates.is_empty() {
-        return Err(
-            "Esta pista no tiene fuentes de streaming disponibles (Qobuz/Tidal).".to_string(),
-        );
-    }
 
     let duration_ms = load_track_duration_ms(db, track_id).await;
-    let mut failures: Vec<String> = Vec::with_capacity(candidates.len());
+    let mut failures: Vec<String> = Vec::with_capacity(candidates.len() + 1);
     let mut lossy_fallback: Option<ResolvedStream> = None;
+    let mut tried: HashSet<(String, String)> = HashSet::with_capacity(candidates.len());
 
     for candidate in candidates {
+        tried.insert((
+            candidate.service_name.clone(),
+            candidate.service_track_id.clone(),
+        ));
         let outcome = match candidate.service_name.as_str() {
             "qobuz" => resolve_qobuz(db, http, &candidate, duration_ms).await,
             "tidal" => resolve_tidal(db, http, &candidate, duration_ms).await,
@@ -128,6 +132,33 @@ pub async fn resolve_stream_for_track(
         }
     }
 
+    // Fase 3: sin fuente directa lossless, la identidad ISRC manda. Se pide una
+    // fuente lossless; sólo se acepta un resultado lossy de la cascada cuando no
+    // había ninguna reserva mejor.
+    let allow_lossy = lossy_fallback.is_none();
+    match isrc_cascade(db, http, track_id, &tried, allow_lossy).await {
+        Ok(Some(resolved)) => {
+            tracing::info!(
+                track_id,
+                service = %resolved.info.service_name,
+                quality = %resolved.info.quality_label,
+                "streaming: fuente encontrada por cascada ISRC"
+            );
+            if resolved.info.quality_tier != "lossy" || lossy_fallback.is_none() {
+                return Ok(resolved);
+            }
+        }
+        Ok(None) => {}
+        Err(reason) => {
+            tracing::info!(
+                track_id,
+                reason = %reason,
+                "streaming: la cascada ISRC no encontró una fuente mejor"
+            );
+            failures.push(format!("cascada ISRC: {}", reason));
+        }
+    }
+
     if let Some(fallback) = lossy_fallback {
         tracing::info!(
             track_id,
@@ -136,6 +167,12 @@ pub async fn resolve_stream_for_track(
             "streaming: usando reserva lossy verificada al no haber alternativa lossless"
         );
         return Ok(fallback);
+    }
+
+    if failures.is_empty() {
+        return Err(
+            "Esta pista no tiene fuentes de streaming disponibles (Qobuz/Tidal).".to_string(),
+        );
     }
 
     Err(format!(
@@ -152,6 +189,508 @@ async fn load_track_duration_ms(db: &SqlitePool, track_id: i64) -> Option<i64> {
         .ok()
         .flatten()
         .flatten()
+}
+
+// ---------------------------------------------------------------------------
+// Fase 3 — cascada ISRC
+// ---------------------------------------------------------------------------
+
+/// Metadatos mínimos para reconocer la misma grabación en otro proveedor.
+#[derive(Debug, Clone)]
+struct TrackLookupContext {
+    title: String,
+    artist: String,
+    duration_ms: Option<i64>,
+    isrc: Option<String>,
+}
+
+impl TrackLookupContext {
+    fn expected_duration_sec(&self) -> i32 {
+        expected_duration_sec(self.duration_ms)
+    }
+}
+
+/// Duración esperada en segundos para el filtro de los buscadores (±10 s).
+fn expected_duration_sec(duration_ms: Option<i64>) -> i32 {
+    duration_ms.map(|ms| (ms.max(0) / 1000) as i32).unwrap_or(0)
+}
+
+/// Normaliza y valida un ISRC. Devuelve `None` si no es un ISRC de 12 caracteres
+/// o si la pista lo trae vacío: un ISRC inventado haría que la cascada buscara
+/// otra grabación, que es peor que no buscar.
+fn normalize_isrc(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim().to_uppercase();
+    syncify_core_domain::metadata::is_valid_isrc(&trimmed).then_some(trimmed)
+}
+
+async fn load_lookup_context(db: &SqlitePool, track_id: i64) -> Option<TrackLookupContext> {
+    let row: Option<(String, Option<String>, Option<i64>, Option<String>)> =
+        sqlx::query_as::<_, (String, Option<String>, Option<i64>, Option<String>)>(
+            r#"
+        SELECT
+            t.title,
+            (SELECT a2.name FROM track_artists ta2
+             JOIN artists a2 ON a2.id = ta2.artist_id
+             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
+             LIMIT 1) AS artist_name,
+            t.duration_ms,
+            t.isrc
+        FROM tracks t
+        WHERE t.id = ?
+        LIMIT 1
+        "#,
+        )
+        .bind(track_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+
+    let (title, artist, duration_ms, isrc) = row?;
+    Some(TrackLookupContext {
+        title,
+        artist: artist.unwrap_or_default(),
+        duration_ms,
+        isrc: normalize_isrc(isrc.as_deref()),
+    })
+}
+
+/// Pide a Spotify el ISRC de la pista cuando la fila local no lo tiene.
+///
+/// Es best-effort y sin efectos sobre la biblioteca: no escribe el ISRC en
+/// `tracks` (una reproducción no debe mutar metadatos). El token se reutiliza
+/// del almacén de cuentas y se refresca si caducó con el mismo helper que usa
+/// la importación. Cada fallo se devuelve con su motivo para que el mensaje de
+/// la cascada diga qué falta (cuenta, token, red o catálogo), no un genérico.
+async fn spotify_isrc_for_track(
+    db: &SqlitePool,
+    http: &reqwest::Client,
+    track_id: i64,
+) -> Result<String, String> {
+    let spotify_track_id: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT ts.service_track_id
+        FROM track_sources ts
+        JOIN services s ON s.id = ts.service_id
+        WHERE ts.track_id = ? AND LOWER(s.name) = 'spotify'
+        LIMIT 1
+        "#,
+    )
+    .bind(track_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+
+    let spotify_track_id = spotify_track_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "la pista no tiene fuente de Spotify de la que leerlo".to_string())?;
+
+    let account_id: Option<i64> = sqlx::query_scalar(
+        r#"
+        SELECT a.id
+        FROM accounts a
+        JOIN services s ON s.id = a.service_id
+        WHERE LOWER(s.name) = 'spotify'
+          AND COALESCE(a.credentials_invalid, 0) = 0
+        ORDER BY a.is_active DESC, a.id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    let account_id = account_id.ok_or_else(|| "cuenta de Spotify desconectada".to_string())?;
+
+    let ciphertext: Option<String> =
+        sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+    let ciphertext = ciphertext
+        .filter(|c| !c.trim().is_empty())
+        .ok_or_else(|| "cuenta de Spotify sin credenciales guardadas".to_string())?;
+    let plaintext = crate::crypto::decrypt(&ciphertext).map_err(|e| {
+        format!(
+            "no se pudieron descifrar las credenciales de Spotify ({})",
+            e
+        )
+    })?;
+    let credentials: serde_json::Value = serde_json::from_str(&plaintext)
+        .map_err(|e| format!("credenciales de Spotify malformadas ({})", e))?;
+
+    let token = resolve_spotify_bearer_token(db, http, account_id, &credentials)
+        .await
+        .map_err(|e| format!("token de Spotify no utilizable ({})", e))?;
+
+    let response = http
+        .get(format!(
+            "https://api.spotify.com/v1/tracks/{}",
+            urlencoding::encode(&spotify_track_id)
+        ))
+        .bearer_auth(&token)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("error de red al consultar Spotify ({})", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Spotify respondió HTTP {} al pedir la pista",
+            response.status()
+        ));
+    }
+
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("respuesta de Spotify ilegible ({})", e))?;
+    let isrc = normalize_isrc(
+        payload
+            .pointer("/external_ids/isrc")
+            .and_then(|v| v.as_str()),
+    )
+    .ok_or_else(|| "Spotify no publica un ISRC válido para esta pista".to_string())?;
+
+    tracing::info!(
+        track_id,
+        "streaming: ISRC obtenido de Spotify para la cascada"
+    );
+    Ok(isrc)
+}
+
+/// Obtiene un token Bearer válido de Spotify reutilizando el almacenado o
+/// refrescándolo con `refresh_token`. Si la base de datos está en modo
+/// solo-lectura o bloqueada al persistir el refresco, usa igualmente el token
+/// recién emitido en memoria para no abortar la reproducción.
+async fn resolve_spotify_bearer_token(
+    db: &SqlitePool,
+    http: &reqwest::Client,
+    account_id: i64,
+    creds: &serde_json::Value,
+) -> Result<String, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
+    if now + 300 < expires_at {
+        if let Some(tok) = creds["access_token"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+        {
+            return Ok(tok.to_string());
+        }
+    }
+
+    let Some(refresh_token) = creds["refresh_token"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+    else {
+        return creds["access_token"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| "sin refresh_token ni access_token".to_string());
+    };
+
+    let config = crate::commands::resolve_spotify_config(db)
+        .await
+        .map_err(|e| format!("configuración de Spotify: {}", e))?;
+    let params = [
+        ("client_id", config.client_id.as_str()),
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+    ];
+
+    let resp = http
+        .post("https://accounts.spotify.com/api/token")
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("refresco Spotify: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("refresco Spotify HTTP {}", resp.status()));
+    }
+
+    let token_data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("respuesta de refresco ilegible: {}", e))?;
+    let new_access_token = token_data["access_token"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "respuesta de refresco sin access_token".to_string())?
+        .to_string();
+    let new_refresh_token = token_data["refresh_token"]
+        .as_str()
+        .unwrap_or(refresh_token)
+        .to_string();
+    let expires_in = token_data["expires_in"].as_i64().unwrap_or(3600);
+    let updated_creds = serde_json::json!({
+        "token_type": "Bearer",
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
+        "expires_at": now + expires_in,
+    });
+
+    if let Ok(encrypted) = crate::crypto::encrypt(&updated_creds.to_string()) {
+        if let Err(e) = sqlx::query("UPDATE accounts SET credentials_json = ? WHERE id = ?")
+            .bind(&encrypted)
+            .bind(account_id)
+            .execute(db)
+            .await
+        {
+            tracing::debug!(
+                account_id,
+                error = %e,
+                "streaming: no se pudo persistir el token de Spotify refrescado (usando en memoria)"
+            );
+        }
+    }
+
+    Ok(new_access_token)
+}
+
+/// `true` cuando este (`service`, `service_track_id`) no se ha intentado ya en
+/// la pasada directa. Evita repetir la misma resolución (y el mismo fallo).
+fn should_try(tried: &HashSet<(String, String)>, service: &str, id: &str) -> bool {
+    !tried.contains(&(service.to_string(), id.to_string()))
+}
+
+/// Busca la grabación por ISRC en Qobuz con una cuenta que pueda consultar.
+///
+/// El endpoint `track/search` exige token de usuario (verificado en vivo:
+/// HTTP 401 sin él), así que la cascada recorre las cuentas igual que la
+/// resolución: busca con la primera que autentique y continúa si falla.
+async fn qobuz_isrc_match(
+    db: &SqlitePool,
+    isrc: &str,
+    context: &TrackLookupContext,
+) -> Result<crate::download::qobuz::QobuzTrack, String> {
+    let account_ids = candidate_account_ids(db, "qobuz").await;
+    if account_ids.is_empty() {
+        return Err("cuenta Qobuz desconectada".to_string());
+    }
+
+    let expected_sec = context.expected_duration_sec();
+    let has_metadata = !context.title.trim().is_empty() && !context.artist.trim().is_empty();
+    let downloader = QobuzDownloader::new();
+    let mut reasons: Vec<String> = Vec::with_capacity(account_ids.len());
+
+    for account_id in account_ids {
+        let token = match downloader
+            .resolve_token_for_account(db, Some(account_id))
+            .await
+        {
+            Ok(token) => token,
+            Err(QobuzAuthStatus::RequiresAuth(msg)) => {
+                reasons.push(format!("cuenta {}: {}", account_id, msg));
+                continue;
+            }
+        };
+
+        match downloader
+            .search_by_isrc(isrc, expected_sec, Some(&token))
+            .await
+        {
+            Ok(track) => return Ok(track),
+            Err(first_err) => {
+                if has_metadata {
+                    match downloader
+                        .search_by_isrc_broad(
+                            isrc,
+                            &context.title,
+                            &context.artist,
+                            expected_sec,
+                            Some(&token),
+                        )
+                        .await
+                    {
+                        Ok(track) => return Ok(track),
+                        Err(second_err) => reasons.push(format!(
+                            "cuenta {}: {} / {}",
+                            account_id, first_err, second_err
+                        )),
+                    }
+                } else {
+                    reasons.push(format!("cuenta {}: {}", account_id, first_err));
+                }
+            }
+        }
+    }
+
+    Err(reasons.join(" · "))
+}
+
+/// Lo mismo para Tidal. La búsqueda usa el token de usuario de la cuenta (la
+/// ruta anónima por client-credentials no basta: en vivo devolvió
+/// "Tidal authentication required for search").
+async fn tidal_isrc_match(
+    db: &SqlitePool,
+    http: &reqwest::Client,
+    isrc: &str,
+    context: &TrackLookupContext,
+) -> Result<syncify_core_domain::metadata::TidalTrack, String> {
+    let account_ids = candidate_account_ids(db, "tidal").await;
+    if account_ids.is_empty() {
+        return Err("cuenta Tidal desconectada".to_string());
+    }
+
+    let expected_sec = context.expected_duration_sec();
+    let has_metadata = !context.title.trim().is_empty() && !context.artist.trim().is_empty();
+    let mut reasons: Vec<String> = Vec::with_capacity(account_ids.len());
+
+    for account_id in account_ids {
+        let (creds, _name) =
+            resolve_and_refresh_gui_credentials_for_account(db, http, Some(account_id), false)
+                .await;
+        let Some(creds) = creds else {
+            reasons.push(format!("cuenta {}: sin credenciales válidas", account_id));
+            continue;
+        };
+
+        let downloader = syncify_tidal_downloader::TidalDownloader::new()
+            .with_user_token(Some(creds.access_token.clone()));
+
+        match downloader.search_by_isrc(isrc, expected_sec).await {
+            Ok(track) => return Ok(track),
+            Err(first_err) => {
+                if has_metadata {
+                    match downloader
+                        .search_by_isrc_broad(isrc, &context.title, &context.artist, expected_sec)
+                        .await
+                    {
+                        Ok(track) => return Ok(track),
+                        Err(second_err) => reasons.push(format!(
+                            "cuenta {}: {} / {}",
+                            account_id, first_err, second_err
+                        )),
+                    }
+                } else {
+                    reasons.push(format!("cuenta {}: {}", account_id, first_err));
+                }
+            }
+        }
+    }
+
+    Err(reasons.join(" · "))
+}
+
+/// Busca la grabación por ISRC en Qobuz/Tidal y resuelve su stream.
+///
+/// Devuelve `Ok(Some)` con el mejor stream verificado (lossless siempre que
+/// exista; lossy sólo si `allow_lossy`), `Ok(None)` si no hay nada reproducible o
+/// `Err` con el motivo honesto cuando la cascada no pudo ni intentarse.
+async fn isrc_cascade(
+    db: &SqlitePool,
+    http: &reqwest::Client,
+    track_id: i64,
+    tried: &HashSet<(String, String)>,
+    allow_lossy: bool,
+) -> Result<Option<ResolvedStream>, String> {
+    let mut context = load_lookup_context(db, track_id)
+        .await
+        .ok_or_else(|| "la pista no tiene metadatos para buscarla".to_string())?;
+
+    if context.isrc.is_none() {
+        match spotify_isrc_for_track(db, http, track_id).await {
+            Ok(isrc) => context.isrc = Some(isrc),
+            Err(reason) => {
+                return Err(format!("la pista no tiene ISRC y {}", reason));
+            }
+        }
+    }
+
+    let Some(isrc) = context.isrc.clone() else {
+        return Err(
+            "la pista no tiene ISRC y Spotify no pudo aportarlo (conecta Spotify o importa la pista con ISRC)"
+                .to_string(),
+        );
+    };
+
+    let duration_ms = context.duration_ms;
+    let mut reasons: Vec<String> = Vec::with_capacity(4);
+    let mut lossy_fallback: Option<ResolvedStream> = None;
+
+    // ---- Qobuz -------------------------------------------------------------
+    match qobuz_isrc_match(db, &isrc, &context).await {
+        Ok(found) => {
+            let service_id = found.id.to_string();
+            if should_try(tried, "qobuz", &service_id) {
+                let candidate = Candidate {
+                    service_name: "qobuz".to_string(),
+                    service_track_id: service_id,
+                };
+                match resolve_qobuz(db, http, &candidate, duration_ms).await {
+                    Ok(resolved) if resolved.info.quality_tier != "lossy" => {
+                        return Ok(Some(resolved));
+                    }
+                    Ok(resolved) => {
+                        tracing::info!(
+                            track_id,
+                            quality = %resolved.info.quality_label,
+                            "streaming: cascada ISRC encontró Qobuz lossy"
+                        );
+                        if allow_lossy && lossy_fallback.is_none() {
+                            lossy_fallback = Some(resolved);
+                        }
+                    }
+                    Err(err) => reasons.push(format!("Qobuz ISRC {}: {}", found.id, err)),
+                }
+            } else {
+                reasons.push("Qobuz: esa identidad ya se intentó en la pasada directa".to_string());
+            }
+        }
+        Err(reason) => reasons.push(format!("Qobuz: {}", reason)),
+    }
+
+    // ---- Tidal -------------------------------------------------------------
+    match tidal_isrc_match(db, http, &isrc, &context).await {
+        Ok(found) => {
+            let service_id = found.id.to_string();
+            if should_try(tried, "tidal", &service_id) {
+                let candidate = Candidate {
+                    service_name: "tidal".to_string(),
+                    service_track_id: service_id,
+                };
+                match resolve_tidal(db, http, &candidate, duration_ms).await {
+                    Ok(resolved) if resolved.info.quality_tier != "lossy" => {
+                        return Ok(Some(resolved));
+                    }
+                    Ok(resolved) => {
+                        tracing::info!(
+                            track_id,
+                            quality = %resolved.info.quality_label,
+                            "streaming: cascada ISRC encontró Tidal lossy"
+                        );
+                        if allow_lossy && lossy_fallback.is_none() {
+                            lossy_fallback = Some(resolved);
+                        }
+                    }
+                    Err(err) => reasons.push(format!("Tidal ISRC {}: {}", found.id, err)),
+                }
+            } else {
+                reasons.push("Tidal: esa identidad ya se intentó en la pasada directa".to_string());
+            }
+        }
+        Err(reason) => reasons.push(format!("Tidal: {}", reason)),
+    }
+
+    if let Some(fallback) = lossy_fallback {
+        return Ok(Some(fallback));
+    }
+
+    Err(if reasons.is_empty() {
+        "las fuentes ya se habían intentado en la pasada directa".to_string()
+    } else {
+        reasons.join(" · ")
+    })
 }
 
 async fn load_candidates(db: &SqlitePool, track_id: i64) -> Result<Vec<Candidate>, String> {
@@ -906,6 +1445,107 @@ mod tests {
         assert_eq!(
             extract_total_bytes(reqwest::StatusCode::OK, &headers_200, Some(1_200_588)),
             Some(1_200_588)
+        );
+    }
+
+    // ---- Fase 3: cascada ISRC -------------------------------------------------
+
+    #[test]
+    fn isrc_normalization_accepts_only_real_isrcs() {
+        assert_eq!(
+            normalize_isrc(Some("  usum71607007 ")).as_deref(),
+            Some("USUM71607007")
+        );
+        // 12 chars but wrong shape (registrant/year/designation).
+        assert_eq!(normalize_isrc(Some("US-UM7-16-07007")), None);
+        assert_eq!(normalize_isrc(Some("USUM7160700")), None); // 11
+        assert_eq!(normalize_isrc(Some("USUM716070077")), None); // 13
+        assert_eq!(normalize_isrc(Some("")), None);
+        assert_eq!(normalize_isrc(None), None);
+    }
+
+    #[test]
+    fn expected_duration_never_invents_a_filter() {
+        assert_eq!(expected_duration_sec(None), 0);
+        assert_eq!(expected_duration_sec(Some(0)), 0);
+        assert_eq!(expected_duration_sec(Some(-5_000)), 0);
+        assert_eq!(expected_duration_sec(Some(223_000)), 223);
+        assert_eq!(expected_duration_sec(Some(999)), 0);
+    }
+
+    #[test]
+    fn isrc_cascade_skips_identities_already_tried() {
+        let mut tried = HashSet::new();
+        tried.insert(("qobuz".to_string(), "102570409".to_string()));
+        assert!(!should_try(&tried, "qobuz", "102570409"));
+        assert!(should_try(&tried, "qobuz", "102570410"));
+        assert!(should_try(&tried, "tidal", "102570409"));
+    }
+
+    #[tokio::test]
+    async fn lookup_context_reads_title_artist_duration_and_valid_isrc() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let artist_id: i64 =
+            sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Veri Fy') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let track_id: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, duration_ms, isrc) VALUES ('Pista Demo', 223000, 'verif2600001') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let context = load_lookup_context(&pool, track_id).await.expect("context");
+        assert_eq!(context.title, "Pista Demo");
+        assert_eq!(context.artist, "Veri Fy");
+        assert_eq!(context.duration_ms, Some(223_000));
+        assert_eq!(context.isrc.as_deref(), Some("VERIF2600001"));
+        assert_eq!(context.expected_duration_sec(), 223);
+
+        // A placeholder ISRC must never drive a search for another recording.
+        let invalid_id: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc) VALUES ('Otra', 'NOT_FOUND') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let invalid = load_lookup_context(&pool, invalid_id)
+            .await
+            .expect("context");
+        assert_eq!(invalid.isrc, None);
+
+        assert!(load_lookup_context(&pool, 999_999).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn isrc_cascade_is_honest_without_isrc_or_spotify() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let track_id: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Sin ISRC') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        let http = reqwest::Client::new();
+        let err = isrc_cascade(&pool, &http, track_id, &HashSet::new(), false)
+            .await
+            .expect_err("no ISRC and no Spotify account: the cascade cannot guess");
+        assert!(
+            err.contains("ISRC"),
+            "the message must name the missing identity: {err}"
         );
     }
 }

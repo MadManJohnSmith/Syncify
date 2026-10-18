@@ -77,7 +77,12 @@ async fn resolves_and_starts_downloading_a_live_stream() {
                 Some(1_200_588),
                 "resolved stream must never be a 1,200,588-byte 30s preview"
             );
-            println!("verified HTTP {} content-type={} len={:?}", resp.status(), ctype, clen);
+            println!(
+                "verified HTTP {} content-type={} len={:?}",
+                resp.status(),
+                ctype,
+                clen
+            );
         }
         Err(err) => {
             println!("honest rejection for track {}: {}", track_id, err);
@@ -195,5 +200,92 @@ async fn probes_qobuz_formats_for_the_live_track() {
                 }
             }
         }
+    }
+}
+
+/// Fase 3 — la cascada ISRC debe encontrar la misma grabación en Qobuz/Tidal
+/// para una pista que NO tiene fuentes directas (importada sólo de Spotify).
+///
+/// Uso:
+///   SYNCIFY_LIVE_ISRC_TRACK_ID=24437 cargo test -p syncify-tauri --test streaming_live -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "live: busca por ISRC en Qobuz/Tidal reales"]
+async fn isrc_cascade_resolves_a_track_without_direct_sources() {
+    let track_id: i64 = std::env::var("SYNCIFY_LIVE_ISRC_TRACK_ID")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24_437);
+
+    let _ = crypto::init_keychain_crypto();
+    let db = sqlx::SqlitePool::connect(&live_db_url())
+        .await
+        .expect("open syncify.db read-only");
+    let http = reqwest::Client::new();
+
+    let direct: Vec<(String, String)> = sqlx::query_as(
+        r#"
+        SELECT LOWER(s.name), ts.service_track_id
+        FROM track_sources ts
+        JOIN services s ON s.id = ts.service_id
+        WHERE ts.track_id = ? AND LOWER(s.name) IN ('qobuz', 'tidal')
+        "#,
+    )
+    .bind(track_id)
+    .fetch_all(&db)
+    .await
+    .unwrap_or_default();
+    let meta: Option<(String, Option<String>, Option<i64>)> =
+        sqlx::query_as("SELECT title, isrc, duration_ms FROM tracks WHERE id = ?")
+            .bind(track_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten();
+    println!(
+        "track {} meta={:?} direct_qobuz_tidal_sources={:?}",
+        track_id, meta, direct
+    );
+
+    match syncify_tauri_lib::services::streaming::resolve_stream_for_track(&db, &http, track_id)
+        .await
+    {
+        Ok(resolved) => {
+            println!(
+                "resolved via {}: format={} tier={} label='{}' source='{}'",
+                resolved.info.service_name,
+                resolved.info.format,
+                resolved.info.quality_tier,
+                resolved.info.quality_label,
+                resolved.info.source_name
+            );
+            assert!(
+                resolved.info.service_name == "qobuz" || resolved.info.service_name == "tidal",
+                "the cascade must land on a lossless provider"
+            );
+            assert_ne!(
+                resolved.info.quality_tier, "lossy",
+                "a Spotify-only import must play lossless when the catalogue has it"
+            );
+            let resp = http
+                .get(&resolved.url)
+                .header(reqwest::header::RANGE, "bytes=0-63")
+                .send()
+                .await
+                .expect("GET stream prefix");
+            assert!(resp.status().is_success(), "HTTP {}", resp.status());
+            assert_ne!(
+                resp.content_length(),
+                Some(1_200_588),
+                "cascade must reject the 30 s Qobuz preview"
+            );
+            println!(
+                "verified HTTP {} content-type={:?}",
+                resp.status(),
+                resp.headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+            );
+        }
+        Err(err) => panic!("cascade failed for track {}: {}", track_id, err),
     }
 }
