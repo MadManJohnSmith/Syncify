@@ -318,8 +318,8 @@ defineExpose({
 </script>
 
 <style scoped>
-/* Keyboard Key Styling — tokens de tema (la variante .dark anterior estaba
-   muerta: el tema vive en data-theme, no en una clase). */
+/* Keyboard Key Styling — theme tokens (the previous .dark variant was
+   dead: the theme lives in data-theme, not in a class). */
 .keyboard-key {
   display: inline-flex;
   align-items: center;

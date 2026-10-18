@@ -95,10 +95,10 @@ describe('MigrationView — account picker identity', () => {
     const optionTexts = picker.findAll('option').map(o => o.text())
 
     expect(optionTexts[0]).toContain('Ana Spotify (ana@spotify.com)')
-    expect(optionTexts[0]).toContain('(activa)')
+    expect(optionTexts[0]).toContain('(active)')
     // The opaque session marker is never shown as an identity.
     expect(optionTexts.join(' ')).not.toContain('browser_session')
-    expect(optionTexts[1]).toContain('Identidad no proporcionada')
+    expect(optionTexts[1]).toContain('Identity not provided')
     // And no numeric fallback label either.
     expect(optionTexts.join(' ')).not.toContain('Cuenta 12')
 

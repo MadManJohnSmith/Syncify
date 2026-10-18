@@ -239,9 +239,9 @@ export const TauriEvents = {
     AUTH_SESSION_EXPIRED: 'auth-session-expired',
     SYNC_SETTINGS_UPDATED: 'sync-settings-updated',
 
-    // Enrichment events. ENRICHMENT_PROGRESS_ALT apunta al mismo canal
-    // canónico: el antiguo alias sin guion no lo escuchaba nadie y solo
-    // duplicaba el tráfico IPC por evento.
+    // Enrichment events. ENRICHMENT_PROGRESS_ALT points to the same
+    // canonical channel: nobody listened to the old alias without a hyphen and it only
+    // duplicated IPC traffic per event.
     ENRICHMENT_PROGRESS: 'enrichment-progress',
     ENRICHMENT_PROGRESS_ALT: 'enrichment-progress',
     ENRICHMENT_STATUS: 'background-enrichment-status',
@@ -271,6 +271,11 @@ export const TauriEvents = {
     FAVORITES_SYNC_COMPLETED: 'syncify:favorites_sync_completed',
     WORKER_FATAL: 'worker_fatal',
     WORKER_RESTARTED: 'worker_restarted',
+
+    // Playback events (motor nativo, fase 1)
+    PLAYER_TICK: 'player:tick',
+    PLAYER_ENDED: 'player:ended',
+    PLAYER_MPRIS_ACTION: 'player:mpris-action',
 } as const;
 
 export type TauriEventName = typeof TauriEvents[keyof typeof TauriEvents];

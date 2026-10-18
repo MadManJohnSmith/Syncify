@@ -238,8 +238,8 @@ async def download_tidal(track_id: str, output_path: str, quality: str) -> Downl
 async def get_deezer_service() -> Any:
     """Initialize and authenticate Deezer service.
 
-    El ARL es la cookie PERSONAL de la sesión; la clave Blowfish es PÚBLICA y
-    DeezerService ya cae a ella por defecto (DEEZER_BLOWFISH_KEY solo sobrescribe).
+    The ARL is the session's PERSONAL cookie; the Blowfish key is PUBLIC and
+    DeezerService already falls back to it by default (DEEZER_BLOWFISH_KEY only overrides it).
     """
     arl = os.getenv("DEEZER_ARL", "")
     if not arl:

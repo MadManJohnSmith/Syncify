@@ -105,21 +105,21 @@
           <span class="uppercase tracking-wider text-[10px]">Queue Reconciliation:</span>
         </div>
         <div class="flex items-center gap-3 flex-wrap text-text-secondary text-[11px]">
-          <span title="Total tracks requested by user / selection">Seleccionadas: <strong class="text-gray-900 dark:text-white">{{ queueStats?.submitted ?? selectedCount }}</strong></span>
+          <span title="Total tracks requested by user / selection">Selected: <strong class="text-gray-900 dark:text-white">{{ queueStats?.submitted ?? selectedCount }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Initial eligible tracks in queue">Elegibles: <strong class="text-indigo-400">{{ (queueStats?.submitted ?? selectedCount) - (queueStats?.skipped ?? 0) - (queueStats?.deduplicated ?? 0) }}</strong></span>
+          <span title="Initial eligible tracks in queue">Eligible: <strong class="text-indigo-400">{{ (queueStats?.submitted ?? selectedCount) - (queueStats?.skipped ?? 0) - (queueStats?.deduplicated ?? 0) }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Excluded before queuing due to preflight filter">Excluidas Preflight: <strong class="text-amber-500">{{ (queueStats?.skipped ?? 0) + (queueStats?.deduplicated ?? 0) }}</strong></span>
+          <span title="Excluded before queuing due to preflight filter">Excluded Preflight: <strong class="text-amber-500">{{ (queueStats?.skipped ?? 0) + (queueStats?.deduplicated ?? 0) }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Tracks currently in queued state">Pendientes: <strong class="text-amber-500">{{ queueStats?.queued ?? 0 }}</strong></span>
+          <span title="Tracks currently in queued state">Pending: <strong class="text-amber-500">{{ queueStats?.queued ?? 0 }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Tracks currently downloading concurrently">Activas: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? 0 }}</strong></span>
+          <span title="Tracks currently downloading concurrently">Active: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? 0 }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Finished downloads in queue">Completadas: <strong class="text-success">{{ queueStats?.completed ?? 0 }}</strong></span>
+          <span title="Finished downloads in queue">Completed: <strong class="text-success">{{ queueStats?.completed ?? 0 }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Failed downloads in queue">Fallidas: <strong class="text-error">{{ queueStats?.failed ?? 0 }}</strong></span>
+          <span title="Failed downloads in queue">Failed: <strong class="text-error">{{ queueStats?.failed ?? 0 }}</strong></span>
           <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-          <span title="Cancelled downloads in queue">Canceladas: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
+          <span title="Cancelled downloads in queue">Cancelled: <strong class="text-orange-400">{{ queueStats?.cancelled ?? 0 }}</strong></span>
         </div>
       </div>
     </div>
@@ -551,7 +551,7 @@
     <!-- Content Area -->
     <div class="flex-1 overflow-hidden px-8 pb-8 flex flex-col">
       
-<!-- ERROR STATE: un fallo de carga no es una biblioteca vacía -->
+<!-- ERROR STATE: a load failure is not an empty library -->
       <div v-if="loadError && !isLoading" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16" data-testid="library-load-error">
         <span class="material-symbols-outlined text-[80px] text-error mb-6">error</span>
         <h3 class="text-2xl font-bold text-ink mb-2">Could not load your library</h3>
@@ -1211,7 +1211,7 @@ function handleAlbumPlay(album: { tracks: Track[] }) {
 
 // Fetch real data from backend
 const isLoading = ref(true)
-/** Fallo de la última carga; distingue «biblioteca vacía» de «no se pudo leer». */
+/** Failure of the last load; distinguishes "empty library" from "could not read". */
 const loadError = ref<string | null>(null)
 
 // State - will be updated from backend
@@ -1234,7 +1234,7 @@ const selectedCount = ref(0)
 const isEnriching = ref(false)
 const enrichProgress = ref<{ current: number; total: number; currentTrack: string } | null>(null)
 
-/** Evento MusicBrainz de `enrich_metadata_musicbrainz`. */
+/** MusicBrainz event from `enrich_metadata_musicbrainz`. */
 interface MusicBrainzProgress {
   status?: string
   total: number
@@ -1245,18 +1245,18 @@ interface MusicBrainzProgress {
 }
 
 /**
- * `enrichment-progress` es un canal compartido. MusicBrainz emite
- * `{ status, total, current, enriched, failed, currentTrack }` sin campo
- * `type`; Last.fm emite `{ type: "lastfm_genre", status, current, total,
- * message }` donde `current` cuenta aciertos, y el enriquecimiento incremental
- * emite su `EnrichmentJobSummary` en camelCase (`totalTracks`,
- * `processedTracks`). Ninguno de esos dos describe el trabajo que este botón
- * lanzó, así que se ignoran en vez de pintar una barra con `undefined`.
+ * `enrichment-progress` is a shared channel. MusicBrainz emits
+ * `{ status, total, current, enriched, failed, currentTrack }` with no `type`
+ * field; Last.fm emits `{ type: "lastfm_genre", status, current, total,
+ * message }` where `current` counts hits, and incremental enrichment emits its
+ * `EnrichmentJobSummary` in camelCase (`totalTracks`, `processedTracks`).
+ * Neither of those describes the work this button started, so they are ignored
+ * instead of painting a bar with `undefined`.
  */
 function asMusicBrainzProgress(payload: unknown): MusicBrainzProgress | null {
   if (!payload || typeof payload !== 'object') return null
   const candidate = payload as Record<string, unknown>
-  // MusicBrainz nunca etiqueta el evento; el resto de productores siempre lo hacen.
+  // MusicBrainz never tags the event; every other producer always does.
   if ('type' in candidate) return null
   if (typeof candidate.current !== 'number' || typeof candidate.total !== 'number') return null
   if (!Number.isFinite(candidate.current) || !Number.isFinite(candidate.total)) return null
@@ -1615,7 +1615,7 @@ async function loadLibrary() {
     hasMore.value = page.has_more;
     currentOffset.value = page.offset + page.tracks.length;
   } catch (error) {
-    // Sin marcarlo, un fallo de carga se renderiza como biblioteca vacía.
+    // Without flagging it, a load failure renders as an empty library.
     loadError.value = String(error);
     console.error('Failed to load library:', error);
   } finally {
@@ -1854,7 +1854,7 @@ async function addTrackToPlaylist(playlistId: number, trackId: number) {
     await libraryApi.addToPlaylist(playlistId, [trackId]);
     closeContextMenu();
     await reconcilePlaylistCounts();
-    // L-02: la pista sí se añadía, pero el usuario no recibía ninguna señal.
+    // L-02: the track was indeed added, but the user got no feedback.
     toast.success('Added to playlist', `"${track?.title ?? 'Track'}" added`);
   } catch (error) {
     console.error('Failed to add to playlist:', error);
@@ -1863,8 +1863,8 @@ async function addTrackToPlaylist(playlistId: number, trackId: number) {
 }
 
 // Track selection & downloads
-// L-05: el contador era O(n) por clic (filter sobre toda la biblioteca). Con
-// 23k pistas eso se notaba al hacer clics seguidos; ahora es incremental.
+// L-05: the counter was O(n) per click (a filter over the whole library). With
+// 23k tracks that was noticeable on rapid clicks; now it is incremental.
 function handleTrackClick(track: Track) {
   track.isSelected = !track.isSelected;
   selectedCount.value += track.isSelected ? 1 : -1;
@@ -1874,9 +1874,9 @@ const { play, playNext, enqueue, toggle: togglePlayback, current: playerCurrent 
 
 // S194 residual: double-click plays the LOCAL downloaded file through the
 // syncify-media protocol. Tracks without a local file fail with the backend's
-// honest error: player.error lo muestra el reproductor de la barra de estado mientras hay pista
-// en curso, y sin current (barra oculta) estos catches lo revelan como toast;
-// provider streaming is out of scope.
+// honest error: with a track in progress the status-bar player shows
+// player.error, and without current (hidden bar) these catches surface it as a
+// toast; provider streaming is out of scope.
 async function handleTrackPlay(track: Track) {
   try {
     await play({
@@ -1919,8 +1919,8 @@ async function handlePlayNext(track: Track) {
   }
 }
 
-// Fase 1: "Add to Play Queue" añade la pista al FINAL de la cola de
-// reproducción (playNext inserta al frente); con el player parado la arranca.
+// Phase 1: "Add to Play Queue" appends the track to the END of the play queue
+// (playNext inserts at the front); with the player stopped it starts playback.
 async function handleAddToPlayQueue(track: Track) {
   closeContextMenu();
   try {
@@ -1943,14 +1943,15 @@ async function handleAddToPlayQueue(track: Track) {
 }
 
 /**
- * Un fallo de arranque solo toca player.error: sin pista en curso la barra
- * no se renderiza y el mensaje no llegaría al usuario (antes estos catch
- * eran silenciosos). Con current la barra ya enseña el error; sin ella, toast.
+ * A playback-start failure only touches player.error: with no track in progress
+ * the bar does not render and the message would never reach the user (these
+ * catches used to be silent). With current the bar already shows the error;
+ * without it, a toast.
  */
 function surfacePlayFailure(track: Track, error: unknown) {
-  // L-01: el fallo se silenciaba cuando habia algo sonando, asi que el usuario
-  // no sabia por que no cambio de pista. Ahora se muestra siempre con la
-  // causa real y el paso a seguir.
+  // L-01: the failure was silenced whenever something was playing, so the user
+  // did not know why the track did not change. Now it always shows the real
+  // cause and the next step.
   const message = String((error as { message?: string })?.message || error || 'Unknown error');
   const hasLocalFile = !!track.filePath;
   const hint = hasLocalFile
@@ -1960,8 +1961,8 @@ function surfacePlayFailure(track: Track, error: unknown) {
 }
 
 // "Add to Downloads" enqueues the track into the download queue (QueueView /
-// DownloadsView), same as the D shortcut. Etiqueta renombrada en fase 1 para
-// desambiguarla de la cola de reproducción.
+// DownloadsView), same as the D shortcut. Label renamed in phase 1 to
+// disambiguate it from the play queue.
 async function handleAddToQueue(track: Track) {
   closeContextMenu();
   await handleDownload(track);
@@ -2202,10 +2203,10 @@ async function handleShowInFolder(track: Track) {
 }
 
 /**
- * Borrar una pista la elimina en cascada de `playlist_tracks`, pero no de
- * `playlists.track_count`: sin esto, la sidebar de Playlists seguiría anunciando
- * canciones que ya no existen. Es una pasada de mantenimiento, así que un fallo
- * aquí no debe tumbar el borrado que ya se completó.
+ * Deleting a track cascades to `playlist_tracks`, but not to
+ * `playlists.track_count`: without this, the Playlists sidebar would keep
+ * advertising songs that no longer exist. It is a maintenance pass, so a
+ * failure here must not take down the deletion that already completed.
  */
 async function reconcilePlaylistCounts() {
   try {
@@ -2281,9 +2282,9 @@ function getServiceStyle(service: string): string {
 }
 
 function getServiceIcon(service: string): string {
-  // L-07: el nombre canónico lo decide formatServiceName (el mismo formateador
-  // que usa el resto de la app) y la inicial sale de ahí, así que dos juegos de
-  // alias ('apple' / 'apple music') no pueden divergir entre sí.
+  // L-07: formatServiceName decides the canonical name (the same formatter the
+  // rest of the app uses) and the initial comes from it, so two sets of aliases
+  // ('apple' / 'apple music') cannot diverge from each other.
   const canonical = formatServiceName(service).trim();
   const short: Record<string, string> = {
     'Spotify': 'S',
@@ -2757,23 +2758,23 @@ function applyRouteFilters() {
 }
 
 // ==============================================
-// Ítem 45: deep-link /library?track=<id>
+// Item 45: deep-link /library?track=<id>
 // ==============================================
-// Al montar, con la biblioteca ya cargada, si el query trae `track` se hace
-// scroll hasta esa fila, se resalta unos segundos y se limpia el parámetro
-// para que recargar no repita el salto.
+// On mount, with the library already loaded, if the query carries `track` it
+// scrolls to that row, highlights it for a few seconds and clears the
+// parameter so reloading does not repeat the jump.
 const highlightedTrackId = ref<number | null>(null)
 let highlightClearTimer: ReturnType<typeof setTimeout> | null = null
 
-/** Tope de páginas cargadas al buscar la pista enlazada (50 × PAGE_SIZE). */
+/** Cap on pages loaded while looking for the linked track (50 × PAGE_SIZE). */
 const TRACK_DEEP_LINK_MAX_PAGES = 50
 
 async function focusTrackFromQuery() {
   const raw = route?.query?.track
   if (raw === undefined || raw === null || raw === '') return
 
-  // El parámetro se consume SIEMPRE, exista o no la pista: así un recargazo o
-  // volver atrás no repite el scroll.
+  // The parameter is ALWAYS consumed, whether or not the track exists: that way
+  // a reload or going back does not repeat the scroll.
   const rest: Record<string, LocationQueryValue | LocationQueryValue[]> = { ...route.query }
   delete rest.track
   await router.replace({ query: rest })
@@ -2781,7 +2782,7 @@ async function focusTrackFromQuery() {
   const trackId = typeof raw === 'string' ? Number.parseInt(raw, 10) : NaN
   if (!Number.isFinite(trackId)) return
 
-  // Si la pista cae en páginas aún no cargadas, pagina hasta encontrarla.
+  // If the track falls on pages not loaded yet, page until it is found.
   let pagesLoaded = 0
   while (
     !tracks.value.some(t => t.id === trackId) &&
@@ -2826,7 +2827,7 @@ onMounted(async () => {
   await loadLibrary()
   await fetchQueueStats()
 
-  // Ítem 45: tras la carga inicial, atiende el deep-link ?track=<id>.
+  // Item 45: after the initial load, handle the ?track=<id> deep-link.
   await focusTrackFromQuery()
 
   queueStatsInterval = setInterval(fetchQueueStats, 4000)

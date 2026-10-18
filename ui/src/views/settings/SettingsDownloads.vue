@@ -81,8 +81,8 @@
       <div class="p-5 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark space-y-4">
         <div class="flex items-center justify-between">
           <div>
-            <h4 class="text-sm font-medium text-gray-900 dark:text-white">Presets de calidad por servicio</h4>
-            <p class="text-xs text-text-secondary">Aplica un objetivo de calidad a los servicios conectados (no confundir con el Techo global de Calidad de Audio)</p>
+            <h4 class="text-sm font-medium text-gray-900 dark:text-white">Per-service quality presets</h4>
+            <p class="text-xs text-text-secondary">Apply a quality target to connected services (not to be confused with the global Audio Quality cap)</p>
           </div>
           <span class="text-xs px-2 py-0.5 bg-primary/10 text-primary font-semibold rounded uppercase tracking-wider">
             {{ selectedGlobalQuality }}
@@ -130,7 +130,7 @@
 
         <div class="flex items-center justify-between pt-2">
           <p class="text-xs text-text-secondary">
-            Aplica este preset de calidad a todos los servicios respetando sus capacidades. Para un tope duro a toda la cola de descargas, usa el Techo global en Audio Quality.
+            Applies this quality preset to all services while respecting their capabilities. For a hard cap on the entire download queue, use the global cap in Audio Quality.
           </p>
           <button
             type="button"
@@ -138,7 +138,7 @@
             class="px-3.5 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs font-medium shadow-sm flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ml-4"
           >
             <span class="material-symbols-outlined text-[16px]">done_all</span>
-            Aplicar a servicios
+            Apply to services
           </button>
         </div>
 

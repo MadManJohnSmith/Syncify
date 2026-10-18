@@ -1,40 +1,87 @@
 /**
  * Fase 1 — cola (identidades, replaceQueueAndPlay, reordenación), modos
- * repeat/shuffle, next/previous, fallos de avance y carreras resolver–stop.
+ * repeat/shuffle, next/previous, fallos de avance y carreras resolver–stop,
+ * sobre el motor nativo.
  *
- * jsdom no reproduce audio: HTMLMediaElement está stubbed y el singleton se
- * captura para disparar eventos de medios.
+ * El transporte del motor (`api/player`) está mockeado: los ticks y el
+ * `ended` llegan por las suscripciones capturadas, como desde el backend.
+ * Cada test reimporta el módulo bajo test (estado del singleton fresco).
  */
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
-
-const playStub = vi.fn(() => Promise.resolve())
-const pauseStub = vi.fn()
-const loadStub = vi.fn()
-
-let audioInstance: HTMLMediaElement | null = null
-
-vi.mock('@tauri-apps/api/core', () => ({
-    convertFileSrc: (path: string, protocol?: string) =>
-        `${protocol ?? 'asset'}://localhost/${encodeURIComponent(path)}`,
-}));
 
 vi.mock('../../api/tauri', () => ({
     invokeCommand: vi.fn(),
 }));
 
-import { invokeCommand } from '../../api/tauri'
-
-const mockInvoke = vi.mocked(invokeCommand);
+vi.mock('../../api/player', () => ({
+    playerLoad: vi.fn(),
+    playerPause: vi.fn(),
+    playerResume: vi.fn(),
+    playerStop: vi.fn(),
+    playerSeek: vi.fn(),
+    playerSetVolume: vi.fn(),
+    playerSetRate: vi.fn(),
+    onPlayerTick: vi.fn(),
+    onPlayerEnded: vi.fn(),
+    playerMprisUpdate: vi.fn(() => Promise.resolve()),
+    onMprisAction: vi.fn(() => Promise.resolve()),
+}));
 
 const A = { id: 1, title: 'One', artist: 'X' };
 const B = { id: 2, title: 'Two', artist: 'X' };
 const C = { id: 3, title: 'Three', artist: 'X' };
 
-let usePlayer: typeof import('../../composables/usePlayer').usePlayer;
+type TauriModule = typeof import('../../api/tauri');
+type PlayerModule = typeof import('../../api/player');
+type UsePlayerModule = typeof import('../../composables/usePlayer');
+
+let tauriApi: TauriModule;
+let playerApi: PlayerModule;
+let usePlayer: UsePlayerModule['usePlayer'];
+
+let seq = 0;
+let tickCb: ((tick: import('../../api/player').PlayerTick) => void) | null = null;
+let endedCb: ((seq: number) => void) | null = null;
+
+function mockInvoke(): ReturnType<typeof vi.mocked<TauriModule['invokeCommand']>> {
+    return vi.mocked(tauriApi.invokeCommand);
+}
+
+function engine(): ReturnType<typeof vi.mocked<PlayerModule>> {
+    return vi.mocked(playerApi);
+}
+
+function configureEngineMocks(): void {
+    seq = 0;
+    engine().playerLoad.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 200 }));
+    engine().playerPause.mockReset().mockResolvedValue(undefined);
+    engine().playerResume.mockReset().mockResolvedValue(undefined);
+    engine().playerStop.mockReset().mockResolvedValue(undefined);
+    engine().playerSeek.mockReset().mockResolvedValue(undefined);
+    engine().playerSetVolume.mockReset().mockResolvedValue(undefined);
+    engine().playerSetRate.mockReset().mockResolvedValue(undefined);
+    engine().onPlayerTick.mockReset().mockImplementation((cb) => {
+        tickCb = cb;
+        return Promise.resolve(() => {});
+    });
+    engine().onPlayerEnded.mockReset().mockImplementation((cb) => {
+        endedCb = cb;
+        return Promise.resolve(() => {});
+    });
+}
+
+function tick(positionSec: number): void {
+    tickCb?.({ seq, state: 'playing', positionSec, durationSec: 200 });
+}
+
+function ended(): void {
+    endedCb?.(seq);
+}
 
 function resolveByTrackId(): void {
-    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+    mockInvoke().mockImplementation((cmd: string, args?: Record<string, unknown>) => {
         if (cmd === 'resolve_playback_source') {
             return Promise.resolve({ track_id: args?.trackId, file_path: `/lib/${args?.trackId}.flac` });
         }
@@ -55,46 +102,28 @@ function resolveByTrackId(): void {
 }
 
 function resolveCalls(): number[] {
-    return mockInvoke.mock.calls
+    return mockInvoke().mock.calls
         .filter(c => c[0] === 'resolve_playback_source')
         .map(c => (c[1] as Record<string, unknown> | undefined)?.trackId as number);
 }
 
-function media(): HTMLMediaElement {
-    if (!audioInstance) throw new Error('audio singleton no capturado');
-    return audioInstance;
-}
-
-function ended(): void {
-    media().dispatchEvent(new Event('ended'));
-}
-
-beforeAll(async () => {
-    Object.defineProperty(window.HTMLMediaElement.prototype, 'play', { configurable: true, value: playStub });
-    Object.defineProperty(window.HTMLMediaElement.prototype, 'pause', { configurable: true, value: pauseStub });
-    Object.defineProperty(window.HTMLMediaElement.prototype, 'load', { configurable: true, value: loadStub });
-    class CapturingAudio extends window.Audio {
-        constructor() {
-            super();
-            audioInstance = this;
-        }
-    }
-    (window as unknown as { Audio: typeof Audio }).Audio = CapturingAudio;
-    ({ usePlayer } = await import('../../composables/usePlayer'));
-});
-
 describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
     beforeEach(async () => {
-        mockInvoke.mockReset();
         localStorage.clear();
-        // Módulo fresco: el singleton arrastra modos entre tests y stop() no
-        // los toca (son preferencias persistentes por diseño).
         vi.resetModules();
+        // Reimportar los módulos mockeados para enlazar con las mismas
+        // instancias que verá el módulo bajo test tras el reset.
+        tauriApi = await import('../../api/tauri');
+        playerApi = await import('../../api/player');
+        mockInvoke().mockReset();
+        configureEngineMocks();
         ({ usePlayer } = await import('../../composables/usePlayer'));
         usePlayer().stop();
-        playStub.mockClear();
-        pauseStub.mockClear();
-        loadStub.mockClear();
+        mockInvoke().mockClear();
+    });
+    afterEach(() => {
+        tickCb = null;
+        endedCb = null;
     });
 
     it('replaceQueueAndPlay reproduce la primera y encola el resto en su orden', async () => {
@@ -142,7 +171,7 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
         // Avanza a B (la cola manda con pendientes); repeat-one solo aplica al agotarse.
         expect(player.current.value?.id).toBe(2);
 
-        // Cola agotada + repeat-one: reinicia B con currentTime = 0 y nueva resolución.
+        // Cola agotada + repeat-one: reinicia B en la posición 0 y nueva resolución.
         const before = resolveCalls().length;
         ended(); await flushPromises();
         expect(player.current.value?.id).toBe(2);
@@ -187,7 +216,6 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
     it('previous(): posición > 3 s reinicia a 0; si no, pop del historial y la actual vuelve al frente', async () => {
         resolveByTrackId();
         const player = usePlayer();
-        const m = media();
 
         await player.play(A);
         await player.playNext(B);
@@ -200,7 +228,7 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
         expect(player.upNext.value.map(t => t.id)).toEqual([2]);
 
         // Posición > 3 s → seek(0), sin nueva resolución.
-        (m as unknown as { currentTime: number }).currentTime = 5;
+        tick(5);
         player.seek(5);
         const before = resolveCalls().length;
         player.previous();
@@ -208,6 +236,7 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
         expect(player.positionSec.value).toBe(0);
         expect(player.current.value?.id).toBe(1);
         expect(resolveCalls().length).toBe(before);
+        expect(engine().playerSeek).toHaveBeenLastCalledWith(0);
     });
 
     it('previous() sin historial hace seek(0)', async () => {
@@ -222,7 +251,7 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
     });
 
     it('fallo de avance conserva la cabeza, detiene la cadena y muestra el error', async () => {
-        mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+        mockInvoke().mockImplementation((cmd: string, args?: Record<string, unknown>) => {
             if (cmd === 'resolve_playback_source') {
                 if (args?.trackId === 2) return Promise.reject(new Error('El track 2 no tiene archivo local descargado; descárgalo primero'));
                 return Promise.resolve({ track_id: args?.trackId, file_path: `/lib/${args?.trackId}.flac` });
@@ -242,7 +271,7 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
 
     it('carrera resolver–stop: sin error y sin current', async () => {
         let release!: (v: unknown) => void;
-        mockInvoke.mockImplementation((cmd: string) => {
+        mockInvoke().mockImplementation((cmd: string) => {
             if (cmd === 'resolve_playback_source') {
                 return new Promise(res => { release = res; });
             }
@@ -258,37 +287,47 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
 
         expect(player.error.value).toBeNull();
         expect(player.current.value).toBeNull();
-        expect(playStub).not.toHaveBeenCalled();
+        expect(engine().playerLoad).not.toHaveBeenCalled();
     });
 
-    it('AbortError de un play() interrumpido: sin error y sin current', async () => {
+    it('carrera playerLoad–stop: la carga que llega tarde no toca el estado', async () => {
         resolveByTrackId();
-        playStub.mockImplementationOnce(() =>
-            Promise.reject(Object.assign(new Error('The play() request was interrupted'), { name: 'AbortError' })));
+        let releaseLoad!: (v: import('../../api/player').PlayerLoadResult) => void;
+        engine().playerLoad.mockImplementationOnce(() =>
+            new Promise<import('../../api/player').PlayerLoadResult>(res => { releaseLoad = res; }));
         const player = usePlayer();
 
-        await expect(player.play(A)).resolves.toBeUndefined();
+        const pending = player.play(A);
+        await flushPromises(); // resolve hecho, playerLoad pendiente
+        player.stop();
+        releaseLoad({ seq: 99, durationSec: 100 });
+        await pending;
+        await flushPromises();
+
         expect(player.error.value).toBeNull();
         expect(player.current.value).toBeNull();
+        expect(player.isPlaying.value).toBe(false);
     });
 
     it('volumen acotado a [0,1] y mute independiente', () => {
         const player = usePlayer();
-        const m = media() as unknown as { volume: number; muted: boolean };
 
         player.setVolume(2);
         expect(player.volume.value).toBe(1);
-        expect(m.volume).toBe(1);
+        expect(engine().playerSetVolume).toHaveBeenLastCalledWith(1);
         player.setVolume(-0.5);
         expect(player.volume.value).toBe(0);
+        expect(engine().playerSetVolume).toHaveBeenLastCalledWith(0);
         player.setVolume(0.42);
         expect(player.volume.value).toBe(0.42);
+        expect(engine().playerSetVolume).toHaveBeenLastCalledWith(0.42);
         player.setMuted(true);
         expect(player.muted.value).toBe(true);
-        expect(m.muted).toBe(true);
+        expect(engine().playerSetVolume).toHaveBeenLastCalledWith(0); // el mute envía 0
         expect(player.volume.value).toBe(0.42); // el mute no altera el volumen
         player.setMuted(false);
         expect(player.muted.value).toBe(false);
+        expect(engine().playerSetVolume).toHaveBeenLastCalledWith(0.42);
     });
 
     it('desactivar shuffle restaura el orden base de los pendientes', async () => {
@@ -339,10 +378,6 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
     });
 
     it('con MediaSession presente: metadatos, playbackState, posición con guard de valores finitos y handlers que delegan', async () => {
-        // El binding de MediaSession ocurre una sola vez por módulo (en el
-        // primer bindAudioEvents): se importa un módulo fresco CON el stub ya
-        // definido, igual que en un webview real donde existe desde el arranque.
-        ({ usePlayer } = await import('../../composables/usePlayer'));
         resolveByTrackId();
         const setActionHandler = vi.fn((action: string, handler: (details?: unknown) => void) => { handlers[action] = handler; });
         const setPositionState = vi.fn();
@@ -356,7 +391,6 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
         }
         vi.stubGlobal('MediaMetadata', MediaMetadataStub);
         const player = usePlayer();
-        const m = media();
 
         try {
             await player.play(A);
@@ -366,19 +400,12 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
             // Metadatos al confirmar el inicio.
             expect(ms.metadata).toBeInstanceOf(MediaMetadataStub);
             expect((ms.metadata?.init as { title: string }).title).toBe('One');
-
-            // playbackState (propiedad del estándar) desde el evento 'play'.
-            m.dispatchEvent(new Event('play'));
-            await flushPromises();
             expect(ms.playbackState).toBe('playing');
 
-            // setPositionState solo con valores finitos: duration NaN → no se llama.
-            m.dispatchEvent(new Event('timeupdate'));
+            // setPositionState solo con valores finitos: sin tick con duración → no se llama.
             expect(ms.setPositionState).not.toHaveBeenCalled();
-            Object.defineProperty(m, 'duration', { configurable: true, value: 180 });
-            (m as unknown as { currentTime: number }).currentTime = 10;
-            m.dispatchEvent(new Event('timeupdate'));
-            expect(ms.setPositionState).toHaveBeenCalledWith({ duration: 180, position: 10, playbackRate: 1 });
+            tick(10); // el tick entrega duración 200
+            expect(ms.setPositionState).toHaveBeenCalledWith({ duration: 200, position: 10, playbackRate: 1 });
 
             // Handlers registrados y delegación en las acciones del player.
             for (const action of ['play', 'pause', 'previoustrack', 'nexttrack', 'seekto']) {
@@ -404,7 +431,7 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
 
     it('tras stop() los handlers de MediaSession se re-registran al volver a reproducir', async () => {
         // Regresión: stop() → clearMediaSession() desregistraba los action
-        // handlers y el bind inicial (bindAudioEvents, guard de módulo) no se
+        // handlers y el bind inicial (bindEngineEvents, guard de módulo) no se
         // repetía: PlayPause/Next/Prev por tecla multimedia o D-Bus/MPRIS
         // quedaban muertos hasta reiniciar la app.
         resolveByTrackId();

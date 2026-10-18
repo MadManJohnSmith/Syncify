@@ -427,3 +427,70 @@ fn test_pagination_and_added_at_invariants() {
     let r3 = normalize_added_at(Some("2024-05-10T15:45:00Z"));
     assert_eq!(r3, "2024-05-10T15:45:00+00:00");
 }
+
+// --- Identidad Qobuz: `user/get` con el token guardado ---
+
+/// El refresco de identidad lee `user/get` con el token del puente. El
+/// endpoint no documenta su forma para sesiones de solo token, así que el
+/// parseo es defensivo: cada campo por separado y opcional.
+#[tokio::test]
+async fn test_qobuz_user_profile_parses_identity_fields() {
+    let (mock_url, _requests) = spawn_mock_server(|_target: &str| {
+        (
+            200,
+            serde_json::json!({
+                "user": {
+                    "id": 123,
+                    "login": "ana@example.com",
+                    "email": "Ana@Example.com",
+                    "display_name": "Ana S."
+                }
+            })
+            .to_string(),
+        )
+    })
+    .await;
+
+    let client = QobuzClient::new_with_token(
+        "mock_app_id".into(),
+        "mock_app_secret".into(),
+        "mock_user_token".into(),
+    )
+    .with_base_url(mock_url);
+
+    let identity = client
+        .get_user_profile()
+        .await
+        .expect("user/get must parse");
+    assert_eq!(identity.login.as_deref(), Some("ana@example.com"));
+    assert_eq!(identity.email.as_deref(), Some("Ana@Example.com"));
+    assert_eq!(identity.display_name.as_deref(), Some("Ana S."));
+}
+
+/// Respuestas sin `user` o sin campos no fallan: la identidad queda vacía y el
+/// refresco decide con lo que haya.
+#[tokio::test]
+async fn test_qobuz_user_profile_tolerates_sparse_payloads() {
+    let (mock_url, _requests) = spawn_mock_server(|_target: &str| {
+        (
+            200,
+            serde_json::json!({ "login": "ana@example.com" }).to_string(),
+        )
+    })
+    .await;
+
+    let client = QobuzClient::new_with_token(
+        "mock_app_id".into(),
+        "mock_app_secret".into(),
+        "mock_user_token".into(),
+    )
+    .with_base_url(mock_url);
+
+    let identity = client
+        .get_user_profile()
+        .await
+        .expect("user/get must parse");
+    assert_eq!(identity.login.as_deref(), Some("ana@example.com"));
+    assert_eq!(identity.email, None);
+    assert_eq!(identity.display_name, None);
+}

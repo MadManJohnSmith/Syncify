@@ -413,6 +413,46 @@ pub struct TidalSinglePlaylistImportReport {
 }
 
 /// Tidal API client
+/// Public profile of the account behind a stored session (`GET /users/{id}`).
+///
+/// Used by the per-account identity refresh: the device-flow payload carries no
+/// profile, so the username (or written name) comes from this endpoint. Every
+/// field is optional — Tidal omits what it does not want to expose.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TidalUserProfile {
+    #[allow(dead_code)]
+    // contrato de datos (serde): lo puebla la deserialización, no el código Rust.
+    pub id: Option<i64>,
+    pub username: Option<String>,
+    pub email: Option<String>,
+    #[serde(rename = "firstName")]
+    pub first_name: Option<String>,
+    #[serde(rename = "lastName")]
+    pub last_name: Option<String>,
+}
+
+impl TidalUserProfile {
+    /// Best human-readable name available: the written name first, then the
+    /// username Tidal shows to other users.
+    pub fn best_display_name(&self) -> Option<String> {
+        let full: String = [self.first_name.as_deref(), self.last_name.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !full.trim().is_empty() {
+            return Some(full);
+        }
+        self.username
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+}
+
 pub struct TidalClient {
     client: Client,
     access_token: String,
@@ -568,6 +608,36 @@ impl TidalClient {
             self.get_playlist_tracks(playlist_id, offset, limit)
         })
         .await
+    }
+
+    /// Profile of the account behind the stored session (`GET /users/{id}`).
+    ///
+    /// Identity refresh only: never used by sync, so a failure here can only
+    /// leave the account with its generic name.
+    pub async fn get_user_profile(&self) -> Result<TidalUserProfile, String> {
+        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
+
+        let url = format!("{}/users/{}", self.base_url, user_id);
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[("countryCode", self.country_code.as_str())])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::handle_api_error(status, &body, &url));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse user profile: {}", e))
     }
 
     /// Get user's favorite tracks (paginated)

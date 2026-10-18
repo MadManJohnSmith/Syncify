@@ -609,6 +609,39 @@ impl DownloadJournal {
     }
 }
 
+/// Detect an explicit credential rejection without matching bare status digits
+/// inside provider item IDs or response bodies. A generic `"401"` substring is
+/// not evidence: `"track 4012345"` must stay a normal provider error.
+fn is_auth_rejection(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    if lower.contains("requiresauth")
+        || lower.contains("authentication failed")
+        || lower.contains("invalid_grant")
+        || lower.contains("oauth token refresh failed")
+    {
+        return true;
+    }
+    const MARKERS: [&str; 12] = [
+        "http 401",
+        "http 403",
+        "status 401",
+        "status 403",
+        "error 401",
+        "error 403",
+        "401 unauthorized",
+        "403 forbidden",
+        "401 login",
+        "401 oauth",
+        "401 authentication",
+        "403 authentication",
+    ];
+    MARKERS.iter().any(|marker| lower.contains(marker))
+        || lower.contains("(401)")
+        || lower.contains("(401 ")
+        || lower.contains("(403)")
+        || lower.contains("(403 ")
+}
+
 /// Map an operational error message onto the shared error taxonomy so that
 /// `fail_operation` and startup reconciliation agree on retryability.
 ///
@@ -655,13 +688,7 @@ pub fn classify_operation_error(
         };
     }
 
-    if error.contains("401")
-        || error.contains("403")
-        || error.contains("RequiresAuth")
-        || error.contains("authentication failed")
-        || error.contains("invalid_grant")
-        || error.contains("OAuth token refresh failed")
-    {
+    if is_auth_rejection(error) {
         return ErrorTaxonomy::AuthInvalid {
             message: error.to_string(),
         };

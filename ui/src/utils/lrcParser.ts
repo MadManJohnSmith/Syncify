@@ -1,6 +1,6 @@
 /**
- * Utilidades para análisis y sincronización de letras LRC y TTML.
- * Extraído y unificado para el reproductor expandido/pantalla completa.
+ * Utilities for parsing and syncing LRC and TTML lyrics.
+ * Extracted and unified for the expanded/fullscreen player.
  */
 
 export interface ParsedLyricLine {
@@ -12,7 +12,7 @@ export interface ParsedLyricLine {
 const TIMESTAMP_RE = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
 
 /**
- * Formatea segundos a reloj mm:ss.xx
+ * Formats seconds as an mm:ss.xx clock
  */
 export function formatClock(sec: number): string {
   const s = Math.max(0, sec);
@@ -24,8 +24,8 @@ export function formatClock(sec: number): string {
 }
 
 /**
- * Parsea el contenido de texto LRC extrayendo marcas de tiempo [mm:ss.xx].
- * Si una línea contiene múltiples marcas, se expanden.
+ * Parses LRC text content, extracting [mm:ss.xx] timestamps.
+ * If a line contains multiple timestamps, they are expanded.
  */
 export function parseLrc(content: string): ParsedLyricLine[] {
   if (!content) return [];
@@ -54,8 +54,8 @@ export function parseLrc(content: string): ParsedLyricLine[] {
 }
 
 /**
- * Encuentra el índice de la línea de letra activa para un segundo de reproducción dado.
- * Devuelve -1 si ninguna línea ha comenzado aún.
+ * Finds the index of the active lyric line for a given playback second.
+ * Returns -1 if no line has started yet.
  */
 export function findActiveLyricIndex(lines: ParsedLyricLine[], positionSec: number): number {
   if (!lines || lines.length === 0) return -1;

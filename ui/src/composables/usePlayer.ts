@@ -1,27 +1,46 @@
 /**
- * Player local — Fase 1 (cola con identidad, modos persistentes, acreditación
- * de escucha, restauración tras reinicio, MediaSession).
+ * Local player — Phase 1 (queue with identity, persistent modes, listen
+ * crediting, restore after restart, MediaSession).
  *
- * Singleton HTML5 Audio driven through the `syncify-media://` protocol:
- * the backend command `resolve_playback_source` verifies the track has a
- * downloaded file, grants exactly that file (in-memory allowlist), and the
- * frontend converts the path with convertFileSrc. Provider streaming is out
- * of scope (S194 verdict).
+ * Singleton driven by the native engine (`syncify-player` in Rust,
+ * rodio + symphonia) through the typed transport in `api/player.ts`: the
+ * backend command `resolve_playback_source` verifies the track has a
+ * downloaded file and the engine loads and plays it. The legacy HTML5 Audio
+ * + `syncify-media://` path was removed after Fase 0 proved the WebKitGTK
+ * media engine cannot consume custom-scheme audio (see
+ * `docs/auditoria/playback-fase0-evidencia-2026-10-17.md`). Provider
+ * streaming is still out of scope.
  *
- * Regulares de la fase:
- * - La restauración tras reinicio SIEMPRE vuelve a resolver con
- *   `resolve_playback_source`: en localStorage jamás se guardan `file_path`,
- *   `audio.src`, URLs convertidas ni el DTO completo de la pista.
- * - La acreditación de escucha usa 30 s de reproducción real acumulados por
- *   tick; nunca `currentTime >= 30`. La posición restaurada no acredita tiempo
- *   previo.
- * - Importar este módulo no dispara invokes ni reproducción: la restauración
- *   es perezosa (`restoreFromPersistence`) y la invoca el reproductor de la barra de estado al montar.
+ * Phase rules:
+ * - Restoring after a restart ALWAYS resolves again with
+ *   `resolve_playback_source`: localStorage never stores `file_path`, the
+ *   full track DTO, or engine state. The engine loads the file paused at the
+ *   saved position.
+ * - Listen crediting uses 30 s of real playback accumulated per
+ *   tick; never `position >= 30`. The restored position does not credit
+ *   previous time.
+ * - Importing this module fires no invokes and no playback: restoration
+ *   is lazy (`restoreFromPersistence`) and the status bar player invokes it on mount.
+ * - Engine events carry the load `seq`: everything from an already replaced
+ *   track is discarded.
  */
 import { computed, ref } from 'vue'
-import { convertFileSrc } from '@tauri-apps/api/core'
 import { invokeCommand } from '../api/tauri'
 import { getTrackMetadata, recordLocalPlay, type TrackMetadataWithSources } from '../api/library'
+import {
+    onMprisAction,
+    onPlayerEnded,
+    onPlayerTick,
+    playerLoad,
+    playerMprisUpdate,
+    playerPause,
+    playerResume,
+    playerSeek,
+    playerSetRate,
+    playerSetVolume,
+    playerStop,
+    type PlayerEngineState,
+} from '../api/player'
 
 /**
  * Outcome of queueing a track: 'started' means playback began right away
@@ -40,9 +59,9 @@ export interface PlayerTrack {
 export type RepeatMode = 'off' | 'all' | 'one'
 
 /**
- * Entrada de cola con identidad propia: permite duplicados y reordenación
- * estable. `track` es la proyección segura (sin file_path) cuando se conoce;
- * las entradas restauradas la obtienen justo antes de sonar.
+ * Queue entry with its own identity: allows duplicates and stable
+ * reordering. `track` is the safe projection (without file_path) when known;
+ * restored entries get it just before playing.
  */
 export interface PlaybackQueueEntry {
     entryId: string;
@@ -50,7 +69,7 @@ export interface PlaybackQueueEntry {
     track?: PlayerTrack;
 }
 
-/** Pendiente de escucha esperando confirmación del backend. */
+/** Listen pending confirmation from the backend. */
 export interface PendingListen {
     trackId: number;
     listenSessionId: string;
@@ -64,7 +83,7 @@ interface PlaybackSource {
 }
 
 // ---------------------------------------------------------------------------
-// Constantes y utilidades
+// Constants and utilities
 // ---------------------------------------------------------------------------
 
 export const LISTEN_THRESHOLD_SEC = 30;
@@ -80,7 +99,7 @@ function clampVolume(v: number): number {
     return Math.min(1, Math.max(0, v));
 }
 
-/** UUID v4 canónico (minúsculas con guiones); fallback manual para entornos sin randomUUID. */
+/** Canonical UUID v4 (lowercase with hyphens); manual fallback for environments without randomUUID. */
 function uuidV4(): string {
     const c = globalThis.crypto;
     if (c && typeof c.randomUUID === 'function') return c.randomUUID();
@@ -104,16 +123,11 @@ function messageOf(err: unknown): string {
     return err instanceof Error ? err.message : String(err);
 }
 
-function isAbortError(err: unknown): boolean {
-    return typeof err === 'object' && err !== null
-        && 'name' in err && (err as { name?: unknown }).name === 'AbortError';
-}
-
 /**
- * Clasificador de errores definitivos de biblioteca (pista borrada, UUID
- * inválido, FK rota): descartan sin reintentar. Todo lo demás (DB ocupada,
- * IPC caído) se trata como transitorio. Los mensajes vienen del backend como
- * texto; el clasificador es tolerante a variaciones de redacción.
+ * Classifier for definitive library errors (deleted track, invalid UUID,
+ * broken FK): they are discarded without retrying. Everything else (busy DB,
+ * IPC down) is treated as transient. Messages come from the backend as
+ * text; the classifier tolerates wording variations.
  */
 export function isDefinitiveLibraryError(message: string): boolean {
     const m = message.toLowerCase();
@@ -126,7 +140,7 @@ export function isDefinitiveLibraryError(message: string): boolean {
         || m.includes('invalid');
 }
 
-/** Proyección estricta del DTO a PlayerTrack: jamás arrastra file_path/URLs. */
+/** Strict projection of the DTO to PlayerTrack: never drags file_path/URLs along. */
 export function projectMetadata(meta: TrackMetadataWithSources): PlayerTrack {
     return {
         id: meta.track_id,
@@ -147,17 +161,25 @@ function shuffled<T>(arr: T[]): T[] {
 }
 
 // ---------------------------------------------------------------------------
-// Estado del singleton
+// Singleton state
 // ---------------------------------------------------------------------------
 
-const audio = new Audio();
+/**
+ * Generation of the engine load owned by this composable (0 = none). Engine
+ * events carry it; anything else belongs to a replaced track and is ignored.
+ */
+let engineSeq = 0;
+/** Path loaded in the engine; `null` plays the role `audio.src` had (nothing loaded). */
+let loadedPath: string | null = null;
+/** Last engine state (tick-confirmed or optimistic); mirrors `audio.paused`. */
+let engineState: PlayerEngineState = 'stopped';
 
 const currentEntry = ref<PlaybackQueueEntry | null>(null);
 const current = computed<PlayerTrack | null>({
     get: () => currentEntry.value?.track ?? null,
-    // Escritura directa soportada (inyección de estado; la usan specs de layout
-    // para simular «reproduciendo»): envuelve la pista en una entrada con
-    // identidad propia sin tocar cola ni historial.
+    // Direct write supported (state injection; layout specs use it
+    // to simulate "playing"): wraps the track in an entry with its own
+    // identity without touching queue or history.
     set: (track) => {
         currentEntry.value = track ? { entryId: uuidV4(), trackId: track.id, track } : null;
     },
@@ -169,7 +191,7 @@ const playbackRate = ref(1);
 const error = ref<string | null>(null);
 const isLoadingSource = ref(false);
 
-// PL-09 / PL-10: Estado y acciones del reproductor de pantalla completa / expandido
+// PL-09 / PL-10: Fullscreen / expanded player state and actions
 const isFullscreenOpen = ref(false);
 
 function openFullscreen(): void {
@@ -184,15 +206,15 @@ function toggleFullscreen(): void {
     isFullscreenOpen.value = !isFullscreenOpen.value;
 }
 
-// PL-10: Escuchar el evento disparado desde el menú lateral (App.vue:483)
+// PL-10: Listen for the event fired from the sidebar menu (App.vue:483)
 if (typeof window !== 'undefined') {
     window.addEventListener('syncify:open-fullscreen-player', () => {
         openFullscreen();
     });
 }
 
-// Cola (FE-9 extendido): pendientes con identidad propia; `upNext` se mantiene
-// como proyección compatible para consumidores previos.
+// Queue (extended FE-9): pending entries with their own identity; `upNext` is kept
+// as a compatible projection for previous consumers.
 const queue = ref<PlaybackQueueEntry[]>([]);
 const history = ref<PlaybackQueueEntry[]>([]);
 const shuffle = ref(false);
@@ -201,30 +223,22 @@ const volume = ref(1);
 const muted = ref(false);
 const pendingListens = ref<PendingListen[]>([]);
 
-/** Orden base pre-barajado de los pendientes (entryIds). No reactivo: lo sincronizan las mutaciones. */
+/** Pre-shuffle base order of the pending entries (entryIds). Not reactive: the mutations keep it in sync. */
 let baseOrder: string[] = [];
-/** Última ruta resuelta con éxito; comparación EXACTA (un substring daría falsos positivos con rutas sufijo). */
-let lastResolvedPath: string | null = null;
-/** Generación de transición: toda continuación asíncrona comprueba que su gen sigue vivo. */
+/** Transition generation: every async continuation checks that its gen is still alive. */
 let transitionGen = 0;
-/** Suprime el informe del listener `error` del elemento cuando el flujo ya gestionó el fallo. */
-let reportedMediaFailure = false;
 
-/** Media errors are mapped to fixed user-facing text; never expose paths or engine diagnostics. */
-function playbackFailureMessage(code?: number): string {
-    switch (code) {
-        case 1: return 'Playback cancelled; please try again';
-        case 2: return 'Could not read the local file; check that it is still available';
-        case 3: return 'Could not decode the audio; check the file or system codecs';
-        case 4: return 'Unsupported audio format; check the system codecs';
-        default: return 'Could not play the audio; check the file and audio output';
-    }
+/** Effective engine volume: mute is sent as 0, like `audio.muted` did. */
+function effectiveEngineVolume(): number {
+    return muted.value ? 0 : clampVolume(volume.value);
 }
 
-function reportMediaFailure(code?: number): void {
-    if (reportedMediaFailure) return;
-    reportedMediaFailure = true;
-    error.value = playbackFailureMessage(code);
+/**
+ * Engine failures are shown with the backend's sanitized message (the engine
+ * never puts paths in its error text).
+ */
+function reportEngineFailure(err: unknown): void {
+    error.value = messageOf(err);
     isPlaying.value = false;
     setMediaSessionPlaybackState('paused');
 }
@@ -232,7 +246,7 @@ function reportMediaFailure(code?: number): void {
 const upNext = computed<PlayerTrack[]>(() =>
     queue.value.map(e => e.track ?? {
         id: e.trackId,
-        title: `Pista #${e.trackId}`,
+        title: `Track #${e.trackId}`,
         artist: '',
         album: null,
         coverUrl: null,
@@ -240,7 +254,7 @@ const upNext = computed<PlayerTrack[]>(() =>
 );
 
 // ---------------------------------------------------------------------------
-// Persistencia (localStorage, clave versionada única)
+// Persistence (localStorage, single versioned key)
 // ---------------------------------------------------------------------------
 
 interface PersistedQueueEntry { entryId: string; trackId: number }
@@ -276,14 +290,14 @@ function persistState(): void {
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch {
-        // Cuota/almacenamiento no disponible: la reproducción sigue sin persistencia.
+        // Quota/storage unavailable: playback continues without persistence.
     }
 }
 
 function validatePersisted(v: unknown): PersistedPlayerState | null {
     if (typeof v !== 'object' || v === null) return null;
     const rec = v as Record<string, unknown>;
-    // Versión desconocida o estructura inválida → descartar completo, arrancar limpio.
+    // Unknown version or invalid structure → discard everything, start clean.
     if (rec.version !== 1) return null;
 
     const parseEntry = (e: unknown): PersistedQueueEntry | null => {
@@ -322,8 +336,8 @@ function validatePersisted(v: unknown): PersistedPlayerState | null {
     if (typeof rec.muted !== 'boolean') return null;
     if (!Array.isArray(rec.pendingListens)) return null;
 
-    // Pendientes de escucha: cada fila corrupta (no-UUID / trackId inválido) se
-    // descarta individualmente; el resto del estado se conserva.
+    // Pending listens: each corrupt row (non-UUID / invalid trackId) is
+    // discarded individually; the rest of the state is kept.
     const listens: PendingListen[] = [];
     for (const item of rec.pendingListens) {
         if (typeof item !== 'object' || item === null) continue;
@@ -365,13 +379,13 @@ function stripEntry(e: PlaybackQueueEntry): PersistedQueueEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Acreditación de escucha (30 s reales por tick)
+// Listen crediting (30 real seconds per tick)
 // ---------------------------------------------------------------------------
 
 let listenSessionId: string | null = null;
 let listenTrackId: number | null = null;
 let listenAccumSec = 0;
-/** Un pendiente por sesión de escucha: se crea una sola vez al cruzar el umbral. */
+/** One pending entry per listen session: it is created only once when the threshold is crossed. */
 let listenScheduled = false;
 let tickWallMs: number | null = null;
 let tickMediaSec: number | null = null;
@@ -396,10 +410,10 @@ function resetListenSession(): void {
 
 function creditListenTick(): void {
     if (!listenSessionId || listenTrackId === null || current.value === null) return;
-    const eligible = !audio.paused && audio.readyState >= 3;
+    const eligible = engineState === 'playing';
     if (!eligible) {
-        // Pausa/buffering: el tick no acredita; el acumulado se conserva y la
-        // línea base se re-ancla en el próximo tick elegible.
+        // Pause/buffering: the tick does not credit; the accumulated time is kept
+        // and the baseline re-anchors on the next eligible tick.
         tickWallMs = null;
         tickMediaSec = null;
         return;
@@ -407,16 +421,16 @@ function creditListenTick(): void {
     const now = Date.now();
     if (tickWallMs !== null && tickMediaSec !== null) {
         const dtWall = (now - tickWallMs) / 1000;
-        const dtMedia = audio.currentTime - tickMediaSec;
-        const rate = Number.isFinite(audio.playbackRate) && audio.playbackRate > 0 ? audio.playbackRate : 1;
+        const dtMedia = positionSec.value - tickMediaSec;
+        const rate = Number.isFinite(playbackRate.value) && playbackRate.value > 0 ? playbackRate.value : 1;
         if (Number.isFinite(dtWall) && Number.isFinite(dtMedia) && dtWall >= 0 && dtMedia >= 0) {
             listenAccumSec += Math.min(dtWall, dtMedia / rate);
         }
-        // Delta inválido (seek, salto de currentTime): el tick no acredita pero
-        // tampoco borra el acumulado; la re-anclaje de abajo evita arrastrarlo.
+        // Invalid delta (seek, currentTime jump): the tick does not credit but
+        // does not wipe the accumulated time either; the re-anchor below keeps it from dragging on.
     }
     tickWallMs = now;
-    tickMediaSec = audio.currentTime;
+    tickMediaSec = positionSec.value;
     if (!listenScheduled && listenAccumSec >= LISTEN_THRESHOLD_SEC) {
         listenScheduled = true;
         scheduleListen(listenTrackId, listenSessionId);
@@ -424,7 +438,7 @@ function creditListenTick(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Pendientes de escucha: envío único por sesión, reintentos con tope
+// Pending listens: single send per session, capped retries
 // ---------------------------------------------------------------------------
 
 const listenInFlight = new Set<string>();
@@ -457,8 +471,8 @@ async function flushPendingListens(): Promise<void> {
     for (const p of [...pendingListens.value]) {
         if (listenInFlight.has(p.listenSessionId)) continue;
         if (p.attempts >= LISTEN_MAX_ATTEMPTS) {
-            // Tope de 5 intentos alcanzado: se descarta y se registra.
-            console.warn(`[player] descartando escucha de track ${p.trackId} tras ${p.attempts} intentos`);
+            // Cap of 5 attempts reached: it is discarded and logged.
+            console.warn(`[player] discarding listen for track ${p.trackId} after ${p.attempts} attempts`);
             discardListen(p);
             continue;
         }
@@ -471,10 +485,10 @@ async function flushPendingListens(): Promise<void> {
             persistState();
         } catch (err) {
             const msg = messageOf(err);
-            console.warn(`[player] record_local_play falló (intento ${p.attempts}) para track ${p.trackId}: ${msg}`);
-            // Definitivo (pista borrada/UUID inválido) o tope de 5 intentos: descarta.
+            console.warn(`[player] record_local_play failed (attempt ${p.attempts}) for track ${p.trackId}: ${msg}`);
+            // Definitive (deleted track/invalid UUID) or cap of 5 attempts: discard.
             if (isDefinitiveLibraryError(msg) || p.attempts >= LISTEN_MAX_ATTEMPTS) discardListen(p);
-            // Transitorio por debajo del tope: conserva el pendiente; scheduleRetry programa el backoff.
+            // Transient below the cap: keep the pending entry; scheduleRetry programs the backoff.
         } finally {
             listenInFlight.delete(p.listenSessionId);
         }
@@ -483,7 +497,7 @@ async function flushPendingListens(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// MediaSession (feature detection por símbolo, degradación limpia)
+// MediaSession (feature detection by symbol, clean degradation)
 // ---------------------------------------------------------------------------
 
 function mediaSessionAvailable(): boolean {
@@ -492,11 +506,11 @@ function mediaSessionAvailable(): boolean {
 
 function setMediaSessionPlaybackState(state: MediaSessionPlaybackState): void {
     if (!mediaSessionAvailable()) return;
-    // `playbackState` es una propiedad del estándar, no un método.
+    // `playbackState` is a property of the standard, not a method.
     try {
         navigator.mediaSession.playbackState = state;
     } catch {
-        // Degradación limpia.
+        // Clean degradation.
     }
 }
 
@@ -511,17 +525,40 @@ function updateMediaSessionMetadata(track: PlayerTrack): void {
             ...(track.coverUrl ? { artwork: [{ src: track.coverUrl }] } : {}),
         });
     } catch {
-        // Degradación limpia.
+        // Clean degradation.
     }
+}
+
+/**
+ * Publica metadatos y modos en el panel MPRIS del escritorio (Linux). El
+ * transporte (estado + posición) lo publica el ticker del backend; aquí va
+ * sólo lo que únicamente sabe la UI. En el resto de plataformas es un no-op.
+ *
+ * La pista llega por parámetro: al empezar a sonar la carga se confirma antes
+ * de que `currentEntry` apunte a la pista nueva.
+ */
+function syncMprisState(track: PlayerTrack | null = current.value): void {
+    void playerMprisUpdate({
+        trackId: track?.id ?? null,
+        title: track?.title ?? null,
+        artist: track?.artist ?? null,
+        album: track?.album ?? null,
+        durationSec: durationSec.value > 0 ? durationSec.value : null,
+        artUrl: track?.coverUrl ?? null,
+        shuffle: shuffle.value,
+        loopStatus: repeat.value === 'one' ? 'Track' : repeat.value === 'all' ? 'Playlist' : 'None',
+    }).catch(() => {
+        // MPRIS es opcional (y sólo Linux): jamás escala a la UI.
+    });
 }
 
 function updateMediaSessionPosition(): void {
     if (!mediaSessionAvailable()) return;
     const ms = navigator.mediaSession;
     if (typeof ms?.setPositionState !== 'function') return;
-    const duration = audio.duration;
-    const position = audio.currentTime;
-    const rate = audio.playbackRate;
+    const duration = durationSec.value;
+    const position = positionSec.value;
+    const rate = playbackRate.value;
     if (!Number.isFinite(duration) || duration <= 0) return;
     if (!Number.isFinite(position) || position < 0) return;
     try {
@@ -531,15 +568,15 @@ function updateMediaSessionPosition(): void {
             playbackRate: Number.isFinite(rate) && rate > 0 ? rate : 1,
         });
     } catch {
-        // Algunos backends rechazan combinaciones fuera de rango.
+        // Some backends reject out-of-range combinations.
     }
 }
 
 /**
- * True tras clearMediaSession: los action handlers quedaron desregistrados y
- * el próximo inicio de reproducción debe re-registrarlos. Sin esto, stop()
- * mataba las teclas multimedia/MPRIS hasta reiniciar la app: bindAudioEvents
- * (que registra los handlers) solo se ejecuta UNA vez por vida del módulo.
+ * True after clearMediaSession: the action handlers were unregistered and
+ * the next playback start must re-register them. Without this, stop()
+ * killed the media keys/MPRIS until an app restart: bindEngineEvents
+ * (which registers the handlers) only runs ONCE per module lifetime.
  */
 let mediaSessionHandlersCleared = false;
 
@@ -549,14 +586,14 @@ function clearMediaSession(): void {
     try {
         ms.metadata = null;
     } catch {
-        // Degradación limpia.
+        // Clean degradation.
     }
     if (typeof ms?.setActionHandler !== 'function') return;
     const unset = (action: MediaSessionAction) => {
         try {
             ms.setActionHandler(action, null);
         } catch {
-            // Acción no soportada por el backend.
+            // Action not supported by the backend.
         }
     };
     unset('play');
@@ -576,11 +613,11 @@ function bindMediaSessionHandlers(): void {
         try {
             ms.setActionHandler(action, handler);
         } catch {
-            // Acción no soportada por el backend.
+            // Action not supported by the backend.
         }
     };
-    // Los handlers delegan en las mismas acciones del player (mismas reglas de
-    // next/previous que la UI).
+    // The handlers delegate to the same player actions (same next/previous
+    // rules as the UI).
     set('play', () => { void playIdle(); });
     set('pause', () => { pausePlayback(); });
     set('previoustrack', () => { void previous(); });
@@ -594,60 +631,80 @@ function bindMediaSessionHandlers(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Eventos del elemento de audio
+// Engine events (native player)
 // ---------------------------------------------------------------------------
 
 let bound = false;
 
-function bindAudioEvents(): void {
+function bindEngineEvents(): void {
     if (bound) return;
     bound = true;
-    audio.addEventListener('timeupdate', () => {
-        positionSec.value = audio.currentTime;
+    void onPlayerTick(tick => {
+        // Stale events from an already replaced track are discarded.
+        if (tick.seq !== engineSeq) return;
+        engineState = tick.state;
+        isPlaying.value = tick.state === 'playing';
+        positionSec.value = tick.positionSec;
+        if (tick.durationSec !== null && tick.durationSec > 0) {
+            durationSec.value = tick.durationSec;
+        }
         creditListenTick();
         updateMediaSessionPosition();
+    }).catch((err: unknown) => {
+        console.warn(`[player] could not subscribe to player:tick: ${messageOf(err)}`);
     });
-    audio.addEventListener('durationchange', () => {
-        durationSec.value = Number.isFinite(audio.duration) ? audio.duration : 0;
-    });
-    audio.addEventListener('play', () => {
-        isPlaying.value = true;
-        reportedMediaFailure = false;
-        if (currentEntry.value && !listenSessionId) {
-            // Reproducción reanudada tras restaurar: la sesión de escucha nace
-            // aquí y el acumulado está a 0 (la posición restaurada no acredita
-            // tiempo previo).
-            beginListenSession(currentEntry.value.trackId);
-        }
-        setMediaSessionPlaybackState('playing');
-    });
-    audio.addEventListener('pause', () => {
+    void onPlayerEnded(seq => {
+        if (seq !== engineSeq) return;
+        engineState = 'stopped';
         isPlaying.value = false;
-        setMediaSessionPlaybackState('paused');
-        persistState();
-    });
-    audio.addEventListener('seeked', () => {
-        persistState();
-    });
-    audio.addEventListener('canplay', () => {
-        reportedMediaFailure = false;
-    });
-    audio.addEventListener('ended', () => {
-        isPlaying.value = false;
-        // Al terminar naturalmente el estándar espera 'paused' (WebKitGTK no
-        // siempre dispara 'pause'); si hay avance, 'play' lo vuelve a 'playing'.
+        // On natural end the standard expects 'paused'; if playback advances,
+        // the next 'playing' tick returns it to 'playing'.
         setMediaSessionPlaybackState('paused');
         void advanceTrack(true);
+    }).catch((err: unknown) => {
+        console.warn(`[player] could not subscribe to player:ended: ${messageOf(err)}`);
     });
-    audio.addEventListener('error', () => {
-        if (!audio.src) return; // ruido de teardown
-        reportMediaFailure(audio.error?.code);
+    void onMprisAction(payload => {
+        // Misma delegación que los handlers de MediaSession: la UI es la dueña
+        // de la cola, los modos y el crédito de escucha.
+        switch (payload.action) {
+            case 'play':
+                void playIdle();
+                break;
+            case 'pause':
+                pausePlayback();
+                break;
+            case 'playPause':
+                toggle();
+                break;
+            case 'next':
+                next();
+                break;
+            case 'previous':
+                void previous();
+                break;
+            case 'stop':
+                stop();
+                break;
+            case 'seek':
+                if (typeof payload.offsetUs === 'number' && Number.isFinite(payload.offsetUs)) {
+                    seek(positionSec.value + payload.offsetUs / 1_000_000);
+                }
+                break;
+            case 'setPosition':
+                if (typeof payload.positionUs === 'number' && Number.isFinite(payload.positionUs)) {
+                    seek(payload.positionUs / 1_000_000);
+                }
+                break;
+        }
+    }).catch((err: unknown) => {
+        console.warn(`[player] could not subscribe to player:mpris-action: ${messageOf(err)}`);
     });
     bindMediaSessionHandlers();
 }
 
 // ---------------------------------------------------------------------------
-// Núcleo de reproducción
+// Playback core
 // ---------------------------------------------------------------------------
 
 function pushHistory(entry: PlaybackQueueEntry): void {
@@ -660,9 +717,9 @@ function removePending(entryId: string): void {
 }
 
 /**
- * Resultado de `ensureProjection` para una entrada pendiente sin proyección:
- * la pista validada, 'dead' (ID desaparecido → descartar al vuelo) o 'error'
- * (fallo no clasificable → conservar la cabeza y detener el avance).
+ * Result of `ensureProjection` for a pending entry without a projection:
+ * the validated track, 'dead' (ID gone → discard on the fly) or 'error'
+ * (unclassifiable failure → keep the head and stop advancing).
  */
 type ProjectionResult = PlayerTrack | 'dead' | 'error';
 
@@ -678,49 +735,42 @@ async function ensureProjection(entry: PlaybackQueueEntry): Promise<ProjectionRe
 }
 
 /**
- * Resuelve la fuente (siempre de nuevo: nunca se reusan concesiones ni URLs),
- * asigna el src y arranca la reproducción. Devuelve:
- * - 'played'  → el audio está sonando; el llamador hace el commit del estado.
- * - 'failed'  → fallo de resolve/play; `error` lleva el mensaje, estado intacto.
- * - 'aborted' → la continuación quedó obsoleta (stop()/nueva transición); no
- *               toca estado, no informa error.
+ * Resolves the source (always fresh: grants and URLs are never reused), loads
+ * it into the native engine and starts playback. A same-file reload is safe:
+ * `player_load` always restarts the engine from zero (never inherits an
+ * element's latent 'ended' loop). Returns:
+ * - 'played'  → the engine is playing; the caller commits the state.
+ * - 'failed'  → resolve/load failure; `error` carries the message, state untouched.
+ * - 'aborted' → the continuation became stale (stop()/new transition); it
+ *               touches no state, reports no error.
  */
 async function resolveAndPlay(track: PlayerTrack, gen: number): Promise<'played' | 'failed' | 'aborted'> {
     isLoadingSource.value = true;
-    let playAttempted = false;
     try {
         const src = await invokeCommand<PlaybackSource>('resolve_playback_source', { trackId: track.id });
         if (gen !== transitionGen) return 'aborted';
-        if (lastResolvedPath !== null && src.file_path === lastResolvedPath) {
-            // Mismo archivo ya cargado (repeat-one, duplicado adyacente): reinicia
-            // el medio sin reasignar src, lo que evita heredar el bucle de 'ended'
-            // latente del elemento.
-            audio.currentTime = 0;
-        } else {
-            reportedMediaFailure = false;
-            audio.src = convertFileSrc(src.file_path, 'syncify-media');
-        }
-        lastResolvedPath = src.file_path;
-        positionSec.value = 0;
-        durationSec.value = 0;
-        beginListenSession(track.id);
-        playAttempted = true;
-        await audio.play();
+        const result = await playerLoad(src.file_path, true, effectiveEngineVolume());
         if (gen !== transitionGen) return 'aborted';
-        // Metadatos al confirmar el inicio de la reproducción. Si stop()
-        // desregistró los handlers de MediaSession, re-registrarlos aquí: el
-        // bind inicial de bindAudioEvents no se repite (guard de módulo) y sin
-        // este re-bind PlayPause/Next/Prev por tecla multimedia o D-Bus/MPRIS
-        // no hacían nada tras el primer stop().
+        engineSeq = result.seq;
+        loadedPath = src.file_path;
+        engineState = 'playing';
+        isPlaying.value = true;
+        setMediaSessionPlaybackState('playing');
+        positionSec.value = 0;
+        durationSec.value = result.durationSec ?? 0;
+        beginListenSession(track.id);
+        // Metadata once playback start is confirmed. If stop()
+        // unregistered the MediaSession handlers, re-register them here: the
+        // initial bind from bindEngineEvents does not repeat (module guard) and
+        // without this re-bind PlayPause/Next/Prev via media key or D-Bus/MPRIS
+        // did nothing after the first stop().
         if (mediaSessionHandlersCleared) bindMediaSessionHandlers();
         updateMediaSessionMetadata(track);
+        syncMprisState(track);
         return 'played';
     } catch (err) {
-        // Un play() interrumpido por stop()/load() se traga: sin error, sin current.
-        if (isAbortError(err)) return 'aborted';
         if (gen !== transitionGen) return 'aborted';
-        if (playAttempted) reportMediaFailure(audio.error?.code);
-        else error.value = messageOf(err);
+        reportEngineFailure(err);
         return 'failed';
     } finally {
         if (gen === transitionGen) isLoadingSource.value = false;
@@ -730,9 +780,9 @@ async function resolveAndPlay(track: PlayerTrack, gen: number): Promise<'played'
 type AdvanceResult = 'played' | 'stopped' | 'empty';
 
 /**
- * Avanza consumiendo la cabeza de la cola. La cabeza NO se retira hasta que la
- * resolución y el arranque tienen éxito; los IDs desaparecidos se descartan al
- * vuelo y un fallo no clasificable conserva la cabeza y detiene el avance.
+ * Advances by consuming the head of the queue. The head is NOT removed until
+ * resolution and startup succeed; IDs that disappeared are discarded on the
+ * fly and an unclassifiable failure keeps the head and stops advancing.
  */
 async function advanceFromHead(gen: number): Promise<AdvanceResult> {
     while (queue.value.length > 0) {
@@ -761,23 +811,23 @@ async function advanceFromHead(gen: number): Promise<AdvanceResult> {
 }
 
 /**
- * Qué pasa cuando la cola se agota (el único papel de `repeat`): la cola avanza
- * siempre al `ended` mientras haya pendientes, en cualquier modo.
+ * What happens when the queue runs out (the only role of `repeat`): the queue always
+ * advances on `ended` while there are pending entries, in any mode.
  */
 async function handleExhausted(auto: boolean, gen: number): Promise<void> {
     if (auto && repeat.value === 'one' && currentEntry.value && current.value) {
-        // Vuelta de repeat-one: token de escucha nuevo y currentTime = 0; no
-        // duplica el historial (es la misma pista continuando).
+        // Repeat-one loop: new listen token and currentTime = 0; it does not
+        // duplicate the history (it is the same track continuing).
         await resolveAndPlay(current.value, gen);
         return;
     }
     if (repeat.value === 'all') {
-        // Reconstruye el ciclo con las entradas vivas (historial en orden de
-        // reproducción + actual). Al recorrer un ciclo completo cada entrada se
-        // reproduce una vez, así que conservar la ÚLTIMA aparición por entryId
-        // devuelve el orden del ciclo y evita duplicados acumulados entre
-        // vueltas. Con shuffle desactivado ese orden coincide con el base; con
-        // shuffle activo los pendientes se re-barajan.
+        // Rebuilds the cycle from the live entries (history in playback
+        // order + current). Walking a full cycle plays every entry
+        // once, so keeping the LAST occurrence per entryId
+        // returns the cycle order and avoids duplicates accumulated across
+        // rounds. With shuffle off that order matches the base order; with
+        // shuffle on the pending entries are re-shuffled.
         const cycleRaw: PlaybackQueueEntry[] = [...history.value];
         if (currentEntry.value) cycleRaw.push({ ...currentEntry.value });
         if (cycleRaw.length === 0) return;
@@ -790,22 +840,22 @@ async function handleExhausted(auto: boolean, gen: number): Promise<void> {
         history.value = [];
         await advanceFromHead(gen);
     }
-    // repeat off (o next() manual sin pendientes): no-op.
+    // repeat off (or manual next() with no pending entries): no-op.
 }
 
 async function advanceTrack(auto: boolean): Promise<void> {
     const gen = ++transitionGen;
-    bindAudioEvents();
+    bindEngineEvents();
     const result = await advanceFromHead(gen);
     if (gen !== transitionGen) return;
     if (result !== 'empty') return;
     await handleExhausted(auto, gen);
 }
 
-/** Reproducción inmediata de una pista concreta (la anterior pasa al historial). */
+/** Immediate playback of a specific track (the previous one moves to the history). */
 async function playTrack(track: PlayerTrack): Promise<void> {
     const gen = ++transitionGen;
-    bindAudioEvents();
+    bindEngineEvents();
     error.value = null;
     const outcome = await resolveAndPlay(track, gen);
     if (gen !== transitionGen) return;
@@ -819,15 +869,41 @@ async function playTrack(track: PlayerTrack): Promise<void> {
     }
 }
 
-/** `play()` sin argumentos: reanuda, o arranca la primera pendiente de una cola restaurada. */
+/**
+ * Resumes engine playback (shared by playIdle/toggle). Resuming after a
+ * restore starts the listen session here: the restored position does not
+ * credit previous listening time.
+ */
+async function resumeEngine(): Promise<void> {
+    await playerResume();
+    engineState = 'playing';
+    isPlaying.value = true;
+    setMediaSessionPlaybackState('playing');
+    if (currentEntry.value && !listenSessionId) {
+        beginListenSession(currentEntry.value.trackId);
+    }
+}
+
+/**
+ * `play()` with no arguments: resume, restart the track that already ended,
+ * or start the first pending entry of a restored queue.
+ */
 async function playIdle(): Promise<void> {
-    if (audio.src) {
-        if (audio.paused) {
-            reportedMediaFailure = false;
-            void audio.play().catch((err: unknown) => {
-                if (isAbortError(err)) return;
-                reportMediaFailure(audio.error?.code);
-            });
+    if (loadedPath !== null) {
+        if (engineState === 'playing') return;
+        if (engineState === 'paused') {
+            try {
+                await resumeEngine();
+            } catch (err) {
+                reportEngineFailure(err);
+            }
+            return;
+        }
+        // Stopped with a loaded track: it reached the end; play restarts it
+        // (the HTML5 element did the same: play() after 'ended' seeks to 0).
+        if (current.value) {
+            const gen = ++transitionGen;
+            await resolveAndPlay(current.value, gen);
         }
         return;
     }
@@ -837,10 +913,10 @@ async function playIdle(): Promise<void> {
 }
 
 /**
- * `play(track)` reproduce esa pista; `play()` reanuda o arranca la primera
- * pendiente (regla del plan: play/MediaSession-play con current == null y cola
- * restaurada arranca la primera pendiente; `pause` sin src es no-op y
- * `toggle` sigue siendo no-op sin src).
+ * `play(track)` plays that track; `play()` resumes or starts the first
+ * pending entry (plan rule: play/MediaSession-play with current == null and a
+ * restored queue starts the first pending entry; `pause` without src is a no-op and
+ * `toggle` remains a no-op without src).
  */
 async function play(track?: PlayerTrack): Promise<void> {
     if (track) return playTrack(track);
@@ -848,11 +924,11 @@ async function play(track?: PlayerTrack): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// API pública
+// Public API
 // ---------------------------------------------------------------------------
 
 async function playNext(track: PlayerTrack): Promise<QueueOutcome> {
-    if (!audio.src) {
+    if (loadedPath === null) {
         await playTrack(track);
         return 'started';
     }
@@ -864,7 +940,7 @@ async function playNext(track: PlayerTrack): Promise<QueueOutcome> {
 }
 
 async function enqueue(track: PlayerTrack): Promise<QueueOutcome> {
-    if (!audio.src) {
+    if (loadedPath === null) {
         await playTrack(track);
         return 'started';
     }
@@ -876,16 +952,16 @@ async function enqueue(track: PlayerTrack): Promise<QueueOutcome> {
 }
 
 /**
- * Reproduce la primera pista del listado y encola el resto **en su orden**
- * (corrige la inversión que producía el encadenado de playNext front-inserts).
- * Abre un ciclo nuevo: historial y orden base empiezan limpios. Si la primera
- * pista falla al resolver, el estado previo queda intacto y `error` lleva el
- * mensaje.
+ * Plays the first track of the list and queues the rest **in their order**
+ * (fixes the inversion that chaining playNext front-inserts caused).
+ * Opens a new cycle: history and base order start clean. If the first
+ * track fails to resolve, the previous state stays intact and `error` carries
+ * the message.
  */
 async function replaceQueueAndPlay(tracks: PlayerTrack[]): Promise<void> {
     if (!Array.isArray(tracks) || tracks.length === 0) return;
     const gen = ++transitionGen;
-    bindAudioEvents();
+    bindEngineEvents();
     error.value = null;
     const outcome = await resolveAndPlay(tracks[0], gen);
     if (gen !== transitionGen) return;
@@ -903,7 +979,7 @@ async function replaceQueueAndPlay(tracks: PlayerTrack[]): Promise<void> {
 }
 
 function clearQueue(): void {
-    // Solo pendientes: la pista en curso nunca se toca.
+    // Pending entries only: the current track is never touched.
     queue.value = [];
     baseOrder = [];
     persistState();
@@ -922,19 +998,19 @@ function moveEntry(entryId: string, toIndex: number): void {
     const [moved] = next.splice(from, 1);
     next.splice(clamped, 0, moved);
     queue.value = next;
-    // El reordenado manual define la nueva base (desactivar shuffle lo respeta).
+    // Manual reordering sets the new base (turning shuffle off respects it).
     baseOrder = next.map(e => e.entryId);
     persistState();
 }
 
 function next(): void {
-    // next() ignora repeat-one: salta a los pendientes; con la cola agotada,
-    // repeat 'all' reconstruye y reproduce, y 'off'/'one' son no-op.
+    // next() ignores repeat-one: it jumps to the pending entries; with the queue exhausted,
+    // repeat 'all' rebuilds and plays, and 'off'/'one' are no-ops.
     void advanceTrack(false);
 }
 
 async function previous(): Promise<void> {
-    bindAudioEvents();
+    bindEngineEvents();
     if (current.value && positionSec.value > 3) {
         seek(0);
         return;
@@ -954,7 +1030,7 @@ async function previous(): Promise<void> {
         const outcome = await resolveAndPlay(proj, gen);
         if (gen !== transitionGen) return;
         if (outcome !== 'played') return;
-        // La pista dejada vuelve al frente de los pendientes.
+        // The track left behind returns to the front of the pending entries.
         if (currentEntry.value) {
             const back = currentEntry.value;
             queue.value = [back, ...queue.value];
@@ -964,35 +1040,45 @@ async function previous(): Promise<void> {
         persistState();
         return;
     }
-    // Sin historial: seek(0).
+    // No history: seek(0).
     seek(0);
 }
 
 function toggle(): void {
-    if (!audio.src) return;
-    if (audio.paused) {
-        // Reanudar conserva la sesión de escucha (la pausa no la rompe).
-        reportedMediaFailure = false;
-        void audio.play().catch((err: unknown) => {
-            if (isAbortError(err)) return;
-            reportMediaFailure(audio.error?.code);
-        });
-    } else {
-        audio.pause();
+    if (loadedPath === null) return;
+    if (engineState === 'playing') {
+        pausePlayback();
+        return;
     }
+    // Paused: resume. Stopped (ended): restart. playIdle handles both.
+    void playIdle();
 }
 
 function pausePlayback(): void {
-    // Sin src es un no-op efectivo.
-    audio.pause();
+    // Only when actually playing: after 'ended' this was a no-op too.
+    if (engineState !== 'playing') return;
+    engineState = 'paused';
+    isPlaying.value = false;
+    setMediaSessionPlaybackState('paused');
+    void playerPause()
+        .then(() => {
+            persistState();
+        })
+        .catch((err: unknown) => {
+            // A failed pause is corrected by the next tick (ticks self-heal state).
+            reportEngineFailure(err);
+        });
 }
 
 function stop(): void {
     transitionGen++;
-    audio.pause();
-    audio.removeAttribute('src');
-    audio.load();
-    lastResolvedPath = null;
+    void playerStop().catch(() => {
+        // Without a loaded track it is a no-op; IPC failure is unrecoverable anyway.
+    });
+    loadedPath = null;
+    engineSeq = 0;
+    engineState = 'stopped';
+    isPlaying.value = false;
     currentEntry.value = null;
     positionSec.value = 0;
     durationSec.value = 0;
@@ -1002,43 +1088,55 @@ function stop(): void {
     history.value = [];
     resetListenSession();
     clearMediaSession();
-    reportedMediaFailure = false;
+    syncMprisState();
     isLoadingSource.value = false;
     persistState();
 }
 
 function seek(sec: number): void {
     if (!Number.isFinite(sec)) return;
-    const max = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : Number.MAX_SAFE_INTEGER;
-    audio.currentTime = Math.min(Math.max(0, sec), max);
-    positionSec.value = audio.currentTime;
-    // La persistencia del seek la hace el evento `seeked` (cubre también las
-    // líneas de LyricsView).
+    const max = durationSec.value > 0 ? durationSec.value : Number.MAX_SAFE_INTEGER;
+    const clamped = Math.min(Math.max(0, sec), max);
+    positionSec.value = clamped;
+    updateMediaSessionPosition();
+    // Seek persistence is explicit here: the engine emits no 'seeked' event.
+    void playerSeek(clamped)
+        .then(() => {
+            persistState();
+        })
+        .catch((err: unknown) => {
+            reportEngineFailure(err);
+        });
 }
 
 function setRate(rate: number): void {
-    if (Number.isFinite(rate) && rate > 0) {
-        audio.playbackRate = rate;
-        playbackRate.value = rate;
-    }
+    if (!Number.isFinite(rate) || rate <= 0) return;
+    playbackRate.value = rate;
+    void playerSetRate(rate).catch((err: unknown) => {
+        reportEngineFailure(err);
+    });
 }
 
 function setVolume(v: number): void {
     volume.value = clampVolume(v);
-    audio.volume = volume.value;
+    void playerSetVolume(effectiveEngineVolume()).catch(() => {
+        // Before the first load there is no engine yet; the load applies the volume.
+    });
     persistState();
 }
 
 function setMuted(m: boolean): void {
     muted.value = !!m;
-    audio.muted = muted.value;
+    void playerSetVolume(effectiveEngineVolume()).catch(() => {
+        // Before the first load there is no engine yet; the load applies the volume.
+    });
     persistState();
 }
 
 function toggleShuffle(): void {
     if (shuffle.value) {
-        // Desactivar shuffle restaura el orden base de los pendientes: no se
-        // conserva el barajado.
+        // Turning shuffle off restores the base order of the pending entries: the
+        // shuffle is not kept.
         shuffle.value = false;
         const byId = new Map(queue.value.map(e => [e.entryId, e]));
         const restored: PlaybackQueueEntry[] = [];
@@ -1048,51 +1146,39 @@ function toggleShuffle(): void {
         }
         queue.value = restored;
     } else {
-        // Activar shuffle permuta los pendientes; el orden base pre-barajado se
-        // conserva para poder restaurarlo y persistirse junto a la permutación.
+        // Turning shuffle on permutes the pending entries; the pre-shuffle base order
+        // is kept so it can be restored and persisted alongside the permutation.
         shuffle.value = true;
         queue.value = shuffled(queue.value);
     }
     persistState();
+    syncMprisState();
 }
 
 function cycleRepeat(): void {
     repeat.value = repeat.value === 'off' ? 'all' : repeat.value === 'all' ? 'one' : 'off';
     persistState();
+    syncMprisState();
 }
 
 // ---------------------------------------------------------------------------
-// Restauración perezosa tras reinicio
+// Lazy restore after a restart
 // ---------------------------------------------------------------------------
 
 let restoreStarted = false;
 
-function waitForLoadedmetadata(el: HTMLMediaElement): Promise<void> {
-    if (el.readyState >= 1) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-        const ok = () => { cleanup(); resolve(); };
-        const fail = () => { cleanup(); reject(new Error('Could not load the file duration')); };
-        const cleanup = () => {
-            el.removeEventListener('loadedmetadata', ok);
-            el.removeEventListener('error', fail);
-        };
-        el.addEventListener('loadedmetadata', ok, { once: true });
-        el.addEventListener('error', fail, { once: true });
-    });
-}
-
 /**
- * Restaura el estado persistido. Solo se invoca explícitamente (el reproductor de la barra de estado
- * al montar); importar el módulo no toca localStorage ni dispara invokes.
- * Resuelve `resolve_playback_source` de nuevo (jamás reusa concesiones ni
- * URLs), coloca la posición tras `loadedmetadata` y queda PAUSADO: leer el
- * estado guardado no reproduce nada y la posición restaurada no acredita
- * tiempo de escucha previo.
+ * Restores the persisted state. It is only invoked explicitly (the status bar player
+ * on mount); importing the module touches no localStorage and fires no invokes.
+ * Resolves `resolve_playback_source` again (never reuses grants or paths) and
+ * loads the file into the engine PAUSED at the saved position: reading the
+ * saved state plays nothing and the restored position does not credit
+ * previous listening time.
  */
 async function restoreFromPersistence(): Promise<void> {
     if (restoreStarted) return;
     restoreStarted = true;
-    bindAudioEvents();
+    bindEngineEvents();
     const saved = loadPersistedState();
     if (!saved) return;
 
@@ -1100,8 +1186,6 @@ async function restoreFromPersistence(): Promise<void> {
     repeat.value = saved.repeat;
     volume.value = clampVolume(saved.volume);
     muted.value = saved.muted;
-    audio.volume = volume.value;
-    audio.muted = muted.value;
     pendingListens.value = saved.pendingListens;
     queue.value = saved.queue.map(e => ({ ...e }));
     baseOrder = [...saved.baseOrder];
@@ -1113,8 +1197,8 @@ async function restoreFromPersistence(): Promise<void> {
         return;
     }
 
-    // Validación perezosa N×1: solo la pista actual se resuelve al restaurar;
-    // los pendientes se validan justo antes de sonar.
+    // Lazy N×1 validation: only the current track is resolved on restore;
+    // pending entries are validated just before playing.
     const gen = ++transitionGen;
     isLoadingSource.value = true;
     try {
@@ -1123,28 +1207,33 @@ async function restoreFromPersistence(): Promise<void> {
         const track = projectMetadata(meta);
         const src = await invokeCommand<PlaybackSource>('resolve_playback_source', { trackId: saved.currentTrackId });
         if (gen !== transitionGen) return;
-        reportedMediaFailure = false;
-        audio.src = convertFileSrc(src.file_path, 'syncify-media');
-        lastResolvedPath = src.file_path;
-        await waitForLoadedmetadata(audio);
+        const result = await playerLoad(src.file_path, false, effectiveEngineVolume());
         if (gen !== transitionGen) return;
-        const maxPos = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : saved.positionSec;
+        engineSeq = result.seq;
+        loadedPath = src.file_path;
+        engineState = 'paused';
+        const maxPos = result.durationSec !== null && result.durationSec > 0 ? result.durationSec : saved.positionSec;
         const pos = Math.min(saved.positionSec, maxPos);
-        audio.currentTime = pos;
+        if (pos > 0) {
+            await playerSeek(pos);
+            if (gen !== transitionGen) return;
+        }
         positionSec.value = pos;
+        durationSec.value = result.durationSec ?? 0;
         currentEntry.value = { entryId: uuidV4(), trackId: track.id, track };
     } catch {
         if (gen !== transitionGen) return;
-        // Pista desaparecida o sin archivo local: arranca sin current; la cola
-        // restaurada se conserva para el primer play().
+        // Track gone or without a local file: start with no current; the
+        // restored queue is kept for the first play().
         currentEntry.value = null;
     } finally {
         if (gen === transitionGen) isLoadingSource.value = false;
         persistState();
+        syncMprisState();
     }
 }
 
-// Persistencia en ocultado de la ventana (no en cada timeupdate).
+// Persistence when the window is hidden (not on every timeupdate).
 if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') persistState();
@@ -1153,18 +1242,18 @@ if (typeof document !== 'undefined') {
 
 export function usePlayer() {
     return {
-        // Estado (superficie previa intacta)
+        // Previous state (surface unchanged)
         current, isPlaying, positionSec, durationSec, playbackRate, error, isLoadingSource,
         upNext,
-        // Estado nuevo (fase 1)
+        // New state (phase 1)
         queue, history, shuffle, repeat, volume, muted, pendingListens,
-        // Acciones previas
+        // Previous actions
         play, playNext, toggle, stop, seek, setRate,
-        // Acciones nuevas (fase 1)
+        // New actions (phase 1)
         enqueue, replaceQueueAndPlay, clearQueue, removeEntry, moveEntry,
         next, previous, setVolume, setMuted, toggleShuffle, cycleRepeat,
         restoreFromPersistence,
-        // PL-09 / PL-10: Pantalla completa / reproductor expandido
+        // PL-09 / PL-10: Fullscreen / expanded player
         isFullscreenOpen, openFullscreen, closeFullscreen, toggleFullscreen,
     };
 }

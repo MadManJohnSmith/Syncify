@@ -1,17 +1,17 @@
 @import "tailwindcss";
 
 /* ==========================================================================
-   Syncify — sistema de temas en runtime
-   Una capa de tokens semánticos + 4 skins base y 6 paletas de servicio. Cambiar data-theme en <html>
-   re-tematiza la app al vuelo: los colores van con @theme inline y las
-   utilidades referencian variables, no valores.
-   Temas: tinta (default) · camaleon · consola · riso · servicios
+   Syncify — runtime theme system
+   A layer of semantic tokens + 4 base skins and 6 service palettes. Changing data-theme on <html>
+   re-themes the app on the fly: colors use @theme inline and the
+   utilities reference variables, not values.
+   Themes: tinta (default) · camaleon · consola · riso · servicios
    ========================================================================== */
 
-/* dark: sigue al tema de la app (los 3 oscuros), no al sistema operativo */
+/* dark: follows the app theme (the 3 dark ones), not the operating system */
 @custom-variant dark (&:where([data-theme="camaleon"] *, [data-theme="tinta"] *, [data-theme="consola"] *, [data-theme="riso"] *, [data-theme="spotify"] *, [data-theme="apple_music"] *, [data-theme="tidal"] *, [data-theme="qobuz"] *, [data-theme="deezer"] *, [data-theme="soundcloud"] *));
 
-/* ---------- Camaleón (default): se tiñe con la carátula en reproducción ---------- */
+/* ---------- Chameleon (default): tints with the playing cover art ---------- */
 :root,
 [data-theme="camaleon"] {
   color-scheme: dark;
@@ -43,7 +43,7 @@
   --shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.5);
 }
 
-/* ---------- Tinta: monocromo, el color llega del arte ---------- */
+/* ---------- Tinta: monochrome, color comes from the art ---------- */
 [data-theme="tinta"] {
   color-scheme: dark;
   --bg-base: #0a0a0b;
@@ -72,7 +72,7 @@
   --shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.55);
 }
 
-/* ---------- Consola: ámbar sobre carbón neutro ---------- */
+/* ---------- Consola: amber over neutral charcoal ---------- */
 [data-theme="consola"] {
   color-scheme: dark;
   --bg-base: #0c0c0f;
@@ -101,7 +101,7 @@
   --shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.55);
 }
 
-/* ---------- Riso: papel frío, dos tintas (azul interactivo / rosa suena) ---------- */
+/* ---------- Riso: cold paper, two inks (interactive blue / now-playing pink) ---------- */
 [data-theme="riso"] {
   color-scheme: light;
   --bg-base: #f1f2f0;
@@ -130,8 +130,8 @@
   --shadow-pop: 0 16px 40px rgba(20, 22, 26, 0.16);
 }
 
-/* Paletas de servicio: superficie, tinta y acento propios, sin heredar
-   silenciosamente el camaleón (que usa un tono dinámico de carátula). */
+/* Service palettes: their own surface, ink and accent, without silently
+   inheriting chameleon (which uses a dynamic cover-art hue). */
 [data-theme="spotify"] {
   --bg-base: #101713; --bg-shell: #0b110e; --surface-1: #19241c;
   --surface-2: #263b2b; --border: #395440; --border-strong: #598466;
@@ -236,8 +236,8 @@
   body {
     background-color: var(--bg-base);
     color: var(--text-1);
-    /* Fusionado de la base preexistente: tipografía y sin scroll de página
-       (el shell de App.vue gestiona su propio overflow). */
+    /* Merged from the preexisting base: typography and no page scroll
+       (the App.vue shell manages its own overflow). */
     font-family: var(--font-display);
     overflow: hidden;
   }
@@ -257,13 +257,13 @@
     background: var(--accent);
   }
 
-  /* El desplegable de un <select> lo pinta el tema del SISTEMA (WebKitGTK en
-     Linux, WebView2 en Windows): la paleta nativa sale de `color-scheme`, que
-     ahora fija cada bloque de tema (los 3 oscuros + riso claro), de modo que
-     el popup sigue al tema de la APP y no al del SO. Los 37 <select> de la app
-     (y sus <option>, que no llevan clases) quedan cubiertos por esta regla
-     tokenizada; la antigua pareja claro/`prefers-color-scheme: dark` se
-     retiró porque un tema claro sobre un SO oscuro (y viceversa) la rompía. */
+  /* The dropdown of a <select> is painted by the SYSTEM theme (WebKitGTK on
+     Linux, WebView2 on Windows): the native palette comes from `color-scheme`, which
+     each theme block now sets (the 3 dark ones + light riso), so
+     the popup follows the APP theme and not the OS one. The app's 37 <select>s
+     (and their <option>s, which carry no classes) are covered by this
+     tokenized rule; the old light/`prefers-color-scheme: dark` pair was
+     removed because a light theme over a dark OS (and vice versa) broke it. */
   select,
   select option {
     @apply bg-surface text-ink;
@@ -275,7 +275,7 @@
     backdrop-filter: blur(20px);
   }
 
-  /* Fusionado de la base preexistente: variante rellena de Material Symbols */
+  /* Merged from the preexisting base: Material Symbols filled variant */
   .material-symbols-filled {
     font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
   }

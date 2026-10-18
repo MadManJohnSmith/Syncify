@@ -2715,7 +2715,7 @@ impl EnrichmentEngine {
         if source_tracks.len() > 1 {
             return Err("needs_review: provider item maps to multiple tracks".to_string());
         }
-        let existing_track_id = source_tracks.first().map(|row| row.0);
+        let mut existing_track_id = source_tracks.first().map(|row| row.0);
         let ledger_tracks: Vec<(i64,)> = sqlx::query_as(
             "SELECT link.track_id FROM edition_provider_items item JOIN edition_item_tracks link ON link.item_id = item.id WHERE item.service_id = ? AND item.service_track_id = ?"
         )
@@ -2731,7 +2731,10 @@ impl EnrichmentEngine {
             return Err("needs_review: provider item identity collision".to_string());
         }
         // The legacy UNIQUE(tracks.isrc) prevents two canonical rows with the
-        // same ISRC. Until that constraint changes, fail closed, not merge.
+        // same ISRC. Cross-service, that ISRC is the same recording exported by
+        // another provider, not a different edition: reuse the canonical track
+        // and let the source-slot guard below keep same-service editions apart.
+        // Ambiguous ISRCs (more than one canonical row) still fail closed.
         if existing_track_id.is_none() {
             if let Some(isrc) = isrc_opt.filter(|value| !value.trim().is_empty()) {
                 let matches: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE isrc = ?")
@@ -2739,10 +2742,14 @@ impl EnrichmentEngine {
                     .fetch_all(&mut *tx)
                     .await
                     .map_err(|e| format!("ED-02 ISRC lookup failed: {e}"))?;
-                if !matches.is_empty() {
-                    return Err(
-                        "needs_review: ISRC alone cannot establish edition identity".to_string()
-                    );
+                match matches.as_slice() {
+                    [] => {}
+                    [(track_id,)] => existing_track_id = Some(*track_id),
+                    _ => {
+                        return Err(
+                            "needs_review: ISRC maps to multiple canonical tracks".to_string()
+                        )
+                    }
                 }
             }
         }

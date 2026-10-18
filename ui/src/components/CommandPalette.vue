@@ -326,8 +326,8 @@ const actions = ref([
 ])
 
 const settings = ref([
-  // Ítem 47: cada entrada lleva la subpestaña de Ajustes (`?tab=`) que debe
-  // abrir; los ids son los de `settingsCategories` en SettingsView.
+  // Item 47: each entry carries the Settings sub-tab (`?tab=`) it must
+  // open; the ids match those of `settingsCategories` in SettingsView.
   { id: 1, name: 'Download location', path: 'Settings → Storage', tab: 'general' },
   { id: 2, name: 'Audio quality preferences', path: 'Settings → Audio Quality', tab: 'quality' },
   { id: 3, name: 'Lyrics providers', path: 'Settings → Lyrics', tab: 'lyrics' },
@@ -542,8 +542,8 @@ const FAVORITES_PAGE_SIZE = 200
 async function collectFavoriteTrackIds(): Promise<number[]> {
   const ids: number[] = []
   let offset = 0
-  // getFavoriteTracks pagina: queue_downloads necesita los ids de una vez,
-  // así que se recorre toda la lista antes de encolar nada.
+  // getFavoriteTracks paginates: queue_downloads needs the ids at once,
+  // so the whole list is walked before enqueuing anything.
   for (;;) {
     const page = await getFavoriteTracks(offset, FAVORITES_PAGE_SIZE)
     ids.push(...page.tracks.map(t => t.id))
@@ -623,8 +623,8 @@ async function runAction(action: any) {
 function openSetting(setting: any) {
   addToRecent(setting.name)
   close()
-  // Ítem 47: navegar a la subpestaña concreta en el query; SettingsView lee
-  // `tab` al montar y con un watcher mientras está abierta.
+  // Item 47: navigate to the specific sub-tab via the query; SettingsView
+  // reads `tab` on mount and with a watcher while it is open.
   router.push({ path: '/settings', query: { tab: setting.tab || 'general' } })
 }
 

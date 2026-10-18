@@ -200,7 +200,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-// R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
+// R13: unified confirm (previously the native plugin-dialog, outside the window).
 import { confirm } from '@/composables/useToast';
 import { executeDisambiguationRepair, planDisambiguationRepair } from '@/api/metadata';
 import { useToast } from '@/composables/useToast';

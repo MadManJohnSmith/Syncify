@@ -76,8 +76,8 @@ class DeezerAuth:
         except ImportError:
             return False, "Playwright not installed. Run: pip install playwright && python -m playwright install chromium"
 
-        # Navegador del sistema (decisión propietario 2026-08-25): nunca el
-        # Chromium descargable de ms-playwright.
+        # System browser (owner decision 2026-08-25): never the
+        # downloadable Chromium from ms-playwright.
         from services.browser_launcher import chrome_launch_kwargs
         
         self._log("Starting browser login flow...")
@@ -106,10 +106,10 @@ class DeezerAuth:
                     ignore_default_args=["--enable-automation"],
                 )
             except Exception as e:
-                # FIX 2026-08-25: el fallback ya NO intenta el Chromium gestionado
-                # por Playwright (binario no descargado → "Executable doesn't
-                # exist"); resolvemos SIEMPRE un navegador del sistema.
-                self._log(f"Chrome vía canal falló ({e}); usando navegador del sistema")
+                # FIX 2026-08-25: the fallback no longer tries Playwright's
+                # managed Chromium (binary not downloaded → "Executable doesn't
+                # exist"); we ALWAYS resolve a system browser.
+                self._log(f"Chrome via channel failed ({e}); using system browser")
                 context = await p.chromium.launch_persistent_context(
                     user_data_dir=user_data_dir,
                     **chrome_launch_kwargs(),
@@ -139,14 +139,14 @@ class DeezerAuth:
             start_time = time.time()
             arl = None
             
-            # FIX: detección de ventana cerrada compatible con cualquier
-            # versión de Playwright (eventos en vez de is_closed()).
+            # FIX: closed-window detection compatible with any
+            # Playwright version (events instead of is_closed()).
             _window_closed = {"v": False}
             context.on("close", lambda _: _window_closed.update(v=True))
             
             while time.time() - start_time < timeout_seconds:
                 if _window_closed["v"]:
-                    return False, "Cerraste la ventana del navegador sin completar el inicio de sesión — vuelve a intentar la conexión."
+                    return False, "You closed the browser window before completing sign-in — please try connecting again."
 
                 cookies = await context.cookies()
                 

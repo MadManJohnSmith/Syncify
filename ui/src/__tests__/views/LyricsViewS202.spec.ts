@@ -75,7 +75,7 @@ describe('S202: karaoke refetch + LY-04 absence of cover sweep', () => {
         const wrapper = mount(LyricsView);
         await flushPromises();
 
-        const btn = wrapper.findAll('button').find(b => b.text().includes('Re-chequear todo'))!;
+        const btn = wrapper.findAll('button').find(b => b.text().includes('Re-check all'))!;
         expect(btn).toBeTruthy();
         await btn.trigger('click');
         await flushPromises();
@@ -93,9 +93,9 @@ describe('S202: karaoke refetch + LY-04 absence of cover sweep', () => {
         expect((refetchCall!.args as { scope: string }).scope).toBe('downloaded');
 
         const summary = document.body.querySelector('.karaoke-summary')!;
-        expect(summary.textContent).toContain('Verificadas:');
-        expect(summary.textContent).toContain('Mejoradas a palabra:');
-        expect(summary.textContent).toContain('Rechazadas por empeorar');
+        expect(summary.textContent).toContain('Checked:');
+        expect(summary.textContent).toContain('Upgraded to word:');
+        expect(summary.textContent).toContain('Rejected as worse:');
     });
 
     it('updates the progress bar from real karaoke-refetch-progress events while running', async () => {
@@ -113,7 +113,7 @@ describe('S202: karaoke refetch + LY-04 absence of cover sweep', () => {
         const wrapper = mount(LyricsView);
         await flushPromises();
 
-        await wrapper.findAll('button').find(b => b.text().includes('Re-chequear todo'))!.trigger('click');
+        await wrapper.findAll('button').find(b => b.text().includes('Re-check all'))!.trigger('click');
         const dialog = document.body.querySelector('.karaoke-dialog')!;
         (dialog.querySelector('[data-testid="karaoke-run"]') as HTMLButtonElement).click();
         await flushPromises();
@@ -153,12 +153,12 @@ describe('S202: karaoke refetch + LY-04 absence of cover sweep', () => {
 
         const wrapper = mount(LyricsView);
         await flushPromises();
-        await wrapper.findAll('button').find(b => b.text().includes('Re-chequear todo'))!.trigger('click');
+        await wrapper.findAll('button').find(b => b.text().includes('Re-check all'))!.trigger('click');
         const dialog = document.body.querySelector('.karaoke-dialog')!;
         (dialog.querySelector('[data-testid="karaoke-run"]') as HTMLButtonElement).click();
         await flushPromises();
 
-        const cancelBtn = Array.from(dialog.querySelectorAll('button')).find(b => b.textContent!.includes('Cancelar proceso'))!;
+        const cancelBtn = Array.from(dialog.querySelectorAll('button')).find(b => b.textContent!.includes('Cancel process'))!;
         cancelBtn.click();
         await flushPromises();
 
@@ -170,7 +170,7 @@ describe('S202: karaoke refetch + LY-04 absence of cover sweep', () => {
         await flushPromises();
         // The honest cancelled flag surfaces in the dialog summary.
         const summary = document.body.querySelector('.karaoke-summary')!;
-        expect(summary.textContent).toContain('cancelado');
+        expect(summary.textContent).toContain('cancelled');
     });
 
     it('«Portadas animadas» ya no vive en Letras: se movió a Metadatos (LY-04 / MET-03)', async () => {

@@ -226,9 +226,9 @@
                 </div>
 
                 <label v-if="svcSource && accountsForService(svcSource).length > 1" class="block mt-4 text-sm">
-                  Cuenta origen
+                  Source account
                   <select v-model.number="svcSourceAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="svc-source-account">
-                    <option v-for="a in accountsForService(svcSource)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(activa)' : '' }}</option>
+                    <option v-for="a in accountsForService(svcSource)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(active)' : '' }}</option>
                   </select>
                 </label>
                 <div v-if="sourceServices.length === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center">
@@ -278,9 +278,9 @@
                 </div>
 
                 <label v-if="svcDestination && accountsForService(svcDestination).length > 1" class="block mt-4 text-sm">
-                  Cuenta destino
+                  Destination account
                   <select v-model.number="svcDestinationAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="svc-destination-account">
-                    <option v-for="a in accountsForService(svcDestination)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(activa)' : '' }}</option>
+                    <option v-for="a in accountsForService(svcDestination)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(active)' : '' }}</option>
                   </select>
                 </label>
                 <div v-if="destinationChoices.length === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center">
@@ -492,9 +492,9 @@
                   </button>
                 </div>
                 <label v-if="sourceService && accountsForService(sourceService).length > 1" class="block mt-4 text-sm">
-                  Cuenta origen
+                  Source account
                   <select v-model.number="sourceAccount" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" data-testid="transfer-source-account">
-                    <option v-for="a in accountsForService(sourceService)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(activa)' : '' }}</option>
+                    <option v-for="a in accountsForService(sourceService)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(active)' : '' }}</option>
                   </select>
                 </label>
               </div>
@@ -577,9 +577,9 @@
                 </div>
 
                 <label v-for="dest in destinationServices.filter(id => accountsForService(id).length > 1)" :key="dest" class="block mt-4 text-sm">
-                  Cuenta destino ({{ dest }})
+                  Destination account ({{ dest }})
                   <select v-model.number="destinationAccounts[dest]" class="block w-full mt-1 rounded-lg border p-2 bg-white dark:bg-surface-dark" :data-testid="`transfer-destination-account-${dest}`">
-                    <option v-for="a in accountsForService(dest)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(activa)' : '' }}</option>
+                    <option v-for="a in accountsForService(dest)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(active)' : '' }}</option>
                   </select>
                 </label>
                 <div v-if="destinationChoices.length === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center">
@@ -1201,7 +1201,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useMigration } from '../composables/useMigration'
-// R13: confirm unificado; antes se resolvía el window.confirm global nativo.
+// R13: unified confirm; previously relied on the native global window.confirm.
 import { useToast, confirm } from '../composables/useToast'
 import { accountsApi } from '../api/accounts'
 import { getMigrationItemsByStatus } from '../api/migration'
@@ -1507,7 +1507,7 @@ const skippedTracks = computed<MigrationItem[]>(() =>
 
 // Handler: Delete migration job
 async function handleDeleteMigration(jobId: string) {
-  // R13: confirmación unificada en la app (antes window.confirm nativo).
+  // R13: unified in-app confirmation (previously the native window.confirm).
   const confirmed = await confirm('Are you sure you want to delete this migration?', {
     title: 'Delete Migration',
     variant: 'danger',
@@ -2247,7 +2247,7 @@ async function saveTemplate(): Promise<void> {
 }
 
 async function handleDeleteTemplate(templateId: number) {
-  // R13: confirmación unificada en la app (antes window.confirm nativo).
+  // R13: unified in-app confirmation (previously the native window.confirm).
   const confirmed = await confirm('Are you sure you want to delete this template?', {
     title: 'Delete Template',
     variant: 'danger',

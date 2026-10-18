@@ -52,7 +52,7 @@ function readInitial(): ThemeId {
       if (fromStorage && VALID.includes(fromStorage)) return fromStorage;
     }
   } catch {
-    /* localStorage no accesible */
+    /* localStorage unavailable */
   }
   return "tinta";
 }
@@ -69,7 +69,7 @@ function readInitialDynamicCover(): boolean {
       if (fromStorage !== null) return fromStorage === "true";
     }
   } catch {
-    /* localStorage no accesible */
+    /* localStorage unavailable */
   }
   return false;
 }
@@ -77,7 +77,7 @@ function readInitialDynamicCover(): boolean {
 const current = ref<ThemeId>(readInitial());
 const dynamicCoverEnabled = ref<boolean>(readInitialDynamicCover());
 
-// Sincronización inicial con DOM si estamos en entorno navegador
+// Initial DOM sync when running in a browser environment
 if (typeof document !== "undefined" && document.documentElement) {
   document.documentElement.dataset.theme = current.value;
   document.documentElement.dataset.dynamicCover = String(dynamicCoverEnabled.value);
@@ -118,7 +118,7 @@ async function syncFromBackend() {
       }
     }
   } catch (err) {
-    console.debug("[useTheme] No se pudieron sincronizar ajustes desde el backend:", err);
+    console.debug("[useTheme] Could not sync settings from the backend:", err);
   }
 }
 
@@ -146,10 +146,10 @@ export function useTheme() {
         localStorage.setItem(STORAGE_KEY, id);
       }
     } catch {
-      /* almacenamiento no disponible: el tema vive solo en esta sesión */
+      /* storage unavailable: the theme only lives in this session */
     }
     void invokeCommand("save_setting", { key: STORAGE_KEY, value: id }).catch((err) => {
-      console.debug("[useTheme] Error guardando tema en backend:", err);
+      console.debug("[useTheme] Error saving theme to the backend:", err);
     });
   }
 
@@ -163,10 +163,10 @@ export function useTheme() {
         localStorage.setItem(DYNAMIC_COVER_KEY, String(enabled));
       }
     } catch {
-      /* almacenamiento no disponible */
+      /* storage unavailable */
     }
     void invokeCommand("save_setting", { key: DYNAMIC_COVER_KEY, value: String(enabled) }).catch((err) => {
-      console.debug("[useTheme] Error guardando ajuste dynamic cover en backend:", err);
+      console.debug("[useTheme] Error saving dynamic cover setting to the backend:", err);
     });
   }
 

@@ -1,18 +1,18 @@
 <template>
-  <!-- PL-06: la barra inferior ya no se colapsa. Antes era `v-if="!isCollapsed"`
-       con un botón flotante para recuperarla; el usuario pidió que no exista
-       forma de colapsarla, así que desaparece también la persistencia de
-       `syncify_statusbar_collapsed`: dejarla habría dejado a quien ya la
-       tuviera colapsada sin barra y sin botón para volver.
+  <!-- PL-06: the bottom bar no longer collapses. It used to be `v-if="!isCollapsed"`
+       with a floating button to bring it back; the user asked that there be no
+       way to collapse it, so the persistence of `syncify_statusbar_collapsed`
+       goes away too: keeping it would have left anyone who already had it
+       collapsed with no bar and no button to recover it.
 
-       UI-CORR-1 (10-oct-2026): alto REAL y flexible. Antes era `h-8` fijo, y
-       el mini-reproductor central (PL-08) pedía más de 32px: su barra de
-       progreso y sus controles quedaban recortados por la propia barra. Ahora
-       la altura mínima es `min-h-12` (48px) y crece con el contenido
-       (`h-auto`), sin techo que recorte. `App.vue` reserva exactamente ese
-       alto real mediante `--status-bar-h` (ver STATUS_BAR_MIN_HEIGHT_PX) en
-       `#page-content`, así el padding del layout no depende de una constante
-       hardcodeada. -->
+       UI-CORR-1 (10-oct-2026): REAL and flexible height. It used to be a fixed
+       `h-8`, and the central mini player (PL-08) needed more than 32px: its
+       progress bar and controls were clipped by the bar itself. Now the
+       minimum height is `min-h-12` (48px) and it grows with the content
+       (`h-auto`), with no ceiling to clip it. `App.vue` reserves exactly that
+       real height through `--status-bar-h` (see STATUS_BAR_MIN_HEIGHT_PX) in
+       `#page-content`, so the layout padding does not depend on a hardcoded
+       constant. -->
   <div
     ref="statusBarEl"
     :class="[
@@ -22,7 +22,7 @@
     ]"
   >
     <!-- Left Section: Background Processes (BP-02/BP-04).
-         No anuncia descargas activas: ésas se consultan en DownloadsView. -->
+         It does not announce active downloads: those are checked in DownloadsView. -->
     <button
       class="status-section sync-status flex items-center gap-2 px-3 py-1 rounded hover:bg-elevated cursor-pointer transition-colors shrink-0"
       @click="toggleSyncPopover"
@@ -56,11 +56,11 @@
 
     
     <!-- Background Processes Popover (BP-02/BP-04)
-         Renombrado desde "Sync Details": este panel ya no describe UNA
-         sincronización, describe el conjunto de procesos en SEGUNDO PLANO
-         (sincronización, enriquecimiento de metadatos, letras). Por eso filtra
-         `download` (primer plano en DownloadsView) y `scan` / `import`
-         iniciadas sincrónicamente desde la UI (AccountsView.vue:1359-1396). -->
+         Renamed from "Sync Details": this panel no longer describes ONE
+         sync, it describes the set of BACKGROUND processes
+         (sync, metadata enrichment, lyrics). That is why it filters out
+         `download` (foreground in DownloadsView) and `scan` / `import`
+         started synchronously from the UI (AccountsView.vue:1359-1396). -->
     <Transition name="slide-up">
       <div v-if="showSyncPopover" :class="['status-popover absolute z-[160] left-3 w-64 bg-surface border border-line rounded-xl shadow-xl p-4', current ? 'bottom-26' : 'bottom-10']">
         <div class="flex items-center justify-between mb-3">
@@ -116,8 +116,8 @@
           </button>
         </div>
 
-        <!-- Sin procesos en segundo plano: se dice, en vez de abrir un panel
-             vacío o de enseñar el estado de una descarga que no corresponde. -->
+        <!-- No background processes: we say so, rather than opening an empty
+             panel or showing the status of an unrelated download. -->
         <div v-else class="text-sm text-ink-2">
           <p>No background processes running.</p>
           <p class="text-xs text-ink-3 mt-1">Last synced: {{ lastSyncTime }}</p>
@@ -130,23 +130,23 @@ Open Accounts to Sync
 
 
     <!-- Center Section: Network & Operations
-         BP-03: aquí vivía una TERCERA barra de progreso ("Global Progress:
-         covers every active task at once") con el nombre de la tarea activa.
-         Se elimina. La barra global es la de 2 px de la cabecera (App.vue) y
-         el detalle por proceso vive en "Background Processes", arriba. -->
+         BP-03: a THIRD progress bar ("Global Progress: covers every active
+         task at once") with the name of the active task used to live here.
+         It is removed. The global bar is the 2 px one in the header (App.vue)
+         and the per-process detail lives in "Background Processes", above. -->
     <div class="flex items-center justify-center gap-6">
-      <!-- UI-CORR-2 (10-oct-2026): el botón "Online" está a la izquierda, pero
-           su popover se centraba en la barra (`left-1/2 -translate-x-1/2`),
-           así que volaba hasta 300px lejos del texto que el usuario había
-           pulsado. Ahora el botón es el propio ancla: vive en un contenedor
-           `relative` y el popover se posiciona respecto a él
-           (`left-1/2 -translate-x-1/2` + `bottom-full`), así queda centrado
-           SOBRE el botón. En pantalla estrecha el panel se sale por la
-           izquierda/derecha, así que se clampea al viewport con `left-0
-           right-auto` + `max-w` (ver networkPopoverStyle). El `relative` crea
-           el contexto de posicionamiento sin tocar el eje Z: la barra sigue
-           subiendo su stacking (z-[160] al abrir un popover), y el panel
-           hereda ese nivel en vez de crear uno nuevo. -->
+      <!-- UI-CORR-2 (10-oct-2026): the "Online" button is on the left, but
+           its popover used to center on the bar (`left-1/2 -translate-x-1/2`),
+           so it flew up to 300px away from the text the user had
+           clicked. Now the button is the anchor itself: it lives in a
+           `relative` container and the popover is positioned relative to it
+           (`left-1/2 -translate-x-1/2` + `bottom-full`), so it stays centered
+           OVER the button. On narrow screens the panel overflows to the
+           left/right, so it is clamped to the viewport with `left-0
+           right-auto` + `max-w` (see networkPopoverStyle). The `relative` creates
+           the positioning context without touching the Z axis: the bar keeps
+           raising its stacking (z-[160] when a popover opens), and the panel
+           inherits that level instead of creating a new one. -->
       <div class="relative">
         <div
           class="status-section network-status flex items-center gap-2 px-3 py-1 rounded hover:bg-elevated cursor-pointer transition-colors"
@@ -162,7 +162,7 @@ Open Accounts to Sync
           <span :class="isOnline ? 'text-ink-2' : 'text-error'">{{ isOnline ? 'Online' : 'Offline' }}</span>
         </div>
 
-        <!-- Network Popover: anclado al botón Online (ver comentario arriba). -->
+        <!-- Network Popover: anchored to the Online button (see comment above). -->
         <Transition name="slide-up">
           <div v-if="showNetworkPopover" :style="networkPopoverStyle()" class="status-popover absolute z-[160] w-72 max-w-[calc(100vw-1.5rem)] bg-surface border border-line rounded-xl shadow-xl p-4">
             <div class="flex items-center justify-between mb-3">
@@ -200,19 +200,19 @@ Open Accounts to Sync
       </div>
     </div>
     
-    <!-- PL-08: Centro de la barra de estado — Pista en curso y mini reproductor -->
+    <!-- PL-08: Status bar center — Current track and mini player -->
     <div
       v-if="current"
       class="status-center-player flex-1 flex items-center justify-center gap-2.5 min-w-0 mx-2 text-xs"
       data-testid="status-bar-player"
     >
-      <!-- PL-09: Portada con señal al hacer hover y click para expandir -->
+      <!-- PL-09: Cover with hover affordance and click to expand -->
       <button
         @click="openFullscreen"
         data-testid="status-bar-track-cover"
         class="group relative w-6 h-6 rounded overflow-hidden shrink-0 cursor-pointer focus:outline-none focus:ring-1 focus:ring-accent"
-        title="Expandir reproductor (Pantalla completa)"
-        aria-label="Expandir reproductor (Pantalla completa)"
+        title="Expand player (Fullscreen)"
+        aria-label="Expand player (Fullscreen)"
       >
         <TrackCover
           :src="current.coverUrl"
@@ -221,7 +221,7 @@ Open Accounts to Sync
           size-class="w-6 h-6 text-[10px]"
           rounded="rounded"
         />
-        <!-- Señal visual de hover: overlay con icono expandir -->
+        <!-- Hover affordance: overlay with expand icon -->
         <div
           class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white"
           data-testid="cover-expand-hint"
@@ -230,11 +230,11 @@ Open Accounts to Sync
         </div>
       </button>
 
-      <!-- Título y artista (clicable para expandir) -->
+      <!-- Title and artist (clickable to expand) -->
       <button
         @click="openFullscreen"
         class="flex items-center gap-1.5 min-w-0 max-w-[200px] sm:max-w-[280px] truncate text-left cursor-pointer hover:text-accent transition-colors focus:outline-none"
-        title="Expandir reproductor (Pantalla completa)"
+        title="Expand player (Fullscreen)"
         data-testid="status-bar-track-info"
       >
         <span class="font-medium text-ink truncate">{{ current.title }}</span>
@@ -242,13 +242,13 @@ Open Accounts to Sync
         <span class="text-text-secondary truncate text-[11px]">{{ current.artist }}</span>
       </button>
 
-      <!-- Mini transporte: prev, play/pause, next -->
+      <!-- Mini transport: prev, play/pause, next -->
       <div class="flex items-center gap-0.5 shrink-0">
         <button
           @click="previous"
           class="p-0.5 rounded hover:bg-elevated text-ink-2 hover:text-ink transition-colors"
-          title="Pista anterior"
-          aria-label="Pista anterior"
+          title="Previous track"
+          aria-label="Previous track"
           data-testid="status-bar-prev"
         >
           <span class="material-symbols-outlined text-sm">skip_previous</span>
@@ -256,8 +256,8 @@ Open Accounts to Sync
         <button
           @click="toggle"
           class="p-0.5 rounded hover:bg-elevated text-ink hover:text-accent transition-colors"
-          :title="isPlaying ? 'Pausa' : 'Reproducir'"
-          :aria-label="isPlaying ? 'Pausa' : 'Reproducir'"
+          :title="isPlaying ? 'Pause' : 'Play'"
+          :aria-label="isPlaying ? 'Pause' : 'Play'"
           data-testid="status-bar-toggle"
         >
           <span class="material-symbols-outlined text-sm">{{ isPlaying ? 'pause' : 'play_arrow' }}</span>
@@ -265,15 +265,15 @@ Open Accounts to Sync
         <button
           @click="next"
           class="p-0.5 rounded hover:bg-elevated text-ink-2 hover:text-ink transition-colors"
-          title="Pista siguiente"
-          aria-label="Pista siguiente"
+          title="Next track"
+          aria-label="Next track"
           data-testid="status-bar-next"
         >
           <span class="material-symbols-outlined text-sm">skip_next</span>
         </button>
       </div>
 
-      <!-- Tiempo transcurrido / total -->
+      <!-- Elapsed / total time -->
       <span
         v-if="durationSec > 0"
         class="font-mono text-[10px] text-ink-3 shrink-0 tabular-nums hidden sm:inline"
@@ -282,28 +282,28 @@ Open Accounts to Sync
         {{ formatTime(positionSec) }} / {{ formatTime(durationSec) }}
       </span>
 
-      <!-- Botón explícito para expandir a pantalla completa -->
+      <!-- Explicit button to expand to fullscreen -->
       <button
         @click="openFullscreen"
         class="p-0.5 rounded hover:bg-elevated text-ink-2 hover:text-ink transition-colors shrink-0"
-        title="Pantalla completa"
-        aria-label="Pantalla completa"
+        title="Fullscreen"
+        aria-label="Fullscreen"
         data-testid="status-bar-expand-btn"
       >
         <span class="material-symbols-outlined text-sm">open_in_full</span>
       </button>
     </div>
-    <!-- Reservar el centro libre cuando no hay reproducción -->
+    <!-- Keep the center free when nothing is playing -->
     <div v-else class="flex-1"></div>
 
 
-    <!-- BP-03: Ajustes NO vive aquí. Con el mini-reproductor ocupando el
-         centro, la barra inferior solo tiene sitio para Background Processes,
-         Online/Network y Storage; Settings vuelve a la barra lateral
-         (App.vue), donde hay sitio de sobra para texto + icono. El botón y
-         `goToSettings()` se eliminan en vez de quedar huérfanos. -->
+    <!-- BP-03: Settings does NOT live here. With the mini player taking the
+         center, the bottom bar only has room for Background Processes,
+         Online/Network and Storage; Settings goes back to the sidebar
+         (App.vue), where there is plenty of room for text + icon. The button and
+         `goToSettings()` are removed instead of being left orphaned. -->
 
-    <!-- Storage conserva la esquina inferior derecha y su popover anclado a
+    <!-- Storage keeps the bottom-right corner and its popover anchored to
          right-3. -->
     <div
       class="status-section storage-info flex items-center gap-3 px-3 py-1 rounded hover:bg-elevated cursor-pointer transition-colors"
@@ -370,7 +370,7 @@ Open Accounts to Sync
 
   </div>
 
-  <!-- PL-04, PL-05, PL-09, PL-10: Reproductor grande / pantalla completa -->
+  <!-- PL-04, PL-05, PL-09, PL-10: Large player / fullscreen -->
   <FullscreenPlayer />
 </template>
 
@@ -407,32 +407,34 @@ const showNetworkPopover = ref(false)
 const showStoragePopover = ref(false)
 
 /**
- * UI-CORR-2 (10-oct-2026): el popover de Network se ancla al botón "Online",
- * no al centro de la barra. El panel se coloca sobre el botón
- * (`bottom-full` respecto al contenedor `relative` que lo envuelve) y se
- * centra en él con `left: 50%; transform: translateX(-50%)`.
+ * UI-CORR-2 (10-oct-2026): the Network popover is anchored to the "Online" button,
+ * not to the center of the bar. The panel is placed above the button
+ * (`bottom-full` relative to the `relative` container that wraps it) and
+ * centered on it with `left: 50%; transform: translateX(-50%)`.
  *
- * Ese centrado desbordaría por la izquierda en ventanas estrechas (el botón
- * vive en el centro de la barra y el panel mide 288px). Se clampea al ancho
- * del viewport: si el panel no cabe, se limita su ancho al espacio disponible
- * a cada lado y se deja `left: 0` para que nazca alineado al botón en vez de
- * salirse de la pantalla. El cálculo se hace en px sobre el ancho real del
- * contenedor, medido en el cliente (imprescindible: en jsdom `getBoundingClientRect`
- * devuelve ceros y no hay CSS real, así que sin este guardia el estilo
- * computado saldría como `left: 0` sin clamp y perdería el anclaje).
+ * That centering would overflow on the left in narrow windows (the button
+ * lives in the center of the bar and the panel is 288px wide). It is clamped
+ * to the viewport width: if the panel does not fit, its width is limited to the
+ * space available on each side and `left: 0` is left so it lines up with the
+ * button instead of running off screen. The calculation is done in px over the
+ * real width of the container, measured on the client (essential: in jsdom
+ * `getBoundingClientRect` returns zeros and there is no real CSS, so without
+ * this guard the computed style would come out as `left: 0` with no clamp and
+ * lose the anchoring).
  */
 const statusBarEl = ref<HTMLElement | null>(null)
 
 /**
- * UI-CORR-2: posición del popover de Network, recalculada en cada render
- * (función, no `computed`). La geometría de la ventana no es reactiva: si
- * fuera un `computed`, se cachearía la primera vez y el panel quedaría anclado
- * donde naciera, no donde está el botón tras un cambio de tamaño. Al ser una
- * función invocada desde el template, se re-evalúa en cada repintado del
- * componente, y `showNetworkPopover` sí fuerza uno nuevo al abrir y cerrar.
+ * UI-CORR-2: position of the Network popover, recalculated on every render
+ * (a function, not a `computed`). Window geometry is not reactive: if it
+ * were a `computed`, it would be cached the first time and the panel would
+ * stay anchored where it first appeared, not where the button is after a
+ * resize. Since it is a function invoked from the template, it is re-evaluated
+ * on every repaint of the component, and `showNetworkPopover` does force a new
+ * one on open and close.
  */
 function networkPopoverStyle(): Record<string, string> {
-  // Aparece sobre el botón; el `mb-2` es la separación visual.
+  // Appears above the button; the `mb-2` is the visual separation.
   const base: Record<string, string> = {
     position: 'absolute',
     bottom: '100%',
@@ -444,16 +446,16 @@ function networkPopoverStyle(): Record<string, string> {
   if (!host) return base
   const barRect = host.getBoundingClientRect()
   const anchorRect = host.querySelector('.network-status')?.getBoundingClientRect() ?? barRect
-  // El panel mide 288px (w-72); se reserva la mitad para no salirse.
+  // The panel is 288px wide (w-72); half is reserved so it does not overflow.
   const halfPanel = 288 / 2
   const roomLeft = anchorRect.left - barRect.left + (anchorRect.width / 2) - halfPanel
   const roomRight = barRect.right - (anchorRect.left + anchorRect.width / 2) - halfPanel
   if (roomLeft < 0) {
-    // No cabe a la izquierda: se alinea al borde izquierdo de la barra.
+    // Does not fit on the left: align to the left edge of the bar.
     return { ...base, left: '0px', transform: 'none' }
   }
   if (roomRight < 0) {
-    // No cabe a la derecha: se alinea al borde derecho de la barra.
+    // Does not fit on the right: align to the right edge of the bar.
     return { ...base, left: 'auto', right: '0px', transform: 'none' }
   }
   return base
@@ -491,20 +493,20 @@ let etaInterval: ReturnType<typeof setInterval> | undefined
 let unlistenDownloadProgress: (() => void) | undefined
 const isRefreshing = ref(false)
 
-// BP-02: este panel es de procesos EN SEGUNDO PLANO. Una descarga en curso es
-// tarea en primer plano —el usuario la sigue en DownloadsView— y queda fuera.
-// Lo mismo para `scan` (AccountsView.vue:1359-1396 lo inicia y espera a que
-// termine) e `import` síncrona. Los tipos son los de `GlobalTask.type`
-// (`useGlobalTasks.ts:15`); `sync`, `metadata`, `lyrics` sí son tareas que
-// continúan por eventos de backend.
+// BP-02: this panel is for BACKGROUND processes. An in-progress download is a
+// foreground task — the user follows it in DownloadsView — and is left out.
+// Same for `scan` (AccountsView.vue:1359-1396 starts it and waits for it to
+// finish) and synchronous `import`. The types are those of `GlobalTask.type`
+// (`useGlobalTasks.ts:15`); `sync`, `metadata`, `lyrics` are indeed tasks that
+// continue through backend events.
 const BACKGROUND_TASK_TYPES = new Set(['sync', 'metadata', 'lyrics'])
 const backgroundTasks = computed(() => activeTasks.value.filter(t => BACKGROUND_TASK_TYPES.has(t.type)))
 const backgroundAllTasks = computed(() => allTasks.value.filter(t => BACKGROUND_TASK_TYPES.has(t.type)))
 
-// `deriveSyncState` de statusTelemetry.ts:118 tiene la política antigua y
-// cuenta cualquier tarea running (incluida download). Esa función queda
-// intacta —es ajena al carril y tiene sus pruebas—, pero el indicador aquí
-// aplica la política BP-02 únicamente a `backgroundAllTasks`.
+// `deriveSyncState` from statusTelemetry.ts:118 has the old policy and
+// counts any running task (including download). That function stays
+// intact —it is outside this lane and has its own tests—, but the indicator here
+// applies the BP-02 policy only to `backgroundAllTasks`.
 type SyncState = 'syncing' | 'idle' | 'error' | 'paused'
 const syncState = computed((): SyncState => {
   const tasks = backgroundAllTasks.value
@@ -520,9 +522,9 @@ const syncService = computed(() => {
   return task.service || task.name.replace(/^Syncing\s+/, '') || 'Background Process'
 })
 
-// Ponderación por número de ítems; sin total, peso igual al promedio de los
-// totales declarados (o 1 si no hay ninguno). Se mantiene la misma regla que
-// la barra global de App.vue sin sumar los bytes de descargas.
+// Weighting by item count; without a total, weight equals the average of the
+// declared totals (or 1 if there are none). The same rule as the App.vue global
+// bar is kept, without adding download bytes.
 const backgroundHasDeterminateProgress = computed(() => backgroundTasks.value.some(t => (t.total ?? 0) > 0))
 const syncProgress = computed(() => {
   const tasks = backgroundTasks.value
@@ -584,7 +586,7 @@ const syncErrorMessage = computed(() => deriveSyncErrorMessage(backgroundAllTask
 
 const syncTooltip = computed(() => {
   switch (syncState.value) {
-    // BP-02: cuenta procesos en segundo plano, no descargas en curso.
+    // BP-02: counts background processes, not in-progress downloads.
     case 'syncing': return `Processing ${backgroundTasks.value.length} background processes: ${Math.round(syncProgress.value)}%`
     case 'idle': return 'No background processes running'
     case 'error': return 'Click to view background process error'
@@ -745,19 +747,19 @@ function goToDownloads() {
   router.push('/downloads')
 }
 
-// UI-CORR-1 (10-oct-2026): alto mínimo REAL de la barra inferior, en px.
-// Es la fuente única que consume `App.vue` para reservar el hueco de
+// UI-CORR-1 (10-oct-2026): REAL minimum height of the bottom bar, in px.
+// It is the single source that `App.vue` consumes to reserve the slot for
 // `#page-content` (`padding-bottom: calc(var(--status-bar-h, 48px) + 8px)`),
-// de modo que el layout deje de adivinar la altura con `pb-8` fijo. La barra
-// en sí usa `min-h-12`; este número debe coincidir con él (12 * 4px).
+// so the layout stops guessing the height with a fixed `pb-8`. The bar
+// itself uses `min-h-12`; this number must match it (12 * 4px).
 const STATUS_BAR_MIN_HEIGHT_PX = 48
 
 /**
- * UI-CORR-1: publica el alto real de la barra en la variable CSS
- * `--status-bar-h` de `documentElement`. `App.vue` la consume con
- * `calc(var(--status-bar-h, 48px) + 8px)`, así que el espacio reservado es
- * SIEMPRE el alto medido y no una constante que hay que mantener a mano. Se
- * acepta un alto de 0 (jsdom, barra oculta) cayendo en el mínimo.
+ * UI-CORR-1: publishes the real height of the bar in the CSS variable
+ * `--status-bar-h` of `documentElement`. `App.vue` consumes it with
+ * `calc(var(--status-bar-h, 48px) + 8px)`, so the reserved space is
+ * ALWAYS the measured height and not a constant that has to be kept by hand.
+ * A height of 0 is accepted (jsdom, hidden bar) by falling back to the minimum.
  */
 function publishStatusBarHeight() {
   if (typeof document === 'undefined') return
@@ -802,8 +804,8 @@ async function changeLocation() {
   showStoragePopover.value = false
 }
 
-// PL-06: `collapse`/`expand` eliminados. Sin botón que las llame, y sin estado
-// `isCollapsed` que las sostenga, quedaban como código muerto con escritura en
+// PL-06: `collapse`/`expand` removed. With no button calling them, and no
+// `isCollapsed` state to hold them up, they were left as dead code writing to
 // `localStorage`.
 
 // Close popovers on outside click
@@ -822,11 +824,11 @@ function checkOnline() {
 }
 
 onMounted(async () => {
-  // UI-CORR-1: publica el alto REAL de la barra en `--status-bar-h`, para que
-  // `#page-content` (App.vue) reserve exactamente ese espacio y el reproductor
-  // central nunca quede tapado por la propia barra. Se publica el mínimo
-  // conocido al montar (jsdom y el primer frame no tienen alto útil) y se
-  // re-mide con ResizeObserver cuando el contenido crece.
+  // UI-CORR-1: publishes the REAL height of the bar in `--status-bar-h`, so that
+  // `#page-content` (App.vue) reserves exactly that space and the central
+  // player is never covered by the bar itself. The known minimum is published
+  // on mount (jsdom and the first frame have no useful height) and is
+  // re-measured with ResizeObserver when the content grows.
   publishStatusBarHeight()
   if (typeof ResizeObserver !== 'undefined' && statusBarEl.value) {
     statusBarHeightObserver = new ResizeObserver(() => publishStatusBarHeight())
@@ -837,20 +839,20 @@ onMounted(async () => {
   window.addEventListener('online', checkOnline)
   window.addEventListener('offline', checkOnline)
 
-  // PL-08: al borrar NowPlayingBar su llamador se perdio. La restauracion de
-  // cola/volumen/posicion vivia en su onMounted; sin ella el estado guardado
-  // no se recuperaba nunca. Ahora la hace el reproductor de esta barra, que
-  // es el unico punto de montaje del shell.
+  // PL-08: deleting NowPlayingBar lost its caller. Restoring
+  // queue/volume/position lived in its onMounted; without it the saved state
+  // was never recovered. Now the player of this bar does it, since it
+  // is the only mount point of the shell.
   await player.restoreFromPersistence()
 
   eventBus.on(TauriEvents.DOWNLOAD_PROGRESS, handleDownloadProgress).then(unlisten => {
     if (unlisten) unlistenDownloadProgress = unlisten
   })
 
-  // PL-06: ya no se restaura `syncify_statusbar_collapsed`. Si se conservara
-  // la lectura, quien ya la tuviera colapsada vería una barra inferior vacía
-  // (la que la restauraba era el botón que este mismo cambio elimina) y sin
-  // forma de volver a sacarla.
+  // PL-06: `syncify_statusbar_collapsed` is no longer restored. If the
+  // read were kept, anyone who already had it collapsed would see an empty
+  // bottom bar (the one that restored it was the button this very change removes)
+  // and with no way to bring it back.
 
   // Initial fetch
   await Promise.all([
@@ -888,7 +890,7 @@ onUnmounted(() => {
   }
 })
 
-// PL-06: `isCollapsed` sale de la exposición; el estado ya no existe.
+// PL-06: `isCollapsed` is removed from the exposure; the state no longer exists.
 defineExpose({ syncState })
 </script>
 
@@ -939,19 +941,19 @@ defineExpose({ syncState })
   bottom: 6.5rem;
 }
 
-/* UI-CORR-1: con `h-auto` + `min-h-12`, el panel centrado deja de quedar
-   recortado por la barra; las secciones se reparten el alto crecido sin
-   solaparse. `flex-wrap` evita que el mini-reproductor y las secciones de los
-   extremos se pisen a lo ancho en ventanas estrechas. */
+/* UI-CORR-1: with `h-auto` + `min-h-12`, the centered panel is no longer
+   clipped by the bar; the sections share the grown height without
+   overlapping. `flex-wrap` prevents the mini player and the edge sections
+   from stepping on each other horizontally in narrow windows. */
 </style>
 
 <script lang="ts">
 /**
- * UI-CORR-1 (10-oct-2026): alto mínimo de la barra inferior, en px.
+ * UI-CORR-1 (10-oct-2026): minimum height of the bottom bar, in px.
  *
- * Vive en un `<script>` normal (no `setup`) porque `<script setup>` no admite
- * `export`. Es la fuente única que consume `App.vue` para reservar el hueco de
- * `#page-content`, y debe coincidir con el `min-h-12` de la barra.
+ * It lives in a regular `<script>` (not `setup`) because `<script setup>` does
+ * not allow `export`. It is the single source that `App.vue` consumes to reserve
+ * the slot for `#page-content`, and must match the bar's `min-h-12`.
  */
 export const STATUS_BAR_MIN_HEIGHT_PX = 48
 </script>

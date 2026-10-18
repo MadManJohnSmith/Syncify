@@ -17,10 +17,10 @@
         <button
           @click="showSpotifyApiModal = true"
           class="flex items-center gap-2 px-3.5 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-surface-highlight dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 rounded-lg text-sm font-medium transition-colors border border-gray-200 dark:border-border-dark"
-          title="Configurar credenciales de la API de Spotify"
+          title="Configure Spotify API credentials"
         >
           <span class="material-symbols-outlined text-[18px]">key</span>
-          Credenciales Spotify
+          Spotify Credentials
         </button>
         <button
           @click="showServiceModal = true"
@@ -57,7 +57,7 @@
               v-if="service.id === 'spotify'"
               @click="showSpotifyApiModal = true"
               class="absolute top-4 right-12 p-1.5 text-gray-400 hover:text-primary dark:hover:text-primary transition-colors opacity-0 group-hover:opacity-100"
-              title="Credenciales de API de Spotify"
+              title="Spotify API credentials"
             >
               <span class="material-symbols-outlined text-[18px]">key</span>
             </button>
@@ -93,14 +93,17 @@
             
             <!-- Stats (if connected) -->
             <div v-if="service.status === 'connected'" class="mb-5">
+              <!-- Active-account totals: full real number for that account. Tracks repeated in
+                   other accounts/services are not subtracted. Details: useAccountsStatus.ts → services. -->
               <div class="grid grid-cols-3 gap-3 mb-3">
                 <div class="text-center p-2 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg">
                   <div class="flex items-center justify-center gap-1 mb-1">
                     <span class="material-symbols-outlined text-[16px] text-gray-400">music_note</span>
                   </div>
                   <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ service.importedTracks }}</p>
-                  <p class="text-[10px] text-text-secondary uppercase">Imported</p>
-                  <p class="text-[10px] text-text-secondary">Favoritos reportados: {{ service.reportedTracks }}</p>
+                  <p class="text-[10px] text-text-secondary uppercase">Total Imported</p>
+                  <!-- "Reported favorites" is the provider-declared total (snapshot), not what was imported. -->
+                  <p class="text-[10px] text-text-secondary">Reported favorites: {{ service.reportedTracks }}</p>
                 </div>
                 <div class="text-center p-2 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg">
                   <div class="flex items-center justify-center gap-1 mb-1">
@@ -123,14 +126,14 @@
                 <div class="flex items-start gap-1.5 text-[11px] text-amber-600 dark:text-amber-400 leading-tight">
                   <span class="material-symbols-outlined text-[15px] shrink-0 mt-0.5">info</span>
                   <div>
-                    <span>La sincronización de Apple Music requiere activar «Sincronizar biblioteca» en tu app de Música o iTunes.</span>
+                    <span>Apple Music sync requires enabling "Sync Library" in your Music or iTunes app.</span>
                     <a
                       href="https://support.apple.com/HT204926"
                       target="_blank"
                       rel="noopener noreferrer"
                       class="inline-flex items-center gap-0.5 text-primary hover:underline font-medium ml-1"
                     >
-                      Guía oficial de Apple <span class="material-symbols-outlined text-[11px]">open_in_new</span>
+                      Official Apple guide <span class="material-symbols-outlined text-[11px]">open_in_new</span>
                     </a>
                   </div>
                 </div>
@@ -191,11 +194,11 @@
               >
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
-                    <div class="font-medium truncate text-gray-900 dark:text-white">{{ formatAccountLabel(account) }} <span v-if="accountLabelCollision(service.accounts, account)" class="text-xs text-text-secondary">(cuenta {{ account.id }})</span></div>
+                    <div class="font-medium truncate text-gray-900 dark:text-white">{{ formatAccountLabel(account) }} <span v-if="accountLabelCollision(service.accounts, account)" class="text-xs text-text-secondary">(account {{ account.id }})</span></div>
                     <div v-if="accountCount(service, account.id)" class="text-xs text-text-secondary" :data-testid="`account-count-${account.id}`">
-                      Favoritos reportados: {{ accountCount(service, account.id)?.reported }} · Favoritos importados: {{ accountCount(service, account.id)?.imported }}
-                      · {{ accountCount(service, account.id)?.completeness }}<span v-if="accountCount(service, account.id)?.stale"> · desactualizado</span>
-                      · {{ accountCount(service, account.id)?.scannedAt || 'sin hora' }}
+                      Reported favorites: {{ accountCount(service, account.id)?.reported }} · Imported favorites: {{ accountCount(service, account.id)?.imported }}
+                      · {{ accountCount(service, account.id)?.completeness }}<span v-if="accountCount(service, account.id)?.stale"> · stale</span>
+                      · {{ accountCount(service, account.id)?.scannedAt || 'no time' }}
                     </div>
                     <!-- Secondary email, only rendered when it differs from the label's email -->
                     <div v-if="accountRowEmail(account)" class="text-xs text-text-secondary truncate">
@@ -331,7 +334,7 @@
                   @click="importQobuzPurchases"
                   :disabled="syncingServices[service.id]"
                   class="px-3 py-2.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-                  title="TASK-108: importar las compras de la cuenta Qobuz a la biblioteca"
+                  title="TASK-108: import Qobuz account purchases into the library"
                 >
                   Purchases
                 </button>
@@ -483,15 +486,15 @@
             <div class="mt-4 p-3 bg-gray-50 dark:bg-surface-highlight/40 rounded-lg border border-gray-200 dark:border-border-dark text-xs space-y-2 text-left">
               <div class="font-semibold text-gray-900 dark:text-white flex items-center gap-1.5">
                 <span class="material-symbols-outlined text-[16px] text-primary">info</span>
-                Formatos y estándares admitidos
+                Supported formats and standards
               </div>
               <ul class="space-y-1 text-text-secondary text-[11px] leading-relaxed">
-                <li><strong class="text-gray-800 dark:text-gray-200">M3U / M3U8</strong>: Estándar Extended M3U (<code class="text-primary font-mono text-[10px]">#EXTINF:duración,Artista - Título</code>) o lista de rutas de archivos de audio locales.</li>
-                <li><strong class="text-gray-800 dark:text-gray-200">CSV</strong> (RFC 4180): Con cabecera (<code class="text-primary font-mono text-[10px]">title, artist, isrc, path</code>) o sin cabecera (<code class="text-primary font-mono text-[10px]">Título, Artista</code>).</li>
-                <li><strong class="text-gray-800 dark:text-gray-200">TXT</strong>: Una pista por línea con formato <code class="text-primary font-mono text-[10px]">Artista - Título</code> o ruta de archivo local.</li>
+                <li><strong class="text-gray-800 dark:text-gray-200">M3U / M3U8</strong>: Extended M3U standard (<code class="text-primary font-mono text-[10px]">#EXTINF:duration,Artist - Title</code>) or a list of local audio file paths.</li>
+                <li><strong class="text-gray-800 dark:text-gray-200">CSV</strong> (RFC 4180): With header (<code class="text-primary font-mono text-[10px]">title, artist, isrc, path</code>) or without header (<code class="text-primary font-mono text-[10px]">Title, Artist</code>).</li>
+                <li><strong class="text-gray-800 dark:text-gray-200">TXT</strong>: One track per line as <code class="text-primary font-mono text-[10px]">Artist - Title</code> or a local file path.</li>
               </ul>
               <p class="text-[10px] text-gray-500 dark:text-gray-400">
-                Las pistas se emparejan automáticamente con tu biblioteca local por ISRC exacto, ruta de descarga o coincidencia exacta de título y artista.
+                Tracks are matched automatically against your local library by exact ISRC, download path, or exact title-and-artist match.
               </p>
             </div>
 
@@ -562,18 +565,18 @@
               Add Library Path
             </button>
 
-            <!-- F-01/F-02: importacion por archivo. NO es un servicio mas:
-                 escanea una carpeta y la anade como fuente local, con su scoring. -->
+            <!-- F-01/F-02: file-based import. It is NOT another service:
+                 it scans a folder and adds it as a local source, with its own scoring. -->
             <button
               @click="showLocalSyncModal = true"
               data-testid="accounts-import-local-folder"
               class="w-full px-4 py-3 bg-primary hover:bg-primary-hover text-on-accent rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-colors shadow-sm"
             >
               <span class="material-symbols-outlined text-[20px]">folder_open</span>
-              Importar biblioteca local desde una carpeta
+              Import local library from a folder
             </button>
             <p class="text-xs text-text-secondary text-center">
-              Lee tus archivos de audio (FLAC, MP3, M4A), evita duplicados y calcula sus metadatos.
+              Reads your audio files (FLAC, MP3, M4A), avoids duplicates, and computes their metadata.
             </p>
           </div>
         </div>
@@ -695,50 +698,94 @@
                         :data-testid="`settings-account-row-${acct.id}`"
                         :data-active="acct.is_active ? 'true' : 'false'"
                       >
-                        <div class="flex flex-col truncate mr-2">
-                          <span class="font-medium text-gray-900 dark:text-white truncate">
-                            {{ formatAccountLabel(acct) }}
-                            <span v-if="acct.is_active" class="ml-1 px-1.5 py-0.5 rounded-full bg-success/10 text-success text-[10px] font-semibold uppercase tracking-wide align-middle">Active</span>
-                            <span v-else-if="acct.credentials_invalid" class="ml-1 px-1.5 py-0.5 rounded-full bg-error/10 text-error text-[10px] font-semibold uppercase tracking-wide align-middle">Reauth</span>
-                          </span>
-                          <span v-if="accountRowEmail(acct)" class="text-text-secondary truncate">{{ accountRowEmail(acct) }}</span>
-                          <!-- Masked stored-credential state: what is on file, never its value. -->
-                          <span
-                            v-if="storedCredentialState(acct).has_credential"
-                            class="flex items-center gap-1 text-text-secondary truncate"
-                          >
-                            <span class="material-symbols-outlined text-[12px]" aria-hidden="true">{{ credentialStateIcon(acct) }}</span>
-                            <span class="truncate">{{ describeCredentialState(acct) }}</span>
-                          </span>
-                          <span v-if="acct.credentials_invalid" class="text-error text-[10px]">Reconnect required to use this account</span>
-                        </div>
-                        <div class="flex items-center gap-1.5 shrink-0">
+                        <!-- Inline rename: the account name is the user's, so it
+                             survives logins and the automatic identity refresh. -->
+                        <div v-if="renamingAccountId === acct.id" class="flex items-center gap-1.5 w-full">
+                          <input
+                            v-model="renameAccountValue"
+                            type="text"
+                            maxlength="128"
+                            class="flex-1 min-w-0 px-2 py-1 rounded border border-gray-300 dark:border-border-dark bg-white dark:bg-surface-dark text-gray-900 dark:text-white text-xs focus:outline-none focus:border-primary"
+                            placeholder="Account name"
+                            :data-testid="`account-rename-input-${acct.id}`"
+                            @keyup.enter="saveAccountRename(acct.id)"
+                            @keyup.escape="cancelAccountRename()"
+                          />
                           <button
-                            v-if="!acct.is_active"
-                            @click="activateAccount(acct.id)"
+                            @click="saveAccountRename(acct.id)"
                             class="px-2 py-1 text-primary hover:bg-primary/10 rounded font-medium"
+                            :data-testid="`account-rename-save-${acct.id}`"
                           >
-                            Use this
+                            Save
                           </button>
                           <button
-                            @click="reconnectAccount(acct)"
+                            @click="cancelAccountRename()"
                             class="px-2 py-1 text-text-secondary hover:text-primary rounded"
                           >
-                            Reconnect
-                          </button>
-                          <button
-                            @click="disconnectService(selectedService?.id, acct.id)"
-                            class="px-2 py-1 text-text-secondary hover:text-error hover:bg-error/10 rounded"
-                          >
-                            Disconnect
-                          </button>
-                          <button
-                            @click="deleteAccount(acct.id)"
-                            class="px-2 py-1 text-error hover:bg-error/10 rounded"
-                          >
-                            Remove
+                            Cancel
                           </button>
                         </div>
+                        <template v-else>
+                          <div class="flex flex-col truncate mr-2">
+                            <span class="font-medium text-gray-900 dark:text-white truncate">
+                              {{ formatAccountLabel(acct) }}
+                              <span v-if="acct.is_active" class="ml-1 px-1.5 py-0.5 rounded-full bg-success/10 text-success text-[10px] font-semibold uppercase tracking-wide align-middle">Active</span>
+                              <span v-else-if="acct.credentials_invalid" class="ml-1 px-1.5 py-0.5 rounded-full bg-error/10 text-error text-[10px] font-semibold uppercase tracking-wide align-middle">Reauth</span>
+                            </span>
+                            <span v-if="accountRowEmail(acct)" class="text-text-secondary truncate">{{ accountRowEmail(acct) }}</span>
+                            <!-- Masked stored-credential state: what is on file, never its value. -->
+                            <span
+                              v-if="storedCredentialState(acct).has_credential"
+                              class="flex items-center gap-1 text-text-secondary truncate"
+                            >
+                              <span class="material-symbols-outlined text-[12px]" aria-hidden="true">{{ credentialStateIcon(acct) }}</span>
+                              <span class="truncate">{{ describeCredentialState(acct) }}</span>
+                            </span>
+                            <span v-if="acct.credentials_invalid" class="text-error text-[10px]">Reconnect required to use this account</span>
+                          </div>
+                          <div class="flex items-center gap-1.5 shrink-0">
+                            <button
+                              v-if="!acct.is_active"
+                              @click="activateAccount(acct.id)"
+                              class="px-2 py-1 text-primary hover:bg-primary/10 rounded font-medium"
+                            >
+                              Use this
+                            </button>
+                            <button
+                              @click="resyncAccount(selectedService?.id, acct.id)"
+                              :disabled="syncingServices[selectedService?.id]"
+                              class="px-2 py-1 text-primary hover:bg-primary/10 rounded font-medium disabled:opacity-50"
+                              title="Delete this account's imported data and sync it again from scratch"
+                            >
+                              Re-sync
+                            </button>
+                            <button
+                              @click="startAccountRename(acct)"
+                              class="px-2 py-1 text-text-secondary hover:text-primary rounded"
+                              :data-testid="`account-rename-${acct.id}`"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              @click="reconnectAccount(acct)"
+                              class="px-2 py-1 text-text-secondary hover:text-primary rounded"
+                            >
+                              Reconnect
+                            </button>
+                            <button
+                              @click="disconnectService(selectedService?.id, acct.id)"
+                              class="px-2 py-1 text-text-secondary hover:text-error hover:bg-error/10 rounded"
+                            >
+                              Disconnect
+                            </button>
+                            <button
+                              @click="deleteAccount(acct.id)"
+                              class="px-2 py-1 text-error hover:bg-error/10 rounded"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </template>
                       </div>
                       <!-- /v-for acct -->
                     </div>
@@ -897,7 +944,7 @@
                   </div>
                   <p class="font-medium text-gray-900 dark:text-white text-sm">{{ service.name }}</p>
                   <p v-if="service.status !== 'disconnected'" class="text-xs text-primary mt-1 font-medium">Add another account</p>
-                  <p v-else class="text-xs text-text-secondary mt-1">Conectar</p>
+                  <p v-else class="text-xs text-text-secondary mt-1">Connect</p>
                 </button>
               </div>
             </div>
@@ -962,7 +1009,7 @@
       </Transition>
     </Teleport>
 
-    <!-- Importar archivos locales sin presentar la carpeta como servicio remoto. -->
+    <!-- Import local files without presenting the folder as a remote service. -->
     <LocalLibrarySyncModal
       v-model="showLocalSyncModal"
       @sync-completed="handleLocalSyncCompleted"
@@ -976,7 +1023,7 @@
             <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
               <div class="flex items-center gap-2">
                 <span class="material-symbols-outlined text-primary">key</span>
-                <h3 class="font-semibold text-gray-900 dark:text-white text-lg">Credenciales de la API de Spotify</h3>
+                <h3 class="font-semibold text-gray-900 dark:text-white text-lg">Spotify API Credentials</h3>
               </div>
               <button @click="showSpotifyApiModal = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors">
                 <span class="material-symbols-outlined text-gray-400">close</span>
@@ -1005,7 +1052,7 @@ import type { ImportResult } from '@/api/types'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { useSyncSettings } from '@/composables/useSyncSettings'
-import { useAccountsStatus, SERVICE_ICON_SYMBOLS } from '@/composables/useAccountsStatus'
+import { useAccountsStatus, SERVICE_ICON_SYMBOLS, claimIdentityRefreshRun } from '@/composables/useAccountsStatus'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import LocalLibrarySyncModal from '@/components/LocalLibrarySyncModal.vue';
 import SpotifyApiConfigCard from '@/components/SpotifyApiConfigCard.vue'
@@ -1110,12 +1157,12 @@ async function ensureSpotifyApiConfigLoaded() {
   try {
     await accountsApi.getSpotifyApiConfig()
   } catch (e) {
-    console.warn('No se pudo precargar la configuración de Spotify:', e)
+    console.warn('Failed to preload Spotify settings:', e)
   }
 }
 
 function handleSpotifyCredentialsError() {
-  showToast('⚙️ Faltan las credenciales de Spotify (Client ID / Secret). Configúralas en la ventana emergente — las instrucciones están incluidas.', 'error')
+  showToast('⚙️ Missing Spotify credentials (Client ID / Secret). Configure them in the popup — instructions are included.', 'error')
   showSpotifyApiModal.value = true
   spotifyApiCard.value?.openInstructions()
 }
@@ -1129,28 +1176,13 @@ function handleSpotifyCredentialsError() {
  */
 function classifyAuthFailure(raw: string): string {
   const msg = String(raw || '')
-  if (msg.includes('RequiresAuth') || msg.includes('401') || msg.includes('Unauthorized')) {
-    return 'Authentication required — reconnect this account'
-  }
-  if (msg.includes('Token expired') || msg.includes('Credentials expired') || msg.includes('session expired')) {
-    return 'Session expired — reconnect this account'
-  }
   if (msg.includes('Decryption error')) {
     return 'Stored credentials could not be read — reconnect this account'
   }
+  if (msg.includes('RequiresAuth')) {
+    return 'Authentication required — reconnect this account'
+  }
   return 'Authentication failed — reconnect this account'
-}
-
-/** True when a backend error string means "the stored session is unusable". */
-function isAuthFailureMessage(errorMsg: string): boolean {
-  return errorMsg.includes('RequiresAuth')
-    || errorMsg.includes('401')
-    || errorMsg.includes('Unauthorized')
-    || errorMsg.includes('Decryption error')
-    || errorMsg.includes('Credentials expired')
-    || errorMsg.includes('Token expired')
-    || errorMsg.includes('session expired')
-    || errorMsg.includes('authentication required')
 }
 
 function isSpotifyCredentialsError(errorMsg: string): boolean {
@@ -1159,10 +1191,10 @@ function isSpotifyCredentialsError(errorMsg: string): boolean {
 
 async function onSpotifyApiSaved(configuredFlag: boolean) {
   if (configuredFlag) {
-    showToast('Credenciales de Spotify guardadas. Ahora pulsa «Conectar» en la tarjeta de Spotify.', 'success')
+    showToast('Spotify credentials saved. Now press "Connect" on the Spotify card.', 'success')
     showSpotifyApiModal.value = false
   } else {
-    showToast('Credenciales de Spotify borradas.', 'info')
+    showToast('Spotify credentials deleted.', 'info')
   }
 }
 
@@ -1181,7 +1213,7 @@ function showToast(message: string, type: 'success' | 'error' | 'info' = 'succes
 // Preserve the actual IPC error message, but never render tokens, URLs with query
 // parameters, or credential-bearing provider responses in a toast.
 function safeAuthError(error: unknown): string {
-  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : 'Error de autenticación desconocido'
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : 'Unknown authentication error'
   return message
     .replace(/https?:\/\/\S+/gi, '[URL omitida]')
     .replace(/\b(?:Bearer\s+|sp_dc\s*[=:]\s*|sp_key\s*[=:]\s*|access_token\s*[=:]\s*|refresh_token\s*[=:]\s*|client_secret\s*[=:]\s*)\S+/gi, '[credencial omitida]')
@@ -1264,7 +1296,7 @@ async function disconnectService(serviceId: string, accountId?: number) {
   // SP-04: Confirmation dialog for destructive disconnect action
   const isTest = typeof process !== 'undefined' && process.env?.VITEST === 'true'
   if (!isTest && typeof window !== 'undefined' && window.confirm) {
-    const ok = window.confirm(`¿Desconectar la cuenta de ${serviceId}? Tendrás que volver a iniciar sesión para sincronizar.`)
+    const ok = window.confirm(`Disconnect the ${serviceId} account? You will need to sign in again to sync.`)
     if (!ok) return
   }
 
@@ -1292,13 +1324,108 @@ async function activateAccount(accountId: number) {
 }
 
 async function deleteAccount(accountId: number) {
-  if (!window.confirm('¿Eliminar esta cuenta? Se borrarán también su biblioteca y playlists. Esta acción no se puede deshacer.')) return
+  if (!window.confirm('Delete this account? Its library and playlists will also be deleted. This action cannot be undone.')) return
   try {
     await accountsApi.removeAccount(accountId)
     if (highlightedAccountId.value === accountId) highlightedAccountId.value = null
     await fetchData()
   } catch (e) {
     showToast(`Failed to delete account: ${e}`, 'error')
+  }
+}
+
+/**
+ * Per-account re-sync: delete only what THIS account imported (library
+ * entries, favorites, playlists, import counters) and run its full sync again.
+ * The account row, its credentials, downloads and every other account stay.
+ */
+async function resyncAccount(serviceId: string, accountId: number) {
+  const serviceKey = serviceId.toLowerCase()
+  const serviceName = services.value.find(item => item.id === serviceKey)?.name || serviceId
+  if (syncingServices[serviceKey]) {
+    showToast(`${serviceName} sync already in progress`, 'info')
+    return
+  }
+  const confirmed = window.confirm(
+    `Re-sync this ${serviceName} account from scratch? Its imported tracks, favorites, playlists and counters will be deleted. The account, its credentials and your downloads are kept.`,
+  )
+  if (!confirmed) return
+  try {
+    const reset = await accountsApi.resetAccountSyncData(accountId)
+    showToast(
+      `${serviceName}: cleared ${reset.library_entries} library entries, ${reset.favorites} favorites and ${reset.playlists} playlists — re-syncing...`,
+      'info',
+    )
+    showSettingsModal.value = false
+    await fetchData()
+    await importFromService(serviceId, accountId)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    showToast(`Failed to reset ${serviceName} sync data: ${msg}`, 'error')
+  }
+}
+
+// Inline rename of one account, used from the settings modal: the name is the
+// user's decision, and the backend marks it custom so no login or automatic
+// identity refresh can overwrite it.
+const renamingAccountId = ref<number | null>(null)
+const renameAccountValue = ref('')
+
+function startAccountRename(account: { id: number; display_name?: string | null }) {
+  renamingAccountId.value = account.id
+  renameAccountValue.value = (account.display_name || '').trim()
+}
+
+function cancelAccountRename() {
+  renamingAccountId.value = null
+  renameAccountValue.value = ''
+}
+
+async function saveAccountRename(accountId: number) {
+  const name = renameAccountValue.value.trim()
+  if (!name) {
+    showToast('Account name cannot be empty', 'error')
+    return
+  }
+  try {
+    await accountsApi.setAccountDisplayName(accountId, name)
+    renamingAccountId.value = null
+    renameAccountValue.value = ''
+    await fetchData()
+    showToast('Account name updated', 'success')
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    showToast(`Failed to rename account: ${msg}`, 'error')
+  }
+}
+
+/**
+ * Best-effort identity refresh, once per app session: fills in the
+ * email/username of accounts still carrying the generic service name so twins
+ * can be told apart. Runs as an automatic task (`origin: 'auto'`): the header
+ * bar only follows user-started processes (BP-05), while the bottom panel
+ * still shows the work. Failures stay silent and are retried next session.
+ */
+async function refreshAccountIdentitiesOnce() {
+  if (!claimIdentityRefreshRun()) return
+  const taskId = globalTasks.addTask({
+    id: globalTasks.generateTaskId('identity', 'accounts'),
+    type: 'metadata',
+    name: 'Account identity refresh',
+    description: 'Looking up account names from services',
+    status: 'running',
+    progress: 0,
+    origin: 'auto',
+  })
+  try {
+    const summary = await accountsApi.refreshAccountIdentities()
+    globalTasks.completeTask(taskId, true)
+    if (summary && summary.updated > 0) {
+      await fetchData()
+    }
+  } catch {
+    // Cosmetic work: keep it out of the panel and retry on the next open.
+    globalTasks.removeTask(taskId)
   }
 }
 
@@ -1342,7 +1469,7 @@ async function handleImportUrl() {
   } catch (e: any) {
     const msg = String(e?.message || e)
     if (msg.includes('individual tracks')) {
-      showToast('Solo se admite importar pistas individuales por URL (no playlists completas)', 'error')
+      showToast('Only individual tracks can be imported by URL (not full playlists)', 'error')
     } else {
       showToast(`Failed to parse/import URL: ${msg}`, 'error')
     }
@@ -1394,9 +1521,9 @@ async function importQobuzPurchases() {
 }
 
 // Import from service using unified sync_service with real auth & preferences
-// R3: Apple Music y SoundCloud comparten el mismo sync completo que el resto;
-// el antiguo veto `partialCatalogServices` ya no existe.
-async function importFromService(serviceName: string) {
+// R3: Apple Music and SoundCloud use the same full sync as the rest;
+// the old `partialCatalogServices` veto no longer exists.
+async function importFromService(serviceName: string, accountId?: number) {
   const serviceKey = serviceName.toLowerCase()
 
   // Prevent duplicate sync calls if already syncing this service
@@ -1412,41 +1539,12 @@ async function importFromService(serviceName: string) {
   showToast(`Syncing ${serviceName}...`, 'info')
   
   try {
-    const syncRes = await accountsApi.syncService(serviceKey, findAccountForService(serviceKey)?.id)
-    
-    // Check if result has errors indicating authentication is required
-    const isAuthFailure = !syncRes.success && syncRes.errors?.some(e =>
-      e.includes('RequiresAuth') ||
-      e.includes('401') ||
-      e.includes('authentication required') ||
-      e.includes('credentials invalid')
-    )
+    const syncRes = await accountsApi.syncService(serviceKey, accountId ?? findAccountForService(serviceKey)?.id)
 
-    if (isAuthFailure) {
-      const authErr = syncRes.errors.find(e => e.includes('RequiresAuth') || e.includes('401')) || 'Authentication required'
-      // Never echo a provider-authored error into UI; it may contain cookies.
-      const safeAuthErr = classifyAuthFailure(authErr)
-      globalTasks.completeTask(taskId, false, safeAuthErr, { requiresAuth: true })
-
-      const s = services.value.find(item => item.id === serviceKey)
-      if (s) {
-        s.status = 'invalid'
-        s.lastAuthError = safeAuthErr
-      }
-      showToast(`⚠️ ${serviceName} needs reauthentication`, 'error')
-      activityLog.value.unshift({
-        id: Date.now(),
-        time: 'Just now',
-        service: serviceName,
-        serviceIcon: s?.icon || 'library_music',
-        action: 'Sync failed',
-        result: safeAuthErr,
-        success: false,
-      })
-      await fetchData()
-      return
-    }
-
+    // Genuine auth failures reject the invoke with a `RequiresAuth:` error and
+    // are handled in the catch below. A resolved sync result with per-item
+    // errors is never an auth failure: classifying those strings by substring
+    // turned provider IDs containing "401" into a false reconnect prompt.
     if (!syncRes.success && syncRes.errors?.length > 0) {
       // Generic failures are also reduced to a safe message: a provider string
       // may carry session/cookie material.
@@ -1503,8 +1601,16 @@ async function importFromService(serviceName: string) {
       summaryParts.push(`${purchasesTotal} purchases`)
     }
 
+    const skippedCount = syncRes.errors?.length ?? 0
+    if (skippedCount > 0) {
+      summaryParts.push(`${skippedCount} item${skippedCount === 1 ? '' : 's'} skipped`)
+    }
+
     if (changedTracks === 0 && alreadyPresent > 0) {
-      showToast(`Sync complete: all ${alreadyPresent} tracks already in library (0 changed)`, 'info')
+      showToast(
+        `Sync complete: all ${alreadyPresent} tracks already in library (0 changed)${skippedCount > 0 ? `, ${skippedCount} skipped` : ''}`,
+        'info',
+      )
       activityLog.value.unshift({
         id: Date.now(),
         time: 'Just now',
@@ -1516,7 +1622,9 @@ async function importFromService(serviceName: string) {
       })
     } else {
       const details = summaryParts.length > 0 ? summaryParts.join(', ') : '0 items'
-      showToast(`Synced ${details}`, 'success')
+      // Partial results (skipped items) are still a completed sync: they must
+      // not surface the connection-failure message reserved for real failures.
+      showToast(skippedCount > 0 ? `⚠️ Synced ${details}` : `Synced ${details}`, skippedCount > 0 ? 'info' : 'success')
       activityLog.value.unshift({
         id: Date.now(),
         time: 'Just now',
@@ -1530,28 +1638,24 @@ async function importFromService(serviceName: string) {
   } catch (e: any) {
     const errorMsg = e?.message || e?.toString() || String(e) || 'Unknown error'
     const formattedServiceName = serviceName.charAt(0).toUpperCase() + serviceName.slice(1)
+    // Only the backend's structured auth prefix (and unreadable credentials)
+    // means the session is unusable. Raw "401" or "expired" substrings can
+    // appear in provider item IDs and caused false reauthentication prompts.
+    const isAuthError =
+      errorMsg.includes('RequiresAuth') || errorMsg.includes('Decryption error')
+
+    // Classify before any UI/telemetry consumer sees it: the raw string is
+    // provider-authored and may embed session/cookie material.
+    const reportedMsg = isAuthError ? classifyAuthFailure(errorMsg) : errorMsg
     activityLog.value.unshift({
       id: Date.now(),
       time: 'Just now',
       service: formattedServiceName,
       serviceIcon: services.value.find(item => item.id === serviceKey)?.icon || 'library_music',
       action: 'Sync failed',
-      result: errorMsg.substring(0, 100),
+      result: isAuthError ? reportedMsg : errorMsg.substring(0, 100),
       success: false,
     })
-    const isAuthError =
-      errorMsg.includes('401') ||
-      errorMsg.includes('Unauthorized') ||
-      errorMsg.includes('RequiresAuth') ||
-      errorMsg.includes('Decryption error') ||
-      errorMsg.includes('Credentials expired') ||
-      errorMsg.includes('Token expired') ||
-      errorMsg.includes('session expired') ||
-      errorMsg.includes('authentication required')
-    
-    // Classify before any UI/telemetry consumer sees it: the raw string is
-    // provider-authored and may embed session/cookie material.
-    const reportedMsg = isAuthError ? classifyAuthFailure(errorMsg) : errorMsg
     globalTasks.completeTask(taskId, false, reportedMsg, { requiresAuth: isAuthError })
 
     if (isAuthError) {
@@ -1570,10 +1674,10 @@ async function importFromService(serviceName: string) {
     } else if (errorMsg.includes('Token refresh') || errorMsg.includes('refresh_token') || errorMsg.includes('Missing refresh token')) {
       showToast(`🔑 ${formattedServiceName} session expired - please reconnect your account`, 'error')
     } else if (errorMsg.includes('SPOTIFY_CLIENT_ID') || errorMsg.includes('SPOTIFY_CLIENT_SECRET')) {
-      showToast(`⚙️ Faltan las credenciales de la API de Spotify — configúralas en la ventana emergente`, 'error')
+      showToast(`⚙️ Missing Spotify API credentials — configure them in the popup`, 'error')
       showSpotifyApiModal.value = true
     } else if (errorMsg.includes('400') || errorMsg.includes('CloudLibrary') || errorMsg.includes('Insufficient')) {
-      showToast(`🍎 Apple Music: Activa «Sincronizar biblioteca» en tu app de Apple Music o iTunes para permitir la sincronización.`, 'error')
+      showToast(`🍎 Apple Music: enable "Sync Library" in your Apple Music or iTunes app to allow syncing.`, 'error')
     } else {
       showToast(`❌ Sync failed: something went wrong with ${formattedServiceName}`, 'error')
     }
@@ -1601,9 +1705,9 @@ async function processImportedFile(file: File) {
   }
 
   try {
-    // FE-6: el archivo se lee en el frontend (File API) y se envía nombre+contenido;
-    // el backend parsea (.m3u/.m3u8/.csv/.txt), enlaza cada entrada con la
-    // biblioteca local y crea la playlist.
+    // FE-6: the file is read in the frontend (File API) and sent as name+content;
+    // the backend parses it (.m3u/.m3u8/.csv/.txt), links each entry against the
+    // local library, and creates the playlist.
     const content = await file.text()
     const result: ImportPlaylistFromFileResult = await playlistsApi.importPlaylistFromFile({
       fileName: file.name,
@@ -1792,14 +1896,14 @@ async function saveServicePreferences() {
 
 // Scan Dialog
 const showScanDialog = ref(false)
-// F-01/F-02: al terminar el escaneo local se recarga la biblioteca para que las
-// pistas nuevas aparezcan sin reiniciar la app.
+// F-01/F-02: when the local scan finishes, the library is reloaded so newly
+// added tracks appear without restarting the app.
 async function handleLocalSyncCompleted(report: { imported: number; errors: string[] }) {
   if (report.errors.length > 0) {
     toast.error(report.errors[0])
     return
   }
-  toast.success(`Biblioteca local actualizada: ${report.imported} pistas importadas`)
+  toast.success(`Local library updated: ${report.imported} tracks imported`)
   await loadLibraryPaths()
 }
 
@@ -1844,8 +1948,8 @@ async function startScan() {
   showScanDialog.value = false
   
   try {
-    // Call backend scan with progress events. FE-6: watchForChanges lanza el
-    // watcher de auto-rescan; skipSmallFiles omite archivos < 1 MB en el scanner.
+    // Call backend scan with progress events. FE-6: watchForChanges starts the
+    // auto-rescan watcher; skipSmallFiles skips files < 1 MB in the scanner.
     const result = await libraryApi.scanLocalLibraryWithProgress(path, {
       recursive: scanOptions.includeSubfolders,
       watchForChanges: scanOptions.watchForChanges,
@@ -1946,7 +2050,7 @@ function removePath(pathEntry: LibraryPathEntry) {
   const index = libraryPaths.value.findIndex(p => p.id === pathEntry.id)
   if (index !== -1) {
     libraryPaths.value.splice(index, 1)
-    // FE-6: si la ruta tenía watcher de auto-rescan, detenerlo.
+    // FE-6: if the path had an auto-rescan watcher, stop it.
     libraryApi.stopLibraryWatcher(pathEntry.path).catch(() => {})
     showToast('Library path removed', 'info')
   }
@@ -1960,6 +2064,11 @@ onMounted(async () => {
   // S196: rehydrate the backend Spotify credential cache on every view mount
   // so a packaged app (no .env) can connect right after configuring the UI.
   await ensureSpotifyApiConfigLoaded()
+
+  // Best-effort identity refresh, once per session: accounts still showing the
+  // generic service name get their email/username filled from the provider.
+  // Fired after the first paint so a slow provider never blocks the view.
+  void refreshAccountIdentitiesOnce()
 
   // Listen for import/sync completion to refresh stats
   await eventBus.on(TauriEvents.IMPORT_COMPLETE, async (payload: any) => {
@@ -2055,7 +2164,7 @@ onMounted(async () => {
       }
       const sName = payload.service.charAt(0).toUpperCase() + payload.service.slice(1)
       // S186: surface the real backend reason instead of always claiming the token expired
-      const detail = payload?.message || payload?.error || 'Re-autenticación requerida.'
+      const detail = payload?.message || payload?.error || 'Re-authentication required.'
       showToast(`⚠️ ${sName}: ${detail}`, 'error')
     }
     await fetchData()

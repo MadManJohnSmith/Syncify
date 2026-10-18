@@ -173,7 +173,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
-// R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
+// R13: unified confirm (previously native plugin-dialog, outside the window).
 import { confirm } from '@/composables/useToast'
 import { useAdvancedSettings } from '@/composables/useAdvancedSettings'
 import BaseToggle from '@/components/settings/BaseToggle.vue'

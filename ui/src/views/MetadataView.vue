@@ -48,14 +48,14 @@
             <span class="material-symbols-outlined text-[20px]">build_circle</span>
           </button>
 
-          <!-- MET-03 / LY-04: barrido de portadas para álbumes descargados -->
+          <!-- MET-03 / LY-04: cover sweep for downloaded albums -->
           <button
             @click="openCoverSweepDialog"
             :disabled="isCoverSweepRunning"
             data-testid="open-cover-sweep"
             class="p-2 bg-purple-500/10 text-purple-500 hover:bg-purple-500/20 rounded-lg transition-colors disabled:opacity-50"
-            title="Barrido de portadas animadas para álbumes descargados: guarda cover.webp y cover.animated.webp junto al audio sin modificar el CoverFront del FLAC."
-            aria-label="Portadas animadas"
+            title="Animated cover sweep for downloaded albums: saves cover.webp and cover.animated.webp next to the audio without modifying the FLAC CoverFront."
+            aria-label="Animated covers"
           >
             <span :class="['material-symbols-outlined text-[20px]', isCoverSweepRunning && 'animate-spin']">{{ isCoverSweepRunning ? 'progress_activity' : 'animation' }}</span>
           </button>
@@ -80,7 +80,7 @@
                   <span :class="['material-symbols-outlined text-[14px]', isFetchingArt && 'animate-spin']">{{ isFetchingArt ? 'progress_activity' : 'image' }}</span>
                   Fetch Art
                 </button>
-                <button @click="reconcileMbTags()" :disabled="isReconcilingMbTags" class="flex items-center gap-1.5 px-3 py-1.5 bg-teal-500/20 text-teal-400 hover:bg-teal-500/30 rounded-lg text-xs font-medium transition-colors disabled:opacity-50" title="TASK-84: reconcilia los comentarios Vorbis MUSICBRAINZ_TRACKID de los FLAC físicos con tracks.musicbrainz_id en la base de datos">
+                <button @click="reconcileMbTags()" :disabled="isReconcilingMbTags" class="flex items-center gap-1.5 px-3 py-1.5 bg-teal-500/20 text-teal-400 hover:bg-teal-500/30 rounded-lg text-xs font-medium transition-colors disabled:opacity-50" title="TASK-84: reconciles Vorbis MUSICBRAINZ_TRACKID comments in physical FLACs with tracks.musicbrainz_id in the database">
                   <span :class="['material-symbols-outlined text-[14px]', isReconcilingMbTags && 'animate-spin']">{{ isReconcilingMbTags ? 'progress_activity' : 'sync' }}</span>
                   Reconcile MB
                 </button>
@@ -102,13 +102,13 @@
         v-if="metadataStats"
         class="mx-4 mt-3 shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-gray-50 dark:bg-surface-highlight/40 border border-gray-200 dark:border-border-dark px-4 py-2 text-[11px] text-text-secondary"
       >
-        <span class="font-medium text-gray-900 dark:text-white">{{ metadataStats.total_tracks }} pistas</span>
+        <span class="font-medium text-gray-900 dark:text-white">{{ metadataStats.total_tracks }} tracks</span>
         <span :class="statPct(metadataStats.with_isrc, metadataStats.total_tracks) >= 90 ? 'text-success' : ''">ISRC {{ statPct(metadataStats.with_isrc, metadataStats.total_tracks) }}%</span>
         <span :class="statPct(metadataStats.with_musicbrainz_id, metadataStats.total_tracks) >= 90 ? 'text-success' : ''">MBID {{ statPct(metadataStats.with_musicbrainz_id, metadataStats.total_tracks) }}%</span>
-        <span :class="statPct(metadataStats.with_art, metadataStats.total_tracks) >= 90 ? 'text-success' : ''">Carátulas {{ statPct(metadataStats.with_art, metadataStats.total_tracks) }}%</span>
-        <span>Género {{ statPct(metadataStats.with_genre, metadataStats.total_tracks) }}%</span>
-        <span>Año {{ statPct(metadataStats.with_year, metadataStats.total_tracks) }}%</span>
-        <span class="ml-auto font-mono">Completitud media {{ metadataStats.average_completeness.toFixed(1) }}%</span>
+        <span :class="statPct(metadataStats.with_art, metadataStats.total_tracks) >= 90 ? 'text-success' : ''">Album Art {{ statPct(metadataStats.with_art, metadataStats.total_tracks) }}%</span>
+        <span>Genre {{ statPct(metadataStats.with_genre, metadataStats.total_tracks) }}%</span>
+        <span>Year {{ statPct(metadataStats.with_year, metadataStats.total_tracks) }}%</span>
+        <span class="ml-auto font-mono">Average completeness {{ metadataStats.average_completeness.toFixed(1) }}%</span>
       </div>
 
       <!-- Loading State (initial only) -->
@@ -248,7 +248,7 @@
               </button>
               <div v-if="enrichProgress && enrichProgress.total > 0" class="mt-2">
                 <div class="flex justify-between text-[10px] text-text-secondary mb-1">
-                  <span class="truncate">{{ enrichProgress.currentTrack || 'Enriqueciendo…' }}</span>
+                  <span class="truncate">{{ enrichProgress.currentTrack || 'Enriching…' }}</span>
                   <span>{{ enrichProgress.current }}/{{ enrichProgress.total }}</span>
                 </div>
                 <div class="h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
@@ -267,7 +267,7 @@
                   <h5 class="font-medium text-gray-900 dark:text-white text-sm">AcoustID Fingerprint</h5>
                   <p class="text-xs text-text-secondary mt-0.5">Identify tracks using audio fingerprint</p>
                   <p :class="['text-xs mt-1', unidentifiedWithFiles > 0 ? 'text-amber-500' : 'text-success']">
-                    {{ unidentifiedWithFiles }} pista(s) sin MBID con archivo local
+                    {{ unidentifiedWithFiles }} track(s) without MBID with a local file
                   </p>
                 </div>
               </div>
@@ -277,7 +277,7 @@
                 class="w-full mt-3 px-3 py-2 bg-green-500/10 text-green-500 hover:bg-green-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
               >
                 <span v-if="isBatchIdentifying" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
-                {{ isBatchIdentifying ? `Identificando ${batchIdentifyProgress.done}/${batchIdentifyProgress.total}…` : 'Analyze Selected' }}
+                {{ isBatchIdentifying ? `Identifying ${batchIdentifyProgress.done}/${batchIdentifyProgress.total}…` : 'Analyze Selected' }}
               </button>
             </div>
 
@@ -291,7 +291,7 @@
                   <h5 class="font-medium text-gray-900 dark:text-white text-sm">Last.fm Tags</h5>
                   <p class="text-xs text-text-secondary mt-0.5">Fetch community genre tags</p>
                   <p class="text-xs mt-1" :class="tracksWithoutGenre > 0 ? 'text-amber-500' : 'text-success'">
-                    {{ tracksWithoutGenre }} pista(s) sin género · solo rellena vacíos
+                    {{ tracksWithoutGenre }} track(s) without genre · only fills empty ones
                   </p>
                 </div>
               </div>
@@ -303,14 +303,14 @@
                 <span v-if="isLastfmRunning" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
                 {{ isLastfmRunning ? 'Fetching…' : 'Fetch Tags' }}
               </button>
-              <!-- S200: API key management (BD primero, luego env) -->
+              <!-- S200: API key management (DB first, then env) -->
               <div class="mt-3 pt-3 border-t border-gray-200 dark:border-border-dark">
-                <label class="block text-[11px] text-text-secondary mb-1">API key de Last.fm</label>
+                <label class="block text-[11px] text-text-secondary mb-1">Last.fm API key</label>
                 <div class="flex gap-1.5">
                   <input
                     v-model="lastfmKeyInput"
                     type="password"
-                    :placeholder="lastfmKeyStatus?.configured ? `Configurada (${lastfmKeyStatus.masked})` : 'Pega tu API key…'"
+                    :placeholder="lastfmKeyStatus?.configured ? `Configured (${lastfmKeyStatus.masked})` : 'Paste your API key…'"
                     class="flex-1 min-w-0 px-2 py-1.5 text-xs bg-white dark:bg-surface-dark border border-gray-300 dark:border-border-dark rounded-lg focus:outline-none focus:ring-1 focus:ring-primary"
                     autocomplete="off"
                   >
@@ -319,14 +319,14 @@
                     :disabled="isSavingLastfmKey || !lastfmKeyInput.trim()"
                     class="px-2.5 py-1.5 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 shrink-0"
                   >
-                    {{ isSavingLastfmKey ? '…' : 'Guardar' }}
+                    {{ isSavingLastfmKey ? '…' : 'Save' }}
                   </button>
                 </div>
                 <p v-if="lastfmKeyStatus?.configured" class="text-[11px] text-success mt-1">
-                  ✓ Configurada ({{ lastfmKeyStatus.source === 'env' ? 'variable de entorno' : 'guardada en la app' }})
+                  ✓ Configured ({{ lastfmKeyStatus.source === 'env' ? 'environment variable' : 'saved in the app' }})
                 </p>
                 <p v-else class="text-[11px] text-text-secondary mt-1">
-                  Consíguela gratis en last.fm/api — necesaria para los géneros.
+                  Get one free at last.fm/api — required for genres.
                 </p>
               </div>
             </div>
@@ -339,9 +339,9 @@
                 </div>
                 <div class="flex-1 min-w-0">
                   <h5 class="font-medium text-gray-900 dark:text-white text-sm">Album Art Search</h5>
-                  <p class="text-xs text-text-secondary mt-0.5">Cover Art Archive vía ISRC → release-group</p>
+                  <p class="text-xs text-text-secondary mt-0.5">Cover Art Archive via ISRC → release-group</p>
                   <p :class="['text-xs mt-1', tracksWithoutArt > 0 ? 'text-error' : 'text-success']">
-                    {{ tracksWithoutArt }} pista(s) sin carátula
+                    {{ tracksWithoutArt }} track(s) without album art
                   </p>
                 </div>
               </div>
@@ -351,7 +351,7 @@
                 class="w-full mt-3 px-3 py-2 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
               >
                 <span v-if="isFetchingArt" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
-                {{ isFetchingArt ? 'Buscando…' : 'Find All Missing' }}
+                {{ isFetchingArt ? 'Fetching…' : 'Find All Missing' }}
               </button>
             </div>
 
@@ -364,7 +364,7 @@
                 <div class="flex-1">
                   <h5 class="font-medium text-gray-900 dark:text-white text-sm">Fix Common Issues</h5>
                   <p class="text-xs text-text-secondary mt-0.5">
-                    Auto-correct over {{ fixTargets.length }} pista(s) ({{ selectedTracks.length > 0 ? 'selección' : 'lista filtrada' }})
+                    Auto-correct over {{ fixTargets.length }} track(s) ({{ selectedTracks.length > 0 ? 'selection' : 'filtered list' }})
                   </p>
                   <div class="mt-2 grid grid-cols-2 gap-2">
                     <label class="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 cursor-pointer">
@@ -815,16 +815,16 @@
             <div class="flex items-center justify-between mb-3">
               <h4 class="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
                 <span class="material-symbols-outlined text-[18px] text-gray-400">sell</span>
-                Tags del archivo
+                File Tags
               </h4>
               <button @click="readTrackFileTags" :disabled="isReadingFileTags || !currentTrack" class="px-3 py-1.5 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 flex items-center gap-1.5">
                 <span v-if="isReadingFileTags" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
                 <span v-else class="material-symbols-outlined text-[14px]">visibility</span>
-                {{ isReadingFileTags ? 'Leyendo…' : 'Leer tags del archivo' }}
+                {{ isReadingFileTags ? 'Reading…' : 'Read file tags' }}
               </button>
             </div>
             <p v-if="!fileTagsSnapshot && !fileTagsError" class="text-xs text-text-secondary">
-              Lee TODAS las etiquetas reales del archivo descargado: facetas Vorbis completas en FLAC (editables con verificación roundtrip); en M4A/MP3 y otros formatos vía ffprobe (solo lectura).
+              Reads ALL real tags from the downloaded file: full Vorbis facets in FLAC (editable with roundtrip verification); in M4A/MP3 and other formats via ffprobe (read-only).
             </p>
             <div v-if="fileTagsError" class="mb-3 px-3 py-2 rounded-lg bg-error/10 border border-error/30 text-error text-xs">{{ fileTagsError }}</div>
 
@@ -834,17 +834,17 @@
                 <button @click="planCountryTagRepair" :disabled="isPlanningCountryRepair || isApplyingCountryRepair || !currentTrack" class="px-3 py-1.5 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 flex items-center gap-1.5">
                   <span v-if="isPlanningCountryRepair" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
                   <span v-else class="material-symbols-outlined text-[14px]">fact_check</span>
-                  {{ isPlanningCountryRepair ? 'Calculando…' : 'Revisar país/región' }}
+                  {{ isPlanningCountryRepair ? 'Calculating…' : 'Review country/region' }}
                 </button>
                 <button v-if="countryRepairReport?.needs_repair" @click="applyCountryTagRepair" :disabled="isApplyingCountryRepair || !currentTrack" class="px-3 py-1.5 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 flex items-center gap-1.5">
                   <span v-if="isApplyingCountryRepair" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
                   <span v-else class="material-symbols-outlined text-[14px]">build</span>
-                  {{ isApplyingCountryRepair ? 'Reparando…' : 'Reparar en archivo' }}
+                  {{ isApplyingCountryRepair ? 'Repairing…' : 'Repair in File' }}
                 </button>
               </div>
               <div v-if="countryRepairReport" class="mt-2 px-3 py-2 rounded-lg text-xs bg-surface-highlight text-gray-700 dark:text-gray-300">
-                <p v-if="countryRepairReport.applied" class="mb-1 text-success">Escrituras verificadas en disco ✓</p>
-                <p v-if="!countryRepairReport.needs_repair" class="mb-1">Los tags de país/región ya son correctos — no hay nada que reparar.</p>
+                <p v-if="countryRepairReport.applied" class="mb-1 text-success">Writes verified on disk ✓</p>
+                <p v-if="!countryRepairReport.needs_repair" class="mb-1">Country/region tags are already correct — nothing to repair.</p>
                 <template v-else>
                   <p v-if="countryRepairReport.plan.reason" class="mb-1">{{ countryRepairReport.plan.reason }}</p>
                   <p class="font-mono">RELEASECOUNTRY: {{ countryRepairReport.plan.original_country || '∅' }} → {{ countryRepairReport.plan.target_country || '∅' }}</p>
@@ -872,14 +872,14 @@
               </div>
               <button @click="writeTrackFileTags" :disabled="isWritingFileTags || !currentTrack" class="mb-4 px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex items-center gap-2">
                 <span v-if="isWritingFileTags" class="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
-                {{ isWritingFileTags ? 'Escribiendo y verificando…' : 'Escribir en archivo (roundtrip)' }}
+                {{ isWritingFileTags ? 'Writing and verifying…' : 'Write to file (roundtrip)' }}
               </button>
               <div v-if="tagVerification" :class="['mb-3 px-3 py-2 rounded-lg text-xs', tagVerification.tags_match ? 'bg-success/10 border border-success/30 text-success' : 'bg-error/10 border border-error/30 text-error']">
-                Roundtrip {{ tagVerification.tags_match ? 'verificado ✓' : 'FALLÓ ✗' }} · cover: {{ tagVerification.cover_present ? 'presente' : 'ausente' }} · lyrics: {{ tagVerification.unsynced_lyrics_present ? 'sí' : 'no' }}
+                Roundtrip {{ tagVerification.tags_match ? 'verified ✓' : 'FAILED ✗' }} · cover: {{ tagVerification.cover_present ? 'present' : 'missing' }} · lyrics: {{ tagVerification.unsynced_lyrics_present ? 'yes' : 'no' }}
               </div>
               <!-- Raw facet dump (all container-written keys, always visible — S200) -->
               <div class="text-xs">
-                <p class="text-text-secondary select-none">Todas las facetas crudas ({{ Object.keys(fileTagsSnapshot.all_tags).length }} claves)</p>
+                <p class="text-text-secondary select-none">All raw facets ({{ Object.keys(fileTagsSnapshot.all_tags).length }} keys)</p>
                 <div class="mt-2 max-h-64 overflow-y-auto custom-scrollbar space-y-1 font-mono border-t border-gray-200 dark:border-border-dark pt-2">
                   <div v-for="(values, key) in fileTagsSnapshot.all_tags" :key="key" class="flex gap-2">
                     <span class="text-purple-500 shrink-0 w-40 truncate" :title="String(key)">{{ key }}</span>
@@ -1122,7 +1122,7 @@
               <!-- Loading -->
               <div v-if="isComparingSources" class="py-14 text-center text-sm text-text-secondary flex flex-col items-center gap-2">
                 <span class="material-symbols-outlined text-3xl text-primary animate-spin">progress_activity</span>
-                Leyendo tags del archivo…
+                Reading file tags…
               </div>
 
               <!-- Error -->
@@ -1149,7 +1149,7 @@
                     <td class="px-4 py-3 font-medium text-gray-900 dark:text-white">{{ row.field }}</td>
                     <td :class="['px-4 py-3', row.differs ? 'text-gray-900 dark:text-white font-medium' : 'text-gray-600 dark:text-gray-400']">
                       {{ row.dbDisplay || '—' }}
-                      <span v-if="row.adoptedFromFile" class="ml-2 px-1.5 py-0.5 bg-primary/10 text-primary text-[10px] rounded">desde archivo ✓</span>
+                      <span v-if="row.adoptedFromFile" class="ml-2 px-1.5 py-0.5 bg-primary/10 text-primary text-[10px] rounded">from file ✓</span>
                     </td>
                     <td :class="['px-4 py-3', row.differs ? 'text-amber-600 dark:text-amber-400 font-medium' : 'text-gray-600 dark:text-gray-400']">
                       {{ row.fileDisplay || '—' }}
@@ -1159,15 +1159,15 @@
               </table>
 
               <p v-else class="py-12 text-center text-sm text-text-secondary italic">
-                Selecciona una pista para comparar sus fuentes.
+                Select a track to compare its sources.
               </p>
             </div>
 
             <!-- Footer -->
             <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex justify-between items-center gap-3 shrink-0">
-              <p class="text-xs text-text-secondary">Clic en una fila para adoptar el valor del archivo en el formulario · las filas resaltadas difieren</p>
+              <p class="text-xs text-text-secondary">Click a row to adopt the file value in the form · highlighted rows differ</p>
               <button @click="showComparison = false; notifyComparisonHint()" class="px-5 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg font-medium transition-colors shrink-0">
-                Listo
+                Done
               </button>
             </div>
           </div>
@@ -1195,33 +1195,33 @@
     </Teleport>
 
 
-    <!-- MET-03 / LY-04: barrido de portadas animadas para álbumes descargados -->
+    <!-- MET-03 / LY-04: animated cover sweep for downloaded albums -->
     <Teleport to="body">
       <Transition name="fade">
         <div v-if="showCoverSweepDialog" class="cover-sweep-dialog fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="!isCoverSweepRunning && (showCoverSweepDialog = false)">
           <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
-              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Portadas animadas</h3>
-              <button v-if="!isCoverSweepRunning" @click="showCoverSweepDialog = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors" aria-label="Cerrar barrido de portadas">
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Animated Covers</h3>
+              <button v-if="!isCoverSweepRunning" @click="showCoverSweepDialog = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors" aria-label="Close cover sweep">
                 <span class="material-symbols-outlined text-gray-400">close</span>
               </button>
             </div>
 
             <div class="p-6 space-y-4">
               <p class="text-xs text-text-secondary leading-relaxed">
-                Busca portadas animadas en Apple Music y, como alternativa, en Tidal para los álbumes descargados.
-                Si encuentra una, guarda los sidecars cover.webp y cover.animated.webp junto al audio;
-                no modifica el CoverFront del FLAC. Omite los álbumes con una portada animada válida.
-                Las fuentes públicas pueden fallar; el resumen indicará «Fuente no disponible» si ocurre.
+                Looks for animated covers on Apple Music and, as a fallback, on Tidal for downloaded albums.
+                If one is found, saves the cover.webp and cover.animated.webp sidecars next to the audio;
+                it does not modify the FLAC CoverFront. Skips albums that already have a valid animated cover.
+                Public sources may fail; the summary will show "Source unavailable" if that happens.
               </p>
 
               <label v-if="!isCoverSweepRunning && !coverSweepResult" class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                <input type="checkbox" v-model="coverSweepForce"> Re-descargar aunque ya exista cover.webp
+                <input type="checkbox" v-model="coverSweepForce"> Re-download even if cover.webp already exists
               </label>
 
               <div v-if="isCoverSweepRunning">
                 <div class="flex items-center justify-between mb-2 text-sm">
-                  <span class="text-gray-700 dark:text-gray-300">Progreso</span>
+                  <span class="text-gray-700 dark:text-gray-300">Progress</span>
                   <span class="font-medium text-gray-900 dark:text-white">{{ coverSweepProgress.current }} / {{ coverSweepProgress.total }}</span>
                 </div>
                 <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
@@ -1232,22 +1232,22 @@
               </div>
 
               <div v-if="coverSweepResult" class="cover-sweep-summary grid grid-cols-2 gap-2 text-xs">
-                <span>Álbumes: <b>{{ coverSweepResult.scanned_albums }}</b></span>
-                <span class="text-success">Ya animadas: <b>{{ coverSweepResult.already_animated }}</b></span>
-                <span class="text-success">Descargadas: <b>{{ coverSweepResult.downloaded }}</b></span>
-                <span>Sin animación disponible: <b>{{ coverSweepResult.not_found }}</b></span>
-                <span>Fuente no disponible: <b>{{ coverSweepResult.source_unavailable }}</b></span>
-                <span class="text-error">Fallos: <b>{{ coverSweepResult.failed }}</b></span>
-                <span v-if="coverSweepResult.cancelled" class="col-span-2 text-warning">Barrido cancelado por el usuario.</span>
+                <span>Albums: <b>{{ coverSweepResult.scanned_albums }}</b></span>
+                <span class="text-success">Already animated: <b>{{ coverSweepResult.already_animated }}</b></span>
+                <span class="text-success">Downloaded: <b>{{ coverSweepResult.downloaded }}</b></span>
+                <span>No animation available: <b>{{ coverSweepResult.not_found }}</b></span>
+                <span>Source unavailable: <b>{{ coverSweepResult.source_unavailable }}</b></span>
+                <span class="text-error">Failures: <b>{{ coverSweepResult.failed }}</b></span>
+                <span v-if="coverSweepResult.cancelled" class="col-span-2 text-warning">Sweep cancelled by the user.</span>
               </div>
             </div>
 
             <div class="px-6 py-4 border-t border-gray-200 dark:border-border-dark flex items-center justify-end gap-3">
               <button v-if="isCoverSweepRunning" @click="cancelCoverSweepAction" class="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors text-gray-700 dark:text-gray-300">
-                Cancelar proceso
+                Cancel Process
               </button>
               <button v-else @click="runCoverSweep" data-testid="cover-sweep-run" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
-                {{ coverSweepResult ? 'Repetir barrido' : 'Ejecutar' }}
+                {{ coverSweepResult ? 'Run Again' : 'Run' }}
               </button>
             </div>
           </div>
@@ -1921,22 +1921,22 @@ const tagVerification = ref<TagVerification | null>(null)
 // Human-curated facet subset; technical facets (replaygain, r128,
 // musicbrainz ids) stay visible through the raw dump but are not edited here.
 const editableTagFields = [
-  { key: 'title', label: 'Título' },
-  { key: 'artist', label: 'Artista' },
-  { key: 'album', label: 'Álbum' },
+  { key: 'title', label: 'Title' },
+  { key: 'artist', label: 'Artist' },
+  { key: 'album', label: 'Album' },
   { key: 'album_artist', label: 'Album Artist' },
-  { key: 'composer', label: 'Compositor' },
-  { key: 'genre', label: 'Género' },
+  { key: 'composer', label: 'Composer' },
+  { key: 'genre', label: 'Genre' },
   { key: 'style', label: 'Style' },
   { key: 'mood', label: 'Mood' },
   { key: 'grouping', label: 'Grouping' },
-  { key: 'language', label: 'Idioma' },
-  { key: 'label', label: 'Sello' },
-  { key: 'catalog_number', label: 'Catálogo' },
+  { key: 'language', label: 'Language' },
+  { key: 'label', label: 'Label' },
+  { key: 'catalog_number', label: 'Catalog' },
   { key: 'isrc', label: 'ISRC' },
-  { key: 'release_year', label: 'Año' },
+  { key: 'release_year', label: 'Year' },
   { key: 'initial_key', label: 'Key' },
-  { key: 'comment', label: 'Comentario' },
+  { key: 'comment', label: 'Comment' },
 ] as const
 
 const editableFileTags = reactive<Record<string, string>>({})
@@ -2114,7 +2114,7 @@ async function batchIdentifyAcoustID() {
     t => (!selectedTracks.value.length || selectedSet.has(t.id)) && !t.musicbrainzId && !!t.filePath
   ).slice(0, 25)
   if (targets.length === 0) {
-    showToast('No hay pistas elegibles para huella acústica (requiere archivo local y sin MBID)', 'warning')
+    showToast('No tracks eligible for fingerprinting (requires a local file and no MBID)', 'warning')
     return
   }
 
@@ -2140,7 +2140,7 @@ async function batchIdentifyAcoustID() {
       batchIdentifyProgress.value.done++
     }
     if (identified > 0) await loadTracks()
-    showToast(`AcoustID: ${identified}/${targets.length} pista(s) identificadas`, identified > 0 ? 'success' : 'info')
+    showToast(`AcoustID: ${identified}/${targets.length} track(s) identified`, identified > 0 ? 'success' : 'info')
   } finally {
     isBatchIdentifying.value = false
     batchIdentifyProgress.value = { done: 0, total: 0 }
@@ -2155,7 +2155,7 @@ async function runLastfmEnrichment() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     const summary = await invoke<string>('enrich_genre_lastfm')
-    showToast(summary || 'Enriquecimiento de géneros finalizado', 'info')
+    showToast(summary || 'Genre enrichment finished', 'info')
     await loadTracks()
   } catch (error) {
     console.error('Last.fm enrichment failed:', error)
@@ -2184,7 +2184,7 @@ async function saveLastfmKey() {
     await settingsApi.setLastfmApiKey(key)
     lastfmKeyInput.value = ''
     await loadLastfmKeyStatus()
-    showToast('API key de Last.fm guardada — ya puedes pedir géneros', 'success')
+    showToast('Last.fm API key saved — you can now fetch genres', 'success')
   } catch (err) {
     showToast(err instanceof Error ? err.message : String(err), 'error')
   } finally {
@@ -2200,7 +2200,7 @@ async function fetchMissingArtwork() {
   try {
     const res = await metadataApi.fetchMissingCoverArt(100)
     if (res.updated > 0) await loadTracks()
-    showToast(`Carátulas: ${res.updated} actualizadas, ${res.skipped} sin imagen disponible, ${res.failed} errores`, res.updated > 0 ? 'success' : 'info')
+    showToast(`Album art: ${res.updated} updated, ${res.skipped} unavailable, ${res.failed} errors`, res.updated > 0 ? 'success' : 'info')
   } catch (error) {
     console.error('Cover art backfill failed:', error)
     showToast(error instanceof Error ? error.message : String(error), 'error')
@@ -2217,7 +2217,7 @@ async function reconcileMbTags() {
   try {
     const res = await metadataApi.reconcileMusicbrainzTags()
     const rec = res as Record<string, unknown>
-    const summary = typeof rec.summary === 'string' ? rec.summary : 'Reconciliación de tags MusicBrainz completada'
+    const summary = typeof rec.summary === 'string' ? rec.summary : 'MusicBrainz tag reconciliation completed'
     showToast(summary, 'success')
     await loadTracks()
   } catch (error) {
@@ -2303,7 +2303,7 @@ async function applyCommonFixes() {
       }
     }
     if (changed > 0) await loadTracks()
-    showToast(`Common fixes: ${changed} pista(s) corregidas${failed ? `, ${failed} errores` : ''}`, changed > 0 ? 'success' : 'info')
+    showToast(`Common fixes: ${changed} track(s) fixed${failed ? `, ${failed} errors` : ''}`, changed > 0 ? 'success' : 'info')
   } finally {
     isFixingCommon.value = false
   }
@@ -2315,7 +2315,7 @@ async function exportSelectedMetadata() {
   if (isExportingMetadata.value) return
   const ids = selectedTracks.value.length > 0 ? selectedTracks.value : filteredTracks.value.map(t => t.id)
   if (ids.length === 0) {
-    showToast('No hay pistas que exportar', 'info')
+    showToast('No tracks to export', 'info')
     return
   }
   isExportingMetadata.value = true
@@ -2345,7 +2345,7 @@ async function exportSelectedMetadata() {
     })
     if (!target) return
     const bytes = await toolsApi.writeTextFile(target, JSON.stringify(items, null, 2))
-    showToast(`${items.length} pista(s) exportadas (${bytes} bytes) → ${target}`, 'success')
+    showToast(`${items.length} track(s) exported (${bytes} bytes) → ${target}`, 'success')
   } catch (error) {
     console.error('Metadata export failed:', error)
     showToast(error instanceof Error ? error.message : String(error), 'error')
@@ -2699,8 +2699,8 @@ function openActionMenu(track: MetadataTrack, event: MouseEvent) {
   const maxX = Math.max(padding, (window.innerWidth || 1200) - menuWidth - padding)
   const maxY = Math.max(padding, (window.innerHeight || 800) - menuHeight - padding)
   contextMenu.track = track
-  // L-13: anclar contra el viewport (flip vertical) para no cortarse en el
-  // borde inferior de la pantalla.
+  // L-13: anchor against the viewport (vertical flip) so the menu is not
+  // clipped at the bottom edge of the screen.
   contextMenu.x = Math.min(Math.max(padding, event.clientX), maxX)
   contextMenu.y = Math.min(Math.max(padding, event.clientY), maxY)
   contextMenu.visible = true
@@ -2837,7 +2837,7 @@ function removeToast(id: number) {
 }
 
 // ==============================================
-// MET-03 / LY-04 — BARRIDO DE PORTADAS ANIMADAS
+// MET-03 / LY-04 — ANIMATED COVER SWEEP
 // ==============================================
 
 const showCoverSweepDialog = ref(false)
@@ -2848,9 +2848,9 @@ const coverSweepProgress = ref({ current: 0, total: 0, currentAlbum: '', message
 let coverSweepUnlisten: UnlistenFn | null = null
 
 /**
- * Abre el diálogo del barrido sin comprobar cuentas: el backend extrae el token
- * JWT del web player de Apple Music y cae en el token público de Tidal como
- * alternativa, así que una cuenta de Apple Music no es requisito.
+ * Opens the sweep dialog without checking accounts: the backend extracts the JWT
+ * token from the Apple Music web player and falls back to Tidal's public token,
+ * so an Apple Music account is not required.
  */
 async function openCoverSweepDialog(): Promise<void> {
   coverSweepResult.value = null
@@ -2878,8 +2878,8 @@ async function runCoverSweep(): Promise<void> {
     coverSweepResult.value = res
     showToast(
       res.cancelled
-        ? 'Barrido de portadas cancelado'
-        : `Portadas animadas: ${res.downloaded} descargadas, ${res.already_animated} ya válidas, ${res.not_found} sin animación, ${res.failed} fallos`,
+        ? 'Cover sweep cancelled'
+        : `Animated covers: ${res.downloaded} downloaded, ${res.already_animated} already valid, ${res.not_found} with no animation, ${res.failed} failures`,
       res.downloaded > 0 ? 'success' : 'info'
     )
   } catch (err) {
@@ -2897,7 +2897,7 @@ async function runCoverSweep(): Promise<void> {
 async function cancelCoverSweepAction(): Promise<void> {
   try {
     await lyricsApi.cancelAnimatedCoverSweep()
-    showToast('Cancelando tras el álbum actual…', 'info')
+    showToast('Cancelling after the current album…', 'info')
   } catch (err) {
     console.error('Cover sweep cancel failed:', err)
   }
@@ -3141,7 +3141,7 @@ function adoptComparisonValue(row: ComparisonRow) {
 
 function notifyComparisonHint() {
   if (adoptedFromFileFields.value.size > 0) {
-    showToast(`${adoptedFromFileFields.value.size} campo(s) adoptados desde el archivo — pulsa «Save Changes» para persistir`, 'info')
+    showToast(`${adoptedFromFileFields.value.size} field(s) adopted from the file — press "Save Changes" to persist`, 'info')
   }
 }
 </script>

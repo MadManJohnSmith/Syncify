@@ -34,7 +34,7 @@
           </button>
 
           <!-- Lyrics Sources / Providers -->
-          <button @click="showProviderSettings = true" class="p-2 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 rounded-lg transition-colors" title="Fuentes de letras y preferencias">
+          <button @click="showProviderSettings = true" class="p-2 bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 rounded-lg transition-colors" title="Lyrics sources and preferences">
             <span class="material-symbols-outlined text-[20px]">tune</span>
           </button>
         </div>
@@ -43,33 +43,33 @@
         <div class="mt-3 flex items-center gap-3 text-[11px] text-text-secondary">
           <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-blue-500"></span>{{ lyricsStats.synced_lyrics }} synced</span>
           <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-gray-500"></span>{{ unsyncedCount }} unsynced</span>
-          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-error"></span>{{ noLyricsCount }} sin letra</span>
-          <span class="ml-auto flex items-center gap-1"><span class="material-symbols-outlined text-[12px]">save</span>{{ lyricsStats.embedded_lyrics }} embebidas</span>
+          <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-error"></span>{{ noLyricsCount }} no lyrics</span>
+          <span class="ml-auto flex items-center gap-1"><span class="material-symbols-outlined text-[12px]">save</span>{{ lyricsStats.embedded_lyrics }} embedded</span>
           <button
             @click="scanDiskForLyrics"
             :disabled="isHarvestingLyrics"
             class="ml-2 flex items-center gap-1 px-2 py-0.5 rounded border border-gray-300 dark:border-border-dark hover:border-primary/50 transition-colors disabled:opacity-50"
-            title="Buscar letras incrustadas en los archivos FLAC y sidecars .lrc/.txt junto al audio para pistas sin letra"
+            title="Search for lyrics embedded in FLAC files and in .lrc/.txt sidecars next to the audio, for tracks without lyrics"
           >
             <span :class="['material-symbols-outlined text-[12px]', isHarvestingLyrics && 'animate-spin']">{{ isHarvestingLyrics ? 'progress_activity' : 'folder_search' }}</span>
-            Escanear disco
+            Scan disk
           </button>
           <!-- S202: library-wide karaoke refetch (includes tracks that already have lyrics) -->
           <button
             @click="openKaraokeDialog"
             :disabled="isKaraokeRunning"
             class="ml-2 flex items-center gap-1 px-2 py-0.5 rounded border border-gray-300 dark:border-border-dark hover:border-primary/50 transition-colors disabled:opacity-50"
-            title="Volver a pedir letras para TODA la biblioteca buscando nivel karaoke palabra-a-palabra. Una letra word-synced existente nunca se reemplaza por una peor."
+            title="Re-request lyrics for the WHOLE library, aiming for karaoke-level word-by-word sync. Existing word-synced lyrics are never replaced with a worse version."
           >
             <span :class="['material-symbols-outlined text-[12px]', isKaraokeRunning && 'animate-spin']">{{ isKaraokeRunning ? 'progress_activity' : 'mic' }}</span>
-            Re-chequear todo (Karaoke)
+            Re-check all (Karaoke)
           </button>
           <!-- TASK-111: materialize missing .lrc sidecars for downloaded tracks with lyrics in DB -->
           <button
             @click="materializeLrcSidecars"
             :disabled="isMaterializingSidecars"
             class="ml-2 flex items-center gap-1 px-2 py-0.5 rounded border border-gray-300 dark:border-border-dark hover:border-primary/50 transition-colors disabled:opacity-50"
-            title="Escribir los sidecars .lrc que falten junto al audio para las pistas descargadas que ya tienen letra en la base de datos"
+            title="Write missing .lrc sidecars next to the audio for downloaded tracks that already have lyrics in the database"
           >
             <span :class="['material-symbols-outlined text-[12px]', isMaterializingSidecars && 'animate-spin']">{{ isMaterializingSidecars ? 'progress_activity' : 'subtitles' }}</span>
             Sidecars .lrc
@@ -79,10 +79,10 @@
             @click="materializeCoverSidecars"
             :disabled="isMaterializingCovers"
             class="ml-2 flex items-center gap-1 px-2 py-0.5 rounded border border-gray-300 dark:border-border-dark hover:border-primary/50 transition-colors disabled:opacity-50"
-            title="Escribir cover.jpg junto al audio para los álbumes descargados sin sidecar de portada, usando el arte embebido en el FLAC o la cover_art_url guardada"
+            title="Write cover.jpg next to the audio for downloaded albums without a cover sidecar, using art embedded in the FLAC or the stored cover_art_url"
           >
             <span :class="['material-symbols-outlined text-[12px]', isMaterializingCovers && 'animate-spin']">{{ isMaterializingCovers ? 'progress_activity' : 'image' }}</span>
-            Portadas sidecar
+            Cover sidecars
           </button>
         </div>
         
@@ -135,7 +135,7 @@
                   Upgrade
                 </button>
 
-                <button @click="embedSelectedLyrics" :disabled="isEmbeddingBatch" class="flex items-center gap-1.5 px-3 py-1.5 bg-teal-500/20 text-teal-500 hover:bg-teal-500/30 rounded-lg text-xs font-medium transition-colors disabled:opacity-50" title="Embeber letras en los FLAC descargados">
+                <button @click="embedSelectedLyrics" :disabled="isEmbeddingBatch" class="flex items-center gap-1.5 px-3 py-1.5 bg-teal-500/20 text-teal-500 hover:bg-teal-500/30 rounded-lg text-xs font-medium transition-colors disabled:opacity-50" title="Embed lyrics into downloaded FLAC files">
                   <span :class="['material-symbols-outlined text-[14px]', isEmbeddingBatch && 'animate-spin']">{{ isEmbeddingBatch ? 'progress_activity' :('album') }}</span>
                   Embed
                 </button>
@@ -175,7 +175,7 @@
         class="flex-1 min-h-0 overflow-y-auto custom-scrollbar relative"
         style="contain: strict;"
       >
-        <p v-if="filteredTracks.length === 0" class="px-4 py-6 text-center text-xs text-text-secondary italic">Sin resultados para este filtro.</p>
+        <p v-if="filteredTracks.length === 0" class="px-4 py-6 text-center text-xs text-text-secondary italic">No results for this filter.</p>
         <!-- Spacer keeps the full scroll range; only the visible rows are mounted. -->
         <div v-else :style="{ height: totalTrackHeight + 'px', position: 'relative', width: '100%' }">
           <div :style="{ transform: `translateY(${trackOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
@@ -280,7 +280,7 @@
                 {{ currentTrack?.language }}
               </span>
               <span v-if="currentLyrics?.embedded_in_file" class="flex items-center gap-1 px-2 py-1 bg-teal-500/10 text-teal-500 text-xs font-medium rounded">
-                <span class="material-symbols-outlined text-[12px]">save</span> Embebida
+                <span class="material-symbols-outlined text-[12px]">save</span> Embedded
               </span>
             </div>
             <div class="flex items-center gap-1 shrink-0">
@@ -298,16 +298,16 @@
                   'p-2 rounded-lg transition-colors',
                   showTimestamps ? 'bg-primary text-on-accent' : 'hover:bg-gray-200 dark:hover:bg-surface-highlight text-gray-600 dark:text-gray-400'
                 ]"
-                :title="showTimestamps ? 'Ocultar marcas de tiempo' : 'Mostrar marcas de tiempo'"
+                :title="showTimestamps ? 'Hide timestamps' : 'Show timestamps'"
                 data-testid="toggle-timestamps"
               >
                 <span class="material-symbols-outlined text-[18px]">schedule</span>
               </button>
-              <button @click="openFetchDialog" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400" title="Buscar letra online">
+              <button @click="openFetchDialog" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400" title="Search for lyrics online">
                 <span :class="['material-symbols-outlined text-[18px]', isFetching && 'animate-spin']">{{ isFetching ? 'progress_activity' : 'download' }}</span>
               </button>
               <!-- S192: associate an external .lrc/.txt file with the track -->
-              <button @click="associateLyricsFile" :disabled="isImportingLyricsFile || !selectedTrackId" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed" title="Asociar archivo .lrc / .txt">
+              <button @click="associateLyricsFile" :disabled="isImportingLyricsFile || !selectedTrackId" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed" title="Associate .lrc / .txt file">
                 <span class="material-symbols-outlined text-[18px]" :class="{ 'animate-spin': isImportingLyricsFile }">{{ isImportingLyricsFile ? 'progress_activity' : 'attach_file' }}</span>
               </button>
               <!-- LY-09: Embed lyrics disabled if not downloaded -->
@@ -315,18 +315,18 @@
                 @click="embedSingleLyrics"
                 :disabled="isEmbeddingSingle || !currentLyrics || !currentTrack?.filePath || currentTrack?.download_status !== 'downloaded'"
                 class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40 disabled:cursor-not-allowed"
-                :title="!currentTrack?.filePath || currentTrack?.download_status !== 'downloaded' ? 'La pista debe estar descargada en el disco para embeber la letra' : 'Embeber letra en el archivo FLAC'"
+                :title="!currentTrack?.filePath || currentTrack?.download_status !== 'downloaded' ? 'The track must be downloaded to disk to embed its lyrics' : 'Embed lyrics into the FLAC file'"
               >
                 <span :class="['material-symbols-outlined text-[18px]', isEmbeddingSingle && 'animate-spin']">{{ isEmbeddingSingle ? 'progress_activity' : 'album' }}</span>
               </button>
-              <button @click="exportCurrentLyrics" :disabled="!currentLyrics" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40" title="Exportar letra en su formato nativo">
+              <button @click="exportCurrentLyrics" :disabled="!currentLyrics" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40" title="Export lyrics in their native format">
                 <span class="material-symbols-outlined text-[18px]">save_alt</span>
               </button>
-              <button @click="openHistory" :disabled="!selectedTrackId" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40" title="Versiones guardadas de esta letra">
+              <button @click="openHistory" :disabled="!selectedTrackId" class="p-2 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded-lg transition-colors text-gray-600 dark:text-gray-400 disabled:opacity-40" title="Saved versions of these lyrics">
                 <span class="material-symbols-outlined text-[18px]">history</span>
               </button>
               <!-- LY-12: Delete lyrics with explicit non-destructive confirmation -->
-              <button @click="confirmDeleteTrackLyrics" :disabled="!currentLyrics" class="p-2 hover:bg-error/10 rounded-lg transition-colors text-error disabled:opacity-40" title="Eliminar letra de la pista (conserva el archivo de audio)">
+              <button @click="confirmDeleteTrackLyrics" :disabled="!currentLyrics" class="p-2 hover:bg-error/10 rounded-lg transition-colors text-error disabled:opacity-40" title="Delete track lyrics (keeps the audio file)">
                 <span class="material-symbols-outlined text-[18px]">delete</span>
               </button>
             </div>
@@ -352,7 +352,7 @@
               Sync Timestamps
             </button>
             <span :class="['px-2 py-1 rounded text-xs font-medium', editorFormat === 'lrc' ? 'bg-blue-500/10 text-blue-500' : 'bg-gray-500/10 text-gray-500']">
-              Formato: {{ editorFormat.toUpperCase() }}
+              Format: {{ editorFormat.toUpperCase() }}
             </span>
             <button @click="validateEditor" class="flex items-center gap-1.5 px-3 py-1.5 bg-green-500/10 text-green-500 hover:bg-green-500/20 rounded-lg text-sm font-medium transition-colors">
               <span class="material-symbols-outlined text-[16px]">check_circle</span>
@@ -375,7 +375,7 @@
                 :class="['px-2.5 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1', editorMode === 'text' ? 'bg-white dark:bg-gray-800 text-primary shadow-sm' : 'text-text-secondary hover:text-gray-900 dark:hover:text-white']"
               >
                 <span class="material-symbols-outlined text-[14px]">code</span>
-                Texto LRC
+                LRC Text
               </button>
             </div>
 
@@ -401,7 +401,7 @@
               <div v-if="line.tokens.length" class="flex flex-wrap gap-2">
                 <label v-for="(token, tokenIndex) in line.tokens" :key="tokenIndex" class="flex gap-1 items-center">
                   <input v-model="token.timestamp" :aria-label="`Timestamp token ${lineIndex + 1}-${tokenIndex + 1}`" class="w-24 p-1 border rounded text-xs font-mono" />
-                  <input v-model="token.text" :aria-label="`Texto token ${lineIndex + 1}-${tokenIndex + 1}`" class="w-32 p-1 border rounded text-sm" />
+                  <input v-model="token.text" :aria-label="`Text token ${lineIndex + 1}-${tokenIndex + 1}`" class="w-32 p-1 border rounded text-sm" />
                 </label>
               </div>
               <span v-else class="text-xs text-text-secondary whitespace-pre-wrap">{{ line.prefix }}</span>
@@ -427,7 +427,7 @@
                   type="button"
                   @click="nudgeVisualLine(idx, -0.5)"
                   class="px-1.5 py-1 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded text-xs text-text-secondary hover:text-primary transition-colors"
-                  title="Restar 0.5s"
+                  title="Subtract 0.5s"
                 >
                   -0.5s
                 </button>
@@ -435,7 +435,7 @@
                   type="button"
                   @click="nudgeVisualLine(idx, 0.5)"
                   class="px-1.5 py-1 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded text-xs text-text-secondary hover:text-primary transition-colors"
-                  title="Sumar 0.5s"
+                  title="Add 0.5s"
                 >
                   +0.5s
                 </button>
@@ -443,7 +443,7 @@
                   type="button"
                   @click="setVisualLineFromPlayer(idx)"
                   class="p-1 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded text-text-secondary hover:text-primary transition-colors"
-                  title="Fijar desde la posición actual del reproductor"
+                  title="Set from current player position"
                 >
                   <span class="material-symbols-outlined text-[16px]">my_location</span>
                 </button>
@@ -451,14 +451,14 @@
                   v-model="line.text"
                   @input="updateFromVisualLines"
                   type="text"
-                  placeholder="Texto del verso..."
+                  placeholder="Verse text..."
                   class="flex-1 px-3 py-1 bg-white dark:bg-surface-dark border border-gray-300 dark:border-border-dark rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary"
                 />
                 <button
                   type="button"
                   @click="insertVisualLineAfter(idx)"
                   class="p-1 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded text-text-secondary hover:text-green-500 transition-colors"
-                  title="Insertar verso debajo"
+                  title="Insert verse below"
                 >
                   <span class="material-symbols-outlined text-[18px]">add</span>
                 </button>
@@ -466,7 +466,7 @@
                   type="button"
                   @click="deleteVisualLine(idx)"
                   class="p-1 hover:bg-gray-200 dark:hover:bg-surface-highlight rounded text-text-secondary hover:text-error transition-colors"
-                  title="Eliminar verso"
+                  title="Delete verse"
                 >
                   <span class="material-symbols-outlined text-[18px]">delete</span>
                 </button>
@@ -479,7 +479,7 @@
                   class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
                 >
                   <span class="material-symbols-outlined text-[16px]">add</span>
-                  Añadir nuevo verso
+                  Add new verse
                 </button>
               </div>
             </div>
@@ -491,10 +491,10 @@
               v-model="editableLyrics"
               @input="onTextareaInput"
               class="w-full flex-1 p-4 bg-gray-50 dark:bg-surface-highlight border border-gray-200 dark:border-border-dark rounded-xl text-sm font-mono text-gray-900 dark:text-white resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
-              placeholder="Enter lyrics here... (usa [mm:ss.xx] para letras sincronizadas — Ctrl+S guarda)"
+              placeholder="Enter lyrics here... (use [mm:ss.xx] for synced lyrics — Ctrl+S saves)"
             ></textarea>
           </div>
-          <p class="px-6 pb-4 text-[11px] text-text-secondary">Ctrl+S / Cmd+S guarda los cambios.</p>
+          <p class="px-6 pb-4 text-[11px] text-text-secondary">Ctrl+S / Cmd+S saves changes.</p>
         </div>
 
         <!-- Viewer Mode -->
@@ -509,11 +509,11 @@
             <div class="flex items-center gap-3">
               <button @click="runAutoFetch" :disabled="isFetching" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors flex items-center gap-2 disabled:opacity-50">
                 <span :class="['material-symbols-outlined text-[18px]', isFetching && 'animate-spin']">{{ isFetching ? 'progress_activity' : 'search' }}</span>
-                {{ isFetching ? 'Buscando…' : 'Search for Lyrics' }}
+                {{ isFetching ? 'Searching…' : 'Search for Lyrics' }}
               </button>
               <button @click="associateLyricsFile" class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
                 <span class="material-symbols-outlined text-[18px]">attach_file</span>
-                Asociar archivo
+                Associate file
               </button>
             </div>
           </div>
@@ -552,7 +552,7 @@
           <!-- Playback Controls (for synced lyrics) -->
           <div v-if="currentTrack?.lyricsStatus === 'synced'" class="shrink-0 px-6 py-4 border-t border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30">
             <div class="flex items-center gap-4">
-              <button @click="togglePlayback" class="p-2 bg-primary hover:bg-primary-hover text-on-accent rounded-full transition-colors" title="Reproducir la pista descargada">
+              <button @click="togglePlayback" class="p-2 bg-primary hover:bg-primary-hover text-on-accent rounded-full transition-colors" title="Play the downloaded track">
                 <span class="material-symbols-outlined text-[20px]">{{ isPlayingAudio ? 'pause' : 'play_arrow' }}</span>
               </button>
               <div class="flex-1">
@@ -592,14 +592,14 @@
                 </span>
                 <button @click="runLyricsSearch" :disabled="isSearching" class="ml-auto px-3 py-1.5 bg-primary/10 hover:bg-primary/20 text-primary rounded-lg text-xs font-medium disabled:opacity-50 flex items-center gap-1">
                   <span :class="['material-symbols-outlined text-[14px]', isSearching && 'animate-spin']">{{ isSearching ? 'progress_activity' : 'refresh' }}</span>
-                  Reintentar
+                  Retry
                 </button>
               </div>
 
               <!-- Loading -->
               <div v-if="isSearching" class="py-10 text-center text-text-secondary text-sm flex flex-col items-center gap-2">
                 <span class="material-symbols-outlined text-3xl text-primary animate-spin">progress_activity</span>
-                Consultando proveedores…
+                Querying providers…
               </div>
 
               <!-- Error -->
@@ -611,7 +611,7 @@
               <!-- Empty -->
               <div v-else-if="lyricsResults.length === 0" class="py-10 text-center">
                 <span class="material-symbols-outlined text-4xl text-gray-400 mb-2 block">search_off</span>
-                <p class="text-sm text-text-secondary">Ningún proveedor devolvió resultados para esta pista.</p>
+                <p class="text-sm text-text-secondary">No provider returned results for this track.</p>
               </div>
               
               <!-- Results -->
@@ -696,7 +696,7 @@
               
               <!-- Close Button (the backend loop continues independently) -->
               <button @click="showBatchProgress = false" class="w-full py-2.5 border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 transition-colors">
-                Cerrar (el proceso continúa en segundo plano)
+                Close (the process keeps running in the background)
               </button>
             </div>
           </div>
@@ -720,7 +720,7 @@
               <!-- Loading -->
               <div v-if="isReportLoading" class="py-12 text-center text-text-secondary text-sm flex flex-col items-center gap-2">
                 <span class="material-symbols-outlined text-3xl text-primary animate-spin">progress_activity</span>
-                Analizando biblioteca…
+                Analyzing library…
               </div>
 
               <template v-else>
@@ -757,7 +757,7 @@
                       <span class="px-2 py-0.5 bg-green-500/10 text-green-500 text-xs font-medium rounded">{{ reportData.line }} tracks</span>
                     </div>
                     <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Embebidas en archivo</span>
+                      <span class="text-sm text-gray-700 dark:text-gray-300">Embedded in file</span>
                       <span class="px-2 py-0.5 bg-teal-500/10 text-teal-500 text-xs font-medium rounded">{{ lyricsStats.embedded_lyrics }} tracks</span>
                     </div>
                   </div>
@@ -768,15 +768,15 @@
                   <h5 class="font-semibold text-gray-900 dark:text-white mb-3">Issues Found</h5>
                   <div class="space-y-2">
                     <button @click="filterByIssue('invalid-ts')" :disabled="reportData.invalidTs === 0" class="w-full flex items-center justify-between p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg hover:bg-amber-500/10 transition-colors disabled:opacity-40 disabled:cursor-default">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Timestamps inválidos o fuera de orden (LRC)</span>
+                      <span class="text-sm text-gray-700 dark:text-gray-300">Invalid or out-of-order timestamps (LRC)</span>
                       <span class="px-2 py-0.5 bg-amber-500/10 text-amber-500 text-xs font-medium rounded">{{ reportData.invalidTs }} tracks</span>
                     </button>
                     <button @click="filterByIssue('missing-ts')" :disabled="reportData.missingTs === 0" class="w-full flex items-center justify-between p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg hover:bg-amber-500/10 transition-colors disabled:opacity-40 disabled:cursor-default">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Marcadas como sincronizadas pero sin timestamps válidos</span>
+                      <span class="text-sm text-gray-700 dark:text-gray-300">Marked as synced but with no valid timestamps</span>
                       <span class="px-2 py-0.5 bg-amber-500/10 text-amber-500 text-xs font-medium rounded">{{ reportData.missingTs }} tracks</span>
                     </button>
                     <button @click="filterByIssue('not-embedded')" :disabled="reportData.notEmbedded === 0" class="w-full flex items-center justify-between p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg hover:bg-amber-500/10 transition-colors disabled:opacity-40 disabled:cursor-default">
-                      <span class="text-sm text-gray-700 dark:text-gray-300">Descargadas con letra aún no embebida en el FLAC</span>
+                      <span class="text-sm text-gray-700 dark:text-gray-300">Downloaded with lyrics not yet embedded in the FLAC</span>
                       <span class="px-2 py-0.5 bg-amber-500/10 text-amber-500 text-xs font-medium rounded">{{ reportData.notEmbedded }} tracks</span>
                     </button>
                   </div>
@@ -798,7 +798,7 @@
                     </div>
                     <div class="flex items-center gap-3 p-3 bg-teal-500/5 border border-teal-500/20 rounded-lg">
                       <span class="material-symbols-outlined text-teal-500">save</span>
-                      <span class="text-sm text-gray-700 dark:text-gray-300 flex-1">Embeber {{ reportData.notEmbedded }} letras en sus archivos</span>
+                      <span class="text-sm text-gray-700 dark:text-gray-300 flex-1">Embed {{ reportData.notEmbedded }} lyrics into their files</span>
                       <button @click="embedAllEligible()" :disabled="reportData.notEmbedded === 0 || isRunningAction" class="px-3 py-1.5 bg-teal-500 text-white rounded-lg text-xs font-medium hover:bg-teal-600 transition-colors disabled:opacity-40">Run</button>
                     </div>
                   </div>
@@ -813,7 +813,7 @@
                 class="px-6 py-2.5 bg-purple-500 hover:bg-purple-600 text-white rounded-lg font-medium transition-colors flex items-center gap-2 disabled:opacity-50"
               >
                 <span :class="['material-symbols-outlined text-[18px]', isRunningAction && 'animate-spin']">{{ isRunningAction ? 'progress_activity' : 'auto_fix_high' }}</span>
-                {{ isRunningAction ? 'Ejecutando…' : 'Auto-Fix All' }}
+                {{ isRunningAction ? 'Running…' : 'Auto-Fix All' }}
               </button>
             </div>
           </div>
@@ -836,14 +836,14 @@
             <div class="p-6 overflow-y-auto custom-scrollbar max-h-[calc(85vh-140px)]">
               <!-- Provider List -->
               <div class="mb-6">
-                <h5 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Priority Order (primero = mayor prioridad)</h5>
+                <h5 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Priority Order (first = highest priority)</h5>
                 <div class="provider-list space-y-2">
                   <div v-for="(provider, pi) in providers" :key="provider.provider_id" class="flex items-center gap-2 p-3 bg-gray-50 dark:bg-surface-highlight rounded-lg">
                     <div class="flex flex-col gap-0.5">
-                      <button @click="moveProvider(pi, -1)" :disabled="pi === 0" class="p-0.5 text-gray-400 hover:text-primary disabled:opacity-30" title="Subir prioridad">
+                      <button @click="moveProvider(pi, -1)" :disabled="pi === 0" class="p-0.5 text-gray-400 hover:text-primary disabled:opacity-30" title="Move up priority">
                         <span class="material-symbols-outlined text-[16px]">arrow_drop_up</span>
                       </button>
-                      <button @click="moveProvider(pi, 1)" :disabled="pi === providers.length - 1" class="p-0.5 text-gray-400 hover:text-primary disabled:opacity-30" title="Bajar prioridad">
+                      <button @click="moveProvider(pi, 1)" :disabled="pi === providers.length - 1" class="p-0.5 text-gray-400 hover:text-primary disabled:opacity-30" title="Move down priority">
                         <span class="material-symbols-outlined text-[16px]">arrow_drop_down</span>
                       </button>
                     </div>
@@ -853,17 +853,17 @@
                     </div>
                     <button @click="testProvider(provider)" :disabled="testingProviderId === provider.provider_id" class="px-2 py-1 rounded text-[11px] font-medium transition-colors flex items-center gap-1"
                       :class="testResults[provider.provider_id] === true ? 'bg-success/10 text-success' : testResults[provider.provider_id] === false ? 'bg-error/10 text-error' : 'bg-gray-500/10 text-gray-500 hover:bg-gray-500/20'"
-                      title="Probar conexión con el proveedor">
+                      title="Test provider connection">
                       <span :class="['material-symbols-outlined text-[12px]', testingProviderId === provider.provider_id && 'animate-spin']">
                         {{ testingProviderId === provider.provider_id ? 'progress_activity' : testResults[provider.provider_id] === true ? 'check_circle' : testResults[provider.provider_id] === false ? 'cancel' : 'network_check' }}
                       </span>
-                      Probar
+                      Test
                     </button>
                     <button role="switch" :aria-checked="provider.enabled" @click="toggleProvider(provider)" :class="['relative inline-flex items-center h-5 w-9 rounded-full transition-colors shrink-0', provider.enabled ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600']">
                       <span :class="['inline-block w-4 h-4 bg-white rounded-full shadow transition-transform', provider.enabled ? 'translate-x-4' : 'translate-x-0.5']"></span>
                     </button>
                   </div>
-                  <p v-if="providers.length === 0" class="text-xs text-text-secondary italic">No hay proveedores configurados en la base de datos.</p>
+                  <p v-if="providers.length === 0" class="text-xs text-text-secondary italic">No providers configured in the database.</p>
                 </div>
               </div>
               
@@ -872,16 +872,16 @@
                 <h5 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Preferences</h5>
                 <div class="grid grid-cols-2 gap-3">
                   <div>
-                    <label class="block text-xs text-text-secondary mb-1">Idioma preferido</label>
+                    <label class="block text-xs text-text-secondary mb-1">Preferred language</label>
                     <select v-model="providerForm.preferred_language" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-900 dark:text-white text-sm rounded-lg border-0 focus:outline-none focus:ring-2 focus:ring-primary/50">
                       <option value="">Original</option>
                       <option value="en">English</option>
-                      <option value="es">Español</option>
+                      <option value="es">Spanish</option>
                       <option value="any">All Languages</option>
                     </select>
                   </div>
                   <div>
-                    <label class="block text-xs text-text-secondary mb-1">Nivel mínimo de sync</label>
+                    <label class="block text-xs text-text-secondary mb-1">Minimum sync level</label>
                     <select v-model="providerForm.min_sync_level" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-900 dark:text-white text-sm rounded-lg border-0 focus:outline-none focus:ring-2 focus:ring-primary/50">
                       <option value="none">Any</option>
                       <option value="line">Line-level</option>
@@ -890,30 +890,30 @@
                     </select>
                   </div>
                   <div>
-                    <label class="block text-xs text-text-secondary mb-1">Formato de almacenamiento</label>
+                    <label class="block text-xs text-text-secondary mb-1">Storage format</label>
                     <select v-model="providerForm.storage_format" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-900 dark:text-white text-sm rounded-lg border-0 focus:outline-none focus:ring-2 focus:ring-primary/50">
-                      <option value="lrc">LRC (.lrc) - Estándar compatible</option>
-                      <option value="plain">Texto plano (.txt)</option>
+                      <option value="lrc">LRC (.lrc) - Compatible standard</option>
+                      <option value="plain">Plain text (.txt)</option>
                     </select>
                   </div>
                   <div>
-                    <label class="block text-xs text-text-secondary mb-1">Reintento de fallos</label>
+                    <label class="block text-xs text-text-secondary mb-1">Retry failures</label>
                     <select v-model="providerForm.retry_frequency" class="w-full px-3 py-2 bg-gray-100 dark:bg-surface-highlight text-gray-900 dark:text-white text-sm rounded-lg border-0 focus:outline-none focus:ring-2 focus:ring-primary/50" :disabled="!providerForm.retry_failed">
-                      <option value="always">Siempre</option>
-                      <option value="daily">Diario</option>
-                      <option value="weekly">Semanal</option>
-                      <option value="never">Nunca</option>
+                      <option value="always">Always</option>
+                      <option value="daily">Daily</option>
+                      <option value="weekly">Weekly</option>
+                      <option value="never">Never</option>
                     </select>
                   </div>
                 </div>
                 <div class="mt-3 space-y-2">
                   <label class="flex items-center gap-3 cursor-pointer">
                     <input type="checkbox" v-model="providerForm.auto_fetch_on_import" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                    <span class="text-sm text-gray-700 dark:text-gray-300">Buscar letra automáticamente al importar</span>
+                    <span class="text-sm text-gray-700 dark:text-gray-300">Fetch lyrics automatically on import</span>
                   </label>
                   <label class="flex items-center gap-3 cursor-pointer">
                     <input type="checkbox" v-model="providerForm.retry_failed" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                    <span class="text-sm text-gray-700 dark:text-gray-300">Reintentar pistas cuya búsqueda falló</span>
+                    <span class="text-sm text-gray-700 dark:text-gray-300">Retry tracks whose search failed</span>
                   </label>
                 </div>
               </div>
@@ -925,7 +925,7 @@
               </button>
               <button @click="saveProviderSettings" :disabled="isSavingProviders || !providerForm" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg font-medium transition-colors disabled:opacity-50 flex items-center gap-1.5">
                 <span :class="['material-symbols-outlined text-[14px]', isSavingProviders && 'animate-spin']">{{ isSavingProviders ? 'progress_activity' : 'done' }}</span>
-                {{ isSavingProviders ? 'Guardando…' : 'Save Settings' }}
+                {{ isSavingProviders ? 'Saving…' : 'Save Settings' }}
               </button>
             </div>
           </div>
@@ -997,10 +997,10 @@
                     v-model="line.text"
                     class="flex-1 px-3 py-1 bg-gray-800 border border-gray-700 rounded text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary/50"
                   >
-                  <button @click.stop="markLineAtPlayhead(index)" class="p-1.5 text-gray-500 hover:text-primary hover:bg-gray-800 rounded transition-colors opacity-0 group-hover:opacity-100" title="Marcar en la posición actual (Space)">
+                  <button @click.stop="markLineAtPlayhead(index)" class="p-1.5 text-gray-500 hover:text-primary hover:bg-gray-800 rounded transition-colors opacity-0 group-hover:opacity-100" title="Mark at current position (Space)">
                     <span class="material-symbols-outlined text-[18px]">play_arrow</span>
                   </button>
-                  <button @click.stop="clearLineTimestamp(index)" class="p-1.5 text-gray-500 hover:text-error hover:bg-gray-800 rounded transition-colors opacity-0 group-hover:opacity-100" title="Quitar timestamp">
+                  <button @click.stop="clearLineTimestamp(index)" class="p-1.5 text-gray-500 hover:text-error hover:bg-gray-800 rounded transition-colors opacity-0 group-hover:opacity-100" title="Remove timestamp">
                     <span class="material-symbols-outlined text-[18px]">delete</span>
                   </button>
                 </div>
@@ -1061,7 +1061,7 @@
               </div>
 
               <p class="mt-6 text-[11px] text-gray-500 leading-relaxed">
-                Marca cada línea con Space mientras suena la pista descargada. Si no hay reproducción activa, las marcas usan la posición actual del reproductor.
+                Mark each line with Space while the downloaded track plays. If nothing is playing, marks use the current player position.
               </p>
             </div>
           </div>
@@ -1089,7 +1089,7 @@
         <div v-if="showLyricsHistory" class="lyrics-history fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="showLyricsHistory = false">
           <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md max-h-[70vh] overflow-hidden shadow-2xl flex flex-col">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between shrink-0">
-              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Versiones guardadas</h3>
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Saved Versions</h3>
               <button @click="showLyricsHistory = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors">
                 <span class="material-symbols-outlined text-gray-400">close</span>
               </button>
@@ -1097,7 +1097,7 @@
             
             <div class="p-6 space-y-3 overflow-y-auto custom-scrollbar max-h-[calc(70vh-80px)]">
               <p v-if="trackVersions.length === 0" class="text-sm text-text-secondary italic text-center py-6">
-                Esta pista solo tiene una versión almacenada (o ninguna).
+                This track has only one stored version (or none).
               </p>
               <div v-for="version in trackVersions" :key="version.id" :class="['p-4 border rounded-xl transition-colors', version.id === currentLyrics?.id ? 'border-primary/60 bg-primary/5' : 'border-gray-200 dark:border-border-dark hover:border-primary/50']">
                 <div class="flex items-start justify-between mb-2">
@@ -1112,9 +1112,9 @@
                 </div>
                 <p class="text-xs text-text-secondary mb-3 line-clamp-2 whitespace-pre-line">{{ version.content.slice(0, 140) }}</p>
                 <button v-if="version.id !== currentLyrics?.id" @click="restoreVersion(version)" class="w-full py-2 bg-primary/10 hover:bg-primary/20 text-primary rounded-lg text-xs font-medium transition-colors">
-                  Usar esta versión
+                  Use this version
                 </button>
-                <p v-else class="text-center text-xs text-primary font-medium py-1">Versión actual</p>
+                <p v-else class="text-center text-xs text-primary font-medium py-1">Current version</p>
               </div>
             </div>
           </div>
@@ -1127,31 +1127,31 @@
         <div v-if="showKaraokeDialog" class="karaoke-dialog fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8" @click.self="showKaraokeDialog = false">
           <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
-              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Re-chequear letras (Karaoke)</h3>
-              <button @click="showKaraokeDialog = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors" title="Cerrar ventana (el proceso continúa si está en curso)">
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Re-check lyrics (Karaoke)</h3>
+              <button @click="showKaraokeDialog = false" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-lg transition-colors" title="Close window (the process continues if running)">
                 <span class="material-symbols-outlined text-gray-400">close</span>
               </button>
             </div>
 
             <div class="p-6 space-y-4">
               <p class="text-xs text-text-secondary leading-relaxed">
-                Vuelve a pedir letras incluso para pistas que ya la tienen, priorizando nivel karaoke (palabra a palabra).
-                Una letra word-synced existente nunca se reemplaza por una peor: solo se mejora o se deja igual.
+                Re-request lyrics even for tracks that already have them, prioritizing karaoke level (word by word).
+                Existing word-synced lyrics are never replaced with a worse version: they are only improved or left unchanged.
               </p>
 
               <div class="space-y-2" v-if="!isKaraokeRunning && !karaokeResult">
                 <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                  <input type="radio" value="downloaded" v-model="karaokeScope"> Solo pistas descargadas
+                  <input type="radio" value="downloaded" v-model="karaokeScope"> Downloaded tracks only
                 </label>
                 <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                  <input type="radio" value="all" v-model="karaokeScope"> Toda la biblioteca
+                  <input type="radio" value="all" v-model="karaokeScope"> Whole library
                 </label>
               </div>
 
               <!-- Live progress -->
               <div v-if="isKaraokeRunning">
                 <div class="flex items-center justify-between mb-2 text-sm">
-                  <span class="text-gray-700 dark:text-gray-300">Progreso</span>
+                  <span class="text-gray-700 dark:text-gray-300">Progress</span>
                   <span class="font-medium text-gray-900 dark:text-white">{{ karaokeProgress.current }} / {{ karaokeProgress.total }}</span>
                 </div>
                 <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
@@ -1163,15 +1163,15 @@
 
               <!-- Honest final summary -->
               <div v-if="karaokeResult" class="karaoke-summary grid grid-cols-2 gap-2 text-xs">
-                <span>Verificadas: <b>{{ karaokeResult.checked }}</b></span>
-                <span class="text-purple-500">Mejoradas a palabra: <b>{{ karaokeResult.upgraded_to_word }}</b></span>
-                <span>Otras mejoras: <b>{{ karaokeResult.upgraded_other }}</b></span>
-                <span>Rellenadas (no tenían): <b>{{ karaokeResult.filled_from_missing }}</b></span>
-                <span>Ya óptimas: <b>{{ karaokeResult.kept }}</b></span>
-                <span class="text-error">Rechazadas por empeorar: <b>{{ karaokeResult.downgraded_rejected }}</b></span>
-                <span class="text-error">Fallidas: <b>{{ karaokeResult.failed }}</b></span>
-                <span>Sin embed FLAC: <b>{{ karaokeResult.embed_skipped }}</b></span>
-                <span v-if="karaokeResult.cancelled" class="col-span-2 text-warning">Proceso cancelado por el usuario.</span>
+                <span>Checked: <b>{{ karaokeResult.checked }}</b></span>
+                <span class="text-purple-500">Upgraded to word: <b>{{ karaokeResult.upgraded_to_word }}</b></span>
+                <span>Other improvements: <b>{{ karaokeResult.upgraded_other }}</b></span>
+                <span>Filled (had none): <b>{{ karaokeResult.filled_from_missing }}</b></span>
+                <span>Already optimal: <b>{{ karaokeResult.kept }}</b></span>
+                <span class="text-error">Rejected as worse: <b>{{ karaokeResult.downgraded_rejected }}</b></span>
+                <span class="text-error">Failed: <b>{{ karaokeResult.failed }}</b></span>
+                <span>No FLAC embed: <b>{{ karaokeResult.embed_skipped }}</b></span>
+                <span v-if="karaokeResult.cancelled" class="col-span-2 text-warning">Process cancelled by the user.</span>
               </div>
             </div>
 
@@ -1181,16 +1181,16 @@
                 type="button"
                 @click="showKaraokeDialog = false"
                 class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
-                title="Continuar en segundo plano"
+                title="Continue in the background"
               >
                 <span class="material-symbols-outlined text-[16px]">visibility_off</span>
-                Segundo plano
+                Background
               </button>
               <button v-if="isKaraokeRunning" @click="cancelKaraokeRefetchAction" class="px-4 py-2 rounded-lg text-sm border border-gray-300 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors text-gray-700 dark:text-gray-300">
-                Cancelar proceso
+                Cancel process
               </button>
               <button v-if="!isKaraokeRunning" @click="runKaraokeRefetch" data-testid="karaoke-run" class="px-4 py-2 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors">
-                {{ karaokeResult ? 'Repetir re-chequeo' : 'Ejecutar' }}
+                {{ karaokeResult ? 'Re-run check' : 'Run' }}
               </button>
             </div>
           </div>
@@ -1205,21 +1205,21 @@
           <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl p-6">
             <div class="flex items-center gap-3 text-error mb-4">
               <span class="material-symbols-outlined text-3xl">warning</span>
-              <h3 class="text-lg font-bold text-gray-900 dark:text-white">¿Eliminar letra de la pista?</h3>
+              <h3 class="text-lg font-bold text-gray-900 dark:text-white">Delete track lyrics?</h3>
             </div>
             <p class="text-sm text-gray-600 dark:text-gray-300 mb-2 leading-relaxed">
-              Esta acción eliminará únicamente la letra guardada en la base de datos para <strong class="text-gray-900 dark:text-white">{{ currentTrack?.title }}</strong>.
+              This action only deletes the lyrics stored in the database for <strong class="text-gray-900 dark:text-white">{{ currentTrack?.title }}</strong>.
             </p>
             <div class="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl mb-6 text-xs text-blue-400 flex items-center gap-2">
               <span class="material-symbols-outlined text-[18px] shrink-0">info</span>
-              <span>El archivo de audio descargado y la pista en tu biblioteca <strong>se conservarán intactos</strong>.</span>
+              <span>The downloaded audio file and the track in your library <strong>will be kept intact</strong>.</span>
             </div>
             <div class="flex items-center justify-end gap-3">
               <button
                 @click="showDeleteConfirmModal = false"
                 class="px-4 py-2 bg-gray-100 dark:bg-surface-highlight hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium transition-colors"
               >
-                Cancelar
+                Cancel
               </button>
               <button
                 @click="executeDeleteTrackLyrics"
@@ -1227,7 +1227,7 @@
                 data-testid="confirm-delete-lyrics-btn"
               >
                 <span class="material-symbols-outlined text-[16px]">delete</span>
-                Eliminar solo letra
+                Delete lyrics only
               </button>
             </div>
           </div>
@@ -1390,13 +1390,13 @@ function analyzeLrc(content: string): { valid: boolean; problems: string[] } {
     if (!/\[\d/.test(line)) continue
     const parsed = parseLrc(line)
     if (parsed.length === 0) {
-      problems.push(`Línea ${i + 1}: timestamp malformado`)
+      problems.push(`Line ${i + 1}: malformed timestamp`)
       continue
     }
     stamped++
     for (const p of parsed) {
       if (p.t < prev) {
-        problems.push(`Línea ${i + 1}: timestamp retrocede (${p.label})`)
+        problems.push(`Line ${i + 1}: timestamp goes backwards (${p.label})`)
         break
       }
       prev = p.t
@@ -1629,7 +1629,7 @@ async function playCurrentTrack(): Promise<void> {
   const track = currentTrack.value
   if (!track) return
   if (!track.filePath) {
-    notify('Esta pista no tiene archivo descargado; la vista de letra funciona sin reproducción.', 'info')
+    notify('This track has no downloaded file; the lyrics view works without playback.', 'info')
     return
   }
   try {
@@ -1707,15 +1707,15 @@ async function loadTrackLyrics(trackId: number) {
           currentLyrics.value = probed
           notify(
             probed.source === 'sidecar'
-              ? 'Letra encontrada como archivo .lrc junto al audio'
-              : 'Letra encontrada incrustada en el archivo',
+              ? 'Lyrics found as an .lrc file next to the audio'
+              : 'Lyrics found embedded in the file',
             'success'
           )
           // Refresh the list so lyrics_type / coverage reflect the find.
           await Promise.all([loadTracks(), loadLyricsStats()])
         }
       } catch {
-        /* sin archivo descargado o sin letras locales — silencioso */
+        /* no downloaded file or no local lyrics — silent */
       }
     }
     if (currentLyrics.value) {
@@ -1739,8 +1739,8 @@ async function scanDiskForLyrics() {
     const found = r.sidecar_found + r.embedded_found
     notify(
       found > 0
-        ? `Escaneo: ${found} letras recuperadas (${r.sidecar_found} sidecar, ${r.embedded_found} incrustadas) de ${r.scanned} pistas`
-        : `Escaneo completo: ninguna letra nueva en ${r.scanned} pistas`,
+        ? `Scan: ${found} lyrics recovered (${r.sidecar_found} sidecar, ${r.embedded_found} embedded) from ${r.scanned} tracks`
+        : `Scan complete: no new lyrics in ${r.scanned} tracks`,
       found > 0 ? 'success' : 'info'
     )
     await Promise.all([loadTracks(), loadLyricsStats()])
@@ -1761,8 +1761,8 @@ async function materializeLrcSidecars() {
     const r = await lyricsApi.materializeMissingLrcSidecars()
     notify(
       r.materialized > 0
-        ? `Sidecars .lrc: ${r.materialized} escritos, ${r.already_present} ya existían, ${r.failed} fallos`
-        : `Sidecars .lrc: nada que escribir (${r.scanned} pistas revisadas, ${r.failed} fallos)`,
+        ? `.lrc sidecars: ${r.materialized} written, ${r.already_present} already present, ${r.failed} failed`
+        : `.lrc sidecars: nothing to write (${r.scanned} tracks checked, ${r.failed} failed)`,
       r.materialized > 0 ? 'success' : 'info'
     )
     await loadLyricsStats()
@@ -1784,8 +1784,8 @@ async function materializeCoverSidecars() {
     const written = r.materialized_from_embedded + r.materialized_from_url
     notify(
       written > 0
-        ? `Portadas sidecar: ${written} escritas (${r.materialized_from_embedded} del FLAC, ${r.materialized_from_url} de URL), ${r.already_present} ya existían, ${r.failed} fallos`
-        : `Portadas sidecar: nada que escribir (${r.scanned_albums} álbumes revisados, ${r.missing_cover_url} sin fuente)`,
+        ? `Cover sidecars: ${written} written (${r.materialized_from_embedded} from FLAC, ${r.materialized_from_url} from URL), ${r.already_present} already present, ${r.failed} failed`
+        : `Cover sidecars: nothing to write (${r.scanned_albums} albums checked, ${r.missing_cover_url} with no source)`,
       written > 0 ? 'success' : 'info'
     )
   } catch (err) {
@@ -1821,8 +1821,8 @@ async function runKaraokeRefetch(): Promise<void> {
   globalTasks.addTask({
     id: 'karaoke-refetch',
     type: 'lyrics',
-    name: 'Re-chequeo Karaoke',
-    description: 'Re-chequeando letras de biblioteca...',
+    name: 'Karaoke Re-check',
+    description: 'Re-checking library lyrics...',
     status: 'running',
     progress: 0,
     current: 0,
@@ -1845,7 +1845,7 @@ async function runKaraokeRefetch(): Promise<void> {
           pct,
           p.current,
           p.total,
-          p.track ? `${p.track}: ${p.message || 'Verificando'}` : p.message
+          p.track ? `${p.track}: ${p.message || 'Checking'}` : p.message
         )
       }
     )
@@ -1856,8 +1856,8 @@ async function runKaraokeRefetch(): Promise<void> {
     const r = res
     notify(
       r.cancelled
-        ? 'Re-chequeo cancelado'
-        : `Re-chequeo: ${r.checked} verificadas, ${r.upgraded_to_word} mejoradas a palabra, ${r.kept} ya óptimas, ${r.downgraded_rejected} rechazadas por empeorar, ${r.failed} fallidas`,
+        ? 'Re-check cancelled'
+        : `Re-check: ${r.checked} checked, ${r.upgraded_to_word} upgraded to word, ${r.kept} already optimal, ${r.downgraded_rejected} rejected as worse, ${r.failed} failed`,
       r.upgraded_to_word > 0 ? 'success' : 'info'
     )
     await refreshAfterBatch()
@@ -1871,11 +1871,11 @@ async function runKaraokeRefetch(): Promise<void> {
     }
     isKaraokeRunning.value = false
     if (finalResult && finalResult.cancelled) {
-      globalTasks.completeTask('karaoke-refetch', false, 'Cancelado por el usuario')
+      globalTasks.completeTask('karaoke-refetch', false, 'Cancelled by the user')
     } else if (finalResult) {
       globalTasks.completeTask('karaoke-refetch', true)
     } else {
-      globalTasks.completeTask('karaoke-refetch', false, 'Error durante el re-chequeo')
+      globalTasks.completeTask('karaoke-refetch', false, 'Error during re-check')
     }
   }
 }
@@ -1883,7 +1883,7 @@ async function runKaraokeRefetch(): Promise<void> {
 async function cancelKaraokeRefetchAction(): Promise<void> {
   try {
     await lyricsApi.cancelKaraokeRefetch()
-    notify('Cancelando tras la pista actual…', 'info')
+    notify('Cancelling after the current track…', 'info')
   } catch (err) {
     console.error('Cancel failed:', err)
   }
@@ -1902,9 +1902,9 @@ async function runAutoFetch() {
     if (result) {
       currentLyrics.value = result
       editableLyrics.value = result.content
-      notify(`Letra obtenida desde ${result.source ?? 'proveedor'}`, 'success')
+      notify(`Lyrics fetched from ${result.source ?? 'provider'}`, 'success')
     } else {
-      notify('Ningún proveedor tiene letra para esta pista.', 'error')
+      notify('No provider has lyrics for this track.', 'error')
     }
     await Promise.all([loadTracks(), loadLyricsStats()])
   } catch (err) {
@@ -1923,7 +1923,7 @@ async function associateLyricsFile() {
     const selection = await openDialog({
       multiple: false,
       directory: false,
-      filters: [{ name: 'Letras', extensions: ['lrc', 'txt'] }]
+      filters: [{ name: 'Lyrics', extensions: ['lrc', 'txt'] }]
     })
     if (!selection || Array.isArray(selection)) return
     isImportingLyricsFile.value = true
@@ -1932,7 +1932,7 @@ async function associateLyricsFile() {
     editableLyrics.value = result.content
     isEditing.value = false
     await Promise.all([loadTracks(), loadLyricsStats()])
-    notify('Archivo de letras asociado correctamente', 'success')
+    notify('Lyrics file associated successfully', 'success')
   } catch (err) {
     console.error('Failed to associate lyrics file:', err)
     importError.value = err instanceof Error ? err.message : String(err)
@@ -1951,7 +1951,7 @@ async function embedSingleLyrics() {
     await lyricsApi.embedLyrics(selectedTrackId.value)
     currentLyrics.value = await lyricsApi.getLyrics(selectedTrackId.value)
     await loadLyricsStats()
-    notify('Letra embebida y verificada en el archivo', 'success')
+    notify('Lyrics embedded and verified in the file', 'success')
   } catch (err) {
     console.error('Failed to embed lyrics:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
@@ -1982,7 +1982,7 @@ async function executeDeleteTrackLyrics() {
     currentLyrics.value = null
     editableLyrics.value = ''
     await Promise.all([loadTracks(), loadLyricsStats()])
-    notify('Letra eliminada (el archivo de música y la pista se conservan)', 'success')
+    notify('Lyrics deleted (the music file and the track are kept)', 'success')
   } catch (err) {
     console.error('Failed to delete lyrics:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
@@ -2147,22 +2147,22 @@ function validateEditor() {
   if (tokenDocument.value && editorMode.value === 'visual') {
     const error = validateTokenDocument(tokenDocument.value)
     validationOk.value = !error
-    validationMessage.value = error ?? 'Tokens temporizados válidos.'
+    validationMessage.value = error ?? 'Valid timed tokens.'
     return
   }
   const fmt = editorFormat.value
   if (fmt !== 'lrc') {
     validationOk.value = true
     validationMessage.value = fmt === 'plain'
-      ? 'Texto plano válido: no lleva timestamps.'
-      : 'Documento TTML detectado: se guarda tal cual.'
+      ? 'Valid plain text: no timestamps.'
+      : 'TTML document detected: saved as-is.'
     return
   }
   const analysis = analyzeLrc(editableLyrics.value)
   validationOk.value = analysis.valid
   validationMessage.value = analysis.valid
-    ? `LRC válido · ${parseLrc(editableLyrics.value).length} líneas sincronizadas`
-    : `Problemas encontrados:\n· ${analysis.problems.slice(0, 8).join('\n· ')}`
+    ? `Valid LRC · ${parseLrc(editableLyrics.value).length} synced lines`
+    : `Problems found:\n· ${analysis.problems.slice(0, 8).join('\n· ')}`
 }
 
 async function saveLyricsEdit() {
@@ -2195,7 +2195,7 @@ async function saveLyricsEdit() {
     currentLyrics.value = result
     isEditing.value = false
     await Promise.all([loadTracks(), loadLyricsStats()])
-    notify('Letra guardada', 'success')
+    notify('Lyrics saved', 'success')
   } catch (err) {
     console.error('Failed to save lyrics:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
@@ -2258,7 +2258,7 @@ async function runLyricsSearch() {
 function resultPreview(result: LyricsSearchResult): string {
   const content = result.synced_lyrics ?? result.plain_lyrics ?? ''
   if (content) return stripTimestamps(content).split('\n').slice(0, 3).join('\n')
-  return result.instrumental ? 'Pista instrumental (sin texto vocal).' : 'Sin vista previa disponible.'
+  return result.instrumental ? 'Instrumental track (no vocal text).' : 'No preview available.'
 }
 
 async function applySearchResult(result: LyricsSearchResult) {
@@ -2277,7 +2277,7 @@ async function applySearchResult(result: LyricsSearchResult) {
         })
         currentLyrics.value = saved
       } else {
-        notify('El resultado no contiene contenido utilizable.', 'error')
+        notify('The result contains no usable content.', 'error')
         return
       }
     } else {
@@ -2293,7 +2293,7 @@ async function applySearchResult(result: LyricsSearchResult) {
     editableLyrics.value = currentLyrics.value?.content ?? ''
     showFetchDialog.value = false
     await Promise.all([loadTracks(), loadLyricsStats()])
-    notify(`Letra aplicada desde ${result.source}`, 'success')
+    notify(`Lyrics applied from ${result.source}`, 'success')
   } catch (err) {
     console.error('Failed to apply search result:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
@@ -2394,7 +2394,7 @@ async function batchFetchSelectedLyrics(mode: FetchMode = 'prefer_synced') {
         }
       }
       if (dropped > 0) {
-        notify(`${dropped} resultado(s) unsynced descartados por la preferencia «Synced only»`, 'info')
+        notify(`${dropped} unsynced result(s) dropped by the "Synced only" preference`, 'info')
       }
     }
 
@@ -2439,7 +2439,7 @@ async function upgradeSelectedToSynced() {
       else failed++
     }
     await refreshAfterBatch()
-    notify(`Upgrade terminado: ${upgraded} sincronizadas, ${alreadySynced} ya lo estaban, ${failed} sin cambios`, upgraded > 0 ? 'success' : 'info')
+    notify(`Upgrade finished: ${upgraded} synced, ${alreadySynced} already were, ${failed} unchanged`, upgraded > 0 ? 'success' : 'info')
   } catch (err) {
     console.error('Upgrade failed:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
@@ -2455,7 +2455,7 @@ async function embedSelectedLyrics() {
   try {
     const res = await lyricsApi.batchEmbedLyrics(selectedTracks.value)
     await loadLyricsStats()
-    notify(`Embed: ${res.embedded} ok, ${res.failed} fallidos, ${res.skipped} omitidos`, res.embedded > 0 ? 'success' : 'info')
+    notify(`Embed: ${res.embedded} ok, ${res.failed} failed, ${res.skipped} skipped`, res.embedded > 0 ? 'success' : 'info')
   } catch (err) {
     console.error('Batch embed failed:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
@@ -2471,7 +2471,7 @@ async function deleteSelectedLyrics() {
       await lyricsApi.deleteLyrics(trackId)
     }
     await refreshAfterBatch()
-    notify('Letras eliminadas de las pistas seleccionadas', 'success')
+    notify('Lyrics deleted from the selected tracks', 'success')
     clearSelection()
   } catch (err) {
     console.error('Failed to delete selected lyrics:', err)
@@ -2533,7 +2533,7 @@ async function exportLyricsRecords(items: ExportItem[], fmt: 'lrc' | 'txt' | 'tt
     })
   }
   if (built.length === 0) {
-    notify(`Ninguna pista tiene letra en formato ${fmt.toUpperCase()} exportable.`, 'info')
+    notify(`No track has lyrics in exportable ${fmt.toUpperCase()} format.`, 'info')
     return
   }
 
@@ -2554,7 +2554,7 @@ async function exportLyricsRecords(items: ExportItem[], fmt: 'lrc' | 'txt' | 'tt
         await toolsApi.writeTextFile(`${dir}/${f.name}`, f.content)
         written++
       }
-      notify(`${written} archivos exportados a ${dir}${skipped ? ` (${skipped} omitidos)` : ''}`, 'success')
+      notify(`${written} files exported to ${dir}${skipped ? ` (${skipped} skipped)` : ''}`, 'success')
     }
   } catch (err) {
     console.error('Lyrics export failed:', err)
@@ -2566,7 +2566,7 @@ async function exportSelectedLyrics(fmt: 'lrc' | 'txt' | 'ttml') {
   showExportDropdown.value = false
   const items = await collectSelectedForExport()
   if (items.length === 0) {
-    notify('Selecciona pistas con letra para exportar.', 'info')
+    notify('Select tracks with lyrics to export.', 'info')
     return
   }
   await exportLyricsRecords(items, fmt)
@@ -2654,7 +2654,7 @@ async function runFetchMissing(limit = 100) {
   try {
     const res = await lyricsApi.fetchMissingLyrics(limit)
     await refreshAfterBatch()
-    notify(`Fetch masivo: ${res.fetched} encontradas, ${res.failed} sin resultado`, res.fetched > 0 ? 'success' : 'info')
+    notify(`Bulk fetch: ${res.fetched} found, ${res.failed} with no result`, res.fetched > 0 ? 'success' : 'info')
   } catch (err) {
     console.error('fetch_missing_lyrics failed:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
@@ -2677,7 +2677,7 @@ async function runUpgradeUnsynced(cap = 100) {
       if (after && (after.format === 'lrc' || after.format === 'ttml')) upgraded++
     }
     await refreshAfterBatch()
-    notify(`Upgrade: ${upgraded}/${targets.length} pistas ahora sincronizadas`, upgraded > 0 ? 'success' : 'info')
+    notify(`Upgrade: ${upgraded}/${targets.length} tracks now synced`, upgraded > 0 ? 'success' : 'info')
   } catch (err) {
     console.error('Upgrade unsynced failed:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
@@ -2693,7 +2693,7 @@ async function embedAllEligible(cap = 100) {
     const res = await lyricsApi.batchEmbedLyrics(targets)
     await loadAllLyrics()
     await loadLyricsStats()
-    notify(`Embed: ${res.embedded} ok, ${res.failed} fallidos`, res.embedded > 0 ? 'success' : 'info')
+    notify(`Embed: ${res.embedded} ok, ${res.failed} failed`, res.embedded > 0 ? 'success' : 'info')
   } catch (err) {
     console.error('Massive embed failed:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
@@ -2710,7 +2710,7 @@ async function autoFixAll() {
     const upgraded = await runUpgradeUnsyncedQuiet(50)
     await loadAllLyrics()
     await loadLyricsStats()
-    notify(`Auto-Fix: ${fetched.fetched} letras nuevas, ${upgraded} upgrades a synced`, 'success')
+    notify(`Auto-Fix: ${fetched.fetched} new lyrics, ${upgraded} upgrades to synced`, 'success')
   } catch (err) {
     console.error('Auto-fix failed:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')
@@ -2819,7 +2819,7 @@ async function saveProviderSettings() {
   isSavingProviders.value = true
   try {
     providerForm.value = { ...(await settingsApi.updateLyricsConfig(providerForm.value)) }
-    notify('Preferencias de letras guardadas', 'success')
+    notify('Lyrics preferences saved', 'success')
     showProviderSettings.value = false
   } catch (err) {
     console.error('Failed to save lyrics config:', err)
@@ -2860,10 +2860,10 @@ async function restoreVersion(version: Lyrics) {
     isEditing.value = false
     showLyricsHistory.value = false
     await Promise.all([loadTracks(), loadLyricsStats()])
-    notify(`Versión ${version.format} de ${version.created_at?.slice(0, 10) ?? 'archivo'} activada y persistida`, 'success')
+    notify(`Version ${version.format} from ${version.created_at?.slice(0, 10) ?? 'file'} activated and persisted`, 'success')
   } catch (err) {
     console.error('Failed to persist restored version:', err)
-    notify('Error al persistir la versión restaurada', 'error')
+    notify('Failed to persist the restored version', 'error')
   }
 }
 
@@ -2935,7 +2935,7 @@ function clearLineTimestamp(index: number) {
 
 function clearAllTimestamps() {
   for (const l of syncLines.value) l.t = null
-  notify('Todos los timestamps fueron limpiados', 'info')
+  notify('All timestamps cleared', 'info')
 }
 
 function shiftAllTimestamps() {
@@ -2955,7 +2955,7 @@ function snapToGrid() {
 function validateSyncTiming() {
   const marked = markedSyncEntries.value
   if (marked.length === 0) {
-    notify('No hay timestamps marcados todavía', 'info')
+    notify('No timestamps marked yet', 'info')
     return
   }
   let bad = 0
@@ -2963,8 +2963,8 @@ function validateSyncTiming() {
     if (marked[i].line.t < marked[i - 1].line.t) bad++
   }
   notify(bad === 0
-    ? `Timing válido: ${marked.length} marcas en orden monótono ✓`
-    : `${bad} salto(s) hacia atrás detectados — revisa las líneas marcadas`,
+    ? `Valid timing: ${marked.length} marks in monotonic order ✓`
+    : `${bad} backward jump(s) detected — check the marked lines`,
     bad === 0 ? 'success' : 'error')
 }
 
@@ -2973,7 +2973,7 @@ function onSyncTimeInput(index: number, value: string) {
   if (!line) return
   const m = value.trim().match(/^(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?$/)
   if (!m) {
-    notify(`Timestamp inválido: "${value}" (usa mm:ss.xx)`, 'error')
+    notify(`Invalid timestamp: "${value}" (use mm:ss.xx)`, 'error')
     return
   }
   const fracRaw = m[3] ?? '0'
@@ -3034,7 +3034,7 @@ async function saveSyncEditor() {
   if (!selectedTrackId.value || isSavingSync.value) return
   const marked = markedSyncEntries.value
   if (marked.length === 0) {
-    notify('Marca al menos una línea antes de guardar', 'info')
+    notify('Mark at least one line before saving', 'info')
     return
   }
   isSavingSync.value = true
@@ -3054,7 +3054,7 @@ async function saveSyncEditor() {
     showSyncEditor.value = false
     isEditing.value = false
     await Promise.all([loadTracks(), loadLyricsStats()])
-    notify(`Sync guardado: ${ordered.length} líneas marcadas`, 'success')
+    notify(`Sync saved: ${ordered.length} marked lines`, 'success')
   } catch (err) {
     console.error('Failed to save sync:', err)
     notify(err instanceof Error ? err.message : String(err), 'error')

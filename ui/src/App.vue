@@ -17,11 +17,11 @@
       <!-- Header -->
       <header class="h-16 w-full bg-shell border-b border-border-dark flex items-center justify-between px-4 md:px-6 shrink-0 z-30 relative select-none" data-tauri-drag-region>
         <div class="flex items-center gap-2 md:gap-3">
-          <!-- PL-01: hamburguesa, único acceso al menú lateral -->
+          <!-- PL-01: hamburger, the only access to the sidebar menu -->
           <button
             @click="toggleSidebarCollapsed"
             data-testid="nav-drawer-toggle"
-            :aria-label="sidebarOverlay ? (sidebarOpenOnMobile ? 'Cerrar menú' : 'Abrir menú') : (sidebarCollapsed ? 'Expandir menú' : 'Colapsar menú')"
+            :aria-label="sidebarOverlay ? (sidebarOpenOnMobile ? 'Close menu' : 'Open menu') : (sidebarCollapsed ? 'Expand menu' : 'Collapse menu')"
             :aria-expanded="sidebarOverlay ? sidebarOpenOnMobile : !sidebarCollapsed"
             aria-controls="app-nav-drawer"
             class="p-2 -ml-1 rounded-lg hover:bg-surface-dark transition-colors text-text-secondary hover:text-white"
@@ -35,7 +35,7 @@
         </div>
 
         <div class="flex items-center gap-3">
-          <!-- Search Button: abre el modal de búsqueda (Ctrl+F / Ctrl+K) -->
+          <!-- Search Button: opens the search modal (Ctrl+F / Ctrl+K) -->
           <button
             @click="openSearchModal"
             data-tour="search"
@@ -145,12 +145,12 @@
           </div>
         </div>
 
-        <!-- Barra de progreso global (G-03): es `absolute` dentro de la
-             cabecera, y la cabecera es la única caja de arriba a abajo, así que
-             `left-0 right-0` == ancho completo de la ventana. El detalle de lo
-             que se está haciendo ya NO va aquí (G-04/BP-01: fuera la píldora con
-             el nombre de la tarea dominante); vive en "Background Processes", en
-             la barra inferior (StatusBar.vue). -->
+        <!-- Global progress bar (G-03): it is `absolute` inside the
+             header, and the header is the only full-width box, so
+             `left-0 right-0` == full window width. The detail of what
+             is being done is NO LONGER here (G-04/BP-01: the pill with
+             the dominant task name is gone); it lives in "Background Processes", in
+             the bottom bar (StatusBar.vue). -->
         <div class="absolute bottom-0 left-0 right-0 h-[2px] bg-surface-dark">
           <div
             v-if="gpHasActive && gpIndeterminate"
@@ -167,19 +167,19 @@
       </header>
 
     <div class="flex flex-1 min-h-0 min-w-0 overflow-hidden">
-    <!-- Barra lateral clasica de escritorio (PL-01, decision del usuario 9-oct-2026).
-         Hermana flex de <main>, bajo la cabecera de ancho completo (G-03). Ya NO es
-         un drawer modal: no hay backdrop que oscurezca la app al navegar. En pantallas
-         estrechas se comporta como overlay, pero en `lg:` queda fija y siempre visible.
-         Colapsa a solo iconos (w-16) guardando la preferencia en localStorage.
-         El unico acceso para colapsar/expandir es la hamburguesa de la cabecera
-         (peticion del usuario 12-oct-2026): la franja superior con el boton de
-         colapsar se elimino, asi que la navegacion arranca arriba del todo y el
-         lateral ya no reserva esos 64px.
-         El alto viene del stretch del contenedor flex (`.flex-1.min-h-0`), NO de
-         `h-full`: `#app` es mas alto que la ventana porque `<main>` reserva abajo
-         `--status-bar-h` para la StatusBar, y con `h-full` el lateral se
-         prolongaba bajo ella tapando su ultimo boton ("Now Playing"). -->
+    <!-- Classic desktop sidebar (PL-01, user decision Oct 9, 2026).
+         Flex sibling of <main>, below the full-width header (G-03). It is NO LONGER a
+         modal drawer: there is no backdrop dimming the app while navigating. On narrow
+         screens it behaves as an overlay, but at `lg:` it stays fixed and always visible.
+         Collapses to icons only (w-16) keeping the preference in localStorage.
+         The only access to collapse/expand is the header hamburger
+         (user request Oct 12, 2026): the top strip with the collapse
+         button was removed, so navigation starts at the top and the
+         sidebar no longer reserves those 64px.
+         Its height comes from the flex container's stretch (`.flex-1.min-h-0`), NOT from
+         `h-full`: `#app` is taller than the window because `<main>` reserves at the bottom
+         `--status-bar-h` for the StatusBar, and with `h-full` the sidebar
+         extended below it, covering its last button ("Now Playing"). -->
     <aside
       v-if="sidebarVisible"
       id="app-nav-drawer"
@@ -192,16 +192,16 @@
         sidebarOverlay && 'shadow-2xl'
       ]"
     >
-      <!-- El ultimo boton del lateral ("Now Playing") quedaba debajo de la
-           StatusBar: `<main>` ya reserva su alto con `--status-bar-h`, pero el
-           lateral llegaba hasta el borde inferior de la ventana y la barra fija
-           se le montaba encima. El mismo padding en el scroller lo saca de
-           debajo, tambien cuando el lateral es overlay en pantalla estrecha. -->
+      <!-- The sidebar's last button ("Now Playing") ended up below the
+           StatusBar: `<main>` already reserves its height with `--status-bar-h`, but the
+           sidebar reached the bottom edge of the window and the fixed bar
+           overlapped it. The same padding on the scroller lifts it out from
+           below, also when the sidebar is an overlay on narrow screens. -->
       <nav
         class="flex-1 overflow-y-auto overflow-x-hidden p-2 space-y-1 flex flex-col"
         :class="sidebarCollapsed ? 'items-center' : undefined"
         style="padding-bottom: calc(var(--status-bar-h, 48px) + 8px)"
-        aria-label="Vistas"
+        aria-label="Views"
       >
         <router-link
           to="/dashboard"
@@ -308,13 +308,13 @@
         <div class="mt-auto"></div>
         <div class="my-2 border-t border-border-dark opacity-50" :class="sidebarCollapsed ? 'w-10' : 'w-full'"></div>
 
-        <!-- UI-CORR-4 (10-oct-2026): Settings estaba en la barra inferior
-             (StatusBar), donde competía con Background Processes, Online y
-             Storage: en cuanto el mini-reproductor aparecía, el botón se
-             comprimía a solo icono. Vuelve al lateral, con texto cuando está
-             expandida (de fácil acceso, se lee) y con `title` cuando está
-             colapsada (icono + tooltip accesible, igual que el resto de
-             enlaces). Queda justo encima de "Now Playing", a la izquierda. -->
+        <!-- UI-CORR-4 (Oct 10, 2026): Settings was in the bottom bar
+             (StatusBar), where it competed with Background Processes, Online and
+             Storage: as soon as the mini player appeared, the button
+             shrank to an icon only. It moves back to the sidebar, with text when
+             expanded (easy to find, readable) and with `title` when
+             collapsed (icon + accessible tooltip, same as the rest of the
+             links). It sits right above "Now Playing", on the left. -->
         <router-link
           to="/settings"
           data-testid="nav-sidebar-settings"
@@ -342,25 +342,25 @@
     </aside>
     <main class="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden relative">
 
-      <!-- Page Content. CONTRATO DE SCROLL (ola 3, virtualización):
-           este NO es el elemento que hace scroll — es `overflow-hidden` a
-           propósito. Cada vista trae su propio scroller (`LibraryView.vue:519`,
+      <!-- Page Content. SCROLL CONTRACT (wave 3, virtualization):
+           this is NOT the scrolling element — it is `overflow-hidden` on
+           purpose. Each view brings its own scroller (`LibraryView.vue:519`,
            `:685`, `:752`, `:802`; `MetadataView.vue:144`;
-           `LyricsView.vue:181`), y es ahí donde la virtualización debe
-           engancharse. Lo que este contenedor garantiza es que la vista
-           ocupe el alto disponible entre cabecera y barra inferior sin pelear
-           con el shell.
+           `LyricsView.vue:181`), and that is where virtualization must
+           hook in. What this container guarantees is that the view
+           fills the height available between header and bottom bar without fighting
+           the shell.
 
-           UI-CORR-1 (10-oct-2026): `pb-8` reservaba SOLO 32px, pero la barra
-           inferior creció a alto real (StatusBar.vue: `min-h-12` + `h-auto`)
-           para que el mini-reproductor cupiera: el resultado era que la barra
-           tapaba el reproductor y el final de cada vista. Ahora el reserva es
-           el alto MEDIDO de la barra, que StatusBar publica en
-           `--status-bar-h` al montar y en cada resize; `48px` es el mínimo de
-           respaldo para el primer frame y para jsdom. El `+ 8px` es el mismo
-           colchón visual de antes.
-           `#page-content` + `data-testid="view-scroll-host"` son el ancla
-           estable para calcular alturas, NO el scroller de cada vista. -->
+           UI-CORR-1 (Oct 10, 2026): `pb-8` reserved ONLY 32px, but the bottom
+           bar grew to its real height (StatusBar.vue: `min-h-12` + `h-auto`)
+           so the mini player would fit: the result was that the bar
+           covered the player and the end of every view. Now the reserve is
+           the MEASURED height of the bar, which StatusBar publishes in
+           `--status-bar-h` on mount and on every resize; `48px` is the fallback
+           minimum for the first frame and for jsdom. The `+ 8px` is the same
+           visual cushion as before.
+           `#page-content` + `data-testid="view-scroll-host"` are the stable
+           anchor for computing heights, NOT each view's scroller. -->
       <div
         id="page-content"
         data-testid="view-scroll-host"
@@ -420,8 +420,8 @@ import { trayApi } from './api/tray'
 
 const route = useRoute()
 
-// `route` puede ser undefined si el componente se monta sin router (tests del
-// cascarón). Derivar el path aquí evita que la plantilla rompa al renderizar.
+// `route` can be undefined if the component mounts without a router (shell
+// tests). Deriving the path here keeps the template from breaking on render.
 const routePath = computed(() => route?.path ?? '')
 const router = useRouter()
 const toast = useToast()
@@ -430,10 +430,10 @@ const { startListening: startNotificationListening, stopListening: stopNotificat
 const { initLogListeners } = useLogs()
 const { current } = usePlayer()
 
-// Tinte Camaleón: publica el matiz de la carátula de la pista en reproducción
-// en --tint-h/--tint-k (los tokens del tema camaleon los consumen). `current`
-// es el singleton compartido de usePlayer; sin pista (o sin carátula) el tinte
-// vuelve a su valor por defecto.
+// Chameleon tint: publishes the hue of the playing track's cover art
+// in --tint-h/--tint-k (the chameleon theme tokens consume them). `current`
+// is the shared usePlayer singleton; without a track (or without cover art) the tint
+// returns to its default value.
 watch(
   () => current.value?.coverUrl ?? null,
   (coverUrl) => {
@@ -449,17 +449,26 @@ watch(
 let unlistenPythonDeps: UnlistenFn | null = null
 let unlistenTrayOpenSettings: UnlistenFn | null = null
 
-// BP-02: la barra de arriba es SOLO de procesos en segundo plano. El
-// composable `useGlobalProgressBar` suma TODAS las tareas (`:107-108`), y no
-// está en los ficheros de este carril; se deriva aquí el avance ponderado de
-// las tareas de fondo sin incluir descargas ni operaciones síncronas.
-// `scan` se inicia/espera en AccountsView.vue:1359-1396, y `import` también
-// se crea desde llamadas UI (`useGlobalTasks.ts:461-470`): ninguno es un
-// proceso en segundo plano del shell. Esta política de tipos coincide con la
-// del panel inferior en `StatusBar.vue`.
+// BP-02: the top bar is ONLY for background processes. The
+// `useGlobalProgressBar` composable sums ALL tasks (`:107-108`), and it is
+// not in this lane's files; the weighted progress of
+// background tasks is derived here without including downloads or synchronous operations.
+// `scan` starts/awaits in AccountsView.vue:1359-1396, and `import` is also
+// created from UI calls (`useGlobalTasks.ts:461-470`): neither is a
+// background process of the shell. This type policy matches
+// the bottom panel in `StatusBar.vue`.
+//
+// BP-05: only USER-initiated background processes drive this bar
+// (`origin !== 'auto'`). The background enrichment worker emits
+// `background-enrichment-status` on its own (enrichment_worker.rs:201,262),
+// so its `metadata` tasks are created with `origin: 'auto'` in
+// `useGlobalTasks` and must not paint the bar. The bottom panel/indicator in
+// `StatusBar.vue` still lists every background process, automatic ones too.
 const { activeTasks, initEventListeners } = useGlobalTasks()
 const BACKGROUND_TASK_TYPES = new Set(['sync', 'metadata', 'lyrics'])
-const backgroundTasks = computed(() => activeTasks.value.filter(t => BACKGROUND_TASK_TYPES.has(t.type)))
+const backgroundTasks = computed(() =>
+  activeTasks.value.filter(t => BACKGROUND_TASK_TYPES.has(t.type) && t.origin !== 'auto')
+)
 const gpHasActive = computed(() => backgroundTasks.value.length > 0)
 const gpIndeterminate = computed(() => backgroundTasks.value.every(t => !t.total || t.total <= 0))
 const gpProgress = computed(() => {
@@ -487,16 +496,16 @@ const showNotifications = ref(false)
 const showOnboarding = ref(false)
 const historyFilter = ref<'all' | 'unread'>('all')
 
-// --- Barra lateral (PL-01) ------------------------------------------------
-// Durante el onboarding el sidebar debe existir: el tour busca sus objetivos con
-// `document.querySelector` sobre `[data-tour]` (`OnboardingWizard.vue:606`) y,
-// si el elemento no existe, se salta ese paso. `sidebarVisible` lo cubre.
+// --- Sidebar (PL-01) ------------------------------------------------
+// During onboarding the sidebar must exist: the tour looks for its targets with
+// `document.querySelector` on `[data-tour]` (`OnboardingWizard.vue:606`) and,
+// if the element does not exist, skips that step. `sidebarVisible` covers it.
 
-// Barra lateral clasica: siempre visible en escritorio, colapsable a iconos.
-// En pantallas estrechas se monta como overlay y empieza cerrada (sidebarOverlay),
-// asi que durante el onboarding se fuerza visible. El estado colapsado se persiste.
+// Classic sidebar: always visible on desktop, collapsible to icons.
+// On narrow screens it mounts as an overlay and starts closed (sidebarOverlay),
+// so during onboarding it is forced visible. The collapsed state is persisted.
 const SIDEBAR_COLLAPSED_KEY = 'syncify.sidebarCollapsed.v1'
-// jsdom (vitest) no implementa matchMedia; se trata como escritorio ancho.
+// jsdom (vitest) does not implement matchMedia; it is treated as a wide desktop.
 const isNarrowViewport = () => {
   try {
     return window.matchMedia?.('(max-width: 1023px)').matches ?? false
@@ -526,7 +535,7 @@ function toggleSidebarCollapsed() {
   try {
     window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed.value))
   } catch {
-    /* modo privado: la preferencia solo vive en memoria */
+    /* private mode: the preference only lives in memory */
   }
 }
 
@@ -551,12 +560,12 @@ const sidebarVisible = computed(() => {
 })
 
 /**
- * PL-10: el reproductor de pantalla completa es PL-09/PL-10, carril
- * `7-reproductor`, y todavía no existe (grep `fullscreen` en `ui/src` = 0 fuera
- * de iconos de Material). Lo que sí es de este carril es el menú lateral: que
- * exista y llegue hasta ahí. Se emite un `CustomEvent` de `window` como punto
- * de enganche; si el componente de la ola 7 no aparece, el enlace es inerte
- * pero no rompe nada.
+ * PL-10: the fullscreen player is PL-09/PL-10, lane
+ * `7-reproductor`, and does not exist yet (grep `fullscreen` in `ui/src` = 0 outside
+ * Material icons). What does belong to this lane is the sidebar menu: that it
+ * exists and reaches there. A `window` `CustomEvent` is emitted as the hook
+ * point; if the wave 7 component does not appear, the link is inert
+ * but breaks nothing.
  */
 function openFullscreenPlayer() {
   if (sidebarOverlay.value) sidebarOpenOnMobile.value = false
@@ -570,9 +579,9 @@ const filteredNotifications = computed(() => {
   return notificationHistory.value
 })
 
-// Cerrar al pulsar fuera: notificaciones de la campana y desplegable de
-// tareas de la cabecera. La barra global solo cubre procesos en segundo
-// plano; el desplegable lista TODAS las tareas activas con su progreso.
+// Close on outside click: bell notifications and the header
+// task dropdown. The global bar only covers background
+// processes; the dropdown lists ALL active tasks with their progress.
 function onNotificationNavigate(e: Event) {
   const destination = (e as CustomEvent<{ route?: string }>).detail?.route
   if (destination) void router.push(destination)
@@ -598,14 +607,14 @@ function handleKeydown(e: KeyboardEvent) {
     openSearchModal()
     return
   }
-  // En pantallas estrechas Escape cierra la navegación superpuesta.
+  // On narrow screens Escape closes the overlay navigation.
   if (e.key === 'Escape' && sidebarOverlay.value && sidebarOpenOnMobile.value) {
     sidebarOpenOnMobile.value = false
   }
 }
 
-// En pantallas estrechas, navegar cierra el sidebar superpuesto;
-// en escritorio la barra lateral permanece siempre visible.
+// On narrow screens, navigating closes the overlay sidebar;
+// on desktop the sidebar always stays visible.
 watch(() => route?.path, () => {
   if (sidebarOverlay.value) sidebarOpenOnMobile.value = false
 })
@@ -721,7 +730,7 @@ function handleSplashComplete() {
 
 // Check if first-time user
 onMounted(async () => {
-  // Inicializar el modo del sidebar (fijo en escritorio / overlay en movil)
+  // Initialize the sidebar mode (fixed on desktop / overlay on mobile)
   syncViewportMode()
   window.addEventListener('resize', handleViewportResize)
   window.addEventListener(NAVIGATE_EVENT, onNotificationNavigate)
@@ -735,8 +744,8 @@ onMounted(async () => {
     console.warn('Failed to listen for python_deps_missing:', err)
   }
 
-  // Ítem 48: el menú de bandeja pide abrir Ajustes. El backend emite el evento
-  // con este nombre EXACTO; aquí solo se escucha y se navega.
+  // Item 48: the tray menu asks to open Settings. The backend emits the event
+  // with this EXACT name; here it is only listened to and navigated.
   try {
     unlistenTrayOpenSettings = await listen(TauriEvents.TRAY_OPEN_SETTINGS, () => {
       void router.push('/settings')

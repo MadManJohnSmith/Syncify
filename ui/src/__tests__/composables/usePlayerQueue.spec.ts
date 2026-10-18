@@ -1,73 +1,78 @@
 /**
- * FE-9 regression — usePlayer up-next playback queue.
+ * FE-9 regression — usePlayer up-next playback queue (native engine).
  *
  * The Library context menu "Play Next" inserts a track into an up-next
  * queue that auto-advances when the current track ends; queueing with an
  * idle player starts the track right away so the action always has an
  * audible effect.
  *
- * jsdom implements no media playback, so HTMLMediaElement methods are
- * stubbed and the module-level Audio singleton is captured to fire media
- * events on it.
+ * The engine transport (`api/player`) is mocked; `player:ended` is delivered
+ * through the captured `onPlayerEnded` subscription, like the Rust ticker.
  */
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
-
-const playStub = vi.fn(() => Promise.resolve())
-const pauseStub = vi.fn()
-const loadStub = vi.fn()
-
-// The audio element created by usePlayer's module scope.
-let audioInstance: HTMLMediaElement | null = null
-
-vi.mock('@tauri-apps/api/core', () => ({
-    convertFileSrc: (path: string, protocol?: string) =>
-        `${protocol ?? 'asset'}://localhost/${encodeURIComponent(path)}`,
-}));
 
 vi.mock('../../api/tauri', () => ({
     invokeCommand: vi.fn(),
 }));
 
+vi.mock('../../api/player', () => ({
+    playerLoad: vi.fn(),
+    playerPause: vi.fn(),
+    playerResume: vi.fn(),
+    playerStop: vi.fn(),
+    playerSeek: vi.fn(),
+    playerSetVolume: vi.fn(),
+    playerSetRate: vi.fn(),
+    onPlayerTick: vi.fn(),
+    onPlayerEnded: vi.fn(),
+    playerMprisUpdate: vi.fn(() => Promise.resolve()),
+    onMprisAction: vi.fn(() => Promise.resolve()),
+}));
+
 import { invokeCommand } from '../../api/tauri'
+import * as playerApi from '../../api/player'
+import type { PlayerTick } from '../../api/player'
+import { usePlayer } from '../../composables/usePlayer'
 
 const mockInvoke = vi.mocked(invokeCommand);
+const engine = vi.mocked(playerApi);
 
-let usePlayer: typeof import('../../composables/usePlayer').usePlayer;
+// The load sequence the fake engine reports; `ended()` uses the current one.
+let seq = 0;
+let tickCb: ((tick: PlayerTick) => void) | null = null;
+let endedCb: ((seq: number) => void) | null = null;
 
-beforeAll(async () => {
-    Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
-        configurable: true,
-        value: playStub,
+function configureEngineMocks(): void {
+    seq = 0;
+    engine.playerLoad.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 200 }));
+    engine.playerPause.mockReset().mockResolvedValue(undefined);
+    engine.playerResume.mockReset().mockResolvedValue(undefined);
+    engine.playerStop.mockReset().mockResolvedValue(undefined);
+    engine.playerSeek.mockReset().mockResolvedValue(undefined);
+    engine.playerSetVolume.mockReset().mockResolvedValue(undefined);
+    engine.playerSetRate.mockReset().mockResolvedValue(undefined);
+    engine.onPlayerTick.mockReset().mockImplementation((cb) => {
+        tickCb = cb;
+        return Promise.resolve(() => {});
     });
-    Object.defineProperty(window.HTMLMediaElement.prototype, 'pause', {
-        configurable: true,
-        value: pauseStub,
+    engine.onPlayerEnded.mockReset().mockImplementation((cb) => {
+        endedCb = cb;
+        return Promise.resolve(() => {});
     });
-    Object.defineProperty(window.HTMLMediaElement.prototype, 'load', {
-        configurable: true,
-        value: loadStub,
-    });
-    // Capture the singleton audio element created by the module so tests can
-    // dispatch 'ended' on it. The patch must be in place BEFORE the module
-    // under test is imported, hence the dynamic import below.
-    class CapturingAudio extends window.Audio {
-        constructor() {
-            super();
-            audioInstance = this;
-        }
-    }
-    (window as unknown as { Audio: typeof Audio }).Audio = CapturingAudio;
-    ({ usePlayer } = await import('../../composables/usePlayer'));
-});
+}
+
+function ended(): void {
+    endedCb?.(seq);
+}
 
 describe('usePlayer playback queue (FE-9)', () => {
     beforeEach(() => {
         mockInvoke.mockReset();
+        configureEngineMocks();
         usePlayer().stop();
-        playStub.mockClear();
-        pauseStub.mockClear();
-        loadStub.mockClear();
+        mockInvoke.mockClear();
     });
 
     it('starts the track right away when nothing is loaded', async () => {
@@ -78,7 +83,7 @@ describe('usePlayer playback queue (FE-9)', () => {
 
         expect(outcome).toBe('started');
         expect(mockInvoke).toHaveBeenCalledWith('resolve_playback_source', { trackId: 5 });
-        expect(playStub).toHaveBeenCalledTimes(1);
+        expect(engine.playerLoad).toHaveBeenCalledWith('/lib/a.flac', true, 1);
         expect(player.current.value?.id).toBe(5);
         expect(player.upNext.value).toHaveLength(0);
     });
@@ -104,7 +109,7 @@ describe('usePlayer playback queue (FE-9)', () => {
         await player.play({ id: 1, title: 'One', artist: 'X' });
         await player.playNext({ id: 2, title: 'Two', artist: 'X' });
 
-        audioInstance?.dispatchEvent(new Event('ended'));
+        ended();
         await flushPromises();
 
         expect(mockInvoke).toHaveBeenCalledWith('resolve_playback_source', { trackId: 2 });

@@ -80,7 +80,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-// R13: confirm/alert unificados (antes plugin-dialog nativo, fuera de la ventana).
+// R13: unified confirm/alert (previously native plugin-dialog, outside the window).
 import { confirm, alert } from '@/composables/useToast'
 import { useGeneralSettings } from '@/composables/useGeneralSettings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
@@ -166,7 +166,7 @@ watch(() => downloadSettings.downloadDto.library_root, (newRoot) => {
   }
 })
 
-// Reset database with confirmation (R13: guardia unificado en la app)
+// Reset database with confirmation (R13: unified guard in the app)
 async function confirmResetDatabase() {
   const confirmed = await confirm('Are you sure you want to reset your library? This will delete all tracks, albums, artists, and playlists. Your accounts and settings will be PRESERVED.', {
     title: 'Reset Database',

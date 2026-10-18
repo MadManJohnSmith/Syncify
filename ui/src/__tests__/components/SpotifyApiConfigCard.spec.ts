@@ -44,7 +44,7 @@ describe('SpotifyApiConfigCard', () => {
         await flushPromises();
 
         const status = wrapper.find('[data-testid="spotify-api-status"]');
-        expect(status.text()).toContain('No configurado');
+        expect(status.text()).toContain('Not configured');
         // Onboarding panel is open for unconfigured users…
         expect(wrapper.find('[data-testid="spotify-instructions"]').exists()).toBe(true);
         // …and contains the 5 guided steps in Spanish.
@@ -65,7 +65,7 @@ describe('SpotifyApiConfigCard', () => {
         const wrapper = mount(SpotifyApiConfigCard);
         await flushPromises();
 
-        expect(wrapper.find('[data-testid="spotify-api-status"]').text()).toContain('Configurado');
+        expect(wrapper.find('[data-testid="spotify-api-status"]').text()).toContain('Configured');
         expect(wrapper.text()).toContain('****x9z4');
         expect(wrapper.text()).not.toContain('abc123myclientid'.slice(0, 8));
         // Instructions stay folded once configured.
@@ -81,7 +81,7 @@ describe('SpotifyApiConfigCard', () => {
         expect(input.attributes('readonly')).toBeDefined();
         expect((input.element as HTMLInputElement).value).toBe('http://127.0.0.1:8888/callback');
 
-        await wrapper.findAll('button').find(b => b.text().includes('Copiar'))!.trigger('click');
+        await wrapper.findAll('button').find(b => b.text().includes('Copy'))!.trigger('click');
         expect(navigator.clipboard.writeText).toHaveBeenCalledWith('http://127.0.0.1:8888/callback');
     });
 

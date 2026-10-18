@@ -24,7 +24,9 @@ import {
   describeCredentialState,
   credentialStateIcon,
   storedCredentialState,
+  resetIdentityRefreshRunFlag,
 } from '@/composables/useAccountsStatus'
+import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import AccountsView from '@/views/AccountsView.vue'
 import SettingsServices from '@/views/settings/SettingsServices.vue'
 
@@ -157,12 +159,12 @@ describe('account snapshots and distinct account rows', () => {
       ] },
     ] as unknown as ServiceStatus[])
     const wrapper = await mountAccounts()
-    expect(wrapper.text()).toContain('Favoritos reportados: 24')
+    expect(wrapper.text()).toContain('Reported favorites: 24')
     expect(wrapper.text()).toContain('2026-10-13 11:00:00')
-    expect(wrapper.text()).toContain('desactualizado')
-    expect(wrapper.find('[data-testid="account-row-100"]').text()).toContain('cuenta 100')
-    expect(wrapper.find('[data-testid="account-row-101"]').text()).toContain('cuenta 101')
-    expect(wrapper.find('[data-testid="account-count-100"]').text()).toContain('Favoritos importados: 7')
+    expect(wrapper.text()).toContain('stale')
+    expect(wrapper.find('[data-testid="account-row-100"]').text()).toContain('account 100')
+    expect(wrapper.find('[data-testid="account-row-101"]').text()).toContain('account 101')
+    expect(wrapper.find('[data-testid="account-count-100"]').text()).toContain('Imported favorites: 7')
     wrapper.unmount()
   })
 })
@@ -223,6 +225,23 @@ describe('account identity resolution (pure helpers)', () => {
     expect(formatAccountLabel({ display_name: 'ana@spotify.com', email: null })).toBe('ana@spotify.com')
   })
 
+  it('drops the generic service fallback so the email stays the principal label', () => {
+    for (const value of ['Qobuz User', 'qobuz user', 'apple_music User', 'Apple Music User', 'SoundCloud User']) {
+      const identity = resolveAccountIdentity({ display_name: value, email: 'ana@example.com' })
+      expect(identity.label).toBe('ana@example.com')
+      expect(identity.displayName).toBeNull()
+      expect(identity.source).toBe('email')
+    }
+    // With nothing else on file the row must not pretend the provider default
+    // is a person: the explicit placeholder is shown instead.
+    expect(resolveAccountIdentity({ display_name: 'Qobuz User', email: null }).label).toBe(NO_IDENTITY_LABEL)
+    expect(resolveAccountIdentity({ display_name: 'apple_music User', email: null }).label).toBe(NO_IDENTITY_LABEL)
+    // A real name is untouched by this rule.
+    expect(resolveAccountIdentity({ display_name: 'Ana Sounds', email: 'ana@example.com' }).label).toBe(
+      'Ana Sounds (ana@example.com)',
+    )
+  })
+
   it('picks the active account first, regardless of array order', () => {
     const accounts = [
       { id: 2, display_name: 'Second', email: null, is_active: false },
@@ -264,6 +283,18 @@ describe('AccountsView — identity cards', () => {
     wrapper.unmount()
   })
 
+  it('never lets a generic service name hide the real email identity', async () => {
+    installBackend(buildAccounts([{ display_name: 'Spotify User' }]), buildStatus())
+    const wrapper = await mountAccounts()
+
+    const row = wrapper.find('[data-testid="account-row-100"]')
+    expect(row.text()).toContain('ana@spotify.com')
+    expect(row.text()).not.toContain('Spotify User')
+    // The email is the whole label: it must not be repeated below it.
+    expect(row.text().split('ana@spotify.com').length - 1).toBe(1)
+    wrapper.unmount()
+  })
+
   it('shows the secondary email separately when the identity is a display name', async () => {
     installBackend(buildAccounts([{ display_name: 'Ana' }]), buildStatus())
     const wrapper = await mountAccounts()
@@ -295,7 +326,7 @@ describe('AccountsView — identity cards', () => {
 
     const row = wrapper.find('[data-testid="account-row-900"]')
     expect(row.exists()).toBe(true)
-    expect(row.text()).toContain('Identidad no proporcionada')
+    expect(row.text()).toContain('Identity not provided')
     // The card offers connect/add-account actions as the CTA.
     expect(wrapper.find('.service-card').text()).toContain('Add account')
     wrapper.unmount()
@@ -381,7 +412,7 @@ describe('AccountsView — identity cards', () => {
     const wrapper = await mountAccounts()
 
     expect(wrapper.html()).not.toContain(LONG_ID)
-    expect(wrapper.find('[data-testid="account-row-101"]').text()).toContain('Identidad no proporcionada')
+    expect(wrapper.find('[data-testid="account-row-101"]').text()).toContain('Identity not provided')
     wrapper.unmount()
   })
 })
@@ -418,7 +449,7 @@ describe('SettingsServices — same identity function, no divergence', () => {
     expect(html).not.toContain('browser_session')
     expect(html).not.toContain('sp_dc=1a2b3c4d5e6f7a8b9c0d')
     const row = wrapper.find('[data-testid="settings-account-row-100"]')
-    expect(row.text()).toContain('Identidad no proporcionada')
+    expect(row.text()).toContain('Identity not provided')
     wrapper.unmount()
   })
 
@@ -472,6 +503,71 @@ describe('advanced settings modal keeps multi-account management', () => {
       b => b.textContent?.includes('Add another account'),
     )
     expect(addAccountBtn).toBeDefined()
+    wrapper.unmount()
+  })
+})
+
+describe('per-account re-sync inside the service settings modal', () => {
+  it('resets only the chosen account and syncs that account id', async () => {
+    const calls: Array<[string, Record<string, unknown> | undefined]> = []
+    mockInvoke((command, args) => {
+      calls.push([command, args])
+      if (command === 'get_services') return buildService()
+      if (command === 'get_accounts') return buildAccounts()
+      if (command === 'get_service_statuses') return buildStatus()
+      if (command === 'get_service_preferences') return []
+      if (command === 'get_service_sync_settings') return []
+      if (command === 'get_sync_settings') {
+        return {
+          id: 1,
+          auto_sync_enabled: true,
+          sync_interval_value: 1,
+          sync_interval_unit: 'hours',
+          sync_on_startup: true,
+          background_download: true,
+          max_concurrent_downloads: 3,
+          rate_limit_delay_ms: 500,
+          pause_on_metered: true,
+          pause_on_low_battery: true,
+        }
+      }
+      if (command === 'get_download_settings') return {}
+      if (command === 'reset_account_sync_data') {
+        return { account_id: 101, service: 'spotify', library_entries: 5, playlists: 1, favorites: 4 }
+      }
+      if (command === 'sync_service') return { success: true }
+      return defaultInvokeHandler(command)
+    })
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = await mountAccounts()
+
+    const card = wrapper.find('.service-card')
+    const gear = card.findAll('button').find(b => b.attributes('title') === 'Service settings')
+    expect(gear).toBeDefined()
+    await gear!.trigger('click')
+    await flushPromises()
+
+    const overlay = document.querySelector('.service-settings-overlay')
+    expect(overlay).not.toBeNull()
+    const accountTab = Array.from(overlay!.querySelectorAll('button')).find(
+      b => b.textContent === 'Account',
+    )
+    ;(accountTab as HTMLButtonElement).click()
+    await flushPromises()
+
+    const row101 = overlay!.querySelector('[data-testid="settings-account-row-101"]')!
+    const resync = Array.from(row101.querySelectorAll('button')).find(
+      b => b.textContent?.trim() === 'Re-sync',
+    )
+    expect(resync).toBeDefined()
+    ;(resync as HTMLButtonElement).click()
+    await flushPromises()
+
+    expect(confirmSpy).toHaveBeenCalledOnce()
+    expect(calls).toContainEqual(['reset_account_sync_data', { accountId: 101 }])
+    const syncCall = calls.find(([command]) => command === 'sync_service')
+    expect(syncCall?.[1]).toMatchObject({ service: 'spotify', accountId: 101 })
+    confirmSpy.mockRestore()
     wrapper.unmount()
   })
 })
@@ -827,6 +923,137 @@ describe('duplicate label rendering (all account surfaces)', () => {
     // Removing the credential line must leave exactly one identity + the email.
     expect(withoutDescription.split('ana@spotify.com').length - 1).toBe(1)
     expect(account.find('[data-testid="account-credential-state-100"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+})
+
+// ==============================================
+// AUTOMATIC IDENTITY REFRESH (once per session)
+// ==============================================
+
+describe('automatic account identity refresh', () => {
+  it('runs once per session on the accounts view, as an automatic task', async () => {
+    resetIdentityRefreshRunFlag()
+    const globalTasks = useGlobalTasks()
+    globalTasks.resetGlobalTasks()
+
+    const calls: string[] = []
+    mockInvoke((command) => {
+      calls.push(command)
+      if (command === 'refresh_account_identities') return { checked: 2, updated: 1, unresolved: 1 }
+      if (command === 'get_services') return buildService()
+      if (command === 'get_accounts') return buildAccounts()
+      if (command === 'get_service_statuses') return buildStatus()
+      if (command === 'get_service_preferences') return []
+      if (command === 'get_service_sync_settings') return []
+      if (command === 'get_download_settings') return {}
+      return defaultInvokeHandler(command)
+    })
+
+    const wrapper = await mountAccounts()
+    await flushPromises()
+    await flushPromises()
+
+    expect(calls.filter(c => c === 'refresh_account_identities')).toHaveLength(1)
+    // Automatic task: the header bar follows only user-started work (BP-05);
+    // the bottom panel may still show it.
+    expect(globalTasks.tasks.value.get('identity-accounts')?.origin).toBe('auto')
+    // Something was filled in: the view refetched the accounts to repaint.
+    expect(calls.filter(c => c === 'get_accounts').length).toBeGreaterThanOrEqual(2)
+    wrapper.unmount()
+
+    // Navigating away and back must not repeat the provider round-trips.
+    const wrapper2 = await mountAccounts()
+    await flushPromises()
+    await flushPromises()
+    expect(calls.filter(c => c === 'refresh_account_identities')).toHaveLength(1)
+    wrapper2.unmount()
+  })
+})
+
+// ==============================================
+// ACCOUNT RENAME (user-chosen name, protected)
+// ==============================================
+
+describe('account rename inside the service settings modal', () => {
+  /** Opens the service settings modal of the first card and switches to "Account". */
+  async function openSettingsAccountTab(wrapper: VueWrapper): Promise<Element> {
+    const card = wrapper.find('.service-card')
+    const gear = card.findAll('button').find(b => b.attributes('title') === 'Service settings')
+    await gear!.trigger('click')
+    await flushPromises()
+    const overlay = document.querySelector('.service-settings-overlay')
+    expect(overlay).not.toBeNull()
+    const accountTab = Array.from(overlay!.querySelectorAll('button')).find(
+      b => b.textContent === 'Account',
+    )
+    expect(accountTab).toBeDefined()
+    ;(accountTab as HTMLButtonElement).click()
+    await flushPromises()
+    return overlay as Element
+  }
+
+  function installRenameBackend(calls: Array<[string, Record<string, unknown> | undefined]>) {
+    mockInvoke((command, args) => {
+      calls.push([command, args])
+      if (command === 'get_services') return buildService()
+      if (command === 'get_accounts') return buildAccounts()
+      if (command === 'get_service_statuses') return buildStatus()
+      if (command === 'get_service_preferences') return []
+      if (command === 'get_service_sync_settings') return []
+      if (command === 'get_download_settings') return {}
+      if (command === 'set_account_display_name') return null
+      return defaultInvokeHandler(command)
+    })
+  }
+
+  it('sends the trimmed custom name and refreshes the accounts', async () => {
+    const calls: Array<[string, Record<string, unknown> | undefined]> = []
+    installRenameBackend(calls)
+    const wrapper = await mountAccounts()
+    const overlay = await openSettingsAccountTab(wrapper)
+
+    const renameBtn = overlay.querySelector('[data-testid="account-rename-101"]')
+    expect(renameBtn).not.toBeNull()
+    ;(renameBtn as HTMLButtonElement).click()
+    await flushPromises()
+
+    const input = overlay.querySelector('[data-testid="account-rename-input-101"]') as HTMLInputElement
+    expect(input).not.toBeNull()
+    expect(input.value).toBe('Luis Spotify')
+    input.value = '  Casa Luis  '
+    input.dispatchEvent(new Event('input'))
+    await flushPromises()
+    ;(overlay.querySelector('[data-testid="account-rename-save-101"]') as HTMLButtonElement).click()
+    await flushPromises()
+
+    expect(calls.find(([c]) => c === 'set_account_display_name')?.[1]).toMatchObject({
+      accountId: 101,
+      name: 'Casa Luis',
+    })
+    // The row left edit mode (the list was refetched to show the saved name).
+    expect(overlay.querySelector('[data-testid="account-rename-input-101"]')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('rejects an empty name without calling the backend', async () => {
+    const calls: Array<[string, Record<string, unknown> | undefined]> = []
+    installRenameBackend(calls)
+    const wrapper = await mountAccounts()
+    const overlay = await openSettingsAccountTab(wrapper)
+
+    ;(overlay.querySelector('[data-testid="account-rename-101"]') as HTMLButtonElement).click()
+    await flushPromises()
+    const input = overlay.querySelector('[data-testid="account-rename-input-101"]') as HTMLInputElement
+    input.value = '   '
+    input.dispatchEvent(new Event('input'))
+    await flushPromises()
+    ;(overlay.querySelector('[data-testid="account-rename-save-101"]') as HTMLButtonElement).click()
+    await flushPromises()
+
+    expect(calls.filter(([c]) => c === 'set_account_display_name')).toHaveLength(0)
+    // The row stays in edit mode so the user can fix the name.
+    expect(overlay.querySelector('[data-testid="account-rename-input-101"]')).not.toBeNull()
     wrapper.unmount()
   })
 })

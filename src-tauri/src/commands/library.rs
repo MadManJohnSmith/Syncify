@@ -1360,6 +1360,26 @@ pub async fn perform_reset_database(db: &sqlx::SqlitePool) -> Result<String, Str
         .await
         .map_err(|e| e.to_string())?;
 
+    // 1b. Favorites, import bookkeeping and dashboard history. These tables are
+    // not children of tracks/albums, so deleting the library would leave stale
+    // favorites, cached totals and import counters behind (0045/0099/0015).
+    sqlx::query("DELETE FROM favorites")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM favorites_cache")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM account_import_counts")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM library_snapshots")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
     // 2. Delete downloads and queue
     sqlx::query("DELETE FROM download_queue")
         .execute(&mut *tx)
@@ -1404,7 +1424,7 @@ pub async fn perform_reset_database(db: &sqlx::SqlitePool) -> Result<String, Str
 
     // 5. Reset auto-increment counters for cleanliness (optional but nice)
     // (the sync_log cleanup step was removed: 0085 dropped the dead table)
-    sqlx::query("DELETE FROM sqlite_sequence WHERE name IN ('tracks', 'albums', 'artists', 'playlists', 'download_queue')")
+    sqlx::query("DELETE FROM sqlite_sequence WHERE name IN ('tracks', 'albums', 'artists', 'playlists', 'download_queue', 'favorites', 'library_snapshots')")
         .execute(&mut *tx).await.map_err(|e| e.to_string())?;
 
     tx.commit()

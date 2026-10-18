@@ -165,7 +165,7 @@ describe('PL-08, PL-09, PL-10, PL-04, PL-05: Reproductor Completo & StatusBar Ce
       const hint = wrapper.find('[data-testid="cover-expand-hint"]')
       expect(hint.exists()).toBe(true)
       expect(hint.classes()).toContain('group-hover:opacity-100')
-      expect(coverBtn.attributes('title')).toContain('Expandir reproductor')
+      expect(coverBtn.attributes('title')).toContain('Expand player (Fullscreen)')
 
       // Click abre el reproductor
       expect(player.isFullscreenOpen.value).toBe(false)
@@ -307,7 +307,7 @@ describe('PL-08, PL-09, PL-10, PL-04, PL-05: Reproductor Completo & StatusBar Ce
 
       const bookletPanel = docQuery('[data-testid="panel-booklet"]')!
       expect(bookletPanel).not.toBe(null)
-      expect(bookletPanel.textContent).toContain('Sin Booklet Digital')
+      expect(bookletPanel.textContent).toContain('No Digital Booklet')
       expect(bookletPanel.textContent).toContain('booklet.pdf')
 
       wrapper.unmount()

@@ -39,12 +39,12 @@ describe('MET-03: portadas animadas en Metadatos', () => {
         const dialog = document.body.querySelector('.cover-sweep-dialog')!;
         expect(dialog).not.toBeNull();
         // Explicación honesta: la fuente pública puede fallar (source_unavailable).
-        expect(dialog.textContent).toContain('Fuente no disponible');
+        expect(dialog.textContent).toContain('Source unavailable');
         // Contrato real del backend: sidecars, nunca retag del FLAC.
         expect(dialog.textContent).toContain('cover.webp');
         expect(dialog.textContent).toContain('cover.animated.webp');
-        expect(dialog.textContent).toContain('no modifica el CoverFront del FLAC');
-        expect(dialog.textContent).not.toContain('actualizando el CoverFront del FLAC');
+        expect(dialog.textContent).toContain('it does not modify the FLAC CoverFront');
+        expect(dialog.textContent).not.toContain('updating the FLAC CoverFront');
         expect(dialog.querySelector('[role="alert"]')).toBeNull();
         expect(dialog.querySelector('[data-testid="cover-sweep-connection-error"]')).toBeNull();
         expect((dialog.querySelector('[data-testid="cover-sweep-run"]') as HTMLButtonElement).disabled).toBe(false);
@@ -53,12 +53,12 @@ describe('MET-03: portadas animadas en Metadatos', () => {
         await flushPromises();
 
         const summary = document.body.querySelector('.cover-sweep-summary')!;
-        expect(summary.textContent).toContain('Álbumes: 7');
-        expect(summary.textContent).toContain('Ya animadas: 3');
-        expect(summary.textContent).toContain('Descargadas: 2');
-        expect(summary.textContent).toContain('Sin animación disponible: 1');
-        expect(summary.textContent).toContain('Fuente no disponible: 1');
-        expect(summary.textContent).toContain('Fallos: 0');
+        expect(summary.textContent).toContain('Albums: 7');
+        expect(summary.textContent).toContain('Already animated: 3');
+        expect(summary.textContent).toContain('Downloaded: 2');
+        expect(summary.textContent).toContain('No animation available: 1');
+        expect(summary.textContent).toContain('Source unavailable: 1');
+        expect(summary.textContent).toContain('Failures: 0');
         expect(calls).toContain('sweep_animated_covers');
         expect(calls).not.toContain('get_service_auth_status');
     });
@@ -111,12 +111,12 @@ describe('MET-03: portadas animadas en Metadatos', () => {
         await flushPromises();
         expect(dialog.textContent).toContain('3 / 7');
         expect(dialog.textContent).toContain('Álbum de prueba');
-        const cancel = Array.from(dialog.querySelectorAll('button')).find(b => b.textContent?.includes('Cancelar proceso'))!;
+        const cancel = Array.from(dialog.querySelectorAll('button')).find(b => b.textContent?.includes('Cancel Process'))!;
         cancel.click();
         await flushPromises();
         expect(calls).toContain('cancel_animated_cover_sweep');
         release({ ...sweepResult, cancelled: true });
         await flushPromises();
-        expect(dialog.querySelector('.cover-sweep-summary')?.textContent).toContain('Barrido cancelado');
+        expect(dialog.querySelector('.cover-sweep-summary')?.textContent).toContain('Sweep cancelled by the user.');
     });
 });

@@ -54,12 +54,12 @@ class QobuzService(MusicService):
     # (docs/Deuda_Tecnica_y_UX.md). Override it per deployment with the
     # operator credentials or the QOBUZ_APP_ID environment variable.
     APP_ID = "798273057"
-    # Secreto PÚBLICO del bundle de la API de Qobuz: el mismo par app_id/secret
-    # que traen los clientes open-source y que la propia API exige (sin él no
-    # hay firma posible). NO es un secreto personal de nadie y NO debe volver a
-    # vaciarse creyendo que lo es (ya pasó dos veces). Las credenciales
-    # PERSONALES del usuario (token, login) van por keychain/cuentas; las
-    # credenciales del operador y la env tienen prioridad sobre este valor.
+    # PUBLIC secret of the Qobuz API bundle: the same app_id/secret pair
+    # that open-source clients ship and that the API itself requires (without it
+    # no signature is possible). It is NOT anyone's personal secret and must NOT be
+    # emptied again under the assumption that it is (that already happened twice).
+    # The user's PERSONAL credentials (token, login) go through the keychain/accounts;
+    # operator credentials and the env take priority over this value.
     APP_SECRET = "abb21364945c0583309667d13ca3d93a"
     
     # Quality mapping: DownloadQuality → Qobuz format_id

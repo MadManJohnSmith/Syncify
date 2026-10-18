@@ -25,8 +25,8 @@ export const routes: RouteRecordRaw[] = [
     // Sprint 4: Detail Views
     { path: '/album/:id', name: 'AlbumDetail', component: AlbumDetailView },
     { path: '/artist/:id', name: 'ArtistDetail', component: ArtistDetailView },
-    // R17: la búsqueda vive SOLO como modal (App.vue). No hay ruta /search: un
-    // enlace antiguo cae en el catch-all y aterriza en /dashboard.
+    // R17: search lives ONLY as a modal (App.vue). There is no /search route: an
+    // old link falls into the catch-all and lands on /dashboard.
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
 ]
 

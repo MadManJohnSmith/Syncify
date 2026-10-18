@@ -45,7 +45,7 @@ describe('PlaylistView', () => {
         await playlistItem!.trigger('click');
         await flushPromises();
         // Header action opens the two-mode dialog
-        const openBtn = wrapper.findAll('button').find((b: any) => b.text().includes('Descargar playlist'));
+        const openBtn = wrapper.findAll('button').find((b: any) => b.text().includes('Download Playlist'));
         expect(openBtn).toBeDefined();
         await openBtn!.trigger('click');
         await flushPromises();
@@ -74,11 +74,11 @@ describe('PlaylistView', () => {
 
         // Two modes are offered, explained in Spanish
         const modalText = document.body.textContent ?? '';
-        expect(modalText).toContain('Solo las que ya tengo');
-        expect(modalText).toContain('Exporta un archivo .m3u');
-        expect(modalText).toContain('Descargar las pistas faltantes');
+        expect(modalText).toContain('Only the ones I already have');
+        expect(modalText).toContain('Exports an .m3u file');
+        expect(modalText).toContain('Download missing tracks');
 
-        const modeB = bodyButtons().find(b => b.textContent?.includes('pistas faltantes'));
+        const modeB = bodyButtons().find(b => b.textContent?.includes('missing tracks'));
         expect(modeB).toBeDefined();
         modeB!.click();
         await flushPromises();
@@ -93,7 +93,7 @@ describe('PlaylistView', () => {
         });
 
         // Banner shows the engine summary as-is
-        expect(wrapper.text()).toContain('Cola de descargas: 2 encoladas');
+        expect(wrapper.text()).toContain('Download queue: 2 queued');
     });
 
     it('Modo B reports SourceIdentityMissing errors gracefully', async () => {
@@ -109,7 +109,7 @@ describe('PlaylistView', () => {
         const wrapper = mount(PlaylistView);
         await openPlaylistAndDownloadDialog(wrapper);
 
-        const modeB = bodyButtons().find(b => b.textContent?.includes('pistas faltantes'));
+        const modeB = bodyButtons().find(b => b.textContent?.includes('missing tracks'));
         expect(modeB).toBeDefined();
         modeB!.click();
         await flushPromises();
@@ -144,7 +144,7 @@ describe('PlaylistView', () => {
         const wrapper = mount(PlaylistView);
         await openPlaylistAndDownloadDialog(wrapper);
 
-        const modeA = bodyButtons().find(b => b.textContent?.includes('Solo las que ya tengo'));
+        const modeA = bodyButtons().find(b => b.textContent?.includes('Only the ones I already have'));
         expect(modeA).toBeDefined();
         modeA!.click();
         await flushPromises();
@@ -157,13 +157,13 @@ describe('PlaylistView', () => {
         expect(invokeCalls.find(c => c.cmd === 'add_batch_to_queue')).toBeUndefined();
 
         // Honest counts banner + collapsible missing list
-        expect(wrapper.text()).toContain('M3U exportado · 2/3 pistas verificadas');
-        const missingToggle = wrapper.findAll('button').find((b: any) => b.text().includes('Faltantes (1)'));
+        expect(wrapper.text()).toContain('M3U exported · 2/3 tracks verified');
+        const missingToggle = wrapper.findAll('button').find((b: any) => b.text().includes('Missing (1)'));
         expect(missingToggle).toBeDefined();
         await missingToggle!.trigger('click');
         await flushPromises();
         expect(wrapper.text()).toContain('Ghost Song');
-        expect(wrapper.text()).toContain('Archivo no encontrado');
+        expect(wrapper.text()).toContain('File not found');
     });
 
     it('Modo A without user-selected file writes nothing', async () => {
@@ -179,7 +179,7 @@ describe('PlaylistView', () => {
         const wrapper = mount(PlaylistView);
         await openPlaylistAndDownloadDialog(wrapper);
 
-        const modeA = bodyButtons().find(b => b.textContent?.includes('Solo las que ya tengo'));
+        const modeA = bodyButtons().find(b => b.textContent?.includes('Only the ones I already have'));
         expect(modeA).toBeDefined();
         modeA!.click();
         await flushPromises();

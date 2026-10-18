@@ -6,6 +6,7 @@ members = [
     "crates/syncify-lyrics-domain",
     "crates/syncify-metadata-domain",
     "crates/syncify-tidal-downloader",
+    "crates/syncify-player",
 ]
 resolver = "2"
 

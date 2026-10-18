@@ -1,89 +1,64 @@
 /**
- * S194 residual — usePlayer composable tests.
- * jsdom implements no media playback, so HTMLMediaElement methods are
- * stubbed; the Tauri layer is mocked at module level.
+ * S194 residual — usePlayer composable tests (native engine transport).
+ *
+ * The engine transport (`api/player`) is mocked at module level; the Tauri
+ * command layer (`api/tauri`) is mocked too. jsdom plays no audio and there
+ * is no HTMLAudioElement: the composable is driven exactly like the Rust
+ * backend would (commands in, events out).
  */
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
-
-const playStub = vi.fn(() => Promise.resolve())
-const pauseStub = vi.fn()
-const loadStub = vi.fn()
-let playerAudio: HTMLMediaElement | undefined
-
-beforeAll(() => {
-    Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
-        configurable: true,
-        value: function(this: HTMLMediaElement) {
-            playerAudio = this;
-            return playStub();
-        },
-    });
-    Object.defineProperty(window.HTMLMediaElement.prototype, 'pause', {
-        configurable: true,
-        value: pauseStub,
-    });
-    Object.defineProperty(window.HTMLMediaElement.prototype, 'load', {
-        configurable: true,
-        value: loadStub,
-    });
-});
-
-vi.mock('@tauri-apps/api/core', () => ({
-    convertFileSrc: (path: string, protocol?: string) =>
-        `${protocol ?? 'asset'}://localhost/${encodeURIComponent(path)}`,
-}));
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../../api/tauri', () => ({
     invokeCommand: vi.fn(),
 }));
 
+vi.mock('../../api/player', () => ({
+    playerLoad: vi.fn(),
+    playerPause: vi.fn(),
+    playerResume: vi.fn(),
+    playerStop: vi.fn(),
+    playerSeek: vi.fn(),
+    playerSetVolume: vi.fn(),
+    playerSetRate: vi.fn(),
+    onPlayerTick: vi.fn(),
+    onPlayerEnded: vi.fn(),
+    playerMprisUpdate: vi.fn(() => Promise.resolve()),
+    onMprisAction: vi.fn(() => Promise.resolve()),
+}));
+
 import { invokeCommand } from '../../api/tauri'
+import * as playerApi from '../../api/player'
 import { usePlayer } from '../../composables/usePlayer'
 
 const mockInvoke = vi.mocked(invokeCommand);
+const engine = vi.mocked(playerApi);
+
+/** Engine mocks with resolved defaults; `playerLoad` assigns increasing seqs. */
+function configureEngineMocks(): void {
+    let seq = 0;
+    engine.playerLoad.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 180 }));
+    engine.playerPause.mockReset().mockResolvedValue(undefined);
+    engine.playerResume.mockReset().mockResolvedValue(undefined);
+    engine.playerStop.mockReset().mockResolvedValue(undefined);
+    engine.playerSeek.mockReset().mockResolvedValue(undefined);
+    engine.playerSetVolume.mockReset().mockResolvedValue(undefined);
+    engine.playerSetRate.mockReset().mockResolvedValue(undefined);
+    engine.onPlayerTick.mockReset().mockResolvedValue(() => {});
+    engine.onPlayerEnded.mockReset().mockResolvedValue(() => {});
+}
 
 describe('usePlayer', () => {
     beforeEach(() => {
         mockInvoke.mockReset();
+        configureEngineMocks();
         // The composable is a module-level singleton: clear its state so
-        // tests stay independent. stop() itself drives pause/load, hence
-        // the stub clears come AFTER it.
+        // tests stay independent (stop() itself commands the engine).
         usePlayer().stop();
-        playStub.mockClear();
-        pauseStub.mockClear();
-        loadStub.mockClear();
+        engine.playerStop.mockClear();
     });
 
-    it('reports one sanitized actionable message for a rejected play and its media error', async () => {
-        const player = usePlayer();
-        mockInvoke.mockResolvedValueOnce({ track_id: 7, file_path: '/private/song.flac', format: 'FLAC' });
-        playStub.mockRejectedValueOnce(new Error('private path /private/song.flac and token=secret'));
-        const playing = player.play({ id: 7, title: 'Song', artist: 'Artist' });
-        await expect(playing).rejects.toThrow();
-        expect(player.error.value).toContain('audio output');
-        expect(player.error.value).not.toContain('/private');
-        expect(player.error.value).not.toContain('secret');
-        expect(playerAudio).toBeDefined();
-        Object.defineProperty(playerAudio, 'error', { configurable: true, value: { code: 3, message: 'private path' } });
-        playerAudio!.dispatchEvent(new Event('error'));
-        expect(player.error.value).toContain('audio output'); // same failure, no second message
-        Object.defineProperty(playerAudio, 'error', { configurable: true, value: null });
-    });
-
-    it('maps MediaError.code without leaking engine diagnostics', async () => {
-        const player = usePlayer();
-        mockInvoke.mockResolvedValueOnce({ track_id: 8, file_path: '/private/broken.flac', format: 'FLAC' });
-        await player.play({ id: 8, title: 'Broken', artist: 'Artist' });
-        Object.defineProperty(playerAudio, 'error', { configurable: true, value: { code: 4, message: '/private/broken.flac' } });
-        playerAudio!.dispatchEvent(new Event('error'));
-        expect(player.error.value).toContain('Unsupported audio format');
-        expect(player.error.value).not.toContain('/private');
-        playerAudio!.dispatchEvent(new Event('error'));
-        expect(player.error.value).toContain('Unsupported audio format');
-        Object.defineProperty(playerAudio, 'error', { configurable: true, value: null });
-    });
-
-    it('resolves the source and starts playback of a downloaded file', async () => {
+    it('resolves the source and starts engine playback of a downloaded file', async () => {
         mockInvoke.mockResolvedValueOnce({
             track_id: 7,
             file_path: '/lib/Artist - Song.flac',
@@ -94,10 +69,22 @@ describe('usePlayer', () => {
         await player.play({ id: 7, title: 'Song', artist: 'Artist' });
 
         expect(mockInvoke).toHaveBeenCalledWith('resolve_playback_source', { trackId: 7 });
-        expect(playStub).toHaveBeenCalledTimes(1);
+        // The engine owns the path; the frontend never converts or mints URLs.
+        expect(engine.playerLoad).toHaveBeenCalledWith('/lib/Artist - Song.flac', true, 1);
         expect(player.current.value?.title).toBe('Song');
-        // The syncify-media protocol carries the percent-encoded absolute path.
+        expect(player.isPlaying.value).toBe(true);
+        expect(player.durationSec.value).toBe(180);
         expect(player.error.value).toBeNull();
+    });
+
+    it('reloads the engine on a same-file replay (no element to inherit)', async () => {
+        mockInvoke.mockResolvedValue({ track_id: 7, file_path: '/lib/7.flac' });
+        const player = usePlayer();
+
+        await player.play({ id: 7, title: 'Song', artist: 'Artist' });
+        await player.play({ id: 7, title: 'Song', artist: 'Artist' });
+
+        expect(engine.playerLoad).toHaveBeenCalledTimes(2);
     });
 
     it('surfaces backend errors honestly when the track has no local file', async () => {
@@ -109,30 +96,59 @@ describe('usePlayer', () => {
         ).rejects.toThrow(/no tiene archivo local/);
 
         expect(player.error.value).toContain('no tiene archivo local');
-        expect(playStub).not.toHaveBeenCalled();
+        expect(engine.playerLoad).not.toHaveBeenCalled();
         expect(player.current.value).toBeNull();
     });
 
-    it('toggle without an assigned source is a no-op', () => {
+    it('shows the engine failure sanitized by the backend (never a path)', async () => {
+        mockInvoke.mockResolvedValueOnce({ track_id: 8, file_path: '/private/broken.flac', format: 'FLAC' });
+        engine.playerLoad.mockRejectedValueOnce(new Error('audio output unavailable: device busy'));
         const player = usePlayer();
-        player.toggle();
-        expect(playStub).not.toHaveBeenCalled();
-        expect(pauseStub).not.toHaveBeenCalled();
+
+        await expect(
+            player.play({ id: 8, title: 'Broken', artist: 'Artist' })
+        ).rejects.toThrow(/audio output unavailable/);
+
+        expect(player.error.value).toContain('audio output unavailable');
+        expect(player.error.value).not.toContain('/private');
+        expect(player.isPlaying.value).toBe(false);
+        expect(player.current.value).toBeNull();
     });
 
-    it('stop resets state and tears down the audio element', async () => {
-        mockInvoke.mockResolvedValueOnce({
-            track_id: 1,
-            file_path: '/lib/a.flac',
-        });
+    it('pause/resume via toggle drives the engine and the state', async () => {
+        mockInvoke.mockResolvedValueOnce({ track_id: 7, file_path: '/lib/7.flac' });
+        const player = usePlayer();
+        await player.play({ id: 7, title: 'Song', artist: 'Artist' });
+
+        player.toggle();
+        await Promise.resolve();
+        expect(engine.playerPause).toHaveBeenCalledTimes(1);
+        expect(player.isPlaying.value).toBe(false);
+
+        player.toggle();
+        await Promise.resolve();
+        expect(engine.playerResume).toHaveBeenCalledTimes(1);
+        expect(player.isPlaying.value).toBe(true);
+    });
+
+    it('toggle without a loaded track is a no-op', () => {
+        const player = usePlayer();
+        player.toggle();
+        expect(engine.playerPause).not.toHaveBeenCalled();
+        expect(engine.playerResume).not.toHaveBeenCalled();
+    });
+
+    it('stop resets state and stops the engine', async () => {
+        mockInvoke.mockResolvedValueOnce({ track_id: 1, file_path: '/lib/a.flac' });
         const player = usePlayer();
         await player.play({ id: 1, title: 'a', artist: 'b' });
 
         player.stop();
-        expect(pauseStub).toHaveBeenCalled();
-        expect(loadStub).toHaveBeenCalled();
+
+        expect(engine.playerStop).toHaveBeenCalled();
         expect(player.current.value).toBeNull();
         expect(player.positionSec.value).toBe(0);
         expect(player.durationSec.value).toBe(0);
+        expect(player.isPlaying.value).toBe(false);
     });
 });

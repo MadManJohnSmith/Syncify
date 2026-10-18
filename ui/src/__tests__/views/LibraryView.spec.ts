@@ -669,6 +669,7 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
             invokeCalls.push({ cmd, args });
             if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             if (cmd === 'resolve_playback_source') return { track_id: 301, file_path: '/lib/301.flac', format: 'FLAC' };
+            if (cmd === 'player_load') return { seq: 1, duration_sec: 180 };
             if (cmd === 'add_to_queue') return 1;
             return null;
         });
@@ -700,6 +701,7 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
             invokeCalls.push({ cmd, args });
             if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             if (cmd === 'resolve_playback_source') return { track_id: 401, file_path: '/lib/401.flac', format: 'FLAC' };
+            if (cmd === 'player_load') return { seq: 1, duration_sec: 180 };
             return null;
         });
 
@@ -785,14 +787,19 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
     it('Space toggles playback of the loaded track without resolving a new source', async () => {
         const { invokeCalls } = await mountWithTrack();
 
-        const playSpy = window.HTMLMediaElement.prototype.play as unknown as ReturnType<typeof vi.fn>;
-        const firstPlayCalls = playSpy.mock.calls.length;
+        // Primer Space: reproductor ocioso con menú abierto → arranca la pista.
         window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', cancelable: true }));
         await flushPromises();
 
-        // Same source resolved again? No — toggle only touches the audio element.
         expect(invokeCalls.filter(c => c.cmd === 'resolve_playback_source').length).toBe(1);
-        expect(playSpy.mock.calls.length).toBeGreaterThan(firstPlayCalls);
+        expect(invokeCalls.some(c => c.cmd === 'player_load')).toBe(true);
+
+        // Segundo Space: pausa del motor, sin resolver la fuente otra vez.
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', cancelable: true }));
+        await flushPromises();
+
+        expect(invokeCalls.filter(c => c.cmd === 'resolve_playback_source').length).toBe(1);
+        expect(invokeCalls.some(c => c.cmd === 'player_pause')).toBe(true);
     });
 
     it('Q adds the context-menu track to the download queue', async () => {
@@ -1255,7 +1262,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         const strip = wrapper.find('.reconciliation-strip');
         expect(strip.exists()).toBe(true);
         expect(strip.text()).toContain('Queue Reconciliation');
-        expect(strip.text()).toContain('Elegibles:');
-        expect(strip.text()).toContain('Pendientes:');
+        expect(strip.text()).toContain('Eligible:');
+        expect(strip.text()).toContain('Pending:');
     });
 });

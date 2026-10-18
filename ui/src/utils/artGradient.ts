@@ -19,8 +19,8 @@ const GRADIENTS = [
 ];
 
 /**
- * Gradiente estable para un id. Los ids no numéricos caen en el primero: un id
- * ausente es un hueco de datos, no una razón para renderizar `undefined`.
+ * Stable gradient for an id. Non-numeric ids fall to the first one: a missing
+ * id is a data gap, not a reason to render `undefined`.
  */
 export function getArtGradient(id: number | string | null | undefined): string {
     const numericId = typeof id === 'number' ? id : Number.parseInt(String(id ?? ''), 10);

@@ -42,8 +42,8 @@ def json_response(success: bool, data=None, error=None):
 
 
 # Tool download URLs (Windows x64)
-# ffmpeg se pinea a una release fechada de BtbN: "latest" es rolling y su
-# hash cambia con cada build, lo que rompería la verificación SHA-256.
+# ffmpeg is pinned to a dated BtbN release: "latest" is rolling and its
+# hash changes with every build, which would break the SHA-256 verification.
 TOOL_URLS = {
     "ffmpeg": {
         "windows": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-01-13-06/ffmpeg-N-127054-g9d3f0f2c58-win64-gpl.zip",

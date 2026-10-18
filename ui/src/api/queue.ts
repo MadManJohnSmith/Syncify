@@ -263,7 +263,7 @@ export async function addBatchToQueue(params: {
         added: pickNumber(raw, ['added']),
         skipped: pickNumber(raw, ['skipped']),
         summary: asRecord(summary) ? normalizePreflightSummary(summary) : undefined,
-        // S201: passthrough tal cual del motor (enqueue_eligible_batch).
+        // S201: passthrough as-is from the engine (enqueue_eligible_batch).
         submitted: optionalNumber(pick(raw, ['submitted'])),
         enqueued: optionalNumber(pick(raw, ['enqueued'])),
         deduplicated: optionalNumber(pick(raw, ['deduplicated'])),

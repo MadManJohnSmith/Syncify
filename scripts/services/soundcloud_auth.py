@@ -108,8 +108,8 @@ class SoundCloudAuth:
             )
             page = await context.new_page()
             
-            # Anti-detection (FIX 2026-08-25 tras bloqueo "You have been blocked"):
-            # ocultamos las señales clásicas de webdriver.
+            # Anti-detection (FIX 2026-08-25 after the "You have been blocked" block):
+            # we hide the classic webdriver signals.
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                 Object.defineProperty(navigator, 'languages', {get: () => ['es-MX', 'es', 'en']});
@@ -151,12 +151,12 @@ class SoundCloudAuth:
             start_time = time.time()
             
             while time.time() - start_time < timeout_seconds:
-                # FIX 2026-08-25: si el propietario cierra la ventana salimos de
-                # inmediato (evento disconnected; is_closed() no existe en la API
-                # async de Playwright 1.58).
+                # FIX 2026-08-25: if the owner closes the window we exit
+                # immediately (disconnected event; is_closed() does not exist in
+                # Playwright 1.58's async API).
                 if _window_closed["v"]:
                     self._log("Browser window closed by user")
-                    return False, "Cerraste la ventana del navegador sin completar el inicio de sesión — vuelve a intentar la conexión cuando quieras."
+                    return False, "You closed the browser window before completing sign-in — please try connecting again whenever you like."
                 if captured_token:
                     self._log("OAuth token captured successfully!")
                     break

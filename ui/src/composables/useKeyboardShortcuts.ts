@@ -113,8 +113,8 @@ export function getRegisteredShortcuts(): ShortcutBinding[] {
 }
 
 /**
- * Busca en `bindings` la primera combinación que case con el evento y la
- * ejecuta. Devuelve si llegó a disparar algo.
+ * Searches `bindings` for the first combo that matches the event and runs it.
+ * Returns whether it fired anything.
  */
 function dispatchBinding(
     event: KeyboardEvent,
@@ -147,8 +147,8 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     dispatchBinding(event, globalBindings.value)
 }
 
-// Un único listener global para todo el registro: useShortcut() y
-// registerShortcut() funcionan sin que cada componente añada el suyo.
+// A single global listener for the whole registry: useShortcut() and
+// registerShortcut() work without each component adding its own.
 if (typeof document !== 'undefined') {
     document.addEventListener('keydown', handleGlobalKeydown)
 }
@@ -229,10 +229,10 @@ export function useKeyboardShortcuts() {
         return Array.from(map.values())
     }
 
-    // Handle keydown event. Solo los enlaces locales de esta instancia: los
-// globales los atiende el listener único de módulo, y.dispatchBinding se
-// volvería a ejecutar si se comprobaran aquí (preventDefault() no marca el
-// evento cuando no es cancelable, que es como los lanzan los tests).
+    // Handle keydown event. Only the local bindings of this instance: global
+// ones are handled by the module's single listener, and dispatchBinding would
+// run again if checked here (preventDefault() does not mark the event when it
+// is not cancelable, which is how tests dispatch it).
     function handleKeydown(event: KeyboardEvent) {
         dispatchBinding(event, localBindings.value)
     }
@@ -275,10 +275,10 @@ export function useShortcut(
     handler: ShortcutHandler,
     options?: ShortcutOptions
 ): () => void {
-    // Registra en el mapa global para que un único listener de documento
-    // atienda todos los atajos. Antes creaba una instancia propia de
-    // useKeyboardShortcuts() por cada componente que lo usaba, y cada una
-    // añadía su propio listener de teclado a `document`.
+    // Register in the global map so a single document listener handles all
+    // shortcuts. It used to create its own instance of
+    // useKeyboardShortcuts() for each component that used it, and each one
+    // added its own keyboard listener to `document`.
     const unregister = registerShortcut(keys, handler, {
         description: options?.description,
         category: options?.category,

@@ -4,7 +4,7 @@
       The theme applies immediately and is saved for future sessions (without using “Save Changes”).
     </p>
 
-    <!-- Temas estándar del sistema (G-02: default Tinta) -->
+    <!-- Standard system themes (G-02: default Ink) -->
     <section class="grid grid-cols-1 md:grid-cols-2 gap-4" data-testid="appearance-themes">
       <article
         v-for="theme in standardThemes"
@@ -28,8 +28,8 @@
           >check_circle</span>
         </div>
 
-        <!-- Mini-paleta: los chips leen los tokens reales de cada tema porque
-             la propia tarjeta lleva su data-theme (cero hex duplicados aquí). -->
+        <!-- Mini palette: chips read each theme's real tokens because
+             the card itself carries its data-theme (zero duplicated hex here). -->
         <div class="flex gap-1.5 mt-3" aria-hidden="true">
           <span
             v-for="token in PALETTE_TOKENS"
@@ -52,7 +52,7 @@
           {{ current === theme.id ? 'Active theme' : 'Use this theme' }}
         </button>
 
-        <!-- Control exclusivo de Camaleón: escala la saturación de sus tokens -->
+        <!-- Chameleon-only control: scales the saturation of its tokens -->
         <label v-if="theme.id === 'camaleon'" class="block mt-4 text-xs text-ink-2">
           <span class="flex items-center justify-between">
             <span>Tint intensity</span>
@@ -73,7 +73,7 @@
       </article>
     </section>
 
-    <!-- Temas por servicio musical (AJ-05) - Colocados debajo y separados -->
+    <!-- Per-service music themes (AJ-05) - placed below and separated -->
     <div class="pt-6 border-t border-line space-y-6">
       <div class="flex flex-col gap-1">
         <h2 class="text-base font-semibold text-ink">Service themes</h2>
@@ -82,7 +82,7 @@
         </p>
       </div>
 
-      <!-- Conmutador para tintado dinámico por carátula (AJ-06) -->
+      <!-- Toggle for dynamic cover tinting (AJ-06) -->
       <div class="flex items-center justify-between p-4 rounded-xl bg-surface border border-line">
         <div class="space-y-0.5 pr-4">
           <div class="flex items-center gap-2">
@@ -113,7 +113,7 @@
         </button>
       </div>
 
-      <!-- Cuadrícula de temas por servicio -->
+      <!-- Service themes grid -->
       <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="appearance-service-themes">
         <article
           v-for="theme in serviceThemes"
@@ -137,7 +137,7 @@
             >check_circle</span>
           </div>
 
-          <!-- Mini-paleta del servicio -->
+          <!-- Service mini palette -->
           <div class="flex gap-1.5 mt-3" aria-hidden="true">
             <span
               v-for="token in PALETTE_TOKENS"

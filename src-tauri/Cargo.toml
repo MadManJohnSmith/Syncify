@@ -62,6 +62,12 @@ syncify-flac-writer = { path = "../crates/syncify-flac-writer" }
 syncify-lyrics-domain = { path = "../crates/syncify-lyrics-domain" }
 syncify-metadata-domain = { path = "../crates/syncify-metadata-domain" }
 syncify-tidal-downloader = { path = "../crates/syncify-tidal-downloader" }
+# Fase 1 del player: motor de audio nativo (rodio + symphonia)
+syncify-player = { path = "../crates/syncify-player" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Fase 1 del player: MPRIS nativo (el WebKit MediaSession antiguo ya no existe).
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 
 

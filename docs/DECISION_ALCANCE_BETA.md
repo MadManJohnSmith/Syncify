@@ -164,3 +164,35 @@ Este fichero es el roadmap que faltaba. Si hay que ampliarlo, se amplía aquí.
 post-beta. Los dos ficheros se leen juntos: este dice qué NO se toca ahora, el otro dice
 exactamente qué se hará después, con qué coste relativo y apoyándose en qué código ya
 existente.
+
+---
+
+## Enmienda 2026-10-17 — La reproducción entra en la beta (excepción única al punto 1)
+
+**Estado:** DECIDIDO · **Fecha:** 2026-10-17 · **Autoriza:** aprobación del propietario sobre el
+plan de reproducción (sesión de 2026-10-17), tras la prueba dirigida de la Fase 0.
+
+La regla del punto 1 («no se añade alcance nuevo de ninguna clase hasta cerrar la beta») queda
+**excepcionada solo para el carril de reproducción**, porque la prueba dirigida demostró que la
+reproducción local está **estructuralmente rota** y no es un hueco de configuración ni de datos:
+
+- Causa raíz demostrada y reproducible en
+  [`docs/auditoria/playback-fase0-evidencia-2026-10-17.md`](auditoria/playback-fase0-evidencia-2026-10-17.md):
+  el motor media de WebKitGTK no reproduce audio servido por el custom scheme `syncify-media://`
+  (`FormatError`, código de error 4) en **ninguna** de las formas de respuesta probadas; el mismo
+  archivo por `http://127.0.0.1` reproduce sin fallo en la misma webview. El handler de Syncify
+  queda exonerado (rangos y URIs correctos en la evidencia).
+- Arreglo aprobado: **reemplazar la ruta `<audio>` + `syncify-media://` por un motor local nativo
+  en Rust** (rodio + symphonia), con MPRIS nativo, y encima el streaming hi-fi de proveedores.
+
+| Entra en la beta (carril reproducción) | Contenido |
+|---|---|
+| Fase 1 — motor local nativo | Decodificación en Rust sin GStreamer ni WebKit en el camino de audio; `usePlayer.ts` mantiene cola/historial/crédito de escucha; MPRIS nativo |
+| Fase 2 — streaming sin descarga | Resolución y búfer de Qobuz/Tidal (lossless con las cuentas existentes) y Deezer free/SoundCloud reutilizando los resolvers existentes, con etiqueta honesta de calidad |
+| Fase 3 — cascada ISRC | De pistas de origen Spotify a su edición en un servicio reproducible; estado honesto «sin fuente reproducible» cuando no exista |
+| Fase 4 — empaquetado y verificación | Windows + Linux reales, tests de decodificación en CI, control de calidad y documentación de claims |
+
+**Se mantiene fuera de la beta, sin cambios:** YouTube Music como fuente de reproducción (diferido
+post-beta: su resolver no está terminado y ninguna fase de la beta depende de él), extensiones/plugins,
+Android, i18n, sincronización continua y la visión de reproductor dedicado. La tabla original de
+exclusiones sigue vigente para todo lo demás.

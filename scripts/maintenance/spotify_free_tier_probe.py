@@ -1,69 +1,69 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Sonda del tier FREE de la API Web de Spotify (lectura de la PROPIA biblioteca).
+"""Probe for the FREE tier of the Spotify Web API (reading one's OWN library).
 
-PROPÓSITO
-=========
-Emitir un VEREDICTO documentado sobre si la lectura de la propia biblioteca
-de Spotify (tracks guardados + playlists propias) sigue operativa para cuentas
-**FREE** tras los cambios de noviembre de 2024, usando una developer-app
-propia (client_id/client_secret). El script NO modifica nada en la cuenta:
-solo hace lecturas acotadas (?limit=1) y reporta totales.
+PURPOSE
+=======
+Produce a documented VERDICT on whether reading one's own Spotify library
+(saved tracks + own playlists) still works for **FREE** accounts
+after the November 2024 changes, using your own developer app
+(client_id/client_secret). The script changes NOTHING in the account:
+it only does bounded reads (?limit=1) and reports totals.
 
-FLUJO (OAuth2 authorization-code con redirect a localhost)
-==========================================================
-1. Levanta un http.server efímero en 127.0.0.1:8899 (o el primer puerto libre).
-2. Abre el navegador en https://accounts.spotify.com/authorize con los scopes
+FLOW (OAuth2 authorization-code with localhost redirect)
+========================================================
+1. Starts an ephemeral http.server on 127.0.0.1:8899 (or the first free port).
+2. Opens the browser at https://accounts.spotify.com/authorize with the scopes
    user-library-read playlist-read-private playlist-read-collaborative
-   user-read-email, show_dialog=true y un parámetro anti-CSRF `state`
-   aleatorio que se verifica al volver.
-3. Captura ?code= en /callback y lo intercambia por un access_token en
+   user-read-email, show_dialog=true and a random anti-CSRF `state`
+   parameter that is verified on return.
+3. Captures ?code= at /callback and exchanges it for an access_token at
    https://accounts.spotify.com/api/token (Basic auth client_id:secret,
-   form-urlencoded grant_type=authorization_code). Los errores 400/403 se
-   imprimen SOLO como status + body SANITIZADO.
-4. Con el token SOLO en memoria consulta secuencialmente GET /me,
-   GET /me/tracks?limit=1, GET /me/playlists?limit=1 y, si hay >=1 playlist,
+   form-urlencoded grant_type=authorization_code). 400/403 errors are
+   printed ONLY as status + SANITIZED body.
+4. With the token ONLY in memory, sequentially queries GET /me,
+   GET /me/tracks?limit=1, GET /me/playlists?limit=1 and, if there is >=1 playlist,
    GET /playlists/{id}/tracks?limit=1.
-5. Imprime una tabla de resultados y un VEREDICTO final, que además queda
-   escrito junto a este archivo en spotify_free_tier_probe_result.md.
+5. Prints a results table and a final VERDICT, which is also written
+   next to this file in spotify_free_tier_probe_result.md.
 
-GARANTÍAS DE PRIVACIDAD (importantes)
-=====================================
-- NUNCA imprime SPOTIFY_CLIENT_ID ni SPOTIFY_CLIENT_SECRET completos: las
-  credenciales se leen en runtime desde el entorno o desde el `.env` de la
-  raíz del repo (líneas KEY=VALUE simples, comentarios ignorados) y toda
-  aparición en mensajes se ENMASCARA.
-- El access_token vive únicamente en memoria durante la ejecución: jamás se
-  imprime, guarda en disco ni incluye en URLs mostradas.
-- Los cuerpos de error se muestran recortados y SANITIZADOS (cualquier patrón
-  tipo token/code/secret/authorization reemplazado por [REDACTADO]).
-- El nombre de usuario se muestra recortado a 2 caracteres + "***"; el email
-  solicitado por scope no se muestra nunca.
+PRIVACY GUARANTEES (important)
+==============================
+- NEVER prints complete SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET: the
+  credentials are read at runtime from the environment or from the repo-root
+  `.env` (simple KEY=VALUE lines, comments ignored) and every
+  occurrence in messages is MASKED.
+- The access_token lives only in memory during the run: it is never
+  printed, saved to disk or included in displayed URLs.
+- Error bodies are shown truncated and SANITIZED (any pattern
+  like token/code/secret/authorization replaced with [REDACTED]).
+- The user name is shown truncated to 2 characters + "***"; the email
+  requested by scope is never shown.
 
-USO
-===
+USAGE
+=====
     python3 scripts/maintenance/spotify_free_tier_probe.py
 
-Requiere SPOTIFY_CLIENT_ID y SPOTIFY_CLIENT_SECRET en el entorno o en `.env`.
-Timeout por petición: 15 s. Ctrl+C sale limpio y siempre cierra el servidor.
+Requires SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in the environment or in `.env`.
+Per-request timeout: 15 s. Ctrl+C exits cleanly and always closes the server.
 
-VEREDICTOS POSIBLES
-===================
-- FUNCIONA_CON_FREE                 product=free y los 4 endpoints devuelven 200
-                                    con totales.
-- FUNCIONA_PARCIAL                  Autenticó pero al menos un endpoint aplicable
-                                    falló; la tabla detalla cuáles dieron 200 y
-                                    cuáles fallaron (status + razón corta).
-- BLOQUEADO_<motivo>                No se pudo completar la prueba (p. ej.
+POSSIBLE VERDICTS
+=================
+- FUNCIONA_CON_FREE                 product=free and all 4 endpoints return 200
+                                    with totals.
+- FUNCIONA_PARCIAL                  It authenticated but at least one applicable endpoint
+                                    failed; the table details which returned 200 and
+                                    which failed (status + short reason).
+- BLOQUEADO_<reason>                The probe could not be completed (e.g.
                                     BLOQUEADO_CREDENCIALES_INVALIDAS,
                                     BLOQUEADO_QUOTA_EXCEDIDA_O_ACCESO_APP,
                                     BLOQUEADO_HTTP_403_EN_ME,
                                     BLOQUEADO_USUARIO_NEGO_PERMISOS).
-- PREMIUM_NO_INFORMATIVO_PARA_FREE  La cuenta autenticada es premium: todo
-                                    funcionó, pero NO evidencia el tier FREE.
+- PREMIUM_NO_INFORMATIVO_PARA_FREE  The authenticated account is premium: everything
+                                    worked, but it does NOT evidence the FREE tier.
 
-CÓDIGOS DE SALIDA: 0 veredicto favorable/informativo, 3 BLOQUEADO_*,
-4 error de configuración, 130 interrumpido por Ctrl+C, 1 error inesperado.
+EXIT CODES: 0 favorable/informative verdict, 3 BLOQUEADO_*,
+4 configuration error, 130 interrupted by Ctrl+C, 1 unexpected error.
 """
 
 import base64
@@ -98,8 +98,8 @@ URL_TOKEN = "https://accounts.spotify.com/api/token"
 URL_API_BASE = "https://api.spotify.com/v1"
 ARCHIVO_RESULTADO = "spotify_free_tier_probe_result.md"
 
-NOTA_ENMASCARADO = ("Todas las salidas fueron ENMASCARADAS: sin client_id/secret "
-                    "completos, sin tokens, sin email ni nombres completos.")
+NOTA_ENMASCARADO = ("All outputs were MASKED: no complete client_id/secret, "
+                    "no tokens, no email or full names.")
 
 _PATRON_FUGA = re.compile(
     r"(?i)\b(access_token|refresh_token|client_secret|authorization|code|token|secret)"
@@ -109,19 +109,19 @@ _PATRON_FUGA = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# Utilidades de enmascarado / saneo
+# Masking / sanitizing helpers
 # ---------------------------------------------------------------------------
 
 def sanitizar_texto(texto):
-    """Reemplaza valores que acompañan a claves sensibles por [REDACTADO].
+    """Replace values following sensitive keys with [REDACTED].
 
-    Cubre tanto JSON ("access_token":"x") como form-urlencoded (code=x).
+    Covers both JSON ("access_token":"x") and form-urlencoded (code=x).
     """
     if not texto:
         return ""
     def _reemplazo(coincidencia):
         comilla = coincidencia.group(2) or ""
-        return "%s%s%s%s[REDACTADO]%s" % (
+        return "%s%s%s%s[REDACTED]%s" % (
             coincidencia.group(1), comilla, coincidencia.group(3), comilla, comilla)
     return _PATRON_FUGA.sub(_reemplazo, texto)
 
@@ -132,7 +132,7 @@ def recortar(texto, maximo=240):
 
 
 def enmascarar_id(valor, n=4):
-    """Primeros n caracteres + *** (para client_id e ids de playlist)."""
+    """First n characters + *** (for client_id and playlist ids)."""
     valor = str(valor or "")
     if len(valor) <= n:
         return "***"
@@ -140,10 +140,10 @@ def enmascarar_id(valor, n=4):
 
 
 def enmascarar_nombre(nombre):
-    """Nombre visible reducido a 2 caracteres + ***."""
+    """Display name reduced to 2 characters + ***."""
     nombre = str(nombre or "").strip()
     if not nombre:
-        return "(sin nombre)"
+        return "(no name)"
     return nombre[:2] + "***"
 
 
@@ -159,7 +159,7 @@ def parsear_json(cuerpo):
 
 
 def extraer_motivo_error(datos):
-    """Extrae una razón corta de un cuerpo JSON de error de Spotify."""
+    """Extract a short reason from a Spotify JSON error body."""
     if isinstance(datos, dict):
         err = datos.get("error")
         if isinstance(err, dict):
@@ -175,16 +175,16 @@ def formato_estado(estado):
 
 
 # ---------------------------------------------------------------------------
-# Credenciales (entorno o .env del repo; NUNCA se muestran los valores)
+# Credentials (environment or the repo's .env; values are NEVER shown)
 # ---------------------------------------------------------------------------
 
 def raiz_repo():
-    # Este probe vive en scripts/maintenance/, tres niveles bajo la raíz del repo.
+    # This probe lives in scripts/maintenance/, three levels below the repo root.
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def cargar_env(ruta_env):
-    """Lee líneas KEY=VALUE simples ignorando comentarios y líneas en blanco."""
+    """Read simple KEY=VALUE lines, ignoring comments and blank lines."""
     variables = {}
     try:
         with open(ruta_env, "r", encoding="utf-8") as manejador:
@@ -209,36 +209,36 @@ def cargar_env(ruta_env):
 
 
 def obtener_credenciales():
-    """Devuelve (client_id, client_secret) o None si faltan. Nunca los revela."""
+    """Return (client_id, client_secret) or None if missing. Never reveals them."""
     client_id = os.environ.get("SPOTIFY_CLIENT_ID")
     client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
-    fuente = "variables de entorno"
+    fuente = "environment variables"
     if not client_id or not client_secret:
         variables = cargar_env(os.path.join(raiz_repo(), ".env"))
         if variables:
             client_id = client_id or variables.get("SPOTIFY_CLIENT_ID")
             client_secret = client_secret or variables.get("SPOTIFY_CLIENT_SECRET")
-            fuente = ".env del repo"
+            fuente = "repo .env"
     faltan = []
     if not client_id:
         faltan.append("SPOTIFY_CLIENT_ID")
     if not client_secret:
         faltan.append("SPOTIFY_CLIENT_SECRET")
     if faltan:
-        print("[!] Faltan credenciales: %s." % ", ".join(faltan))
-        print("    Defínelas en el entorno o en líneas KEY=VALUE del .env de la raíz del repo.")
+        print("[!] Missing credentials: %s." % ", ".join(faltan))
+        print("    Define them in the environment or in simple KEY=VALUE lines of the repo-root .env.")
         return None
-    print("[i] Credenciales cargadas desde %s (valores OCULTOS: "
+    print("[i] Credentials loaded from %s (values HIDDEN: "
           "client_id=%s, client_secret=****)." % (fuente, enmascarar_id(client_id)))
     return client_id, client_secret
 
 
 # ---------------------------------------------------------------------------
-# HTTP genérico (timeout 15 s, errores tipificados, sin tracebacks)
+# Generic HTTP (15 s timeout, typed errors, no tracebacks)
 # ---------------------------------------------------------------------------
 
 def peticion_http(url, metodo="GET", cabeceras=None, datos=None):
-    """Devuelve (estado|None, cuerpo_texto, motivo_fallo|None)."""
+    """Return (status|None, body_text, failure_reason|None)."""
     peticion = urllib.request.Request(url, data=datos, method=metodo)
     for clave, valor in (cabeceras or {}).items():
         peticion.add_header(clave, valor)
@@ -253,21 +253,21 @@ def peticion_http(url, metodo="GET", cabeceras=None, datos=None):
             cuerpo = ""
         return exc.code, cuerpo, None
     except (socket.timeout, TimeoutError):
-        return None, "", "timeout de %ds" % TIMEOUT_REQUEST_SEG
+        return None, "", "timeout after %ds" % TIMEOUT_REQUEST_SEG
     except urlerror.URLError as exc:
-        return None, "", "error de conexión: %s" % (getattr(exc, "reason", None) or exc)
+        return None, "", "connection error: %s" % (getattr(exc, "reason", None) or exc)
     except OSError as exc:
-        return None, "", "error de E/S: %s" % exc
+        return None, "", "I/O error: %s" % exc
 
 
 # ---------------------------------------------------------------------------
-# Servidor local para el redirect OAuth
+# Local server for the OAuth redirect
 # ---------------------------------------------------------------------------
 
 class ManejadorCallback(BaseHTTPRequestHandler):
-    """Atiende SOLO /callback; valida state anti-CSRF y captura ?code=."""
+    """Handles ONLY /callback; validates the anti-CSRF state and captures ?code=."""
 
-    def log_message(self, formato, *args):  # silencia el log por defecto
+    def log_message(self, formato, *args):  # silence the default log
         pass
 
     def do_GET(self):
@@ -280,11 +280,11 @@ class ManejadorCallback(BaseHTTPRequestHandler):
         sondeo = self.server.estado_probe
         partes = urlpar.urlparse(self.path)
         if partes.path != "/callback":
-            self._enviar_html(404, "Probe Spotify",
-                              "<p>Ruta desconocida. Esperando <code>/callback</code>...</p>")
+            self._enviar_html(404, "Spotify Probe",
+                              "<p>Unknown route. Waiting for <code>/callback</code>...</p>")
             return
         if sondeo.get("listo"):
-            self._enviar_html(200, "Probe Spotify", "<p>La autorización ya fue procesada.</p>")
+            self._enviar_html(200, "Spotify Probe", "<p>The authorization was already processed.</p>")
             return
         params = urlpar.parse_qs(partes.query, keep_blank_values=True)
         estado_recibido = (params.get("state") or [""])[0]
@@ -292,34 +292,34 @@ class ManejadorCallback(BaseHTTPRequestHandler):
             sondeo["error_autorizacion"] = (params.get("error") or ["desconocido"])[0]
             sondeo["descripcion_error"] = (params.get("error_description") or [""])[0]
             sondeo["listo"] = True
-            self._enviar_html(200, "Autorización rechazada",
-                              "<p>Spotify devolvió un error de autorización. "
-                              "Vuelve a la terminal para ver el veredicto.</p>")
+            self._enviar_html(200, "Authorization rejected",
+                              "<p>Spotify returned an authorization error. "
+                              "Go back to the terminal to see the verdict.</p>")
             return
         codigo = (params.get("code") or [""])[0]
         if not codigo:
             sondeo["error_autorizacion"] = "sin_codigo"
             sondeo["listo"] = True
-            self._enviar_html(400, "Callback incompleto",
-                              "<p>El callback no incluyó <code>?code=</code>.</p>")
+            self._enviar_html(400, "Incomplete callback",
+                              "<p>The callback did not include <code>?code=</code>.</p>")
             return
         esperado = sondeo.get("estado_csrf", "")
         if not estado_recibido or not secrets.compare_digest(
                 estado_recibido.encode("utf-8"), esperado.encode("utf-8")):
             sondeo["error_autorizacion"] = "csrf_state_mismatch"
             sondeo["listo"] = True
-            self._enviar_html(400, "State inválido",
-                              "<p>El parámetro <code>state</code> no coincide "
-                              "(posible CSRF). Vuelve a lanzar el probe.</p>")
+            self._enviar_html(400, "Invalid state",
+                              "<p>The <code>state</code> parameter does not match "
+                              "(possible CSRF). Re-run the probe.</p>")
             return
-        sondeo["codigo_autorizacion"] = codigo  # solo en memoria del proceso
+        sondeo["codigo_autorizacion"] = codigo  # process memory only
         sondeo["listo"] = True
-        self._enviar_html(200, "Autorización recibida",
-                          "<p>El probe ya capturó el código de autorización "
-                          "(valor oculto). Puedes cerrar esta pestaña.</p>")
+        self._enviar_html(200, "Authorization received",
+                          "<p>The probe has captured the authorization code "
+                          "(value hidden). You can close this tab.</p>")
 
     def _enviar_html(self, status, titulo, cuerpo_html):
-        pagina = ("<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"utf-8\">"
+        pagina = ("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
                   "<title>%s</title></head><body style=\"font-family:sans-serif\">"
                   "<h2>%s</h2>%s</body></html>" % (titulo, titulo, cuerpo_html))
         payload = pagina.encode("utf-8")
@@ -331,7 +331,7 @@ class ManejadorCallback(BaseHTTPRequestHandler):
 
 
 def elegir_puerto(preferido):
-    """Prueba 8899; si está ocupado pide un puerto efímero al SO."""
+    """Try 8899; if it is taken, ask the OS for an ephemeral port."""
     for pedido in (preferido, 0):
         zócalo = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -359,11 +359,11 @@ def construir_url_autorizacion(client_id, redirect_uri, estado_csrf):
 
 
 # ---------------------------------------------------------------------------
-# Intercambio de código por token (Basic auth; errores 400/403 saneados)
+# Code-for-token exchange (Basic auth; 400/403 errors sanitized)
 # ---------------------------------------------------------------------------
 
 def intercambiar_codigo_por_token(client_id, client_secret, codigo, redirect_uri):
-    """Devuelve (access_token|None, detalle_error|None). Token nunca impreso."""
+    """Return (access_token|None, error_detail|None). Token never printed."""
     basico = base64.b64encode(
         ("%s:%s" % (client_id, client_secret)).encode("utf-8")).decode("ascii")
     cuerpo_form = urlpar.urlencode({
@@ -381,14 +381,14 @@ def intercambiar_codigo_por_token(client_id, client_secret, codigo, redirect_uri
         datos=cuerpo_form,
     )
     if fallo:
-        print("[!] Falló el intercambio del código: %s" % fallo)
-        return None, "red: %s" % fallo
+        print("[!] Code exchange failed: %s" % fallo)
+        return None, "network: %s" % fallo
     datos = parsear_json(texto)
     if estado != 200 or not isinstance(datos, dict) or not datos.get("access_token"):
         motivo = extraer_motivo_error(datos) or recortar(sanitizar_texto(texto), 240)
-        # Manejo explícito de 400/403: SOLO status + body SANITIZADO (sin tokens).
-        print("[!] Intercambio de token fallido. HTTP %s" % formato_estado(estado))
-        print("    Body (sanitizado): %s" % sanitizar_texto(recortar(motivo)))
+        # Explicit handling of 400/403: ONLY status + SANITIZED body (no tokens).
+        print("[!] Token exchange failed. HTTP %s" % formato_estado(estado))
+        print("    Body (sanitized): %s" % sanitizar_texto(recortar(motivo)))
         return None, "HTTP %s: %s" % (formato_estado(estado), sanitizar_texto(motivo))
     return str(datos["access_token"]), None
 
@@ -401,17 +401,17 @@ def clasificar_fallo_token(detalle):
         return "BLOQUEADO_CODIGO_INVALIDO_O_EXPIRADO"
     if "quota" in d or "403" in d:
         return "BLOQUEADO_QUOTA_EXCEDIDA_O_ACCESO_APP"
-    if "timeout" in d or "conexi" in d or "e/s" in d:
+    if "timeout" in d or "connect" in d or "i/o" in d:
         return "BLOQUEADO_RED_HACIA_SPOTIFY"
     return "BLOQUEADO_INTERCAMBIO_DE_TOKEN"
 
 
 # ---------------------------------------------------------------------------
-# Chequeos de lectura contra la API
+# Read checks against the API
 # ---------------------------------------------------------------------------
 
 def consultar_api(token, ruta):
-    """GET autenticado. Devuelve (estado|None, datos_json|None, motivo_error|None)."""
+    """Authenticated GET. Returns (status|None, json_data|None, error_reason|None)."""
     estado, cuerpo, fallo = peticion_http(
         URL_API_BASE + ruta, cabeceras={"Authorization": "Bearer " + token})
     if fallo:
@@ -430,17 +430,17 @@ def nueva_fila(endpoint, estado, detalle, aplica=True):
 
 def fila_fallo(endpoint, etiqueta_num, estado, fallo, datos):
     motivo = fallo or extraer_motivo_error(datos) \
-        or ("200 pero sin campo 'total'" if estado == 200 else "HTTP %s" % formato_estado(estado))
+        or ("200 but no 'total' field" if estado == 200 else "HTTP %s" % formato_estado(estado))
     detalle = sanitizar_texto(recortar(motivo, 140))
     print("%s %-40s %s  %s" % (etiqueta_num, endpoint, formato_estado(estado), detalle))
     return nueva_fila(endpoint, estado, detalle)
 
 
 def ejecutar_chequeos(token):
-    """Cuatro lecturas secuenciales. Devuelve (filas, producto, fallo_perfil|None)."""
+    """Four sequential reads. Returns (filas, producto, perfil_failure|None)."""
     filas = []
 
-    # [1/4] GET /me — product es EL CAMPO CLAVE del veredicto.
+    # [1/4] GET /me — product is THE KEY FIELD of the verdict.
     endpoint = "GET /me"
     estado, datos, fallo = consultar_api(token, "/me")
     if estado != 200 or not isinstance(datos, dict):
@@ -450,13 +450,13 @@ def ejecutar_chequeos(token):
         filas.append(nueva_fila(endpoint, estado, detalle))
         print("[1/4] %-40s %s  %s" % (endpoint, formato_estado(estado), detalle))
         return filas, None, {"estado": estado, "motivo": detalle}
-    producto = str(datos.get("product") or "(sin campo)")
+    producto = str(datos.get("product") or "(no field)")
     usuario = enmascarar_nombre(datos.get("display_name"))
     filas.append(nueva_fila(endpoint, 200,
-                            "producto=%s · usuario=%s · email omitido" % (producto, usuario)))
-    print("[1/4] %-40s 200  producto=%s usuario=%s" % (endpoint, producto, usuario))
+                            "product=%s · user=%s · email omitted" % (producto, usuario)))
+    print("[1/4] %-40s 200  product=%s user=%s" % (endpoint, producto, usuario))
 
-    # [2/4] GET /me/tracks?limit=1 — total de tracks guardados.
+    # [2/4] GET /me/tracks?limit=1 — total number of saved tracks.
     endpoint = "GET /me/tracks?limit=1"
     estado, datos, fallo = consultar_api(token, "/me/tracks?limit=1")
     if estado == 200 and isinstance(datos, dict) and isinstance(datos.get("total"), int):
@@ -465,7 +465,7 @@ def ejecutar_chequeos(token):
     else:
         filas.append(fila_fallo(endpoint, "[2/4]", estado, fallo, datos))
 
-    # [3/4] GET /me/playlists?limit=1 — total de playlists visibles.
+    # [3/4] GET /me/playlists?limit=1 — total number of visible playlists.
     endpoint = "GET /me/playlists?limit=1"
     playlists_ok = False
     total_playlists = 0
@@ -482,7 +482,7 @@ def ejecutar_chequeos(token):
     else:
         filas.append(fila_fallo(endpoint, "[3/4]", estado, fallo, datos))
 
-    # [4/4] GET /playlists/{id}/tracks?limit=1 — condicional a tener >=1 playlist.
+    # [4/4] GET /playlists/{id}/tracks?limit=1 — conditional on having >=1 playlist.
     endpoint = "GET /playlists/{id}/tracks?limit=1"
     if playlists_ok and total_playlists >= 1:
         if primer_playlist_id:
@@ -497,16 +497,16 @@ def ejecutar_chequeos(token):
                 filas.append(fila_fallo(endpoint, "[4/4]", estado, fallo, datos))
         else:
             filas.append(nueva_fila(endpoint, None,
-                                    "la primera página no incluyó id de playlist", aplica=False))
-            print("[4/4] %-40s N/A  (sin id en la primera página)" % endpoint)
+                                    "the first page did not include a playlist id", aplica=False))
+            print("[4/4] %-40s N/A  (no id on the first page)" % endpoint)
     elif playlists_ok:
         filas.append(nueva_fila(endpoint, None,
-                                "la cuenta no tiene playlists; no aplica", aplica=False))
+                                "the account has no playlists; not applicable", aplica=False))
         print("[4/4] %-40s N/A  (0 playlists)" % endpoint)
     else:
         filas.append(nueva_fila(endpoint, None,
-                                "no aplica porque /me/playlists falló", aplica=False))
-        print("[4/4] %-40s N/A  (paso anterior falló)" % endpoint)
+                                "not applicable because /me/playlists failed", aplica=False))
+        print("[4/4] %-40s N/A  (previous step failed)" % endpoint)
 
     return filas, producto, None
 
@@ -516,14 +516,14 @@ def clasificar_fallo_perfil(fallo_perfil):
     motivo = fallo_perfil.get("motivo", "")
     if estado == 401:
         return "BLOQUEADO_TOKEN_RECHAZADO_401", \
-            "El token fue rechazado al consultar /me (401)."
+            "The token was rejected when querying /me (401)."
     if estado == 403:
         return "BLOQUEADO_HTTP_403_EN_ME", \
-            "Spotify respondió 403 en /me (posible endpoint restringido o app " \
-            "en modo desarrollo sin usuarios allowlisted). Detalle: %s" % motivo
+            "Spotify responded 403 on /me (possibly a restricted endpoint or an app " \
+            "in development mode without allowlisted users). Detail: %s" % motivo
     if estado is None:
         return "BLOQUEADO_RED_HACIA_SPOTIFY", \
-            "No hubo respuesta HTTP de api.spotify.com: %s" % motivo
+            "No HTTP response from api.spotify.com: %s" % motivo
     return "BLOQUEADO_HTTP_%s_EN_ME" % estado, motivo
 
 
@@ -535,8 +535,8 @@ def calcular_veredicto(producto, filas):
     if (producto or "").strip().lower() == "free":
         return "FUNCIONA_CON_FREE", None
     return "PREMIUM_NO_INFORMATIVO_PARA_FREE", (
-        "La cuenta autenticada es '%s': todos los endpoints devolvieron 200, "
-        "pero el resultado NO sirve como evidencia sobre el tier FREE." % producto)
+        "The authenticated account is '%s': all endpoints returned 200, "
+        "but the result does NOT serve as evidence about the FREE tier." % producto)
 
 
 def resumen_fallos(filas):
@@ -549,56 +549,56 @@ def resumen_fallos(filas):
 
 def mapear_error_autorizacion(error, descripcion):
     desc = sanitizar_texto(descripcion or "")
-    sufijo_desc = (" Detalle: " + recortar(desc, 140)) if desc else ""
+    sufijo_desc = (" Detail: " + recortar(desc, 140)) if desc else ""
     if error == "access_denied":
         return "BLOQUEADO_USUARIO_NEGO_PERMISOS", \
-            "El usuario denegó el consentimiento en la pantalla de Spotify." + sufijo_desc
+            "The user denied consent on the Spotify screen." + sufijo_desc
     if error == "csrf_state_mismatch":
         return "BLOQUEADO_STATE_CSRF_INVALIDO", \
-            "El parámetro state del callback no coincide con el enviado " \
-            "(posible CSRF o pestaña vieja reutilizada)."
+            "The callback's state parameter does not match the one sent " \
+            "(possible CSRF or a reused old tab)."
     normalizado = re.sub(r"[^A-Za-z0-9]+", "_", str(error)).strip("_").upper()[:40] or "DESCONOCIDO"
     return "BLOQUEADO_ERROR_AUTORIZACION_%s" % normalizado, \
-        "Spotify devolvió un error durante la autorización." + sufijo_desc
+        "Spotify returned an error during authorization." + sufijo_desc
 
 
 # ---------------------------------------------------------------------------
-# Veredicto: impresión + informe Markdown
+# Verdict: printing + Markdown report
 # ---------------------------------------------------------------------------
 
 LEYENDA_VEREDICTOS_MD = """
-## Cómo interpretar el veredicto
+## How to read the verdict
 
-- `FUNCIONA_CON_FREE`: la cuenta es **free** y los 4 endpoints devolvieron 200 con
-  totales; la lectura de la propia biblioteca sigue operativa para FREE.
-- `FUNCIONA_PARCIAL`: la cuenta autenticó, pero al menos un endpoint aplicable falló;
-  la tabla distingue los 200 de los fallos (status + razón corta).
-- `BLOQUEADO_<motivo>`: no se pudo completar la prueba; el motivo tras el guion indica
-  la causa (credenciales inválidas, quota excedida, HTTP 403/401, usuario negó permisos,
+- `FUNCIONA_CON_FREE`: the account is **free** and all 4 endpoints returned 200 with
+  totals; reading one's own library still works for FREE.
+- `FUNCIONA_PARCIAL`: the account authenticated, but at least one applicable endpoint failed;
+  the table distinguishes the 200s from the failures (status + short reason).
+- `BLOQUEADO_<reason>`: the probe could not be completed; the reason after the underscore indicates
+  the cause (invalid credentials, quota exceeded, HTTP 403/401, user denied permissions,
   timeout, etc.).
-- `PREMIUM_NO_INFORMATIVO_PARA_FREE`: la cuenta es premium; todo funcionó pero el
-  resultado no evidencia el comportamiento del tier FREE.
+- `PREMIUM_NO_INFORMATIVO_PARA_FREE`: the account is premium; everything worked but the
+  result does not evidence the behavior of the FREE tier.
 """.strip("\n")
 
 
 def escribir_informe_md(veredicto, filas, producto, motivo):
     ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), ARCHIVO_RESULTADO)
     lineas = [
-        "# Veredicto probe tier FREE — API Web de Spotify",
+        "# Verdict: FREE tier probe — Spotify Web API",
         "",
-        "- **Veredicto:** `%s`" % veredicto,
+        "- **Verdict:** `%s`" % veredicto,
     ]
     if motivo:
-        lineas.append("- **Motivo:** %s" % motivo)
+        lineas.append("- **Reason:** %s" % motivo)
     lineas.extend([
-        "- **Producto de la cuenta:** `%s`" % (producto or "(desconocido)"),
-        "- **Fecha:** %s" % marca_tiempo_utc(),
-        "- **Versión del probe:** %s" % PROBE_VERSION,
-        "- **Scopes solicitados:** `%s`" % " ".join(SCOPE_SOLICITADOS),
+        "- **Account product:** `%s`" % (producto or "(unknown)"),
+        "- **Date:** %s" % marca_tiempo_utc(),
+        "- **Probe version:** %s" % PROBE_VERSION,
+        "- **Requested scopes:** `%s`" % " ".join(SCOPE_SOLICITADOS),
         "",
-        "## Resultados por endpoint",
+        "## Results per endpoint",
         "",
-        "| Endpoint | Estado | Detalle |",
+        "| Endpoint | Status | Detail |",
         "| --- | --- | --- |",
     ])
     for fila in filas:
@@ -613,46 +613,46 @@ def escribir_informe_md(veredicto, filas, producto, motivo):
     lineas.append("## Privacidad")
     lineas.append("")
     lineas.append("- " + NOTA_ENMASCARADO)
-    lineas.append("- El access_token existió solo en memoria durante la ejecución y "
-                  "nunca se escribió en disco ni en este informe.")
-    lineas.append("- Contexto: operatividad de la lectura de la propia biblioteca para "
-                  "cuentas FREE tras los cambios de Spotify de noviembre de 2024.")
+    lineas.append("- The access_token existed only in memory during the run and "
+                  "was never written to disk or to this report.")
+    lineas.append("- Context: whether reading one's own library still works for "
+                  "FREE accounts after Spotify's November 2024 changes.")
     contenido = "\n".join(lineas) + "\n"
     try:
         with open(ruta, "w", encoding="utf-8") as manejador:
             manejador.write(contenido)
-        print("[i] Informe escrito en: %s" % ruta)
+        print("[i] Report written to: %s" % ruta)
     except OSError as exc:
-        print("[!] No se pudo escribir el informe en %s (%s)." % (ruta, exc))
+        print("[!] Could not write the report to %s (%s)." % (ruta, exc))
 
 
 def imprimir_y_guardar_veredicto(veredicto, filas, producto, motivo):
     print("")
     print("=" * 66)
-    print("VEREDICTO FINAL: %s" % veredicto)
+    print("FINAL VERDICT: %s" % veredicto)
     if motivo:
-        print("Motivo: %s" % motivo)
-    print("Producto de la cuenta: %s" % (producto or "(desconocido)"))
-    print("Fecha: %s | Versión del probe: v%s" % (marca_tiempo_utc(), PROBE_VERSION))
-    print("(Salidas enmascaradas: ningún secreto, token o dato personal completo.)")
+        print("Reason: %s" % motivo)
+    print("Account product: %s" % (producto or "(unknown)"))
+    print("Date: %s | Probe version: v%s" % (marca_tiempo_utc(), PROBE_VERSION))
+    print("(Masked outputs: no complete secret, token or personal data.)")
     print("=" * 66)
     escribir_informe_md(veredicto, filas, producto, motivo)
 
 
 # ---------------------------------------------------------------------------
-# Orquestación
+# Orchestration
 # ---------------------------------------------------------------------------
 
 def main():
-    print("Sonda Spotify tier FREE v%s — lectura de la propia biblioteca" % PROBE_VERSION)
-    print("Contexto: cambios de noviembre de 2024. Solo LECTURAS (?limit=1).")
+    print("Spotify FREE tier probe v%s — reading one's own library" % PROBE_VERSION)
+    print("Context: November 2024 changes. READS only (?limit=1).")
 
     credenciales = obtener_credenciales()
     if credenciales is None:
         imprimir_y_guardar_veredicto(
             "BLOQUEADO_FALTAN_CREDENCIALES", [], None,
-            "No se encontraron SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET en el entorno "
-            "ni en el .env de la raíz del repo.")
+            "SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET were not found in the environment "
+            "or in the repo-root .env.")
         return 4
     client_id, client_secret = credenciales
 
@@ -660,11 +660,11 @@ def main():
     if puerto is None:
         imprimir_y_guardar_veredicto(
             "BLOQUEADO_SIN_PUERTO_LIBRE", [], None,
-            "No se encontró un puerto libre en 127.0.0.1.")
+            "No free port was found on 127.0.0.1.")
         return 4
     redirect_uri = "http://%s:%d/callback" % (HOST_REDIRECT, puerto)
     if puerto != PUERTO_PREFERIDO:
-        print("[!] El puerto %d estaba ocupado; usando el %d." % (PUERTO_PREFERIDO, puerto))
+        print("[!] Port %d was busy; using %d." % (PUERTO_PREFERIDO, puerto))
 
     estado_csrf = secrets.token_urlsafe(24)
 
@@ -673,7 +673,7 @@ def main():
     except OSError as exc:
         imprimir_y_guardar_veredicto(
             "BLOQUEADO_PUERTO_NO_DISPONIBLE", [], None,
-            "No se pudo levantar el servidor local en %s:%d (%s)." % (HOST_REDIRECT, puerto, exc))
+            "Could not start the local server on %s:%d (%s)." % (HOST_REDIRECT, puerto, exc))
         return 4
     servidor.timeout = 0.5
     servidor.estado_probe = {"listo": False, "estado_csrf": estado_csrf}
@@ -681,19 +681,19 @@ def main():
     try:
         url_autorizacion = construir_url_autorizacion(client_id, redirect_uri, estado_csrf)
         print("")
-        print("[i] Abriendo el navegador para autorizar tu developer app...")
-        print("[i] Si no se abre, copia esta URL en tu navegador:")
+        print("[i] Opening the browser to authorize your developer app...")
+        print("[i] If it does not open, copy this URL into your browser:")
         print("    %s" % url_autorizacion)
-        print("[i] redirect_uri usado: %s" % redirect_uri)
-        print("    (debe estar registrado en tu app en developer.spotify.com/dashboard).")
+        print("[i] redirect_uri used: %s" % redirect_uri)
+        print("    (it must be registered in your app at developer.spotify.com/dashboard).")
         try:
             abierto = webbrowser.open(url_autorizacion, new=1, autoraise=True)
         except Exception:
             abierto = False
         if not abierto:
-            print("[!] No se pudo abrir el navegador automáticamente; usa la URL de arriba.")
+            print("[!] Could not open the browser automatically; use the URL above.")
         print("")
-        print("[i] Esperando autorización (máximo %d s). Ctrl+C para cancelar..."
+        print("[i] Waiting for authorization (max %d s). Ctrl+C to cancel..."
               % TIMEOUT_ESPERA_NAVEGADOR_SEG)
 
         limite = time.time() + TIMEOUT_ESPERA_NAVEGADOR_SEG
@@ -704,7 +704,7 @@ def main():
         if not sondeo["listo"]:
             imprimir_y_guardar_veredicto(
                 "BLOQUEADO_TIMEOUT_ESPERANDO_AUTORIZACION", [], None,
-                "El usuario no completó la autorización en %d s." % TIMEOUT_ESPERA_NAVEGADOR_SEG)
+                "The user did not complete the authorization within %d s." % TIMEOUT_ESPERA_NAVEGADOR_SEG)
             return 3
 
         if sondeo.get("error_autorizacion"):
@@ -717,18 +717,18 @@ def main():
         if not codigo:
             imprimir_y_guardar_veredicto(
                 "BLOQUEADO_SIN_CODIGO_AUTORIZACION", [], None,
-                "El callback no contenía ?code=.")
+                "The callback did not contain ?code=.")
             return 3
 
-        print("[i] Código recibido (valor oculto). Intercambiándolo por token...")
+        print("[i] Code received (value hidden). Exchanging it for a token...")
         token, detalle_error = intercambiar_codigo_por_token(
             client_id, client_secret, codigo, redirect_uri)
         if token is None:
             imprimir_y_guardar_veredicto(
                 clasificar_fallo_token(detalle_error), [], None, detalle_error)
             return 3
-        print("[i] Access_token obtenido (SOLO en memoria; nunca se imprime).")
-        del codigo  # el código ya no hace falta fuera del intercambio
+        print("[i] Access_token obtained (in memory ONLY; it is never printed).")
+        del codigo  # the code is no longer needed after the exchange
 
         filas, producto, fallo_perfil = ejecutar_chequeos(token)
         if fallo_perfil is not None:
@@ -750,10 +750,10 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\n[!] Ejecución interrumpida por el usuario (Ctrl+C). Saliendo limpio.")
+        print("\n[!] Run interrupted by the user (Ctrl+C). Exiting cleanly.")
         sys.exit(130)
     except SystemExit:
         raise
-    except Exception as exc:  # evita tracebacks crudos ante el usuario
-        print("[!] Error inesperado: %s: %s" % (type(exc).__name__, sanitizar_texto(str(exc))))
+    except Exception as exc:  # avoid raw tracebacks in front of the user
+        print("[!] Unexpected error: %s: %s" % (type(exc).__name__, sanitizar_texto(str(exc))))
         sys.exit(1)

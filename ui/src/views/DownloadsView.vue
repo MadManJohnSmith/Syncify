@@ -264,13 +264,13 @@
             <span class="uppercase tracking-wider text-[10px]">Queue Reconciliation:</span>
           </div>
           <div class="flex items-center gap-3 flex-wrap text-text-secondary text-[11px]">
-            <span title="Total tracks requested by user / selection">Seleccionadas: <strong class="text-gray-900 dark:text-white">{{ queueStats?.submitted ?? totalItemCount }}</strong></span>
+            <span title="Total tracks requested by user / selection">Selected: <strong class="text-gray-900 dark:text-white">{{ queueStats?.submitted ?? totalItemCount }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Initial eligible tracks in queue">Elegibles: <strong class="text-indigo-400">{{ queueStats?.initial_eligible_total ?? (queueStats?.submitted ?? totalItemCount) }}</strong></span>
+            <span title="Initial eligible tracks in queue">Eligible: <strong class="text-indigo-400">{{ queueStats?.initial_eligible_total ?? (queueStats?.submitted ?? totalItemCount) }}</strong></span>
             <span v-if="(queueStats?.skipped ?? 0) > 0" class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span v-if="(queueStats?.skipped ?? 0) > 0" title="Tracks with unresolvable or missing source">Fuentes no disp.: <strong class="text-amber-500">{{ queueStats?.skipped }}</strong></span>
+            <span v-if="(queueStats?.skipped ?? 0) > 0" title="Tracks with unresolvable or missing source">Missing sources: <strong class="text-amber-500">{{ queueStats?.skipped }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
-            <span title="Tracks currently in queued state">Pendientes: <strong class="text-amber-500">{{ queueStats?.queued ?? queuedCount }}</strong></span>
+            <span title="Tracks currently in queued state">Queued: <strong class="text-amber-500">{{ queueStats?.queued ?? queuedCount }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
             <span title="Tracks currently downloading concurrently">Active: <strong class="text-primary">{{ queueStats?.active ?? queueStats?.downloading ?? activeDownloads.length }}</strong></span>
             <span class="w-px h-3 bg-gray-200 dark:bg-border-dark"></span>
@@ -341,7 +341,7 @@
               <span class="font-bold font-mono text-amber-500 text-[11px]">{{ artifactCounters.lrc }}</span>
             </div>
 
-            <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Album Artwork Portadas">
+            <div class="flex items-center gap-1 px-2.5 py-1 rounded bg-gray-50 dark:bg-elevated border border-gray-200 dark:border-border-dark/70 text-xs" title="Album Artwork Covers">
               <span class="material-symbols-outlined text-[14px] text-pink-500">image</span>
               <span class="text-text-secondary text-[11px]">Covers</span>
               <span class="font-bold font-mono text-pink-500 text-[11px]">{{ artifactCounters.covers }}</span>
@@ -374,7 +374,7 @@
         </div>
         
         <div class="flex flex-col gap-3">
-          <!-- Error: sin datos no se puede afirmar que la cola esté vacía -->
+          <!-- Error: without data we cannot claim the queue is empty -->
           <div
             v-if="loadError"
             class="rounded-xl bg-red-50 dark:bg-surface-dark border border-red-200 dark:border-red-500/40 p-6 text-center flex flex-col items-center"
@@ -1114,7 +1114,7 @@
 import { ref, shallowRef, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useToast } from '@/composables/useToast'
-// R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
+// R13: unified confirm (previously the native plugin-dialog, outside the window).
 import { confirm } from '@/composables/useToast'
 import { queueApi, classifyFailureReason, type FailureInfo, type FailureReason } from '@/api/queue'
 import { formatDownloadPhase, formatDurationMs } from '@/utils/downloadPhase'
@@ -1160,7 +1160,7 @@ export interface EnrichedQueueItem extends QueueItem {
   bitDepth?: number | null
   sample_rate?: number | null
   sampleRate?: number | null
-  /** Lo rellena `get_queue` cuando el backend resuelve la carátula del disco. */
+  /** Filled by `get_queue` when the backend resolves the cover art from disk. */
   cover_art_url?: string | null
 }
 
@@ -1360,7 +1360,7 @@ async function handleFavoritesEnqueued(res: DownloadFavoritesResult) {
 const viewFilter = ref<'all' | 'active' | 'queued' | 'completed' | 'failed'>('all')
 const searchQuery = ref('')
 const loading = ref(true)
-/** Fallo de la última carga de la cola; distingue «vacía» de «no se pudo leer». */
+/** Last queue load failure; distinguishes "empty" from "could not be read". */
 const loadError = ref<string | null>(null)
 const isProcessing = ref(false)
 
@@ -1378,16 +1378,16 @@ const showSettingsPanel = ref(false)
 // Backend data
 const queueStats = ref<ExtendedQueueStats>({ total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 })
 const workerStatus = ref<WorkerStatus>({ running: true, paused: false, active_downloads: 0, max_concurrent: 3 })
-// R11: la cola llega con hasta 50 000 filas. Guardarlas en un `ref` normal las
-// convertía en 50 000 proxies reactivos que Vue recorría en cada evento de
-// progreso: medido en 194 ms de hilo principal por evento (ui/scripts/
-// measure-downloads-reactivity.mts), frente a 2,7 ms con datos planos. Aquí los
-// items son objetos planos y el aviso de cambio llega por `progressTick`, que
-// solo se incrementa cuando un evento supera el throttle y muta de verdad.
+// R11: the queue can arrive with up to 50,000 rows. Storing them in a plain `ref`
+// turned them into 50,000 reactive proxies that Vue walked on every progress
+// event: measured at 194 ms of main thread per event (ui/scripts/
+// measure-downloads-reactivity.mts), versus 2.7 ms with plain data. Here the
+// items are plain objects and change notification arrives via `progressTick`,
+// which only increments when an event beats the throttle and actually mutates.
 const rawQueueItems = shallowRef<EnrichedQueueItem[]>([])
 const progressTick = ref(0)
 
-/** La cola vigente; leerla registra la dependencia de `progressTick`. */
+/** The current queue; reading it registers the `progressTick` dependency. */
 function currentQueueItems(): EnrichedQueueItem[] {
   void progressTick.value
   return rawQueueItems.value
@@ -1472,9 +1472,9 @@ const filteredActiveDownloads = computed(() => {
 })
 
 // Computed: Queue items (Up Next)
-// R11: el mapeo se aplica solo a la ventana visible. Mapear las 50 000 filas
-// de la cola en cada evento de progreso costaba ~57 ms de hilo principal por
-// evento (medido en ui/scripts/measure-downloads-reactivity.mts).
+// R11: mapping is applied only to the visible window. Mapping all 50,000 queue
+// rows on every progress event cost ~57 ms of main thread per event
+// (measured in ui/scripts/measure-downloads-reactivity.mts).
 function mapQueueItem(item: EnrichedQueueItem) {
   const sName = item.service_name || item.service || 'Unknown'
   const rawQuality = item.quality_preference || item.quality || 'FLAC'
@@ -1500,8 +1500,8 @@ const queuedCount = computed(() => queuedItemsRaw.value.length)
 const filteredQueueItems = computed(() => queuedItemsRaw.value.filter(matchesSearch))
 
 // Computed: Completed items
-// R11: el objeto mapeado se construye solo para las filas que se pintan;
-// `completedItemsCount` alimenta los contadores sin materializar 50 000 objetos.
+// R11: the mapped object is built only for the rows that are painted;
+// `completedItemsCount` feeds the counters without materializing 50,000 objects.
 function mapCompletedItem(item: EnrichedQueueItem) {
     const originalService = item.original_service || item.service_name || item.service || 'Unknown'
     const effectiveService = item.effective_service || item.service_name || item.service || 'Unknown'
@@ -1552,7 +1552,7 @@ const visibleCompletedSlice = computed(() =>
 )
 
 // Computed: Failed items
-// R11: mismo criterio que las completadas: el mapeo es perezoso.
+// R11: same approach as completed items: mapping is lazy.
 function mapFailedItem(item: EnrichedQueueItem) {
     const originalService = item.original_service || item.service_name || item.service || 'Unknown'
     const effectiveService = item.effective_service || item.service_name || item.service || null
@@ -1849,7 +1849,7 @@ async function fetchData() {
       auditReport.value = audit
     }
   } catch (e) {
-    // Sin marcarlo, los contadores a cero se leen como «no tengo descargas».
+    // Without flagging it, zero counters read as "no downloads".
     loadError.value = String(e)
     console.error('Failed to fetch queue data:', e)
   } finally {
@@ -1991,8 +1991,8 @@ function handleProgressEvent(event: DownloadProgressEventPayload | null | undefi
       item.status = 'downloading'
     }
 
-    // Los items son planos: un único aviso invalida los derivados que leen
-    // `currentQueueItems()`, en vez de depender de cada campo reactivo.
+    // Items are plain: a single notification invalidates the derived values that
+    // read `currentQueueItems()`, instead of depending on each reactive field.
     progressTick.value += 1
   }
 
@@ -2117,9 +2117,9 @@ async function retryFailed() {
   }
 }
 
-// WF-DL-01: el backend solo borra `status = 'failed'`; las completadas y las
-// en curso no entran en ese DELETE. El recuento mostrado y el del diálogo son
-// el total de fallidas, no el subconjunto que deja pasar el filtro de búsqueda.
+// WF-DL-01: the backend only deletes `status = 'failed'`; completed and
+// in-progress items are not part of that DELETE. The count shown and the one in
+// the dialog are the total failed downloads, not the subset that passes the search filter.
 async function clearFailed() {
   if (isProcessing.value) return
   const count = failedItemsCount.value

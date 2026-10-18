@@ -224,6 +224,12 @@ fn main() {
                 concurrency_manager: concurrency_manager.clone(),
             });
             app.manage(import_lock);
+            // Fase 1 del player: motor nativo (rodio + symphonia). El motor de
+            // audio se abre perezosamente en el primer `player_load`.
+            app.manage(commands::player::PlayerState::default());
+            // MPRIS (Linux): panel de medios del escritorio para el motor nativo.
+            app.manage(services::mpris::MprisService::start(&init_handle));
+            commands::player::spawn_player_ticker(&init_handle);
 
             // PAUSE MusicBrainz enrichment as requested (S78) - Commented out to restore user persistence
             /*
@@ -1104,6 +1110,15 @@ fn main() {
             commands::apply_country_tag_repair,
             // S194: local playback of downloaded tracks
             commands::resolve_playback_source,
+            // Fase 1 del player: motor nativo (rodio + symphonia)
+            commands::player_load,
+            commands::player_pause,
+            commands::player_resume,
+            commands::player_stop,
+            commands::player_seek,
+            commands::player_set_volume,
+            commands::player_set_rate,
+            commands::player_mpris_update,
             // Fase 1 del player: estadísticas de reproducción local
             commands::record_local_play,
             // Downloads
@@ -1168,6 +1183,9 @@ fn main() {
             commands::get_accounts,
             commands::add_account,
             commands::remove_account,
+            commands::reset_account_sync_data,
+            commands::refresh_account_identities,
+            commands::set_account_display_name,
             commands::update_account_sync_time,
             commands::toggle_account_active,
             commands::set_active_account,

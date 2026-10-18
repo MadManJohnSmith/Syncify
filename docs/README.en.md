@@ -12,6 +12,7 @@ instead of leaving an English reader to discover it mid-page.
 | Document | Language |
 |---|---|
 | `README.en.md` (this file) | English |
+| `APP_FLOW.en.md` | English |
 | `features/` design specs (7 files) | Spanish only |
 | `DECISION_IDENTIDAD_TRACKS.md` | Spanish only |
 | `PLAN_UNIFICACION_IMPORTACION.md` | Spanish only |
@@ -84,6 +85,8 @@ Back to the front pages: [`../README.md`](../README.md) (English) and
 
 ## Architecture and process
 
+- `APP_FLOW.en.md`: an end-to-end walkthrough of the current flow, from
+  connecting an account through library import to a verified download on disk.
 - `DECISION_IDENTIDAD_TRACKS.md`: architecture decision record (ADR) for the
   canonical key `track_sources(service_id, service_track_id)`.
 - `PLAN_UNIFICACION_IMPORTACION.md`: master plan for import parity across the

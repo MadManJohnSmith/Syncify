@@ -222,6 +222,29 @@ describe('S128A: Global Tasks & Sync Progress Suite', () => {
         expect(qobuzTask!.error).toContain('RequiresAuth')
     })
 
+    it('5b. requires_auth=false no se sobreescribe por "401" en el texto del error', async () => {
+        const { tasks, initEventListeners } = useGlobalTasks()
+        initEventListeners()
+
+        await eventBus.emit(TauriEvents.IMPORT_PROGRESS, {
+            service: 'tidal',
+            status: 'started',
+            current: 0,
+            total: 10,
+        })
+        await eventBus.emit(TauriEvents.IMPORT_PROGRESS, {
+            service: 'tidal',
+            status: 'failed',
+            requires_auth: false,
+            error: 'Tidal favorites error: item 4012345 could not be imported',
+        })
+
+        const task = tasks.value.get('sync-tidal')
+        expect(task).toBeDefined()
+        expect(task!.status).toBe('failed')
+        expect(task!.requiresAuth).toBe(false)
+    })
+
     it('6. Múltiples servicios simultáneos no pisan su progreso', async () => {
         const { activeTasks, overallProgress, initEventListeners } = useGlobalTasks()
         initEventListeners()
@@ -387,6 +410,9 @@ describe('S128A: Global Tasks & Sync Progress Suite', () => {
         })
         // La tarea sigue viva: una completacion por pista no termina la corrida
         expect(tasks.value.get('metadata-musicbrainz')?.status).toBe('running')
+        // BP-05: el worker automatico marca sus tareas como 'auto' para que
+        // la barra superior no las pinte.
+        expect(tasks.value.get('metadata-musicbrainz')?.origin).toBe('auto')
         expect(activeTasks.value.length).toBe(1)
 
         // Una segunda pista reutiliza la misma tarea unica

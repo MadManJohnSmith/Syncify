@@ -56,6 +56,36 @@ fn credential_failures_are_not_retryable() {
 }
 
 #[test]
+fn status_digits_inside_item_ids_are_not_auth_rejections() {
+    for (service, error) in [
+        ("qobuz", "Qobuz API error (500): track 4012345 failed"),
+        (
+            "tidal",
+            "Tidal API error 500 Internal Server Error: item 4012345",
+        ),
+        ("spotify", "Failed to import item 4012345"),
+    ] {
+        assert!(
+            !matches!(classify(service, error), ErrorTaxonomy::AuthInvalid { .. }),
+            "'{}' must not be classified as an auth rejection",
+            error
+        );
+    }
+
+    for (service, error) in [
+        ("qobuz", "Qobuz API error (401 Unauthorized): token expired"),
+        ("tidal", "Tidal API error 401 Unauthorized: token expired"),
+        ("spotify", "RequiresAuth: session expired"),
+    ] {
+        assert!(
+            matches!(classify(service, error), ErrorTaxonomy::AuthInvalid { .. }),
+            "'{}' must be classified as an auth rejection",
+            error
+        );
+    }
+}
+
+#[test]
 fn retrying_everything_would_be_the_bug_we_fixed() {
     // El UPDATE sin clasificar reencolaba estas mismas descargas. El test
     // documenta que el comportamiento viejo era incorrecto, para que nadie

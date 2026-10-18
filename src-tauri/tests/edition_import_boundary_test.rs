@@ -151,3 +151,134 @@ async fn same_isrc_different_item_fails_closed_without_overwrite() {
     .unwrap();
     assert_eq!(rolled_back, 0);
 }
+
+#[tokio::test]
+async fn cross_service_same_isrc_reuses_canonical_track_and_keeps_album_identity() {
+    let pool = setup().await;
+    let qobuz_sid: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'qobuz'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let tidal_sid: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'tidal'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let qobuz_account: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts(service_id,display_name) VALUES (?, 'qobuz-fixture') RETURNING id",
+    )
+    .bind(qobuz_sid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let tidal_account: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts(service_id,display_name) VALUES (?, 'tidal-fixture') RETURNING id",
+    )
+    .bind(tidal_sid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let engine = EnrichmentEngine::new();
+    let mut qobuz_input = input(
+        qobuz_sid,
+        "qobuz",
+        "qobuz-item",
+        Some("ED02CROSS0001"),
+        Some("release-q"),
+    );
+    qobuz_input.account_id = qobuz_account;
+    let first = engine
+        .enrich_and_persist_sync_track(&pool, qobuz_input)
+        .await
+        .unwrap();
+    let album_after_first: Option<i64> =
+        sqlx::query_scalar("SELECT album_id FROM tracks WHERE id = ?")
+            .bind(first.track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(first.is_new_global_track);
+
+    let mut tidal_input = input(
+        tidal_sid,
+        "tidal",
+        "tidal-item",
+        Some("ED02CROSS0001"),
+        Some("release-t"),
+    );
+    tidal_input.account_id = tidal_account;
+    tidal_input.origin_meta.title = Some("Different Provider Title".into());
+    tidal_input.origin_meta.album = Some("Different Provider Album".into());
+    let second = engine
+        .enrich_and_persist_sync_track(&pool, tidal_input)
+        .await
+        .unwrap();
+
+    assert_eq!(first.track_id, second.track_id);
+    assert!(!second.is_new_global_track);
+    assert!(second.is_new_source_for_service);
+
+    let track_count: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(track_count, 1);
+    let source_count: i64 = sqlx::query_scalar("SELECT count(*) FROM track_sources")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(source_count, 2);
+    let item_count: i64 = sqlx::query_scalar("SELECT count(*) FROM edition_provider_items")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(item_count, 2);
+    let link_count: i64 = sqlx::query_scalar("SELECT count(*) FROM edition_item_tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(link_count, 2);
+
+    let album_after_second: Option<i64> =
+        sqlx::query_scalar("SELECT album_id FROM tracks WHERE id = ?")
+            .bind(first.track_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(album_after_first, album_after_second);
+
+    let linked_accounts: Vec<i64> =
+        sqlx::query_scalar("SELECT account_id FROM library_entries ORDER BY account_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(linked_accounts, vec![qobuz_account, tidal_account]);
+
+    // Re-importing the same provider item is idempotent: it must not create a
+    // second source, ledger item or track.
+    let mut tidal_retry = input(
+        tidal_sid,
+        "tidal",
+        "tidal-item",
+        Some("ED02CROSS0001"),
+        Some("release-t"),
+    );
+    tidal_retry.account_id = tidal_account;
+    let third = engine
+        .enrich_and_persist_sync_track(&pool, tidal_retry)
+        .await
+        .unwrap();
+    assert_eq!(third.track_id, first.track_id);
+    assert!(!third.is_new_global_track);
+    assert!(!third.is_new_source_for_service);
+    let source_count: i64 = sqlx::query_scalar("SELECT count(*) FROM track_sources")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(source_count, 2);
+    let item_count: i64 = sqlx::query_scalar("SELECT count(*) FROM edition_provider_items")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(item_count, 2);
+}

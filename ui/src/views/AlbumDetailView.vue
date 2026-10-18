@@ -133,7 +133,7 @@
               class="flex items-center gap-4 px-4 py-3 hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors border-b border-gray-100 dark:border-gray-800 last:border-0 group"
             >
               <span class="w-8 text-center text-sm text-text-secondary">{{ index + 1 }}</span>
-              <!-- Todas las pistas comparten la carátula del disco. -->
+              <!-- All tracks share the album cover. -->
               <TrackCover
                 :src="album.cover_art_url"
                 :item-id="track.id"
@@ -215,8 +215,8 @@ async function playAlbum() {
   })
 
   try {
-    // Fase 1: reproduce la primera y encola el resto EN SU ORDEN (playNext
-    // inserta al frente; el encadenado anterior invertía el tracklist).
+    // Phase 1: play the first track and queue the rest IN ORDER (playNext
+    // inserts at the front; the previous chaining reversed the tracklist).
     await player.replaceQueueAndPlay(album.value.tracks.map(toPlayerTrack))
     toast.success('Playing album', `${album.value.title} · ${album.value.tracks.length} tracks queued`)
   } catch (err: any) {

@@ -51,6 +51,9 @@ pub use notifications::*;
 pub mod playback;
 pub use playback::*;
 
+pub mod player;
+pub use player::*;
+
 pub mod playlists;
 pub use playlists::*;
 

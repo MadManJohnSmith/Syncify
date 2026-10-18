@@ -1,0 +1,19 @@
+[package]
+name = "syncify-player"
+version = "0.1.0"
+edition = "2021"
+description = "Motor de reproducción local nativo de Syncify (rodio + symphonia). Sin GStreamer ni WebKit en el camino de audio."
+
+[dependencies]
+rodio = { version = "0.23.0", features = [
+    "symphonia-flac",
+    "symphonia-mp3",
+    "symphonia-isomp4",
+    "symphonia-aac",
+    "symphonia-wav",
+    "symphonia-ogg",
+    "symphonia-vorbis",
+    "symphonia-simd",
+] }
+thiserror = "2"
+tracing = "0.1"

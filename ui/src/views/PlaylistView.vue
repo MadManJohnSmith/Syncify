@@ -311,7 +311,7 @@
               </button>
               <button @click="openDownloadModal" class="px-5 py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-full flex items-center gap-2">
                 <span class="material-symbols-outlined">download</span>
-                Descargar playlist
+                Download Playlist
               </button>
               <button @click="shufflePlay" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-full">
                 <span class="material-symbols-outlined">shuffle</span>
@@ -321,13 +321,13 @@
               </button>
             </div>
 
-            <!-- S201: banner de resultado de «Descargar playlist» -->
+            <!-- S201: Download Playlist result banner -->
             <div v-if="downloadResult" class="mt-3 p-3 rounded-lg border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight text-sm">
-              <!-- Modo A: export M3U -->
+              <!-- Mode A: M3U export -->
               <template v-if="downloadResult.mode === 'm3u'">
                 <div class="flex items-center justify-between gap-2">
                   <span class="text-gray-700 dark:text-gray-300">
-                    M3U exportado · {{ downloadResult.verified }}/{{ downloadResult.total }} pistas verificadas<template v-if="downloadResult.filePath"> → {{ downloadResult.filePath }}</template>
+                    M3U exported · {{ downloadResult.verified }}/{{ downloadResult.total }} tracks verified<template v-if="downloadResult.filePath"> → {{ downloadResult.filePath }}</template>
                   </span>
                   <span class="flex items-center gap-1 shrink-0">
                     <button
@@ -336,9 +336,9 @@
                       class="px-2 py-1 text-xs rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center gap-1"
                     >
                       <span class="material-symbols-outlined text-sm">{{ showMissingDetails ? 'expand_less' : 'expand_more' }}</span>
-                      Faltantes ({{ downloadResult.missing.length }})
+                      Missing ({{ downloadResult.missing.length }})
                     </button>
-                    <button @click="downloadResult = null" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded" aria-label="Cerrar">
+                    <button @click="downloadResult = null" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded" aria-label="Close">
                       <span class="material-symbols-outlined text-base text-gray-500">close</span>
                     </button>
                   </span>
@@ -357,13 +357,13 @@
                   </ul>
                 </div>
               </template>
-              <!-- Modo B: resumen del motor de cola -->
+              <!-- Mode B: queue engine summary -->
               <template v-else>
                 <div class="flex items-center justify-between gap-2">
                   <span class="text-gray-700 dark:text-gray-300">
-                    Cola de descargas: {{ downloadResult.enqueued }} encoladas<template v-if="downloadResult.deduplicated !== undefined"> · {{ downloadResult.deduplicated }} ya descargadas o en cola</template><template v-if="downloadResult.skipped > 0"> · {{ downloadResult.skipped }} omitidas</template>.
+                    Download queue: {{ downloadResult.enqueued }} queued<template v-if="downloadResult.deduplicated !== undefined"> · {{ downloadResult.deduplicated }} already downloaded or queued</template><template v-if="downloadResult.skipped > 0"> · {{ downloadResult.skipped }} skipped</template>.
                   </span>
-                  <button @click="downloadResult = null" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded shrink-0" aria-label="Cerrar">
+                  <button @click="downloadResult = null" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded shrink-0" aria-label="Close">
                     <span class="material-symbols-outlined text-base text-gray-500">close</span>
                   </button>
                 </div>
@@ -375,7 +375,7 @@
       
       <!-- Track List -->
       <div v-if="selectedPlaylist" class="flex-1 overflow-y-auto custom-scrollbar">
-        <!-- Loading: mientras llegan las pistas no se puede afirmar que la lista esté vacía -->
+        <!-- Loading: until tracks arrive we cannot claim the list is empty -->
         <div v-if="isLoading" class="flex-1 flex items-center justify-center py-16" data-testid="playlist-tracks-loading">
           <div class="text-center">
             <span class="material-symbols-outlined text-3xl text-gray-400 animate-spin block mb-4">progress_activity</span>
@@ -383,7 +383,7 @@
           </div>
         </div>
 
-        <!-- Error: un fallo de carga no es una playlist vacía -->
+        <!-- Error: a load failure is not an empty playlist -->
         <div v-else-if="tracksError" class="flex-1 flex items-center justify-center py-16 px-6" data-testid="playlist-tracks-error">
           <div class="text-center">
             <div class="w-16 h-16 mx-auto rounded-full bg-red-50 dark:bg-surface-highlight flex items-center justify-center mb-4">
@@ -643,17 +643,17 @@
       </Transition>
     </Teleport>
 
-    <!-- S201: Download Playlist Modal — dos modos -->
+    <!-- S201: Download Playlist Modal — two modes -->
     <Teleport to="body">
       <Transition name="fade">
         <div v-if="showDownloadModal" class="fixed inset-0 bg-black/60 flex items-center justify-center z-[200] p-8" @click.self="closeDownloadModal">
           <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark">
-              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Descargar playlist</h3>
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Download Playlist</h3>
               <p class="text-xs text-gray-500 truncate">{{ selectedPlaylist?.name }}</p>
             </div>
             <div class="p-6 space-y-3">
-              <!-- Modo A -->
+              <!-- Mode A -->
               <button
                 :disabled="isDownloadBusy"
                 @click="downloadExistingAsM3u"
@@ -661,11 +661,11 @@
               >
                 <span class="material-symbols-outlined text-primary mt-0.5">save</span>
                 <span>
-                  <span class="block text-sm font-medium text-gray-900 dark:text-white">Solo las que ya tengo</span>
-                  <span class="block text-xs text-gray-500 mt-1">Exporta un archivo .m3u con únicamente las pistas cuyo archivo local existe en tu disco. No descarga nada nuevo.</span>
+                  <span class="block text-sm font-medium text-gray-900 dark:text-white">Only the ones I already have</span>
+                  <span class="block text-xs text-gray-500 mt-1">Exports an .m3u file with only the tracks whose local file exists on your disk. Downloads nothing new.</span>
                 </span>
               </button>
-              <!-- Modo B -->
+              <!-- Mode B -->
               <button
                 :disabled="isDownloadBusy"
                 @click="downloadMissingTracks"
@@ -673,18 +673,18 @@
               >
                 <span class="material-symbols-outlined text-primary mt-0.5">cloud_download</span>
                 <span>
-                  <span class="block text-sm font-medium text-gray-900 dark:text-white">Descargar las pistas faltantes</span>
-                  <span class="block text-xs text-gray-500 mt-1">Encola en la cola de descargas normal solo las pistas que aún no tienes. Requiere conexión.</span>
+                  <span class="block text-sm font-medium text-gray-900 dark:text-white">Download missing tracks</span>
+                  <span class="block text-xs text-gray-500 mt-1">Queues only the tracks you don't have yet in the regular download queue. Requires a connection.</span>
                 </span>
               </button>
               <p v-if="isDownloadBusy" class="text-xs text-gray-500 flex items-center gap-2">
                 <span class="material-symbols-outlined text-sm animate-spin">progress_activity</span>
-                Procesando…
+                Processing…
               </p>
             </div>
             <div class="px-6 pb-6">
               <button @click="closeDownloadModal" class="w-full py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 rounded-lg" :disabled="isDownloadBusy">
-                Cerrar
+                Close
               </button>
             </div>
           </div>
@@ -692,7 +692,7 @@
       </Transition>
     </Teleport>
 
-    <!-- Menú de opciones de playlist (sustituye al borrado directo) -->
+    <!-- Playlist options menu (replaces direct deletion) -->
     <Teleport to="body">
       <div
         v-if="playlistMenu"
@@ -741,19 +741,19 @@ import { libraryApi } from '@/api/library'
 import { playlistsApi, exportPlaylistM3u, importPlaylists, type MissingPlaylistFile } from '@/api/playlists'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
 import type { Playlist, LibraryTrack } from '@/api/types'
-// R13: `confirm`/`prompt` unificados (diálogo dentro de la app) en lugar de
-// `window.confirm`/`window.prompt`, que se abren fuera de la ventana.
+// R13: unified `confirm`/`prompt` (in-app dialog) instead of
+// `window.confirm`/`window.prompt`, which open outside the window.
 import { useToast, confirm, prompt } from '@/composables/useToast'
 import { usePlayer } from '@/composables/usePlayer'
 import TrackCover from '@/components/TrackCover.vue'
 
-/** Id sintético de la entrada Favoritos: no existe en la tabla `playlists`. */
+/** Synthetic Favorites entry ID: it does not exist in the `playlists` table. */
 const FAVORITES_PLAYLIST_ID = -1
 
 const toast = useToast()
 const player = usePlayer()
-// Encadenado con el router (encadenado opcional como SettingsView/LibraryView:
-// la vista también se monta en tests sin instancia de router).
+// Chained to the router (optional chaining like SettingsView/LibraryView:
+// the view also mounts in tests without a router instance).
 const router = useRouter()
 const route = useRoute()
 
@@ -765,7 +765,7 @@ const showCreateModal = ref(false)
 const showSmartModal = ref(false)
 const showImportModal = ref(false)
 
-// S201: «Descargar playlist» — dos modos
+// S201: "Download Playlist" — two modes
 const showDownloadModal = ref(false)
 const isExportingM3u = ref(false)
 const isQueueingMissing = ref(false)
@@ -822,11 +822,11 @@ const importedServices = ref<any[]>([])
 const smartPlaylists = ref<any[]>([])
 const playlistTracks = ref<any[]>([])
 const isLoading = ref(false)
-/** Fallo de la última carga de pistas; distingue «vacía» de «no se pudo leer». */
+/** Last track load failure; distinguishes "empty" from "could not read". */
 const tracksError = ref<string | null>(null)
-/** La página superaba el tope por página: lo que se ve no es todo el contenido. */
+/** The page exceeded the per-page cap: what is shown is not all the content. */
 const tracksTruncated = ref(false)
-/** Tope por página del backend (`limit` se recorta a 500 en get_playlist_tracks). */
+/** Backend per-page cap (`limit` is clamped to 500 in get_playlist_tracks). */
 const PLAYLIST_PAGE_SIZE = 500
 
 const canMutateSelectedPlaylist = computed(() => {
@@ -941,8 +941,8 @@ async function selectPlaylist(playlist: any) {
 
   try {
     if (playlist.id === FAVORITES_PLAYLIST_ID) {
-      // Favoritos no es una fila de `playlists`: `get_playlist_tracks(-1)`
-      // contaría cero, así que se leen directamente de la biblioteca.
+      // Favorites is not a row in `playlists`: `get_playlist_tracks(-1)`
+      // would count zero, so tracks are read directly from the library.
       const page = await libraryApi.getFavoriteTracks(0, PLAYLIST_PAGE_SIZE)
       playlistTracks.value = page.tracks.map((t, i) => mapToTrack(t, i))
       favoritesPlaylist.value.track_count = page.total
@@ -962,7 +962,7 @@ async function selectPlaylist(playlist: any) {
   }
 }
 
-/** Recarga las pistas de la selección actual tras un error o un reintento. */
+/** Reloads the current selection's tracks after an error or a retry. */
 async function loadPlaylistTracks() {
   if (!selectedPlaylist.value) return
   await selectPlaylist(selectedPlaylist.value)
@@ -1055,10 +1055,10 @@ onMounted(() => {
   document.addEventListener('keydown', onMenuKeydown)
 })
 
-// Ítem 46: la acción rápida «New Playlist» (App.handleNewPlaylist) navega a
-// /playlists?create=1. Al montar con ese flag se abre el formulario de
-// creación y el parámetro se consume SIEMPRE para que recargar o volver atrás
-// no lo vuelva a abrir (mismo patrón que LibraryView con ?track=).
+// Item 46: the "New Playlist" quick action (App.handleNewPlaylist) navigates to
+// /playlists?create=1. Mounting with that flag opens the creation form and
+// the parameter is ALWAYS consumed so reloading or going back does not
+// reopen it (same pattern as LibraryView with ?track=).
 async function consumeCreateQuery() {
   if (route?.query?.create !== '1') return
 
@@ -1152,7 +1152,7 @@ function applyUpdatedPlaylist(updated: Playlist) {
 async function deleteSelectedPlaylist() {
   if (!canDeleteSelectedPlaylist.value) return
   const playlist = selectedPlaylist.value
-  // R13: confirmación unificada en la app (antes window.confirm nativo).
+  // R13: unified in-app confirmation (previously native window.confirm).
   const confirmed = await confirm(`Delete playlist “${playlist.name}”?`, {
     title: 'Delete Playlist',
     variant: 'danger',
@@ -1177,7 +1177,7 @@ async function deleteSelectedPlaylist() {
 
 async function addTracksById() {
   if (!canMutateSelectedPlaylist.value) return
-  // R13: prompt unificado en la app (antes window.prompt nativo).
+  // R13: unified in-app prompt (previously native window.prompt).
   const raw = await prompt('Track IDs to add (comma-separated)', {
     title: 'Add Tracks by ID',
     placeholder: 'e.g. 301, 302, 303',
@@ -1313,7 +1313,7 @@ async function playTrack(track: any) {
       coverUrl: track.albumArt || null,
     })
   } catch (err) {
-    toast.error('No se pudo reproducir la pista', String(err))
+    toast.error('Could not play track', String(err))
   }
 }
 
@@ -1330,19 +1330,19 @@ function toPlayerTrack(track: any) {
 async function playAll() {
   if (!playlistTracks.value.length) return
 
-  // Corrección fase 1: el comentario anterior era falso — playNext inserta al
-  // frente, así que el encadenado slice(1)+playNext invertía el orden de la
-  // playlist. replaceQueueAndPlay reproduce la primera y encola el resto en el
-  // orden real de la lista.
+  // Phase 1 fix: the previous comment was wrong — playNext inserts at the
+  // front, so chaining slice(1)+playNext reversed the playlist order.
+  // replaceQueueAndPlay plays the first track and queues the rest in the
+  // list's real order.
   try {
     await player.replaceQueueAndPlay(playlistTracks.value.map(toPlayerTrack))
   } catch (err) {
-    toast.error('No se pudo reproducir la playlist', String(err))
+    toast.error('Could not play playlist', String(err))
   }
 }
 
 // ==============================================
-// S201: Descargar playlist — Modo A (M3U) y Modo B (cola)
+// S201: Download Playlist — Mode A (M3U) and Mode B (queue)
 // ==============================================
 
 function selectedNumericPlaylistId(): number | null {
@@ -1352,7 +1352,7 @@ function selectedNumericPlaylistId(): number | null {
 
 function openDownloadModal() {
   if (!selectedPlaylist.value || selectedNumericPlaylistId() === null) {
-    toast.warning('Selecciona una playlist', 'Elige una playlist real para descargar (Favoritos no aplica).')
+    toast.warning('Select a playlist', 'Choose a real playlist to download (Favorites does not apply).')
     return
   }
   downloadResult.value = null
@@ -1370,9 +1370,9 @@ function sanitizeFileBaseName(name: string): string {
 }
 
 /**
- * Modo A «Solo las que ya tengo»: save-dialog + export_playlist_m3u.
- * El backend verifica con stat() real cada archivo y escribe el .m3u solo
- * con las pistas verificadas; los conteos {total, verified, missing} son reales.
+ * Mode A "Only the ones I already have": save-dialog + export_playlist_m3u.
+ * The backend checks each file with a real stat() and writes the .m3u only
+ * with verified tracks; the {total, verified, missing} counts are real.
  */
 async function downloadExistingAsM3u() {
   const playlistId = selectedNumericPlaylistId()
@@ -1380,11 +1380,11 @@ async function downloadExistingAsM3u() {
   isExportingM3u.value = true
   try {
     const path = await saveDialog({
-      title: 'Exportar playlist (.m3u)',
+      title: 'Export Playlist (.m3u)',
       defaultPath: `${sanitizeFileBaseName(selectedPlaylist.value?.name ?? 'playlist')}.m3u`,
       filters: [{ name: 'Playlist M3U', extensions: ['m3u'] }],
     })
-    if (!path) return // cancelado por el usuario
+    if (!path) return // cancelled by the user
     const res = await exportPlaylistM3u(playlistId, path)
     downloadResult.value = {
       mode: 'm3u',
@@ -1393,16 +1393,16 @@ async function downloadExistingAsM3u() {
       missing: res.missing_tracks,
       filePath: res.file_path,
     }
-    toast.success('M3U exportado', `${res.verified_count}/${res.total_tracks} pistas verificadas`)
+    toast.success('M3U exported', `${res.verified_count}/${res.total_tracks} tracks verified`)
     showDownloadModal.value = false
   } catch (error: any) {
-    toast.error('No se pudo exportar el M3U', String(error?.message || error || ''))
+    toast.error('Could not export M3U', String(error?.message || error || ''))
   } finally {
     isExportingM3u.value = false
   }
 }
 
-/** Trae TODAS las páginas de la playlist (offset/limit/has_more). */
+/** Fetches ALL pages of the playlist (offset/limit/has_more). */
 async function fetchAllPlaylistTracks(playlistId: number): Promise<LibraryTrack[]> {
   const PAGE_SIZE = 500
   const all: LibraryTrack[] = []
@@ -1417,10 +1417,10 @@ async function fetchAllPlaylistTracks(playlistId: number): Promise<LibraryTrack[
 }
 
 /**
- * Modo B «Descargar las pistas faltantes»: filtra localmente las pistas sin
- * descarga vigente y las encola vía add_batch_to_queue (enqueue_eligible_batch),
- * con prioridad/calidad idénticas al encolado manual desde Library.
- * Los contadores mostrados salen tal cual del motor.
+ * Mode B "Download missing tracks": locally filters tracks without a current
+ * download and queues them via add_batch_to_queue (enqueue_eligible_batch),
+ * with the same priority/quality as manual queueing from Library.
+ * The displayed counters come straight from the engine.
  */
 async function downloadMissingTracks() {
   const playlistId = selectedNumericPlaylistId()
@@ -1434,12 +1434,12 @@ async function downloadMissingTracks() {
       .filter(id => Number.isFinite(id))
 
     if (missingIds.length === 0) {
-      toast.info('Nada que descargar', 'Ya tienes todas las pistas de esta playlist.')
+      toast.info('Nothing to download', 'You already have all tracks in this playlist.')
       showDownloadModal.value = false
       return
     }
 
-    // Misma política que el encolado manual en Library: prioridad 50, hires, fallback permitido.
+    // Same policy as manual queueing in Library: priority 50, hires, fallback allowed.
     const res = await addBatchToQueue({
       trackIds: missingIds,
       priority: 50,
@@ -1454,14 +1454,14 @@ async function downloadMissingTracks() {
       deduplicated: res.deduplicated,
       skipped: res.skipped ?? 0,
     }
-    toast.success('Pistas encoladas', `${enqueued} de ${missingIds.length} en la cola de descargas.`)
+    toast.success('Tracks queued', `${enqueued} of ${missingIds.length} in the download queue.`)
     showDownloadModal.value = false
   } catch (error: any) {
     const errStr = String(error?.message || error || '')
     if (errStr.includes('SourceIdentityMissing')) {
-      toast.error('Source identity missing', 'Algunas pistas no tienen proveedor de descarga disponible.')
+      toast.error('Source identity missing', 'Some tracks have no download provider available.')
     } else {
-      toast.error(`No se pudo encolar la playlist: ${errStr}`)
+      toast.error(`Could not queue playlist: ${errStr}`)
     }
   } finally {
     isQueueingMissing.value = false
@@ -1469,20 +1469,20 @@ async function downloadMissingTracks() {
 }
 
 function missingReasonLabel(reason: string): string {
-  if (reason === 'sin_archivo_local') return 'Sin archivo local'
-  if (reason === 'archivo_no_encontrado') return 'Archivo no encontrado'
+  if (reason === 'sin_archivo_local') return 'No local file'
+  if (reason === 'archivo_no_encontrado') return 'File not found'
   return reason
 }
 
 async function downloadTrack(track: any) {
   try {
-    // Ítem 63: una pista cuya fuente disponible es Tidal (y no Qobuz) bloquea
-    // su identidad de origen a Tidal. El backend solo fija de serie el origen
-    // exacto de Qobuz (tracks.qobuz_id en perform_add_to_queue), así que sin
-    // este lock una pista con fuente Tidal podía no llegar a descargarse por
-    // Tidal. Con el lock el worker la procesa por el pipeline de Tidal
+    // Item 63: a track whose available source is Tidal (and not Qobuz) locks
+    // its source identity to Tidal. The backend only sets the exact Qobuz
+    // source by default (tracks.qobuz_id in perform_add_to_queue), so without
+    // this lock a track with a Tidal source might never download via Tidal.
+    // With the lock the worker processes it through the Tidal pipeline
     // (orchestrator → TidalDownloader → execute_tidal_single_track_download)
-    // con la misma cola, estados y progreso que una descarga de Qobuz.
+    // with the same queue, states and progress as a Qobuz download.
     const availableServices = String(track.available_services || track.services || '')
       .split(',')
       .map(s => s.trim().toLowerCase())
@@ -1522,15 +1522,15 @@ async function playPlaylist(playlist: any) {
   await playAll()
 }
 
-// Menú de opciones de la sidebar: abrirlo nunca borra nada por su cuenta.
+// Sidebar options menu: opening it never deletes anything on its own.
 const playlistMenu = ref<{ playlist: any; x: number; y: number } | null>(null)
 
 function openPlaylistMenu(event: MouseEvent, playlist: any) {
   event.preventDefault()
   event.stopPropagation()
 
-  // Anclado al elemento que abrió el menú, no al evento: el mismo menú sirve
-  // para el botón de tres puntos (izquierda) y para el clic derecho.
+  // Anchored to the element that opened the menu, not the event: the same menu
+  // serves the three-dot button (left) and right-click.
   const target = event.currentTarget as HTMLElement | null
   const anchor = target?.getBoundingClientRect()
   const width = 200
@@ -1549,7 +1549,7 @@ function closePlaylistMenu() {
   playlistMenu.value = null
 }
 
-/** El menú actúa sobre su propia entrada, que puede no ser la seleccionada. */
+/** The menu acts on its own entry, which may not be the selected one. */
 const canMutateMenuPlaylist = computed(() => {
   const id = playlistMenu.value?.playlist?.id
   return typeof id === 'number' && id > 0 && !playlistMenu.value?.playlist?.smart

@@ -97,9 +97,9 @@ describe('MetadataView (fully wired tab)', () => {
         expect(wrapper.text()).toContain('Song One');
         expect(wrapper.text()).toContain('Song Two');
         // Real get_metadata_stats data drives the completeness strip
-        expect(wrapper.text()).toContain('3 pistas');
+        expect(wrapper.text()).toContain('3 tracks');
         expect(wrapper.text()).toContain('ISRC 67%');
-        expect(wrapper.text()).toContain('Completitud media 78.5%');
+        expect(wrapper.text()).toContain('Average completeness 78.5%');
     });
 
     it('quality report shows counts computed from the loaded library', async () => {
@@ -252,7 +252,7 @@ describe('MetadataView (fully wired tab)', () => {
 
         // Close modal and persist through Save Changes
         const doneBtn = Array.from(modalEl!.querySelectorAll('button'))
-            .find(b => b.textContent?.includes('Listo'))! as HTMLButtonElement;
+            .find(b => b.textContent?.includes('Done'))! as HTMLButtonElement;
         doneBtn.click();
         await flushPromises();
 
@@ -460,12 +460,12 @@ describe('S200: Last.fm API key + full tag visibility', () => {
         await flushPromises();
 
         // Status line reflects the unconfigured state before saving
-        expect(wrapper.text()).toContain('Consíguela gratis en last.fm/api');
+        expect(wrapper.text()).toContain('Get one free at last.fm/api');
 
         const input = wrapper.find('input[type="password"]');
         expect(input.exists()).toBe(true);
         await input.setValue('abcd1234');
-        const saveBtn = wrapper.findAll('button').find(b => b.text().trim() === 'Guardar')!;
+        const saveBtn = wrapper.findAll('button').find(b => b.text().trim() === 'Save')!;
         await saveBtn.trigger('click');
         await flushPromises();
 
@@ -497,11 +497,11 @@ describe('S200: Last.fm API key + full tag visibility', () => {
         await flushPromises();
 
         // Load the snapshot first…
-        await wrapper.findAll('button').find(b => b.text().includes('Leer tags del archivo'))!.trigger('click');
+        await wrapper.findAll('button').find(b => b.text().includes('Read file tags'))!.trigger('click');
         await flushPromises();
 
         // …then the dump heading renders without any <details> expansion.
-        expect(wrapper.text()).toContain('Todas las facetas crudas (3 claves)');
+        expect(wrapper.text()).toContain('All raw facets (3 keys)');
         expect(wrapper.text()).toContain('REPLAYGAIN_TRACK_GAIN');
     });
 
@@ -569,20 +569,20 @@ describe('S200: Last.fm API key + full tag visibility', () => {
         await flushPromises();
 
         // The dry run is reachable without reading tags first.
-        await wrapper.findAll('button').find(b => b.text().includes('Revisar país/región'))!.trigger('click');
+        await wrapper.findAll('button').find(b => b.text().includes('Review country/region'))!.trigger('click');
         await flushPromises();
 
         expect(calls.some(c => c.cmd === 'plan_country_tag_repair' && (c.args as { trackId: number }).trackId === 3)).toBe(true);
         expect(wrapper.text()).toContain('RELEASECOUNTRY: US → United States');
 
         // "Reparar en archivo" only appears once the plan says a repair is needed.
-        const applyBtn = wrapper.findAll('button').find(b => b.text().includes('Reparar en archivo'));
+        const applyBtn = wrapper.findAll('button').find(b => b.text().includes('Repair in File'));
         expect(applyBtn).toBeDefined();
         await applyBtn!.trigger('click');
         await flushPromises();
 
         expect(calls.some(c => c.cmd === 'apply_country_tag_repair')).toBe(true);
-        expect(wrapper.text()).toContain('Escrituras verificadas en disco');
+        expect(wrapper.text()).toContain('Writes verified on disk');
     });
 });
 

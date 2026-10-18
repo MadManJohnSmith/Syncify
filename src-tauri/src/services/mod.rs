@@ -20,6 +20,7 @@ pub mod logging;
 pub mod manifest_writer;
 pub mod mb_dump_import;
 pub mod mp4_writer;
+pub mod mpris;
 pub mod musicbrainz;
 pub mod notification;
 pub mod operation_recovery;

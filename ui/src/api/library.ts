@@ -256,9 +256,9 @@ export async function syncLocalLibrary(
         });
 
         if (report?.success && options?.autoResolveDuplicates) {
-            // Esta opción modifica TODA la biblioteca, no sólo la carpeta
-            // importada. Se conserva como opción explícita desactivada por
-            // defecto; no debe ejecutarse silenciosamente en cada importación.
+            // This option modifies the WHOLE library, not just the imported
+            // folder. It is kept as an explicit option, off by
+            // default; it must not run silently on every import.
             try {
                 await invokeCommand<unknown>('auto_resolve_duplicates');
             } catch (error) {
@@ -1177,29 +1177,43 @@ export interface TrackMetadataWithSources {
 }
 
 function normalizeTrackMetadata(raw: unknown): TrackMetadataWithSources {
-    const rec = asRecord(raw);
-    const optStr = (v: unknown): string | null => (typeof v === 'string' ? v : null);
-    const optNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    // `TrackMetadata` en Rust lleva `#[serde(rename_all = "camelCase")]`
+    // (trackId, artistName, filePath…). `pick` acepta ambas grafías para no
+    // volver a romper ids/nombres si el backend cambia de convención: un id
+    // perdido aquí se propaga a la persistencia, MPRIS y los listens.
+    const optStr = (keys: string[]): string | null => {
+        const value = pick<unknown>(raw, keys);
+        return typeof value === 'string' ? value : null;
+    };
+    const optNum = (keys: string[]): number | null => {
+        const value = pick<unknown>(raw, keys);
+        return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    };
+    const optBool = (keys: string[]): boolean | null => {
+        const value = pick<unknown>(raw, keys);
+        return typeof value === 'boolean' ? value : null;
+    };
+    const sources = pick<unknown>(raw, ['sources']);
     return {
-        track_id: asNumber(rec?.track_id),
-        title: asString(rec?.title),
-        artist_name: optStr(rec?.artist_name),
-        artist_id: optNum(rec?.artist_id),
-        album_name: optStr(rec?.album_name),
-        album_id: optNum(rec?.album_id),
-        duration_ms: optNum(rec?.duration_ms),
-        track_number: optNum(rec?.track_number),
-        disc_number: optNum(rec?.disc_number),
-        isrc: optStr(rec?.isrc),
-        explicit: typeof rec?.explicit === 'boolean' ? rec.explicit : null,
-        genre: optStr(rec?.genre),
-        bpm: optNum(rec?.bpm),
-        musical_key: optStr(rec?.musical_key),
-        release_year: optNum(rec?.release_year),
-        musicbrainz_id: optStr(rec?.musicbrainz_id),
-        cover_art_url: optStr(rec?.cover_art_url),
-        file_path: optStr(rec?.file_path),
-        sources: Array.isArray(rec?.sources) ? (rec.sources as TrackSourceAvailability[]) : null,
+        track_id: pickNumber(raw, ['track_id', 'trackId']),
+        title: asString(pick<unknown>(raw, ['title'])),
+        artist_name: optStr(['artist_name', 'artistName']),
+        artist_id: optNum(['artist_id', 'artistId']),
+        album_name: optStr(['album_name', 'albumName']),
+        album_id: optNum(['album_id', 'albumId']),
+        duration_ms: optNum(['duration_ms', 'durationMs']),
+        track_number: optNum(['track_number', 'trackNumber']),
+        disc_number: optNum(['disc_number', 'discNumber']),
+        isrc: optStr(['isrc']),
+        explicit: optBool(['explicit']),
+        genre: optStr(['genre']),
+        bpm: optNum(['bpm']),
+        musical_key: optStr(['musical_key', 'musicalKey']),
+        release_year: optNum(['release_year', 'releaseYear']),
+        musicbrainz_id: optStr(['musicbrainz_id', 'musicbrainzId']),
+        cover_art_url: optStr(['cover_art_url', 'coverArtUrl']),
+        file_path: optStr(['file_path', 'filePath']),
+        sources: Array.isArray(sources) ? (sources as TrackSourceAvailability[]) : null,
     };
 }
 
@@ -1211,7 +1225,7 @@ export async function getTrackMetadata(trackId: number): Promise<TrackMetadataWi
     return normalizeTrackMetadata(raw);
 }
 
-/** Resultado de `record_local_play` (espejo del struct Rust `PlayStats`). */
+/** Result of `record_local_play` (mirror of the Rust struct `PlayStats`). */
 export interface PlayStats {
     track_id: number;
     play_count: number;
@@ -1220,10 +1234,10 @@ export interface PlayStats {
 }
 
 /**
- * Fase 1 del player: acredita una escucha completada (≥ 30 s de reproducción
- * real) para una pista. Idempotente por `listen_session_id` en el backend:
- * reenviar el mismo token tras una respuesta perdida devuelve `counted: false`
- * sin duplicar el conteo. Contrato: migración 0091 + `record_local_play` en
+ * Player phase 1: credits a completed listen (≥ 30 s of real
+ * playback) for a track. Idempotent by `listen_session_id` in the backend:
+ * resending the same token after a lost response returns `counted: false`
+ * without duplicating the count. Contract: migration 0091 + `record_local_play` in
  * `src-tauri/src/commands/playback.rs`.
  */
 export async function recordLocalPlay(trackId: number, listenSessionId: string): Promise<PlayStats> {

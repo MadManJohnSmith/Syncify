@@ -360,6 +360,17 @@ pub struct QobuzFavoritesResponse {
     pub tracks: QobuzTracksContainer,
 }
 
+/// Identity Qobuz reports for a stored token, as far as the endpoint reveals.
+///
+/// `user/get` shape is not documented for token-only sessions, so every field
+/// is optional and callers must treat an Err as "identity unknown".
+#[derive(Debug, Clone, Default)]
+pub struct QobuzUserIdentity {
+    pub login: Option<String>,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct QobuzTracksContainer {
     #[serde(default)]
@@ -707,6 +718,31 @@ impl QobuzClient {
         let result: serde_json::Value = self.api_request("user/login", params, false).await?;
 
         Self::parse_qobuz_login(&result)
+    }
+
+    /// Best-effort identity behind the stored `user_auth_token` (`user/get`).
+    ///
+    /// Identity refresh only: the accounts surface needs an email or a
+    /// username. A failure here never touches the account.
+    pub async fn get_user_profile(&self) -> Result<QobuzUserIdentity, String> {
+        let result: serde_json::Value = self.api_request("user/get", Vec::new(), true).await?;
+
+        let user = result.get("user").unwrap_or(&result);
+        Ok(QobuzUserIdentity {
+            login: user
+                .get("login")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            email: user
+                .get("email")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            display_name: user
+                .get("display_name")
+                .or_else(|| user.get("nickname"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        })
     }
 
     /// Get user's favorite tracks (paginated)

@@ -1,8 +1,8 @@
-"""Resolución del navegador del sistema para los flujos de auth (Playwright).
+"""System browser resolution for the auth flows (Playwright).
 
-Soporta Windows (incluyendo instalaciones sin Edge / Tiny11 / debloated),
-Linux y macOS, con detección de stubs/dummies y soporte para Chrome, Brave,
-Vivaldi, Opera, Thorium, Chromium y Edge.
+Supports Windows (including installs without Edge / Tiny11 / debloated),
+Linux and macOS, with stub/dummy detection and support for Chrome, Brave,
+Vivaldi, Opera, Thorium, Chromium and Edge.
 """
 import os
 import shutil
@@ -34,12 +34,12 @@ _MACOS_CANDIDATES = [
 
 
 def _is_valid_browser_exe(path: str) -> bool:
-    """Verifica si un archivo ejecutable existe y NO es un dummy/stub vacío."""
+    """Check whether an executable file exists and is NOT an empty dummy/stub."""
     if not path or not os.path.exists(path):
         return False
     try:
-        # Los ejecutables dummy/stub de Windows desinstalados suelen medir 0 KB o < 50 KB.
-        # Un navegador real compilado pesa al menos 300 KB - 3 MB.
+        # Dummy/stub executables left by uninstalls on Windows are usually 0 KB or < 50 KB.
+        # A real compiled browser weighs at least 300 KB - 3 MB.
         size = os.path.getsize(path)
         return size > 150_000
     except OSError:
@@ -47,10 +47,10 @@ def _is_valid_browser_exe(path: str) -> bool:
 
 
 def _get_windows_candidates():
-    """Busca navegadores en las carpetas estándar de Windows sin asumir que Edge existe."""
+    """Look for browsers in the standard Windows folders without assuming Edge exists."""
     candidates = []
 
-    # Permite override explícito mediante variable de entorno
+    # Allow an explicit override via environment variable
     custom_path = os.environ.get("SYNCIFY_BROWSER_PATH") or os.environ.get("CHROME_PATH")
     if custom_path and _is_valid_browser_exe(custom_path):
         candidates.append(custom_path)
@@ -86,7 +86,7 @@ def _get_windows_candidates():
     for root in env_roots:
         candidates.append(os.path.join(root, "Chromium", "Application", "chrome.exe"))
 
-    # 7. Microsoft Edge (solo si el binario es legítimo y no un dummy de 0 bytes)
+    # 7. Microsoft Edge (only if the binary is legitimate and not a 0-byte dummy)
     for root in env_roots:
         candidates.append(os.path.join(root, "Microsoft", "Edge", "Application", "msedge.exe"))
 
@@ -94,31 +94,31 @@ def _get_windows_candidates():
 
 
 def chrome_launch_kwargs() -> dict:
-    """Kwargs para `p.chromium.launch*()` usando el navegador del sistema.
+    """Kwargs for `p.chromium.launch*()` using the system browser.
 
-    Verifica ejecutables reales, descartando dummies de desinstalación.
+    Verifies real executables, discarding uninstall dummies.
     """
     is_windows = sys.platform.startswith("win") or os.name == "nt"
     is_mac = sys.platform == "darwin"
 
-    # Override explícito
+    # Explicit override
     custom = os.environ.get("SYNCIFY_BROWSER_PATH") or os.environ.get("CHROME_PATH")
     if custom and _is_valid_browser_exe(custom):
         return {"executable_path": custom}
 
     if is_windows:
-        # 1. Comprobar ejecutables con ruta completa y validar tamaño anti-dummy
+        # 1. Check full-path executables and validate size to reject dummies
         for cand in _get_windows_candidates():
             if _is_valid_browser_exe(cand):
                 return {"executable_path": cand}
 
-        # 2. Comprobar en PATH descartando dummies
+        # 2. Check in PATH, discarding dummies
         for cmd in ["chrome", "brave", "vivaldi"]:
             resolved = shutil.which(cmd)
             if resolved and _is_valid_browser_exe(resolved):
                 return {"executable_path": resolved}
 
-        # Comprobar edge en PATH con validación estricta
+        # Check edge in PATH with strict validation
         edge_cmd = shutil.which("msedge")
         if edge_cmd and _is_valid_browser_exe(edge_cmd):
             return {"executable_path": edge_cmd}
@@ -137,17 +137,17 @@ def chrome_launch_kwargs() -> dict:
             if resolved and _is_valid_browser_exe(resolved):
                 return {"executable_path": resolved}
 
-    # Si no se encontró ningún navegador del sistema válido:
+    # If no valid system browser was found:
     raise RuntimeError(
-        "No se detectó un navegador Chromium válido en el sistema (Chrome, Brave, Vivaldi, Opera, etc.). "
-        "Si tu Windows no tiene Microsoft Edge instalado, por favor instala Google Chrome o Brave, "
-        "o define la variable de entorno SYNCIFY_BROWSER_PATH con la ruta de tu navegador."
+        "No valid Chromium browser was detected on the system (Chrome, Brave, Vivaldi, Opera, etc.). "
+        "If your Windows install does not have Microsoft Edge, please install Google Chrome or Brave, "
+        "or set the SYNCIFY_BROWSER_PATH environment variable to your browser's path."
     )
 
 
-# Apertores del gestor de URLs del escritorio, en orden de preferencia por
-# plataforma. `webbrowser` sólo conoce `BROWSER` y `xdg-open`, así que en una
-# máquina sin xdg-utils devuelve False sin lanzar nada.
+# Desktop URL-handler openers, in preference order per platform. `webbrowser`
+# only knows `BROWSER` and `xdg-open`, so on a machine without xdg-utils it
+# returns False without launching anything.
 _LINUX_URL_OPENERS = ["xdg-open", "gio", "gnome-open", "kde-open", "x-www-browser", "wslview"]
 _MACOS_URL_OPENERS = ["open"]
 _WINDOWS_URL_OPENERS = ["explorer"]
@@ -162,12 +162,12 @@ def _platform_url_openers():
 
 
 def open_in_system_browser(url: str) -> bool:
-    """Abre `url` en el navegador del escritorio. True solo si se lanzó de verdad.
+    """Open `url` in the desktop browser. True only if it was actually launched.
 
-    `webbrowser.open()` devuelve False —sin excepción— cuando no encuentra
-    `BROWSER` ni `xdg-open`, y el flujo de device code de Tidal no puede seguir
-    sin esa pestaña, así que el valor de retorno se comprueba y se degradan
-    aperturas explícitas por plataforma hasta que una abre la URL.
+    `webbrowser.open()` returns False —without raising— when it finds neither
+    `BROWSER` nor `xdg-open`, and Tidal's device code flow cannot continue
+    without that tab, so the return value is checked and platform-specific
+    openers are tried as fallbacks until one opens the URL.
     """
     import webbrowser
 
@@ -183,8 +183,8 @@ def open_in_system_browser(url: str) -> bool:
             continue
         argv = [resolved, "open", url] if opener == "gio" else [resolved, url]
         try:
-            # `explorer.exe` devuelve 1 aunque abra la ventana con éxito, así
-            # que se acepta cualquier salida siempre que no sea un fallo de arranque.
+            # `explorer.exe` returns 1 even when it opens the window successfully,
+            # so any exit status is accepted as long as it is not a launch failure.
             completed = subprocess.run(
                 argv,
                 stdout=subprocess.DEVNULL,

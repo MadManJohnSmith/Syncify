@@ -34,9 +34,9 @@ let logIdCounter = 1000
 export const SESSION_STORAGE_KEY = 'syncify_cached_logs'
 
 /**
- * R15 / límites: el anillo nativo guarda 2000 entradas
- * (`services::logging::DEFAULT_BUFFER_CAPACITY`); la UI quedaba corta en 1000.
- * El histórico anterior a esto se recupera de disco con `read_log_history`.
+ * R15 / limits: the native ring buffer keeps 2000 entries
+ * (`services::logging::DEFAULT_BUFFER_CAPACITY`); the UI fell short at 1000.
+ * Anything older than that is recovered from disk with `read_log_history`.
  */
 export const MAX_LOG_ENTRIES = 2000
 
@@ -261,8 +261,8 @@ export function mapSystemLogToLogEntry(sys: SystemLogEntry): LogEntry {
 }
 
 /**
- * R15: el histórico leído de disco tiene fechas pasadas, así que la columna de
- * tiempo lleva la fecha cuando la entrada no es de hoy ("MM-DD HH:MM:SS").
+ * R15: history read from disk carries past dates, so the time column includes
+ * the date when the entry is not from today ("MM-DD HH:MM:SS").
  */
 export function formatHistoryLogTime(isoOrDate?: string | Date): string {
     try {
@@ -350,12 +350,12 @@ export function useLogs() {
             details: entry.details,
         }
 
-        // R15 (rendimiento): la lista puede recibir ráfagas de miles de
-        // entradas y mutar el proxy reactivo es O(n) por llamada (unshift
-        // dispara un set reactivo por cada elemento desplazado). Se muta el
-        // array crudo y se notifica UNA vez con triggerRef: cualquier
-        // consumidor reacciona igual porque siempre lee `logs.value`
-        // (dependencia del propio ref) antes de recorrer la lista.
+        // R15 (performance): the list can receive bursts of thousands of
+        // entries, and mutating the reactive proxy is O(n) per call (unshift
+        // fires a reactive set for every shifted element). The raw array is
+        // mutated and signalled ONCE with triggerRef: any consumer reacts the
+        // same because it always reads `logs.value` (a dependency on the ref
+        // itself) before walking the list.
         const rawLogs = toRaw(logs.value)
 
         // Avoid adding duplicate identical ID if re-fetched
@@ -532,7 +532,7 @@ export function useLogs() {
             toast.error('Export Failed', 'Could not open the file dialog')
             return false
         }
-        if (!destPath) return false // Usuario canceló el diálogo
+        if (!destPath) return false // User cancelled the dialog
 
         try {
             const raw = await invokeCommand<unknown>('export_log_range', {
@@ -642,14 +642,13 @@ export function useLogs() {
             const unlistenProgress = await listen<any>(TauriEvents.PROGRESS, (event) => {
                 const payload = event.payload
                 if (!payload) return
-                // R15 (dedup): la telemetría de progreso NO es una entrada de
-                // log. Cada tick del worker llega identificado por
-                // queue_id/item_id + progress_percent y contaminaba el
-                // histórico de auditoría. La barra de progreso se alimenta de
-                // su propio canal (syncify:download_progress → store), los
-                // resultados de descarga siguen entrando por ese listener y
-                // los eventos de pipeline sin porcentaje (scan, organize…)
-                // se siguen registrando aquí.
+                // R15 (dedup): progress telemetry is NOT a log entry. Every
+                // worker tick arrives identified by queue_id/item_id +
+                // progress_percent and polluted the audit history. The progress
+                // bar is fed by its own channel (syncify:download_progress →
+                // store), download results still come in through that listener,
+                // and pipeline events without a percentage (scan, organize…)
+                // keep being logged here.
                 const isDownloadProgressTick =
                     (payload.queue_id !== undefined && payload.queue_id !== null) ||
                     (payload.item_id !== undefined && payload.item_id !== null)

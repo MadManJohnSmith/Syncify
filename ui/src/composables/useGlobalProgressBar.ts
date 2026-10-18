@@ -1,27 +1,27 @@
 /**
- * Global Progress Bar Composable (barra de progreso global ponderada)
+ * Global Progress Bar Composable (weighted global progress bar)
  *
- * Agrega el progreso de TODAS las tareas activas con pesos reales:
- *  - descargas: por bytes (`bytes_downloaded` / `total_bytes` del evento
- *    `syncify:download_progress`) cuando el backend los reporta;
- *  - resto de tareas: por número de ítems (`task.total`) y, si ninguna lo
- *    declara, con peso igualitario para que sigan contando.
+ * Aggregates the progress of ALL active tasks with real weights:
+ *  - downloads: by bytes (`bytes_downloaded` / `total_bytes` from the
+ *    `syncify:download_progress` event) when the backend reports them;
+ *  - other tasks: by item count (`task.total`) and, if none declares one,
+ *    with an equal weight so they still count.
  *
- * Expone el ítem actual (la tarea dominante), el porcentaje total SUAVIZADO
- * (progresión exponencial hacia el objetivo, sin saltos bruscos entre
- * eventos) y una ETA calculada por regresión lineal sobre la muestra
- * reciente. Sin datos de peso deja `isIndeterminate` a true para que la UI
- * pinte la barra animada en vez de un 0% congelado.
+ * Exposes the current item (the dominant task), the SMOOTHED total percentage
+ * (exponential progression toward the target, no abrupt jumps between
+ * events) and an ETA computed by linear regression over the recent sample.
+ * Without weight data it leaves `isIndeterminate` true so the UI
+ * paints the animated bar instead of a frozen 0%.
  *
- * Lee SOLO la API pública de `useGlobalTasks` (no lo modifica) y no toca el
- * módulo de logging.
+ * Reads ONLY the public API of `useGlobalTasks` (it does not modify it) and
+ * does not touch the logging module.
  */
 
 import { computed, ref, watch, onScopeDispose, getCurrentScope } from 'vue'
 import { useEventBus, TauriEvents } from './useEventBus'
 import { useGlobalTasks, generateTaskId, type GlobalTask } from './useGlobalTasks'
 
-/** Payload relevante de `syncify:download_progress` (DownloadProgressEvent). */
+/** Relevant payload of `syncify:download_progress` (DownloadProgressEvent). */
 interface DownloadProgressPayload {
     queue_id?: number | string
     status?: string
@@ -44,20 +44,20 @@ interface Aggregate {
 
 const EMPTY_AGGREGATE: Aggregate = { hasActive: false, percent: 0, determinate: false, currentLabel: '' }
 
-/** Constante de tiempo del suavizado exponencial (ms). */
+/** Time constant of the exponential smoothing (ms). */
 const SMOOTHING_TAU_MS = 400
-/** Periodo del tick de suavizado (ms). */
+/** Smoothing tick period (ms). */
 const SMOOTHING_TICK_MS = 50
-/** Umbral por debajo del cual se clava el valor en lugar de seguir aproximando. */
+/** Threshold below which the value snaps instead of continuing to approach. */
 const SNAP_EPSILON = 0.15
-/** Periodo de muestreo para la ETA (ms). */
+/** Sampling period for the ETA (ms). */
 const ETA_SAMPLE_MS = 1000
-/** Ventana de muestra para la ETA (ms). */
+/** Sampling window for the ETA (ms). */
 const ETA_WINDOW_MS = 90_000
-/** Muestras y lapso mínimos antes de fiarse de la pendiente. */
+/** Minimum samples and span before trusting the slope. */
 const ETA_MIN_SAMPLES = 3
 const ETA_MIN_SPAN_MS = 2000
-/** Pendiente mínima creíble (%/s) para anunciar una ETA. */
+/** Minimum credible slope (%/s) to announce an ETA. */
 const ETA_MIN_RATE = 0.05
 
 function clampPercent(value: number): number {
@@ -76,17 +76,17 @@ export function formatEtaLabel(seconds: number): string {
     return `${secs}s`
 }
 
-// Estado compartido a nivel de módulo (patrón singleton, como useGlobalTasks):
-// los bytes reportados por el evento de descarga, indexados por id de tarea.
+// Module-level shared state (singleton pattern, like useGlobalTasks):
+// the bytes reported by the download event, indexed by task id.
 const bytesByTask = new Map<string, ByteProgress>()
 
 export function useGlobalProgressBar() {
     const eventBus = useEventBus()
     const { activeTasks } = useGlobalTasks()
 
-    /** % agregado crudo (sin suavizar), para tests y para la ETA. */
+    /** Raw aggregated % (unsmoothed), for tests and for the ETA. */
     const targetPercent = ref(0)
-    /** % mostrado, aproximado exponencialmente al objetivo. */
+    /** Displayed %, exponentially approaching the target. */
     const displayPercent = ref(0)
     const isIndeterminate = ref(false)
     const hasActive = ref(false)
@@ -101,15 +101,15 @@ export function useGlobalProgressBar() {
     let disposed = false
 
     /**
-     * Recalcula el agregado ponderado sobre las tareas activas.
+     * Recomputes the weighted aggregate over the active tasks.
      */
     function recomputeAggregate(): Aggregate {
         const active = activeTasks.value
         if (active.length === 0) return { ...EMPTY_AGGREGATE }
 
-        // Peso de referencia para tareas sin total declarado: la media de los
-        // totales declarados (o 1 si ninguna declara), para que una fase
-        // indeterminada siga contando en lugar de resetear el agregado.
+        // Reference weight for tasks without a declared total: the average of
+        // the declared totals (or 1 if none declares one), so an
+        // indeterminate phase still counts instead of resetting the aggregate.
         const declaredTotals = active
             .map(t => t.total ?? 0)
             .filter(t => t > 0)
@@ -128,12 +128,12 @@ export function useGlobalProgressBar() {
             let progress: number
             let weight: number
             if (bytes && bytes.total > 0) {
-                // Peso por bytes reales de la descarga.
+                // Weight by the download's real bytes.
                 weight = bytes.total
                 progress = (bytes.done / bytes.total) * 100
                 determinate = true
             } else if ((task.total ?? 0) > 0) {
-                // Peso por número de ítems de la tarea.
+                // Weight by the task's item count.
                 weight = task.total as number
                 progress = task.progress ?? 0
                 determinate = true
@@ -144,7 +144,7 @@ export function useGlobalProgressBar() {
             progress = clampPercent(progress)
             weighted += progress * weight
             totalWeight += weight
-            // El ítem actual es la tarea dominante (mayor peso).
+            // The current item is the dominant task (highest weight).
             if (weight > labelWeight) {
                 labelWeight = weight
                 label = task.name
@@ -159,7 +159,7 @@ export function useGlobalProgressBar() {
         }
     }
 
-    /** Recalcula objetivo/etiqueta/indeterminado y resetea la ETA si procede. */
+    /** Recomputes target/label/indeterminate and resets the ETA when appropriate. */
     function refresh(): void {
         const next = recomputeAggregate()
         hasActive.value = next.hasActive
@@ -174,7 +174,7 @@ export function useGlobalProgressBar() {
     }
 
     // ---------------------------------------------
-    // ETA: pendiente por regresión lineal de la ventana reciente
+    // ETA: slope via linear regression over the recent window
     // ---------------------------------------------
     function updateEta(now: number): void {
         if (!hasActive.value || isIndeterminate.value) {
@@ -198,7 +198,7 @@ export function useGlobalProgressBar() {
             return
         }
 
-        // Regresión lineal simple: pendiente de % frente a tiempo.
+        // Simple linear regression: slope of % over time.
         const n = samples.length
         const meanT = samples.reduce((s, p) => s + p.t, 0) / n
         const meanP = samples.reduce((s, p) => s + p.percent, 0) / n
@@ -208,7 +208,7 @@ export function useGlobalProgressBar() {
             cov += (p.t - meanT) * (p.percent - meanP)
             varT += (p.t - meanT) ** 2
         }
-        const rate = varT > 0 ? (cov / varT) * 1000 : 0 // % por segundo
+        const rate = varT > 0 ? (cov / varT) * 1000 : 0 // % per second
         const remaining = 100 - targetPercent.value
         if (rate > ETA_MIN_RATE && remaining > 0.5) {
             etaSeconds.value = remaining / rate
@@ -218,7 +218,7 @@ export function useGlobalProgressBar() {
     }
 
     // ---------------------------------------------
-    // Suavizado: aproximación exponencial al objetivo, sin saltos
+    // Smoothing: exponential approach to the target, without jumps
     // ---------------------------------------------
     function tick(): void {
         const now = Date.now()
@@ -227,7 +227,7 @@ export function useGlobalProgressBar() {
 
         updateEta(now)
 
-        // Purga de bytes de tareas que ya no están activas (anti-fuga).
+        // Purge bytes of tasks that are no longer active (leak guard).
         if (activeTasks.value.length > 0) {
             const activeIds = new Set(activeTasks.value.map((t: GlobalTask) => t.id))
             for (const id of bytesByTask.keys()) {
@@ -243,7 +243,7 @@ export function useGlobalProgressBar() {
             displayPercent.value += (target - displayPercent.value) * alpha
         }
 
-        // Sin tareas activas y ya de vuelta a cero: el timer sobra.
+        // No active tasks and already back at zero: the timer is unnecessary.
         if (!hasActive.value && displayPercent.value <= 0.01) {
             displayPercent.value = 0
             stopTimer()
@@ -293,13 +293,13 @@ export function useGlobalProgressBar() {
                 handleDownloadProgress
             )
         } catch {
-            // Sin bus de eventos (entorno de prueba) el agregado sigue
-            // funcionando con los pesos por ítems.
+            // Without an event bus (test environment) the aggregate keeps
+            // working with the item-count weights.
         }
     }
 
-    // Arranque perezoso: en cuanto haya tareas (o cambien) se recalcula y se
-    // enciende el tick de suavizado.
+    // Lazy start: as soon as there are tasks (or they change) it recomputes and
+    // turns on the smoothing tick.
     watch(
         () => activeTasks.value.map((t: GlobalTask) => `${t.id}:${t.progress}:${t.total ?? 0}`).join('|'),
         () => {
@@ -327,21 +327,21 @@ export function useGlobalProgressBar() {
     }
 
     return {
-        /** Hay tareas activas. */
+        /** Whether there are active tasks. */
         hasActive,
-        /** Activas pero sin datos de peso: la barra debe ser indeterminada. */
+        /** Active but without weight data: the bar must be indeterminate. */
         isIndeterminate,
-        /** % agregado suavizado (0-100). */
+        /** Smoothed aggregated % (0-100). */
         progress: displayPercent,
-        /** % agregado crudo, para tests. */
+        /** Raw aggregated %, for tests. */
         targetPercent,
-        /** Nombre de la tarea dominante (ítem actual). */
+        /** Name of the dominant task (current item). */
         currentLabel,
-        /** ETA en segundos, o null cuando no hay datos suficientes. */
+        /** ETA in seconds, or null when there is not enough data. */
         etaSeconds,
-        /** ETA formateada ('2m 40s'), '' si no hay datos. */
+        /** Formatted ETA ('2m 40s'), '' when there is no data. */
         etaLabel,
-        /** Libera timer y suscripción (también al desmontar el scope). */
+        /** Releases timer and subscription (also when the scope unmounts). */
         dispose,
     }
 }

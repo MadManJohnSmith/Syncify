@@ -2283,6 +2283,68 @@ pub(crate) struct AppleMusicImportSummary {
     pub warnings: Vec<String>,
 }
 
+/// Resolve the canonical track row for an Apple Music library song.
+///
+/// `INSERT OR IGNORE` returns no row when `tracks.isrc` is already owned by
+/// another service under a different title. The fallback must therefore look up
+/// by ISRC, which is the cross-service identity, before the exact title lookup;
+/// the old title+ISRC filter silently dropped those songs as `track_id = 0`.
+async fn resolve_apple_music_track_id(
+    db: &DbPool,
+    title: &str,
+    duration_ms: i64,
+    isrc: Option<&str>,
+) -> Result<i64, String> {
+    let isrc = isrc.map(str::trim).filter(|value| !value.is_empty());
+
+    if let Some((track_id,)) = sqlx::query_as::<_, (i64,)>(
+        "INSERT OR IGNORE INTO tracks (title, duration_ms, isrc) VALUES (?, ?, ?) RETURNING id",
+    )
+    .bind(title)
+    .bind(duration_ms)
+    .bind(isrc)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("DB error: {e}"))?
+    {
+        return Ok(track_id);
+    }
+
+    if let Some(isrc) = isrc {
+        if let Some((track_id,)) =
+            sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE isrc = ? LIMIT 1")
+                .bind(isrc)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| format!("DB error: {e}"))?
+        {
+            return Ok(track_id);
+        }
+    }
+
+    // Legacy rows may predate the unique ISRC constraint; keep the exact
+    // lookup as a last resort so an insert ignored for another reason is not
+    // turned into a silent skip.
+    let track_id =
+        sqlx::query_as::<_, (i64,)>("SELECT id FROM tracks WHERE title = ? AND isrc IS ? LIMIT 1")
+            .bind(title)
+            .bind(isrc)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("DB error: {e}"))?
+            .map(|(id,)| id)
+            .unwrap_or(0);
+
+    if track_id == 0 {
+        tracing::warn!(
+            "Could not resolve canonical track after insert was ignored: {} (ISRC: {:?})",
+            title,
+            isrc
+        );
+    }
+    Ok(track_id)
+}
+
 /// Import Apple Music library
 /// COMPARTIDO por el comando legacy y el brazo "apple_music" del motor unificado.
 /// Requiere music_user_token + developer_token en credenciales guardadas; el
@@ -2376,48 +2438,64 @@ async fn run_apple_music_library_import(
                         .await?;
                 }
 
-                // Create/update track
+                // Create/update track. Reuses the canonical row by ISRC when
+                // another service already owns that recording.
                 let duration_ms = attrs.duration_in_millis.unwrap_or(0);
-                let track_id: i64 =
-                    if let Some(row) = sqlx::query_as::<_, (i64,)>(
-                        "INSERT OR IGNORE INTO tracks (title, duration_ms, isrc) VALUES (?, ?, ?) RETURNING id",
-                    )
-                    .bind(&attrs.name)
-                    .bind(duration_ms)
-                    .bind(&attrs.isrc)
-                    .fetch_optional(db)
-                    .await
-                    .map_err(|e| format!("DB error: {}", e))?
-                    {
-                        tracing::info!("Inserted new track ID: {}", row.0);
-                        row.0
-                    } else {
-                        // Track already exists, find it
-                        let existing = sqlx::query_as::<_, (i64,)>(
-                            "SELECT id FROM tracks WHERE title = ? AND isrc = ?",
-                        )
-                        .bind(&attrs.name)
-                        .bind(&attrs.isrc)
-                        .fetch_optional(db)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|r| r.0)
-                        .unwrap_or(0);
-
-                        if existing > 0 {
-                            tracing::info!("Found existing track ID: {}", existing);
-                        } else {
-                            tracing::warn!("Could not find track after insert failed: {} (ISRC: {:?})",
-                                &attrs.name, &attrs.isrc);
-                        }
-                        existing
-                    };
+                let track_id = resolve_apple_music_track_id(
+                    db,
+                    &attrs.name,
+                    duration_ms,
+                    attrs.isrc.as_deref(),
+                )
+                .await?;
+                tracing::debug!("Resolved Apple Music track ID: {}", track_id);
 
                 if track_id == 0 {
                     tracing::warn!("Skipping track with ID 0: {}", &attrs.name);
                     skipped += 1;
                     continue;
+                }
+
+                // Do not steal the Apple Music source slot from another edition
+                // that already owns it (neither by track nor by provider item).
+                let existing_apple_source: Option<String> = sqlx::query_scalar(
+                    "SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = ?",
+                )
+                .bind(track_id)
+                .bind(apple_service_id)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| format!("DB error: {e}"))?;
+                let source_slot_conflict = existing_apple_source
+                    .as_deref()
+                    .is_some_and(|item| item != track.id);
+
+                let existing_item_owner: Option<i64> = sqlx::query_scalar(
+                    "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?",
+                )
+                .bind(apple_service_id)
+                .bind(&track.id)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| format!("DB error: {e}"))?;
+                let item_owner_conflict =
+                    existing_item_owner.is_some_and(|owner| owner != track_id);
+
+                if source_slot_conflict {
+                    tracing::warn!(
+                        "Apple Music item {} resolves to track {} but that track already has Apple Music source {}; keeping the existing source",
+                        track.id,
+                        track_id,
+                        existing_apple_source.as_deref().unwrap_or("<unknown>")
+                    );
+                }
+                if item_owner_conflict {
+                    tracing::warn!(
+                        "Apple Music item {} is already linked to track {:?}; not moving its source to track {}",
+                        track.id,
+                        existing_item_owner,
+                        track_id
+                    );
                 }
 
                 // Add track-artist relation
@@ -2464,15 +2542,25 @@ async fn run_apple_music_library_import(
                     );
                 }
 
-                // Add track source
-                let _ = sqlx::query(
-                    "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, bitrate, quality_score, available) VALUES (?, ?, ?, 'AAC', 16, 44100, 256, NULL, 1)"
-                )
-                .bind(track_id)
-                .bind(apple_service_id)
-                .bind(&track.id)
-                .execute(db)
-                .await;
+                // Add track source, unless another edition already owns this
+                // Apple Music item or this track's Apple Music slot.
+                if !source_slot_conflict && !item_owner_conflict {
+                    if let Err(e) = sqlx::query(
+                        "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, bitrate, quality_score, available) VALUES (?, ?, ?, 'AAC', 16, 44100, 256, NULL, 1)"
+                    )
+                    .bind(track_id)
+                    .bind(apple_service_id)
+                    .bind(&track.id)
+                    .execute(db)
+                    .await
+                    {
+                        tracing::warn!(
+                            "Apple Music track source persistence failed for {}: {}",
+                            track.id,
+                            e
+                        );
+                    }
+                }
             } else {
                 tracing::warn!("Track missing attributes: {:?}", track.id);
             }
@@ -2982,6 +3070,149 @@ fn is_soundcloud_auth_error(err: &str) -> bool {
     err.contains("SoundCloud API error 401")
 }
 
+/// True only when Qobuz explicitly rejected the session. The status is read
+/// from the client's structured error prefix, never from an arbitrary
+/// substring: provider item IDs can contain "401", and matching those used to
+/// mark healthy accounts as needing re-authentication.
+fn is_qobuz_auth_error(error: &str) -> bool {
+    if error == "Authentication required" || error.contains("User authentication is required") {
+        return true;
+    }
+    // `reqwest::StatusCode` renders as "401 Unauthorized", while tests and
+    // older logs use "401". Read the status token, not a substring of the
+    // provider body (where a track ID may contain "401").
+    qobuz_error_status(error) == Some("401")
+}
+
+fn qobuz_error_status(error: &str) -> Option<&str> {
+    let rest = error.strip_prefix("Qobuz API error (")?;
+    rest.split([' ', ')']).next()
+}
+
+/// True only when Tidal explicitly rejected the session. Tidal client errors
+/// are `"Tidal API error {status}: {body}"`; read the status token so an item
+/// ID in the body cannot impersonate a 401.
+fn is_tidal_auth_error(error: &str) -> bool {
+    if error.starts_with("RequiresAuth:") {
+        return true;
+    }
+    let rest = match error.strip_prefix("Tidal API error ") {
+        Some(rest) => rest,
+        None => return false,
+    };
+    rest.split([' ', ':']).next() == Some("401")
+}
+
+/// Build a bounded, UI-facing summary of per-item sync errors. The full vector
+/// stays in `ServiceSyncResult` for diagnostics, but a progress event must not
+/// serialize thousands of provider strings into the IPC payload.
+fn summarize_sync_errors(errors: &[String], max_items: usize) -> String {
+    let mut summary = errors
+        .iter()
+        .take(max_items)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("; ");
+    if errors.len() > max_items {
+        summary.push_str(&format!("; … {} more", errors.len() - max_items));
+    }
+    summary
+}
+
+/// Stable grouping reason for a per-item sync error.
+///
+/// Per-item messages wrap a provider/id prefix around the actual cause
+/// ("Tidal playlist track error for 123: needs_review: …"). Keeping only the
+/// tail after the last ": " groups thousands of items into a handful of
+/// actionable reasons; the full strings are still returned to the caller.
+fn sync_error_kind(error: &str) -> String {
+    let tail = error
+        .rsplit_once(": ")
+        .map(|(_, tail)| tail.trim())
+        .unwrap_or_else(|| error.trim());
+    let mut kind: String = tail.chars().take(120).collect();
+    if tail.chars().count() > 120 {
+        kind.push('…');
+    }
+    kind
+}
+
+/// Frequency-ordered per-item error reasons (most common first).
+fn sync_error_kinds(errors: &[String]) -> Vec<(String, usize)> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for error in errors {
+        *counts.entry(sync_error_kind(error)).or_insert(0) += 1;
+    }
+    let mut kinds: Vec<(String, usize)> = counts.into_iter().collect();
+    kinds.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    kinds
+}
+
+fn format_sync_error_kinds(kinds: &[(String, usize)], max: usize) -> String {
+    kinds
+        .iter()
+        .take(max)
+        .map(|(kind, count)| format!("{count}x {kind}"))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// Retry an idempotent Qobuz GET at the sync boundary.
+///
+/// Unlike Spotify and Tidal, the Qobuz client has no response-level retry
+/// policy. A single transient failure used to abort the remaining pages of a
+/// collection. Auth/permission/client errors are terminal; transport, rate
+/// limit and server errors get two exponential-backoff retries.
+async fn qobuz_sync_with_retry<T, F, Fut>(mut fetch: F) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt: u32 = 0;
+    loop {
+        match fetch().await {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt + 1 < MAX_ATTEMPTS && qobuz_error_is_retryable(&error) => {
+                let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt));
+                tracing::warn!(
+                    "Qobuz sync request failed (attempt {}/{}), retrying in {:?}: {}",
+                    attempt + 1,
+                    MAX_ATTEMPTS,
+                    delay,
+                    error
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            Err(error) => {
+                tracing::error!(
+                    "Qobuz sync request failed after {} attempt(s): {}",
+                    attempt + 1,
+                    error
+                );
+                return Err(error);
+            }
+        }
+    }
+}
+
+fn qobuz_error_is_retryable(error: &str) -> bool {
+    // Auth, permission, malformed request and not-found are terminal.
+    if is_qobuz_auth_error(error)
+        || error.contains("login rejected")
+        || error.contains("Failed to parse Qobuz login")
+    {
+        return false;
+    }
+    if let Some(status) = qobuz_error_status(error) {
+        if matches!(status, "400" | "403" | "404" | "422") {
+            return false;
+        }
+    }
+    true
+}
+
 /// Perform unified synchronization for a service with explicit progress emitter (S128B)
 ///
 /// BD-9: a service sync is the longest non-download operation in the app (remote
@@ -3392,7 +3623,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 let limit = 50;
                 loop {
                     let t_api = std::time::Instant::now();
-                    match client.get_favorites(offset, limit).await {
+                    match qobuz_sync_with_retry(|| client.get_favorites(offset, limit)).await {
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.tracks.total as u64;
@@ -3574,7 +3805,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 "error",
                             )
                             .await?;
-                            if e.contains("401") || e.contains("User authentication is required") {
+                            if is_qobuz_auth_error(&e) {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on favorites — marking credentials invalid");
                                 let _ = mark_account_credentials_invalid(
                                     db,
@@ -3615,7 +3846,8 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 let limit = 50;
                 loop {
                     let t_api = std::time::Instant::now();
-                    match client.get_favorite_albums(offset, limit).await {
+                    match qobuz_sync_with_retry(|| client.get_favorite_albums(offset, limit)).await
+                    {
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.albums.total as u64;
@@ -3839,7 +4071,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             }
                         }
                         Err(e) => {
-                            if e.contains("401") || e.contains("User authentication is required") {
+                            if is_qobuz_auth_error(&e) {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on favorite albums — marking credentials invalid");
                                 let _ = mark_account_credentials_invalid(
                                     db,
@@ -3880,7 +4112,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 let limit = 50;
                 loop {
                     let t_api = std::time::Instant::now();
-                    match client.get_purchases(offset, limit).await {
+                    match qobuz_sync_with_retry(|| client.get_purchases(offset, limit)).await {
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.albums.total as u64;
@@ -4094,7 +4326,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             }
                         }
                         Err(e) => {
-                            if e.contains("401") || e.contains("User authentication is required") {
+                            if is_qobuz_auth_error(&e) {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on purchases — marking credentials invalid");
                                 let _ = mark_account_credentials_invalid(
                                     db,
@@ -4135,7 +4367,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 let limit = 50;
                 loop {
                     let t_api = std::time::Instant::now();
-                    match client.get_playlists(offset, limit).await {
+                    match qobuz_sync_with_retry(|| client.get_playlists(offset, limit)).await {
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             let page_total = page.playlists.total as u64;
@@ -4204,13 +4436,14 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                         pl.tracks_count.map(|c| c.max(0) as i64).unwrap_or(0);
                                     loop {
                                         let t_exp = std::time::Instant::now();
-                                        let detail = match client
-                                            .get_playlist_tracks(
+                                        let detail = match qobuz_sync_with_retry(|| {
+                                            client.get_playlist_tracks(
                                                 pl.id,
                                                 track_offset,
                                                 qobuz_page_limit,
                                             )
-                                            .await
+                                        })
+                                        .await
                                         {
                                             Ok(d) => d,
                                             Err(e) => {
@@ -4403,7 +4636,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             }
                         }
                         Err(e) => {
-                            if e.contains("401") || e.contains("User authentication is required") {
+                            if is_qobuz_auth_error(&e) {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on playlists — marking credentials invalid");
                                 let _ = mark_account_credentials_invalid(
                                     db,
@@ -4444,7 +4677,8 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 let limit = 50;
                 loop {
                     let t_api = std::time::Instant::now();
-                    match client.get_favorite_artists(offset, limit).await {
+                    match qobuz_sync_with_retry(|| client.get_favorite_artists(offset, limit)).await
+                    {
                         Ok(page) => {
                             api_fetch_ms += t_api.elapsed().as_millis() as u64;
                             if page.artists.items.is_empty() {
@@ -4482,7 +4716,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             }
                         }
                         Err(e) => {
-                            if e.contains("401") || e.contains("User authentication is required") {
+                            if is_qobuz_auth_error(&e) {
                                 tracing::warn!("[perform_sync_service/qobuz] 401 on favorite artists — marking credentials invalid");
                                 let _ = mark_account_credentials_invalid(
                                     db,
@@ -4733,7 +4967,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                         }
                         Err(e) => {
                             tracing::warn!("Tidal favorite tracks fetch error: {}", e);
-                            if e.contains("RequiresAuth") || e.contains("401") {
+                            if is_tidal_auth_error(&e) {
                                 // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
                                 // intenta UN refresh forzado; si el proveedor emite token fresco, la
                                 // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
@@ -5101,7 +5335,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                         }
                         Err(e) => {
                             tracing::warn!("Tidal favorite albums fetch error: {}", e);
-                            if e.contains("RequiresAuth") || e.contains("401") {
+                            if is_tidal_auth_error(&e) {
                                 // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
                                 // intenta UN refresh forzado; si el proveedor emite token fresco, la
                                 // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
@@ -5449,7 +5683,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                         }
                         Err(e) => {
                             tracing::warn!("Tidal playlists fetch error: {}", e);
-                            if e.contains("RequiresAuth") || e.contains("401") {
+                            if is_tidal_auth_error(&e) {
                                 // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
                                 // intenta UN refresh forzado; si el proveedor emite token fresco, la
                                 // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
@@ -5548,7 +5782,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                         }
                         Err(e) => {
                             tracing::warn!("Tidal favorite artists fetch error: {}", e);
-                            if e.contains("RequiresAuth") || e.contains("401") {
+                            if is_tidal_auth_error(&e) {
                                 // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
                                 // intenta UN refresh forzado; si el proveedor emite token fresco, la
                                 // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
@@ -5764,7 +5998,15 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             }
                         }
                         Err(e) => {
-                            errors.push(format!("Spotify favorite tracks fetch error: {}", e));
+                            tracing::error!(
+                                "[sync/spotify] favorite tracks page at offset {} failed after retries: {}",
+                                offset,
+                                e
+                            );
+                            errors.push(format!(
+                                "Spotify favorite tracks fetch error at offset {}: {}",
+                                offset, e
+                            ));
                             break;
                         }
                     }
@@ -7358,8 +7600,16 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
 
     // A sync error (including a failed page or entity expansion) never certifies
     // a complete collection. NULL means no provider total was observed this run.
+    // Skipped items with imports on the board are a partial collection, not a
+    // hard error: the account card must not claim nothing was imported.
     let snapshot_state = if errors.is_empty() {
         "complete"
+    } else if favorite_tracks_total > 0
+        || favorite_albums_total > 0
+        || playlists_total > 0
+        || purchases_total > 0
+    {
+        "partial"
     } else {
         "error"
     };
@@ -7393,7 +7643,11 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
         "success".to_string()
     };
 
-    let success = sync_outcome == "success" || sync_outcome == "success_with_warnings";
+    // Per-item skips are warnings, not a dead connection: if anything was
+    // imported, the sync ran end-to-end and must be presented as a completed
+    // sync with skipped items. Only a run that imported nothing is a hard
+    // failure (the UI reserves its connection-error message for that case).
+    let success = sync_outcome != "failed";
 
     let message = if sync_outcome == "success" {
         format!(
@@ -7416,14 +7670,47 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             albums_unavailable,
             playlists_total
         )
-    } else {
+    } else if sync_outcome == "partial_failure" {
         format!(
-            "Sync completed with {} warnings/errors ({} expansion failures) for {}",
+            "Sync completed for {} with {} skipped item(s) ({} expansion failures): {} favorites, {} albums, {} playlists",
+            service_name,
             errors.len(),
             tracks_expansion_failed,
-            service_name
+            favorite_tracks_total,
+            favorite_albums_total,
+            playlists_total
+        )
+    } else {
+        format!(
+            "Sync failed for {}: {} item(s) could not be imported",
+            service_name,
+            errors.len()
         )
     };
+
+    // Diagnostics: thousands of per-item strings are never logged one by one.
+    // Group them into stable reasons so the next run's log identifies the
+    // causes (duplicate editions, identity collisions, DB errors) without
+    // dumping the full error list.
+    if !errors.is_empty() {
+        let kinds = sync_error_kinds(&errors);
+        tracing::warn!(
+            service = %service_normalized,
+            error_count = errors.len(),
+            tracks_expansion_failed,
+            "[sync] {} item error(s) for {} — top reasons: {}",
+            errors.len(),
+            service_normalized,
+            format_sync_error_kinds(&kinds, 8)
+        );
+        for sample in errors.iter().take(3) {
+            tracing::warn!(
+                "[sync/{}] item error sample: {}",
+                service_normalized,
+                sample
+            );
+        }
+    }
 
     if success {
         emit(SyncProgressEvent::completed(
@@ -7435,11 +7722,20 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             Some(imported_tracks_total),
         ));
     } else {
+        tracing::warn!(
+            "Sync failed for {} with {} item errors",
+            service_name,
+            errors.len()
+        );
         emit(SyncProgressEvent::failed(
             &service_normalized,
             Some(account_id),
             "completed",
-            format!("Sync completed with errors: {}", errors.join("; ")),
+            format!(
+                "Sync completed with {} errors: {}",
+                errors.len(),
+                summarize_sync_errors(&errors, 5)
+            ),
             imported_tracks_total,
             favorite_tracks_total,
         ));
@@ -8012,5 +8308,153 @@ mod service_tests {
                 .await
                 .unwrap();
         assert_eq!(s2.0, 1);
+    }
+
+    #[test]
+    fn tidal_auth_detection_ignores_item_ids_containing_401() {
+        assert!(!is_tidal_auth_error(
+            "Tidal API error 500 Internal Server Error: item 4012345"
+        ));
+        assert!(!is_tidal_auth_error(
+            "Tidal API error 400 Bad Request: item 4012345"
+        ));
+        assert!(is_tidal_auth_error(
+            "Tidal API error 401 Unauthorized: token expired"
+        ));
+        assert!(is_tidal_auth_error("Tidal API error 401: token expired"));
+        assert!(is_tidal_auth_error("RequiresAuth: Tidal session expired"));
+    }
+
+    #[test]
+    fn qobuz_auth_detection_ignores_item_ids_containing_401() {
+        assert!(!is_qobuz_auth_error(
+            "Qobuz API error (500): track 4012345 failed"
+        ));
+        assert!(!is_qobuz_auth_error(
+            "Qobuz API error (400): invalid item 4012345"
+        ));
+        assert!(!is_qobuz_auth_error("Qobuz API error (4012): invalid item"));
+        assert!(is_qobuz_auth_error("Qobuz API error (401): token expired"));
+        assert!(is_qobuz_auth_error(
+            "Qobuz API error (401 Unauthorized): token expired"
+        ));
+        assert!(is_qobuz_auth_error("Authentication required"));
+        assert!(is_qobuz_auth_error(
+            "Qobuz API error (400): User authentication is required"
+        ));
+    }
+
+    #[test]
+    fn qobuz_retry_classification_keeps_auth_and_client_errors_terminal() {
+        assert!(!qobuz_error_is_retryable("Qobuz API error (401): nope"));
+        assert!(!qobuz_error_is_retryable(
+            "Qobuz API error (401 Unauthorized): nope"
+        ));
+        assert!(!qobuz_error_is_retryable("Qobuz API error (403): nope"));
+        assert!(!qobuz_error_is_retryable("Qobuz API error (404): nope"));
+        assert!(!qobuz_error_is_retryable("Authentication required"));
+        assert!(qobuz_error_is_retryable("Qobuz API error (429): slow down"));
+        assert!(qobuz_error_is_retryable(
+            "Qobuz API error (503): unavailable"
+        ));
+        assert!(qobuz_error_is_retryable(
+            "Qobuz API error (500): track 4012345 failed"
+        ));
+        assert!(qobuz_error_is_retryable("Request failed: connection reset"));
+    }
+
+    #[test]
+    fn sync_error_summary_is_bounded() {
+        let errors = vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ];
+        assert_eq!(summarize_sync_errors(&errors, 2), "first; second; … 1 more");
+        assert_eq!(summarize_sync_errors(&errors, 5), "first; second; third");
+        assert_eq!(summarize_sync_errors(&[], 5), "");
+    }
+
+    #[test]
+    fn sync_error_kinds_group_item_ids_into_stable_reasons() {
+        let errors = vec![
+            "Tidal playlist track error for 111: needs_review: another edition occupies the legacy source slot".to_string(),
+            "Tidal playlist track error for 222: needs_review: another edition occupies the legacy source slot".to_string(),
+            "Qobuz favorites error: Qobuz API error (500): server unavailable".to_string(),
+            "needs_review: provider item identity collision".to_string(),
+        ];
+        let kinds = sync_error_kinds(&errors);
+        assert_eq!(
+            kinds[0],
+            (
+                "another edition occupies the legacy source slot".to_string(),
+                2
+            )
+        );
+        assert_eq!(kinds[1].0, "provider item identity collision");
+        assert_eq!(kinds[2].0, "server unavailable");
+        let summary = format_sync_error_kinds(&kinds, 8);
+        assert!(summary.contains("2x another edition occupies the legacy source slot"));
+        assert_eq!(format_sync_error_kinds(&[], 8), "");
+    }
+
+    #[tokio::test]
+    async fn apple_music_identity_reuses_canonical_track_by_isrc_when_title_differs() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                duration_ms INTEGER,
+                isrc TEXT UNIQUE
+            )",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let existing: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, duration_ms, isrc)
+             VALUES ('Provider Title', 200000, 'APPLEISRC1') RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        // The insert is ignored because the ISRC already exists. The old
+        // title+ISRC lookup returned 0 and dropped the song.
+        let resolved =
+            resolve_apple_music_track_id(&db, "Different Title", 200000, Some("APPLEISRC1"))
+                .await
+                .unwrap();
+        assert_eq!(resolved, existing);
+        let track_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(track_count, 1);
+
+        // ISRC-less songs must still insert and resolve normally.
+        let local = resolve_apple_music_track_id(&db, "Local Only", 1000, None)
+            .await
+            .unwrap();
+        assert!(local > 0);
+        assert_ne!(local, existing);
+
+        // A different ISRC is a different canonical recording, even with the
+        // same title.
+        let other = resolve_apple_music_track_id(&db, "Provider Title", 200000, Some("APPLEISRC2"))
+            .await
+            .unwrap();
+        assert_ne!(other, existing);
+        let track_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(track_count, 3);
     }
 }

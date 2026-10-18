@@ -220,8 +220,8 @@ const isFavorite = ref(false)
 const artistId = Number(route.params.id)
 
 /**
- * `top_tracks` solo trae el título del disco; la carátula se resuelve contra los
- * álbumes que ya vinieron en la misma respuesta, sin volver a consultar.
+ * `top_tracks` only brings the album title; the cover is resolved against the
+ * albums already present in the same response, without querying again.
  */
 function coverByAlbumTitle(albumTitle: string | null | undefined): string | null {
   if (!artist.value?.albums || !albumTitle) return null
@@ -265,9 +265,9 @@ async function shufflePlay() {
   })
 
   try {
-    // Fase 1: reproduce la primera y encola el resto en el orden del listado
-    // (ya barajado aquí abajo si viene de «Shuffle Play»); playNext insertaba
-    // al frente y invertía el orden.
+    // Phase 1: play the first track and queue the rest in listing order
+    // (already shuffled above if coming from "Shuffle Play"); playNext used
+    // to insert at the front and reverse the order.
     await player.replaceQueueAndPlay(tracks.map(toPlayerTrack))
   } catch (err: any) {
     const errStr = String(err?.message || err || '')

@@ -123,16 +123,23 @@ una sesión gráfica real con cuentas reales, salvo donde se dice lo contrario.
 
 ## Reproducción (Playback)
 
-- **R-13 — Todas las pistas fallan al reproducir.** **ABIERTO** ([PLAY-TRACE-01],
-  actualizada como PLAY-TRACE-02 para el ruido de consola). La explicación anterior (faltaban
-  los elementos de GStreamer `autoaudiosink` y `flacdec`) **ya no sirve**: en el host actual
-  ambos elementos y los paquetes `gst-plugins-base/good/bad` están presentes. Hace falta una
-  reproducción real que separe si el fallo está en el archivo, en el protocolo
-  `syncify-media://` o en la decodificación, antes de tocar código.
+- **R-13 — Todas las pistas fallan al reproducir.** **DIAGNOSTICADO (2026-10-17)** ([PLAY-TRACE-01],
+  actualizada como PLAY-TRACE-02 para el ruido de consola). Causa raíz demostrada con prueba
+  dirigida (repro mínimo, mismas versiones tauri 2.12.1/wry 0.57.0, controles de vía de entrega):
+  el motor media de WebKitGTK falla con `FormatError` (código 4) al reproducir cualquier archivo
+  servido por el custom scheme `syncify-media://` — con todas las formas de respuesta probadas
+  (206±`Content-Range`, 200 full-body, ±`Content-Length`) — mientras el **mismo archivo por
+  `http://127.0.0.1` reproduce sin fallo en la misma webview** (readyState 4 y seek correcto). El
+  handler de Syncify queda exonerado (rangos y URIs correctos en la evidencia). La explicación
+  anterior (faltaban `autoaudiosink`/`flacdec`) queda definitivamente descartada. Evidencia:
+  `docs/auditoria/playback-fase0-evidencia-2026-10-17.md`; arreglo aprobado: motor local nativo
+  (Fase 1), que no depende de WebKit/GStreamer para el audio.
 
 - **R-14 — La consola de desarrollo inunda de información y omite el error accionable.**
-  **ABIERTO** ([PLAY-TRACE-02]). Reducir el ruido informativo y elevar solo el error útil,
-  sin perder la pista que hoy sí sirve para diagnosticar.
+  **SEÑAL IDENTIFICADA (2026-10-17)** ([PLAY-TRACE-02]). La capa útil ya está aislada (error del
+  media element + `FormatError` de WebKit, ver R-13). La reducción de ruido y los mensajes
+  definitivos se harán sobre el motor nativo (Fase 1), donde los errores propios (decode/output/
+  source) sustituyen a los del webview; no se reescriben mensajes del camino que va a retirarse.
 
 ---
 
