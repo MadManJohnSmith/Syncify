@@ -315,6 +315,11 @@ pub struct LibraryTrack {
     pub explicit: Option<bool>,
     pub is_favorite: Option<bool>,
     pub favorite_at: Option<String>,
+    // Route 2 (2026-10-18): identity of the favorited release row in the
+    // expanded favorites list (get_favorite_tracks only). `#[sqlx(default)]`
+    // keeps every other query decodable without selecting it.
+    #[sqlx(default)]
+    pub edition_item_id: Option<String>,
     pub file_path: Option<String>,
     #[sqlx(default)]
     pub display_title: Option<String>,

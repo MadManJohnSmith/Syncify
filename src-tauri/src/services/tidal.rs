@@ -1170,6 +1170,13 @@ impl TidalClient {
         let limit = 10; // Reduced for constant feedback (S78)
         let mut imported = 0;
         let mut skipped = 0;
+        // Route 2 (2026-10-18): Tidal re-reads offset windows (server-side
+        // filtering + offset arithmetic), so a walk that counts repeats as
+        // progress stops early and loses the tail. De-duplicate by item id and
+        // stop only on an empty page (bounded below).
+        let mut favorite_item_ids: std::collections::HashSet<i64> =
+            std::collections::HashSet::new();
+        let mut favorite_items_duplicated: u64 = 0;
 
         loop {
             // S187: a transient failure that survives retries must NOT abort the
@@ -1203,6 +1210,10 @@ impl TidalClient {
                 .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
             for item in page.items.iter() {
+                if !favorite_item_ids.insert(item.item.id) {
+                    favorite_items_duplicated += 1;
+                    continue;
+                }
                 let track = &item.item;
 
                 // 1. Artist
@@ -1436,18 +1447,27 @@ impl TidalClient {
                 .await
                 .map_err(|e| format!("Failed to commit favorites: {}", e))?;
 
-            // S187: advance by the REAL page length (a short page mid-list is
-            // not end-of-data) and keep walking until the provider total is met.
+            // S187/Route 2: advance by the REAL page length (a short page mid-list
+            // is not end-of-data). Items repeated across pages are skipped above,
+            // so the walk only ends on an empty page; the bound below is a
+            // belt-and-braces stop against a provider that never sends one.
             offset += page.items.len() as i32;
-            if !should_continue_tidal_pagination(
-                page.items.len(),
-                (imported + skipped) as u64,
-                page.total as i64,
-            ) {
+            if page.total > 0 && offset > page.total + limit * 2 {
+                tracing::warn!(
+                    "[S187][tidal] legacy favorites pagination ran past the provider total (offset {}, total {}); stopping",
+                    offset,
+                    page.total
+                );
                 break;
             }
         }
 
+        if favorite_items_duplicated > 0 {
+            tracing::info!(
+                "[S187][tidal] legacy import_favorites: {} ítems repetidos entre páginas omitidos",
+                favorite_items_duplicated
+            );
+        }
         tracing::info!(
             "[S187][tidal] legacy import_favorites: importadas {} de {} (skipped {})",
             imported,
@@ -3195,6 +3215,48 @@ pub mod s187_tests {
             liked, 141,
             "library_entries.is_liked drives the UI favorites count"
         );
+    }
+
+    /// Route 2 regression: every page overlaps the previous one by 5 positions
+    /// (provider offset drift). The old walk counted the re-read items as
+    /// progress and stopped 5 favorites short of the catalogue; the de-duplicated
+    /// walk must import every unique item and finish exactly at the total.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_s187_mock_favorites_overlapping_pages_import_every_unique_item(
+        pool: sqlx::SqlitePool,
+    ) {
+        let catalog_total: i64 = 100;
+        let responder: Responder = Arc::new(move |target: &str| {
+            let (path, query) = split_target(target);
+            if path.ends_with("/favorites/tracks") {
+                let offset = query_param(query, "offset").unwrap_or(0);
+                let limit = query_param(query, "limit").unwrap_or(10);
+                let effective = (offset - 5).max(0);
+                let items = slice_catalog(catalog_total, effective, limit, false);
+                return (200, tidal_page_body(items, catalog_total, offset, limit));
+            }
+            (404, "{}".to_string())
+        });
+        let (base, _requests) = spawn_mock_tidal(responder).await;
+        let client = mock_client(base);
+        ensure_test_account(&pool, 9).await;
+
+        let result = client
+            .import_favorites(&pool, 9, None)
+            .await
+            .expect("favorites import must succeed");
+
+        assert_eq!(
+            result.imported, 100,
+            "overlapping pages must not truncate the tail of the favorites walk"
+        );
+        let liked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM library_entries WHERE account_id = 9 AND is_liked = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(liked, 100);
     }
 
     /// Transient failures that exhaust retries must NOT abort silently: the

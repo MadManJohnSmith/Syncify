@@ -666,7 +666,7 @@
             <div :style="{ transform: `translateY(${virtualOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
               <div
                 v-for="(track, index) in visibleTracks"
-                :key="track.id"
+                :key="trackRowKey(track)"
                 :data-track-id="track.id"
                 @click="handleTrackClick(track)"
                 @dblclick="handleTrackPlay(track)"
@@ -913,7 +913,7 @@
             <div v-if="expandedGroups.includes(artistGroup.artist)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
               <div
                 v-for="(track, idx) in artistGroup.tracks"
-                :key="track.id"
+                :key="trackRowKey(track)"
                 :data-track-id="track.id"
                 :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
@@ -975,7 +975,7 @@
             <div v-if="expandedGroups.includes(albumGroup.title)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
               <div
                 v-for="(track, idx) in albumGroup.tracks"
-                :key="track.id"
+                :key="trackRowKey(track)"
                 :data-track-id="track.id"
                 :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
@@ -1019,7 +1019,7 @@
             <div v-if="expandedGroups.includes(genreGroup.genre)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
               <div
                 v-for="(track, idx) in genreGroup.tracks"
-                :key="track.id"
+                :key="trackRowKey(track)"
                 :data-track-id="track.id"
                 :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
@@ -1071,7 +1071,7 @@
             <div v-if="expandedGroups.includes(qualityGroup.quality)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
               <div
                 v-for="(track, idx) in qualityGroup.tracks"
-                :key="track.id"
+                :key="trackRowKey(track)"
                 :data-track-id="track.id"
                 :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
                 class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
@@ -1534,6 +1534,9 @@ interface Track {
   isFavorite: boolean
   isPlaying: boolean
   isSelected: boolean
+  // Route 2 (2026-10-18): identifies the favorited release when the same track
+  // appears once per release in the expanded favorites list.
+  editionItemId?: string | null
 }
 
 // Mock tracks data
@@ -1587,7 +1590,15 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     isFavorite: !!(item as any).is_favorite,
     isPlaying: false,
     isSelected: false,
+    editionItemId: item.edition_item_id ?? null,
   };
+}
+
+// Route 2 (2026-10-18): the favorites list can show the same canonical track
+// once per favorited release; the row key must include the release identity or
+// Vue reuses DOM nodes across different releases.
+function trackRowKey(track: Track): string {
+  return `${track.id}:${track.editionItemId ?? track.album}`
 }
 
 // Pagination state

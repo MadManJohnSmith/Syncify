@@ -2737,11 +2737,16 @@ impl EnrichmentEngine {
         // Ambiguous ISRCs (more than one canonical row) still fail closed.
         if existing_track_id.is_none() {
             if let Some(isrc) = isrc_opt.filter(|value| !value.trim().is_empty()) {
-                let matches: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE isrc = ?")
-                    .bind(isrc.trim())
-                    .fetch_all(&mut *tx)
-                    .await
-                    .map_err(|e| format!("ED-02 ISRC lookup failed: {e}"))?;
+                // Route 2 (2026-10-18): the unique index is `isrc COLLATE NOCASE`,
+                // so the lookup must be NOCASE too. A case-sensitive compare here
+                // treated `USCGH...` and `uscgh...` as different recordings and
+                // the later INSERT blew up on the unique index.
+                let matches: Vec<(i64,)> =
+                    sqlx::query_as("SELECT id FROM tracks WHERE isrc = ? COLLATE NOCASE")
+                        .bind(isrc.trim())
+                        .fetch_all(&mut *tx)
+                        .await
+                        .map_err(|e| format!("ED-02 ISRC lookup failed: {e}"))?;
                 match matches.as_slice() {
                     [] => {}
                     [(track_id,)] => existing_track_id = Some(*track_id),
@@ -3149,6 +3154,40 @@ impl EnrichmentEngine {
             .bind(track_id)
             .execute(&mut *tx)
             .await;
+
+            // Route 2 (2026-10-18): remember the provider item behind the
+            // favorite (with its own release title) so the library can show one
+            // row per favorited release. Idempotent per (account, item); real
+            // metadata replaces the push-flow placeholder when available.
+            let favorite_title = input
+                .origin_meta
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(track_title.as_str());
+            sqlx::query(
+                r#"
+                INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, isrc, favorited_at)
+                VALUES (?, ?, 'track', ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(account_id, item_type, service_item_id) DO UPDATE SET
+                    service_id = excluded.service_id,
+                    title = excluded.title,
+                    artist_name = COALESCE(excluded.artist_name, favorites.artist_name),
+                    album_name = COALESCE(excluded.album_name, favorites.album_name),
+                    isrc = COALESCE(excluded.isrc, favorites.isrc)
+                "#,
+            )
+            .bind(input.account_id)
+            .bind(input.service_id)
+            .bind(&input.service_track_id)
+            .bind(favorite_title)
+            .bind(input.origin_meta.artist.as_deref())
+            .bind(input.origin_meta.album.as_deref())
+            .bind(input.origin_meta.isrc.as_deref())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("favorite item persistence failed: {e}"))?;
         }
 
         // 6. Link Track-Artist
@@ -3298,19 +3337,28 @@ impl EnrichmentEngine {
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| format!("ED-02 source slot lookup failed: {e}"))?;
-        if existing_source
+        // Route 2 (2026-10-18): the legacy slot keeps its original representative
+        // item and is NEVER overwritten. A second provider item with the same ISRC
+        // is the same recording on another release: it is linked through the
+        // edition ledger below (and its favorite/library entry still lands) instead
+        // of failing closed, so duplicate editions are imported, not skipped.
+        let slot_occupied_by_other_edition = existing_source
             .as_ref()
-            .is_some_and(|(_, item)| item != &input.service_track_id)
-        {
-            return Err(
-                "needs_review: another edition occupies the legacy source slot".to_string(),
+            .is_some_and(|(_, item)| item != &input.service_track_id);
+        if slot_occupied_by_other_edition {
+            tracing::debug!(
+                service = %input.service_name,
+                track_id,
+                item = %input.service_track_id,
+                "[ED-02] linking edition item to canonical track without occupying the legacy slot",
             );
         }
         let source_already_existed = existing_source.is_some();
         let is_new_source_for_service = !source_already_existed;
 
-        sqlx::query(
-            r#"
+        if !slot_occupied_by_other_edition {
+            sqlx::query(
+                r#"
             INSERT INTO track_sources (
                 track_id, service_id, service_track_id, format, bit_depth,
                 sample_rate, quality_score, available, availability_status, last_checked
@@ -3325,17 +3373,18 @@ impl EnrichmentEngine {
                 availability_status = 'available',
                 last_checked = CURRENT_TIMESTAMP
             "#,
-        )
-        .bind(track_id)
-        .bind(input.service_id)
-        .bind(&input.service_track_id)
-        .bind(input.format.as_deref())
-        .bind(input.bit_depth)
-        .bind(input.sample_rate)
-        .bind(input.quality_score)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("ED-02 source persistence failed: {e}"))?;
+            )
+            .bind(track_id)
+            .bind(input.service_id)
+            .bind(&input.service_track_id)
+            .bind(input.format.as_deref())
+            .bind(input.bit_depth)
+            .bind(input.sample_rate)
+            .bind(input.quality_score)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("ED-02 source persistence failed: {e}"))?;
+        }
 
         // The ED-01 ledger is written in the SAME transaction as canonical
         // track_sources; failures roll back both sides rather than half-activate.
@@ -3426,7 +3475,7 @@ impl EnrichmentEngine {
             input.origin_meta.added_at.as_deref(),
         );
 
-        let _ = sqlx::query(
+        sqlx::query(
             r#"
             INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
             VALUES (?, ?, ?, ?, ?)
@@ -3445,7 +3494,8 @@ impl EnrichmentEngine {
         .bind(input.is_purchased as i32)
         .bind(&safe_added_at)
         .execute(&mut *tx)
-        .await;
+        .await
+        .map_err(|e| format!("library entry persistence failed: {e}"))?;
 
         let is_already_present =
             !is_new_global_track && !is_new_source_for_service && !is_new_library_entry_for_account;

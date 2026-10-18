@@ -1854,6 +1854,57 @@ pub async fn set_track_favorite(
     Ok(res_fav)
 }
 
+/// Route 2 (2026-10-18): the favorites view expands each favorited provider item
+/// into its own row so every release is visible ("100% Pure Love" on both the
+/// Best-Of and the Storyteller editions). Item rows come from the `favorites`
+/// table (written by the sync for each favorited item) mapped to its canonical
+/// track through `track_sources` (slot items) or the ED ledger (duplicate
+/// editions), grouped by (track, release title). Favorited tracks with no mapped
+/// items keep their single canonical row.
+const FAVORITE_ROWS_CTE: &str = r#"
+    WITH mapped AS (
+        SELECT f.service_id,
+               f.service_item_id,
+               COALESCE(ts.track_id, le.track_id) AS track_id,
+               NULLIF(TRIM(f.album_name), '') AS item_album
+        FROM favorites f
+        LEFT JOIN track_sources ts
+               ON ts.service_id = f.service_id
+              AND ts.service_track_id = f.service_item_id
+        LEFT JOIN (
+            SELECT item.service_id, item.service_track_id, link.track_id
+            FROM edition_provider_items item
+            JOIN edition_item_tracks link ON link.item_id = item.id
+        ) le
+               ON le.service_id = f.service_id
+              AND le.service_track_id = f.service_item_id
+        WHERE f.item_type = 'track'
+    ),
+    favorite_rows AS (
+        SELECT t.id AS track_id,
+               LOWER(TRIM(COALESCE(m.item_album, al_canon.title))) AS album_key,
+               COALESCE(MIN(m.item_album), al_canon.title) AS display_album,
+               MIN(m.service_item_id) AS edition_item_id,
+               t.favorite_at AS favorite_at,
+               t.title AS sort_title
+        FROM mapped m
+        JOIN tracks t ON t.id = m.track_id AND t.is_favorite = 1
+        LEFT JOIN albums al_canon ON al_canon.id = t.album_id
+        GROUP BY t.id, album_key
+        UNION ALL
+        SELECT t.id,
+               '',
+               al_canon.title,
+               NULL,
+               t.favorite_at,
+               t.title
+        FROM tracks t
+        LEFT JOIN albums al_canon ON al_canon.id = t.album_id
+        WHERE t.is_favorite = 1
+          AND NOT EXISTS (SELECT 1 FROM mapped m2 WHERE m2.track_id = t.id)
+    )
+"#;
+
 /// Get all favorite tracks in the library - paginated
 #[tauri::command]
 pub async fn get_favorite_tracks(
@@ -1861,16 +1912,28 @@ pub async fn get_favorite_tracks(
     offset: Option<i64>,
     limit: Option<i64>,
 ) -> Result<LibraryPage, String> {
+    query_favorite_tracks(&state.db, offset, limit).await
+}
+
+/// Route 2 (2026-10-18): shared body of `get_favorite_tracks` so the expanded
+/// per-release rows can be exercised without a full Tauri `AppState`.
+pub(crate) async fn query_favorite_tracks(
+    db: &DbPool,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<LibraryPage, String> {
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(100).min(500);
 
-    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE is_favorite = 1")
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| format!("Count error: {}", e))?;
+    let total: (i64,) = sqlx::query_as(&format!(
+        "{FAVORITE_ROWS_CTE} SELECT COUNT(*) FROM favorite_rows"
+    ))
+    .fetch_one(db)
+    .await
+    .map_err(|e| format!("Count error: {}", e))?;
 
-    let mut tracks = sqlx::query_as::<_, LibraryTrack>(
-        r#"
+    let favorites_query = format!(
+        r#"{FAVORITE_ROWS_CTE}
         SELECT
             t.id,
             t.title,
@@ -1882,8 +1945,9 @@ pub async fn get_favorite_tracks(
              JOIN artists a2 ON a2.id = ta2.artist_id
              WHERE ta2.track_id = t.id AND ta2.role = 'primary'
              LIMIT 1) as artist_id,
-            al.title as album_name,
+            p.display_album as album_name,
             al.id as album_id,
+            p.edition_item_id as edition_item_id,
             t.duration_ms,
             t.isrc,
             GROUP_CONCAT(DISTINCT s.name) as services,
@@ -1936,8 +2000,9 @@ pub async fn get_favorite_tracks(
             t.favorite_at,
             d.file_path
         FROM tracks t
-        JOIN (SELECT id FROM tracks WHERE is_favorite = 1
-              ORDER BY favorite_at DESC, title ASC, id ASC LIMIT ? OFFSET ?) p ON p.id = t.id
+        JOIN (SELECT track_id, display_album, edition_item_id FROM favorite_rows
+              ORDER BY favorite_at DESC, sort_title ASC, display_album ASC, edition_item_id ASC
+              LIMIT ? OFFSET ?) p ON p.track_id = t.id
         LEFT JOIN albums al ON al.id = t.album_id
         LEFT JOIN track_sources ts ON ts.track_id = t.id
         LEFT JOIN services s ON s.id = ts.service_id
@@ -1945,15 +2010,16 @@ pub async fn get_favorite_tracks(
         LEFT JOIN downloads d ON d.track_id = t.id
         LEFT JOIN download_queue dq ON dq.track_id = t.id AND dq.status IN ('queued', 'downloading')
         LEFT JOIN lyrics l ON l.track_id = t.id
-        GROUP BY t.id
-        ORDER BY t.favorite_at DESC, t.title ASC
+        GROUP BY t.id, p.display_album, p.edition_item_id
+        ORDER BY t.favorite_at DESC, t.title ASC, p.display_album ASC, p.edition_item_id ASC
         "#
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
+    );
+    let mut tracks = sqlx::query_as::<_, LibraryTrack>(&favorites_query)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("Database error: {}", e))?;
 
     verify_page_files(&mut tracks).await?;
     let has_more = offset + (tracks.len() as i64) < total.0;
@@ -2018,6 +2084,207 @@ mod library_tests {
             panic!("Migration failed in test: {}", e);
         }
         pool
+    }
+
+    // ---- Route 2 (2026-10-18): one row per favorited release ----
+
+    /// Seeds: canonical track "100% Pure Love" favorited on Tidal via `item-a`
+    /// (release "The Best Of"), with a live `track_sources` slot and a
+    /// `favorites` row. Returns (service_id, account_id, track_id).
+    async fn seed_favorite_fixture(pool: &SqlitePool) -> (i64, i64, i64) {
+        let sid: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'tidal'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let account: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, display_name, is_active) VALUES (?, 'fav-fixture', 1) RETURNING id",
+        )
+        .bind(sid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let artist: i64 =
+            sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Test Artist') RETURNING id")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        let album: i64 =
+            sqlx::query_scalar("INSERT INTO albums (title) VALUES ('The Best Of') RETURNING id")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        let track: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, is_favorite, favorite_at) VALUES ('100% Pure Love', ?, 1, '2024-01-01T00:00:00Z') RETURNING id",
+        )
+        .bind(album)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(track)
+        .bind(artist)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, format, available, availability_status) VALUES (?, ?, 'item-a', 'FLAC', 1, 'available')",
+        )
+        .bind(track)
+        .bind(sid)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, album_name) VALUES (?, ?, 'track', 'item-a', '100% Pure Love', 'The Best Of')",
+        )
+        .bind(account)
+        .bind(sid)
+        .execute(pool)
+        .await
+        .unwrap();
+        (sid, account, track)
+    }
+
+    #[tokio::test]
+    async fn favorite_duplicate_release_yields_one_row_per_release() {
+        let pool = setup_test_db().await;
+        let (sid, account, track) = seed_favorite_fixture(&pool).await;
+
+        // Second favorited item: same recording on another release, linked
+        // through the ED ledger (the legacy slot keeps item-a).
+        let release_b: i64 = sqlx::query_scalar(
+            "INSERT INTO edition_releases (service_id, provider_release_id, evidence_status, provenance) VALUES (?, 'release-b', 'observed', 'test') RETURNING id",
+        )
+        .bind(sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let item_b: i64 = sqlx::query_scalar(
+            "INSERT INTO edition_provider_items (service_id, service_track_id, release_id, evidence_status, provenance) VALUES (?, 'item-b', ?, 'observed', 'test') RETURNING id",
+        )
+        .bind(sid)
+        .bind(release_b)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO edition_item_tracks (item_id, track_id, validation_status, provenance) VALUES (?, ?, 'unknown', 'test')")
+            .bind(item_b)
+            .bind(track)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, album_name) VALUES (?, ?, 'track', 'item-b', '100% Pure Love', 'Storyteller')",
+        )
+        .bind(account)
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let page = query_favorite_tracks(&pool, Some(0), Some(50))
+            .await
+            .unwrap();
+        assert_eq!(page.total, 2, "one row per favorited release");
+        assert_eq!(page.tracks.len(), 2);
+        let mut albums: Vec<Option<String>> =
+            page.tracks.iter().map(|t| t.album_name.clone()).collect();
+        albums.sort();
+        assert_eq!(
+            albums,
+            vec![
+                Some("Storyteller".to_string()),
+                Some("The Best Of".to_string())
+            ]
+        );
+        assert!(
+            page.tracks.iter().all(|t| t.id == track),
+            "both rows point at the same canonical track"
+        );
+    }
+
+    #[tokio::test]
+    async fn favorite_releases_collapse_by_title_and_keep_canonical_fallback() {
+        let pool = setup_test_db().await;
+        let (_sid, _account, track) = seed_favorite_fixture(&pool).await;
+
+        // The same release reached through another service (case/whitespace
+        // variant) must collapse into the existing row, not duplicate it.
+        let qobuz_sid: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'qobuz'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let qobuz_account: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, display_name, is_active) VALUES (?, 'fav-qobuz', 1) RETURNING id",
+        )
+        .bind(qobuz_sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, format, available, availability_status) VALUES (?, ?, 'q-item', 'FLAC', 1, 'available')",
+        )
+        .bind(track)
+        .bind(qobuz_sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, album_name) VALUES (?, ?, 'track', 'q-item', '100% Pure Love', '  the best of ')",
+        )
+        .bind(qobuz_account)
+        .bind(qobuz_sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A favorited track imported before the per-item records existed keeps
+        // its single canonical row.
+        let album2: i64 = sqlx::query_scalar(
+            "INSERT INTO albums (title) VALUES ('Canonical Album') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let track2: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id, is_favorite, favorite_at) VALUES ('Legacy Favorite', ?, 1, '2024-02-01T00:00:00Z') RETURNING id",
+        )
+        .bind(album2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let page = query_favorite_tracks(&pool, Some(0), Some(50))
+            .await
+            .unwrap();
+        assert_eq!(page.total, 2);
+        let track1_rows: Vec<_> = page.tracks.iter().filter(|t| t.id == track).collect();
+        assert_eq!(
+            track1_rows.len(),
+            1,
+            "same release collapses across services"
+        );
+        assert_eq!(track1_rows[0].album_name.as_deref(), Some("The Best Of"));
+        let track2_rows: Vec<_> = page.tracks.iter().filter(|t| t.id == track2).collect();
+        assert_eq!(track2_rows.len(), 1);
+        assert_eq!(
+            track2_rows[0].album_name.as_deref(),
+            Some("Canonical Album")
+        );
+
+        let first_page = query_favorite_tracks(&pool, Some(0), Some(1))
+            .await
+            .unwrap();
+        assert_eq!(first_page.total, 2);
+        assert_eq!(first_page.tracks.len(), 1);
+        assert!(first_page.has_more);
+        let second_page = query_favorite_tracks(&pool, Some(1), Some(1))
+            .await
+            .unwrap();
+        assert_eq!(second_page.tracks.len(), 1);
+        assert!(!second_page.has_more);
     }
 
     #[tokio::test]

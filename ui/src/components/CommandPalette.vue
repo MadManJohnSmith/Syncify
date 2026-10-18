@@ -550,7 +550,9 @@ async function collectFavoriteTrackIds(): Promise<number[]> {
     if (!page.has_more || page.tracks.length === 0) break
     offset += page.tracks.length
   }
-  return ids
+  // Route 2: the expanded favorites list can repeat a canonical track once per
+  // favorited release; enqueue each track exactly once.
+  return [...new Set(ids)]
 }
 
 async function runAction(action: any) {

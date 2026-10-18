@@ -4823,6 +4823,15 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 let limit = 50;
                 // S187: provider-reported grand total, for honest X-of-Y reporting.
                 let mut favorites_provider_total: i64 = 0;
+                // Route 2 (2026-10-18): Tidal repeats items across pages (server-side
+                // filtering + offset arithmetic over the filtered subset). De-duplicate
+                // by track id so repeats neither inflate the walk nor truncate the
+                // tail; the page loop stops only on an empty page (defensive bound
+                // below). The old "accumulated >= total" stop let 569 favorites fall
+                // off the end of the list.
+                let mut favorite_item_ids: std::collections::HashSet<i64> =
+                    std::collections::HashSet::new();
+                let mut favorite_items_duplicated: u64 = 0;
                 loop {
                     let t_api = std::time::Instant::now();
                     match client.get_favorites_with_retry(offset, limit).await {
@@ -4836,6 +4845,10 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 break;
                             }
                             for item in &page.items {
+                                if !favorite_item_ids.insert(item.item.id) {
+                                    favorite_items_duplicated += 1;
+                                    continue;
+                                }
                                 favorites_seen += 1;
                                 let track = &item.item;
                                 let artist_name = track
@@ -4953,15 +4966,22 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     favorite_tracks_total,
                                 ));
                             }
-                            // S187: advance by the REAL page length; a short-but-non-empty
-                            // page is NOT end-of-data (Tidal sends no `next` and may return
-                            // filtered pages). Stop when the provider total is reached.
+                            // S187/Route 2: advance by the REAL page length; a short-but-
+                            // non-empty page is NOT end-of-data (Tidal sends no `next` and
+                            // may return filtered pages). Repeated items are de-duplicated
+                            // above, so the walk now ends only on an empty page; the bound
+                            // below is pure belt-and-braces against a provider that never
+                            // returns one.
                             offset += page.items.len() as i32;
-                            if !crate::services::tidal::should_continue_tidal_pagination(
-                                page.items.len(),
-                                favorites_seen,
-                                page.total as i64,
-                            ) {
+                            if favorites_provider_total > 0
+                                && i64::from(offset)
+                                    > favorites_provider_total + i64::from(limit) * 2
+                            {
+                                tracing::warn!(
+                                    "[S187][tidal] favorite tracks pagination ran past the provider total (offset {}, total {}); stopping",
+                                    offset,
+                                    favorites_provider_total
+                                );
                                 break;
                             }
                         }
@@ -5008,6 +5028,12 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                             break;
                         }
                     }
+                }
+                if favorite_items_duplicated > 0 {
+                    tracing::info!(
+                        "[S187][tidal] favorite tracks: {} ítems repetidos entre páginas omitidos",
+                        favorite_items_duplicated
+                    );
                 }
                 tracing::info!(
                     "[S187][tidal] favorite tracks: importadas {} de {} provider",
@@ -8378,23 +8404,19 @@ mod service_tests {
     #[test]
     fn sync_error_kinds_group_item_ids_into_stable_reasons() {
         let errors = vec![
-            "Tidal playlist track error for 111: needs_review: another edition occupies the legacy source slot".to_string(),
-            "Tidal playlist track error for 222: needs_review: another edition occupies the legacy source slot".to_string(),
+            "Tidal playlist track error for 111: needs_review: provider item release conflict"
+                .to_string(),
+            "Tidal playlist track error for 222: needs_review: provider item release conflict"
+                .to_string(),
             "Qobuz favorites error: Qobuz API error (500): server unavailable".to_string(),
             "needs_review: provider item identity collision".to_string(),
         ];
         let kinds = sync_error_kinds(&errors);
-        assert_eq!(
-            kinds[0],
-            (
-                "another edition occupies the legacy source slot".to_string(),
-                2
-            )
-        );
+        assert_eq!(kinds[0], ("provider item release conflict".to_string(), 2));
         assert_eq!(kinds[1].0, "provider item identity collision");
         assert_eq!(kinds[2].0, "server unavailable");
         let summary = format_sync_error_kinds(&kinds, 8);
-        assert!(summary.contains("2x another edition occupies the legacy source slot"));
+        assert!(summary.contains("2x provider item release conflict"));
         assert_eq!(format_sync_error_kinds(&[], 8), "");
     }
 

@@ -60,6 +60,9 @@ export interface LibraryTrack {
     explicit: boolean | null;
     is_favorite?: boolean | null;
     favorite_at?: string | null;
+    // Route 2 (2026-10-18): identity of the favorited release row in the
+    // expanded favorites list (get_favorite_tracks only).
+    edition_item_id?: string | null;
     file_path: string | null;
     musicbrainz_id: string | null;
     display_title?: string | null;
