@@ -657,19 +657,20 @@ impl DownloadOrchestrator {
                                 continue;
                             }
                             if target_service == "tidal" {
-                                let found = match self.tidal.search_by_isrc(sib_trimmed, eff_dur).await {
-                                    Ok(t) => Some(t),
-                                    Err(_) => self
-                                        .tidal
-                                        .search_by_isrc_broad(
-                                            sib_trimmed,
-                                            &request.track_name,
-                                            &request.artist_name,
-                                            eff_dur,
-                                        )
-                                        .await
-                                        .ok(),
-                                };
+                                let found =
+                                    match self.tidal.search_by_isrc(sib_trimmed, eff_dur).await {
+                                        Ok(t) => Some(t),
+                                        Err(_) => self
+                                            .tidal
+                                            .search_by_isrc_broad(
+                                                sib_trimmed,
+                                                &request.track_name,
+                                                &request.artist_name,
+                                                eff_dur,
+                                            )
+                                            .await
+                                            .ok(),
+                                    };
                                 if let Some(track) = found {
                                     info!(
                                         "[Orchestrator] ✓ Fallback matched via MusicBrainz recording sibling ISRC {}: Tidal ID {}",
@@ -1059,34 +1060,77 @@ impl DownloadOrchestrator {
         };
 
         let quality = audio_quality.map(|q| q.to_ascii_uppercase());
-        let (format, bit_depth, sample_rate): (&str, Option<i64>, Option<i64>) =
-            match quality.as_deref() {
-                Some("HI_RES") | Some("HIRES") | Some("HI_RES_LOSSLESS") => {
-                    ("FLAC", Some(24), Some(96000))
-                }
-                Some("LOSSLESS") => ("FLAC", Some(16), Some(44100)),
-                _ => ("FLAC", None, None),
-            };
+        let (bit_depth, sample_rate_khz): (Option<i32>, Option<f64>) = match quality.as_deref() {
+            Some("HI_RES") | Some("HIRES") | Some("HI_RES_LOSSLESS") => (Some(24), Some(96.0)),
+            Some("LOSSLESS") => (Some(16), Some(44.1)),
+            _ => (None, None),
+        };
 
+        Self::persist_live_isrc_refresh_row(
+            db,
+            canonical_track_id,
+            service_id,
+            &service_track_id.to_string(),
+            bit_depth,
+            sample_rate_khz,
+        )
+        .await;
+    }
+
+    /// RSQ-03: un refresh solo existe si el hit en vivo nombra una edición
+    /// DISTINTA de la muerta (puro para poder probarlo sin red).
+    fn refreshed_edition_is_new(attempted_track_id: &str, refreshed_track_id: &str) -> bool {
+        !refreshed_track_id.trim().is_empty() && refreshed_track_id != attempted_track_id
+    }
+
+    /// RSQ-03: persistencia best-effort de la edición refrescada.
+    ///
+    /// Upsert dirigido a `(track_id, service_id)`: a diferencia de
+    /// `INSERT OR REPLACE`, no puede borrar la fila de OTRO track a través del
+    /// índice único `(service_id, service_track_id)` (migración 0064); si el ID
+    /// refrescado ya pertenece a otra fila, el error se registra en debug y la
+    /// descarga ya completada no se toca.
+    async fn persist_live_isrc_refresh_row(
+        db: &sqlx::SqlitePool,
+        canonical_track_id: i64,
+        service_id: i64,
+        refreshed_track_id: &str,
+        bit_depth: Option<i32>,
+        sample_rate_khz: Option<f64>,
+    ) {
+        let sample_rate_hz = sample_rate_khz.map(|khz| (khz * 1000.0) as i64);
+        let quality_score = 1000
+            + bit_depth.map(|bd| (bd as i64) * 10).unwrap_or(0)
+            + sample_rate_khz
+                .map(|khz| (khz as i64).min(200))
+                .unwrap_or(0);
         if let Err(e) = sqlx::query(
             r#"
-            INSERT OR REPLACE INTO track_sources
-                (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available)
-            VALUES (?, ?, ?, ?, ?, ?, 1)
+            INSERT INTO track_sources
+                (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available, last_checked)
+            VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(track_id, service_id) DO UPDATE SET
+                service_track_id = excluded.service_track_id,
+                format = excluded.format,
+                bit_depth = excluded.bit_depth,
+                sample_rate = excluded.sample_rate,
+                quality_score = excluded.quality_score,
+                available = 1,
+                last_checked = CURRENT_TIMESTAMP
             "#,
         )
         .bind(canonical_track_id)
         .bind(service_id)
-        .bind(service_track_id.to_string())
-        .bind(format)
+        .bind(refreshed_track_id)
         .bind(bit_depth)
-        .bind(sample_rate)
+        .bind(sample_rate_hz)
+        .bind(quality_score)
         .execute(db)
         .await
         {
             debug!(
-                "[Orchestrator] Strict-metadata source not persisted ({} {}): {}",
-                service_name, service_track_id, e
+                "[Orchestrator] RSQ-03 refreshed source not persisted ({} on service {}): {}",
+                refreshed_track_id, service_id, e
             );
         }
     }
@@ -1108,9 +1152,7 @@ impl DownloadOrchestrator {
         let token = match self.qobuz.resolve_token(self.db.as_ref()).await {
             Ok(token) => token,
             Err(_) => {
-                debug!(
-                    "[Orchestrator] Stale Qobuz source refresh skipped: no usable user token"
-                );
+                debug!("[Orchestrator] Stale Qobuz source refresh skipped: no usable user token");
                 return None;
             }
         };
@@ -1141,7 +1183,10 @@ impl DownloadOrchestrator {
             {
                 Ok(track) => {
                     let found = track.id.to_string();
-                    if Some(found.as_str()) == stale_id {
+                    if stale_id
+                        .map(|old| !Self::refreshed_edition_is_new(old, &found))
+                        .unwrap_or(false)
+                    {
                         debug!(
                             "[Orchestrator] Stale Qobuz source refresh: ISRC search returned the same (dead) id {}",
                             found
@@ -1741,8 +1786,7 @@ impl DownloadOrchestrator {
                     if is_lossless_or_hires {
                         refresh_req.allow_fallback = false;
                     }
-                    match Box::pin(self.qobuz.download_track(&refresh_req, self.db.as_ref()))
-                        .await
+                    match Box::pin(self.qobuz.download_track(&refresh_req, self.db.as_ref())).await
                     {
                         Ok(mut res) => {
                             res.origin_service = Some("qobuz".to_string());
@@ -2538,10 +2582,8 @@ impl DownloadOrchestrator {
                         // adapter before any network call, so it must
                         // re-resolve like every other 320 rung.
                         tidal_320_req.resolution_plan = None;
-                        match Box::pin(
-                            self.tidal.download_track(&tidal_320_req, self.db.as_ref()),
-                        )
-                        .await
+                        match Box::pin(self.tidal.download_track(&tidal_320_req, self.db.as_ref()))
+                            .await
                         {
                             Ok(mut tidal_res) => {
                                 tidal_res.origin_service = Some("tidal".to_string());
@@ -2956,6 +2998,130 @@ lazy_static::lazy_static! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RSQ-03: a refresh only exists when the live hit names a different
+    /// edition than the dead identifier (pure, no network).
+    #[test]
+    fn rsq03_refreshed_edition_requires_a_different_identifier() {
+        assert!(DownloadOrchestrator::refreshed_edition_is_new("100", "200"));
+        assert!(!DownloadOrchestrator::refreshed_edition_is_new(
+            "100", "100"
+        ));
+        assert!(!DownloadOrchestrator::refreshed_edition_is_new(
+            "100", "   "
+        ));
+    }
+
+    /// RSQ-03: the targeted upsert updates the dead row in place and never
+    /// steals/deletes another track's row when the refreshed ID collides with
+    /// the `(service_id, service_track_id)` unique index (migration 0064).
+    #[tokio::test]
+    async fn rsq03_refresh_upsert_updates_in_place_and_survives_collisions() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query(
+            "INSERT OR IGNORE INTO services (id, name, supports_download, max_quality) VALUES (2, 'qobuz', 1, 'hires')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let track: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title) VALUES ('RSQ dead edition') RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let other: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title) VALUES ('RSQ other track') RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) VALUES (?, 2, 'dead-id', 'FLAC', 1)",
+        )
+        .bind(track)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        DownloadOrchestrator::persist_live_isrc_refresh_row(
+            &db,
+            track,
+            2,
+            "fresh-id",
+            Some(24),
+            Some(96.0),
+        )
+        .await;
+
+        let (stid, bd, sr, q): (String, Option<i64>, Option<i64>, Option<i64>) =
+            sqlx::query_as(
+                "SELECT service_track_id, bit_depth, sample_rate, quality_score FROM track_sources WHERE track_id = ? AND service_id = 2",
+            )
+            .bind(track)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(stid, "fresh-id");
+        assert_eq!(bd, Some(24));
+        assert_eq!(sr, Some(96000));
+        assert_eq!(q, Some(1336)); // 1000 + 24*10 + min(96_000/1000, 200)
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
+            .bind(track)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1, "refresh must update the row, never duplicate it");
+
+        // Collision: the refreshed ID already belongs to ANOTHER track.
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) VALUES (?, 2, 'other-fresh', 'FLAC', 1)",
+        )
+        .bind(other)
+        .execute(&db)
+        .await
+        .unwrap();
+        DownloadOrchestrator::persist_live_isrc_refresh_row(
+            &db,
+            track,
+            2,
+            "other-fresh",
+            Some(16),
+            Some(44.1),
+        )
+        .await;
+
+        let (track_stid,): (String,) = sqlx::query_as(
+            "SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = 2",
+        )
+        .bind(track)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            track_stid, "fresh-id",
+            "a colliding refresh must not touch the row it could not claim"
+        );
+        let (other_stid,): (String,) = sqlx::query_as(
+            "SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = 2",
+        )
+        .bind(other)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            other_stid, "other-fresh",
+            "another track's row must never be stolen or deleted"
+        );
+    }
 
     // Synthetic catalogue only: no downloader, keyring, profile, or network.
     #[tokio::test]

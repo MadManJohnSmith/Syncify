@@ -626,13 +626,11 @@ impl QobuzDownloader {
                                     // requests. Detect the mismatch HERE so the caller
                                     // can move to a sibling account instead of failing
                                     // only after the payload is already streaming.
-                                    let delivered_mime = resp_json["mime_type"]
-                                        .as_str()
-                                        .unwrap_or("");
-                                    let delivered_lossy = delivered_mime
-                                        .to_ascii_lowercase()
-                                        .contains("mpeg")
-                                        || stream_url.contains("fmt=5");
+                                    let delivered_mime =
+                                        resp_json["mime_type"].as_str().unwrap_or("");
+                                    let delivered_lossy =
+                                        delivered_mime.to_ascii_lowercase().contains("mpeg")
+                                            || stream_url.contains("fmt=5");
                                     if *format_id != "5" && delivered_lossy {
                                         warn!(
                                             "[Qobuz] Account delivered a lossy/preview stream for format_id={} (mime='{}'): per-account entitlement failure",
@@ -829,17 +827,7 @@ impl QobuzDownloader {
         // retrieval, observed live on retired Trojan/Qobuz catalogue rows) are
         // skipped in favour of a live sibling or a clean miss.
         for track in &tracks.items {
-            if track.isrc.as_deref() == Some(isrc) {
-                if expected_duration_sec > 0 {
-                    let duration_diff = (track.duration - expected_duration_sec).abs();
-                    if duration_diff > 10 {
-                        warn!(
-                            "[Qobuz] ISRC match but duration mismatch: expected {}s, got {}s",
-                            expected_duration_sec, track.duration
-                        );
-                        continue;
-                    }
-                }
+            if Self::isrc_matches_candidate(track, isrc, expected_duration_sec) {
                 if let Some(tok) = user_auth_token.filter(|t| !t.trim().is_empty()) {
                     if self.get_track_by_id(track.id, Some(tok)).await.is_err() {
                         debug!(
@@ -857,7 +845,48 @@ impl QobuzDownloader {
             }
         }
 
+        warn!(
+            "[Qobuz] ISRC search produced no exact match (queried {}, {} candidates)",
+            isrc,
+            tracks.items.len()
+        );
         Err(anyhow!("No exact ISRC match found for: {}", isrc))
+    }
+
+    /// RSQ-01: pure exact-ISRC + duration (`±10 s`) check shared by direct and
+    /// broad ISRC searches (case-insensitive, matching the S197 preflight).
+    fn isrc_matches_candidate(track: &QobuzTrack, isrc: &str, expected_duration_sec: i32) -> bool {
+        let Some(candidate_isrc) = track.isrc.as_deref() else {
+            return false;
+        };
+        if !candidate_isrc.trim().eq_ignore_ascii_case(isrc.trim()) {
+            return false;
+        }
+        if expected_duration_sec > 0 {
+            let duration_diff = (track.duration - expected_duration_sec).abs();
+            if duration_diff > 10 {
+                warn!(
+                    "[Qobuz] ISRC match but duration mismatch: expected {}s, got {}s",
+                    expected_duration_sec, track.duration
+                );
+                return false;
+            }
+        }
+        true
+    }
+
+    /// RSQ-01: pure selector over `track/search` candidates for unit testing
+    /// without network access.
+    #[cfg(test)]
+    fn select_exact_isrc_match(
+        tracks: &[QobuzTrack],
+        isrc: &str,
+        expected_duration_sec: i32,
+    ) -> Option<QobuzTrack> {
+        tracks
+            .iter()
+            .find(|track| Self::isrc_matches_candidate(track, isrc, expected_duration_sec))
+            .cloned()
     }
 
     /// Exact-ISRC lookup with a broader query fallback.
@@ -882,16 +911,7 @@ impl QobuzDownloader {
             .await?;
 
         for track in &tracks {
-            if track.isrc.as_deref() != Some(isrc) {
-                continue;
-            }
-            if expected_duration_sec > 0
-                && (track.duration - expected_duration_sec).abs() > 10
-            {
-                warn!(
-                    "[Qobuz] Broad-query ISRC match but duration mismatch: expected {}s, got {}s",
-                    expected_duration_sec, track.duration
-                );
+            if !Self::isrc_matches_candidate(track, isrc, expected_duration_sec) {
                 continue;
             }
             if let Some(tok) = user_auth_token.filter(|t| !t.trim().is_empty()) {
@@ -1004,7 +1024,7 @@ impl QobuzDownloader {
                 .collect()
         };
 
-        let mut matches = filter_strict(std::mem::take(&mut tracks));
+        let matches = filter_strict(std::mem::take(&mut tracks));
 
         // Filter out dead search-index ghosts (404 on `track/get`) when a token
         // is present.
@@ -3110,6 +3130,55 @@ fn lyrics_blocked_without_db_identity() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RSQ-01: synthetic catalogue entries shaped like `track/search` returns.
+    fn rsq_qobuz_track(id: i64, isrc: &str, duration: i32) -> QobuzTrack {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "title": "RSQ synthetic",
+            "duration": duration,
+            "isrc": isrc,
+        }))
+        .expect("synthetic QobuzTrack must deserialize")
+    }
+
+    #[test]
+    fn rsq01_exact_isrc_match_is_case_insensitive_and_duration_bounded() {
+        let tracks = vec![
+            rsq_qobuz_track(11, "gbAAA1234567", 210),
+            rsq_qobuz_track(12, "GBAAA7654321", 90),
+        ];
+
+        // Catalog lowercase vs query uppercase (and vice versa) must match:
+        // same identity-proof semantics as the S197 preflight.
+        let hit = QobuzDownloader::select_exact_isrc_match(&tracks, "GBAAA1234567", 210)
+            .expect("case-insensitive identity match");
+        assert_eq!(hit.id, 11);
+
+        // The duration window stays ±10 s when the request knows the duration.
+        assert!(QobuzDownloader::select_exact_isrc_match(&tracks, "GBAAA1234567", 224).is_none());
+        assert_eq!(
+            QobuzDownloader::select_exact_isrc_match(&tracks, "GBAAA1234567", 220)
+                .expect("boundary duration match")
+                .id,
+            11
+        );
+
+        // Unknown duration (0) keeps the historical accept-any-duration path.
+        assert_eq!(
+            QobuzDownloader::select_exact_isrc_match(&tracks, "gbaaa1234567", 0)
+                .expect("duration-less match")
+                .id,
+            11
+        );
+
+        // No identity match → None, never "closest".
+        assert!(QobuzDownloader::select_exact_isrc_match(&tracks, "USAAA0000000", 210).is_none());
+
+        // Candidates without a usable ISRC are skipped without panicking.
+        let untagged = vec![rsq_qobuz_track(13, "", 210)];
+        assert!(QobuzDownloader::select_exact_isrc_match(&untagged, "GBAAA1234567", 210).is_none());
+    }
 
     #[test]
     fn direct_download_without_db_identity_keeps_resolved_lyrics() {
