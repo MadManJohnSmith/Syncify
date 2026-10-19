@@ -123,10 +123,8 @@ pub fn read_init(init: &[u8]) -> Result<FlacStreamInfo, Fmp4FlacError> {
 fn parse_stream_info(bytes: [u8; STREAMINFO_LEN]) -> Result<FlacStreamInfo, Fmp4FlacError> {
     let min_block_size = u16::from_be_bytes([bytes[0], bytes[1]]);
     let max_block_size = u16::from_be_bytes([bytes[2], bytes[3]]);
-    let min_frame_size =
-        ((bytes[4] as u32) << 16) | ((bytes[5] as u32) << 8) | bytes[6] as u32;
-    let max_frame_size =
-        ((bytes[7] as u32) << 16) | ((bytes[8] as u32) << 8) | bytes[9] as u32;
+    let min_frame_size = ((bytes[4] as u32) << 16) | ((bytes[5] as u32) << 8) | bytes[6] as u32;
+    let max_frame_size = ((bytes[7] as u32) << 16) | ((bytes[8] as u32) << 8) | bytes[9] as u32;
     let packed = u64::from_be_bytes(bytes[10..18].try_into().unwrap_or([0u8; 8]));
     let sample_rate = ((packed >> 44) & 0xF_FFFF) as u32;
     let channels = (((packed >> 41) & 0x7) as u8) + 1;
@@ -166,10 +164,7 @@ fn parse_stream_info(bytes: [u8; STREAMINFO_LEN]) -> Result<FlacStreamInfo, Fmp4
 
 /// Escribe la cabecera de un FLAC nativo: `fLaC` + STREAMINFO como último
 /// bloque de metadatos. Los frames se añaden después tal cual.
-pub fn write_flac_header(
-    out: &mut impl Write,
-    info: &FlacStreamInfo,
-) -> Result<(), Fmp4FlacError> {
+pub fn write_flac_header(out: &mut impl Write, info: &FlacStreamInfo) -> Result<(), Fmp4FlacError> {
     out.write_all(b"fLaC")?;
     out.write_all(&[0x80, 0x00, 0x00, STREAMINFO_LEN as u8])?;
     out.write_all(&info.bytes)?;
@@ -234,10 +229,7 @@ pub fn demux_segment(
 /// Convierte un fMP4 completo (init + segmentos concatenados, lo que deja la
 /// descarga de Tidal en el fichero temporal) a FLAC nativo. Devuelve las
 /// muestras totales escritas.
-pub fn convert_fmp4_to_flac(
-    src: &Path,
-    dst: &Path,
-) -> Result<u64, Fmp4FlacError> {
+pub fn convert_fmp4_to_flac(src: &Path, dst: &Path) -> Result<u64, Fmp4FlacError> {
     let head = read_head(src, 4 * 1024 * 1024)?;
     let info = read_init(&head)?;
 
@@ -343,8 +335,7 @@ fn box_iter(data: &[u8]) -> impl Iterator<Item = ([u8; 4], &[u8])> {
                 if pos + 16 > data.len() {
                     return None;
                 }
-                let big =
-                    u64::from_be_bytes(data[pos + 8..pos + 16].try_into().ok()?) as usize;
+                let big = u64::from_be_bytes(data[pos + 8..pos + 16].try_into().ok()?) as usize;
                 (big, 16)
             }
             s if s >= 8 => (s, 8),

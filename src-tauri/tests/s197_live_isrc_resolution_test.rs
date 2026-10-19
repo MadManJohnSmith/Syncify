@@ -367,13 +367,9 @@ async fn s197_live_isrc_resolution_scenarios() {
 
     let db_dup = fresh_db().await;
     insert_active_tidal_account(&db_dup).await;
-    let tid_dup = insert_spotify_origin_track_with_identity(
-        &db_dup,
-        ISRC,
-        "After Dark - Dub Mix",
-        367_827,
-    )
-    .await;
+    let tid_dup =
+        insert_spotify_origin_track_with_identity(&db_dup, ISRC, "After Dark - Dub Mix", 367_827)
+            .await;
 
     let pf_dup = evaluate_track_preflight(&db_dup, tid_dup, None, None, false, true)
         .await

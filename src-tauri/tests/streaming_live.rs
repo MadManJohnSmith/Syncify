@@ -432,12 +432,18 @@ async fn dash_download_to_cache_produces_a_playable_flac() {
         source_name: resolution.source_name.clone(),
         match_method: "direct".to_string(),
     };
-    let session =
-        syncify_tauri_lib::services::stream_cache::StreamSession::new(1, tidal_id, info, path.clone());
+    let session = syncify_tauri_lib::services::stream_cache::StreamSession::new(
+        1,
+        tidal_id,
+        info,
+        path.clone(),
+    );
 
     let mut primed_at: Option<f64> = None;
     let mut prime = || {
-        let written = session.downloaded_bytes.load(std::sync::atomic::Ordering::SeqCst);
+        let written = session
+            .downloaded_bytes
+            .load(std::sync::atomic::Ordering::SeqCst);
         primed_at = Some(written as f64);
         Ok(())
     };
@@ -470,7 +476,10 @@ async fn dash_download_to_cache_produces_a_playable_flac() {
     // seek dentro de lo descargado, como haría la app.
     let mut engine = syncify_player::PlayerEngine::new().expect("audio output");
     let loaded = engine.load(&path, false).expect("decode native FLAC");
-    let duration = loaded.duration.expect("duración del STREAMINFO").as_secs_f64();
+    let duration = loaded
+        .duration
+        .expect("duración del STREAMINFO")
+        .as_secs_f64();
     assert!(
         (duration - flac.duration_secs()).abs() < 1.0,
         "duración {duration} vs STREAMINFO {}",

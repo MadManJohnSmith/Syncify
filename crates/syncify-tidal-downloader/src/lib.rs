@@ -1002,9 +1002,7 @@ impl TidalDownloader {
             if track.isrc.as_deref() != Some(isrc) {
                 continue;
             }
-            if expected_duration_sec > 0
-                && (track.duration - expected_duration_sec).abs() > 10
-            {
+            if expected_duration_sec > 0 && (track.duration - expected_duration_sec).abs() > 10 {
                 warn!(
                     "[Tidal] ISRC match '{}' found but duration mismatch (expected {}s, got {}s)",
                     track.title, expected_duration_sec, track.duration
@@ -1074,9 +1072,7 @@ impl TidalDownloader {
             if track.isrc.as_deref() != Some(isrc) {
                 continue;
             }
-            if expected_duration_sec > 0
-                && (track.duration - expected_duration_sec).abs() > 10
-            {
+            if expected_duration_sec > 0 && (track.duration - expected_duration_sec).abs() > 10 {
                 continue;
             }
             info!(
@@ -1371,24 +1367,24 @@ impl TidalDownloader {
         Ok(candidate_tracks)
     }
 
-/// Strict metadata acceptance rule: compatible title, compatible artist and a
-/// duration within ±3 s of the real catalog duration. Kept as a free function
-/// so the rule is unit-testable without network access.
-fn strict_metadata_match(
-    track_name: &str,
-    artist_name: &str,
-    expected_duration_sec: i32,
-    track: &TidalTrack,
-) -> bool {
-    if !title_matches(track_name, &track.title) {
-        return false;
+    /// Strict metadata acceptance rule: compatible title, compatible artist and a
+    /// duration within ±3 s of the real catalog duration. Kept as a free function
+    /// so the rule is unit-testable without network access.
+    fn strict_metadata_match(
+        track_name: &str,
+        artist_name: &str,
+        expected_duration_sec: i32,
+        track: &TidalTrack,
+    ) -> bool {
+        if !title_matches(track_name, &track.title) {
+            return false;
+        }
+        let track_artist_owned = track.artist_name().unwrap_or_default();
+        if !artist_matches(artist_name, &track_artist_owned) {
+            return false;
+        }
+        expected_duration_sec <= 0 || (track.duration - expected_duration_sec).abs() <= 3
     }
-    let track_artist_owned = track.artist_name().unwrap_or_default();
-    if !artist_matches(artist_name, &track_artist_owned) {
-        return false;
-    }
-    expected_duration_sec <= 0 || (track.duration - expected_duration_sec).abs() <= 3
-}
 
     /// Strict title + artist + duration match that must be UNIQUE (or resolve
     /// same-recording re-releases deterministically by studio-origin score).
@@ -1667,8 +1663,7 @@ fn strict_metadata_match(
                         let text = resp.text().await.unwrap_or_default();
 
                         if status.is_success() {
-                            if let Ok(parsed) =
-                                parse_tidal_playback_manifest(&text, &attempt_param)
+                            if let Ok(parsed) = parse_tidal_playback_manifest(&text, &attempt_param)
                             {
                                 let obtained_q = if parsed.quality_class == QualityClass::Lossy {
                                     "320"
@@ -2737,9 +2732,8 @@ mod tests {
 
         // No agreeing hit: catalogue order (legacy first-hit behavior).
         let only_wrong = [wrong.clone()];
-        let picked =
-            TidalDownloader::select_identity_isrc_candidate(&only_wrong, "After Dark", "")
-                .expect("first hit must remain selectable");
+        let picked = TidalDownloader::select_identity_isrc_candidate(&only_wrong, "After Dark", "")
+            .expect("first hit must remain selectable");
         assert_eq!(picked.title, "Run River");
 
         // Empty candidate set yields None.

@@ -113,7 +113,12 @@ pub fn pick_identity_candidate(
         if identity_conflicts(expected_title, expected_duration_ms, candidate) {
             continue;
         }
-        let score = identity_score(expected_title, expected_artist, expected_duration_ms, candidate);
+        let score = identity_score(
+            expected_title,
+            expected_artist,
+            expected_duration_ms,
+            candidate,
+        );
         if best.map_or(true, |(_, best_score)| score > best_score) {
             best = Some((idx, score));
         }

@@ -891,12 +891,7 @@ async fn metadata_stage_match(
                     return Err(message);
                 }
                 let picked = downloader
-                    .search_by_metadata(
-                        &context.title,
-                        &context.artist,
-                        expected_sec,
-                        Some(&token),
-                    )
+                    .search_by_metadata(&context.title, &context.artist, expected_sec, Some(&token))
                     .await
                     .map_err(|e| e.to_string())?;
                 if !qobuz_title_matches(&context.title, &picked.title) {

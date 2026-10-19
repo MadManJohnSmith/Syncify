@@ -578,14 +578,18 @@ pub fn clean_title(title: &str) -> String {
 
 pub fn title_matches(expected: &str, candidate: &str) -> bool {
     let clean_exp = clean_title(expected).to_lowercase().replace(" & ", " and ");
-    let clean_cand = clean_title(candidate).to_lowercase().replace(" & ", " and ");
+    let clean_cand = clean_title(candidate)
+        .to_lowercase()
+        .replace(" & ", " and ");
     clean_exp == clean_cand || clean_cand.contains(&clean_exp) || clean_exp.contains(&clean_cand)
 }
 
 pub fn artist_matches(expected: &str, candidate: &str) -> bool {
     let exp_low = expected.to_lowercase();
     let cand_low = candidate.to_lowercase();
-    exp_low == cand_low || cand_low.contains(&exp_low) || clean_artist_parts_match(&exp_low, &cand_low)
+    exp_low == cand_low
+        || cand_low.contains(&exp_low)
+        || clean_artist_parts_match(&exp_low, &cand_low)
 }
 
 fn clean_artist_parts_match(expected_lower: &str, found_lower: &str) -> bool {
@@ -593,8 +597,16 @@ fn clean_artist_parts_match(expected_lower: &str, found_lower: &str) -> bool {
         return true;
     }
     let sep = [',', ';', '&', '/', '|'];
-    for ep in expected_lower.split(&sep[..]).map(str::trim).filter(|s| !s.is_empty()) {
-        for fp in found_lower.split(&sep[..]).map(str::trim).filter(|s| !s.is_empty()) {
+    for ep in expected_lower
+        .split(&sep[..])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        for fp in found_lower
+            .split(&sep[..])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             if ep == fp {
                 return true;
             }

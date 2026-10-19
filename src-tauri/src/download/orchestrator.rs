@@ -682,18 +682,18 @@ impl DownloadOrchestrator {
                                     )
                                     .await
                                 {
-                                        Ok(t) => Some(t),
-                                        Err(_) => self
-                                            .tidal
-                                            .search_by_isrc_broad(
-                                                sib_trimmed,
-                                                &request.track_name,
-                                                &request.artist_name,
-                                                eff_dur,
-                                            )
-                                            .await
-                                            .ok(),
-                                    };
+                                    Ok(t) => Some(t),
+                                    Err(_) => self
+                                        .tidal
+                                        .search_by_isrc_broad(
+                                            sib_trimmed,
+                                            &request.track_name,
+                                            &request.artist_name,
+                                            eff_dur,
+                                        )
+                                        .await
+                                        .ok(),
+                                };
                                 if let Some(track) = found {
                                     info!(
                                         "[Orchestrator] ✓ Fallback matched via MusicBrainz recording sibling ISRC {}: Tidal ID {}",
