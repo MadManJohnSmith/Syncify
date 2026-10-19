@@ -2883,6 +2883,48 @@ impl EnrichmentEngine {
         };
 
         let is_new_global_track = existing_track_id.is_none();
+
+        // ED-04: la identidad por grabación (ISRC) no autoriza a mover una
+        // grabación a otra edición. Si el track ya existe con álbum conocido y
+        // llega un álbum distinto sin evidencia de release que lo corrobore, la
+        // decisión es de una persona (`needs_review`), no una reasignación
+        // silenciosa. Ver `docs/DECISION_SELECCION_EDICION.md` y D-07.
+        if let Some(tid) = existing_track_id {
+            let current_album_title: Option<String> = sqlx::query_scalar(
+                "SELECT a.title FROM tracks t JOIN albums a ON a.id = t.album_id WHERE t.id = ?",
+            )
+            .bind(tid)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("ED-04 album lookup failed: {e}"))?;
+            let has_release_evidence = input
+                .album_provider_track_id
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|s| !s.is_empty());
+            if let (Some(current), Some(incoming)) = (
+                current_album_title.as_deref(),
+                input.origin_meta.album.as_deref(),
+            ) {
+                let normalize = |s: &str| {
+                    s.split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .to_lowercase()
+                };
+                let current_norm = normalize(current);
+                let incoming_norm = normalize(incoming);
+                if !has_release_evidence
+                    && !current_norm.is_empty()
+                    && !incoming_norm.is_empty()
+                    && current_norm != incoming_norm
+                {
+                    return Err(format!(
+                        "needs_review: la grabación ya existe en «{current}» y llegó con «{incoming}» sin evidencia de release (ED-04)"
+                    ));
+                }
+            }
+        }
         let effective_audio_quality: Option<String>;
 
         let track_id = if let Some(tid) = existing_track_id {
@@ -3577,8 +3619,8 @@ pub fn evaluate_enrichment_status(
 }
 
 /// Input payload for sync-time pre-enrichment and persistence
-#[derive(Debug, Clone, Default)]
 // Cubierto por `tests/sync_pre_enrichment_test.rs` y `tests/tidal_sync_persistence_test.rs`.
+#[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct SyncTrackInput {
     pub origin_meta: OriginTrackMetadata,

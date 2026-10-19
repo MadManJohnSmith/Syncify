@@ -127,26 +127,6 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   mayor riesgo, y frenar el crecimiento con una puerta que cuente el total (solo puede
   bajar).
 
-### D-07 — Contrato de identidad por edición sin decidir
-
-- **Observado**: `src-tauri/tests/track_identity_and_tagging_test.rs` espera
-  `needs_review` cuando el mismo ISRC aparece en un álbum distinto; el producto devuelve
-  `is_already_present: true` antes de llegar a la guarda de conflicto de release
-  (`src-tauri/src/services/enrichment.rs:3412`), que en ese camino es inalcanzable.
-- **Autoridad de dominio**: `docs/DECISION_SELECCION_EDICION.md:204-205` define la
-  identidad «solo grabación» como ISRC exacto **más** título calificado, artista y
-  duración con tolerancia, y exige revisión ante «falta o conflicto relevante» de esas
-  evidencias («no igualar silenciosamente versiones distintas»). Pero el mismo documento
-  (`:199-201`) dice que entre álbum y single la edición cambia legítimamente y que el
-  número de pista solo corrobora dentro del mismo release. El caso del test —misma
-  grabación, álbum original vs. recopilación— **no queda resuelto por la ADR**.
-- **Cierra**: decidir con el propietario del dominio si una recopilación es «edición
-  materialmente distinta» que debe pasar por revisión (y entonces el producto tiene que
-  consultar la preferencia de edición antes de responder «ya presente»), o si la
-  identidad por grabación basta y lo que sobra es la expectativa del test. En el segundo
-  caso se actualiza el test **y** la ADR en el mismo cambio; no se ajusta la aserción a
-  solas.
-
 ### D-08 — Dos funciones monstruo
 
 - **Observado**: `perform_sync_service_with_emitter_inner`
@@ -182,6 +162,7 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 | C-17 | El README afirmaba 9 tests ignorados y el árbol tiene 13 | `1e35108`; puerta que compara la cifra en ambos idiomas |
 | C-18 | No había mapa de entrada para un agente | `b4a9588`; `AGENTS.md` escaneado por `scripts/tests/test_docs_consistency.py` |
 | C-19 | El subsistema de reproducción retirado seguía registrado (puerta de higiene en rojo) | `resolve_playback_source`, el protocolo y sus tests borrados; `playback.rs` 628 → 194 líneas; puerta 9/9, suite 1 rojo menos |
+| C-20 | Misma grabación en otra edición pasaba sin revisión (ED-04 inalcanzable en ese camino) | Guarda antes de escribir: álbum canónico ≠ entrante sin evidencia de release → `needs_review`; suite 2740/0/13 |
 
 ### D-02 — Cerrada, y con qué alcance exacto
 
