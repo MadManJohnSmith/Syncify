@@ -1111,8 +1111,6 @@ fn main() {
             // S202 / TASK-7.1 CR-5: country & region tag repair (dry-run + apply)
             commands::plan_country_tag_repair,
             commands::apply_country_tag_repair,
-            // S194: local playback of downloaded tracks
-            commands::resolve_playback_source,
             // Fase 1 del player: motor nativo (rodio + symphonia)
             commands::player_load,
             commands::player_load_track,
