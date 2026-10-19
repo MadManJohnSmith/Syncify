@@ -17,7 +17,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "src-tauri" / "src"
-BASELINE = 243
+BASELINE = 225
 PATTERN = re.compile(r"let _ = sqlx::query")
 
 

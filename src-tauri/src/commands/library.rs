@@ -1295,11 +1295,14 @@ pub async fn enrich_metadata_musicbrainz(
                 if results.is_empty() {
                     // No matches for any ISRC - mark all as NOT_FOUND
                     for (track_id, _, _, _) in batch {
-                        let _ = sqlx::query(
-                            "UPDATE tracks SET musicbrainz_id = 'NOT_FOUND' WHERE id = ?",
+                        let _ = crate::db::write_or_log(
+                            "enrich_metadata_musicbrainz",
+                            sqlx::query(
+                                "UPDATE tracks SET musicbrainz_id = 'NOT_FOUND' WHERE id = ?",
+                            )
+                            .bind(track_id)
+                            .execute(&state.db),
                         )
-                        .bind(track_id)
-                        .execute(&state.db)
                         .await;
                         not_found += 1;
                     }
@@ -1369,20 +1372,18 @@ pub async fn enrich_metadata_musicbrainz(
                                     }
                                 } else {
                                     // Mismatch - treat as not found to avoid bad data
-                                    let _ = sqlx::query("UPDATE tracks SET musicbrainz_id = 'MISMATCH' WHERE id = ?")
+                                    let _ = crate::db::write_or_log("enrich_metadata_musicbrainz", sqlx::query("UPDATE tracks SET musicbrainz_id = 'MISMATCH' WHERE id = ?")
                                         .bind(track_id)
-                                        .execute(&state.db)
-                                        .await;
+                                        .execute(&state.db)).await;
                                     failed += 1;
                                 }
                             }
                             Ok(None) => {
-                                let _ = sqlx::query(
+                                let _ = crate::db::write_or_log("enrich_metadata_musicbrainz", sqlx::query(
                                     "UPDATE tracks SET musicbrainz_id = 'NOT_FOUND' WHERE id = ?",
                                 )
                                 .bind(track_id)
-                                .execute(&state.db)
-                                .await;
+                                .execute(&state.db)).await;
                                 not_found += 1;
                             }
                             Err(_) => {
@@ -1861,13 +1862,12 @@ pub async fn add_to_playlist(
     }
 
     // Update track count
-    let _ = sqlx::query(
+    let _ = crate::db::write_or_log("add_to_playlist", sqlx::query(
         "UPDATE playlists SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?) WHERE id = ?"
     )
     .bind(playlist_id)
     .bind(playlist_id)
-    .execute(&state.db)
-    .await;
+    .execute(&state.db)).await;
 
     Ok(format!("Added {} tracks to playlist", added))
 }
@@ -3818,12 +3818,14 @@ pub async fn auto_resolve_duplicates_inner(
 
             if let Some(lm) = loser_meta {
                 // Clear unique columns on loser before backfilling onto winner to prevent UNIQUE collisions
-                let _ = sqlx::query("UPDATE tracks SET isrc = NULL, spotify_id = NULL, qobuz_id = NULL, musicbrainz_id = NULL WHERE id = ?")
+                let _ = crate::db::write_or_log("resolve_group", sqlx::query("UPDATE tracks SET isrc = NULL, spotify_id = NULL, qobuz_id = NULL, musicbrainz_id = NULL WHERE id = ?")
                     .bind(loser_id)
-                    .execute(&mut **tx).await;
+                    .execute(&mut **tx)).await;
 
-                let _ = sqlx::query(
-                    r#"
+                let _ = crate::db::write_or_log(
+                    "resolve_group",
+                    sqlx::query(
+                        r#"
                     UPDATE tracks
                     SET
                         album_id = COALESCE(tracks.album_id, ?),
@@ -3843,35 +3845,36 @@ pub async fn auto_resolve_duplicates_inner(
                         audio_quality = COALESCE(?, tracks.audio_quality, ?)
                     WHERE tracks.id = ?
                     "#,
+                    )
+                    .bind(lm.album_id)
+                    .bind(lm.duration_ms)
+                    .bind(lm.track_number)
+                    .bind(lm.disc_number)
+                    .bind(lm.isrc)
+                    .bind(lm.musicbrainz_id)
+                    .bind(lm.genre)
+                    .bind(lm.subgenre)
+                    .bind(lm.release_year)
+                    .bind(lm.record_label)
+                    .bind(lm.bpm)
+                    .bind(lm.musical_key)
+                    .bind(lm.spotify_id)
+                    .bind(lm.qobuz_id)
+                    .bind(merged_tier.map(|t| t.as_str()))
+                    .bind(lm.audio_quality)
+                    .bind(winner_id)
+                    .execute(&mut **tx),
                 )
-                .bind(lm.album_id)
-                .bind(lm.duration_ms)
-                .bind(lm.track_number)
-                .bind(lm.disc_number)
-                .bind(lm.isrc)
-                .bind(lm.musicbrainz_id)
-                .bind(lm.genre)
-                .bind(lm.subgenre)
-                .bind(lm.release_year)
-                .bind(lm.record_label)
-                .bind(lm.bpm)
-                .bind(lm.musical_key)
-                .bind(lm.spotify_id)
-                .bind(lm.qobuz_id)
-                .bind(merged_tier.map(|t| t.as_str()))
-                .bind(lm.audio_quality)
-                .bind(winner_id)
-                .execute(&mut **tx)
                 .await;
             }
 
             // Preserve favorite status if loser was favorited
-            let _ = sqlx::query(
+            let _ = crate::db::write_or_log("resolve_group", sqlx::query(
                 "UPDATE tracks SET is_favorite = 1 WHERE id = ? AND EXISTS (SELECT 1 FROM tracks WHERE id = ? AND is_favorite = 1)"
             )
             .bind(winner_id)
             .bind(loser_id)
-            .execute(&mut **tx).await;
+            .execute(&mut **tx)).await;
 
             // 1. Transfer track_sources respecting UNIQUE(track_id, service_id)
             #[derive(sqlx::FromRow)]
@@ -3902,17 +3905,20 @@ pub async fn auto_resolve_duplicates_inner(
 
                 match winner_src {
                     None => {
-                        let _ = sqlx::query("UPDATE track_sources SET track_id = ? WHERE id = ?")
-                            .bind(winner_id)
-                            .bind(ls.id)
-                            .execute(&mut **tx)
-                            .await;
+                        let _ = crate::db::write_or_log(
+                            "resolve_group",
+                            sqlx::query("UPDATE track_sources SET track_id = ? WHERE id = ?")
+                                .bind(winner_id)
+                                .bind(ls.id)
+                                .execute(&mut **tx),
+                        )
+                        .await;
                     }
                     Some((ws_id, ws_qs)) => {
                         let loser_qs = ls.quality_score.unwrap_or(0);
                         let winner_qs_val = ws_qs.unwrap_or(0);
                         if loser_qs > winner_qs_val {
-                            let _ = sqlx::query(
+                            let _ = crate::db::write_or_log("resolve_group", sqlx::query(
                                 r#"
                                 UPDATE track_sources
                                 SET service_track_id = ?, format = COALESCE(?, format),
@@ -3928,12 +3934,15 @@ pub async fn auto_resolve_duplicates_inner(
                             .bind(ls.bitrate)
                             .bind(loser_qs)
                             .bind(ws_id)
-                            .execute(&mut **tx).await;
+                            .execute(&mut **tx)).await;
                         }
-                        let _ = sqlx::query("DELETE FROM track_sources WHERE id = ?")
-                            .bind(ls.id)
-                            .execute(&mut **tx)
-                            .await;
+                        let _ = crate::db::write_or_log(
+                            "resolve_group",
+                            sqlx::query("DELETE FROM track_sources WHERE id = ?")
+                                .bind(ls.id)
+                                .execute(&mut **tx),
+                        )
+                        .await;
                     }
                 }
             }
@@ -3955,16 +3964,22 @@ pub async fn auto_resolve_duplicates_inner(
                     .unwrap_or(false);
 
             if !winner_has_download {
-                let _ = sqlx::query("UPDATE downloads SET track_id = ? WHERE track_id = ?")
-                    .bind(winner_id)
-                    .bind(loser_id)
-                    .execute(&mut **tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "resolve_group",
+                    sqlx::query("UPDATE downloads SET track_id = ? WHERE track_id = ?")
+                        .bind(winner_id)
+                        .bind(loser_id)
+                        .execute(&mut **tx),
+                )
+                .await;
             } else {
-                let _ = sqlx::query("DELETE FROM downloads WHERE track_id = ?")
-                    .bind(loser_id)
-                    .execute(&mut **tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "resolve_group",
+                    sqlx::query("DELETE FROM downloads WHERE track_id = ?")
+                        .bind(loser_id)
+                        .execute(&mut **tx),
+                )
+                .await;
             }
 
             // 4. Transfer lyrics
@@ -4051,12 +4066,15 @@ pub async fn auto_resolve_duplicates_inner(
             )
             .fetch_one(&mut **tx).await.unwrap_or(false);
             if has_op_journal {
-                let _ = sqlx::query(
-                    "UPDATE OR IGNORE operation_journal SET track_id = ? WHERE track_id = ?",
+                let _ = crate::db::write_or_log(
+                    "resolve_group",
+                    sqlx::query(
+                        "UPDATE OR IGNORE operation_journal SET track_id = ? WHERE track_id = ?",
+                    )
+                    .bind(winner_id)
+                    .bind(loser_id)
+                    .execute(&mut **tx),
                 )
-                .bind(winner_id)
-                .bind(loser_id)
-                .execute(&mut **tx)
                 .await;
             }
 
@@ -4078,11 +4096,14 @@ pub async fn auto_resolve_duplicates_inner(
             }
 
             if let Some(tier) = merged_tier {
-                let _ = sqlx::query("UPDATE tracks SET audio_quality = ? WHERE id = ?")
-                    .bind(tier.as_str())
-                    .bind(winner_id)
-                    .execute(&mut **tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "resolve_group",
+                    sqlx::query("UPDATE tracks SET audio_quality = ? WHERE id = ?")
+                        .bind(tier.as_str())
+                        .bind(winner_id)
+                        .execute(&mut **tx),
+                )
+                .await;
             }
 
             // 12. Finally remove the loser track record
@@ -4324,13 +4345,16 @@ pub async fn auto_resolve_duplicates_inner(
 
             for (idx, (tid,)) in track_rows.into_iter().enumerate() {
                 let new_num = (idx + 1) as i32;
-                let _ = sqlx::query(
-                    "UPDATE tracks SET track_number = ? WHERE id = ? AND track_number != ?",
+                let _ = crate::db::write_or_log(
+                    "resolve_group",
+                    sqlx::query(
+                        "UPDATE tracks SET track_number = ? WHERE id = ? AND track_number != ?",
+                    )
+                    .bind(new_num)
+                    .bind(tid)
+                    .bind(new_num)
+                    .execute(&mut *tx),
                 )
-                .bind(new_num)
-                .bind(tid)
-                .bind(new_num)
-                .execute(&mut *tx)
                 .await;
             }
         }
@@ -4341,19 +4365,19 @@ pub async fn auto_resolve_duplicates_inner(
         // unconditionally collapsed a declared 10 to the number of surviving local rows.
         // BD-5: `declared_total_tracks` is what makes that distinction durable
         // (0088), so this path asks the same column the triggers do.
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("resolve_group", sqlx::query(
             "UPDATE albums SET total_tracks = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ? AND (is_stub != 1 OR is_stub IS NULL) AND declared_total_tracks = 0"
         )
         .bind(album_id)
-        .execute(&mut *tx).await;
+        .execute(&mut *tx)).await;
 
         // The merge deletes tracks rows, so the imported count the 0088 triggers
         // maintain has to be refreshed here too.
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("resolve_group", sqlx::query(
             "UPDATE albums SET local_track_count = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = albums.id) WHERE id = ?"
         )
         .bind(album_id)
-        .execute(&mut *tx).await;
+        .execute(&mut *tx)).await;
     }
 
     tx.commit()
@@ -4642,7 +4666,7 @@ pub async fn perform_check_track_availability(
         };
 
         // Update database with new availability status, reason, and last_checked timestamp
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("perform_check_track_availability", sqlx::query(
             r#"
             UPDATE track_sources
             SET available = ?, availability_status = ?, availability_reason = ?, last_checked = CURRENT_TIMESTAMP
@@ -4653,8 +4677,7 @@ pub async fn perform_check_track_availability(
         .bind(&new_status)
         .bind(&new_reason)
         .bind(src.id)
-        .execute(db)
-        .await;
+        .execute(db)).await;
 
         let mut updated = src;
         updated.available = new_available;
