@@ -32,7 +32,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::services::mpris::{MprisMetadataInput, MprisService, PlaybackStatus};
 use crate::services::stream_cache::{self, StreamCacheState, StreamSession};
-use crate::services::streaming::StreamSourceInfo;
+use crate::services::streaming::{DashManifest, StreamSourceInfo};
 
 /// Intervalo del ticker de posición.
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
@@ -370,29 +370,46 @@ pub async fn player_load_track(
     }
 
     // 2b) Descarga progresiva: prime (buffer inicial) + tarea de fondo.
-    let response = http
-        .get(&resolved.url)
-        .send()
-        .await
-        .map_err(|e| format!("No se pudo abrir el stream: {}", e))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "El proveedor rechazó el stream (HTTP {})",
-            response.status()
-        ));
-    }
-
     let session = StreamSession::new(seq, track_id, resolved.info.clone(), cache_path);
     cache.install(session.clone());
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<Option<f64>, String>>();
-    spawn_stream_download(
-        app.clone(),
-        session.clone(),
-        response,
-        autoplay,
-        volume,
-        ready_tx,
-    );
+
+    if let Some(dash) = resolved.dash.clone() {
+        // Tidal lossless/hi-res llega segmentado: el backend lo convierte a
+        // FLAC nativo progresivo (init + frames) mientras se reproduce.
+        spawn_dash_stream_download(
+            app.clone(),
+            session.clone(),
+            http.clone(),
+            dash,
+            autoplay,
+            volume,
+            ready_tx,
+        );
+    } else {
+        let response = match http.get(&resolved.url).send().await {
+            Ok(response) => response,
+            Err(e) => {
+                session.canceled.store(true, Ordering::SeqCst);
+                return Err(format!("No se pudo abrir el stream: {}", e));
+            }
+        };
+        if !response.status().is_success() {
+            session.canceled.store(true, Ordering::SeqCst);
+            return Err(format!(
+                "El proveedor rechazó el stream (HTTP {})",
+                response.status()
+            ));
+        }
+        spawn_stream_download(
+            app.clone(),
+            session.clone(),
+            response,
+            autoplay,
+            volume,
+            ready_tx,
+        );
+    }
 
     match tokio::time::timeout(STREAM_PRIME_TIMEOUT, ready_rx).await {
         Ok(Ok(Ok(duration_sec))) => Ok(PlayerLoadResult {
@@ -563,6 +580,59 @@ fn spawn_stream_download(
                     stream_cache::emit_state(&app, &session, Some(msg));
                     return;
                 }
+            }
+        }
+    })
+}
+
+/// Descarga progresiva de un manifiesto DASH de Tidal: convierte cada segmento
+/// (FLAC-en-ISOBMFF) en frames de un FLAC nativo que crece, para que el motor
+/// pueda reproducirlo y buscar como con cualquier FLAC local.
+fn spawn_dash_stream_download(
+    app: AppHandle,
+    session: Arc<StreamSession>,
+    http: reqwest::Client,
+    dash: DashManifest,
+    autoplay: bool,
+    volume: f64,
+    ready: tokio::sync::oneshot::Sender<Result<Option<f64>, String>>,
+) -> JoinHandle<()> {
+    tauri::async_runtime::spawn(async move {
+        let mut ready = Some(ready);
+        let mut prime = || match load_stream_into_engine(&app, &session, autoplay, volume) {
+            Ok(duration) => {
+                if let Some(tx) = ready.take() {
+                    let _ = tx.send(Ok(duration));
+                }
+                Ok(())
+            }
+            Err(err) => {
+                if let Some(tx) = ready.take() {
+                    let _ = tx.send(Err(err.clone()));
+                }
+                Err(err)
+            }
+        };
+        let mut progress = || stream_cache::emit_state(&app, &session, None);
+        let result =
+            stream_cache::download_dash_to_cache(&http, &session, &dash, &mut prime, &mut progress)
+                .await;
+        match result {
+            Ok(()) => {
+                if session.is_canceled() {
+                    if let Some(tx) = ready.take() {
+                        let _ = tx.send(Err("carga reemplazada".to_string()));
+                    }
+                } else {
+                    stream_cache::emit_state(&app, &session, None);
+                }
+            }
+            Err(err) => {
+                session.canceled.store(true, Ordering::SeqCst);
+                if let Some(tx) = ready.take() {
+                    let _ = tx.send(Err(err.clone()));
+                }
+                stream_cache::emit_state(&app, &session, Some(err));
             }
         }
     })

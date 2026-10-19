@@ -20,12 +20,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::io::AsyncWriteExt;
 
-use super::streaming::StreamSourceInfo;
+use super::streaming::{DashManifest, StreamSourceInfo};
 
 /// Presupuesto máximo de la caché de streaming (se limpia la más antigua).
 const CACHE_BUDGET_BYTES: u64 = 3 * 1024 * 1024 * 1024; // 3 GiB
@@ -61,6 +62,9 @@ pub struct StreamSession {
     /// `0` = desconocido (servidor sin Content-Length).
     pub total_bytes: AtomicU64,
     pub downloaded_bytes: AtomicU64,
+    /// Milisegundos de audio ya escritos (0 = no aplica): el streaming DASH
+    /// conoce la duración real por muestras demuxeadas, no por bytes.
+    pub audio_millis: AtomicU64,
     pub complete: AtomicBool,
     pub canceled: AtomicBool,
     /// El motor ya está cargado con este fichero.
@@ -87,6 +91,7 @@ impl StreamSession {
             path,
             total_bytes: AtomicU64::new(0),
             downloaded_bytes: AtomicU64::new(0),
+            audio_millis: AtomicU64::new(0),
             complete: AtomicBool::new(false),
             canceled: AtomicBool::new(false),
             started: AtomicBool::new(false),
@@ -102,7 +107,14 @@ impl StreamSession {
 
     /// Segundos de audio disponibles según los bytes descargados.
     /// `None` cuando aún no se conoce el tamaño total.
+    ///
+    /// El streaming DASH (FLAC segmentado) escribe las muestras demuxeadas, así
+    /// que su frontera es exacta: `audio_millis` manda cuando está presente.
     pub fn frontier_secs(&self, duration_secs: f64) -> Option<f64> {
+        let audio_ms = self.audio_millis.load(Ordering::SeqCst);
+        if audio_ms > 0 && duration_secs.is_finite() && duration_secs > 0.0 {
+            return Some((audio_ms as f64 / 1000.0).min(duration_secs));
+        }
         let total = self.total_bytes.load(Ordering::SeqCst);
         if total == 0 || !duration_secs.is_finite() || duration_secs <= 0.0 {
             return None;
@@ -259,6 +271,164 @@ pub fn read_complete_cache(path: &Path) -> Option<StreamSourceInfo> {
     }
 }
 
+/// Intervalo máximo entre eventos de progreso durante la descarga DASH.
+const DASH_EVENT_INTERVAL: Duration = Duration::from_millis(750);
+/// Reintentos por petición (init y cada segmento).
+const DASH_FETCH_ATTEMPTS: u32 = 3;
+
+/// Descarga un manifiesto DASH (FLAC-en-ISOBMFF segmentado, lo que Tidal
+/// entrega para lossless/hi-res) a la caché como un **FLAC nativo que crece**:
+/// cabecera con el STREAMINFO real del init + frames demuxeados por segmento.
+///
+/// `on_prime` se llama una vez, cuando hay suficiente audio para abrir el
+/// motor (devolver `Err` aborta); `on_progress` se llama como mucho cada
+/// `DASH_EVENT_INTERVAL` para emitir estado. Si algo falla o se cancela, el
+/// parcial se borra para no dejar una caché mentirosa.
+pub async fn download_dash_to_cache<F, G>(
+    http: &reqwest::Client,
+    session: &StreamSession,
+    dash: &DashManifest,
+    on_prime: &mut F,
+    on_progress: &mut G,
+) -> Result<(), String>
+where
+    F: FnMut() -> Result<(), String>,
+    G: FnMut(),
+{
+    let result = download_dash_inner(http, session, dash, on_prime, on_progress).await;
+    if result.is_err() && !session.complete.load(Ordering::SeqCst) {
+        let _ = tokio::fs::remove_file(&session.path).await;
+    }
+    result
+}
+
+async fn download_dash_inner<F, G>(
+    http: &reqwest::Client,
+    session: &StreamSession,
+    dash: &DashManifest,
+    on_prime: &mut F,
+    on_progress: &mut G,
+) -> Result<(), String>
+where
+    F: FnMut() -> Result<(), String>,
+    G: FnMut(),
+{
+    // El init trae el STREAMINFO real: de ahí salen la duración y la etiqueta
+    // (Tidal declara 96 kHz en el MPD donde el FLAC real trae 192 kHz).
+    let init = get_bytes_with_retries(http, &dash.init_url)
+        .await
+        .map_err(|e| format!("No se pudo descargar el init del stream: {}", e))?;
+    let info = syncify_fmp4_flac::read_init(&init)
+        .map_err(|e| format!("El init del stream no es FLAC: {}", e))?;
+
+    let mut file = tokio::fs::File::create(&session.path)
+        .await
+        .map_err(|e| format!("No se pudo crear la caché del stream: {}", e))?;
+    let mut header: Vec<u8> = Vec::with_capacity(4 + 4 + 34);
+    syncify_fmp4_flac::write_flac_header(&mut header, &info)
+        .map_err(|e| format!("No se pudo escribir la cabecera FLAC: {}", e))?;
+    file.write_all(&header)
+        .await
+        .map_err(|e| format!("Error escribiendo la caché del stream: {}", e))?;
+
+    let total_secs = info.duration_secs();
+    let prime_secs = (total_secs / 10.0).clamp(8.0, 30.0);
+    let mut primed = session.started.load(Ordering::SeqCst);
+    let mut samples_total: u64 = 0;
+    let mut written_bytes: u64 = header.len() as u64;
+    let mut last_emit = Instant::now();
+    session
+        .downloaded_bytes
+        .store(written_bytes, Ordering::SeqCst);
+
+    for seg in 1..=dash.total_segments {
+        if session.is_canceled() {
+            let _ = file.flush().await;
+            if !session.complete.load(Ordering::SeqCst) {
+                let _ = tokio::fs::remove_file(&session.path).await;
+            }
+            return Ok(());
+        }
+
+        let segment = get_bytes_with_retries(http, &dash.segment_url(seg))
+            .await
+            .map_err(|e| format!("Se interrumpió la descarga (segmento {}): {}", seg, e))?;
+
+        // Los frames de cada segmento se escriben de una vez para no partir una
+        // escritura en mitad de un frame.
+        let mut frames: Vec<u8> = Vec::with_capacity(segment.len());
+        let samples = syncify_fmp4_flac::demux_segment(&init, &segment, &mut |frame| {
+            frames.extend_from_slice(frame);
+            Ok(())
+        })
+        .map_err(|e| format!("Segmento {} ilegible: {}", seg, e))?;
+
+        file.write_all(&frames)
+            .await
+            .map_err(|e| format!("Error escribiendo la caché del stream: {}", e))?;
+        samples_total += samples;
+        written_bytes += frames.len() as u64;
+        session
+            .downloaded_bytes
+            .store(written_bytes, Ordering::SeqCst);
+        if info.sample_rate > 0 {
+            let audio_ms = samples_total.saturating_mul(1000) / info.sample_rate as u64;
+            session.audio_millis.store(audio_ms, Ordering::SeqCst);
+            // Estimación para la barra de progreso: bytes por segundo escritos.
+            if audio_ms > 0 && total_secs > 0.0 {
+                let estimate =
+                    (written_bytes as f64 / (audio_ms as f64 / 1000.0) * total_secs) as u64;
+                session
+                    .total_bytes
+                    .store(estimate.max(written_bytes), Ordering::SeqCst);
+            }
+        }
+
+        let audio_secs = if info.sample_rate > 0 {
+            samples_total as f64 / info.sample_rate as f64
+        } else {
+            0.0
+        };
+        if !primed && audio_secs >= prime_secs {
+            primed = true;
+            on_prime()?;
+        }
+        if last_emit.elapsed() >= DASH_EVENT_INTERVAL {
+            last_emit = Instant::now();
+            on_progress();
+        }
+    }
+
+    let _ = file.flush().await;
+    session.complete.store(true, Ordering::SeqCst);
+    if !primed {
+        on_prime()?;
+    }
+    let _ = write_done_marker(session);
+    on_progress();
+    Ok(())
+}
+
+/// GET con reintentos acotados: son muchos payloads pequeños y un fallo
+/// puntual no debe matar la reproducción.
+async fn get_bytes_with_retries(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    let mut last_err = String::new();
+    for attempt in 1..=DASH_FETCH_ATTEMPTS {
+        match http.get(url).send().await {
+            Ok(response) if response.status().is_success() => match response.bytes().await {
+                Ok(bytes) => return Ok(bytes.to_vec()),
+                Err(e) => last_err = e.to_string(),
+            },
+            Ok(response) => last_err = format!("HTTP {}", response.status()),
+            Err(e) => last_err = e.to_string(),
+        }
+        if attempt < DASH_FETCH_ATTEMPTS {
+            tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
+        }
+    }
+    Err(last_err)
+}
+
 /// Limpia parciales abandonados y recorta la caché al presupuesto (borra los
 /// más antiguos). Nunca toca el fichero de la sesión recién creada.
 pub fn cleanup_cache(app: &AppHandle, keep: Option<&Path>) {
@@ -343,6 +513,23 @@ mod tests {
         // Sin total conocido no hay frontera.
         session.total_bytes.store(0, Ordering::SeqCst);
         assert_eq!(session.frontier_secs(200.0), None);
+    }
+
+    #[test]
+    fn dash_frontier_uses_written_audio_not_bytes() {
+        // El streaming DASH conoce las muestras escritas: la frontera es exacta
+        // aunque la estimación de bytes sea imprecisa.
+        let session = StreamSession::new(1, 42, sample_info(), PathBuf::from("/tmp/x.flac"));
+        session.total_bytes.store(1_000, Ordering::SeqCst);
+        session.downloaded_bytes.store(100, Ordering::SeqCst);
+        session.audio_millis.store(42_500, Ordering::SeqCst);
+        assert_eq!(session.frontier_secs(200.0), Some(42.5));
+        // Nunca por encima de la duración real.
+        session.audio_millis.store(999_000, Ordering::SeqCst);
+        assert_eq!(session.frontier_secs(200.0), Some(200.0));
+        // Sin audio escrito vuelve a la estimación por bytes.
+        session.audio_millis.store(0, Ordering::SeqCst);
+        assert_eq!(session.frontier_secs(200.0), Some(20.0));
     }
 
     #[test]

@@ -62,7 +62,42 @@ pub struct StreamSourceInfo {
 #[derive(Debug, Clone)]
 pub struct ResolvedStream {
     pub url: String,
+    /// Presente cuando la fuente llega como manifiesto DASH (FLAC-en-ISOBMFF
+    /// segmentado, lo que Tidal entrega para lossless/hi-res). En ese caso
+    /// `url` no es reproducible con `reqwest`: el backend descarga init +
+    /// segmentos y los convierte a FLAC nativo progresivo.
+    pub dash: Option<DashManifest>,
     pub info: StreamSourceInfo,
+}
+
+/// Manifiesto DASH de Tidal: `DASH_MANIFEST|init|media_$Number$|N`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DashManifest {
+    pub init_url: String,
+    pub media_template: String,
+    pub total_segments: u32,
+}
+
+impl DashManifest {
+    pub fn parse(spec: &str) -> Option<DashManifest> {
+        let parts: Vec<&str> = spec.split('|').collect();
+        if parts.len() < 4 || parts[0] != "DASH_MANIFEST" {
+            return None;
+        }
+        let total_segments = parts[3].parse::<u32>().ok()?;
+        if total_segments == 0 || total_segments > 500 {
+            return None;
+        }
+        Some(DashManifest {
+            init_url: parts[1].to_string(),
+            media_template: parts[2].to_string(),
+            total_segments,
+        })
+    }
+
+    pub fn segment_url(&self, index: u32) -> String {
+        self.media_template.replace("$Number$", &index.to_string())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -504,7 +539,13 @@ async fn qobuz_isrc_match(
         };
 
         match downloader
-            .search_by_isrc(isrc, expected_sec, Some(&token))
+            .search_by_isrc_verified(
+                isrc,
+                &context.title,
+                &context.artist,
+                expected_sec,
+                Some(&token),
+            )
             .await
         {
             Ok(track) => return Ok(track),
@@ -566,7 +607,10 @@ async fn tidal_isrc_match(
         let downloader = syncify_tidal_downloader::TidalDownloader::new()
             .with_user_token(Some(creds.access_token.clone()));
 
-        match downloader.search_by_isrc(isrc, expected_sec).await {
+        match downloader
+            .search_by_isrc_verified(isrc, &context.title, &context.artist, expected_sec)
+            .await
+        {
             Ok(track) => return Ok(track),
             Err(first_err) => {
                 if has_metadata {
@@ -955,6 +999,7 @@ async fn resolve_qobuz(
             Ok(verified_info) => {
                 let resolved = ResolvedStream {
                     url: resolution.url,
+                    dash: None,
                     info: verified_info,
                 };
                 if resolved.info.quality_tier != "lossy" {
@@ -978,6 +1023,69 @@ async fn resolve_qobuz(
         "no se pudo resolver stream en Qobuz".to_string()
     } else {
         last_err
+    })
+}
+
+/// Resultado de la cascada de calidad de Tidal por cuenta.
+///
+/// Las variantes van boxeadas: `TidalStreamResolution`/`StreamSourceInfo` son
+/// grandes y solo se maneja un valor por cuenta y vuelta.
+enum TidalObtained {
+    /// Fichero directo reproducible con una petición HTTP.
+    Progressive {
+        resolution: Box<syncify_tidal_downloader::TidalStreamResolution>,
+        extension: String,
+    },
+    /// Manifiesto DASH (FLAC-en-ISOBMFF segmentado) con su etiqueta honesta ya
+    /// leída del STREAMINFO real del init.
+    Dash {
+        resolution: Box<syncify_tidal_downloader::TidalStreamResolution>,
+        dash: Box<DashManifest>,
+        info: Box<StreamSourceInfo>,
+    },
+}
+
+/// Verifica el init de un manifiesto DASH y construye la etiqueta a partir del
+/// STREAMINFO real: Tidal declara en el MPD 96 kHz donde el FLAC trae 192 kHz,
+/// así que la etiqueta no se puede fiar del manifiesto.
+async fn dash_stream_info(
+    http: &reqwest::Client,
+    dash: &DashManifest,
+    resolution: &syncify_tidal_downloader::TidalStreamResolution,
+    candidate: &Candidate,
+) -> Result<StreamSourceInfo, String> {
+    let response = http
+        .get(&dash.init_url)
+        .send()
+        .await
+        .map_err(|e| format!("no se pudo descargar el init del manifiesto ({})", e))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "el proveedor rechazó el init (HTTP {})",
+            response.status()
+        ));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("init ilegible ({})", e))?;
+    let info = syncify_fmp4_flac::read_init(&bytes).map_err(|e| e.to_string())?;
+
+    let bit_depth = Some(info.bits_per_sample as i32);
+    let sample_rate = Some(info.sample_rate as i32);
+    Ok(StreamSourceInfo {
+        service_name: "tidal".to_string(),
+        service_track_id: candidate.service_track_id.clone(),
+        format: "FLAC".to_string(),
+        codec: Some("flac".to_string()),
+        container: Some("ISOBMFF".to_string()),
+        extension: "flac".to_string(),
+        bit_depth,
+        sample_rate,
+        quality_label: quality_label("FLAC", bit_depth, sample_rate, false),
+        quality_tier: quality_tier("FLAC", bit_depth).to_string(),
+        source_name: resolution.source_name.clone(),
+        match_method: "direct".to_string(),
     })
 }
 
@@ -1009,12 +1117,13 @@ async fn resolve_tidal(
             continue;
         };
 
-        // Tidal entrega el FLAC como BTS/DASH segmentado (no reproducible de
-        // forma progresiva) y sólo el tier `high` (AAC) como fichero directo.
-        // Se piden en ese orden: `hires` primero —por si la cuenta o la región
-        // devuelven FLAC progresivo— y si llega segmentado se reintenta con
-        // `high` para que la pista suene, con etiqueta lossy honesta.
-        let mut obtained: Option<(syncify_tidal_downloader::TidalStreamResolution, String)> = None;
+        // Tidal entrega el FLAC como BTS/DASH segmentado: `hires` responde con
+        // el manifiesto (`DASH_MANIFEST|init|seg|N`) y sólo el tier `high`
+        // (AAC) como fichero directo. El manifiesto se acepta para lossless —
+        // se convierte a FLAC nativo progresivo en el backend — y si no se
+        // puede, se reintenta con `high` para que la pista suene con etiqueta
+        // lossy honesta.
+        let mut obtained: Option<TidalObtained> = None;
         let mut attempt_errors: Vec<String> = Vec::with_capacity(2);
         for quality in ["hires", "high"] {
             match downloader
@@ -1022,11 +1131,37 @@ async fn resolve_tidal(
                 .await
             {
                 Ok(resolution) => {
+                    if let Some(dash) = DashManifest::parse(&resolution.url) {
+                        if !resolution.codec.eq_ignore_ascii_case("flac") {
+                            attempt_errors.push(format!(
+                                "{}: manifiesto segmentado no FLAC ({})",
+                                quality, resolution.codec
+                            ));
+                            continue;
+                        }
+                        match dash_stream_info(http, &dash, &resolution, candidate).await {
+                            Ok(info) => {
+                                obtained = Some(TidalObtained::Dash {
+                                    resolution: Box::new(resolution),
+                                    dash: Box::new(dash),
+                                    info: Box::new(info),
+                                });
+                                break;
+                            }
+                            Err(reason) => {
+                                attempt_errors.push(format!("{}: {}", quality, reason));
+                                continue;
+                            }
+                        }
+                    }
                     let extension =
                         normalize_extension(&resolution.extension, &resolution.container);
                     match ensure_streamable(&resolution.url, &extension) {
                         Ok(()) => {
-                            obtained = Some((resolution, extension));
+                            obtained = Some(TidalObtained::Progressive {
+                                resolution: Box::new(resolution),
+                                extension,
+                            });
                             break;
                         }
                         Err(reason) => attempt_errors.push(format!("{}: {}", quality, reason)),
@@ -1036,9 +1171,39 @@ async fn resolve_tidal(
             }
         }
 
-        let Some((resolution, extension)) = obtained else {
+        let Some(obtained) = obtained else {
             last_err = attempt_errors.join(" · ");
             continue;
+        };
+
+        // DASH FLAC: el init ya dio la etiqueta honesta (leída del STREAMINFO
+        // real), así que no hay sonda HTTP adicional que hacer.
+        if let TidalObtained::Dash {
+            resolution,
+            dash,
+            info,
+        } = obtained
+        {
+            let resolved = ResolvedStream {
+                url: resolution.url,
+                dash: Some(*dash),
+                info: *info,
+            };
+            if resolved.info.quality_tier != "lossy" {
+                return Ok(resolved);
+            }
+            if lossy_fallback.is_none() {
+                lossy_fallback = Some(resolved);
+            }
+            continue;
+        }
+
+        let TidalObtained::Progressive {
+            resolution,
+            extension,
+        } = obtained
+        else {
+            unreachable!("el caso DASH ya se resolvió arriba");
         };
 
         let format = resolution_format(&resolution.codec, &extension);
@@ -1066,6 +1231,7 @@ async fn resolve_tidal(
             Ok(verified_info) => {
                 let resolved = ResolvedStream {
                     url: resolution.url,
+                    dash: None,
                     info: verified_info,
                 };
                 if resolved.info.quality_tier != "lossy" {
@@ -1488,6 +1654,21 @@ mod tests {
         let err = ensure_streamable("sample://preview", "mp3").expect_err("not a URL");
         assert!(err.contains("http(s)"), "mensaje honesto: {err}");
         assert!(ensure_streamable("", "flac").is_err());
+    }
+
+    #[test]
+    fn dash_manifest_parses_and_rejects_invalid_specs() {
+        let spec = "DASH_MANIFEST|https://x/init.mp4|https://x/seg_$Number$.mp4|57";
+        let dash = DashManifest::parse(spec).expect("spec válido");
+        assert_eq!(dash.init_url, "https://x/init.mp4");
+        assert_eq!(dash.total_segments, 57);
+        assert_eq!(dash.segment_url(7), "https://x/seg_7.mp4");
+
+        assert!(DashManifest::parse("https://x/file.flac").is_none());
+        assert!(DashManifest::parse("DASH_MANIFEST|a|b").is_none());
+        assert!(DashManifest::parse("DASH_MANIFEST|a|b|0").is_none());
+        assert!(DashManifest::parse("DASH_MANIFEST|a|b|501").is_none());
+        assert!(DashManifest::parse("DASH_MANIFEST|a|b|muchos").is_none());
     }
 
     #[test]

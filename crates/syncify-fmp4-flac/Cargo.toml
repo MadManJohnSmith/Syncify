@@ -1,0 +1,11 @@
+[package]
+name = "syncify-fmp4-flac"
+version = "0.1.0"
+edition = "2021"
+description = "Convierte FLAC-en-ISOBMFF fragmentado (manifiestos DASH de Tidal) a FLAC nativo progresivo, sin ffmpeg"
+
+[dependencies]
+# Solo el lector de MP4 fragmentado y el códec FLAC: sin el resto de defaults
+# (mkv, adpcm…) para no engordar el árbol de dependencias.
+symphonia = { version = "0.5.5", default-features = false, features = ["flac", "isomp4"] }
+thiserror = "2"

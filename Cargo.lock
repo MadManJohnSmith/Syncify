@@ -5604,6 +5604,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncify-fmp4-flac"
+version = "0.1.0"
+dependencies = [
+ "symphonia",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "syncify-lyrics-domain"
 version = "0.1.0"
 dependencies = [
@@ -5661,6 +5669,7 @@ dependencies = [
  "sqlx",
  "syncify-core-domain",
  "syncify-flac-writer",
+ "syncify-fmp4-flac",
  "syncify-lyrics-domain",
  "syncify-metadata-domain",
  "syncify-player",
@@ -5694,6 +5703,7 @@ dependencies = [
  "serde_json",
  "syncify-core-domain",
  "syncify-flac-writer",
+ "syncify-fmp4-flac",
  "tempfile",
  "tokio",
  "tracing",

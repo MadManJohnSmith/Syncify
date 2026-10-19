@@ -976,6 +976,88 @@ impl TidalDownloader {
         Err(anyhow!("No exact ISRC match found on Tidal for: {}", isrc))
     }
 
+    /// Exact-ISRC lookup that disambiguates same-ISRC catalogue duplicates.
+    ///
+    /// `search_by_isrc` returns the first hit passing the exact-ISRC + `±10 s`
+    /// rule, but one ISRC can be labelled on several recordings (manifest
+    /// corruption at the provider). Among every passing hit, prefer the one
+    /// whose title (then artist) agrees with the request; ties keep catalogue
+    /// order. With no agreeing hit the result matches the legacy first hit.
+    pub async fn search_by_isrc_verified(
+        &self,
+        isrc: &str,
+        track_name: &str,
+        artist_name: &str,
+        expected_duration_sec: i32,
+    ) -> Result<TidalTrack> {
+        debug!(
+            "[Tidal] Searching track by ISRC (identity-verified): {}",
+            isrc
+        );
+
+        let items = self.fetch_search_candidates(isrc).await?;
+
+        let mut candidates: Vec<TidalTrack> = Vec::new();
+        for track in items {
+            if track.isrc.as_deref() != Some(isrc) {
+                continue;
+            }
+            if expected_duration_sec > 0
+                && (track.duration - expected_duration_sec).abs() > 10
+            {
+                warn!(
+                    "[Tidal] ISRC match '{}' found but duration mismatch (expected {}s, got {}s)",
+                    track.title, expected_duration_sec, track.duration
+                );
+                continue;
+            }
+            candidates.push(track);
+        }
+
+        let track = Self::select_identity_isrc_candidate(&candidates, track_name, artist_name)
+            .ok_or_else(|| anyhow!("No exact ISRC match found on Tidal for: {}", isrc))?
+            .clone();
+
+        info!(
+            "[Tidal] Found exact ISRC match (identity-verified): '{}' by '{}' (ID: {})",
+            track.title,
+            track.artist_name().unwrap_or_default(),
+            track.id
+        );
+        Ok(track)
+    }
+
+    /// Pure selector shared by [`Self::search_by_isrc_verified`]: among hits
+    /// that already passed the exact-ISRC + duration rules, prefer title
+    /// agreement, then artist agreement; ties keep catalogue order.
+    fn select_identity_isrc_candidate<'a>(
+        candidates: &'a [TidalTrack],
+        track_name: &str,
+        artist_name: &str,
+    ) -> Option<&'a TidalTrack> {
+        let evidence = |track: &TidalTrack| -> u8 {
+            let mut score = 0u8;
+            if !track_name.trim().is_empty() && title_matches(track_name, &track.title) {
+                score += 2;
+            }
+            if !artist_name.trim().is_empty()
+                && artist_matches(artist_name, &track.artist_name().unwrap_or_default())
+            {
+                score += 1;
+            }
+            score
+        };
+
+        let mut best: Option<(usize, u8)> = None;
+        for (idx, track) in candidates.iter().enumerate() {
+            let score = evidence(track);
+            if best.map_or(true, |(_, best_score)| score > best_score) {
+                best = Some((idx, score));
+            }
+        }
+        best.map(|(idx, _)| &candidates[idx])
+    }
+
     /// Exact-ISRC lookup via an artist+title query when Tidal's bare-ISRC
     /// search returns noisy/unrelated results instead of indexing the ISRC.
     pub async fn search_by_isrc_broad(
@@ -2273,24 +2355,12 @@ fn strict_metadata_match(
             let is_flac_path = ext_str == "flac";
             let is_isobmff = AudioByteValidator::is_isobmff_container(valid_header);
             if is_flac_path && is_isobmff {
-                info!("[Tidal] Remuxing ISOBMFF FLAC container to native FLAC container via ffmpeg...");
+                // Remux en Rust puro (sin ffmpeg): copia los frames FLAC del
+                // ISOBMFF fragmentado a un FLAC nativo con su STREAMINFO real.
+                info!("[Tidal] Remuxing ISOBMFF FLAC container to native FLAC (pure Rust)...");
                 let native_temp_path = output_path.with_extension("native.tmp");
-                let remux_output = hidden_tokio_command("ffmpeg")
-                    .args([
-                        "-y",
-                        "-i",
-                        temp_file_path.to_str().unwrap_or(""),
-                        "-c:a",
-                        "copy",
-                        "-f",
-                        "flac",
-                        native_temp_path.to_str().unwrap_or(""),
-                    ])
-                    .output()
-                    .await;
-
-                match remux_output {
-                    Ok(out) if out.status.success() && native_temp_path.exists() => {
+                match syncify_fmp4_flac::convert_fmp4_to_flac(&temp_file_path, &native_temp_path) {
+                    Ok(samples) => {
                         let (native_header, native_read) =
                             read_audio_header_bounded(&native_temp_path)
                                 .await
@@ -2299,7 +2369,7 @@ fn strict_metadata_match(
                             let _ = tokio::fs::remove_file(&native_temp_path).await;
                             let _ = tokio::fs::remove_file(&temp_file_path).await;
                             return Err(anyhow!(
-                                "RemuxError: ffmpeg output is not a valid native FLAC bitstream"
+                                "RemuxError: el FLAC nativo no lleva cabecera fLaC"
                             ));
                         }
                         let _ = tokio::fs::remove_file(&temp_file_path).await;
@@ -2309,25 +2379,17 @@ fn strict_metadata_match(
                             .map(|m| m.len())
                             .unwrap_or(downloaded);
                         info!(
+                            samples = samples,
                             "[Tidal] Remuxed & saved native FLAC payload: {} bytes -> {}",
                             final_len,
                             output_path.display()
                         );
                         return Ok(final_len);
                     }
-                    Ok(out) => {
-                        let stderr_msg = String::from_utf8_lossy(&out.stderr);
-                        let _ = tokio::fs::remove_file(&temp_file_path).await;
-                        let _ = tokio::fs::remove_file(&native_temp_path).await;
-                        return Err(anyhow!(
-                            "RemuxError: ffmpeg remuxing failed (exit code {:?}): {}",
-                            out.status.code(),
-                            stderr_msg
-                        ));
-                    }
                     Err(e) => {
                         let _ = tokio::fs::remove_file(&temp_file_path).await;
-                        return Err(anyhow!("RemuxError: failed to invoke ffmpeg: {}", e));
+                        let _ = tokio::fs::remove_file(&native_temp_path).await;
+                        return Err(anyhow!("RemuxError: {}", e));
                     }
                 }
             }
@@ -2622,6 +2684,69 @@ mod tests {
             0,
             &short
         ));
+    }
+
+    /// Same-ISRC catalogue duplicates: the selector must prefer the hit whose
+    /// title/artist agree with the request, keep catalogue order on ties, and
+    /// fall back to the first hit only when no hit agrees.
+    #[test]
+    fn test_identity_isrc_candidate_selection() {
+        let make = |title: &str, artist: &str, duration: i32, isrc: &str| TidalTrack {
+            id: 1,
+            title: title.to_string(),
+            version: None,
+            isrc: Some(isrc.to_string()),
+            duration,
+            audio_quality: Some("LOSSLESS".to_string()),
+            album: None,
+            artist: Some(TidalArtist {
+                id: None,
+                name: artist.to_string(),
+            }),
+            artists: None,
+            track_number: None,
+            volume_number: None,
+            media_metadata: None,
+            bpm: None,
+            copyright: None,
+            explicit: None,
+        };
+
+        let wrong = make("Run River", "Mozez", 463, "GB53R1200006");
+        let right = make("After Dark", "Mang Dynasty", 367, "GB53R1200006");
+
+        // The agreeing hit wins regardless of catalogue order.
+        assert_eq!(
+            TidalDownloader::select_identity_isrc_candidate(
+                &[wrong.clone(), right.clone()],
+                "After Dark - Dub Mix",
+                "Mang Dynasty"
+            )
+            .map(|t| t.duration),
+            Some(right.duration)
+        );
+        assert_eq!(
+            TidalDownloader::select_identity_isrc_candidate(
+                &[right.clone(), wrong.clone()],
+                "After Dark - Dub Mix",
+                "Mang Dynasty"
+            )
+            .map(|t| t.duration),
+            Some(right.duration)
+        );
+
+        // No agreeing hit: catalogue order (legacy first-hit behavior).
+        let only_wrong = [wrong.clone()];
+        let picked =
+            TidalDownloader::select_identity_isrc_candidate(&only_wrong, "After Dark", "")
+                .expect("first hit must remain selectable");
+        assert_eq!(picked.title, "Run River");
+
+        // Empty candidate set yields None.
+        assert!(
+            TidalDownloader::select_identity_isrc_candidate(&[], "After Dark", "Mang Dynasty")
+                .is_none()
+        );
     }
 
     #[test]

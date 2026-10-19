@@ -3,6 +3,7 @@ members = [
     "src-tauri",
     "crates/syncify-core-domain",
     "crates/syncify-flac-writer",
+    "crates/syncify-fmp4-flac",
     "crates/syncify-lyrics-domain",
     "crates/syncify-metadata-domain",
     "crates/syncify-tidal-downloader",
