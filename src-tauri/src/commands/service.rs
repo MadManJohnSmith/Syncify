@@ -3286,6 +3286,24 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     }
 }
 
+/// Credenciales que el brazo SoundCloud necesita de lo almacenado.
+///
+/// Función pura: no emite eventos ni escribe. El llamador decide cómo reportar
+/// el `Err` (hoy: evento `requires_auth` y retorno del error).
+fn soundcloud_credentials(creds: &serde_json::Value) -> Result<(String, i64), String> {
+    let oauth_token = creds["oauth_token"]
+        .as_str()
+        .or_else(|| creds["access_token"].as_str())
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "RequiresAuth: SoundCloud OAuth token missing".to_string())?;
+    let user_id = creds["user_id"].as_i64().ok_or_else(|| {
+        "RequiresAuth: SoundCloud user_id missing from stored credentials".to_string()
+    })?;
+    Ok((oauth_token, user_id))
+}
+
 /// Sync body. `journal` is `Some` whenever a recovery-journal entry is open for
 /// this sync; milestones are reported through it as the sync advances.
 pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitter>(
@@ -7306,32 +7324,18 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             // (`sync_soundcloud_playlists_with_engine`). La ausencia de ISRC en
             // los tracks sin `publisher_metadata` es una limitación de capacidad
             // del servicio, documentada en `sync_soundcloud_likes_with_engine`.
-            let oauth_token = creds["oauth_token"]
-                .as_str()
-                .or_else(|| creds["access_token"].as_str())
-                .map(str::trim)
-                .filter(|t| !t.is_empty());
-            let Some(oauth_token) = oauth_token else {
-                let err_msg = "RequiresAuth: SoundCloud OAuth token missing".to_string();
-                emit(SyncProgressEvent::requires_auth(
-                    &service_normalized,
-                    Some(account_id),
-                    &err_msg,
-                ));
-                return Err(err_msg);
+            let (oauth_token, user_id) = match soundcloud_credentials(&creds) {
+                Ok(credentials) => credentials,
+                Err(err_msg) => {
+                    emit(SyncProgressEvent::requires_auth(
+                        &service_normalized,
+                        Some(account_id),
+                        &err_msg,
+                    ));
+                    return Err(err_msg);
+                }
             };
-            let Some(user_id) = creds["user_id"].as_i64() else {
-                let err_msg =
-                    "RequiresAuth: SoundCloud user_id missing from stored credentials".to_string();
-                emit(SyncProgressEvent::requires_auth(
-                    &service_normalized,
-                    Some(account_id),
-                    &err_msg,
-                ));
-                return Err(err_msg);
-            };
-            let client = crate::services::SoundCloudClient::new(oauth_token.to_string())
-                .with_user_id(user_id);
+            let client = crate::services::SoundCloudClient::new(oauth_token).with_user_id(user_id);
             let soundcloud_service_id = client.get_service_id(db, "soundcloud").await?;
 
             // Phase 1: Favorite Tracks — los likes son toda la biblioteca que
@@ -8599,6 +8603,54 @@ mod sync_orchestrator_characterization {
         assert_eq!(
             secuencias[0], secuencias[1],
             "dos intentos idénticos deben emitir la misma secuencia (sin estado que se filtre)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod soundcloud_arm_tests {
+    //! Contrato de la precondición extraída del brazo SoundCloud (D-08).
+
+    use super::soundcloud_credentials;
+    use serde_json::json;
+
+    #[test]
+    fn acepta_oauth_token_y_user_id() {
+        let creds = json!({"oauth_token": " tok-123 ", "user_id": 42});
+        let (token, user_id) = soundcloud_credentials(&creds).expect("credenciales válidas");
+        assert_eq!(token, "tok-123", "el token se recorta");
+        assert_eq!(user_id, 42);
+    }
+
+    #[test]
+    fn cae_a_access_token_si_no_hay_oauth_token() {
+        let creds = json!({"access_token": "acc-9", "user_id": 7});
+        let (token, user_id) = soundcloud_credentials(&creds).expect("access_token sirve");
+        assert_eq!(token, "acc-9");
+        assert_eq!(user_id, 7);
+    }
+
+    #[test]
+    fn token_vacio_es_requires_auth() {
+        let creds = json!({"oauth_token": "   ", "user_id": 1});
+        let error = soundcloud_credentials(&creds).expect_err("token vacío no autentica");
+        assert_eq!(error, "RequiresAuth: SoundCloud OAuth token missing");
+    }
+
+    #[test]
+    fn sin_token_es_requires_auth() {
+        let creds = json!({"user_id": 1});
+        let error = soundcloud_credentials(&creds).expect_err("sin token no autentica");
+        assert!(error.starts_with("RequiresAuth:"), "llegó: {error}");
+    }
+
+    #[test]
+    fn sin_user_id_es_requires_auth() {
+        let creds = json!({"oauth_token": "tok"});
+        let error = soundcloud_credentials(&creds).expect_err("sin user_id no autentica");
+        assert_eq!(
+            error,
+            "RequiresAuth: SoundCloud user_id missing from stored credentials"
         );
     }
 }

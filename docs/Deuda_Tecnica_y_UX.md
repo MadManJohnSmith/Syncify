@@ -151,6 +151,12 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 - **Primer brazo a extraer**: soundcloud, el más pequeño y el que menos comparte con los
   demás. Antes de mover una línea: tests de caracterización del orquestador (secuencia de
   progreso emitida, recuento por servicio, mapeo de errores y qué escribe cada brazo).
+- **Hecho (2026-10-19)**: tests de caracterización del orquestador (3 contratos sin red:
+  `requires_auth` terminal, emisor opcional y determinismo) y primer corte del brazo
+  SoundCloud: la precondición de credenciales sale a `soundcloud_credentials`, función pura
+  con 5 tests, y el brazo solo decide cómo reportar el error. Los acumuladores mutables del
+  brazo (recuentos de importados/favoritos/playlists) siguen dentro: el siguiente corte
+  necesita un contexto propio para moverlos.
 - **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
   después, y el orquestador reducido a un bucle corto sobre los brazos.
 
