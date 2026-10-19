@@ -83,6 +83,26 @@ async fn setup_test_db() -> SqlitePool {
     if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
         panic!("Migration failed in test: {}", e);
     }
+
+    // El fixture debe respetar el esquema: `library_entries.account_id` tiene FK
+    // a `accounts(id)` (src-tauri/migrations/0002_normalize_schema.sql:38-48) y
+    // estos tests usan `account_id: 1`. Sin esa fila la persistencia falla con
+    // FK 787 — que es el esquema funcionando, no un defecto del producto.
+    // Las migraciones ya siembran `services` (0002_normalize_schema.sql:261) y
+    // `services.id` es `INTEGER PRIMARY KEY`, asi que el id 1 esta ocupado: el
+    // fixture reutiliza el primer servicio en vez de crearlo.
+    let service_id: i64 = sqlx::query_scalar("SELECT id FROM services ORDER BY id LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .expect("Migrations must seed at least one service");
+    sqlx::query(
+        "INSERT INTO accounts (id, service_id, display_name, is_active) VALUES (1, ?, 'fixture', 1)",
+    )
+    .bind(service_id)
+    .execute(&pool)
+    .await
+    .expect("Seed fixture account (tests use account_id = 1)");
+
     pool
 }
 
