@@ -152,11 +152,17 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   demás. Antes de mover una línea: tests de caracterización del orquestador (secuencia de
   progreso emitida, recuento por servicio, mapeo de errores y qué escribe cada brazo).
 - **Hecho (2026-10-19)**: tests de caracterización del orquestador (3 contratos sin red:
-  `requires_auth` terminal, emisor opcional y determinismo) y primer corte del brazo
-  SoundCloud: la precondición de credenciales sale a `soundcloud_credentials`, función pura
-  con 5 tests, y el brazo solo decide cómo reportar el error. Los acumuladores mutables del
-  brazo (recuentos de importados/favoritos/playlists) siguen dentro: el siguiente corte
-  necesita un contexto propio para moverlos.
+  `requires_auth` terminal, emisor opcional y determinismo) y el brazo SoundCloud extraído
+  entero a `sync_soundcloud_arm` (249 líneas) con un `ArmOutcome` de 19 acumuladores:
+  el `match` pasa a ser una llamada y un volcado explícito. La precondición de credenciales
+  vive en `soundcloud_credentials`, función pura con 5 tests, y el brazo tiene su contrato
+  (sin fases activas no emite ni toca nada). `perform_sync_service_with_emitter_inner` baja
+  de **4 546 a 4 330 líneas**.
+- **Límite conocido**: ningún test de integración recorre el brazo con red; la equivalencia
+  se apoya en el compilador, en el contrato del brazo y en la suite completa, no en una
+  reproducción con proveedor real.
+- **Siguiente**: los otros cuatro brazos (qobuz 3 576, tidal 4 760, spotify 5 859, deezer
+  6 689) con el mismo patrón, empezando por el más pequeño que quede.
 - **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
   después, y el orquestador reducido a un bucle corto sobre los brazos.
 

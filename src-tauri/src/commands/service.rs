@@ -3304,6 +3304,285 @@ fn soundcloud_credentials(creds: &serde_json::Value) -> Result<(String, i64), St
     Ok((oauth_token, user_id))
 }
 
+/// Acumuladores que un brazo de sincronización puede tocar, en un sitio.
+///
+/// El orquestador siembra los que ya traen valor (los que aparecen en los
+/// eventos de progreso) y vuelca el resultado al terminar el brazo, de modo que
+/// el `match` de servicios sea una llamada y un volcado, no 240 líneas.
+#[derive(Default)]
+struct ArmOutcome {
+    tracks_processed: u64,
+    tracks_expanded: u64,
+    tracks_new_global: u64,
+    sources_new_for_service: u64,
+    library_entries_new_for_account: u64,
+    tracks_already_present: u64,
+    tracks_changed_unique: u64,
+    imported_tracks_total: u64,
+    skipped_tracks_total: u64,
+    favorite_tracks_total: u64,
+    favorites_seen: u64,
+    metadata_enriched: u64,
+    metadata_partial: u64,
+    playlists_seen: u64,
+    playlists_total: u64,
+    api_fetch_ms: u64,
+    enrichment_ms: u64,
+    errors: Vec<String>,
+    warnings: Vec<String>,
+}
+
+/// Brazo SoundCloud del sync: likes y playlists propias por el motor unificado.
+async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
+    db: &sqlx::SqlitePool,
+    service_normalized: &str,
+    account_id: i64,
+    creds: &serde_json::Value,
+    prefs: &ImportPreferences,
+    emitter: Option<&E>,
+    mut arm: ArmOutcome,
+) -> Result<ArmOutcome, String> {
+    let emit = |event: SyncProgressEvent| {
+        if let Some(e) = emitter {
+            e.emit_sync_progress(&event);
+        }
+    };
+    // F3-1/F3-3: brazo propio del motor unificado. Antes delegaba en el
+    // importador legacy de likes —CRUD crudo, dedup por título+duración y
+    // el username del uploader como artista—. Ahora cada like entra por
+    // `EnrichmentEngine` con la identidad canónica y los metadatos que
+    // persisten qobuz/tidal/spotify/deezer, y las playlists propias de
+    // la cuenta se importan por el mismo motor
+    // (`sync_soundcloud_playlists_with_engine`). La ausencia de ISRC en
+    // los tracks sin `publisher_metadata` es una limitación de capacidad
+    // del servicio, documentada en `sync_soundcloud_likes_with_engine`.
+    let (oauth_token, user_id) = match soundcloud_credentials(&creds) {
+        Ok(credentials) => credentials,
+        Err(err_msg) => {
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                Some(account_id),
+                &err_msg,
+            ));
+            return Err(err_msg);
+        }
+    };
+    let client = crate::services::SoundCloudClient::new(oauth_token).with_user_id(user_id);
+    let soundcloud_service_id = client.get_service_id(db, "soundcloud").await?;
+
+    // Phase 1: Favorite Tracks — los likes son toda la biblioteca que
+    // SoundCloud expone para una cuenta de usuario.
+    if prefs.favorite_tracks {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "fetching_favorite_tracks",
+            0,
+            None,
+            "Importing SoundCloud likes...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let outcome = sync_soundcloud_likes_with_engine(
+            db,
+            account_id,
+            soundcloud_service_id,
+            &client,
+            |res, processed, page_finished| {
+                arm.tracks_processed += 1;
+                if res.is_new_global_track {
+                    arm.tracks_new_global += 1;
+                }
+                if res.is_new_source_for_service {
+                    arm.sources_new_for_service += 1;
+                }
+                if res.is_new_library_entry_for_account {
+                    arm.library_entries_new_for_account += 1;
+                }
+                if res.is_already_present {
+                    arm.tracks_already_present += 1;
+                }
+                if res.is_new_import {
+                    arm.tracks_changed_unique += 1;
+                    arm.imported_tracks_total += 1;
+                } else {
+                    arm.skipped_tracks_total += 1;
+                }
+                arm.favorite_tracks_total += 1;
+                arm.favorites_seen += 1;
+                match res.completeness {
+                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                        arm.metadata_enriched += 1
+                    }
+                    _ => arm.metadata_partial += 1,
+                }
+                if page_finished {
+                    emit(SyncProgressEvent::running(
+                        &service_normalized,
+                        Some(account_id),
+                        "fetching_favorite_tracks",
+                        processed,
+                        None,
+                        &format!(
+                            "Processed {} SoundCloud likes ({} new)",
+                            processed, arm.imported_tracks_total
+                        ),
+                        arm.imported_tracks_total,
+                        arm.favorite_tracks_total,
+                    ));
+                }
+            },
+        )
+        .await;
+        match outcome {
+            Ok(totals) => {
+                arm.api_fetch_ms += totals.api_fetch_ms;
+                arm.enrichment_ms += totals.enrichment_ms;
+                arm.errors.extend(totals.errors);
+            }
+            Err(sc_err) if is_soundcloud_auth_error(&sc_err) => {
+                tracing::warn!(
+                    "[perform_sync_service/soundcloud] 401 on likes — marking credentials invalid"
+                );
+                let _ = mark_account_credentials_invalid(
+                    db,
+                    "soundcloud",
+                    "HTTP 401: SoundCloud OAuth token rejected or expired",
+                    Some(account_id),
+                )
+                .await;
+                let err_msg = format!(
+                    "RequiresAuth: SoundCloud session rejected (401) while fetching likes: {}",
+                    sc_err
+                );
+                emit(SyncProgressEvent::requires_auth(
+                    &service_normalized,
+                    Some(account_id),
+                    &err_msg,
+                ));
+                return Err(err_msg);
+            }
+            Err(sc_err) => {
+                arm.errors.push(format!("SoundCloud likes: {}", sc_err));
+            }
+        }
+    }
+
+    // Fase 2: Playlists — `/me/library/playlists_without_albums` expone
+    // las playlists propias de la cuenta (el mismo endpoint que recorre
+    // el servicio Python) y `/playlists/{id}/tracks` da las pistas en
+    // el orden guardado. El brazo avisaba de que SoundCloud no exponía
+    // playlists; el endpoint existe y el cliente lo pagina igual que
+    // los likes (ver `SoundCloudClient::get_playlists`).
+    if prefs.playlists {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "importing_playlists",
+            0,
+            None,
+            "Importing SoundCloud playlists...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let outcome = sync_soundcloud_playlists_with_engine(
+            db,
+            account_id,
+            soundcloud_service_id,
+            &client,
+            |res, playlist_title, processed, page_finished| {
+                arm.tracks_processed += 1;
+                arm.tracks_expanded += 1;
+                if res.is_new_global_track {
+                    arm.tracks_new_global += 1;
+                }
+                if res.is_new_source_for_service {
+                    arm.sources_new_for_service += 1;
+                }
+                if res.is_new_library_entry_for_account {
+                    arm.library_entries_new_for_account += 1;
+                }
+                if res.is_already_present {
+                    arm.tracks_already_present += 1;
+                }
+                if res.is_new_import {
+                    arm.tracks_changed_unique += 1;
+                    arm.imported_tracks_total += 1;
+                } else {
+                    arm.skipped_tracks_total += 1;
+                }
+                match res.completeness {
+                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                        arm.metadata_enriched += 1
+                    }
+                    _ => arm.metadata_partial += 1,
+                }
+                if page_finished {
+                    emit(SyncProgressEvent::running(
+                        &service_normalized,
+                        Some(account_id),
+                        "importing_playlists",
+                        processed,
+                        None,
+                        &format!(
+                            "Processed {} SoundCloud playlist tracks ({} new)",
+                            playlist_title, arm.imported_tracks_total
+                        ),
+                        arm.imported_tracks_total,
+                        arm.favorite_tracks_total,
+                    ));
+                }
+            },
+        )
+        .await;
+        match outcome {
+            Ok(totals) => {
+                arm.playlists_seen += totals.playlists_seen;
+                arm.playlists_total += totals.playlists_synced;
+                arm.api_fetch_ms += totals.api_fetch_ms;
+                arm.enrichment_ms += totals.enrichment_ms;
+                arm.errors.extend(totals.errors);
+            }
+            Err(sc_err) if is_soundcloud_auth_error(&sc_err) => {
+                tracing::warn!("[perform_sync_service/soundcloud] 401 on playlists — marking credentials invalid");
+                let _ = mark_account_credentials_invalid(
+                    db,
+                    "soundcloud",
+                    "HTTP 401: SoundCloud OAuth token rejected or expired",
+                    Some(account_id),
+                )
+                .await;
+                let err_msg = format!(
+                    "RequiresAuth: SoundCloud session rejected (401) while fetching playlists: {}",
+                    sc_err
+                );
+                emit(SyncProgressEvent::requires_auth(
+                    &service_normalized,
+                    Some(account_id),
+                    &err_msg,
+                ));
+                return Err(err_msg);
+            }
+            Err(sc_err) => {
+                arm.errors.push(format!("SoundCloud playlists: {}", sc_err));
+            }
+        }
+    }
+
+    // Fases sin endpoint propio: la API de SoundCloud no expone álbumes
+    // ni artistas favoritos, compras ni historial de escucha de la
+    // cuenta. Los rows de álbum y artista nacen igual de cada pista
+    // cuando su `publisher_metadata` los aporta, pero no hay nada
+    // adicional que leer — capacidad del servicio, no un hueco del
+    // motor.
+    if prefs.favorite_albums || prefs.favorite_artists || prefs.purchases || prefs.library_history {
+        arm.warnings.push(
+            "SoundCloud: the API exposes a user's likes and own playlists — favorite albums/artists, purchases and listen history have no user endpoint; album and artist rows come from each track's own publisher_metadata".to_string(),
+        );
+    }
+    Ok(arm)
+}
+
 /// Sync body. `journal` is `Some` whenever a recovery-journal entry is open for
 /// this sync; milestones are reported through it as the sync advances.
 pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitter>(
@@ -7315,241 +7594,39 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             }
         }
         "soundcloud" => {
-            // F3-1/F3-3: brazo propio del motor unificado. Antes delegaba en el
-            // importador legacy de likes —CRUD crudo, dedup por título+duración y
-            // el username del uploader como artista—. Ahora cada like entra por
-            // `EnrichmentEngine` con la identidad canónica y los metadatos que
-            // persisten qobuz/tidal/spotify/deezer, y las playlists propias de
-            // la cuenta se importan por el mismo motor
-            // (`sync_soundcloud_playlists_with_engine`). La ausencia de ISRC en
-            // los tracks sin `publisher_metadata` es una limitación de capacidad
-            // del servicio, documentada en `sync_soundcloud_likes_with_engine`.
-            let (oauth_token, user_id) = match soundcloud_credentials(&creds) {
-                Ok(credentials) => credentials,
-                Err(err_msg) => {
-                    emit(SyncProgressEvent::requires_auth(
-                        &service_normalized,
-                        Some(account_id),
-                        &err_msg,
-                    ));
-                    return Err(err_msg);
-                }
-            };
-            let client = crate::services::SoundCloudClient::new(oauth_token).with_user_id(user_id);
-            let soundcloud_service_id = client.get_service_id(db, "soundcloud").await?;
-
-            // Phase 1: Favorite Tracks — los likes son toda la biblioteca que
-            // SoundCloud expone para una cuenta de usuario.
-            if prefs.favorite_tracks {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "fetching_favorite_tracks",
-                    0,
-                    None,
-                    "Importing SoundCloud likes...",
+            let arm = sync_soundcloud_arm(
+                db,
+                &service_normalized,
+                account_id,
+                &creds,
+                &prefs,
+                emitter,
+                ArmOutcome {
                     imported_tracks_total,
                     favorite_tracks_total,
-                ));
-                let outcome = sync_soundcloud_likes_with_engine(
-                    db,
-                    account_id,
-                    soundcloud_service_id,
-                    &client,
-                    |res, processed, page_finished| {
-                        tracks_processed += 1;
-                        if res.is_new_global_track {
-                            tracks_new_global += 1;
-                        }
-                        if res.is_new_source_for_service {
-                            sources_new_for_service += 1;
-                        }
-                        if res.is_new_library_entry_for_account {
-                            library_entries_new_for_account += 1;
-                        }
-                        if res.is_already_present {
-                            tracks_already_present += 1;
-                        }
-                        if res.is_new_import {
-                            tracks_changed_unique += 1;
-                            imported_tracks_total += 1;
-                        } else {
-                            skipped_tracks_total += 1;
-                        }
-                        favorite_tracks_total += 1;
-                        favorites_seen += 1;
-                        match res.completeness {
-                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                                metadata_enriched += 1
-                            }
-                            _ => metadata_partial += 1,
-                        }
-                        if page_finished {
-                            emit(SyncProgressEvent::running(
-                                &service_normalized,
-                                Some(account_id),
-                                "fetching_favorite_tracks",
-                                processed,
-                                None,
-                                &format!(
-                                    "Processed {} SoundCloud likes ({} new)",
-                                    processed, imported_tracks_total
-                                ),
-                                imported_tracks_total,
-                                favorite_tracks_total,
-                            ));
-                        }
-                    },
-                )
-                .await;
-                match outcome {
-                    Ok(totals) => {
-                        api_fetch_ms += totals.api_fetch_ms;
-                        enrichment_ms += totals.enrichment_ms;
-                        errors.extend(totals.errors);
-                    }
-                    Err(sc_err) if is_soundcloud_auth_error(&sc_err) => {
-                        tracing::warn!("[perform_sync_service/soundcloud] 401 on likes — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
-                            db,
-                            "soundcloud",
-                            "HTTP 401: SoundCloud OAuth token rejected or expired",
-                            Some(account_id),
-                        )
-                        .await;
-                        let err_msg = format!(
-                            "RequiresAuth: SoundCloud session rejected (401) while fetching likes: {}",
-                            sc_err
-                        );
-                        emit(SyncProgressEvent::requires_auth(
-                            &service_normalized,
-                            Some(account_id),
-                            &err_msg,
-                        ));
-                        return Err(err_msg);
-                    }
-                    Err(sc_err) => {
-                        errors.push(format!("SoundCloud likes: {}", sc_err));
-                    }
-                }
-            }
-
-            // Fase 2: Playlists — `/me/library/playlists_without_albums` expone
-            // las playlists propias de la cuenta (el mismo endpoint que recorre
-            // el servicio Python) y `/playlists/{id}/tracks` da las pistas en
-            // el orden guardado. El brazo avisaba de que SoundCloud no exponía
-            // playlists; el endpoint existe y el cliente lo pagina igual que
-            // los likes (ver `SoundCloudClient::get_playlists`).
-            if prefs.playlists {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "importing_playlists",
-                    0,
-                    None,
-                    "Importing SoundCloud playlists...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let outcome = sync_soundcloud_playlists_with_engine(
-                    db,
-                    account_id,
-                    soundcloud_service_id,
-                    &client,
-                    |res, playlist_title, processed, page_finished| {
-                        tracks_processed += 1;
-                        tracks_expanded += 1;
-                        if res.is_new_global_track {
-                            tracks_new_global += 1;
-                        }
-                        if res.is_new_source_for_service {
-                            sources_new_for_service += 1;
-                        }
-                        if res.is_new_library_entry_for_account {
-                            library_entries_new_for_account += 1;
-                        }
-                        if res.is_already_present {
-                            tracks_already_present += 1;
-                        }
-                        if res.is_new_import {
-                            tracks_changed_unique += 1;
-                            imported_tracks_total += 1;
-                        } else {
-                            skipped_tracks_total += 1;
-                        }
-                        match res.completeness {
-                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                                metadata_enriched += 1
-                            }
-                            _ => metadata_partial += 1,
-                        }
-                        if page_finished {
-                            emit(SyncProgressEvent::running(
-                                &service_normalized,
-                                Some(account_id),
-                                "importing_playlists",
-                                processed,
-                                None,
-                                &format!(
-                                    "Processed {} SoundCloud playlist tracks ({} new)",
-                                    playlist_title, imported_tracks_total
-                                ),
-                                imported_tracks_total,
-                                favorite_tracks_total,
-                            ));
-                        }
-                    },
-                )
-                .await;
-                match outcome {
-                    Ok(totals) => {
-                        playlists_seen += totals.playlists_seen;
-                        playlists_total += totals.playlists_synced;
-                        api_fetch_ms += totals.api_fetch_ms;
-                        enrichment_ms += totals.enrichment_ms;
-                        errors.extend(totals.errors);
-                    }
-                    Err(sc_err) if is_soundcloud_auth_error(&sc_err) => {
-                        tracing::warn!("[perform_sync_service/soundcloud] 401 on playlists — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
-                            db,
-                            "soundcloud",
-                            "HTTP 401: SoundCloud OAuth token rejected or expired",
-                            Some(account_id),
-                        )
-                        .await;
-                        let err_msg = format!(
-                            "RequiresAuth: SoundCloud session rejected (401) while fetching playlists: {}",
-                            sc_err
-                        );
-                        emit(SyncProgressEvent::requires_auth(
-                            &service_normalized,
-                            Some(account_id),
-                            &err_msg,
-                        ));
-                        return Err(err_msg);
-                    }
-                    Err(sc_err) => {
-                        errors.push(format!("SoundCloud playlists: {}", sc_err));
-                    }
-                }
-            }
-
-            // Fases sin endpoint propio: la API de SoundCloud no expone álbumes
-            // ni artistas favoritos, compras ni historial de escucha de la
-            // cuenta. Los rows de álbum y artista nacen igual de cada pista
-            // cuando su `publisher_metadata` los aporta, pero no hay nada
-            // adicional que leer — capacidad del servicio, no un hueco del
-            // motor.
-            if prefs.favorite_albums
-                || prefs.favorite_artists
-                || prefs.purchases
-                || prefs.library_history
-            {
-                warnings.push(
-                    "SoundCloud: the API exposes a user's likes and own playlists — favorite albums/artists, purchases and listen history have no user endpoint; album and artist rows come from each track's own publisher_metadata".to_string(),
-                );
-            }
+                    ..Default::default()
+                },
+            )
+            .await?;
+            imported_tracks_total = arm.imported_tracks_total;
+            favorite_tracks_total = arm.favorite_tracks_total;
+            tracks_processed += arm.tracks_processed;
+            tracks_expanded += arm.tracks_expanded;
+            tracks_new_global += arm.tracks_new_global;
+            sources_new_for_service += arm.sources_new_for_service;
+            library_entries_new_for_account += arm.library_entries_new_for_account;
+            tracks_already_present += arm.tracks_already_present;
+            tracks_changed_unique += arm.tracks_changed_unique;
+            skipped_tracks_total += arm.skipped_tracks_total;
+            favorites_seen += arm.favorites_seen;
+            metadata_enriched += arm.metadata_enriched;
+            metadata_partial += arm.metadata_partial;
+            playlists_seen += arm.playlists_seen;
+            playlists_total += arm.playlists_total;
+            api_fetch_ms += arm.api_fetch_ms;
+            enrichment_ms += arm.enrichment_ms;
+            errors.extend(arm.errors);
+            warnings.extend(arm.warnings);
         }
         _ => {
             let err_msg = format!("Unsupported service for sync: {}", service_name);
@@ -8611,8 +8688,91 @@ mod sync_orchestrator_characterization {
 mod soundcloud_arm_tests {
     //! Contrato de la precondición extraída del brazo SoundCloud (D-08).
 
-    use super::soundcloud_credentials;
+    use super::*;
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    /// Emisor falso mínimo para el contrato del brazo.
+    #[derive(Clone, Default)]
+    struct ArmEmitter {
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ArmEmitter {
+        fn phases(&self) -> Vec<String> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl SyncProgressEmitter for ArmEmitter {
+        fn emit_sync_progress(&self, event: &SyncProgressEvent) {
+            self.events.lock().unwrap().push(event.phase.clone());
+        }
+    }
+
+    async fn fixture_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool SQLite en memoria");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migraciones aplicadas");
+        pool
+    }
+
+    fn prefs_sin_fases() -> ImportPreferences {
+        ImportPreferences {
+            service_name: "soundcloud".to_string(),
+            favorite_tracks: false,
+            favorite_albums: false,
+            favorite_artists: false,
+            playlists: false,
+            purchases: false,
+            library_history: false,
+            include_appearances: false,
+            incremental_sync: false,
+            force_retry_unavailable: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn sin_fases_activas_el_brazo_no_toca_nada() {
+        let pool = fixture_pool().await;
+        let emitter = ArmEmitter::default();
+        let creds = json!({"oauth_token": "tok", "user_id": 1});
+
+        let arm = sync_soundcloud_arm(
+            &pool,
+            "soundcloud",
+            1,
+            &creds,
+            &prefs_sin_fases(),
+            Some(&emitter),
+            ArmOutcome {
+                imported_tracks_total: 5,
+                favorite_tracks_total: 7,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("sin fases activas el brazo no debe fallar");
+
+        assert_eq!(
+            arm.imported_tracks_total, 5,
+            "el contador entrante se conserva"
+        );
+        assert_eq!(arm.favorite_tracks_total, 7);
+        assert!(arm.errors.is_empty(), "no hay nada que reportar");
+        assert!(arm.warnings.is_empty());
+        assert!(
+            emitter.phases().is_empty(),
+            "sin fases activas no se emite progreso, llegó: {:?}",
+            emitter.phases()
+        );
+    }
 
     #[test]
     fn acepta_oauth_token_y_user_id() {
