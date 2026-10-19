@@ -80,6 +80,8 @@ que pase.
 
 ## Más contexto
 
+- `GLOSSARY.md`: vocabulario de dominio (track vs. track source vs. edición,
+  y los dos sentidos de «migración»).
 - `docs/DECISION_*.md`: decisiones de alcance y arquitectura.
 - `docs/Deuda_Tecnica_y_UX.md`: deuda conocida y su prioridad.
 - `docs/features/`: comportamiento por área (reproductor, biblioteca, descargas).

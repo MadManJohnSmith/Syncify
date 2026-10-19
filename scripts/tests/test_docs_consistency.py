@@ -124,9 +124,10 @@ class DocumentationReferenceTests(unittest.TestCase):
         docs += sorted(p for p in (REPO_ROOT / "docs").glob("*.md"))
         # AGENTS.md es el mapa que un agente lee primero: sus referencias
         # envejecen igual que las de docs/ y deben resolverse igual.
-        agents = REPO_ROOT / "AGENTS.md"
-        if agents.is_file():
-            docs.append(agents)
+        for root_doc in ("AGENTS.md", "GLOSSARY.md"):
+            candidate = REPO_ROOT / root_doc
+            if candidate.is_file():
+                docs.append(candidate)
         return docs
 
     def test_every_cited_path_in_docs_resolves(self):
