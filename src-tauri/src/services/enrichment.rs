@@ -1746,11 +1746,14 @@ impl EnrichmentEngine {
             let (clean_t, feat_from_title) =
                 crate::services::tag_writer::clean_title_and_extract_featured(t);
             let title_to_save = if !clean_t.is_empty() { &clean_t } else { t };
-            let _ = sqlx::query("UPDATE tracks SET title = ? WHERE id = ?")
-                .bind(title_to_save)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET title = ? WHERE id = ?")
+                    .bind(title_to_save)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
 
             for feat_name in feat_from_title {
                 let clean_feat = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
@@ -1788,8 +1791,8 @@ impl EnrichmentEngine {
                     }
                 };
                 if final_feat_id > 0 {
-                    let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
-                        .bind(track_id).bind(final_feat_id).execute(&mut *tx).await;
+                    let _ = crate::db::write_or_log("apply_to_database", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                        .bind(track_id).bind(final_feat_id).execute(&mut *tx)).await;
                 }
             }
         }
@@ -1798,127 +1801,175 @@ impl EnrichmentEngine {
             .value()
             .and_then(|s| s.parse::<i32>().ok())
         {
-            let _ = sqlx::query("UPDATE tracks SET track_number = ? WHERE id = ?")
-                .bind(tn)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET track_number = ? WHERE id = ?")
+                    .bind(tn)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(dn) = meta.disc_number.value().and_then(|s| s.parse::<i32>().ok()) {
-            let _ = sqlx::query("UPDATE tracks SET disc_number = ? WHERE id = ?")
-                .bind(dn)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET disc_number = ? WHERE id = ?")
+                    .bind(dn)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(i) = meta.isrc.value() {
-            let _ = sqlx::query("UPDATE tracks SET isrc = ? WHERE id = ?")
-                .bind(i)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET isrc = ? WHERE id = ?")
+                    .bind(i)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(y) = meta
             .release_year
             .value()
             .and_then(|s| s.chars().take(4).collect::<String>().parse::<i32>().ok())
         {
-            let _ = sqlx::query("UPDATE tracks SET release_year = ? WHERE id = ?")
-                .bind(y)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET release_year = ? WHERE id = ?")
+                    .bind(y)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(l) = meta.label.value() {
-            let _ = sqlx::query("UPDATE tracks SET record_label = ? WHERE id = ?")
-                .bind(l)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET record_label = ? WHERE id = ?")
+                    .bind(l)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(mb_track) = meta.musicbrainz_recording_id.value() {
-            let _ = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
-                .bind(mb_track)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                    .bind(mb_track)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(b) = meta.bpm.value().and_then(|s| s.parse::<f64>().ok()) {
-            let _ = sqlx::query("UPDATE tracks SET bpm = ? WHERE id = ?")
-                .bind(b)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET bpm = ? WHERE id = ?")
+                    .bind(b)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(k) = meta.initial_key.value() {
-            let _ = sqlx::query("UPDATE tracks SET musical_key = ? WHERE id = ?")
-                .bind(k)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET musical_key = ? WHERE id = ?")
+                    .bind(k)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(en) = meta.energy.value().and_then(|s| s.parse::<f64>().ok()) {
-            let _ = sqlx::query("UPDATE tracks SET energy = ? WHERE id = ?")
-                .bind(en)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET energy = ? WHERE id = ?")
+                    .bind(en)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(fp) = meta.acoustid_fingerprint.value() {
-            let _ = sqlx::query("UPDATE tracks SET acoustid_fingerprint = ? WHERE id = ?")
-                .bind(fp)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET acoustid_fingerprint = ? WHERE id = ?")
+                    .bind(fp)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(g) = meta.genre.value() {
             if let Some(cg) = clean_primary_genre(g) {
-                let _ = sqlx::query("UPDATE tracks SET genre = ? WHERE id = ?")
-                    .bind(cg)
-                    .bind(track_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE tracks SET genre = ? WHERE id = ?")
+                        .bind(cg)
+                        .bind(track_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
         }
         if let Some(lo) = meta.loudness.value().and_then(|s| s.parse::<f64>().ok()) {
-            let _ = sqlx::query("UPDATE tracks SET loudness = ? WHERE id = ?")
-                .bind(lo)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET loudness = ? WHERE id = ?")
+                    .bind(lo)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(rg_gain) = meta.replaygain_track_gain.value() {
-            let _ = sqlx::query("UPDATE tracks SET replaygain_track_gain = ? WHERE id = ?")
-                .bind(rg_gain)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET replaygain_track_gain = ? WHERE id = ?")
+                    .bind(rg_gain)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(rg_peak) = meta.replaygain_track_peak.value() {
-            let _ = sqlx::query("UPDATE tracks SET replaygain_track_peak = ? WHERE id = ?")
-                .bind(rg_peak)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET replaygain_track_peak = ? WHERE id = ?")
+                    .bind(rg_peak)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(rg_again) = meta.replaygain_album_gain.value() {
-            let _ = sqlx::query("UPDATE tracks SET replaygain_album_gain = ? WHERE id = ?")
-                .bind(rg_again)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET replaygain_album_gain = ? WHERE id = ?")
+                    .bind(rg_again)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(rg_apeak) = meta.replaygain_album_peak.value() {
-            let _ = sqlx::query("UPDATE tracks SET replaygain_album_peak = ? WHERE id = ?")
-                .bind(rg_apeak)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET replaygain_album_peak = ? WHERE id = ?")
+                    .bind(rg_apeak)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
 
         // Update global job status and timestamp
-        let _ = sqlx::query("UPDATE tracks SET enrichment_status = 'complete', enriched_at = CURRENT_TIMESTAMP WHERE id = ?")
-            .bind(track_id).execute(&mut *tx).await;
+        let _ = crate::db::write_or_log("apply_to_database", sqlx::query("UPDATE tracks SET enrichment_status = 'complete', enriched_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(track_id).execute(&mut *tx)).await;
 
         // 4. Resolve / link Artist safely (NEVER rename artists.name)
         if let Some(art_name_raw) = meta.artist.value() {
@@ -1971,8 +2022,8 @@ impl EnrichmentEngine {
             };
 
             // Link track_artists safely
-            let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-                .bind(track_id).bind(artist_id).execute(&mut *tx).await;
+            let _ = crate::db::write_or_log("apply_to_database", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+                .bind(track_id).bind(artist_id).execute(&mut *tx)).await;
         }
 
         // 5. Update Album if track has album_id
@@ -1986,25 +2037,34 @@ impl EnrichmentEngine {
 
         if let Some((Some(album_id),)) = album_row {
             if let Some(alb_title) = meta.album.value() {
-                let _ = sqlx::query("UPDATE albums SET title = ? WHERE id = ?")
-                    .bind(alb_title)
-                    .bind(album_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE albums SET title = ? WHERE id = ?")
+                        .bind(alb_title)
+                        .bind(album_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
             if let Some(rel_date) = meta.original_date.value() {
-                let _ = sqlx::query("UPDATE albums SET release_date = ? WHERE id = ?")
-                    .bind(rel_date)
-                    .bind(album_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE albums SET release_date = ? WHERE id = ?")
+                        .bind(rel_date)
+                        .bind(album_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
             if let Some(upc) = meta.barcode.value() {
-                let _ = sqlx::query("UPDATE albums SET upc = ? WHERE id = ?")
-                    .bind(upc)
-                    .bind(album_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE albums SET upc = ? WHERE id = ?")
+                        .bind(upc)
+                        .bind(album_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
             if let Some(tt) = meta.track_total.value().and_then(|s| s.parse::<i32>().ok()) {
                 // The provider's track_total is authoritative album metadata: it describes the
@@ -2025,18 +2085,24 @@ impl EnrichmentEngine {
                 }
             }
             if let Some(lbl) = meta.label.value() {
-                let _ = sqlx::query("UPDATE albums SET label = ? WHERE id = ?")
-                    .bind(lbl)
-                    .bind(album_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE albums SET label = ? WHERE id = ?")
+                        .bind(lbl)
+                        .bind(album_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
             if let Some(mb_rel) = meta.musicbrainz_release_id.value() {
-                let _ = sqlx::query("UPDATE albums SET musicbrainz_id = ? WHERE id = ?")
-                    .bind(mb_rel)
-                    .bind(album_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE albums SET musicbrainz_id = ? WHERE id = ?")
+                        .bind(mb_rel)
+                        .bind(album_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
 
             // TASK-138: for non-stub albums without a declared track count, derive it from the
@@ -2248,11 +2314,14 @@ impl EnrichmentEngine {
             if !current_is_valid {
                 if let Some(mb_art) = enriched.musicbrainz_artist_id.value() {
                     if FieldValidator::is_valid_musicbrainz_artist_id(mb_art, Some(&artist_name)) {
-                        let _ = sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
-                            .bind(mb_art)
-                            .bind(aid)
-                            .execute(&mut *tx)
-                            .await;
+                        let _ = crate::db::write_or_log(
+                            "enrich_and_persist_sync_track",
+                            sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
+                                .bind(mb_art)
+                                .bind(aid)
+                                .execute(&mut *tx),
+                        )
+                        .await;
                     }
                 }
             }
@@ -2503,8 +2572,10 @@ impl EnrichmentEngine {
 
             let aid = if let Some((existing_aid,)) = album_row {
                 // Update missing album fields
-                let _ = sqlx::query(
-                    r#"
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
+                    sqlx::query(
+                        r#"
                     UPDATE albums SET
                         release_date = COALESCE(release_date, ?),
                         musicbrainz_id = COALESCE(musicbrainz_id, ?),
@@ -2514,25 +2585,26 @@ impl EnrichmentEngine {
                         label = COALESCE(label, ?)
                     WHERE id = ?
                     "#,
+                    )
+                    .bind(
+                        enriched
+                            .original_date
+                            .value()
+                            .or_else(|| enriched.release_date.value()),
+                    )
+                    .bind(enriched.musicbrainz_release_id.value())
+                    .bind(enriched.barcode.value())
+                    .bind(
+                        enriched
+                            .track_total
+                            .value()
+                            .and_then(|s| s.parse::<i32>().ok()),
+                    )
+                    .bind(input.cover_art_url.as_deref())
+                    .bind(enriched.label.value())
+                    .bind(existing_aid)
+                    .execute(&mut *tx),
                 )
-                .bind(
-                    enriched
-                        .original_date
-                        .value()
-                        .or_else(|| enriched.release_date.value()),
-                )
-                .bind(enriched.musicbrainz_release_id.value())
-                .bind(enriched.barcode.value())
-                .bind(
-                    enriched
-                        .track_total
-                        .value()
-                        .and_then(|s| s.parse::<i32>().ok()),
-                )
-                .bind(input.cover_art_url.as_deref())
-                .bind(enriched.label.value())
-                .bind(existing_aid)
-                .execute(&mut *tx)
                 .await;
 
                 existing_aid
@@ -2614,27 +2686,28 @@ impl EnrichmentEngine {
                     res.get::<i64, _>(0)
                 };
 
-                let _ = sqlx::query("UPDATE album_artists SET is_primary = 0 WHERE album_id = ?")
-                    .bind(aid)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
+                    sqlx::query("UPDATE album_artists SET is_primary = 0 WHERE album_id = ?")
+                        .bind(aid)
+                        .execute(&mut *tx),
+                )
+                .await;
 
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                     "INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)
                      ON CONFLICT(album_id, artist_id) DO UPDATE SET is_primary = 1",
                 )
                 .bind(aid)
                 .bind(va_id)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx)).await;
 
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                     "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 0)"
                 )
                 .bind(aid)
                 .bind(artist_id)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx)).await;
 
                 enriched.compilation.merge_candidate(
                     Some("1".to_string()),
@@ -2653,13 +2726,12 @@ impl EnrichmentEngine {
                     );
                 }
             } else {
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                     "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
                 )
                 .bind(aid)
                 .bind(album_artist_id)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx)).await;
             }
 
             // S198: favorite-album marking + provider album id (guarded, idempotent).
@@ -2667,12 +2739,11 @@ impl EnrichmentEngine {
             // timestamp; the provider id is written once and never stolen from
             // another row (NOT EXISTS guards the partial-unique index).
             if input.album_is_favorite {
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                     "UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?"
                 )
                 .bind(aid)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx)).await;
             }
             if let Some(provider_album_id) = input.album_provider_track_id.as_deref() {
                 if !provider_album_id.trim().is_empty() {
@@ -2690,12 +2761,15 @@ impl EnrichmentEngine {
                             "UPDATE albums SET {col} = ? WHERE id = ? AND {col} IS NULL \
                              AND NOT EXISTS (SELECT 1 FROM albums a2 WHERE a2.{col} = ?)"
                         );
-                        let _ = sqlx::query(&sql)
-                            .bind(provider_album_id)
-                            .bind(aid)
-                            .bind(provider_album_id)
-                            .execute(&mut *tx)
-                            .await;
+                        let _ = crate::db::write_or_log(
+                            "enrich_and_persist_sync_track",
+                            sqlx::query(&sql)
+                                .bind(provider_album_id)
+                                .bind(aid)
+                                .bind(provider_album_id)
+                                .execute(&mut *tx),
+                        )
+                        .await;
                     }
                 }
             }
@@ -2861,11 +2935,10 @@ impl EnrichmentEngine {
                 let inferred_year = min_track_year.or(parsed_year);
                 if let Some(iy) = inferred_year {
                     let formatted = format!("{:04}-01-01", iy);
-                    let _ = sqlx::query("UPDATE albums SET release_date = ? WHERE id = ? AND (release_date IS NULL OR release_date = '')")
+                    let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query("UPDATE albums SET release_date = ? WHERE id = ? AND (release_date IS NULL OR release_date = '')")
                         .bind(&formatted)
                         .bind(aid)
-                        .execute(&mut *tx)
-                        .await;
+                        .execute(&mut *tx)).await;
                     album_release_year = Some(iy);
                 }
             }
@@ -2965,8 +3038,10 @@ impl EnrichmentEngine {
 
             if is_manual {
                 // Preserve manual fields; only fill missing relational/service keys
-                let _ = sqlx::query(
-                    r#"
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
+                    sqlx::query(
+                        r#"
                     UPDATE tracks SET
                         album_id = COALESCE(album_id, ?),
                         duration_ms = COALESCE(duration_ms, ?),
@@ -2977,16 +3052,17 @@ impl EnrichmentEngine {
                         audio_quality = COALESCE(?, audio_quality)
                     WHERE id = ?
                     "#,
+                    )
+                    .bind(album_id_opt)
+                    .bind(input.duration_ms)
+                    .bind(parsed_track_num)
+                    .bind(parsed_disc_num)
+                    .bind(enriched.isrc.value())
+                    .bind(enriched.musicbrainz_recording_id.value())
+                    .bind(effective_audio_quality.as_deref())
+                    .bind(tid)
+                    .execute(&mut *tx),
                 )
-                .bind(album_id_opt)
-                .bind(input.duration_ms)
-                .bind(parsed_track_num)
-                .bind(parsed_disc_num)
-                .bind(enriched.isrc.value())
-                .bind(enriched.musicbrainz_recording_id.value())
-                .bind(effective_audio_quality.as_deref())
-                .bind(tid)
-                .execute(&mut *tx)
                 .await;
             } else {
                 let existing_acoustic: Option<(Option<f64>, Option<String>, Option<f64>, Option<String>)> = sqlx::query_as(
@@ -3034,8 +3110,10 @@ impl EnrichmentEngine {
                 });
 
                 // Update with resolved metadata (StreamingService > MusicBrainz > Inferred)
-                let _ = sqlx::query(
-                    r#"
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
+                    sqlx::query(
+                        r#"
                     UPDATE tracks SET
                         title = COALESCE(?, title),
                         album_id = COALESCE(album_id, ?),
@@ -3058,27 +3136,28 @@ impl EnrichmentEngine {
                         enriched_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     "#,
+                    )
+                    .bind(title_update_val)
+                    .bind(album_id_opt)
+                    .bind(input.duration_ms)
+                    .bind(parsed_track_num)
+                    .bind(parsed_disc_num)
+                    .bind(enriched.isrc.value())
+                    .bind(enriched.musicbrainz_recording_id.value())
+                    .bind(parsed_explicit)
+                    .bind(clean_genre.as_deref())
+                    .bind(enriched.style.value())
+                    .bind(effective_year)
+                    .bind(enriched.label.value())
+                    .bind(parsed_bpm)
+                    .bind(enriched.initial_key.value())
+                    .bind(parsed_energy)
+                    .bind(enriched.acoustid_fingerprint.value())
+                    .bind(effective_audio_quality.as_deref())
+                    .bind(target_status)
+                    .bind(tid)
+                    .execute(&mut *tx),
                 )
-                .bind(title_update_val)
-                .bind(album_id_opt)
-                .bind(input.duration_ms)
-                .bind(parsed_track_num)
-                .bind(parsed_disc_num)
-                .bind(enriched.isrc.value())
-                .bind(enriched.musicbrainz_recording_id.value())
-                .bind(parsed_explicit)
-                .bind(clean_genre.as_deref())
-                .bind(enriched.style.value())
-                .bind(effective_year)
-                .bind(enriched.label.value())
-                .bind(parsed_bpm)
-                .bind(enriched.initial_key.value())
-                .bind(parsed_energy)
-                .bind(enriched.acoustid_fingerprint.value())
-                .bind(effective_audio_quality.as_deref())
-                .bind(target_status)
-                .bind(tid)
-                .execute(&mut *tx)
                 .await;
             }
 
@@ -3090,12 +3169,15 @@ impl EnrichmentEngine {
                         .execute(&mut *tx)
                         .await;
             } else if input.service_name == "spotify" {
-                let _ = sqlx::query(
-                    "UPDATE tracks SET spotify_id = COALESCE(spotify_id, ?) WHERE id = ?",
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
+                    sqlx::query(
+                        "UPDATE tracks SET spotify_id = COALESCE(spotify_id, ?) WHERE id = ?",
+                    )
+                    .bind(&input.service_track_id)
+                    .bind(tid)
+                    .execute(&mut *tx),
                 )
-                .bind(&input.service_track_id)
-                .bind(tid)
-                .execute(&mut *tx)
                 .await;
             }
 
@@ -3190,12 +3272,11 @@ impl EnrichmentEngine {
 
         // 5b. Update tracks.is_favorite if favorite
         if input.is_favorite {
-            let _ = sqlx::query(
+            let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                 "UPDATE tracks SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?"
             )
             .bind(track_id)
-            .execute(&mut *tx)
-            .await;
+            .execute(&mut *tx)).await;
 
             // Route 2 (2026-10-18): remember the provider item behind the
             // favorite (with its own release title) so the library can show one
@@ -3233,25 +3314,23 @@ impl EnrichmentEngine {
         }
 
         // 6. Link Track-Artist
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
             "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
         )
         .bind(track_id)
         .bind(artist_id)
-        .execute(&mut *tx)
-        .await;
+        .execute(&mut *tx)).await;
 
         // TASK-68: If incoming primary artist had a technical role (e.g. "Guitar - Juan Perez"),
         // register the technical role in track_credits as well
         if syncify_core_domain::metadata::is_technical_role(&art_role) {
-            let _ = sqlx::query(
+            let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                 "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)",
             )
             .bind(track_id)
             .bind(artist_id)
             .bind(&art_role)
-            .execute(&mut *tx)
-            .await;
+            .execute(&mut *tx)).await;
         }
 
         let effective_title_for_feat = enriched.title.value().unwrap_or(&track_title);
@@ -3294,8 +3373,8 @@ impl EnrichmentEngine {
                 }
             };
             if final_feat_id > 0 && final_feat_id != artist_id {
-                let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
-                    .bind(track_id).bind(final_feat_id).execute(&mut *tx).await;
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                    .bind(track_id).bind(final_feat_id).execute(&mut *tx)).await;
             }
         }
 
@@ -3329,8 +3408,8 @@ impl EnrichmentEngine {
                             }
                         }
                     };
-                    let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
-                        .bind(track_id).bind(c_art_id).bind(&c_role_final).execute(&mut *tx).await;
+                    let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
+                        .bind(track_id).bind(c_art_id).bind(&c_role_final).execute(&mut *tx)).await;
                 }
             }
         }
@@ -3364,8 +3443,8 @@ impl EnrichmentEngine {
                             }
                         }
                     };
-                    let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
-                        .bind(track_id).bind(p_art_id).bind(&p_role_final).execute(&mut *tx).await;
+                    let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
+                        .bind(track_id).bind(p_art_id).bind(&p_role_final).execute(&mut *tx)).await;
                 }
             }
         }
@@ -3479,8 +3558,10 @@ impl EnrichmentEngine {
         // Promote tracks.audio_quality if newly inserted/updated source offers a higher tier,
         // unless track has already been downloaded (in which case physical download metrics are authoritative).
         if let Some(ref eff_q) = effective_audio_quality {
-            let _ = sqlx::query(
-                r#"UPDATE tracks SET audio_quality = ?
+            let _ = crate::db::write_or_log(
+                "enrich_and_persist_sync_track",
+                sqlx::query(
+                    r#"UPDATE tracks SET audio_quality = ?
                    WHERE id = ? AND (
                        audio_quality IS NULL
                        OR (
@@ -3491,12 +3572,13 @@ impl EnrichmentEngine {
                            )
                        )
                    )"#,
+                )
+                .bind(eff_q)
+                .bind(track_id)
+                .bind(eff_q)
+                .bind(eff_q)
+                .execute(&mut *tx),
             )
-            .bind(eff_q)
-            .bind(track_id)
-            .bind(eff_q)
-            .bind(eff_q)
-            .execute(&mut *tx)
             .await;
         }
 
@@ -3994,11 +4076,10 @@ pub async fn backfill_social_metadata(
 
     for (aid, yr) in isrc_map {
         let formatted = format!("{:04}-01-01", yr);
-        let _ = sqlx::query("UPDATE albums SET release_date = ? WHERE id = ? AND (release_date IS NULL OR release_date = '')")
+        let _ = crate::db::write_or_log("backfill_social_metadata", sqlx::query("UPDATE albums SET release_date = ? WHERE id = ? AND (release_date IS NULL OR release_date = '')")
             .bind(&formatted)
             .bind(aid)
-            .execute(db)
-            .await;
+            .execute(db)).await;
         report.albums_dates_inferred += 1;
     }
 

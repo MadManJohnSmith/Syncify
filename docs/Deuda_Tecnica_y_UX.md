@@ -126,9 +126,10 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 - **Frontera creada**: `crate::db::write_or_log(contexto, futuro)` en `src-tauri/src/db.rs`
   concentra la política (registra con `tracing::warn!` y devuelve `Option`), con sus tests.
   Las escrituras que deban abortar tendrán su variante cuando exista el primer llamador.
-- **Progreso**: `src-tauri/src/commands/library.rs` migrado entero (18 sitios, 0 a mano);
-  quedan 225 congelados por `scripts/tests/test_silent_write_ratchet.py` (baja a 225 desde
-  243; solo puede bajar).
+- **Progreso**: migrados `src-tauri/src/commands/library.rs` (18) y
+  `src-tauri/src/services/enrichment.rs` (45, los dos caminos calientes:
+  `apply_to_database` 25 y `enrich_and_persist_sync_track` 19); el ratchet baja a 180
+  desde 243 y solo puede bajar.
 - **Cierra**: migrar el resto por lotes (enrichment 45, service 28, qobuz 21, favorites 19,
   tidal 17), un fichero por commit con su suite verde, y seguir bajando el baseline.
 
