@@ -2,7 +2,10 @@
 
 `let _ = sqlx::query(...)` descarta el error de una escritura: si falla, ni se
 registra ni se propaga. La auditoria de pilares (2026-10-19) midio 243 sitios en
-`src-tauri/src`. Este test congela ese numero para que la deuda no crezca
+`src-tauri/src`; al migrarlos se comprobo que 18 de ellos terminan en
+`.await.map_err(..)?`, es decir propagan y no eran silencios: los silenciosos
+reales eran 225. El baseline actual solo cubre lo que queda tras los lotes ya
+migrados. Este test congela ese numero para que la deuda no crezca
 mientras se migran a la frontera de escritura (D-06 en
 `docs/Deuda_Tecnica_y_UX.md`).
 
@@ -17,7 +20,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPO_ROOT / "src-tauri" / "src"
-BASELINE = 180
+BASELINE = 113
 PATTERN = re.compile(r"let _ = sqlx::query")
 
 

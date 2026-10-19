@@ -1275,13 +1275,12 @@ impl TidalClient {
                     };
 
                     let album_id = if let Some(eid) = existing_id {
-                        let _ = sqlx::query(
+                        let _ = crate::db::write_or_log("import_favorites", sqlx::query(
                             "UPDATE albums SET is_compilation = 1, tidal_id = COALESCE(tidal_id, ?) WHERE id = ?"
                         )
                         .bind(album.tidal_id)
                         .bind(eid)
-                        .execute(&mut *tx)
-                        .await;
+                        .execute(&mut *tx)).await;
                         eid
                     } else {
                         let aid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
@@ -1391,11 +1390,10 @@ impl TidalClient {
                         }
                     };
                     if final_feat_id > 0 && final_feat_id != artist_id {
-                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                        let _ = crate::db::write_or_log("import_favorites", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
                             .bind(track_id)
                             .bind(final_feat_id)
-                            .execute(&mut *tx)
-                            .await;
+                            .execute(&mut *tx)).await;
                     }
                 }
 
@@ -2025,11 +2023,10 @@ impl TidalClient {
                                 }
                             };
                             if final_feat_id > 0 && final_feat_id != artist_id {
-                                let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                                let _ = crate::db::write_or_log("import_playlists", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
                                     .bind(track_id)
                                     .bind(final_feat_id)
-                                    .execute(&mut *tx)
-                                    .await;
+                                    .execute(&mut *tx)).await;
                             }
                         }
 
@@ -2123,20 +2120,23 @@ impl TidalClient {
                 .unwrap_or(None)
                 .unwrap_or_else(|| "Tidal Playlist".to_string());
 
-        let _ = sqlx::query(
-            r#"
+        let _ = crate::db::write_or_log(
+            "import_single_playlist_scoped",
+            sqlx::query(
+                r#"
             INSERT INTO playlists (account_id, service_playlist_id, name, track_count, last_synced)
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
                 track_count = excluded.track_count,
                 last_synced = CURRENT_TIMESTAMP
             "#,
+            )
+            .bind(account_id)
+            .bind(playlist_uuid)
+            .bind(&playlist_name)
+            .bind(total_available)
+            .execute(db),
         )
-        .bind(account_id)
-        .bind(playlist_uuid)
-        .bind(&playlist_name)
-        .bind(total_available)
-        .execute(db)
         .await;
 
         let playlist_db_id: i64 = sqlx::query_scalar(
@@ -2228,13 +2228,12 @@ impl TidalClient {
                 };
 
                 let album_id = if let Some(eid) = existing_id {
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_single_playlist_scoped", sqlx::query(
                         "UPDATE albums SET is_compilation = 1, tidal_id = COALESCE(tidal_id, ?) WHERE id = ?"
                     )
                     .bind(album.tidal_id.to_string())
                     .bind(eid)
-                    .execute(&mut *tx)
-                    .await;
+                    .execute(&mut *tx)).await;
                     eid
                 } else {
                     let aid: Option<i64> = sqlx::query_scalar(
@@ -2270,11 +2269,10 @@ impl TidalClient {
                     }
                 };
 
-                let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
+                let _ = crate::db::write_or_log("import_single_playlist_scoped", sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
                     .bind(album_id)
                     .bind(effective_album_artist_id)
-                    .execute(&mut *tx)
-                    .await;
+                    .execute(&mut *tx)).await;
 
                 Some(album_id)
             } else {
@@ -2340,7 +2338,7 @@ impl TidalClient {
             let track_id = if let Some(ext_id) = existing_track_id {
                 report.deduped_existing_tracks += 1;
                 // Update missing/richer metadata
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_single_playlist_scoped", sqlx::query(
                     r#"UPDATE tracks SET
                         album_id = COALESCE(tracks.album_id, ?),
                         duration_ms = CASE WHEN duration_ms IS NULL OR duration_ms = 0 THEN ? ELSE duration_ms END,
@@ -2365,8 +2363,7 @@ impl TidalClient {
                 .bind(canonical_q.as_deref())
                 .bind(isrc_clean)
                 .bind(ext_id)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx)).await;
                 report.metadata_updates += 1;
                 ext_id
             } else {
@@ -2391,11 +2388,10 @@ impl TidalClient {
                 .await
                 .map_err(|e| format!("Failed to insert track: {}", e))?;
 
-                let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+                let _ = crate::db::write_or_log("import_single_playlist_scoped", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
                     .bind(new_id)
                     .bind(artist_id)
-                    .execute(&mut *tx)
-                    .await;
+                    .execute(&mut *tx)).await;
 
                 // F4.3: Detect featured artists in track title and link with role = 'featured'
                 for feat_name in feat_artists {
@@ -2419,11 +2415,10 @@ impl TidalClient {
                         }
                     };
                     if final_feat_id > 0 && final_feat_id != artist_id {
-                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                        let _ = crate::db::write_or_log("import_single_playlist_scoped", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
                             .bind(new_id)
                             .bind(final_feat_id)
-                            .execute(&mut *tx)
-                            .await;
+                            .execute(&mut *tx)).await;
                     }
                 }
 

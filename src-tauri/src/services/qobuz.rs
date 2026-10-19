@@ -974,12 +974,15 @@ impl QobuzClient {
         for (i, (qobuz_id,)) in candidates.into_iter().enumerate() {
             match self.get_album_full(&qobuz_id).await {
                 Ok(full_album) => {
-                    let _ = sqlx::query("UPDATE albums SET label = ?, upc = ? WHERE qobuz_id = ?")
-                        .bind(full_album.label.as_ref().and_then(|l| l.name.as_deref()))
-                        .bind(full_album.upc)
-                        .bind(&qobuz_id)
-                        .execute(db)
-                        .await;
+                    let _ = crate::db::write_or_log(
+                        "enrich_albums",
+                        sqlx::query("UPDATE albums SET label = ?, upc = ? WHERE qobuz_id = ?")
+                            .bind(full_album.label.as_ref().and_then(|l| l.name.as_deref()))
+                            .bind(full_album.upc)
+                            .bind(&qobuz_id)
+                            .execute(db),
+                    )
+                    .await;
 
                     enriched += 1;
                 }
@@ -1061,24 +1064,22 @@ impl QobuzClient {
                 let track_id = self.get_or_create_track(db, track, album_id).await?;
 
                 // Link artist to track
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_library", sqlx::query(
                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                 )
                 .bind(track_id)
                 .bind(artist_id)
-                .execute(db)
-                .await;
+                .execute(db)).await;
 
                 // TASK-68: If performer had an explicit technical role, register in track_credits
                 if syncify_core_domain::metadata::is_technical_role(&perf_role) {
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_library", sqlx::query(
                         "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                     )
                     .bind(track_id)
                     .bind(artist_id)
                     .bind(&perf_role)
-                    .execute(db)
-                    .await;
+                    .execute(db)).await;
                 }
 
                 // TASK-68: Register performers in track_credits
@@ -1088,14 +1089,13 @@ impl QobuzClient {
                         "performer",
                     ) {
                         if let Ok(p_artist_id) = self.get_or_create_artist(db, &p_name).await {
-                            let _ = sqlx::query(
+                            let _ = crate::db::write_or_log("import_library", sqlx::query(
                                 "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                             )
                             .bind(track_id)
                             .bind(p_artist_id)
                             .bind(&p_role)
-                            .execute(db)
-                            .await;
+                            .execute(db)).await;
                         }
                     }
                 }
@@ -1109,14 +1109,13 @@ impl QobuzClient {
                                 "composer",
                             );
                         if let Ok(c_artist_id) = self.get_or_create_artist(db, &c_name).await {
-                            let _ = sqlx::query(
+                            let _ = crate::db::write_or_log("import_library", sqlx::query(
                                 "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                             )
                             .bind(track_id)
                             .bind(c_artist_id)
                             .bind(&c_role)
-                            .execute(db)
-                            .await;
+                            .execute(db)).await;
                         }
                     }
                 }
@@ -1128,13 +1127,12 @@ impl QobuzClient {
                 {
                     if let Ok(feat_artist_id) = self.get_or_create_artist(db, &feat_name).await {
                         if feat_artist_id != artist_id {
-                            let _ = sqlx::query(
+                            let _ = crate::db::write_or_log("import_library", sqlx::query(
                                 "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')"
                             )
                             .bind(track_id)
                             .bind(feat_artist_id)
-                            .execute(db)
-                            .await;
+                            .execute(db)).await;
                         }
                     }
                 }
@@ -1168,7 +1166,7 @@ impl QobuzClient {
 
                 // Add track source with quality info
                 let quality_score = self.compute_quality_score(track);
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_library", sqlx::query(
                     r#"
                     INSERT OR REPLACE INTO track_sources
                     (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available)
@@ -1181,8 +1179,7 @@ impl QobuzClient {
                 .bind(track.maximum_bit_depth)
                 .bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32))
                 .bind(quality_score)
-                .execute(db)
-                .await;
+                .execute(db)).await;
             }
 
             offset += limit;
@@ -1301,23 +1298,21 @@ impl QobuzClient {
                         };
 
                         if artist_id > 0 {
-                            let _ = sqlx::query(
+                            let _ = crate::db::write_or_log("import_purchases", sqlx::query(
                                 "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                             )
                             .bind(track_id)
                             .bind(artist_id)
-                            .execute(db)
-                            .await;
+                            .execute(db)).await;
 
                             if is_tech_role {
-                                let _ = sqlx::query(
+                                let _ = crate::db::write_or_log("import_purchases", sqlx::query(
                                     "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                                 )
                                 .bind(track_id)
                                 .bind(artist_id)
                                 .bind(&perf_role)
-                                .execute(db)
-                                .await;
+                                .execute(db)).await;
                             }
                         }
 
@@ -1332,14 +1327,13 @@ impl QobuzClient {
                                 if let Ok(p_artist_id) =
                                     self.get_or_create_artist(db, &p_name).await
                                 {
-                                    let _ = sqlx::query(
+                                    let _ = crate::db::write_or_log("import_purchases", sqlx::query(
                                         "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                                     )
                                     .bind(track_id)
                                     .bind(p_artist_id)
                                     .bind(&p_role)
-                                    .execute(db)
-                                    .await;
+                                    .execute(db)).await;
                                 }
                             }
                         }
@@ -1355,14 +1349,13 @@ impl QobuzClient {
                                 if let Ok(c_artist_id) =
                                     self.get_or_create_artist(db, &c_name).await
                                 {
-                                    let _ = sqlx::query(
+                                    let _ = crate::db::write_or_log("import_purchases", sqlx::query(
                                         "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
                                     )
                                     .bind(track_id)
                                     .bind(c_artist_id)
                                     .bind(&c_role)
-                                    .execute(db)
-                                    .await;
+                                    .execute(db)).await;
                                 }
                             }
                         }
@@ -1395,7 +1388,7 @@ impl QobuzClient {
                         }
 
                         let quality_score = self.compute_quality_score(track);
-                        let _ = sqlx::query(
+                        let _ = crate::db::write_or_log("import_purchases", sqlx::query(
                             r#"
                             INSERT OR REPLACE INTO track_sources
                             (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available)
@@ -1408,8 +1401,7 @@ impl QobuzClient {
                         .bind(track.maximum_bit_depth)
                         .bind(track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32))
                         .bind(quality_score)
-                        .execute(db)
-                        .await;
+                        .execute(db)).await;
                     }
                 }
             }
@@ -1519,13 +1511,12 @@ impl QobuzClient {
         let album_id = album_id.0;
 
         // Link album to artist
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("get_or_create_album", sqlx::query(
             "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
         )
         .bind(album_id)
         .bind(primary_artist_id)
-        .execute(db)
-        .await;
+        .execute(db)).await;
 
         Ok(album_id)
     }
@@ -1545,20 +1536,23 @@ impl QobuzClient {
             .await
         {
             // Update missing metadata
-            let _ = sqlx::query(
-                r#"
+            let _ = crate::db::write_or_log(
+                "get_or_create_track",
+                sqlx::query(
+                    r#"
                 UPDATE tracks SET
                     album_id = COALESCE(album_id, ?),
                     track_number = COALESCE(track_number, ?),
                     disc_number = COALESCE(disc_number, ?)
                 WHERE id = ?
                 "#,
+                )
+                .bind(album_id)
+                .bind(track.track_number)
+                .bind(track.media_number)
+                .bind(row.0)
+                .execute(db),
             )
-            .bind(album_id)
-            .bind(track.track_number)
-            .bind(track.media_number)
-            .bind(row.0)
-            .execute(db)
             .await;
 
             return Ok(row.0);
@@ -1572,8 +1566,10 @@ impl QobuzClient {
                 .await
             {
                 // Update qobuz_id and other metadata
-                let _ = sqlx::query(
-                    r#"
+                let _ = crate::db::write_or_log(
+                    "get_or_create_track",
+                    sqlx::query(
+                        r#"
                     UPDATE tracks SET
                         qobuz_id = COALESCE(qobuz_id, ?),
                         album_id = COALESCE(album_id, ?),
@@ -1581,13 +1577,14 @@ impl QobuzClient {
                         disc_number = COALESCE(disc_number, ?)
                     WHERE id = ?
                     "#,
+                    )
+                    .bind(&qobuz_id)
+                    .bind(album_id)
+                    .bind(track.track_number)
+                    .bind(track.media_number)
+                    .bind(row.0)
+                    .execute(db),
                 )
-                .bind(&qobuz_id)
-                .bind(album_id)
-                .bind(track.track_number)
-                .bind(track.media_number)
-                .bind(row.0)
-                .execute(db)
                 .await;
 
                 return Ok(row.0);
@@ -1935,14 +1932,14 @@ impl QobuzClient {
                                 };
                                 let track_id =
                                     self.get_or_create_track(db, track, album_id).await?;
-                                let _ = sqlx::query(
+                                let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                                         "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
-                                    ).bind(track_id).bind(artist_id).execute(db).await;
+                                    ).bind(track_id).bind(artist_id).execute(db)).await;
 
                                 if is_tech_role {
-                                    let _ = sqlx::query(
+                                    let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                                             "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
-                                        ).bind(track_id).bind(artist_id).bind(&perf_role).execute(db).await;
+                                        ).bind(track_id).bind(artist_id).bind(&perf_role).execute(db)).await;
                                 }
 
                                 // TASK-68: Register performers in track_credits
@@ -1956,9 +1953,9 @@ impl QobuzClient {
                                         if let Ok(p_artist_id) =
                                             self.get_or_create_artist(db, &p_name).await
                                         {
-                                            let _ = sqlx::query(
+                                            let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                                                     "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
-                                                ).bind(track_id).bind(p_artist_id).bind(&p_role).execute(db).await;
+                                                ).bind(track_id).bind(p_artist_id).bind(&p_role).execute(db)).await;
                                         }
                                     }
                                 }
@@ -1970,9 +1967,9 @@ impl QobuzClient {
                                         if let Ok(c_artist_id) =
                                             self.get_or_create_artist(db, &c_name).await
                                         {
-                                            let _ = sqlx::query(
+                                            let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                                                     "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)"
-                                                ).bind(track_id).bind(c_artist_id).bind(&c_role).execute(db).await;
+                                                ).bind(track_id).bind(c_artist_id).bind(&c_role).execute(db)).await;
                                         }
                                     }
                                 }
@@ -1988,15 +1985,15 @@ impl QobuzClient {
                                         self.get_or_create_artist(db, &feat_name).await
                                     {
                                         if feat_artist_id != artist_id {
-                                            let _ = sqlx::query(
+                                            let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                                                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')"
-                                                ).bind(track_id).bind(feat_artist_id).execute(db).await;
+                                                ).bind(track_id).bind(feat_artist_id).execute(db)).await;
                                         }
                                     }
                                 }
-                                let _ = sqlx::query(
+                                let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                                         "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
-                                    ).bind(pid).bind(track_id).bind(track_position).execute(db).await;
+                                    ).bind(pid).bind(track_id).bind(track_position).execute(db)).await;
                                 Ok::<(), String>(())
                             };
                             if let Err(e) = process.await {

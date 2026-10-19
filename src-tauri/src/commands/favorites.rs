@@ -975,14 +975,13 @@ pub async fn perform_push_favorite_sync(
                     .await
                     .map_err(|e| format!("Failed to update library_entries: {}", e))?;
 
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("perform_push_favorite_sync", sqlx::query(
                         "INSERT OR IGNORE INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, ?)"
                     )
                     .bind(track_id)
                     .bind(service_id)
                     .bind(service_item_id)
-                    .execute(db)
-                    .await;
+                    .execute(db)).await;
                 } else {
                     let _ = sqlx::query("UPDATE library_entries SET is_liked = 0 WHERE account_id = ? AND track_id = ?")
                         .bind(account_id)
@@ -1297,13 +1296,12 @@ pub async fn upsert_canonical_favorite_album(
         }
     };
 
-    let _ = sqlx::query(
+    let _ = crate::db::write_or_log("upsert_canonical_favorite_album", sqlx::query(
         "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)",
     )
     .bind(album_id)
     .bind(artist_id)
-    .execute(db)
-    .await;
+    .execute(db)).await;
 
     let service_name: Option<String> = sqlx::query_scalar("SELECT name FROM services WHERE id = ?")
         .bind(service_id)
@@ -1314,25 +1312,22 @@ pub async fn upsert_canonical_favorite_album(
     if let Some(ref svc) = service_name {
         match svc.to_lowercase().as_str() {
             "tidal" => {
-                let _ = sqlx::query("UPDATE albums SET tidal_id = ? WHERE id = ? AND (tidal_id IS NULL OR tidal_id = '')")
+                let _ = crate::db::write_or_log("upsert_canonical_favorite_album", sqlx::query("UPDATE albums SET tidal_id = ? WHERE id = ? AND (tidal_id IS NULL OR tidal_id = '')")
                     .bind(service_album_id)
                     .bind(album_id)
-                    .execute(db)
-                    .await;
+                    .execute(db)).await;
             }
             "spotify" => {
-                let _ = sqlx::query("UPDATE albums SET spotify_id = ? WHERE id = ? AND (spotify_id IS NULL OR spotify_id = '')")
+                let _ = crate::db::write_or_log("upsert_canonical_favorite_album", sqlx::query("UPDATE albums SET spotify_id = ? WHERE id = ? AND (spotify_id IS NULL OR spotify_id = '')")
                     .bind(service_album_id)
                     .bind(album_id)
-                    .execute(db)
-                    .await;
+                    .execute(db)).await;
             }
             "qobuz" => {
-                let _ = sqlx::query("UPDATE albums SET qobuz_id = ? WHERE id = ? AND (qobuz_id IS NULL OR qobuz_id = '')")
+                let _ = crate::db::write_or_log("upsert_canonical_favorite_album", sqlx::query("UPDATE albums SET qobuz_id = ? WHERE id = ? AND (qobuz_id IS NULL OR qobuz_id = '')")
                     .bind(service_album_id)
                     .bind(album_id)
-                    .execute(db)
-                    .await;
+                    .execute(db)).await;
             }
             _ => {}
         }
@@ -1391,25 +1386,22 @@ pub async fn upsert_canonical_favorite_artist(
     if let Some(ref svc) = service_name {
         match svc.to_lowercase().as_str() {
             "tidal" => {
-                let _ = sqlx::query("UPDATE artists SET tidal_id = ? WHERE id = ? AND (tidal_id IS NULL OR tidal_id = '')")
+                let _ = crate::db::write_or_log("upsert_canonical_favorite_artist", sqlx::query("UPDATE artists SET tidal_id = ? WHERE id = ? AND (tidal_id IS NULL OR tidal_id = '')")
                     .bind(service_artist_id)
                     .bind(artist_id)
-                    .execute(db)
-                    .await;
+                    .execute(db)).await;
             }
             "spotify" => {
-                let _ = sqlx::query("UPDATE artists SET spotify_id = ? WHERE id = ? AND (spotify_id IS NULL OR spotify_id = '')")
+                let _ = crate::db::write_or_log("upsert_canonical_favorite_artist", sqlx::query("UPDATE artists SET spotify_id = ? WHERE id = ? AND (spotify_id IS NULL OR spotify_id = '')")
                     .bind(service_artist_id)
                     .bind(artist_id)
-                    .execute(db)
-                    .await;
+                    .execute(db)).await;
             }
             "qobuz" => {
-                let _ = sqlx::query("UPDATE artists SET qobuz_id = ? WHERE id = ? AND (qobuz_id IS NULL OR qobuz_id = '')")
+                let _ = crate::db::write_or_log("upsert_canonical_favorite_artist", sqlx::query("UPDATE artists SET qobuz_id = ? WHERE id = ? AND (qobuz_id IS NULL OR qobuz_id = '')")
                     .bind(service_artist_id)
                     .bind(artist_id)
-                    .execute(db)
-                    .await;
+                    .execute(db)).await;
             }
             _ => {}
         }
@@ -2647,19 +2639,22 @@ pub async fn perform_sync_favorites(
     }
 
     // Update favorites_cache
-    let _ = sqlx::query(
-        r#"
+    let _ = crate::db::write_or_log(
+        "perform_sync_favorites",
+        sqlx::query(
+            r#"
         INSERT INTO favorites_cache (service_name, item_type, total_count, last_synced_at)
         VALUES (?, ?, ?, datetime('now'))
         ON CONFLICT(service_name, item_type) DO UPDATE SET
             total_count = excluded.total_count,
             last_synced_at = datetime('now')
         "#,
+        )
+        .bind(&service_lower)
+        .bind(&type_filter)
+        .bind(total_found)
+        .execute(db),
     )
-    .bind(&service_lower)
-    .bind(&type_filter)
-    .bind(total_found)
-    .execute(db)
     .await;
 
     Ok(FavoritesSyncResult {

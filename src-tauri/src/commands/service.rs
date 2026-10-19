@@ -855,14 +855,13 @@ pub async fn import_spotify_library(
                 }
 
                 // Add track source (using cached service_id)
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_spotify_library", sqlx::query(
                     "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, available) VALUES (?, ?, ?, 1)"
                 )
                 .bind(track_id)
                 .bind(spotify_service_id)
                 .bind(&track.id)
-                .execute(&state.db)
-                .await;
+                .execute(&state.db)).await;
 
                 processed += 1;
 
@@ -1076,36 +1075,33 @@ pub async fn import_spotify_playlists(
                                 .get_or_create_artist(&state.db, &spotify_artist.name)
                                 .await?;
                             let role = if i == 0 { "primary" } else { "featured" };
-                            let _ = sqlx::query(
+                            let _ = crate::db::write_or_log("import_spotify_playlists", sqlx::query(
                                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, ?)"
                                 )
                                 .bind(track_id)
                                 .bind(aid)
                                 .bind(role)
-                                .execute(&state.db)
-                                .await;
+                                .execute(&state.db)).await;
                         }
 
                         // Add track source (link to Spotify service)
-                        let _ = sqlx::query(
+                        let _ = crate::db::write_or_log("import_spotify_playlists", sqlx::query(
                                 "INSERT OR IGNORE INTO track_sources (track_id, service_id, service_track_id)
                                  SELECT ?, id, ? FROM services WHERE name = 'spotify'"
                             )
                             .bind(track_id)
                             .bind(&track.id)
-                            .execute(&state.db)
-                            .await;
+                            .execute(&state.db)).await;
 
                         // Add to playlist_tracks
-                        let _ = sqlx::query(
+                        let _ = crate::db::write_or_log("import_spotify_playlists", sqlx::query(
                                 "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position, added_at) VALUES (?, ?, ?, ?)"
                             )
                             .bind(playlist_db_id.0)
                             .bind(track_id)
                             .bind(track_offset + position as i32 + 1)
                             .bind(item.added_at.as_deref())
-                            .execute(&state.db)
-                            .await;
+                            .execute(&state.db)).await;
 
                         tracks_imported += 1;
                     }
@@ -1394,18 +1390,16 @@ pub async fn service_save_settings(
 
     if !settings.download_path.trim().is_empty() {
         let trimmed = settings.download_path.trim();
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("service_save_settings", sqlx::query(
             "UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1",
         )
         .bind(trimmed)
-        .execute(&state.db)
-        .await;
+        .execute(&state.db)).await;
         for key in &["download_path", "dl_download_path", "download_dir"] {
-            let _ = sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+            let _ = crate::db::write_or_log("service_save_settings", sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
                 .bind(key)
                 .bind(trimmed)
-                .execute(&state.db)
-                .await;
+                .execute(&state.db)).await;
         }
     }
 
@@ -1618,10 +1612,13 @@ pub async fn import_tidal_library(
         .await;
 
     // Update last_synced
-    let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(account_id)
-        .execute(&state.db)
-        .await;
+    let _ = crate::db::write_or_log(
+        "import_tidal_library",
+        sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(account_id)
+            .execute(&state.db),
+    )
+    .await;
 
     // Use helper for complete event - Redundant broadcast to ensure UI clears all bars
     emit_import_complete(&window, "tidal", imported as u64, skipped as u64);
@@ -1732,13 +1729,12 @@ pub async fn import_deezer_library(
                 .await?;
 
             // Link artist to track
-            let _ = sqlx::query(
+            let _ = crate::db::write_or_log("import_deezer_library", sqlx::query(
                 "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
             )
             .bind(track_id)
             .bind(artist_id)
-            .execute(&state.db)
-            .await;
+            .execute(&state.db)).await;
 
             // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
             let safe_added_at = crate::services::import_pagination::normalize_added_at(None);
@@ -1768,17 +1764,20 @@ pub async fn import_deezer_library(
             }
 
             // Add track source (assuming FLAC 16/44.1 available for now)
-            let _ = sqlx::query(
-                r#"
+            let _ = crate::db::write_or_log(
+                "import_deezer_library",
+                sqlx::query(
+                    r#"
                 INSERT OR REPLACE INTO track_sources
                 (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available)
                 VALUES (?, ?, ?, 'FLAC', 16, 44100, 1)
                 "#,
+                )
+                .bind(track_id)
+                .bind(deezer_service_id)
+                .bind(track.id)
+                .execute(&state.db),
             )
-            .bind(track_id)
-            .bind(deezer_service_id)
-            .bind(track.id)
-            .execute(&state.db)
             .await;
         }
 
@@ -1804,10 +1803,13 @@ pub async fn import_deezer_library(
     }
 
     // Update last_synced
-    let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(account_id)
-        .execute(&state.db)
-        .await;
+    let _ = crate::db::write_or_log(
+        "import_deezer_library",
+        sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(account_id)
+            .execute(&state.db),
+    )
+    .await;
 
     // Use helper for complete event
     emit_import_complete(&window, "deezer", imported as u64, skipped as u64);
@@ -2118,14 +2120,13 @@ where
                             // La pertenencia se registra aunque la pista ya
                             // estuviera en el catálogo (idempotencia por
                             // `INSERT OR IGNORE`), igual que en el brazo Deezer.
-                            let _ = sqlx::query(
+                            let _ = crate::db::write_or_log("sync_soundcloud_playlists_with_engine", sqlx::query(
                                 "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
                             )
                             .bind(playlist_db_id)
                             .bind(res.track_id)
                             .bind((processed_in_playlist + 1) as i32)
-                            .execute(db)
-                            .await;
+                            .execute(db)).await;
                             if res.is_new_import {
                                 totals.imported += 1;
                             } else {
@@ -2219,10 +2220,13 @@ async fn run_soundcloud_likes_import(
     }
 
     // Update last_synced
-    let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(account_id)
-        .execute(db)
-        .await;
+    let _ = crate::db::write_or_log(
+        "run_soundcloud_likes_import",
+        sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(account_id)
+            .execute(db),
+    )
+    .await;
 
     tracing::info!(
         "SoundCloud import complete: {} imported, {} skipped ({} likes seen)",
@@ -2499,13 +2503,12 @@ async fn run_apple_music_library_import(
                 }
 
                 // Add track-artist relation
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("run_apple_music_library_import", sqlx::query(
                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                 )
                 .bind(track_id)
                 .bind(artist_id)
-                .execute(db)
-                .await;
+                .execute(db)).await;
 
                 // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
                 let safe_added_at = crate::services::import_pagination::normalize_added_at(
@@ -2618,10 +2621,13 @@ async fn run_apple_music_library_import(
     }
 
     // Update last_synced
-    let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(account_id)
-        .execute(db)
-        .await;
+    let _ = crate::db::write_or_log(
+        "run_apple_music_library_import",
+        sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(account_id)
+            .execute(db),
+    )
+    .await;
 
     tracing::info!(
         "Apple Music import complete: {} imported, {} skipped",
@@ -4059,10 +4065,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
 
                                 // Mark album as favorite
                                 let t_pers = std::time::Instant::now();
-                                let _ = sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE title = ? COLLATE NOCASE")
+                                let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE title = ? COLLATE NOCASE")
                                     .bind(&full_album.title)
-                                    .execute(db)
-                                    .await;
+                                    .execute(db)).await;
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
                             }
                             offset += limit;
@@ -4567,14 +4572,13 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                                 enrichment_ms +=
                                                     t_enrich.elapsed().as_millis() as u64;
                                                 let t_pl_track = std::time::Instant::now();
-                                                let _ = sqlx::query(
+                                                let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
                                                     "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
                                                 )
                                                 .bind(p_id)
                                                 .bind(res.track_id)
                                                 .bind(pos as i32 + 1)
-                                                .execute(db)
-                                                .await;
+                                                .execute(db)).await;
                                                 persistence_ms +=
                                                     t_pl_track.elapsed().as_millis() as u64;
 
@@ -4702,10 +4706,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 if let Some(ref name) = art.name {
                                     let t_pers = std::time::Instant::now();
                                     if let Ok(aid) = client.get_or_create_artist(db, name).await {
-                                        let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
+                                        let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
                                             .bind(aid)
-                                            .execute(db)
-                                            .await;
+                                            .execute(db)).await;
                                     }
                                     persistence_ms += t_pers.elapsed().as_millis() as u64;
                                 }
@@ -5140,11 +5143,10 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 .unwrap_or(None);
 
                                 if let Some((album_id,)) = aid_res {
-                                    let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
                                         .bind(album_id)
                                         .bind(artist_id)
-                                        .execute(db)
-                                        .await;
+                                        .execute(db)).await;
                                 }
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
 
@@ -5593,14 +5595,13 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                                             tracks_processed += 1;
                                                             let t_pl_track =
                                                                 std::time::Instant::now();
-                                                            let _ = sqlx::query(
+                                                            let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
                                                                 "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
                                                             )
                                                             .bind(p_id)
                                                             .bind(res.track_id)
                                                             .bind(track_offset + pos as i32 + 1)
-                                                            .execute(db)
-                                                            .await;
+                                                            .execute(db)).await;
                                                             persistence_ms +=
                                                                 t_pl_track.elapsed().as_millis()
                                                                     as u64;
@@ -5788,11 +5789,10 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 let t_pers = std::time::Instant::now();
                                 if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
                                     let tidal_id_str = art.id.to_string();
-                                    let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP), tidal_id = COALESCE(tidal_id, ?) WHERE id = ?")
+                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP), tidal_id = COALESCE(tidal_id, ?) WHERE id = ?")
                                         .bind(&tidal_id_str)
                                         .bind(aid)
-                                        .execute(db)
-                                        .await;
+                                        .execute(db)).await;
                                 }
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
                             }
@@ -6185,10 +6185,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
 
                                 // Mark album as favorite
                                 let t_pers = std::time::Instant::now();
-                                let _ = sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE title = ? COLLATE NOCASE")
+                                let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE title = ? COLLATE NOCASE")
                                     .bind(&album.name)
-                                    .execute(db)
-                                    .await;
+                                    .execute(db)).await;
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
                             }
                             offset += limit;
@@ -6399,14 +6398,13 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                                     enrichment_ms +=
                                                         t_enrich.elapsed().as_millis() as u64;
                                                     let t_pl_track = std::time::Instant::now();
-                                                    let _ = sqlx::query(
+                                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
                                                         "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
                                                     )
                                                     .bind(p_id)
                                                     .bind(res.track_id)
                                                     .bind(pos as i32 + 1)
-                                                    .execute(db)
-                                                    .await;
+                                                    .execute(db)).await;
                                                     persistence_ms +=
                                                         t_pl_track.elapsed().as_millis() as u64;
                                                     tracks_processed += 1;
@@ -6539,11 +6537,10 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 .await
                                 .unwrap_or(None);
                                 if let Some((album_id,)) = aid_res {
-                                    let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
                                         .bind(album_id)
                                         .bind(artist_id)
-                                        .execute(db)
-                                        .await;
+                                        .execute(db)).await;
                                     favorite_albums_total += 1;
 
                                     if let Ok(tracks_page) =
@@ -6645,11 +6642,10 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                 favorite_artists_total += 1;
                                 let t_pers = std::time::Instant::now();
                                 if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
-                                    let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP), spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
+                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP), spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
                                         .bind(&art.id)
                                         .bind(aid)
-                                        .execute(db)
-                                        .await;
+                                        .execute(db)).await;
                                 }
                                 persistence_ms += t_pers.elapsed().as_millis() as u64;
                             }
@@ -7057,10 +7053,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                     for (_artist_provider_id, artist_name) in &artists {
                         if let Ok(artist_db_id) = client.get_or_create_artist(db, artist_name).await
                         {
-                            let _ = sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
+                            let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
                                 .bind(artist_db_id)
-                                .execute(db)
-                                .await;
+                                .execute(db)).await;
                             favorite_artists_total += 1;
                         }
                     }
@@ -7210,14 +7205,13 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                                     let t_enrich = std::time::Instant::now();
                                     if let Ok(res) = persist_deezer_track(sync_input).await {
                                         let t_pl_track = std::time::Instant::now();
-                                        let _ = sqlx::query(
+                                        let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
                                             "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
                                         )
                                         .bind(p_id)
                                         .bind(res.track_id)
                                         .bind(pos as i32 + 1)
-                                        .execute(db)
-                                        .await;
+                                        .execute(db)).await;
                                         persistence_ms += t_pl_track.elapsed().as_millis() as u64;
                                         enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                         tracks_processed += 1;
@@ -7593,17 +7587,19 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     }
 
     let t_pers = std::time::Instant::now();
-    let _ = sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(account_id)
-        .execute(db)
-        .await;
+    let _ = crate::db::write_or_log(
+        "perform_sync_service_with_emitter_inner",
+        sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(account_id)
+            .execute(db),
+    )
+    .await;
 
-    let _ = sqlx::query(
+    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
         "UPDATE service_sync_settings SET last_synced = CURRENT_TIMESTAMP WHERE service_name = ?",
     )
     .bind(&service_normalized)
-    .execute(db)
-    .await;
+    .execute(db)).await;
     persistence_ms += t_pers.elapsed().as_millis() as u64;
 
     // Check partial failure: If albums were received/requested for sync but 0 tracks were found/persisted/existing due to errors or empty expansions

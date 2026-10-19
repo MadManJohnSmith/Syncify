@@ -123,13 +123,18 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   11 DELETE). Una escritura puede fallar y la transacción confirmar sin rastro. Reparto:
   `src-tauri/src/services/enrichment.rs` 45, `src-tauri/src/commands/service.rs` 28,
   `src-tauri/src/services/qobuz.rs` 21.
+- **Corrección medida al migrar (2026-10-19)**: de esos 243, **18 terminan en
+  `.await.map_err(..)?`**, o sea que propagan el error y nunca fueron silencios (10 en
+  `commands/favorites.rs`, 8 en `services/tidal.rs`). Los silenciosos reales eran **225**.
 - **Frontera creada**: `crate::db::write_or_log(contexto, futuro)` en `src-tauri/src/db.rs`
   concentra la política (registra con `tracing::warn!` y devuelve `Option`), con sus tests.
   Las escrituras que deban abortar tendrán su variante cuando exista el primer llamador.
-- **Progreso**: migrados `src-tauri/src/commands/library.rs` (18) y
-  `src-tauri/src/services/enrichment.rs` (45, los dos caminos calientes:
-  `apply_to_database` 25 y `enrich_and_persist_sync_track` 19); el ratchet baja a 180
-  desde 243 y solo puede bajar.
+- **Progreso**: 130 de los 225 silenciosos migrados a `crate::db::write_or_log` —
+  `commands/library.rs` 18, `services/enrichment.rs` 45 (los caminos calientes
+  `apply_to_database` 25 y `enrich_and_persist_sync_track` 19), `commands/favorites.rs` 9,
+  `services/tidal.rs` 9, `services/qobuz.rs` 21 y `commands/service.rs` 28. Los cinco
+  ficheros de mayor riesgo del plan quedan cubiertos; el ratchet baja de 243 a 113 (patrón
+  bruto; 95 silenciosos + 18 que propagan) y solo puede bajar.
 - **Cierra**: migrar el resto por lotes (enrichment 45, service 28, qobuz 21, favorites 19,
   tidal 17), un fichero por commit con su suite verde, y seguir bajando el baseline.
 
