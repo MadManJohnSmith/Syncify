@@ -220,6 +220,14 @@
               >
                 {{ qualityBadgeSource }}
               </span>
+              <span
+                v-if="qualityMatchNote"
+                class="px-2 py-1 rounded-md text-[10px] font-medium bg-emerald-500/10 border border-emerald-500/30 text-emerald-400"
+                data-testid="audio-quality-match"
+                :title="qualityBadgeTitle"
+              >
+                {{ qualityMatchNote }}
+              </span>
             </div>
           </div>
 
@@ -931,11 +939,25 @@ const qualityBadge = computed<string | null>(() => {
   return null
 })
 
-const qualityBadgeTitle = computed(() =>
-  streamQuality.value
-    ? `Streaming from ${streamQuality.value.serviceName} · obtained quality (verified stream)`
-    : 'Best available source quality for this track',
-)
+const qualityBadgeTitle = computed(() => {
+  const stream = streamQuality.value
+  if (!stream) return 'Best available source quality for this track'
+  const identity =
+    stream.matchMethod === 'metadata'
+      ? ' · misma grabación emparejada por título/artista/duración (edición con otro ISRC)'
+      : stream.matchMethod === 'isrc'
+        ? ' · misma grabación emparejada por ISRC entre proveedores'
+        : ''
+  return `Streaming desde ${stream.serviceName.toUpperCase()} · calidad obtenida (stream verificado)${identity}`
+})
+
+/** Chip honesto cuando la fuente no venía en la pista sino de la cascada. */
+const qualityMatchNote = computed<string | null>(() => {
+  const method = streamQuality.value?.matchMethod
+  if (method === 'isrc') return 'ISRC'
+  if (method === 'metadata') return 'por metadatos'
+  return null
+})
 
 const qualityBadgeSource = computed<string | null>(() => {
   const stream = streamQuality.value

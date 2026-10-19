@@ -102,6 +102,7 @@ describe('usePlayer', () => {
                 qualityLabel: 'FLAC 24 bits / 192 kHz',
                 qualityTier: 'hires',
                 sourceName: 'Qobuz API oficial',
+                matchMethod: 'direct',
             },
         });
         const player = usePlayer();
@@ -112,6 +113,7 @@ describe('usePlayer', () => {
             serviceName: 'qobuz',
             qualityLabel: 'FLAC 24 bits / 192 kHz',
             qualityTier: 'hires',
+            matchMethod: 'direct',
         });
     });
 

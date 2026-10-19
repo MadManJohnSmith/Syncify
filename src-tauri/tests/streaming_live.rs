@@ -251,12 +251,13 @@ async fn isrc_cascade_resolves_a_track_without_direct_sources() {
     {
         Ok(resolved) => {
             println!(
-                "resolved via {}: format={} tier={} label='{}' source='{}'",
+                "resolved via {}: format={} tier={} label='{}' source='{}' match={}",
                 resolved.info.service_name,
                 resolved.info.format,
                 resolved.info.quality_tier,
                 resolved.info.quality_label,
-                resolved.info.source_name
+                resolved.info.source_name,
+                resolved.info.match_method
             );
             assert!(
                 resolved.info.service_name == "qobuz" || resolved.info.service_name == "tidal",

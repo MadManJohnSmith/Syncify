@@ -487,6 +487,43 @@ describe('PL-08, PL-09, PL-10, PL-04, PL-05: Reproductor Completo & StatusBar Ce
       wrapper.unmount()
     })
 
+    it('etiqueta la identidad cuando la fuente viene de la cascada (ISRC o metadatos)', async () => {
+      useRichMetadata()
+      // La pista ya sonaba desde Tidal lossy y la cascada encontró la misma
+      // grabación en Qobuz por metadatos: el badge debe decirlo, no ocultarlo.
+      player.streamQuality.value = {
+        serviceName: 'qobuz',
+        qualityLabel: 'FLAC 16 bits / 44.1 kHz',
+        qualityTier: 'lossless',
+        matchMethod: 'metadata',
+      }
+
+      const wrapper = mount(FullscreenPlayer)
+      player.current.value = sampleTrack
+      player.openFullscreen()
+      await paint()
+
+      const badge = docQuery('[data-testid="audio-quality-badge"]')!
+      expect(badge.textContent).toContain('FLAC 16 bits / 44.1 kHz')
+      const note = docQuery('[data-testid="audio-quality-match"]')
+      expect(note).not.toBe(null)
+      expect(note!.textContent).toContain('por metadatos')
+      expect(badge.getAttribute('title')).toContain('misma grabación')
+
+      // Sin cascada (fuente directa) no se añade ruido al badge.
+      player.streamQuality.value = {
+        serviceName: 'qobuz',
+        qualityLabel: 'FLAC 24 bits / 96 kHz',
+        qualityTier: 'hires',
+        matchMethod: 'direct',
+      }
+      await paint()
+      expect(docQuery('[data-testid="audio-quality-match"]')).toBe(null)
+
+      player.streamQuality.value = null
+      wrapper.unmount()
+    })
+
     it('lista la metadata ampliada: album artist, sello, UPC, fichero y tags del archivo', async () => {
       useRichMetadata()
       const wrapper = mount(FullscreenPlayer)

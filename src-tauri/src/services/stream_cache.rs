@@ -46,6 +46,8 @@ pub struct StreamStatePayload {
     pub service_name: String,
     pub quality_label: String,
     pub quality_tier: String,
+    /// `direct` | `isrc` | `metadata` (identidad de la grabación).
+    pub match_method: String,
     pub error: Option<String>,
 }
 
@@ -176,6 +178,7 @@ pub fn emit_state(app: &AppHandle, session: &StreamSession, error: Option<String
         pending_seek_sec: session.pending_seek_sec.lock().ok().and_then(|p| *p),
         service_name: session.info.service_name.clone(),
         quality_label: session.info.quality_label.clone(),
+        match_method: session.info.match_method.clone(),
         quality_tier: session.info.quality_tier.clone(),
         error,
     };
@@ -327,6 +330,7 @@ mod tests {
             quality_label: "FLAC 24 bits / 192 kHz".to_string(),
             quality_tier: "hires".to_string(),
             source_name: "Qobuz API oficial".to_string(),
+            match_method: "direct".to_string(),
         }
     }
 

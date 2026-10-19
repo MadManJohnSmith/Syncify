@@ -50,6 +50,12 @@ pub struct StreamSourceInfo {
     pub quality_tier: String,
     /// Origen real (API oficial / proxy).
     pub source_name: String,
+    /// Cómo se identificó la grabación: `direct` (la pista ya traía esta fuente),
+    /// `isrc` (misma grabación por ISRC) o `metadata` (misma grabación por
+    /// título/artista/duración estrictos, con ISRC de edición distinto).
+    /// La UI lo usa para no presentar una coincidencia como si fuera la fuente
+    /// original de la pista.
+    pub match_method: String,
 }
 
 /// Resolución interna: la URL sólo vive en backend (sesión de streaming).
@@ -150,12 +156,14 @@ pub async fn resolve_stream_for_track(
         }
         Ok(None) => {}
         Err(reason) => {
-            tracing::info!(
+            // Frecuente y esperado (pistas que no están en el catálogo): no es
+            // un error de la app ni debe inundar el log en INFO.
+            tracing::debug!(
                 track_id,
                 reason = %reason,
-                "streaming: la cascada ISRC no encontró una fuente mejor"
+                "streaming: la cascada no encontró una fuente mejor"
             );
-            failures.push(format!("cascada ISRC: {}", reason));
+            failures.push(format!("cascada: {}", reason));
         }
     }
 
@@ -582,7 +590,18 @@ async fn tidal_isrc_match(
     Err(reasons.join(" · "))
 }
 
-/// Busca la grabación por ISRC en Qobuz/Tidal y resuelve su stream.
+/// Busca la grabación en Qobuz/Tidal y resuelve su stream.
+///
+/// Dos etapas, de más fuerte a más débil identidad:
+/// 1. **ISRC** (Fase 3): misma grabación por ISRC exacto (directo o por consulta
+///    amplia con ISRC confirmado).
+/// 2. **Metadatos estrictos**: muchas reediciones cambian el ISRC sin cambiar la
+///    grabación (verificado en vivo: *Amazing Grace* local `GBCVZ0200290` es
+///    `USI4R0401939` en Qobuz, misma duración). Sólo se acepta cuando el
+///    matcher estricto de cada proveedor lo confirma (título normalizado,
+///    artista y duración) y no hay ambigüedad; queda marcado como
+///    `match_method = "metadata"` para que la UI no lo presente como la fuente
+///    original de la pista.
 ///
 /// Devuelve `Ok(Some)` con el mejor stream verificado (lossless siempre que
 /// exista; lossy sólo si `allow_lossy`), `Ok(None)` si no hay nada reproducible o
@@ -598,88 +617,189 @@ async fn isrc_cascade(
         .await
         .ok_or_else(|| "la pista no tiene metadatos para buscarla".to_string())?;
 
+    let duration_ms = context.duration_ms;
+    let mut reasons: Vec<String> = Vec::with_capacity(6);
+    let mut lossy_fallback: Option<ResolvedStream> = None;
+
+    // El ISRC puede venir de la fila local o de Spotify. Si no se consigue, la
+    // etapa de metadatos sigue siendo válida: no se aborta aquí.
     if context.isrc.is_none() {
         match spotify_isrc_for_track(db, http, track_id).await {
             Ok(isrc) => context.isrc = Some(isrc),
-            Err(reason) => {
-                return Err(format!("la pista no tiene ISRC y {}", reason));
-            }
+            Err(reason) => reasons.push(format!("sin ISRC ({})", reason)),
         }
     }
 
-    let Some(isrc) = context.isrc.clone() else {
-        return Err(
-            "la pista no tiene ISRC y Spotify no pudo aportarlo (conecta Spotify o importa la pista con ISRC)"
-                .to_string(),
-        );
-    };
-
-    let duration_ms = context.duration_ms;
-    let mut reasons: Vec<String> = Vec::with_capacity(4);
-    let mut lossy_fallback: Option<ResolvedStream> = None;
-
-    // ---- Qobuz -------------------------------------------------------------
-    match qobuz_isrc_match(db, &isrc, &context).await {
-        Ok(found) => {
-            let service_id = found.id.to_string();
-            if should_try(tried, "qobuz", &service_id) {
-                let candidate = Candidate {
-                    service_name: "qobuz".to_string(),
-                    service_track_id: service_id,
-                };
-                match resolve_qobuz(db, http, &candidate, duration_ms).await {
-                    Ok(resolved) if resolved.info.quality_tier != "lossy" => {
-                        return Ok(Some(resolved));
-                    }
-                    Ok(resolved) => {
-                        tracing::info!(
-                            track_id,
-                            quality = %resolved.info.quality_label,
-                            "streaming: cascada ISRC encontró Qobuz lossy"
-                        );
-                        if allow_lossy && lossy_fallback.is_none() {
-                            lossy_fallback = Some(resolved);
+    if let Some(isrc) = context.isrc.clone() {
+        // ---- Etapa 1a: Qobuz por ISRC ---------------------------------------
+        match qobuz_isrc_match(db, &isrc, &context).await {
+            Ok(found) => {
+                let service_id = found.id.to_string();
+                if should_try(tried, "qobuz", &service_id) {
+                    let candidate = Candidate {
+                        service_name: "qobuz".to_string(),
+                        service_track_id: service_id,
+                    };
+                    match resolve_qobuz(db, http, &candidate, duration_ms).await {
+                        Ok(mut resolved) => {
+                            resolved.info.match_method = "isrc".to_string();
+                            if resolved.info.quality_tier != "lossy" {
+                                return Ok(Some(resolved));
+                            }
+                            tracing::info!(
+                                track_id,
+                                quality = %resolved.info.quality_label,
+                                "streaming: cascada ISRC encontró Qobuz lossy"
+                            );
+                            if allow_lossy && lossy_fallback.is_none() {
+                                lossy_fallback = Some(resolved);
+                            }
                         }
+                        Err(err) => reasons.push(format!("Qobuz ISRC {}: {}", found.id, err)),
                     }
-                    Err(err) => reasons.push(format!("Qobuz ISRC {}: {}", found.id, err)),
+                } else {
+                    reasons.push(
+                        "Qobuz: esa identidad ya se intentó en la pasada directa".to_string(),
+                    );
                 }
-            } else {
-                reasons.push("Qobuz: esa identidad ya se intentó en la pasada directa".to_string());
             }
+            Err(reason) => reasons.push(format!("Qobuz: {}", reason)),
         }
-        Err(reason) => reasons.push(format!("Qobuz: {}", reason)),
+
+        // ---- Etapa 1b: Tidal por ISRC ---------------------------------------
+        match tidal_isrc_match(db, http, &isrc, &context).await {
+            Ok(found) => {
+                let service_id = found.id.to_string();
+                if should_try(tried, "tidal", &service_id) {
+                    let candidate = Candidate {
+                        service_name: "tidal".to_string(),
+                        service_track_id: service_id,
+                    };
+                    match resolve_tidal(db, http, &candidate, duration_ms).await {
+                        Ok(mut resolved) => {
+                            resolved.info.match_method = "isrc".to_string();
+                            if resolved.info.quality_tier != "lossy" {
+                                return Ok(Some(resolved));
+                            }
+                            tracing::info!(
+                                track_id,
+                                quality = %resolved.info.quality_label,
+                                "streaming: cascada ISRC encontró Tidal lossy"
+                            );
+                            if allow_lossy && lossy_fallback.is_none() {
+                                lossy_fallback = Some(resolved);
+                            }
+                        }
+                        Err(err) => reasons.push(format!("Tidal ISRC {}: {}", found.id, err)),
+                    }
+                } else {
+                    reasons.push(
+                        "Tidal: esa identidad ya se intentó en la pasada directa".to_string(),
+                    );
+                }
+            }
+            Err(reason) => reasons.push(format!("Tidal: {}", reason)),
+        }
     }
 
-    // ---- Tidal -------------------------------------------------------------
-    match tidal_isrc_match(db, http, &isrc, &context).await {
-        Ok(found) => {
-            let service_id = found.id.to_string();
-            if should_try(tried, "tidal", &service_id) {
-                let candidate = Candidate {
-                    service_name: "tidal".to_string(),
-                    service_track_id: service_id,
-                };
-                match resolve_tidal(db, http, &candidate, duration_ms).await {
-                    Ok(resolved) if resolved.info.quality_tier != "lossy" => {
-                        return Ok(Some(resolved));
+    // ---- Etapa 2: metadatos estrictos (misma grabación, ISRC de edición) ----
+    let has_metadata = !context.title.trim().is_empty() && !context.artist.trim().is_empty();
+    if has_metadata {
+        let expected_sec = context.expected_duration_sec();
+
+        for (service, account_ids) in [
+            ("qobuz", candidate_account_ids(db, "qobuz").await),
+            ("tidal", candidate_account_ids(db, "tidal").await),
+        ] {
+            if account_ids.is_empty() {
+                continue;
+            }
+
+            for account_id in account_ids {
+                let maybe_match: Result<String, String> = if service == "qobuz" {
+                    let downloader = QobuzDownloader::new();
+                    match downloader
+                        .resolve_token_for_account(db, Some(account_id))
+                        .await
+                    {
+                        Ok(token) => downloader
+                            .search_by_metadata_strict(
+                                &context.title,
+                                &context.artist,
+                                expected_sec,
+                                Some(&token),
+                            )
+                            .await
+                            .map(|track| track.id.to_string())
+                            .map_err(|e| e.to_string()),
+                        Err(QobuzAuthStatus::RequiresAuth(msg)) => Err(msg),
                     }
-                    Ok(resolved) => {
+                } else {
+                    let (creds, _name) = resolve_and_refresh_gui_credentials_for_account(
+                        db,
+                        http,
+                        Some(account_id),
+                        false,
+                    )
+                    .await;
+                    match creds {
+                        Some(creds) => {
+                            let downloader = syncify_tidal_downloader::TidalDownloader::new()
+                                .with_user_token(Some(creds.access_token.clone()));
+                            downloader
+                                .search_by_metadata_strict(
+                                    &context.title,
+                                    &context.artist,
+                                    expected_sec,
+                                )
+                                .await
+                                .map(|track| track.id.to_string())
+                                .map_err(|e| e.to_string())
+                        }
+                        None => Err("sin credenciales válidas".to_string()),
+                    }
+                };
+
+                match maybe_match {
+                    Ok(service_id) => {
+                        if !should_try(tried, service, &service_id) {
+                            break;
+                        }
                         tracing::info!(
                             track_id,
-                            quality = %resolved.info.quality_label,
-                            "streaming: cascada ISRC encontró Tidal lossy"
+                            service,
+                            service_track_id = %service_id,
+                            "streaming: cascada por metadatos estrictos (misma grabación, ISRC de edición distinto)"
                         );
-                        if allow_lossy && lossy_fallback.is_none() {
-                            lossy_fallback = Some(resolved);
+                        let candidate = Candidate {
+                            service_name: service.to_string(),
+                            service_track_id: service_id,
+                        };
+                        let outcome = if service == "qobuz" {
+                            resolve_qobuz(db, http, &candidate, duration_ms).await
+                        } else {
+                            resolve_tidal(db, http, &candidate, duration_ms).await
+                        };
+                        match outcome {
+                            Ok(mut resolved) => {
+                                resolved.info.match_method = "metadata".to_string();
+                                if resolved.info.quality_tier != "lossy" {
+                                    return Ok(Some(resolved));
+                                }
+                                if allow_lossy && lossy_fallback.is_none() {
+                                    lossy_fallback = Some(resolved);
+                                }
+                            }
+                            Err(err) => reasons.push(format!("{} (metadatos): {}", service, err)),
                         }
+                        break;
                     }
-                    Err(err) => reasons.push(format!("Tidal ISRC {}: {}", found.id, err)),
+                    Err(reason) => {
+                        reasons.push(format!("{} (metadatos): {}", service, reason));
+                    }
                 }
-            } else {
-                reasons.push("Tidal: esa identidad ya se intentó en la pasada directa".to_string());
             }
         }
-        Err(reason) => reasons.push(format!("Tidal: {}", reason)),
     }
 
     if let Some(fallback) = lossy_fallback {
@@ -828,6 +948,7 @@ async fn resolve_qobuz(
             quality_label: quality_label(format, bit_depth, sample_rate, format == "MP3"),
             quality_tier: quality_tier(format, bit_depth).to_string(),
             source_name,
+            match_method: "direct".to_string(),
         };
 
         match probe_stream_candidate(http, &resolution.url, &expected, duration_ms).await {
@@ -888,24 +1009,37 @@ async fn resolve_tidal(
             continue;
         };
 
-        // `hires` + fallback permitido: si Tidal no entrega hi-res se acepta
-        // lossless (o lossy) con la etiqueta reflejando lo obtenido.
-        let resolution = match downloader
-            .get_stream_resolution_with_credentials(track_id, Some("hires"), Some(&creds), true)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                last_err = e.to_string();
-                continue;
+        // Tidal entrega el FLAC como BTS/DASH segmentado (no reproducible de
+        // forma progresiva) y sólo el tier `high` (AAC) como fichero directo.
+        // Se piden en ese orden: `hires` primero —por si la cuenta o la región
+        // devuelven FLAC progresivo— y si llega segmentado se reintenta con
+        // `high` para que la pista suene, con etiqueta lossy honesta.
+        let mut obtained: Option<(syncify_tidal_downloader::TidalStreamResolution, String)> = None;
+        let mut attempt_errors: Vec<String> = Vec::with_capacity(2);
+        for quality in ["hires", "high"] {
+            match downloader
+                .get_stream_resolution_with_credentials(track_id, Some(quality), Some(&creds), true)
+                .await
+            {
+                Ok(resolution) => {
+                    let extension =
+                        normalize_extension(&resolution.extension, &resolution.container);
+                    match ensure_streamable(&resolution.url, &extension) {
+                        Ok(()) => {
+                            obtained = Some((resolution, extension));
+                            break;
+                        }
+                        Err(reason) => attempt_errors.push(format!("{}: {}", quality, reason)),
+                    }
+                }
+                Err(e) => attempt_errors.push(format!("{}: {}", quality, e)),
             }
-        };
-
-        let extension = normalize_extension(&resolution.extension, &resolution.container);
-        if let Err(e) = ensure_streamable(&resolution.url, &extension) {
-            last_err = e;
-            continue;
         }
+
+        let Some((resolution, extension)) = obtained else {
+            last_err = attempt_errors.join(" · ");
+            continue;
+        };
 
         let format = resolution_format(&resolution.codec, &extension);
         let bit_depth = (resolution.bit_depth > 0).then_some(resolution.bit_depth);
@@ -922,9 +1056,10 @@ async fn resolve_tidal(
             extension: extension.to_string(),
             bit_depth,
             sample_rate,
-            quality_label: quality_label(format, bit_depth, sample_rate, bit_depth.is_none()),
+            quality_label: quality_label(format, bit_depth, sample_rate, format != "FLAC"),
             quality_tier: quality_tier(format, bit_depth).to_string(),
             source_name: resolution.source_name.clone(),
+            match_method: "direct".to_string(),
         };
 
         match probe_stream_candidate(http, &resolution.url, &expected, duration_ms).await {
@@ -1231,7 +1366,29 @@ fn normalize_extension(extension: &str, container: &str) -> String {
 /// Sólo se reproduce lo que sea un fichero progresivo: los manifiestos
 /// (DASH `.mpd`, HLS `.m3u8`) o extensiones desconocidas se rechazan.
 fn ensure_streamable(url: &str, extension: &str) -> Result<(), String> {
-    let lower = url.to_lowercase();
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("la fuente no trae URL de audio".to_string());
+    }
+    // Tidal entrega el FLAC como BTS/DASH: `DASH_MANIFEST|init|seg_$Number$|N`.
+    // Ese flujo hay que concatenarlo/remuxearlo, no se reproduce progresivamente;
+    // pasarlo a `reqwest` da un "builder error" opaco, así que se nombra aquí.
+    if trimmed.starts_with("DASH_MANIFEST|")
+        || trimmed.starts_with("HLS_MANIFEST|")
+        || trimmed.starts_with("BTS_MANIFEST|")
+    {
+        return Err(
+            "la fuente llega segmentada (manifiesto DASH/BTS), no reproducible de forma progresiva"
+                .to_string(),
+        );
+    }
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err(format!(
+            "la fuente no es una URL http(s) reproducible ({})",
+            trimmed.chars().take(40).collect::<String>()
+        ));
+    }
+    let lower = trimmed.to_lowercase();
     if lower.contains(".mpd") || lower.contains(".m3u8") {
         return Err(
             "la fuente es un manifiesto DASH/HLS, no reproducible de forma progresiva".to_string(),
@@ -1264,6 +1421,15 @@ fn quality_label(
     sample_rate: Option<i32>,
     lossy: bool,
 ) -> String {
+    // En un formato con pérdida la profundidad de bits no significa nada: la
+    // etiqueta honesta es el códec y, si se conoce, su frecuencia de muestreo.
+    if lossy || format != "FLAC" {
+        return match sample_rate {
+            Some(rate) => format!("{} {} kHz", format, format_sample_rate(rate)),
+            None if format == "MP3" => "MP3 320 kbps".to_string(),
+            None => format.to_string(),
+        };
+    }
     match (bit_depth, sample_rate) {
         (Some(bits), Some(rate)) => format!(
             "{} {} bits / {} kHz",
@@ -1271,7 +1437,6 @@ fn quality_label(
             bits,
             format_sample_rate(rate)
         ),
-        (None, _) if format == "MP3" || lossy => format!("{} 320 kbps", format),
         _ => format.to_string(),
     }
 }
@@ -1314,6 +1479,34 @@ mod tests {
         assert!(ensure_streamable("https://x/y.manifest.mpd", "mp4").is_err());
         assert!(ensure_streamable("https://x/y.m3u8", "m4a").is_err());
         assert!(ensure_streamable("https://x/y.flac", "flac").is_ok());
+        // Tidal entrega el FLAC como BTS/DASH: `DASH_MANIFEST|init|seg|N`. Antes
+        // llegaba a reqwest y el usuario leía un "builder error" opaco.
+        let dash = "DASH_MANIFEST|https://sp-ad-fa.audio.tidal.com/mediatracks/x/init.mp4|https://sp-ad-fa.audio.tidal.com/mediatracks/x/seg_$Number$.mp4|11";
+        let err = ensure_streamable(dash, "flac").expect_err("DASH is not progressive");
+        assert!(err.contains("segmentada"), "mensaje honesto: {err}");
+        // Y una URL que ni es http(s) no se intenta siquiera.
+        let err = ensure_streamable("sample://preview", "mp3").expect_err("not a URL");
+        assert!(err.contains("http(s)"), "mensaje honesto: {err}");
+        assert!(ensure_streamable("", "flac").is_err());
+    }
+
+    #[test]
+    fn lossy_labels_never_claim_bit_depth() {
+        // AAC 320: la profundidad de bits no significa nada en un códec con
+        // pérdida; se muestra códec y frecuencia.
+        assert_eq!(
+            quality_label("AAC", Some(16), Some(44100), true),
+            "AAC 44.1 kHz"
+        );
+        assert_eq!(quality_label("MP3", None, None, true), "MP3 320 kbps");
+        assert_eq!(
+            quality_label("MP3", Some(16), Some(44100), false),
+            "MP3 44.1 kHz"
+        );
+        assert_eq!(
+            quality_label("FLAC", Some(16), Some(44100), false),
+            "FLAC 16 bits / 44.1 kHz"
+        );
     }
 
     #[test]
@@ -1336,6 +1529,7 @@ mod tests {
             quality_label: "FLAC 24 bits / 96 kHz".to_string(),
             quality_tier: "hires".to_string(),
             source_name: "Qobuz API oficial".to_string(),
+            match_method: "direct".to_string(),
         }
     }
 

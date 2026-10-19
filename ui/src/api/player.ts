@@ -46,6 +46,8 @@ export interface PlayerStreamInfo {
     qualityLabel: string;
     qualityTier: string;
     sourceName: string;
+    /** `direct` (la pista ya tenía esa fuente) | `isrc` | `metadata`. */
+    matchMethod: string;
 }
 
 /** Subconjunto de la calidad para badges/indicadores de la UI. */
@@ -53,6 +55,8 @@ export interface PlayerStreamQuality {
     serviceName: string;
     qualityLabel: string;
     qualityTier: string;
+    /** Cómo se identificó la grabación (ver `PlayerStreamInfo.matchMethod`). */
+    matchMethod: string;
 }
 
 /** Resultado de `player_load_track` (local o streaming). */

@@ -667,6 +667,7 @@ function bindEngineEvents(): void {
             serviceName: state.serviceName,
             qualityLabel: state.qualityLabel,
             qualityTier: state.qualityTier,
+            matchMethod: state.matchMethod,
         };
     }).catch((err: unknown) => {
         console.warn(`[player] could not subscribe to player:stream-state: ${messageOf(err)}`);
@@ -777,6 +778,7 @@ async function resolveAndPlay(track: PlayerTrack, gen: number): Promise<'played'
                 serviceName: result.stream.serviceName,
                 qualityLabel: result.stream.qualityLabel,
                 qualityTier: result.stream.qualityTier,
+                matchMethod: result.stream.matchMethod,
             }
             : null;
         engineState = 'playing';
@@ -1243,6 +1245,7 @@ async function restoreFromPersistence(): Promise<void> {
                 serviceName: result.stream.serviceName,
                 qualityLabel: result.stream.qualityLabel,
                 qualityTier: result.stream.qualityTier,
+                matchMethod: result.stream.matchMethod,
             }
             : null;
         streamError.value = null;
