@@ -144,8 +144,15 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   (`src-tauri/src/commands/service.rs:3285`) mide 4 556 líneas y
   `resolve_token_for_account` (`src-tauri/src/download/qobuz.rs:417`) 2 860; el censo del
   hub da mediana 23 líneas y máximo 4 559.
-- **Cierra**: extraer costuras con tests de caracterización delante. No es un refactor a
-  ciegas: cada corte necesita su test que falle si cambia el comportamiento.
+- **Medido de nuevo (2026-10-19, tras migrar D-06)**: la función ocupa las líneas
+  3291-7836 de `src-tauri/src/commands/service.rs`, **4 546 líneas**, con 214 `if`, 88
+  `match`, 40 `for` y 122 `.await`; los brazos se distinguen por servicio (qobuz 16
+  comparaciones, tidal 13, spotify 10, deezer 9, soundcloud 4).
+- **Primer brazo a extraer**: soundcloud, el más pequeño y el que menos comparte con los
+  demás. Antes de mover una línea: tests de caracterización del orquestador (secuencia de
+  progreso emitida, recuento por servicio, mapeo de errores y qué escribe cada brazo).
+- **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
+  después, y el orquestador reducido a un bucle corto sobre los brazos.
 
 ## Cerrado en esta revisión
 
