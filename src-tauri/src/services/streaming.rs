@@ -703,52 +703,6 @@ async fn isrc_cascade(
             }
             IsrcAttempt::None => {}
         }
-
-        // ---- Etapa 1.5: otros ISRC de la misma grabación (MusicBrainz) ------
-        // Las reediciones cambian el ISRC sin cambiar la grabación (en vivo:
-        // *Amazing Grace* local GBCVZ0200290 es USI4R0401939 en Qobuz). Probar
-        // los ISRC que MusicBrainz atribuye a la misma grabación mantiene la
-        // identidad exacta antes de caer al match por metadatos.
-        match musicbrainz_alt_isrcs(db, &isrc).await {
-            Ok(alts) => {
-                for alt in alts {
-                    tracing::debug!(
-                        track_id,
-                        alt_isrc = %alt,
-                        "streaming: probando ISRC alternativo de MusicBrainz"
-                    );
-                    match try_isrc_on_providers(
-                        db,
-                        http,
-                        &alt,
-                        &context,
-                        duration_ms,
-                        tried,
-                        allow_lossy,
-                        &mut reasons,
-                    )
-                    .await
-                    {
-                        IsrcAttempt::Lossless(resolved) => {
-                            tracing::info!(
-                                track_id,
-                                alt_isrc = %alt,
-                                quality = %resolved.info.quality_label,
-                                "streaming: MusicBrainz resolvió la misma grabación por ISRC alternativo"
-                            );
-                            return Ok(Some(resolved));
-                        }
-                        IsrcAttempt::Lossy(resolved) => {
-                            if lossy_fallback.is_none() {
-                                lossy_fallback = Some(resolved);
-                            }
-                        }
-                        IsrcAttempt::None => {}
-                    }
-                }
-            }
-            Err(reason) => reasons.push(format!("MusicBrainz: {}", reason)),
-        }
     }
 
     // ---- Etapa 2: metadatos estrictos (misma grabación, ISRC de edición) ----
@@ -905,30 +859,6 @@ async fn try_isrc_on_providers(
         Some(resolved) => IsrcAttempt::Lossy(resolved),
         None => IsrcAttempt::None,
     }
-}
-
-/// ISRCs que MusicBrainz atribuye a la misma grabación, sin el de partida.
-/// Best-effort: sin respuesta o sin ISRC conocido devuelve lista vacía.
-async fn musicbrainz_alt_isrcs(db: &SqlitePool, isrc: &str) -> Result<Vec<String>, String> {
-    let service = crate::services::musicbrainz::MusicBrainzClient::with_db(db.clone());
-    let Some(recording) = service.lookup_by_isrc(isrc).await.map_err(|e| e.to_string())? else {
-        return Ok(Vec::new());
-    };
-    let detail = service
-        .get_recording_details(&recording.id)
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut alts: Vec<String> = detail
-        .isrcs
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|candidate| normalize_isrc(Some(candidate.as_str())))
-        .filter(|candidate| !candidate.eq_ignore_ascii_case(isrc))
-        .collect();
-    alts.sort();
-    alts.dedup();
-    alts.truncate(3);
-    Ok(alts)
 }
 
 /// Match por metadatos de UNA cuenta: estricto primero y, si el proveedor lo
