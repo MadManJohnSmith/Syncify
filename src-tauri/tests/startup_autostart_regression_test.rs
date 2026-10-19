@@ -17,7 +17,7 @@ fn linux_autostart_entry_points_at_the_executable() {
 
     assert!(entry.starts_with("[Desktop Entry]\n"));
     assert!(entry.contains("Type=Application"));
-    assert!(entry.contains("Exec=/opt/syncify/syncify"));
+    assert!(entry.contains("Exec=\"/opt/syncify/syncify\""));
     assert!(entry.contains("Terminal=false"));
     // Autostart managers skip the entry entirely when this key is absent/false.
     assert!(entry.contains("X-GNOME-Autostart-enabled=true"));
@@ -28,7 +28,27 @@ fn linux_autostart_entry_keeps_spaces_in_the_path() {
     let entry =
         linux_autostart_desktop_entry(std::path::Path::new("/home/user/My Apps/Syncify/syncify"));
 
-    assert!(entry.contains("Exec=/home/user/My Apps/Syncify/syncify"));
+    assert!(
+        entry.contains("Exec=\"/home/user/My Apps/Syncify/syncify\""),
+        "a path with spaces must be quoted in the Exec line: {}",
+        entry
+    );
+}
+
+#[test]
+fn linux_autostart_entry_escapes_exec_reserved_characters() {
+    // `%` starts a field code in a desktop Exec line and must be doubled;
+    // quotes, backslashes, dollars and backticks are escaped inside the quoted
+    // argument (freedesktop Desktop Entry spec, "The Exec key").
+    let entry = linux_autostart_desktop_entry(std::path::Path::new(
+        "/home/user/100% Music/\"mix\"/$app`x`\\bin/syncify",
+    ));
+
+    assert!(
+        entry.contains("Exec=\"/home/user/100%% Music/\\\"mix\\\"/\\$app\\`x\\`\\\\bin/syncify\""),
+        "Exec escaping broken: {}",
+        entry
+    );
 }
 
 #[test]

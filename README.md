@@ -186,6 +186,22 @@ install has nothing extra to fetch or configure:
   which it would launch but make no sound.
 - A private Python runtime with the service bridges already installed, so the
   user's Python is never needed.
+
+A few features rely on something the packages cannot bundle:
+
+- **Browser-based logins** (Qobuz, Deezer, SoundCloud, Apple Music) use a
+  Chromium-family browser already installed on your system (Chrome, Chromium,
+  Brave, Edge, Vivaldi…). Tidal signs in through its device-code page in your
+  default browser and Spotify uses the app's own WebView, so those two need
+  nothing extra.
+- **The AppImage needs FUSE 2** on the host (Ubuntu 23.04+ ships it as
+  `libfuse2t64`). If it refuses to start, run it with
+  `--appimage-extract-and-run`, or use the DEB or the tarball instead.
+- **Audio on Linux** goes through ALSA; on a PipeWire-only system install
+  `pipewire-alsa` (or the ALSA plugins).
+- **On Windows**, the installer is not code-signed yet: SmartScreen may show
+  "Windows protected your PC" once — choose *More info* → *Run anyway*.
+
 2. Run the first-run wizard: connect your accounts, pick your music folder,
    done. Credentials are encrypted and stored in Syncify's own SQLite
    database, inside the app profile folder. The encryption key lives in your
@@ -210,10 +226,11 @@ Symfonium, Plexamp, Roon or any player reads them directly.
 
 Encrypted inside Syncify's own SQLite database, in the app profile folder on
 your machine. The encryption key is kept in your operating system's keyring
-when one is available; where it is not (headless Linux, no Secret Service),
-the key falls back to a `.crypto_key` file with `0600` permissions in that
-same profile folder. Each login runs through your browser, and no credential
-is ever written to a plain config file.
+when one is available — the Windows Credential Manager on Windows, the Secret
+Service (GNOME Keyring/KWallet) on Linux; where it is not (headless Linux, no
+Secret Service), the key falls back to a `.crypto_key` file with `0600`
+permissions in that same profile folder. Each login runs through your browser,
+and no credential is ever written to a plain config file.
 
 **What quality can I expect?**
 

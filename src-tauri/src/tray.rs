@@ -149,8 +149,32 @@ pub const MACOS_AUTOSTART_FILE: &str = "com.syncify.app.plist";
 pub const WINDOWS_AUTOSTART_VALUE: &str = "Syncify";
 pub const WINDOWS_AUTOSTART_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 
+/// Quote and escape one argument for a `Desktop Entry` `Exec=` line.
+///
+/// The freedesktop spec requires quoting when the value contains spaces or
+/// reserved characters, and a literal `%` must be doubled (it introduces field
+/// codes). AppImages usually live under `~/Applications` or `~/Descargas`,
+/// paths that very often contain spaces.
+fn desktop_entry_exec_arg(arg: &str) -> String {
+    let mut quoted = String::with_capacity(arg.len() + 2);
+    quoted.push('"');
+    for ch in arg.chars() {
+        match ch {
+            '"' | '`' | '$' | '\\' => {
+                quoted.push('\\');
+                quoted.push(ch);
+            }
+            '%' => quoted.push_str("%%"),
+            _ => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 /// Contents of the XDG autostart entry. Kept pure so it can be asserted.
 pub fn linux_autostart_desktop_entry(exe: &Path) -> String {
+    let exec = desktop_entry_exec_arg(&exe.display().to_string());
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
@@ -160,7 +184,7 @@ pub fn linux_autostart_desktop_entry(exe: &Path) -> String {
          Icon=syncify\n\
          Terminal=false\n\
          X-GNOME-Autostart-enabled=true\n",
-        exe.display()
+        exec
     )
 }
 

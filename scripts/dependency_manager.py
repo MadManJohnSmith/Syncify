@@ -41,14 +41,19 @@ def json_response(success: bool, data=None, error=None):
     sys.exit(0 if success else 1)
 
 
-# Tool download URLs (Windows x64)
-# ffmpeg is pinned to a dated BtbN release: "latest" is rolling and its
-# hash changes with every build, which would break the SHA-256 verification.
+# Tool download URLs.
+#
+# ffmpeg is pinned to a DATED BtbN release on Windows and Linux: "latest" is
+# rolling and its hash changes with every build, which would break the SHA-256
+# verification. The Linux entry used to be johnvansickle's rolling
+# `ffmpeg-release-amd64-static` tarball with a fixed hash — the same trap: the
+# next upstream rebuild would fail the integrity check forever. macOS is not a
+# released platform, so its evermeet entry stays as-is.
 TOOL_URLS = {
     "ffmpeg": {
         "windows": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-01-13-06/ffmpeg-N-127054-g9d3f0f2c58-win64-gpl.zip",
         "darwin": "https://evermeet.cx/ffmpeg/getrelease/zip",
-        "linux": "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
+        "linux": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-01-13-06/ffmpeg-N-127054-g9d3f0f2c58-linux64-gpl.tar.xz",
     },
     "fpcalc": {
         "windows": "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip",
@@ -63,7 +68,9 @@ KNOWN_SHA256_HASHES: Dict[str, Dict[str, str]] = {
     "ffmpeg": {
         "windows": "c1bb626bca84c6f471a04c13a90af68e406c631cf8f9ea2f1a141d4a71adcf52",
         "darwin": "8a8c9e549983409fe6604b9aa665648b7a5def9407fe814c39c8b2ea7f64a48f",
-        "linux": "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67",
+        # Same pinned BtbN build used by build-linux.yml for the packaged
+        # externalBin copy (sha256 of the .tar.xz asset).
+        "linux": "4ec801cb048f2ec81ac3b06507fda2f6b48f70c46286e89a27cd89baa041605d",
     },
     "fpcalc": {
         "windows": "36b478e16aa69f757f376645db0d436073a42c0097b6bb2677109e7835b59bbc",
