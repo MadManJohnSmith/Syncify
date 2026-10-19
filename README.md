@@ -275,8 +275,9 @@ green on that exact SHA. What has **not** been proven here:
   and window-manager behaviour have not been exercised on a real desktop.
 - **Live network paths.** No launch login, provider enrichment, download, or
   lyrics resolution ran against real services.
-- **Ignored Rust tests.** The 9 ignored tests requiring network access or
-  credentials have not been exercised.
+- **Ignored Rust tests.** The 13 ignored tests — kept out of CI because they
+  need live network, real credentials, a runtime SQLite database, physical
+  storage or wall-clock timing — have not been exercised.
 - **Windows.** The cross-check for the `x86_64-pc-windows-msvc` target has not
   been run on this machine, although Windows installers were produced by CI.
 

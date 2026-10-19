@@ -102,6 +102,28 @@ class ReadmeClaimTests(unittest.TestCase):
                     )
 
 
+    def test_ignored_test_count_matches_the_tree(self):
+        """La cifra "N tests ignorados" del README debe ser la del arbol."""
+        ignore_sites = 0
+        for pattern in ("src-tauri/tests/**/*.rs", "crates/*/tests/**/*.rs"):
+            for path in REPO_ROOT.glob(pattern):
+                ignore_sites += path.read_text(encoding="utf-8").count("#[ignore")
+        self.assertGreater(ignore_sites, 0, "no #[ignore] site found; the count would be vacuous")
+
+        for relative, pattern in (
+            ("README.md", r"The (\d+) ignored tests"),
+            ("README.es.md", r"Los (\d+) tests ignorados"),
+        ):
+            match = re.search(pattern, _flatten(_read(relative)))
+            self.assertIsNotNone(
+                match, f"{relative} stopped stating the ignored-test count: update this gate"
+            )
+            self.assertEqual(
+                int(match.group(1)),
+                ignore_sites,
+                f"{relative} claims {match.group(1)} ignored tests; the tree has {ignore_sites}",
+            )
+
 class ReadmeLinkTests(unittest.TestCase):
     """A link or an anchor a reader follows and finds broken is the oldest lie."""
 

@@ -291,8 +291,9 @@ ha demostrado aquí:
   ejercitado en un escritorio real.
 - **La red en vivo.** Ningún login de arranque, enriquecimiento con proveedores,
   descarga ni resolución de letras ha corrido contra servicios reales.
-- **Tests de Rust ignorados.** Los 9 tests ignorados que necesitan red o
-  credenciales no se han ejercitado.
+- **Tests de Rust ignorados.** Los 13 tests ignorados —fuera de CI porque
+  necesitan red real, credenciales reales, una base SQLite de ejecución,
+  almacenamiento físico o medida de tiempo real— no se han ejercitado.
 - **Windows.** La comprobación cruzada del target `x86_64-pc-windows-msvc` no
   se ha ejecutado en esta máquina, aunque la CI produjo los instaladores de
   Windows.
