@@ -3,9 +3,9 @@ use std::path::Path;
 use std::time::Duration;
 use syncify_tauri_lib::cmd_utils::{
     apply_bundled_tool_env, bundled_tool_candidates, create_python_std_command,
-    create_python_tokio_command, create_std_command, find_scripts_dir, is_executable_file,
-    packaged_python_candidates, resolve_tool, run_command_with_timeout, scripts_dir_from,
-    DEFAULT_BRIDGE_TIMEOUT,
+    create_python_tokio_command, create_std_command, db_path_hint, find_scripts_dir,
+    is_executable_file, packaged_python_candidates, resolve_tool, run_command_with_timeout,
+    scripts_dir_from, DEFAULT_BRIDGE_TIMEOUT,
 };
 
 #[test]
@@ -241,6 +241,32 @@ fn test_resolve_tool_rejects_non_executable_candidate() {
     assert!(is_executable_file(&placeholder));
 
     let _ = std::fs::remove_file(&placeholder);
+}
+
+#[test]
+fn test_db_path_hint_points_at_the_app_database() {
+    // Other tests may set an explicit override; the helper must echo it
+    // verbatim, because playlist_bridge.py treats any usable value as
+    // authoritative.
+    if let Some(configured) = std::env::var_os("SYNCIFY_DB_PATH") {
+        if !configured.is_empty() {
+            assert_eq!(db_path_hint(), Some(std::path::PathBuf::from(configured)));
+            return;
+        }
+    }
+
+    let hint = db_path_hint().expect("the OS app-data directory must resolve");
+    assert_eq!(
+        hint.file_name().and_then(|name| name.to_str()),
+        Some("syncify.db"),
+        "the hint must point at syncify.db: {:?}",
+        hint
+    );
+    assert!(
+        hint.to_string_lossy().contains("com.syncify.app"),
+        "the hint must use the app identifier directory on every OS: {:?}",
+        hint
+    );
 }
 
 #[test]

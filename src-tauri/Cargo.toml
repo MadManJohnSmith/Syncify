@@ -43,7 +43,15 @@ rand = "0.8"
 # sesión y no persiste entre arranques. Con el backend por defecto, la app
 # guardaba la clave "con éxito" y al siguiente arranque no la encontraba,
 # generaba otra y marcaba TODAS las cuentas como credenciales irrecuperables.
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+#
+# windows-native es imprescindible: keyring cae a su store "mock" (EntryOnly,
+# sin persistencia) cuando ninguna feature de backend aplica al target, y con
+# solo sync-secret-service Windows compilaba ese mock: escribía con Ok y al
+# siguiente arranque la clave no existía. crypto.rs verifica la persistencia
+# declarada y usa el archivo de fallback en ese caso, pero el backend real de
+# Windows es el Credential Manager. windows-sys solo se compila en targets
+# Windows (dependencia target-gated de keyring), no afecta a Linux/macOS.
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "windows-native"] }
 dirs = "5"
 libc = "0.2"
 hostname = "0.4"

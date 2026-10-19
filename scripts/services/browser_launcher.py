@@ -5,6 +5,7 @@ Linux and macOS, with stub/dummy detection and support for Chrome, Brave,
 Vivaldi, Opera, Thorium, Chromium and Edge.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -13,14 +14,23 @@ _LINUX_CANDIDATES = [
     "/usr/bin/google-chrome-stable",
     "/usr/bin/google-chrome",
     "/usr/bin/brave-browser",
+    "/usr/bin/brave-browser-stable",
     "/usr/bin/brave",
     "/usr/bin/vivaldi-stable",
     "/usr/bin/vivaldi",
     "/usr/bin/chromium-browser",
     "/usr/bin/chromium",
     "/opt/google/chrome/chrome",
+    "/opt/brave.com/brave/brave",
     "/usr/bin/microsoft-edge-stable",
     "/usr/bin/microsoft-edge",
+    # Snap and Flatpak exports: many distros only expose the browser through
+    # these launchers, and the Flatpak ones are tiny wrapper scripts (the size
+    # heuristic alone rejected them before the --version probe existed).
+    "/snap/bin/chromium",
+    "/var/lib/flatpak/exports/bin/org.chromium.Chromium",
+    "/var/lib/flatpak/exports/bin/com.google.Chrome",
+    "/var/lib/flatpak/exports/bin/com.brave.Browser",
 ]
 
 _MACOS_CANDIDATES = [
@@ -32,18 +42,46 @@ _MACOS_CANDIDATES = [
     "/Applications/Arc.app/Contents/MacOS/Arc",
 ]
 
+# Version banner of a Chromium-family browser, used to tell a real launcher
+# (possibly a small wrapper script) from an uninstall stub.
+_BROWSER_VERSION_RE = re.compile(
+    r"(Chrome|Chromium|Brave|Edge|Vivaldi|Opera|Thorium)", re.IGNORECASE
+)
+
 
 def _is_valid_browser_exe(path: str) -> bool:
-    """Check whether an executable file exists and is NOT an empty dummy/stub."""
+    """Check whether an executable file exists and is a real browser.
+
+    Large binaries are trusted by size. Small files are not rejected outright
+    anymore: distros often ship thin wrapper scripts (snap, Flatpak exports,
+    Debian's chromium launcher), so they are probed with ``--version`` and
+    accepted only when they announce a Chromium-family browser. Windows
+    uninstall dummies are 0 KB stubs that produce no such output.
+    """
     if not path or not os.path.exists(path):
         return False
     try:
         # Dummy/stub executables left by uninstalls on Windows are usually 0 KB or < 50 KB.
         # A real compiled browser weighs at least 300 KB - 3 MB.
-        size = os.path.getsize(path)
-        return size > 150_000
+        if os.path.getsize(path) > 150_000:
+            return True
     except OSError:
         return False
+
+    if not os.path.isfile(path) or not os.access(path, os.X_OK):
+        return False
+
+    try:
+        completed = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    output = f"{completed.stdout or ''} {completed.stderr or ''}"
+    return bool(_BROWSER_VERSION_RE.search(output))
 
 
 def _get_windows_candidates():
@@ -132,16 +170,26 @@ def chrome_launch_kwargs() -> dict:
         for cand in _LINUX_CANDIDATES:
             if _is_valid_browser_exe(cand):
                 return {"executable_path": cand}
-        for cmd in ["google-chrome-stable", "google-chrome", "brave-browser", "chromium", "chromium-browser"]:
+        for cmd in [
+            "google-chrome-stable",
+            "google-chrome",
+            "brave-browser",
+            "brave",
+            "chromium",
+            "chromium-browser",
+            "vivaldi-stable",
+            "microsoft-edge-stable",
+        ]:
             resolved = shutil.which(cmd)
             if resolved and _is_valid_browser_exe(resolved):
                 return {"executable_path": resolved}
 
     # If no valid system browser was found:
     raise RuntimeError(
-        "No valid Chromium browser was detected on the system (Chrome, Brave, Vivaldi, Opera, etc.). "
-        "If your Windows install does not have Microsoft Edge, please install Google Chrome or Brave, "
-        "or set the SYNCIFY_BROWSER_PATH environment variable to your browser's path."
+        "No valid Chromium browser was detected on the system (Chrome, Chromium, Brave, "
+        "Vivaldi, Edge, Opera or Thorium). Install one of them (on Linux, for example, the "
+        "'chromium' or 'brave-browser' package; on Windows, Google Chrome or Edge), or set "
+        "the SYNCIFY_BROWSER_PATH environment variable to your browser's executable path."
     )
 
 

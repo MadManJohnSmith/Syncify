@@ -2819,23 +2819,32 @@ pub async fn run_health_check(state: State<'_, AppState>) -> Result<HealthCheck,
     // 1. Check Database connection
     let database_ok = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
 
-    // 2. Check Python availability (generic system check)
-    let python_cmd = if cfg!(windows) {
-        if std::path::Path::new(".venv/Scripts/python.exe").exists() {
-            ".venv/Scripts/python.exe"
-        } else {
-            "python"
-        }
-    } else {
-        if std::path::Path::new(".venv/bin/python").exists() {
-            ".venv/bin/python"
-        } else {
-            "python3"
-        }
-    };
-
-    let python_ok = crate::cmd_utils::create_std_command(python_cmd)
+    // 2. Python runtime: resolve it exactly like the bridges do (bundled
+    // runtime -> .venv -> system interpreter). CWD-relative `.venv` paths made
+    // packaged Windows builds report "Python not found" while the bundled
+    // interpreter was in place.
+    let python_cmd = crate::commands::get_python_executable();
+    let python_ok = crate::cmd_utils::create_std_command(&python_cmd)
         .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    // 3. External tools: `create_std_command` resolves the bundled copy first
+    // and only then falls back to PATH, so this reports what the app will
+    // actually use. The previous hardcoded `true` hid a missing ffmpeg/fpcalc
+    // from Settings > Diagnostics.
+    let ffmpeg_available = crate::cmd_utils::create_std_command("ffmpeg")
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let chromaprint_available = crate::cmd_utils::create_std_command("fpcalc")
+        .arg("-v")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -2845,8 +2854,8 @@ pub async fn run_health_check(state: State<'_, AppState>) -> Result<HealthCheck,
     Ok(HealthCheck {
         database_ok,
         python_ok,
-        ffmpeg_available: true,
-        chromaprint_available: true,
+        ffmpeg_available,
+        chromaprint_available,
         services_configured: vec![],
         errors: vec![],
     })

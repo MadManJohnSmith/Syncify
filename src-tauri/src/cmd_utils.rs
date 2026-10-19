@@ -179,8 +179,45 @@ fn resolve_known_program<S: AsRef<OsStr>>(program: S) -> OsString {
     }
 }
 
+/// Hint for the Python bridges (`playlist_bridge.py`) so they find the real
+/// SQLite database instead of guessing a Linux-only path.
+///
+/// The native path is the one Tauri uses for the `com.syncify.app`
+/// identifier (`app_local_data_dir`); the legacy `<exe_dir>/data/syncify.db`
+/// covers installs from before the move to OS app data. An explicit
+/// `SYNCIFY_DB_PATH` in the environment always wins, so tests and portable
+/// setups can point the bridges elsewhere. The path is returned even when the
+/// file does not exist yet: callers check existence before using it.
+pub fn db_path_hint() -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os("SYNCIFY_DB_PATH").filter(|value| !value.is_empty())
+    {
+        return Some(PathBuf::from(configured));
+    }
+
+    let native = dirs::data_local_dir().map(|dir| dir.join("com.syncify.app").join("syncify.db"));
+    if native.as_ref().is_some_and(|path| path.is_file()) {
+        return native;
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let legacy = dir.join("data").join("syncify.db");
+            if legacy.is_file() {
+                return Some(legacy);
+            }
+        }
+    }
+
+    native
+}
+
 /// Publishes every resolved tool as `NAME_PATH` so child processes (Python
 /// bridges, pyacoustid) find them without a `PATH` installation.
+///
+/// `SYNCIFY_DB_PATH` rides along for the same reason: bridge-local database
+/// lookups used to hardcode `~/.local/share/com.syncify.app`, which only works
+/// on Linux. Publishing the value the app actually uses keeps Windows and
+/// custom profiles working.
 pub trait CommandEnv {
     fn set_env(&mut self, key: String, value: PathBuf);
 }
@@ -202,6 +239,9 @@ pub fn apply_bundled_tool_env<C: CommandEnv>(cmd: &mut C) {
         if let Some(path) = resolve_tool(tool) {
             cmd.set_env(format!("{}_PATH", tool.to_uppercase()), path);
         }
+    }
+    if let Some(db_path) = db_path_hint() {
+        cmd.set_env("SYNCIFY_DB_PATH".to_string(), db_path);
     }
 }
 

@@ -14,6 +14,7 @@ import json
 import sys
 import os
 import hashlib
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -87,11 +88,34 @@ def compute_sha256(file_path: Path) -> str:
     return h.hexdigest()
 
 
+def resolve_ffprobe_path() -> str:
+    """Absolute path of the ffprobe the app shipped, or the bare name.
+
+    The packaged app publishes `FFPROBE_PATH` (and `FFMPEG_PATH`) for its
+    bundled tools; without this lookup the fallback below only worked when
+    ffprobe happened to be on PATH, which is not the case on a Windows
+    install (the bundled binary lives next to the executable).
+    """
+    env_path = os.getenv("FFPROBE_PATH")
+    if env_path and Path(env_path).exists():
+        return env_path
+
+    ffmpeg_env = os.getenv("FFMPEG_PATH")
+    if ffmpeg_env:
+        sibling = Path(ffmpeg_env).parent / (
+            "ffprobe.exe" if os.name == "nt" else "ffprobe"
+        )
+        if sibling.exists():
+            return str(sibling)
+
+    return shutil.which("ffprobe") or "ffprobe"
+
+
 def extract_metadata_ffprobe(file_path: Path) -> Optional[TrackInfo]:
     """Extract metadata using ffprobe if mutagen is missing or fails."""
     try:
         cmd = [
-            "ffprobe",
+            resolve_ffprobe_path(),
             "-v", "quiet",
             "-print_format", "json",
             "-show_format",

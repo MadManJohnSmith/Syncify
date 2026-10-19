@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* Self-hosted fonts (Inter, Geist, Geist Mono, Space Grotesk, Material
+   Symbols). Vendored under ui/public/fonts/ so the app renders identically
+   offline and on networks that block Google Fonts. */
+@import './fonts.css';
+
 /* ==========================================================================
    Syncify — runtime theme system
    A layer of semantic tokens + 4 base skins and 6 service palettes. Changing data-theme on <html>

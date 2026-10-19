@@ -193,6 +193,22 @@ configurar:
 - Un runtime de Python privado con los puentes de servicios ya instalados, así
   que nunca se pide el Python del sistema.
 
+Algunas funciones dependen de algo que los paquetes no pueden incluir:
+
+- **Los logins por navegador** (Qobuz, Deezer, SoundCloud, Apple Music) usan un
+  navegador de la familia Chromium ya instalado en tu sistema (Chrome,
+  Chromium, Brave, Edge, Vivaldi…). Tidal entra por su página de código de
+  dispositivo en tu navegador por defecto y Spotify usa el WebView propio de la
+  app: esos dos no necesitan nada extra.
+- **El AppImage necesita FUSE 2** en el sistema (Ubuntu 23.04+ lo trae como
+  `libfuse2t64`). Si no arranca, ejecútalo con `--appimage-extract-and-run`, o
+  usa el DEB o el tarball.
+- **El audio en Linux** va por ALSA; en un sistema solo-PipeWire instala
+  `pipewire-alsa` (o los plugins de ALSA).
+- **En Windows**, el instalador aún no está firmado: SmartScreen puede mostrar
+  una vez "Windows protegió tu PC" — elige *Más información* → *Ejecutar de
+  todas formas*.
+
 Después:
 
 1. Corre el asistente de primera ejecución: conecta tus cuentas, elige tu
@@ -220,11 +236,12 @@ directamente.
 
 Cifradas dentro de la base de datos SQLite propia de Syncify, en la carpeta
 de perfil de la app en tu máquina. La clave de cifrado se guarda en el
-llavero de tu sistema operativo cuando hay uno disponible; donde no lo hay
-(Linux sin sesión gráfica, sin Secret Service), la clave cae a un archivo
-`.crypto_key` con permisos `0600` en esa misma carpeta de perfil. Cada login
-corre por tu navegador y ninguna credencial se escribe nunca en un archivo de
-configuración plano.
+llavero de tu sistema operativo cuando hay uno disponible — el Administrador
+de credenciales en Windows, el Secret Service (GNOME Keyring/KWallet) en
+Linux; donde no lo hay (Linux sin sesión gráfica, sin Secret Service), la
+clave cae a un archivo `.crypto_key` con permisos `0600` en esa misma carpeta
+de perfil. Cada login corre por tu navegador y ninguna credencial se escribe
+nunca en un archivo de configuración plano.
 
 **¿Qué calidad puedo esperar?**
 
