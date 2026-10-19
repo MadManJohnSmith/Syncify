@@ -6,6 +6,16 @@
 
 **Estado de revisión:** 2026-10-06 — fase 1 implementada en UI (cola con identidad, modos persistentes, acreditación de 30 s, restauración tras reinicio). MediaSession integrado con feature detection y degradación limpia. **MPRIS NO verificado en GUI**: no se ejecutó sesión gráfica ni D-Bus de Syncify; la prueba manual queda definida abajo y no debe darse por hecha hasta ejecutarse.
 
+> **Actualización 2026-10-19 — la ruta de audio de este documento está retirada.**
+> El cuerpo describe la fase 1 original (elemento HTML Audio + `resolve_playback_source` +
+> protocolo `syncify-media://`). El reproductor actual carga el audio en un motor nativo
+> (`commands::player_load` / `commands::player_load_track`, en `src-tauri/src/commands/player.rs`)
+> y sí soporta streaming de proveedores. `resolve_playback_source` y el protocolo siguen
+> registrados pero nada los invoca: la puerta `src-tauri/tests/dead_commands_hygiene_test.rs`
+> los señala como huérfanos. La fuente de verdad del estado de reproducción sigue siendo
+> `ui/src/composables/usePlayer.ts`. El resto del documento se conserva como registro
+> histórico de la fase 1.
+
 **Último cambio:** fase 1 del player — archivos: `ui/src/composables/usePlayer.ts`, `ui/src/components/StatusBar.vue` (mini reproductor, desde PL-08) y `ui/src/components/player/FullscreenPlayer.vue`, `ui/src/api/library.ts` (`recordLocalPlay`), vistas consumidoras (`AlbumDetailView.vue`, `ArtistDetailView.vue`, `PlaylistView.vue`, `LibraryView.vue`).
 **Leer antes de modificar:** `ui/src/composables/usePlayer.ts` (única fuente de verdad del estado de reproducción), `src-tauri/src/commands/playback.rs` (`resolve_playback_source`, `record_local_play` — lado Rust, propiedad de su implementador), `src-tauri/migrations/0091_local_play_stats.sql`.
 **Archivos core:**

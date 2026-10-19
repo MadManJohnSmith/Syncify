@@ -15,8 +15,10 @@ Cada entrada dice **qué se observó**, **dónde** y **qué la cerraría**. Una
 entrada sin observación reproducible no entra aquí. Los riesgos aceptados se
 declaran como tales y no se reopened por reflejo.
 
-Última revisión: auditoría 73 ítems, entrada A-01 reescrita contra el árbol
-(2026-10-05) — el par `app_id`/`app_secret` está versionado en Python y en
+Última revisión: auditoría de pilares y reparación posterior (2026-10-19) —
+se abren D-05 a D-08 (subsistema de reproducción retirado, escrituras silenciosas,
+contrato de identidad por edición y funciones monstruo) y se cierran C-12 a C-18.
+Antes: auditoría 73 ítems, entrada A-01 reescrita contra el árbol (2026-10-05) — el par `app_id`/`app_secret` está versionado en Python y en
 Rust, no solo el `app_id`. Antes de eso: ítem 9.1 del plan post-auditoría
 (2026-10-02), que cierra D-02 y redefine D-01 y D-04 a la luz de las fases 4 y
 8. Y antes: `b9559da` + reparaciones de SYNC-AUD-062 a SYNC-AUD-071.
@@ -109,6 +111,65 @@ hecha, y `docs/MATRIZ_PARIDAD_IMPORTACION.md` lo dice en cada fila afectada (⚠
   externa, y se convierte en deuda abierta solo si aparece trabajo que el equipo sí
   pueda hacer.
 
+## Deuda abierta accionable (auditoría de pilares, 2026-10-19)
+
+Las entradas de esta sección **no** están condicionadas a una entrada externa: son
+trabajo que el equipo puede hacer ya. Por eso no aparecen en la tabla de alcance
+condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
+
+### D-05 — Subsistema de reproducción retirado, aún registrado
+
+- **Observado**: `resolve_playback_source` (`src-tauri/src/commands/playback.rs:38`) y el
+  protocolo `syncify-media://` (`src-tauri/src/main.rs:104`, handler en `playback.rs:352`)
+  los sustituyó el motor nativo (`commands::player_load_track`). `grants()`
+  (`playback.rs:24`) solo se puebla en esa función y el handler deniega toda ruta no
+  concedida (`playback.rs:373`): sin invocador, el protocolo ya no puede servir nada.
+  Ni `ui/src` ni el bundle construido ni ningún test invocan el comando.
+- **Consecuencia**: la puerta `src-tauri/tests/dead_commands_hygiene_test.rs` está en rojo
+  por `resolve_playback_source` (`orphans: ["resolve_playback_source"]`).
+- **Cierra**: borrar el subsistema (unas 450 líneas de `playback.rs`, su registro en
+  `main.rs` y sus tests) o volver a conectarlo a un invocador real. Es una decisión de
+  producto, no un arreglo mecánico: por eso no se tomó en la reparación.
+
+### D-06 — Escrituras SQLx silenciosas
+
+- **Observado**: 243 `let _ = sqlx::query(...)` en producción (125 UPDATE, 82 INSERT,
+  11 DELETE). Una escritura puede fallar y la transacción confirmar sin rastro. Reparto:
+  `src-tauri/src/services/enrichment.rs` 45, `src-tauri/src/commands/service.rs` 28,
+  `src-tauri/src/services/qobuz.rs` 21.
+- **Cierra**: migrar por lotes a propagación con `?` o a `tracing::warn!` en los sitios de
+  mayor riesgo, y frenar el crecimiento con una puerta que cuente el total (solo puede
+  bajar).
+
+### D-07 — Contrato de identidad por edición sin decidir
+
+- **Observado**: `src-tauri/tests/track_identity_and_tagging_test.rs` espera
+  `needs_review` cuando el mismo ISRC aparece en un álbum distinto; el producto devuelve
+  `is_already_present: true` antes de llegar a la guarda de conflicto de release
+  (`src-tauri/src/services/enrichment.rs:3412`), que en ese camino es inalcanzable.
+- **Autoridad de dominio**: `docs/DECISION_SELECCION_EDICION.md:204-205` define la
+  identidad «solo grabación» como ISRC exacto **más** título calificado, artista y
+  duración con tolerancia, y exige revisión ante «falta o conflicto relevante» de esas
+  evidencias («no igualar silenciosamente versiones distintas»). Pero el mismo documento
+  (`:199-201`) dice que entre álbum y single la edición cambia legítimamente y que el
+  número de pista solo corrobora dentro del mismo release. El caso del test —misma
+  grabación, álbum original vs. recopilación— **no queda resuelto por la ADR**.
+- **Cierra**: decidir con el propietario del dominio si una recopilación es «edición
+  materialmente distinta» que debe pasar por revisión (y entonces el producto tiene que
+  consultar la preferencia de edición antes de responder «ya presente»), o si la
+  identidad por grabación basta y lo que sobra es la expectativa del test. En el segundo
+  caso se actualiza el test **y** la ADR en el mismo cambio; no se ajusta la aserción a
+  solas.
+
+### D-08 — Dos funciones monstruo
+
+- **Observado**: `perform_sync_service_with_emitter_inner`
+  (`src-tauri/src/commands/service.rs:3285`) mide 4 556 líneas y
+  `resolve_token_for_account` (`src-tauri/src/download/qobuz.rs:417`) 2 860; el censo del
+  hub da mediana 23 líneas y máximo 4 559.
+- **Cierra**: extraer costuras con tests de caracterización delante. No es un refactor a
+  ciegas: cada corte necesita su test que falle si cambia el comportamiento.
+
 ## Cerrado en esta revisión
 
 | ID | Qué se cerró | Evidencia |
@@ -127,6 +188,13 @@ hecha, y `docs/MATRIZ_PARIDAD_IMPORTACION.md` lo dice en cada fila afectada (⚠
 | C-12 | `sanitize_flac_pictures` no se ejecutaba en la app y el bloque PICTURE irreparable se perdía sin recuperación (D-03) | Ítem 5.3 del plan post-auditoría: `sanitize_flac_pictures_with_recovery` + `salvage_cover_to_jpeg` en `crates/syncify-flac-writer`, `services::flac_cover_sanitizer` con las dos rutas de D-03 (re-encode en el host y sidecar externo `<track>.unrecovered-cover.<sha8>.<ext>`) y registro en `repair_history`; wired en las cinco rutas de escritura FLAC de producción (post-promoción del pipeline Tidal, finalización de descarga Qobuz, re-tag de enriquecimiento, editor manual de tags y el fallback sin BD del descargador Tidal), con `tests/flac_cover_sanitizer_recovery_test.rs` como guardia |
 | C-13 | `sync_favorites` solo cubría 3 de los 6 servicios (D-02) | Fase 8 del plan post-auditoría, ítem 8.3: `perform_sync_favorites` tiene los seis brazos (`tidal`, `qobuz`, `spotify`, `deezer`, `soundcloud`, `apple_music`), cada uno paginando completo y persistiendo en `favorites` y en el catálogo vía `persist_favorite_track_via_engine`; `tests/favorites_service_arms_test.rs` los cubre contra servidor mock |
 | C-14 | La narrativa de `docs/features/` afirmaba capacidades que el código ya no tiene (DO-4, DO-5) | Ítem 9.1: `metadata-enrichment.md` re-derivado sin Spotify Audio Features y con el worker real (MusicBrainz), `playlist-system.md` re-derivado con la importación real por servicio, README sin «apariciones» ni la cifra de migraciones, `LYRICS_16_PROVIDER_MATRIX.md` sin la ruta `legacy/syncify-cli` |
+| C-12 | `cargo fmt --all -- --check` estaba en rojo (9 ficheros) | `ff11167`; equivalencia probada normalizando whitespace y comas |
+| C-13 | `cargo clippy -D warnings` en rojo: 2 lints, no 1 (clippy para por crate) | `3174642`; el segundo apareció al arreglar el primero |
+| C-14 | El selector de hilos de la biblioteca invocaba un comando inexistente y el error se tragaba | `f5e2317`; vitest 1 failed/44 → 45 passed |
+| C-15 | La puerta IPC no vigilaba comandos que la UI invoca y no existen, ni veía `logs_history::*` | `f5e2317`; test nuevo + parser generalizado |
+| C-16 | Dos objetivos de test rojos por fixtures que usaban `account_id: 1` sin crear la cuenta | `41b2f08`; 4/4 y 5/5 verdes |
+| C-17 | El README afirmaba 9 tests ignorados y el árbol tiene 13 | `1e35108`; puerta que compara la cifra en ambos idiomas |
+| C-18 | No había mapa de entrada para un agente | `b4a9588`; `AGENTS.md` escaneado por `scripts/tests/test_docs_consistency.py` |
 
 ### D-02 — Cerrada, y con qué alcance exacto
 

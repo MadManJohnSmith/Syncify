@@ -7,6 +7,8 @@ design decisions. This index is the English entry point: it says what each
 document covers and, where a document has not been translated yet, says so
 instead of leaving an English reader to discover it mid-page.
 
+**Working in this repo?** `AGENTS.md` at the repository root is the entry map for agents: surfaces, deterministic commands, the gates that must not be relaxed, and the landmines. Start there.
+
 ## Language status
 
 | Document | Language |

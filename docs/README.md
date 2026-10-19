@@ -4,6 +4,8 @@
 
 Esta carpeta centraliza las especificaciones funcionales y decisiones de diseño de arquitectura del proyecto. Es también la puerta de entrada al estado real del repo: si quieres saber qué está hecho y qué no, empieza por «Estado actual».
 
+**¿Vas a trabajar en el repo?** `AGENTS.md`, en la raíz, es el mapa de entrada para agentes: superficies, comandos deterministas, las puertas que no se relajan y las minas. Empieza por ahí.
+
 ## Estructura de Documentación
 ### Especificaciones de Módulos y Arquitectura Vigente
 - **`features/`**: Especificaciones funcionales de los subsistemas principales (7 ficheros):
