@@ -472,7 +472,16 @@ impl DownloadOrchestrator {
 
                 // 1B. Query provider API
                 if target_service == "tidal" {
-                    match self.tidal.search_by_isrc(isrc_trimmed, duration_sec).await {
+                    match self
+                        .tidal
+                        .search_by_isrc_verified(
+                            isrc_trimmed,
+                            &request.track_name,
+                            &request.artist_name,
+                            duration_sec,
+                        )
+                        .await
+                    {
                         Ok(track) => {
                             info!(
                                 "[Orchestrator] ✓ Fallback matched via exact ISRC: Tidal ID {}",
@@ -520,7 +529,13 @@ impl DownloadOrchestrator {
                 } else if target_service == "qobuz" {
                     match self
                         .qobuz
-                        .search_by_isrc(isrc_trimmed, duration_sec, qobuz_token.as_deref())
+                        .search_by_isrc_verified(
+                            isrc_trimmed,
+                            &request.track_name,
+                            &request.artist_name,
+                            duration_sec,
+                            qobuz_token.as_deref(),
+                        )
                         .await
                     {
                         Ok(track) => {
@@ -657,8 +672,16 @@ impl DownloadOrchestrator {
                                 continue;
                             }
                             if target_service == "tidal" {
-                                let found =
-                                    match self.tidal.search_by_isrc(sib_trimmed, eff_dur).await {
+                                let found = match self
+                                    .tidal
+                                    .search_by_isrc_verified(
+                                        sib_trimmed,
+                                        &request.track_name,
+                                        &request.artist_name,
+                                        eff_dur,
+                                    )
+                                    .await
+                                {
                                         Ok(t) => Some(t),
                                         Err(_) => self
                                             .tidal
@@ -687,7 +710,13 @@ impl DownloadOrchestrator {
                             } else if target_service == "qobuz" {
                                 let found = match self
                                     .qobuz
-                                    .search_by_isrc(sib_trimmed, eff_dur, qobuz_token.as_deref())
+                                    .search_by_isrc_verified(
+                                        sib_trimmed,
+                                        &request.track_name,
+                                        &request.artist_name,
+                                        eff_dur,
+                                        qobuz_token.as_deref(),
+                                    )
                                     .await
                                 {
                                     Ok(t) => Some(t),
@@ -1178,7 +1207,13 @@ impl DownloadOrchestrator {
         {
             match self
                 .qobuz
-                .search_by_isrc(isrc, duration_sec, Some(&token))
+                .search_by_isrc_verified(
+                    isrc,
+                    &request.track_name,
+                    &request.artist_name,
+                    duration_sec,
+                    Some(&token),
+                )
                 .await
             {
                 Ok(track) => {
@@ -1304,7 +1339,13 @@ impl DownloadOrchestrator {
                         }
                         let candidate = match self
                             .qobuz
-                            .search_by_isrc(sib_trimmed, mb_dur_sec, Some(&token))
+                            .search_by_isrc_verified(
+                                sib_trimmed,
+                                &request.track_name,
+                                &request.artist_name,
+                                mb_dur_sec,
+                                Some(&token),
+                            )
                             .await
                         {
                             Ok(t) => Some(t),

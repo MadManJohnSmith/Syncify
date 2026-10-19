@@ -2707,6 +2707,10 @@ pub struct DownloadFavoritesResult {
     pub already_downloaded: i64,
     pub already_queued: i64,
     pub unresolved_sources: i64,
+    /// Punto 3: filas cuya única fuente es catálogo-solo (Spotify y similares):
+    /// no traen un flujo descargable; el worker intentará una resolución viva
+    /// por ISRC antes de fallar.
+    pub pending_live_resolution: i64,
     pub stale_sources: i64,
     pub ambiguous_sources: i64,
     pub is_preflight: bool,
@@ -2862,6 +2866,7 @@ pub async fn download_favorites(
             already_downloaded: 0,
             already_queued: 0,
             unresolved_sources: 0,
+            pending_live_resolution: 0,
             stale_sources: 0,
             ambiguous_sources: 0,
             is_preflight: false,
@@ -2878,6 +2883,7 @@ pub async fn download_favorites(
     let mut already_downloaded = 0i64;
     let mut already_queued = 0i64;
     let mut unresolved_sources = 0i64;
+    let mut pending_live_resolution = 0i64;
     let mut stale_sources = 0i64;
     let mut ambiguous_sources = 0i64;
 
@@ -2938,6 +2944,7 @@ pub async fn download_favorites(
             Option<String>, // artist
             Option<String>, // album
             Option<String>, // isrc
+            i64,            // supports_download (COALESCE, no nulo)
         )> = match &service_filter {
             Some(srv) if srv != "all" && srv != "local" => {
                 sqlx::query_as(
@@ -2946,7 +2953,8 @@ pub async fn download_favorites(
                            t.title,
                            (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
                            alb.title as album,
-                           t.isrc
+                           t.isrc,
+                           COALESCE(s.supports_download, 0)
                     FROM tracks t
                     LEFT JOIN albums alb ON alb.id = t.album_id
                     JOIN track_sources ts ON ts.track_id = t.id AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
@@ -2969,7 +2977,8 @@ pub async fn download_favorites(
                            t.title,
                            (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
                            alb.title as album,
-                           t.isrc
+                           t.isrc,
+                           COALESCE(s.supports_download, 0)
                     FROM tracks t
                     LEFT JOIN albums alb ON alb.id = t.album_id
                     JOIN track_sources ts ON ts.track_id = t.id AND ts.available = 1 AND ts.service_track_id IS NOT NULL AND TRIM(ts.service_track_id) != ''
@@ -2993,14 +3002,22 @@ pub async fn download_favorites(
             }
         };
 
-        let (s_id, s_name, s_track_id, t_title, t_artist, t_album, t_isrc) =
-            track_info.unwrap_or((None, None, None, None, None, None, None));
+        let (s_id, s_name, s_track_id, t_title, t_artist, t_album, t_isrc, s_supports_download) =
+            track_info.unwrap_or((None, None, None, None, None, None, None, 0));
 
         // When downloading favorites without fallback, source identity MUST be resolved and locked
         if s_track_id.is_none() || s_track_id.as_deref().unwrap_or("").trim().is_empty() {
             tracing::warn!("[download_favorites] Track {} has no resolved service_track_id on {:?}; marked as unresolved", track_id, service_filter);
             unresolved_sources += 1;
             continue;
+        }
+
+        // Punto 3: una fuente catálogo-solo (p. ej. solo Spotify) no trae un
+        // flujo descargable por sí misma. El worker intentará una resolución
+        // viva por ISRC antes de fallar; el resumen lo cuenta aparte para no
+        // presentarla como una descarga confirmada.
+        if s_supports_download != 1 {
+            pending_live_resolution += 1;
         }
 
         // If in Preflight mode, do not write to database
@@ -3069,13 +3086,14 @@ pub async fn download_favorites(
             already_downloaded,
             already_queued,
             unresolved_sources,
+            pending_live_resolution,
             stale_sources,
             ambiguous_sources,
             is_preflight: true,
             estimated_size_mb: Some(est_mb),
             message: format!(
-                "Preflight summary: {} candidate(s) total — {} ready to queue (~{:.1} MB), {} already downloaded, {} in queue, {} unresolved, {} stale sources, {} ambiguous. Confirmation required to queue.",
-                total_candidates, enqueued, est_mb, already_downloaded, already_queued, unresolved_sources, stale_sources, ambiguous_sources
+                "Preflight summary: {} candidate(s) total — {} ready to queue (~{:.1} MB; {} of them catalog-only — live ISRC resolution at download time), {} already downloaded, {} in queue, {} unresolved, {} stale sources, {} ambiguous. Confirmation required to queue.",
+                total_candidates, enqueued, est_mb, pending_live_resolution, already_downloaded, already_queued, unresolved_sources, stale_sources, ambiguous_sources
             ),
         })
     } else {
@@ -3085,13 +3103,14 @@ pub async fn download_favorites(
             already_downloaded,
             already_queued,
             unresolved_sources,
+            pending_live_resolution,
             stale_sources,
             ambiguous_sources,
             is_preflight: false,
             estimated_size_mb: Some(est_mb),
             message: format!(
-                "Enqueued {} of {} favorite tracks ({} already downloaded, {} already in queue, {} unresolved, {} stale, {} ambiguous)",
-                enqueued, total_candidates, already_downloaded, already_queued, unresolved_sources, stale_sources, ambiguous_sources
+                "Enqueued {} of {} favorite tracks ({} catalog-only — live ISRC resolution at download time; {} already downloaded, {} already in queue, {} unresolved, {} stale, {} ambiguous)",
+                enqueued, total_candidates, pending_live_resolution, already_downloaded, already_queued, unresolved_sources, stale_sources, ambiguous_sources
             ),
         })
     }

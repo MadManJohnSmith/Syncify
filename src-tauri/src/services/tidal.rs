@@ -2620,19 +2620,35 @@ impl TidalClient {
         Ok(results)
     }
 
+    /// All exact-ISRC hits, catalogue duplicates included.
+    ///
+    /// Provider catalogues can label one ISRC on two different recordings;
+    /// callers must disambiguate with the shared identity rules instead of
+    /// trusting catalogue order.
+    pub async fn search_isrc_candidates(
+        &self,
+        isrc: &str,
+        limit: i32,
+    ) -> Result<Vec<TidalSearchResult>, String> {
+        let results = self.search_track(isrc, limit).await?;
+        Ok(results
+            .into_iter()
+            .filter(|r| {
+                r.isrc
+                    .as_ref()
+                    .map(|i| i.eq_ignore_ascii_case(isrc))
+                    .unwrap_or(false)
+            })
+            .collect())
+    }
+
     /// Search for a track by ISRC code
     pub async fn search_by_isrc(&self, isrc: &str) -> Result<Option<TidalSearchResult>, String> {
-        let results = self.search_track(isrc, 5).await?;
-
-        // Find exact ISRC match
-        let match_result = results.into_iter().find(|r| {
-            r.isrc
-                .as_ref()
-                .map(|i| i.eq_ignore_ascii_case(isrc))
-                .unwrap_or(false)
-        });
-
-        Ok(match_result)
+        Ok(self
+            .search_isrc_candidates(isrc, 5)
+            .await?
+            .into_iter()
+            .next())
     }
 
     /// Add a track to user's favorites
