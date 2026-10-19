@@ -1213,7 +1213,7 @@ impl QobuzDownloader {
                     let dur_diff = -(t.duration - expected_duration_sec).abs();
                     (own_album, bd, dur_diff)
                 };
-                live_matches.sort_by(|a, b| rank(b).cmp(&rank(a)));
+                live_matches.sort_by_key(|a| std::cmp::Reverse(rank(a)));
                 return Ok(live_matches.remove(0));
             }
             return Err(anyhow!(

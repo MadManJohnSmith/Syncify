@@ -1049,7 +1049,7 @@ impl TidalDownloader {
         let mut best: Option<(usize, u8)> = None;
         for (idx, track) in candidates.iter().enumerate() {
             let score = evidence(track);
-            if best.map_or(true, |(_, best_score)| score > best_score) {
+            if best.is_none_or(|(_, best_score)| score > best_score) {
                 best = Some((idx, score));
             }
         }
