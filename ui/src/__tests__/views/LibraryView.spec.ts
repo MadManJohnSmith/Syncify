@@ -1217,7 +1217,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
             if (cmd === 'get_library') return { tracks: [], total: 0, offset: 0, limit: 100, has_more: false };
             if (cmd === 'get_queue_stats') return { total: 10, queued: 4, downloading: 2, completed: 3, failed: 1, paused: 0 };
             if (cmd === 'get_worker_status') return { running: true, paused: false, active_downloads: 2, max_concurrent: 4 };
-            if (cmd === 'set_max_concurrency') return null;
+            if (cmd === 'set_max_concurrent_downloads') return 6;
             return null;
         });
 
@@ -1246,9 +1246,10 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         await btn6!.trigger('click');
         await flushPromises();
 
-        const setConcurrencyCall = invokeCalls.find(c => c.cmd === 'set_max_concurrency');
+        // El contrato real del backend: set_max_concurrent_downloads(max: usize)
+        const setConcurrencyCall = invokeCalls.find(c => c.cmd === 'set_max_concurrent_downloads');
         expect(setConcurrencyCall).toBeDefined();
-        expect(setConcurrencyCall?.args).toEqual({ maxConcurrent: 6 });
+        expect(setConcurrencyCall?.args).toEqual({ max: 6 });
 
         // 3. Queue reconciliation strip toggling
         const toggleBtn = header.find('button[title*="Toggle queue reconciliation"]');

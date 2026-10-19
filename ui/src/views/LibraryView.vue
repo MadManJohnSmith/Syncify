@@ -1684,8 +1684,10 @@ const currentConcurrency = computed(() => {
 
 async function setConcurrency(threads: number) {
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('set_max_concurrency', { maxConcurrent: threads })
+    // El backend expone `set_max_concurrent_downloads(max: usize)`; el wrapper
+    // de la API es la unica via (el nombre anterior, `set_max_concurrency`, no
+    // existia en Rust y el fallo se tragaba en el catch).
+    await settingsApi.setMaxConcurrentDownloads(threads)
     workerStatus.value.max_concurrent = threads
     toast.success('Concurrency Updated', `Max concurrent downloads set to ${threads}`)
   } catch (err) {

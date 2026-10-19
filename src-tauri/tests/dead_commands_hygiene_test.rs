@@ -205,16 +205,30 @@ fn extract_handler_block() -> String {
     main_rs[handler_start..handler_start + handler_end].to_string()
 }
 
-/// Every `commands::name` / `tray::name` entry listed in `generate_handler!`.
+/// Every command registered in `generate_handler!`, whatever module path
+/// prefixes it (`commands::`, `tray::`, `logs_history::`, …).
+///
+/// IN-5 originally understood only `commands::` and `tray::`, so entries such as
+/// `logs_history::read_log_history` were invisible in BOTH directions of this
+/// gate: they could not be flagged as orphans, and the UI side could not see
+/// that they exist.
 fn extract_registered_commands() -> Vec<String> {
     extract_handler_block()
         .lines()
-        .map(str::trim)
         .filter_map(|line| {
-            line.trim_end_matches(',')
-                .strip_prefix("commands::")
-                .or_else(|| line.trim_end_matches(',').strip_prefix("tray::"))
-                .map(str::to_string)
+            let entry = line
+                .split("//")
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_end_matches(',')
+                .trim();
+            if entry.is_empty() {
+                return None;
+            }
+            // `commands::name` / `tray::name` / `mod::sub::name` -> `name`
+            let name = entry.rsplit("::").next().unwrap_or(entry);
+            is_command_literal(name).then(|| name.to_string())
         })
         .collect()
 }
@@ -396,6 +410,34 @@ fn test_every_registered_command_is_invoked_by_the_frontend() {
         orphans.is_empty(),
         "every command in generate_handler! must be invoked from ui/src (IN-5); orphans: {:?}",
         orphans
+    );
+}
+
+/// [Fase 1b] La direccion que faltaba: IN-5 vigila comandos registrados que
+/// nadie invoca (sobran), pero nadie vigilaba comandos que la UI invoca y no
+/// existen (faltan). Ese hueco dejo vivir a `set_max_concurrency`, invocado por
+/// una vista dentro de un try/catch que solo hacia `console.warn`, con un spec
+/// que mockeaba el comando inventado y por eso seguia verde.
+#[test]
+fn test_every_ui_invoked_command_exists_in_the_backend() {
+    let invoked = ui_invoked_commands();
+    assert!(
+        !invoked.is_empty(),
+        "no frontend invocation could be parsed from ui/src; the scan is broken, not the app"
+    );
+    let registered: HashSet<String> = extract_registered_commands().into_iter().collect();
+
+    let mut phantom: Vec<String> = invoked
+        .iter()
+        .filter(|cmd| !registered.contains(*cmd))
+        .cloned()
+        .collect();
+    phantom.sort();
+
+    assert!(
+        phantom.is_empty(),
+        "every command invoked from ui/src must exist in generate_handler!; phantom commands: {:?}",
+        phantom
     );
 }
 
