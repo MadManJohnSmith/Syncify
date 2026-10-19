@@ -4,6 +4,7 @@
 pub mod amazon;
 pub mod audio_inspector;
 pub mod http_client;
+pub mod identity;
 pub mod lyrics;
 pub mod orchestrator;
 pub mod progress;

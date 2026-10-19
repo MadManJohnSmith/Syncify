@@ -5,8 +5,10 @@
 //! mapping were classified `NoDownloadProvider` even though a connected Tidal
 //! account could have resolved them live. S197 wires a final-resolution round:
 //! before the default verdict, the pipeline queries connected providers by ISRC
-//! (Tidal first, then Qobuz), persists the first hit into `track_sources`
-//! (same INSERT shape as the import paths) and re-runs the untouched preflight.
+//! (Tidal first, then Qobuz), persists the best identity-agreeing hit into
+//! `track_sources` (same INSERT shape as the import paths) and re-runs the
+//! untouched preflight. When the catalogue serves several hits under one ISRC,
+//! a hit contradicted by BOTH title and duration is never locked (bug #607).
 //!
 //! Coverage here follows the S187 mock-HTTP pattern (`TcpListener` + injectable
 //! base URL). The injection seam is the `SYNCIFY_S197_TIDAL_BASE_URL` env var
@@ -17,9 +19,10 @@
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::sync::{Arc, Mutex};
 use syncify_tauri_lib::commands::{
-    evaluate_track_preflight, s197_qobuz_quality_fields, s197_should_attempt_live_resolution,
-    DownloadPreflightStatus,
+    evaluate_track_preflight, s197_pick_identity_hit, s197_qobuz_quality_fields,
+    s197_should_attempt_live_resolution, DownloadPreflightStatus,
 };
+use syncify_tauri_lib::download::identity::IdentityCandidate;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -116,6 +119,57 @@ fn s197_hit_body(queried_isrc: &str) -> String {
     .to_string()
 }
 
+/// Search response with TWO hits sharing the queried ISRC — the observed
+/// catalogue duplication (one ISRC labelled on two different recordings, queue
+/// bug #607: Mozez "Run River" 463 s and Mang Dynasty "After Dark" 367 s).
+/// The contradicted hit is catalogue-first on purpose: the legacy code locked
+/// the first hit unconditionally before any identity check existed.
+fn s197_duplicate_isrc_body(queried_isrc: &str, contradicted_only: bool) -> String {
+    let mut items = vec![serde_json::json!({
+        "id": 49272100,
+        "title": "Run River",
+        "duration": 463,
+        "isrc": queried_isrc,
+        "audioQuality": "LOSSLESS",
+        "artist": {"id": 9, "name": "Mozez"},
+        "album": {
+            "id": 3,
+            "title": "Run River",
+            "releaseDate": "2012-05-01",
+            "numberOfTracks": 10,
+            "cover": null
+        },
+        "trackNumber": 1,
+        "volumeNumber": 1
+    })];
+    if !contradicted_only {
+        items.push(serde_json::json!({
+            "id": 362915406,
+            "title": "After Dark",
+            "duration": 367,
+            "isrc": queried_isrc,
+            "audioQuality": "LOSSLESS",
+            "artist": {"id": 10, "name": "Mang Dynasty"},
+            "album": {
+                "id": 4,
+                "title": "After Dark",
+                "releaseDate": "2015-01-01",
+                "numberOfTracks": 12,
+                "cover": null
+            },
+            "trackNumber": 2,
+            "volumeNumber": 1
+        }));
+    }
+    serde_json::json!({
+        "tracks": {
+            "totalNumberOfItems": items.len(),
+            "items": items
+        }
+    })
+    .to_string()
+}
+
 async fn fresh_db() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -157,6 +211,41 @@ async fn insert_spotify_origin_track(db: &SqlitePool, isrc: &str) -> i64 {
     )
     .bind(album_id)
     .bind(isrc)
+    .fetch_one(db)
+    .await
+    .unwrap();
+
+    sqlx::query("INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, available) VALUES (?, 1, ?, 1)")
+        .bind(track_id)
+        .bind(format!("sp_{}", track_id))
+        .execute(db)
+        .await
+        .unwrap();
+
+    track_id
+}
+
+/// Spotify-origin track whose canonical identity (title + duration) can
+/// disambiguate duplicate-ISRC provider hits (bug #607 scenario).
+async fn insert_spotify_origin_track_with_identity(
+    db: &SqlitePool,
+    isrc: &str,
+    title: &str,
+    duration_ms: i64,
+) -> i64 {
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title) VALUES ('S197 Duplicate Album') RETURNING id",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, isrc, duration_ms) VALUES (?, ?, ?, ?) RETURNING id",
+    )
+    .bind(title)
+    .bind(album_id)
+    .bind(isrc)
+    .bind(duration_ms)
     .fetch_one(db)
     .await
     .unwrap();
@@ -268,6 +357,90 @@ async fn s197_live_isrc_resolution_scenarios() {
     );
     drop(db_hit);
 
+    // ---------- Phase (i-bis): duplicate ISRC — never lock the contradicted hit (#607) ----------
+    let dup_responder: Responder = Arc::new(|target: &str| {
+        let queried = query_param(split_target(target).1, "query").unwrap_or_default();
+        (200, s197_duplicate_isrc_body(&queried, false))
+    });
+    let (base_dup, requests_dup) = spawn_mock_tidal(dup_responder).await;
+    std::env::set_var("SYNCIFY_S197_TIDAL_BASE_URL", &base_dup);
+
+    let db_dup = fresh_db().await;
+    insert_active_tidal_account(&db_dup).await;
+    let tid_dup = insert_spotify_origin_track_with_identity(
+        &db_dup,
+        ISRC,
+        "After Dark - Dub Mix",
+        367_827,
+    )
+    .await;
+
+    let pf_dup = evaluate_track_preflight(&db_dup, tid_dup, None, None, false, true)
+        .await
+        .expect("preflight must not error on duplicate-ISRC hits");
+
+    assert_eq!(
+        pf_dup.status,
+        DownloadPreflightStatus::ReadyExactSource,
+        "the agreeing hit must be locked and upgrade the verdict (got {:?}: {})",
+        pf_dup.status,
+        pf_dup.reason
+    );
+    assert_eq!(
+        pf_dup.resolved_service_track_id.as_deref(),
+        Some("362915406"),
+        "only the catalogue hit agreeing with the canonical identity may be locked"
+    );
+    let (stid_dup, _, available_dup) = tidal_row_for_track(&db_dup, tid_dup)
+        .await
+        .expect("verified hit must be persisted");
+    assert_eq!(stid_dup, "362915406");
+    assert_eq!(available_dup, 1);
+    assert!(!requests_dup.lock().unwrap().is_empty());
+    drop(db_dup);
+
+    // ---------- Phase (i-ter): every same-ISRC hit contradicts → nothing locked ----------
+    let allwrong_responder: Responder = Arc::new(|target: &str| {
+        let queried = query_param(split_target(target).1, "query").unwrap_or_default();
+        (200, s197_duplicate_isrc_body(&queried, true))
+    });
+    let (base_allwrong, requests_allwrong) = spawn_mock_tidal(allwrong_responder).await;
+    std::env::set_var("SYNCIFY_S197_TIDAL_BASE_URL", &base_allwrong);
+
+    let db_allwrong = fresh_db().await;
+    insert_active_tidal_account(&db_allwrong).await;
+    let tid_allwrong = insert_spotify_origin_track_with_identity(
+        &db_allwrong,
+        ISRC,
+        "After Dark - Dub Mix",
+        367_827,
+    )
+    .await;
+
+    let pf_allwrong = evaluate_track_preflight(&db_allwrong, tid_allwrong, None, None, false, true)
+        .await
+        .expect("preflight must not error when every hit contradicts");
+
+    assert_eq!(
+        pf_allwrong.status,
+        DownloadPreflightStatus::NoDownloadProvider,
+        "no source is preferable to a provably wrong one (got {:?}: {})",
+        pf_allwrong.status,
+        pf_allwrong.reason
+    );
+    assert!(!pf_allwrong.is_eligible);
+    assert_eq!(
+        tidal_row_count(&db_allwrong, tid_allwrong).await,
+        0,
+        "a contradicted hit must never be persisted"
+    );
+    assert_eq!(
+        requests_allwrong.lock().unwrap().len(),
+        1,
+        "exactly one Tidal search attempt (Qobuz skipped: no session)"
+    );
+    drop(db_allwrong);
+
     // ---------- Phase (ii): miss on Tidal (+ Qobuz absent) → default, zero rows ----------
     let miss_responder: Responder = Arc::new(|_target: &str| {
         (
@@ -372,4 +545,48 @@ fn s197_qobuz_quality_fields_mirror_import_math() {
     );
     // Unknown quality degrades gracefully to the FLAC base score.
     assert_eq!(s197_qobuz_quality_fields(None, None), (None, None, 1000));
+}
+
+/// Pure selector over same-ISRC catalogue hits, shared by both S197 legs: a hit
+/// the provider metadata contradicts on BOTH title and duration is never
+/// pickable; with no contradiction the best evidence wins and ties keep
+/// catalogue order (back-compat for duration-less tracks).
+#[test]
+fn s197_identity_pick_never_locks_a_contradicted_hit() {
+    let expected = IdentityCandidate::new("After Dark - Dub Mix", "Mang Dynasty", 367_827);
+
+    // #607: the wrong recording is catalogue-first (Mozez "Run River", 463 s);
+    // the agreeing hit must win regardless of order.
+    let wrong = IdentityCandidate::new("Run River", "Mozez", 463_000);
+    let right = IdentityCandidate::new("After Dark", "Mang Dynasty", 367_000);
+    assert_eq!(
+        s197_pick_identity_hit(&expected, &[wrong.clone(), right.clone()]),
+        Some(1)
+    );
+    assert_eq!(
+        s197_pick_identity_hit(&expected, &[right, wrong.clone()]),
+        Some(0)
+    );
+
+    // Every candidate contradicted → None (no source over a wrong source).
+    assert_eq!(s197_pick_identity_hit(&expected, &[wrong]), None);
+
+    // #256: re-release under a different title with the same duration is NOT a
+    // contradiction and must stay lockable.
+    let rereleased = IdentityCandidate::new("FUNK BAD DO BAD", "DJ VTTT77", 105_417);
+    let original = IdentityCandidate::new("41421421412", "MiracVR", 105_460);
+    assert_eq!(s197_pick_identity_hit(&original, &[rereleased]), Some(0));
+
+    // Unknown canonical duration ⇒ no second axis ⇒ legacy first-hit order.
+    let unknown = IdentityCandidate::new("Whatever", "Someone", 0);
+    assert_eq!(
+        s197_pick_identity_hit(
+            &unknown,
+            &[
+                IdentityCandidate::new("First", "A", 210_000),
+                IdentityCandidate::new("Second", "B", 100_000),
+            ]
+        ),
+        Some(0)
+    );
 }

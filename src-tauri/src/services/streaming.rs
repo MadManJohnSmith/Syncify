@@ -9,15 +9,22 @@
 //! - Se prioriza la mejor fuente disponible (`track_sources.quality_score`).
 //! - Se pide la máxima calidad y se acepta degradación con etiqueta honesta
 //!   (`quality_label` refleja lo OBTENIDO, no lo pedido).
-//! - Fuentes que no sean un fichero progresivo (manifiestos DASH/HLS) se
-//!   rechazan: el motor local decodifica ficheros completos, no segmentos.
+//! - Los manifiestos segmentados de Tidal (FLAC-en-ISOBMFF) se aceptan y se
+//!   convierten a FLAC nativo progresivo en el backend (`syncify-fmp4-flac`);
+//!   el resto de manifiestos no reproducibles (HLS) se rechazan.
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use syncify_core_domain::byte_validators::AudioByteValidator;
+use syncify_core_domain::metadata::{
+    artist_matches as core_artist_matches, title_matches as core_title_matches,
+};
 
-use crate::download::qobuz::{QobuzAuthStatus, QobuzDownloader};
+use crate::download::qobuz::{
+    artist_matches as qobuz_artist_matches, title_matches as qobuz_title_matches, QobuzAuthStatus,
+    QobuzDownloader,
+};
 use crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials_for_account;
 
 /// Tamaño máximo leído al sondear la cabecera real del stream (64 KiB, igual que
@@ -675,74 +682,72 @@ async fn isrc_cascade(
     }
 
     if let Some(isrc) = context.isrc.clone() {
-        // ---- Etapa 1a: Qobuz por ISRC ---------------------------------------
-        match qobuz_isrc_match(db, &isrc, &context).await {
-            Ok(found) => {
-                let service_id = found.id.to_string();
-                if should_try(tried, "qobuz", &service_id) {
-                    let candidate = Candidate {
-                        service_name: "qobuz".to_string(),
-                        service_track_id: service_id,
-                    };
-                    match resolve_qobuz(db, http, &candidate, duration_ms).await {
-                        Ok(mut resolved) => {
-                            resolved.info.match_method = "isrc".to_string();
-                            if resolved.info.quality_tier != "lossy" {
-                                return Ok(Some(resolved));
-                            }
-                            tracing::info!(
-                                track_id,
-                                quality = %resolved.info.quality_label,
-                                "streaming: cascada ISRC encontró Qobuz lossy"
-                            );
-                            if allow_lossy && lossy_fallback.is_none() {
-                                lossy_fallback = Some(resolved);
-                            }
-                        }
-                        Err(err) => reasons.push(format!("Qobuz ISRC {}: {}", found.id, err)),
-                    }
-                } else {
-                    reasons.push(
-                        "Qobuz: esa identidad ya se intentó en la pasada directa".to_string(),
-                    );
+        // ---- Etapa 1: ISRC exacto en Qobuz/Tidal ----------------------------
+        match try_isrc_on_providers(
+            db,
+            http,
+            &isrc,
+            &context,
+            duration_ms,
+            tried,
+            allow_lossy,
+            &mut reasons,
+        )
+        .await
+        {
+            IsrcAttempt::Lossless(resolved) => return Ok(Some(resolved)),
+            IsrcAttempt::Lossy(resolved) => {
+                if lossy_fallback.is_none() {
+                    lossy_fallback = Some(resolved);
                 }
             }
-            Err(reason) => reasons.push(format!("Qobuz: {}", reason)),
+            IsrcAttempt::None => {}
         }
 
-        // ---- Etapa 1b: Tidal por ISRC ---------------------------------------
-        match tidal_isrc_match(db, http, &isrc, &context).await {
-            Ok(found) => {
-                let service_id = found.id.to_string();
-                if should_try(tried, "tidal", &service_id) {
-                    let candidate = Candidate {
-                        service_name: "tidal".to_string(),
-                        service_track_id: service_id,
-                    };
-                    match resolve_tidal(db, http, &candidate, duration_ms).await {
-                        Ok(mut resolved) => {
-                            resolved.info.match_method = "isrc".to_string();
-                            if resolved.info.quality_tier != "lossy" {
-                                return Ok(Some(resolved));
-                            }
+        // ---- Etapa 1.5: otros ISRC de la misma grabación (MusicBrainz) ------
+        // Las reediciones cambian el ISRC sin cambiar la grabación (en vivo:
+        // *Amazing Grace* local GBCVZ0200290 es USI4R0401939 en Qobuz). Probar
+        // los ISRC que MusicBrainz atribuye a la misma grabación mantiene la
+        // identidad exacta antes de caer al match por metadatos.
+        match musicbrainz_alt_isrcs(db, &isrc).await {
+            Ok(alts) => {
+                for alt in alts {
+                    tracing::debug!(
+                        track_id,
+                        alt_isrc = %alt,
+                        "streaming: probando ISRC alternativo de MusicBrainz"
+                    );
+                    match try_isrc_on_providers(
+                        db,
+                        http,
+                        &alt,
+                        &context,
+                        duration_ms,
+                        tried,
+                        allow_lossy,
+                        &mut reasons,
+                    )
+                    .await
+                    {
+                        IsrcAttempt::Lossless(resolved) => {
                             tracing::info!(
                                 track_id,
+                                alt_isrc = %alt,
                                 quality = %resolved.info.quality_label,
-                                "streaming: cascada ISRC encontró Tidal lossy"
+                                "streaming: MusicBrainz resolvió la misma grabación por ISRC alternativo"
                             );
-                            if allow_lossy && lossy_fallback.is_none() {
+                            return Ok(Some(resolved));
+                        }
+                        IsrcAttempt::Lossy(resolved) => {
+                            if lossy_fallback.is_none() {
                                 lossy_fallback = Some(resolved);
                             }
                         }
-                        Err(err) => reasons.push(format!("Tidal ISRC {}: {}", found.id, err)),
+                        IsrcAttempt::None => {}
                     }
-                } else {
-                    reasons.push(
-                        "Tidal: esa identidad ya se intentó en la pasada directa".to_string(),
-                    );
                 }
             }
-            Err(reason) => reasons.push(format!("Tidal: {}", reason)),
+            Err(reason) => reasons.push(format!("MusicBrainz: {}", reason)),
         }
     }
 
@@ -760,49 +765,9 @@ async fn isrc_cascade(
             }
 
             for account_id in account_ids {
-                let maybe_match: Result<String, String> = if service == "qobuz" {
-                    let downloader = QobuzDownloader::new();
-                    match downloader
-                        .resolve_token_for_account(db, Some(account_id))
-                        .await
-                    {
-                        Ok(token) => downloader
-                            .search_by_metadata_strict(
-                                &context.title,
-                                &context.artist,
-                                expected_sec,
-                                Some(&token),
-                            )
-                            .await
-                            .map(|track| track.id.to_string())
-                            .map_err(|e| e.to_string()),
-                        Err(QobuzAuthStatus::RequiresAuth(msg)) => Err(msg),
-                    }
-                } else {
-                    let (creds, _name) = resolve_and_refresh_gui_credentials_for_account(
-                        db,
-                        http,
-                        Some(account_id),
-                        false,
-                    )
-                    .await;
-                    match creds {
-                        Some(creds) => {
-                            let downloader = syncify_tidal_downloader::TidalDownloader::new()
-                                .with_user_token(Some(creds.access_token.clone()));
-                            downloader
-                                .search_by_metadata_strict(
-                                    &context.title,
-                                    &context.artist,
-                                    expected_sec,
-                                )
-                                .await
-                                .map(|track| track.id.to_string())
-                                .map_err(|e| e.to_string())
-                        }
-                        None => Err("sin credenciales válidas".to_string()),
-                    }
-                };
+                let maybe_match =
+                    metadata_stage_match(db, http, service, account_id, &context, expected_sec)
+                        .await;
 
                 match maybe_match {
                     Ok(service_id) => {
@@ -855,6 +820,236 @@ async fn isrc_cascade(
     } else {
         reasons.join(" · ")
     })
+}
+
+/// Resultado de probar un ISRC concreto en los proveedores.
+enum IsrcAttempt {
+    /// Lossless verificado: se puede devolver ya.
+    Lossless(ResolvedStream),
+    /// Sólo lossy de duración completa: reserva mientras se buscan opciones.
+    Lossy(ResolvedStream),
+    /// Ninguna fuente aceptable para este ISRC.
+    None,
+}
+
+/// Prueba un ISRC (el local o uno alternativo de MusicBrainz) en Qobuz y Tidal,
+/// respetando las identidades ya intentadas y prefiriendo lossless. Los motivos
+/// de cada rechazo se acumulan en `reasons`.
+#[allow(clippy::too_many_arguments)]
+async fn try_isrc_on_providers(
+    db: &SqlitePool,
+    http: &reqwest::Client,
+    isrc: &str,
+    context: &TrackLookupContext,
+    duration_ms: Option<i64>,
+    tried: &HashSet<(String, String)>,
+    allow_lossy: bool,
+    reasons: &mut Vec<String>,
+) -> IsrcAttempt {
+    let mut lossy: Option<ResolvedStream> = None;
+
+    for service in ["qobuz", "tidal"] {
+        let found = if service == "qobuz" {
+            qobuz_isrc_match(db, isrc, context)
+                .await
+                .map(|track| track.id.to_string())
+        } else {
+            tidal_isrc_match(db, http, isrc, context)
+                .await
+                .map(|track| track.id.to_string())
+        };
+        let service_id = match found {
+            Ok(service_id) => service_id,
+            Err(reason) => {
+                reasons.push(format!("{}: {}", service, reason));
+                continue;
+            }
+        };
+        if !should_try(tried, service, &service_id) {
+            reasons.push(format!(
+                "{}: esa identidad ya se intentó en la pasada directa",
+                service
+            ));
+            continue;
+        }
+
+        let candidate = Candidate {
+            service_name: service.to_string(),
+            service_track_id: service_id.clone(),
+        };
+        let outcome = if service == "qobuz" {
+            resolve_qobuz(db, http, &candidate, duration_ms).await
+        } else {
+            resolve_tidal(db, http, &candidate, duration_ms).await
+        };
+        match outcome {
+            Ok(mut resolved) => {
+                resolved.info.match_method = "isrc".to_string();
+                if resolved.info.quality_tier != "lossy" {
+                    return IsrcAttempt::Lossless(resolved);
+                }
+                tracing::info!(
+                    service,
+                    quality = %resolved.info.quality_label,
+                    "streaming: cascada ISRC encontró una fuente lossy"
+                );
+                if allow_lossy && lossy.is_none() {
+                    lossy = Some(resolved);
+                }
+            }
+            Err(err) => reasons.push(format!("{} ISRC {}: {}", service, service_id, err)),
+        }
+    }
+
+    match lossy {
+        Some(resolved) => IsrcAttempt::Lossy(resolved),
+        None => IsrcAttempt::None,
+    }
+}
+
+/// ISRCs que MusicBrainz atribuye a la misma grabación, sin el de partida.
+/// Best-effort: sin respuesta o sin ISRC conocido devuelve lista vacía.
+async fn musicbrainz_alt_isrcs(db: &SqlitePool, isrc: &str) -> Result<Vec<String>, String> {
+    let service = crate::services::musicbrainz::MusicBrainzClient::with_db(db.clone());
+    let Some(recording) = service.lookup_by_isrc(isrc).await.map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    let detail = service
+        .get_recording_details(&recording.id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut alts: Vec<String> = detail
+        .isrcs
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|candidate| normalize_isrc(Some(candidate.as_str())))
+        .filter(|candidate| !candidate.eq_ignore_ascii_case(isrc))
+        .collect();
+    alts.sort();
+    alts.dedup();
+    alts.truncate(3);
+    Ok(alts)
+}
+
+/// Match por metadatos de UNA cuenta: estricto primero y, si el proveedor lo
+/// declara ambiguo (varias reediciones del mismo corte con título/artista/
+/// duración ±3 s — en vivo: *Knee Deep* con 6 ediciones), se resuelve por
+/// duración más cercana con el matcher laxo y se **vuelve a verificar aquí**;
+/// si la elección no cuadra, se rechaza igual que antes.
+async fn metadata_stage_match(
+    db: &SqlitePool,
+    http: &reqwest::Client,
+    service: &str,
+    account_id: i64,
+    context: &TrackLookupContext,
+    expected_sec: i32,
+) -> Result<String, String> {
+    if service == "qobuz" {
+        let downloader = QobuzDownloader::new();
+        let token = downloader
+            .resolve_token_for_account(db, Some(account_id))
+            .await
+            .map_err(|QobuzAuthStatus::RequiresAuth(msg)| msg)?;
+        match downloader
+            .search_by_metadata_strict(&context.title, &context.artist, expected_sec, Some(&token))
+            .await
+        {
+            Ok(track) => Ok(track.id.to_string()),
+            Err(strict_err) => {
+                let message = strict_err.to_string();
+                if !message.contains("AmbiguousSource") {
+                    return Err(message);
+                }
+                let picked = downloader
+                    .search_by_metadata(
+                        &context.title,
+                        &context.artist,
+                        expected_sec,
+                        Some(&token),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !qobuz_title_matches(&context.title, &picked.title) {
+                    return Err(format!(
+                        "la elección por duración no coincide en título ('{}' vs '{}')",
+                        context.title, picked.title
+                    ));
+                }
+                if let Some(performer) = &picked.performer {
+                    if !qobuz_artist_matches(&context.artist, &performer.name) {
+                        return Err(format!(
+                            "la elección por duración no coincide en artista ('{}' vs '{}')",
+                            context.artist, performer.name
+                        ));
+                    }
+                }
+                if expected_sec > 0 && (picked.duration - expected_sec).abs() > 3 {
+                    return Err(format!(
+                        "la elección por duración se aleja {} s de la esperada",
+                        (picked.duration - expected_sec).abs()
+                    ));
+                }
+                tracing::info!(
+                    service = "qobuz",
+                    track_id = picked.id,
+                    duration = picked.duration,
+                    "streaming: ambigüedad de metadatos resuelta por duración más cercana"
+                );
+                Ok(picked.id.to_string())
+            }
+        }
+    } else {
+        let (creds, _name) =
+            resolve_and_refresh_gui_credentials_for_account(db, http, Some(account_id), false)
+                .await;
+        let Some(creds) = creds else {
+            return Err("sin credenciales válidas".to_string());
+        };
+        let downloader = syncify_tidal_downloader::TidalDownloader::new()
+            .with_user_token(Some(creds.access_token.clone()));
+        match downloader
+            .search_by_metadata_strict(&context.title, &context.artist, expected_sec)
+            .await
+        {
+            Ok(track) => Ok(track.id.to_string()),
+            Err(strict_err) => {
+                let message = strict_err.to_string();
+                if !message.contains("AmbiguousSource") {
+                    return Err(message);
+                }
+                let picked = downloader
+                    .search_by_metadata(&context.title, &context.artist, expected_sec)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if !core_title_matches(&context.title, &picked.title) {
+                    return Err(format!(
+                        "la elección por duración no coincide en título ('{}' vs '{}')",
+                        context.title, picked.title
+                    ));
+                }
+                let artist_name = picked.artist_name().unwrap_or_default();
+                if !core_artist_matches(&context.artist, &artist_name) {
+                    return Err(format!(
+                        "la elección por duración no coincide en artista ('{}' vs '{}')",
+                        context.artist, artist_name
+                    ));
+                }
+                if expected_sec > 0 && (picked.duration - expected_sec).abs() > 3 {
+                    return Err(format!(
+                        "la elección por duración se aleja {} s de la esperada",
+                        (picked.duration - expected_sec).abs()
+                    ));
+                }
+                tracing::info!(
+                    service = "tidal",
+                    track_id = picked.id,
+                    duration = picked.duration,
+                    "streaming: ambigüedad de metadatos resuelta por duración más cercana"
+                );
+                Ok(picked.id.to_string())
+            }
+        }
+    }
 }
 
 async fn load_candidates(db: &SqlitePool, track_id: i64) -> Result<Vec<Candidate>, String> {

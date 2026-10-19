@@ -861,6 +861,7 @@ async fn production_tidal_pipeline_reuses_the_worker_journal_entry() {
         hint_artist: Some("Some Artist".to_string()),
         hint_album: Some("Some Album".to_string()),
         hint_isrc: Some("USQX92000875".to_string()),
+        hint_duration_ms: None,
         hint_track_number: Some(1),
         hint_disc_number: Some(1),
         hint_release_date: Some("2020-03-27".to_string()),

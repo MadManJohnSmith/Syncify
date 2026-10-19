@@ -1015,6 +1015,13 @@ pub fn classify_attempt_failure(error: &str) -> Option<ReResolutionTrigger> {
         return Some(ReResolutionTrigger::QobuzPreview);
     }
 
+    // Una edición cuyo id resuelve a OTRA grabación (ISRC duplicado en el
+    // catálogo del proveedor; observado en vivo) es un problema de la EDICIÓN:
+    // se excluye esa identidad y se re-resuelve, nunca se descarga audio ajeno.
+    if error.contains("IdentityConflict") {
+        return Some(ReResolutionTrigger::NotFound);
+    }
+
     // Un fallo de TRANSPORTE no es veredicto de cuenta (misma regla que
     // `worker::classify_session_auth_failure`).
     if crate::worker::is_transport_failure(error) {

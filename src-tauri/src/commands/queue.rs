@@ -904,8 +904,6 @@ async fn evaluate_track_preflight_inner(
         #[allow(dead_code)]
         // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
         album_id: Option<i64>,
-        #[allow(dead_code)]
-        // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
         duration_ms: Option<i64>,
     }
 
@@ -952,6 +950,9 @@ async fn evaluate_track_preflight_inner(
     let title = meta.title;
     let artist = meta.artist;
     let album = meta.album;
+    // S197: la duración canónica es la segunda prueba de identidad al desempatar
+    // ISRCs duplicados en catálogo (ver `download::identity`).
+    let duration_ms = meta.duration_ms.unwrap_or(0);
     let isrc = meta.isrc.filter(|s| !s.trim().is_empty());
     let mbid = meta.musicbrainz_id.filter(|s| !s.trim().is_empty());
 
@@ -1602,7 +1603,12 @@ async fn evaluate_track_preflight_inner(
         && s197_should_attempt_live_resolution(isrc.is_some(), eff_svc_ref)
     {
         if let Some(ref isrc_code) = isrc {
-            if s197_insert_live_isrc_source(db, track_id, isrc_code)
+            let expected_identity = crate::download::identity::IdentityCandidate::new(
+                title.clone(),
+                artist.clone().unwrap_or_default(),
+                duration_ms,
+            );
+            if s197_insert_live_isrc_source(db, track_id, isrc_code, &expected_identity)
                 .await
                 .is_some()
             {
@@ -1701,9 +1707,28 @@ fn s197_is_missing_session_error(err: &str) -> bool {
     err.contains("account not connected") || err.starts_with("RequiresAuth")
 }
 
+/// S197: pure selector over same-ISRC provider hits. Never picks a hit whose
+/// provider metadata contradicts the canonical track on BOTH title and
+/// duration (observed live: two different Qobuz recordings sharing one ISRC);
+/// among the rest the strongest evidence wins, ties keep catalogue order.
+/// `None` means "do not lock any of these": either no hits or every hit
+/// contradicted the canonical track.
+pub fn s197_pick_identity_hit(
+    expected: &crate::download::identity::IdentityCandidate,
+    candidates: &[crate::download::identity::IdentityCandidate],
+) -> Option<usize> {
+    crate::download::identity::pick_identity_candidate(
+        &expected.title,
+        &expected.artist,
+        expected.duration_ms,
+        candidates,
+    )
+}
+
 async fn s197_search_tidal_by_isrc(
     db: &crate::DbPool,
     isrc: &str,
+    expected: &crate::download::identity::IdentityCandidate,
 ) -> Result<Option<(String, Option<i32>, Option<i32>)>, String> {
     // Client acquisition copied verbatim from import_tidal_library (commands/service.rs):
     // load_service_credentials → access_token/user_id/country_code → TidalClient.
@@ -1733,16 +1758,41 @@ async fn s197_search_tidal_by_isrc(
         }
     }
 
-    match client.search_by_isrc(isrc).await? {
-        Some(hit) => {
+    let candidates = client.search_isrc_candidates(isrc, 10).await?;
+    let candidate_identities: Vec<crate::download::identity::IdentityCandidate> = candidates
+        .iter()
+        .map(|hit| {
+            crate::download::identity::IdentityCandidate::new(
+                hit.title.clone(),
+                hit.artist.clone(),
+                hit.duration_ms,
+            )
+        })
+        .collect();
+
+    match s197_pick_identity_hit(expected, &candidate_identities) {
+        Some(idx) => {
+            let hit = &candidates[idx];
             let (bit_depth, sample_rate) = client.parse_quality(&hit.quality);
             tracing::info!(
-                "[S197] Tidal ISRC hit for {}: track {} ({:?})",
+                "[S197] Tidal ISRC hit for {}: track {} ('{}', {} ms, {:?})",
                 isrc,
                 hit.track_id,
+                hit.title,
+                hit.duration_ms,
                 hit.quality
             );
-            Ok(Some((hit.track_id, bit_depth, sample_rate)))
+            Ok(Some((hit.track_id.clone(), bit_depth, sample_rate)))
+        }
+        None if !candidates.is_empty() => {
+            tracing::warn!(
+                "[S197] Tidal ISRC {} returned {} catalogue hit(s) but every one contradicts '{}' ({} ms); not locking a provably wrong source",
+                isrc,
+                candidates.len(),
+                expected.title,
+                expected.duration_ms
+            );
+            Ok(None)
         }
         None => Ok(None),
     }
@@ -1751,6 +1801,7 @@ async fn s197_search_tidal_by_isrc(
 async fn s197_search_qobuz_by_isrc(
     db: &crate::DbPool,
     isrc: &str,
+    expected: &crate::download::identity::IdentityCandidate,
 ) -> Result<Option<(String, Option<i32>, Option<i32>, i32)>, String> {
     // Client acquisition copied verbatim from import_qobuz_library / sync paths:
     // load_service_credentials → app_id/secret (env fallback) → shared S186 token
@@ -1763,17 +1814,47 @@ async fn s197_search_qobuz_by_isrc(
     let user_auth_token = resolve_qobuz_user_auth_token(db, account_id, &creds).await?;
     let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
 
-    match client.search_by_isrc(isrc).await? {
-        Some(hit) => {
+    let candidates = client.search_isrc_candidates(isrc, 10).await?;
+    let candidate_identities: Vec<crate::download::identity::IdentityCandidate> = candidates
+        .iter()
+        .map(|hit| {
+            crate::download::identity::IdentityCandidate::new(
+                hit.title.clone(),
+                hit.artist.clone(),
+                hit.duration_ms,
+            )
+        })
+        .collect();
+
+    match s197_pick_identity_hit(expected, &candidate_identities) {
+        Some(idx) => {
+            let hit = &candidates[idx];
             let (bit_depth, sample_rate, quality_score) =
                 s197_qobuz_quality_fields(hit.bit_depth, hit.sample_rate);
             tracing::info!(
-                "[S197] Qobuz ISRC hit for {}: track {} (score {})",
+                "[S197] Qobuz ISRC hit for {}: track {} ('{}', {} ms, score {})",
                 isrc,
                 hit.track_id,
+                hit.title,
+                hit.duration_ms,
                 quality_score
             );
-            Ok(Some((hit.track_id, bit_depth, sample_rate, quality_score)))
+            Ok(Some((
+                hit.track_id.clone(),
+                bit_depth,
+                sample_rate,
+                quality_score,
+            )))
+        }
+        None if !candidates.is_empty() => {
+            tracing::warn!(
+                "[S197] Qobuz ISRC {} returned {} catalogue hit(s) but every one contradicts '{}' ({} ms); not locking a provably wrong source",
+                isrc,
+                candidates.len(),
+                expected.title,
+                expected.duration_ms
+            );
+            Ok(None)
         }
         None => Ok(None),
     }
@@ -1785,14 +1866,23 @@ async fn s197_search_qobuz_by_isrc(
 /// which provider produced it. Missing sessions skip silently; search failures
 /// log a warning and fall through to the next provider; no hit returns None and
 /// the caller keeps the previous default behavior.
-async fn s197_insert_live_isrc_source(
+///
+/// Punto 3: además del preflight, la usa el worker antes de dar por perdido un
+/// ítem con `NoDownloadableSource` (resolución viva verificada cuando el
+/// resolver, que solo lee `track_sources`, no encuentra fuente local).
+///
+/// `expected` carries the canonical track's identity: when a provider returns
+/// several catalogue hits under one ISRC, only a hit that does not contradict
+/// that identity may be locked (see `download::identity`).
+pub(crate) async fn s197_insert_live_isrc_source(
     db: &crate::DbPool,
     track_id: i64,
     isrc: &str,
+    expected: &crate::download::identity::IdentityCandidate,
 ) -> Option<String> {
     // --- Provider order fixed by spec: Tidal first, then Qobuz ---
     if let Some(tidal_service_id) = s197_service_downloadable_id(db, "tidal").await {
-        match s197_search_tidal_by_isrc(db, isrc).await {
+        match s197_search_tidal_by_isrc(db, isrc, expected).await {
             Ok(Some((service_track_id, bit_depth, sample_rate))) => {
                 // INSERT pattern copied from services/tidal.rs import paths.
                 let res = sqlx::query(
@@ -1828,7 +1918,7 @@ async fn s197_insert_live_isrc_source(
     }
 
     if let Some(qobuz_service_id) = s197_service_downloadable_id(db, "qobuz").await {
-        match s197_search_qobuz_by_isrc(db, isrc).await {
+        match s197_search_qobuz_by_isrc(db, isrc, expected).await {
             Ok(Some((service_track_id, bit_depth, sample_rate, quality_score))) => {
                 // INSERT pattern copied from services/qobuz.rs import paths.
                 let res = sqlx::query(

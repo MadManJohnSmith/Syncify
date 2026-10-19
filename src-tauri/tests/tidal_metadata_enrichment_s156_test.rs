@@ -474,6 +474,7 @@ async fn test_s156_request_hints_preservation() {
         hint_artist: Some("UPSAHL".to_string()),
         hint_album: Some("12345SEX".to_string()),
         hint_isrc: Some("USQX92000875".to_string()),
+        hint_duration_ms: None,
         hint_track_number: Some(1),
         hint_disc_number: Some(1),
         hint_release_date: Some("2020-03-27".to_string()),
