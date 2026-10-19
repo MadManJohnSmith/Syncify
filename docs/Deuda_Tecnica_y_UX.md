@@ -117,20 +117,6 @@ Las entradas de esta sección **no** están condicionadas a una entrada externa:
 trabajo que el equipo puede hacer ya. Por eso no aparecen en la tabla de alcance
 condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 
-### D-05 — Subsistema de reproducción retirado, aún registrado
-
-- **Observado**: `resolve_playback_source` (`src-tauri/src/commands/playback.rs:38`) y el
-  protocolo `syncify-media://` (`src-tauri/src/main.rs:104`, handler en `playback.rs:352`)
-  los sustituyó el motor nativo (`commands::player_load_track`). `grants()`
-  (`playback.rs:24`) solo se puebla en esa función y el handler deniega toda ruta no
-  concedida (`playback.rs:373`): sin invocador, el protocolo ya no puede servir nada.
-  Ni `ui/src` ni el bundle construido ni ningún test invocan el comando.
-- **Consecuencia**: la puerta `src-tauri/tests/dead_commands_hygiene_test.rs` está en rojo
-  por `resolve_playback_source` (`orphans: ["resolve_playback_source"]`).
-- **Cierra**: borrar el subsistema (unas 450 líneas de `playback.rs`, su registro en
-  `main.rs` y sus tests) o volver a conectarlo a un invocador real. Es una decisión de
-  producto, no un arreglo mecánico: por eso no se tomó en la reparación.
-
 ### D-06 — Escrituras SQLx silenciosas
 
 - **Observado**: 243 `let _ = sqlx::query(...)` en producción (125 UPDATE, 82 INSERT,
@@ -195,6 +181,7 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 | C-16 | Dos objetivos de test rojos por fixtures que usaban `account_id: 1` sin crear la cuenta | `41b2f08`; 4/4 y 5/5 verdes |
 | C-17 | El README afirmaba 9 tests ignorados y el árbol tiene 13 | `1e35108`; puerta que compara la cifra en ambos idiomas |
 | C-18 | No había mapa de entrada para un agente | `b4a9588`; `AGENTS.md` escaneado por `scripts/tests/test_docs_consistency.py` |
+| C-19 | El subsistema de reproducción retirado seguía registrado (puerta de higiene en rojo) | `resolve_playback_source`, el protocolo y sus tests borrados; `playback.rs` 628 → 194 líneas; puerta 9/9, suite 1 rojo menos |
 
 ### D-02 — Cerrada, y con qué alcance exacto
 

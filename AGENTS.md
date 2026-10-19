@@ -54,10 +54,10 @@ que pase.
   número. Una BD `:memory:` recién migrada **no** demuestra que el upgrade funcione.
 - **Datos personales:** no toques `~/.local/share/com.syncify.app`, la biblioteca de
   música ni las descargas reales. Usa fixtures desechables y BD `:memory:`.
-- **Ruta de reproducción retirada:** el motor nativo `player_load_track` sustituyó a
-  `resolve_playback_source` y al protocolo `syncify-media://`
-  (`src-tauri/src/commands/playback.rs`). Siguen registrados y la puerta de higiene
-  los señala; no los tomes por el camino vivo.
+- **Ruta de reproducción retirada (ya eliminada):** el motor nativo `player_load_track`
+  sustituyó a `resolve_playback_source` y al protocolo `syncify-media://`, que se
+  borraron (C-19 en `docs/Deuda_Tecnica_y_UX.md`). `commands/playback.rs` conserva
+  solo la escucha local (`record_local_play`).
 - **Escrituras silenciosas:** hay ~243 `let _ = sqlx::query(...)` en producción: una
   escritura puede fallar y la transacción confirmar sin rastro. Si tocas una, propaga
   el error o registra con `tracing::warn!`.

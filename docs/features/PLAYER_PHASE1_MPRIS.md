@@ -10,9 +10,9 @@
 > El cuerpo describe la fase 1 original (elemento HTML Audio + `resolve_playback_source` +
 > protocolo `syncify-media://`). El reproductor actual carga el audio en un motor nativo
 > (`commands::player_load` / `commands::player_load_track`, en `src-tauri/src/commands/player.rs`)
-> y sí soporta streaming de proveedores. `resolve_playback_source` y el protocolo siguen
-> registrados pero nada los invoca: la puerta `src-tauri/tests/dead_commands_hygiene_test.rs`
-> los señala como huérfanos. La fuente de verdad del estado de reproducción sigue siendo
+> y sí soporta streaming de proveedores. `resolve_playback_source` y el protocolo
+> `syncify-media://` **se retiraron** (C-19): no quedaba invocador que poblara sus
+> concesiones, así que se borraron con sus tests. La fuente de verdad del estado de reproducción sigue siendo
 > `ui/src/composables/usePlayer.ts`. El resto del documento se conserva como registro
 > histórico de la fase 1.
 

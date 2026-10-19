@@ -94,16 +94,6 @@ fn main() {
     let concurrency_manager = services::get_global_concurrency_manager();
 
     tauri::Builder::default()
-        // S194/S200: local playback protocol - serves byte ranges of files that
-        // resolve_playback_source explicitly granted (downloads-verified).
-        // S200: ASYNC registration — the handler does blocking file IO (up to
-        // 8 MB per request); the synchronous variant ran it on the MAIN thread
-        // (webkit/WebView2 serve custom schemes there) and froze the UI while
-        // audio played. The async variant answers via UriSchemeResponder from a
-        // plain OS thread.
-        .register_asynchronous_uri_scheme_protocol("syncify-media", |_ctx, request, responder| {
-            commands::handle_media_protocol_request_async(request, responder)
-        })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         // Ítem 31: autoinicio al arrancar el sistema, gobernado por el ajuste
@@ -1111,8 +1101,6 @@ fn main() {
             // S202 / TASK-7.1 CR-5: country & region tag repair (dry-run + apply)
             commands::plan_country_tag_repair,
             commands::apply_country_tag_repair,
-            // S194: local playback of downloaded tracks
-            commands::resolve_playback_source,
             // Fase 1 del player: motor nativo (rodio + symphonia)
             commands::player_load,
             commands::player_load_track,

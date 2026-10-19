@@ -85,6 +85,6 @@ el resultado es `needs_review`.
 **QualityTier** — calidad anunciada por el servicio frente a la realmente
 entregada (`quality_preferences`, `track_availability`). Anunciada ≠ bytes reales.
 
-**Grant** *(retirado)* — concesión en memoria del protocolo `syncify-media://`,
-sustituido por el motor nativo. Sigue en `src-tauri/src/commands/playback.rs` pero
-ya no puede servir nada; ver D-05 en `docs/Deuda_Tecnica_y_UX.md`.
+**Grant** *(retirado y eliminado)* — concesión en memoria del protocolo
+`syncify-media://`, sustituido por el motor nativo. El subsistema se borró (C-19 en
+`docs/Deuda_Tecnica_y_UX.md`): hoy no queda ni el comando ni el protocolo.
