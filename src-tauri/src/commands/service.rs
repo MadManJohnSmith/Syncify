@@ -8476,3 +8476,129 @@ mod service_tests {
         assert_eq!(track_count, 3);
     }
 }
+
+#[cfg(test)]
+mod sync_orchestrator_characterization {
+    //! Caracterización del orquestador de sincronización (D-08).
+    //!
+    //! Fija el contrato observable de `perform_sync_service_with_emitter_inner`
+    //! ANTES de extraer sus brazos: secuencia de eventos, terminalidad y el
+    //! prefijo del error. Solo cubre caminos sin red; si un corte mueve el
+    //! comportamiento de estos caminos, el test lo dice.
+
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Emisor falso: guarda los campos que forman el contrato observable.
+    #[derive(Clone, Default)]
+    struct RecordingEmitter {
+        events: Arc<Mutex<Vec<(String, String, bool, String, Option<i64>)>>>,
+    }
+
+    impl RecordingEmitter {
+        fn recorded(&self) -> Vec<(String, String, bool, String, Option<i64>)> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl SyncProgressEmitter for RecordingEmitter {
+        fn emit_sync_progress(&self, event: &SyncProgressEvent) {
+            self.events.lock().unwrap().push((
+                event.phase.clone(),
+                event.status.clone(),
+                event.terminal,
+                event.service.clone(),
+                event.account_id,
+            ));
+        }
+    }
+
+    async fn fixture_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool SQLite en memoria");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migraciones aplicadas");
+        pool
+    }
+
+    #[tokio::test]
+    async fn sin_cuenta_autenticada_emite_started_y_requires_auth() {
+        let pool = fixture_pool().await;
+        let emitter = RecordingEmitter::default();
+
+        let error = perform_sync_service_with_emitter_inner::<RecordingEmitter>(
+            &pool,
+            "tidal",
+            None,
+            None,
+            Some(&emitter),
+            None,
+        )
+        .await
+        .expect_err("sin cuenta autenticada el sync debe fallar");
+
+        assert!(
+            error.starts_with("RequiresAuth:"),
+            "el contrato del error es RequiresAuth:, llegó: {error}"
+        );
+
+        let events = emitter.recorded();
+        assert_eq!(
+            events.len(),
+            2,
+            "secuencia esperada: started + requires_auth, llegó: {events:?}"
+        );
+        assert_eq!(events[0].0, "authenticating");
+        assert_eq!(events[0].1, "running");
+        assert!(!events[0].2, "el primer evento no es terminal");
+        assert_eq!(events[0].3, "tidal");
+        assert_eq!(events[1].1, "requires_auth");
+        assert!(events[1].2, "el último evento debe ser terminal");
+    }
+
+    #[tokio::test]
+    async fn sin_emisor_el_error_es_el_mismo_y_no_hay_panico() {
+        let pool = fixture_pool().await;
+
+        let error = perform_sync_service_with_emitter_inner::<RecordingEmitter>(
+            &pool, "tidal", None, None, None, None,
+        )
+        .await
+        .expect_err("sin cuenta autenticada el sync debe fallar");
+
+        assert!(
+            error.starts_with("RequiresAuth:"),
+            "el emisor es opcional: el contrato del error no cambia, llegó: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dos_llamadas_seguidas_dan_la_misma_secuencia() {
+        let pool = fixture_pool().await;
+
+        let mut secuencias = Vec::new();
+        for _ in 0..2 {
+            let emitter = RecordingEmitter::default();
+            let _ = perform_sync_service_with_emitter_inner::<RecordingEmitter>(
+                &pool,
+                "tidal",
+                None,
+                None,
+                Some(&emitter),
+                None,
+            )
+            .await;
+            secuencias.push(emitter.recorded());
+        }
+
+        assert_eq!(
+            secuencias[0], secuencias[1],
+            "dos intentos idénticos deben emitir la misma secuencia (sin estado que se filtre)"
+        );
+    }
+}
