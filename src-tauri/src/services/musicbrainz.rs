@@ -761,7 +761,8 @@ impl MusicBrainzClient {
                     let body = response.text().await.unwrap_or_default();
                     tracing::debug!("MusicBrainz error: {}", body);
                     last_err = format!("MusicBrainz returned {}", status);
-                    if status.as_u16() != 503 && status.as_u16() != 429 && !status.is_server_error() {
+                    if status.as_u16() != 503 && status.as_u16() != 429 && !status.is_server_error()
+                    {
                         return Err(last_err);
                     }
                 }
