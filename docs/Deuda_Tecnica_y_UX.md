@@ -135,6 +135,11 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   `services/tidal.rs` 9, `services/qobuz.rs` 21 y `commands/service.rs` 28. Los cinco
   ficheros de mayor riesgo del plan quedan cubiertos; el ratchet baja de 243 a 113 (patrón
   bruto; 95 silenciosos + 18 que propagan) y solo puede bajar.
+- **Lo que la frontera destapó (2026-10-19)**: en la primera prueba manual,
+  `context="enrich_and_persist_sync_track"` registró 51 fallos que antes eran
+  invisibles: `UNIQUE constraint failed: tracks.isrc`. Corregido en `c7325a7`
+  (ver D-07). Es el argumento de la frontera: no cambia el comportamiento, pero
+  convierte un fallo mudo en una línea de log accionable.
 - **Cierra**: migrar el resto por lotes (enrichment 45, service 28, qobuz 21, favorites 19,
   tidal 17), un fichero por commit con su suite verde, y seguir bajando el baseline.
 
@@ -191,6 +196,11 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   `perform_sync_service_with_emitter_inner` baja a **958 líneas**: de 4 546 a 958 (−79 %),
   sin cambiar el contrato del orquestador (los 3 tests de caracterización y los 10 contratos
   de brazo siguen verdes).
+- **Validado en la app real (2026-10-19)**: un sync completo de los cinco servicios
+  recorrió los cinco brazos sin panic ni cuelgue, con los tiempos que registra el
+  orquestador: Tidal 670 s (enriquecimiento 348 s, persistencia 124 s), Qobuz 81 s,
+  Apple Music 29 s, Deezer 4 s, SoundCloud 1,4 s. Tidal importó 16 087 de 17 492
+  favoritos y 27 832 de 27 832 pistas de playlist.
 - **Estado de D-08**: los cinco brazos extraídos (soundcloud 249, deezer 591, spotify 841,
   tidal 1 098, qobuz 1 237). Lo que queda **no** es mover líneas: el `match` ya es una
   llamada y un volcado por brazo, y el siguiente trabajo real es decidir si `ArmOutcome` se
@@ -226,7 +236,36 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 | C-17 | El README afirmaba 9 tests ignorados y el árbol tiene 13 | `1e35108`; puerta que compara la cifra en ambos idiomas |
 | C-18 | No había mapa de entrada para un agente | `b4a9588`; `AGENTS.md` escaneado por `scripts/tests/test_docs_consistency.py` |
 | C-19 | El subsistema de reproducción retirado seguía registrado (puerta de higiene en rojo) | `resolve_playback_source`, el protocolo y sus tests borrados; `playback.rs` 628 → 194 líneas; puerta 9/9, suite 1 rojo menos |
-| C-20 | Misma grabación en otra edición pasaba sin revisión (ED-04 inalcanzable en ese camino) | Guarda antes de escribir: álbum canónico ≠ entrante sin evidencia de release → `needs_review`; suite 2740/0/13 |
+| C-20 | Misma grabación en otra edición pasaba sin revisión (ED-04 inalcanzable en ese camino) | Guarda antes de escribir: álbum canónico ≠ entrante sin evidencia de release → `needs_review`; suite 2740/0/13. **Corregida el 2026-10-19**: la comparación solo normalizaba espacios y mayúsculas y rechazaba ediciones legítimas; `misma_familia_de_album` las unifica (`46e0a57`) |
+| C-21 | El alta de pista con un ISRC ya presente se perdía en silencio (`UNIQUE constraint failed: tracks.isrc`, 51 avisos en el sync de Tidal del 2026-10-19) | `c7325a7`: `INSERT_PISTA_SQL` con `ON CONFLICT(isrc) DO UPDATE` reutiliza la fila canónica sin moverla de álbum; test rojo→verde sobre el mismo código 2067 |
+
+### D-07 — Cerrada, con corrección de rumbo tras la prueba manual (2026-10-19)
+
+La guarda de ED-04 se validó primero en la app real, no solo en la suite: un sync
+completo de los cinco servicios (guion `syncify-prueba-limpia.sh`, logs en
+`~/.local/state/syncify-manual-test`) dejó **16 766 errores de ítem** en seis
+pasadas (Tidal 7 644, Qobuz 5 098, Spotify 4 023, SoundCloud 1) y los favoritos de
+Tidal se quedaron en **16 087 de 17 492** (92 %). Los motivos dominantes eran la
+guarda nueva, con pares que son la misma grabación en dos ediciones:
+
+    «Nothing But Thieves»          <- «Nothing But Thieves (Deluxe)»
+    «Moral Panic»                  <- «Moral Panic (The Complete Edition)»
+    «1»                            <- «1 (Remastered 2015)»
+    «Hybrid Theory (DMD Album + 3 Bonus Tracks)» <- «Hybrid Theory (Bonus Edition)»
+
+La comparación normalizaba solo espacios y mayúsculas, así que cualquier sufijo de
+edición contaba como álbum distinto y, como `album_provider_track_id` no llega en
+estas rutas, el resultado era `needs_review` para todo. `misma_familia_de_album`
+quita ahora los sufijos de edición (Deluxe, Remastered, Anniversary, Expanded,
+Complete, Bonus, Reissue, Collector, Legacy/Definitive y sus equivalentes en
+español; entre paréntesis, corchetes o tras « - ») y solo entonces compara. Siguen
+yendo a revisión los lanzamientos distintos de verdad («Jazz Dance» vs «60s Stars»,
+recopilatorios «The Essentials» vs «60s Essential Hits»). Dos tests fijan ambos
+lados con los pares reales del log, en ambas direcciones (`46e0a57`).
+
+La misma prueba destapó un fallo preexistente que la frontera de escritura de D-06
+hizo visible: 51 altas de pista perdidas por `tracks.isrc` UNIQUE. Se corrigió con
+`ON CONFLICT(isrc)` que reutiliza la fila y no la mueve de álbum (`c7325a7`).
 
 ### D-02 — Cerrada, y con qué alcance exacto
 
