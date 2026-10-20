@@ -3244,12 +3244,47 @@ impl EnrichmentEngine {
                 .bind(qobuz_id_val)
                 .bind(spotify_id_val)
                 .bind(target_status)
-                .fetch_one(&mut *tx)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(|e| format!("Failed to insert track '{}': {}", track_title, e))?;
 
             use sqlx::Row;
-            res.get::<i64, _>(0)
+            match res {
+                Some(row) => row.get::<i64, _>(0),
+                None => {
+                    // `ON CONFLICT DO NOTHING` cubre los dos índices únicos sobre
+                    // `tracks.isrc`: el BINARY de la columna (0002:91) y el NOCASE
+                    // parcial de 0064:186. El choque puede venir del ISRC
+                    // enriquecido, que no es el que se usó para buscar arriba, así
+                    // que resolvemos por NOCASE y completamos lo que falte sin
+                    // mover la pista de álbum.
+                    let isrc_insertado =
+                        enriched.isrc.value().unwrap_or_default().trim().to_string();
+                    let existente: i64 = sqlx::query_scalar::<_, i64>(
+                        "SELECT id FROM tracks WHERE isrc = ? COLLATE NOCASE",
+                    )
+                    .bind(&isrc_insertado)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Failed to resolve track by ISRC: {e}"))?
+                    .ok_or_else(|| {
+                        format!(
+                            "Failed to insert track '{track_title}': no insertó y ningún ISRC coincide"
+                        )
+                    })?;
+                    let _ = crate::db::write_or_log(
+                        "enrich_and_persist_sync_track",
+                        sqlx::query(
+                            "UPDATE tracks SET musicbrainz_id = COALESCE(musicbrainz_id, ?), enriched_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        )
+                        .bind(enriched.musicbrainz_recording_id.value())
+                        .bind(existente)
+                        .execute(&mut *tx),
+                    )
+                    .await;
+                    existente
+                }
+            }
         };
 
         // 5b. Update tracks.is_favorite if favorite
@@ -4287,9 +4322,7 @@ const INSERT_PISTA_SQL: &str = r#"
                     release_year, record_label, bpm, musical_key, energy, acoustid_fingerprint, audio_quality,
                     qobuz_id, spotify_id, enrichment_status, enriched_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(isrc) DO UPDATE SET
-                    musicbrainz_id = COALESCE(tracks.musicbrainz_id, excluded.musicbrainz_id),
-                    enriched_at = CURRENT_TIMESTAMP
+                ON CONFLICT DO NOTHING
                 RETURNING id
                 "#;
 
@@ -4300,7 +4333,9 @@ mod tests {
 
     /// ED-04b: el alta de pista no puede perder la pista en silencio cuando su
     /// ISRC ya está en la biblioteca. La prueba manual del 2026-10-19 dejó 51
-    /// avisos `UNIQUE constraint failed: tracks.isrc` durante el sync de Tidal.
+    /// avisos `UNIQUE constraint failed: tracks.isrc` durante el sync de Tidal y
+    /// 65 más en la del 2026-10-20, siempre con el índice NOCASE de 0064:186:
+    /// la fila previa tenía `ESABC…` y el alta entrante `esabc…`.
     #[tokio::test]
     async fn el_alta_de_pista_tolera_un_isrc_ya_presente() {
         use sqlx::Row;
@@ -4322,7 +4357,7 @@ mod tests {
                 .bind(Some(180_000i64))
                 .bind(None::<i64>)
                 .bind(1i64)
-                .bind("ESABC2600002")
+                .bind("esabc2600002")
                 .bind(None::<String>)
                 .bind(0i64)
                 .bind(None::<String>)
@@ -4337,9 +4372,21 @@ mod tests {
                 .bind(None::<String>)
                 .bind(None::<String>)
                 .bind("pending")
-                .fetch_one(pool)
+                .fetch_optional(pool)
                 .await?;
-            Ok(row.get::<i64, _>(0))
+            match row {
+                Some(row) => Ok(row.get::<i64, _>(0)),
+                // Mismo fallback que producción: resolver por NOCASE cuando el
+                // `ON CONFLICT DO NOTHING` no insertó (índice NOCASE de 0064:186).
+                None => {
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT id FROM tracks WHERE isrc = ? COLLATE NOCASE",
+                    )
+                    .bind("esabc2600002")
+                    .fetch_one(pool)
+                    .await
+                }
+            }
         }
 
         let id = alta(&pool)
