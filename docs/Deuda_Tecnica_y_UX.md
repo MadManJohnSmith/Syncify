@@ -186,7 +186,17 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   script lo paró antes de escribir y la inserción quedó restringida a literales
   `ArmOutcome {` sin `..Default::default()`. `service_name` volvió a sobrar y se retiró.
   El orquestador baja a **2 054 líneas** (desde 4 546: −55 %).
-- **Siguiente**: qobuz (~1 184), el último y el más grande.
+- **Hecho (2026-10-19, quinto y último brazo)**: Qobuz extraído a `sync_qobuz_arm`
+  (1 237 líneas), el más grande. `ArmOutcome` queda en 34 campos con `purchases_total`.
+  `perform_sync_service_with_emitter_inner` baja a **958 líneas**: de 4 546 a 958 (−79 %),
+  sin cambiar el contrato del orquestador (los 3 tests de caracterización y los 10 contratos
+  de brazo siguen verdes).
+- **Estado de D-08**: los cinco brazos extraídos (soundcloud 249, deezer 591, spotify 841,
+  tidal 1 098, qobuz 1 237). Lo que queda **no** es mover líneas: el `match` ya es una
+  llamada y un volcado por brazo, y el siguiente trabajo real es decidir si `ArmOutcome` se
+  convierte en el contador único del orquestador (hoy se siembra y se vuelca por brazo) y
+  escribir la caracterización con red que hoy falta (secuencia de progreso completa y
+  recuento por servicio contra un proveedor simulado).
 - **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
   después, y el orquestador reducido a un bucle corto sobre los brazos.
 
