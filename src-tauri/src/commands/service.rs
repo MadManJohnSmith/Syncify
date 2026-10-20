@@ -3334,6 +3334,9 @@ struct ArmOutcome {
     persistence_ms: u64,
     favorite_albums_total: u64,
     favorite_artists_total: u64,
+    reported_favorites: Option<i64>,
+    reported_albums: Option<i64>,
+    reported_playlists: Option<i64>,
     album_expansion_metrics: crate::commands::types::AlbumSyncExpansionMetrics,
     errors: Vec<String>,
     warnings: Vec<String>,
@@ -4181,6 +4184,851 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
             "Deezer: listen history not exposed by the public API (documented capability gap)"
                 .to_string(),
         );
+    }
+    Ok(arm)
+}
+
+/// Brazo Spotify del sync. Comparte el motor de enriquecimiento con los demás
+/// brazos y trae los recuentos declarados por el proveedor para el informe.
+#[allow(clippy::too_many_arguments)]
+async fn sync_spotify_arm<E: SyncProgressEmitter>(
+    db: &sqlx::SqlitePool,
+    service_normalized: &str,
+    account_id: i64,
+    creds: &serde_json::Value,
+    prefs: &ImportPreferences,
+    emitter: Option<&E>,
+    enrichment_engine: &crate::services::enrichment::EnrichmentEngine,
+    mut arm: ArmOutcome,
+) -> Result<ArmOutcome, String> {
+    let emit = |event: SyncProgressEvent| {
+        if let Some(e) = emitter {
+            e.emit_sync_progress(&event);
+        }
+    };
+    let access_token = match get_or_refresh_spotify_token(db, account_id, &creds).await {
+        Ok(tok) => tok,
+        Err(e) => {
+            let err_msg = format!("RequiresAuth: Spotify authentication failed: {}", e);
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                Some(account_id),
+                &err_msg,
+            ));
+            return Err(err_msg);
+        }
+    };
+    let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
+    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
+    let client = SpotifyClient::new(access_token, refresh_token, expires_at);
+    let spotify_service_id = client.get_service_id(db, "spotify").await.unwrap_or(1);
+
+    // Phase 1: Saved (Favorite) Tracks
+    if prefs.favorite_tracks {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "fetching_favorite_tracks",
+            0,
+            None,
+            "Fetching Spotify library...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut offset = 0;
+        let limit = 50;
+        loop {
+            let t_api = std::time::Instant::now();
+            match client.get_saved_tracks(offset, limit).await {
+                Ok(page) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    let page_total = page.total as u64;
+                    arm.reported_favorites = Some(page_total as i64);
+                    if page.items.is_empty() {
+                        break;
+                    }
+                    for item in &page.items {
+                        let track = &item.track;
+                        let artist_name = track
+                            .artists
+                            .first()
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        let album_title = track.album.as_ref().map(|a| a.name.clone());
+                        let album_cover = track
+                            .album
+                            .as_ref()
+                            .and_then(|a| a.images.first())
+                            .map(|img| img.url.clone());
+                        let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
+                        let barcode = track
+                            .album
+                            .as_ref()
+                            .and_then(|a| a.external_ids.as_ref())
+                            .and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
+                        let label = track.album.as_ref().and_then(|a| a.label.clone());
+                        let release_date =
+                            track.album.as_ref().and_then(|a| a.release_date.clone());
+                        let album_artist = track.artists.first().map(|a| a.name.clone());
+
+                        let sync_input = crate::services::enrichment::SyncTrackInput {
+                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                title: Some(track.name.clone()),
+                                artist: Some(artist_name),
+                                album: album_title,
+                                album_artist,
+                                track_number: track.track_number.map(|tn| tn as u32),
+                                disc_number: track.disc_number.map(|dn| dn as u32),
+                                isrc,
+                                barcode,
+                                label,
+                                release_date,
+                                explicit: Some(track.explicit),
+                                source_name: "spotify".to_string(),
+                                ..Default::default()
+                            },
+                            service_track_id: track.id.clone(),
+                            service_name: "spotify".to_string(),
+                            service_id: spotify_service_id,
+                            account_id,
+                            is_favorite: true,
+                            is_purchased: false,
+                            format: Some("OGG".to_string()),
+                            bit_depth: None,
+                            sample_rate: None,
+                            quality_score: None,
+                            audio_quality: Some(
+                                classify_audio_tier(None, None, None, Some("OGG"))
+                                    .as_str()
+                                    .to_string(),
+                            ),
+                            cover_art_url: album_cover,
+                            duration_ms: Some(track.duration_ms),
+                            query_musicbrainz: false,
+                            album_is_favorite: false,
+                            album_provider_track_id: None,
+                        };
+
+                        let t_enrich = std::time::Instant::now();
+                        match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input)
+                            .await
+                        {
+                            Ok(res) => {
+                                arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                arm.tracks_processed += 1;
+                                if res.is_new_global_track {
+                                    arm.tracks_new_global += 1;
+                                }
+                                if res.is_new_source_for_service {
+                                    arm.sources_new_for_service += 1;
+                                }
+                                if res.is_new_library_entry_for_account {
+                                    arm.library_entries_new_for_account += 1;
+                                }
+                                if res.is_already_present {
+                                    arm.tracks_already_present += 1;
+                                }
+                                if res.is_new_import {
+                                    arm.tracks_changed_unique += 1;
+                                    arm.imported_tracks_total += 1;
+                                } else {
+                                    arm.skipped_tracks_total += 1;
+                                }
+                                arm.favorite_tracks_total += 1;
+                                arm.availability_checked += 1;
+                                match res.completeness {
+                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                                        arm.metadata_enriched += 1
+                                    }
+                                    _ => arm.metadata_partial += 1,
+                                }
+                            }
+                            Err(e) => {
+                                arm.errors
+                                    .push(format!("Spotify track error for {}: {}", track.id, e));
+                            }
+                        }
+
+                        emit(SyncProgressEvent::running(
+                            &service_normalized,
+                            Some(account_id),
+                            "importing_favorite_tracks",
+                            arm.favorite_tracks_total,
+                            Some(page_total),
+                            format!(
+                                "Importing Spotify favorite tracks ({}/{})",
+                                arm.favorite_tracks_total, page_total
+                            ),
+                            arm.imported_tracks_total,
+                            arm.favorite_tracks_total,
+                        ));
+                    }
+                    offset += limit;
+                    if page.items.len() < limit as usize {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "[sync/spotify] favorite tracks page at offset {} failed after retries: {}",
+                        offset,
+                        e
+                    );
+                    arm.errors.push(format!(
+                        "Spotify favorite tracks fetch error at offset {}: {}",
+                        offset, e
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+
+    // Phase 2: Favorite Albums
+    if prefs.favorite_albums {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "fetching_favorite_albums",
+            0,
+            None,
+            "Fetching Spotify albums...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut offset = 0;
+        let limit = 50;
+        loop {
+            let t_api = std::time::Instant::now();
+            match client.get_saved_albums(offset, limit).await {
+                Ok(page) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    let page_total = page.total as u64;
+                    arm.reported_albums = Some(page_total as i64);
+                    if page.items.is_empty() {
+                        break;
+                    }
+                    for saved in &page.items {
+                        let album = &saved.album;
+                        arm.favorite_albums_total += 1;
+                        arm.albums_seen += 1;
+                        emit(SyncProgressEvent::running(
+                            &service_normalized,
+                            Some(account_id),
+                            "importing_favorite_albums",
+                            arm.favorite_albums_total,
+                            Some(page_total),
+                            format!(
+                                "Importing Spotify albums ({}/{})",
+                                arm.favorite_albums_total, page_total
+                            ),
+                            arm.imported_tracks_total,
+                            arm.favorite_tracks_total,
+                        ));
+
+                        let album_cover = album.images.first().map(|img| img.url.clone());
+                        let barcode = album
+                            .external_ids
+                            .as_ref()
+                            .and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
+
+                        let t_exp = std::time::Instant::now();
+                        let tracks_res = if let Some(ref tracks_pag) = album.tracks {
+                            Ok(tracks_pag.clone())
+                        } else {
+                            client.get_album_tracks(&album.id, 0, 100).await
+                        };
+
+                        if let Ok(tracks_page) = tracks_res {
+                            arm.entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                            for track in &tracks_page.items {
+                                arm.tracks_expanded += 1;
+                                let artist_name = track
+                                    .artists
+                                    .first()
+                                    .map(|a| a.name.clone())
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
+
+                                let sync_input = crate::services::enrichment::SyncTrackInput {
+                                    origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                        title: Some(track.name.clone()),
+                                        artist: Some(artist_name),
+                                        album: Some(album.name.clone()),
+                                        album_artist: None,
+                                        track_number: track.track_number.map(|tn| tn as u32),
+                                        disc_number: track.disc_number.map(|dn| dn as u32),
+                                        isrc,
+                                        barcode: barcode.clone(),
+                                        label: album.label.clone(),
+                                        release_date: album.release_date.clone(),
+                                        explicit: Some(track.explicit),
+                                        source_name: "spotify".to_string(),
+                                        ..Default::default()
+                                    },
+                                    service_track_id: track.id.clone(),
+                                    service_name: "spotify".to_string(),
+                                    service_id: spotify_service_id,
+                                    account_id,
+                                    is_favorite: false,
+                                    is_purchased: false,
+                                    format: Some("OGG".to_string()),
+                                    bit_depth: None,
+                                    sample_rate: None,
+                                    quality_score: None,
+                                    audio_quality: Some(
+                                        classify_audio_tier(None, None, None, Some("OGG"))
+                                            .as_str()
+                                            .to_string(),
+                                    ),
+                                    cover_art_url: album_cover.clone(),
+                                    duration_ms: Some(track.duration_ms),
+                                    query_musicbrainz: false,
+                                    album_is_favorite: false,
+                                    album_provider_track_id: None,
+                                };
+
+                                let t_enrich = std::time::Instant::now();
+                                if let Ok(res) = enrich_persist_with_locked_retry(
+                                    &enrichment_engine,
+                                    db,
+                                    sync_input,
+                                )
+                                .await
+                                {
+                                    arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                    arm.tracks_processed += 1;
+                                    if res.is_new_global_track {
+                                        arm.tracks_new_global += 1;
+                                    }
+                                    if res.is_new_source_for_service {
+                                        arm.sources_new_for_service += 1;
+                                    }
+                                    if res.is_new_library_entry_for_account {
+                                        arm.library_entries_new_for_account += 1;
+                                    }
+                                    if res.is_already_present {
+                                        arm.tracks_already_present += 1;
+                                    }
+                                    if res.is_new_import {
+                                        arm.tracks_changed_unique += 1;
+                                        arm.imported_tracks_total += 1;
+                                    } else {
+                                        arm.skipped_tracks_total += 1;
+                                    }
+                                    arm.availability_checked += 1;
+                                    match res.completeness {
+                                        syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
+                                        _ => arm.metadata_partial += 1,
+                                    }
+                                }
+                            }
+                        }
+
+                        // Mark album as favorite
+                        let t_pers = std::time::Instant::now();
+                        let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE title = ? COLLATE NOCASE")
+                            .bind(&album.name)
+                            .execute(db)).await;
+                        arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
+                    }
+                    offset += limit;
+                    if page.items.len() < limit as usize {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    arm.errors
+                        .push(format!("Spotify favorite albums fetch error: {}", e));
+                    break;
+                }
+            }
+        }
+    }
+
+    // Phase 3: Playlists
+    if prefs.playlists {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "fetching_playlists",
+            0,
+            None,
+            "Fetching Spotify playlists...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut offset = 0;
+        let limit = 50;
+        loop {
+            let t_api = std::time::Instant::now();
+            match client.get_playlists(offset, limit).await {
+                Ok(page) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    let page_total = page.total as u64;
+                    arm.reported_playlists = Some(page_total as i64);
+                    if page.items.is_empty() {
+                        break;
+                    }
+                    for pl in &page.items {
+                        arm.playlists_total += 1;
+                        arm.playlists_seen += 1;
+                        emit(SyncProgressEvent::running(
+                            &service_normalized,
+                            Some(account_id),
+                            "importing_playlists",
+                            arm.playlists_total,
+                            Some(page_total),
+                            format!(
+                                "Importing Spotify playlist: {} ({}/{})",
+                                pl.name, arm.playlists_total, page_total
+                            ),
+                            arm.imported_tracks_total,
+                            arm.favorite_tracks_total,
+                        ));
+
+                        let img_url = pl.images.first().map(|i| i.url.as_str());
+                        let t_pers = std::time::Instant::now();
+                        let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
+                            db,
+                            account_id,
+                            &pl.id,
+                            &pl.name,
+                            pl.description.as_deref(),
+                            None,
+                            pl.public.unwrap_or(true) as i32,
+                            pl.collaborative as i32,
+                            img_url,
+                            pl.tracks.as_ref().map(|t| t.total).unwrap_or(0),
+                        )
+                        .await
+                        {
+                            Ok(id) => Some((id,)),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to upsert Spotify playlist '{}': {}",
+                                    pl.name,
+                                    e
+                                );
+                                None
+                            }
+                        };
+                        arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
+
+                        // S198: full pagination of Spotify playlist expansion.
+                        // Owner live audit (docs/s197_auditoria_importaciones.md §3):
+                        // 'Liked Songs Pt. 1' declared 9,946 but imported exactly 99
+                        // (single page, offset=0). S187 semantics generalized via
+                        // services::import_pagination; client already retries 429 x3.
+                        if let Some((p_id,)) = playlist_db_id {
+                            let mut track_offset: i32 = 0;
+                            let spotify_page_limit: i32 = 100;
+                            let mut playlist_provider_total: i64 = pl
+                                .tracks
+                                .as_ref()
+                                .map(|t| t.total.max(0) as i64)
+                                .unwrap_or(0);
+                            loop {
+                                let t_exp = std::time::Instant::now();
+                                let tracks_page = match client
+                                    .get_playlist_tracks(&pl.id, track_offset, spotify_page_limit)
+                                    .await
+                                {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "[S198] Spotify playlist '{}' expansion incomplete at offset {}: {}",
+                                            pl.name, track_offset, e
+                                        );
+                                        break;
+                                    }
+                                };
+                                arm.entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                                if tracks_page.items.is_empty() {
+                                    break;
+                                }
+                                playlist_provider_total =
+                                    playlist_provider_total.max(tracks_page.total.max(0) as i64);
+                                for (idx, item) in tracks_page.items.iter().enumerate() {
+                                    let pos = track_offset as usize + idx;
+                                    if let Some(ref track) = item.track {
+                                        arm.tracks_expanded += 1;
+                                        let artist_name = track
+                                            .artists
+                                            .first()
+                                            .map(|a| a.name.clone())
+                                            .unwrap_or_else(|| "Unknown".to_string());
+                                        let album_title =
+                                            track.album.as_ref().map(|a| a.name.clone());
+                                        let album_cover = track
+                                            .album
+                                            .as_ref()
+                                            .and_then(|a| a.images.first())
+                                            .map(|img| img.url.clone());
+                                        let isrc = track
+                                            .external_ids
+                                            .as_ref()
+                                            .and_then(|e| e.isrc.clone());
+                                        let barcode = track
+                                            .album
+                                            .as_ref()
+                                            .and_then(|a| a.external_ids.as_ref())
+                                            .and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
+                                        let label =
+                                            track.album.as_ref().and_then(|a| a.label.clone());
+                                        let release_date = track
+                                            .album
+                                            .as_ref()
+                                            .and_then(|a| a.release_date.clone());
+                                        let album_artist =
+                                            track.artists.first().map(|a| a.name.clone());
+
+                                        let sync_input = crate::services::enrichment::SyncTrackInput {
+                                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                title: Some(track.name.clone()),
+                                                artist: Some(artist_name),
+                                                album: album_title,
+                                                album_artist,
+                                                track_number: track.track_number.map(|tn| tn as u32),
+                                                disc_number: track.disc_number.map(|dn| dn as u32),
+                                                isrc,
+                                                barcode,
+                                                label,
+                                                release_date,
+                                                explicit: Some(track.explicit),
+                                                source_name: "spotify".to_string(),
+                                                ..Default::default()
+                                            },
+                                            service_track_id: track.id.clone(),
+                                            service_name: "spotify".to_string(),
+                                            service_id: spotify_service_id,
+                                            account_id,
+                                            is_favorite: false,
+                                            is_purchased: false,
+                                            format: Some("OGG".to_string()),
+                                            bit_depth: None,
+                                            sample_rate: None,
+                                            quality_score: None,
+                                            audio_quality: Some(
+                                                classify_audio_tier(None, None, None, Some("OGG"))
+                                                    .as_str()
+                                                    .to_string(),
+                                            ),
+                                            cover_art_url: album_cover,
+                                            duration_ms: Some(track.duration_ms),
+                                            query_musicbrainz: false,
+                                            album_is_favorite: false,
+                                            album_provider_track_id: None,
+                                        };
+
+                                        let t_enrich = std::time::Instant::now();
+                                        if let Ok(res) = enrich_persist_with_locked_retry(
+                                            &enrichment_engine,
+                                            db,
+                                            sync_input,
+                                        )
+                                        .await
+                                        {
+                                            arm.enrichment_ms +=
+                                                t_enrich.elapsed().as_millis() as u64;
+                                            let t_pl_track = std::time::Instant::now();
+                                            let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
+                                                "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                                            )
+                                            .bind(p_id)
+                                            .bind(res.track_id)
+                                            .bind(pos as i32 + 1)
+                                            .execute(db)).await;
+                                            arm.persistence_ms +=
+                                                t_pl_track.elapsed().as_millis() as u64;
+                                            arm.tracks_processed += 1;
+
+                                            if res.is_new_global_track {
+                                                arm.tracks_new_global += 1;
+                                            }
+                                            if res.is_new_source_for_service {
+                                                arm.sources_new_for_service += 1;
+                                            }
+                                            if res.is_new_library_entry_for_account {
+                                                arm.library_entries_new_for_account += 1;
+                                            }
+                                            if res.is_already_present {
+                                                arm.tracks_already_present += 1;
+                                            }
+                                            if res.is_new_import {
+                                                arm.tracks_changed_unique += 1;
+                                                arm.imported_tracks_total += 1;
+                                            } else {
+                                                arm.skipped_tracks_total += 1;
+                                            }
+                                            arm.availability_checked += 1;
+                                            match res.completeness {
+                                                syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
+                                                _ => arm.metadata_partial += 1,
+                                            }
+                                        }
+                                    }
+                                }
+                                // S198: advance by the REAL page length; stop at
+                                // total or on a page that cannot continue.
+                                match crate::services::import_pagination::next_offset(
+                                    track_offset,
+                                    tracks_page.items.len() as i32,
+                                    spotify_page_limit,
+                                    Some(playlist_provider_total),
+                                ) {
+                                    Some(next) => track_offset = next,
+                                    None => break,
+                                }
+                            }
+                            // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
+                            let _ =
+                                crate::commands::playlists::recompact_playlist_positions(db, p_id)
+                                    .await;
+                        }
+                    }
+                    offset += limit;
+                    if page.items.len() < limit as usize {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    arm.errors
+                        .push(format!("Spotify playlists fetch error: {}", e));
+                    break;
+                }
+            }
+        }
+    }
+
+    // Phase 3b: Favorite Albums (S198 — owner live audit §4: only Tidal
+    // ever wrote albums.is_favorite; Spotify had no writer despite
+    // sync_albums=1). Materializes saved albums with spotify_id so the
+    // favorite flag and provider identity survive for migration/UI.
+    if prefs.favorite_albums {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "importing_favorite_albums",
+            0,
+            None,
+            "Importing favorite albums (Spotify)...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut albums_offset: i32 = 0;
+        let spotify_album_page: i32 = 50;
+        loop {
+            match client
+                .get_saved_albums(albums_offset, spotify_album_page)
+                .await
+            {
+                Ok(page) => {
+                    if page.items.is_empty() {
+                        break;
+                    }
+                    for saved in &page.items {
+                        let album = &saved.album;
+                        if album.id.is_empty() || album.name.is_empty() {
+                            continue;
+                        }
+                        let artist_name = album
+                            .artists
+                            .first()
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        let artist_id = match client.get_or_create_artist(db, &artist_name).await {
+                            Ok(id) => id,
+                            Err(_) => continue,
+                        };
+                        let cover = album.images.first().map(|img| img.url.clone());
+                        let upc = album.external_ids.as_ref().and_then(|e| e.upc.clone());
+                        // Same upsert contract as the Tidal favorite-albums writer:
+                        // identity by partial-unique provider id, COALESCE preserves
+                        // richer local data, is_favorite is monotonic.
+                        let aid_res: Option<(i64,)> = sqlx::query_as(
+                            r#"
+                            INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id, upc, label, is_favorite, favorite_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                            ON CONFLICT(spotify_id) WHERE spotify_id IS NOT NULL DO UPDATE SET
+                                label = COALESCE(albums.label, excluded.label),
+                                upc = COALESCE(albums.upc, excluded.upc),
+                                is_favorite = 1,
+                                favorite_at = COALESCE(albums.favorite_at, CURRENT_TIMESTAMP)
+                            RETURNING id
+                            "#
+                        )
+                        .bind(&album.name)
+                        .bind(&album.release_date)
+                        .bind(album.total_tracks)
+                        .bind(&cover)
+                        .bind(&album.id)
+                        .bind(upc)
+                        .bind(&album.label)
+                        .fetch_optional(db)
+                        .await
+                        .unwrap_or(None);
+                        if let Some((album_id,)) = aid_res {
+                            let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+                                .bind(album_id)
+                                .bind(artist_id)
+                                .execute(db)).await;
+                            arm.favorite_albums_total += 1;
+
+                            if let Ok(tracks_page) = client.get_album_tracks(&album.id, 0, 50).await
+                            {
+                                for track in &tracks_page.items {
+                                    let track_artist = track
+                                        .artists
+                                        .first()
+                                        .map(|a| a.name.clone())
+                                        .unwrap_or_else(|| artist_name.clone());
+                                    let sync_input = crate::services::enrichment::SyncTrackInput {
+                                        origin_meta:
+                                            crate::services::enrichment::OriginTrackMetadata {
+                                                title: Some(track.name.clone()),
+                                                artist: Some(track_artist),
+                                                album: Some(album.name.clone()),
+                                                album_artist: Some(artist_name.clone()),
+                                                track_number: track.track_number.map(|n| n as u32),
+                                                disc_number: track.disc_number.map(|n| n as u32),
+                                                isrc: track
+                                                    .external_ids
+                                                    .as_ref()
+                                                    .and_then(|e| e.isrc.clone()),
+                                                barcode: album
+                                                    .external_ids
+                                                    .as_ref()
+                                                    .and_then(|e| e.upc.clone()),
+                                                label: album.label.clone(),
+                                                release_date: album.release_date.clone(),
+                                                source_name: "spotify".to_string(),
+                                                ..Default::default()
+                                            },
+                                        service_track_id: track.id.clone(),
+                                        service_name: "spotify".to_string(),
+                                        service_id: spotify_service_id,
+                                        account_id,
+                                        is_favorite: false,
+                                        is_purchased: false,
+                                        format: Some("OGG_VORBIS".to_string()),
+                                        bit_depth: None,
+                                        sample_rate: None,
+                                        quality_score: None,
+                                        audio_quality: Some(
+                                            classify_audio_tier(
+                                                None,
+                                                None,
+                                                None,
+                                                Some("OGG_VORBIS"),
+                                            )
+                                            .as_str()
+                                            .to_string(),
+                                        ),
+                                        cover_art_url: cover.clone(),
+                                        duration_ms: Some(track.duration_ms),
+                                        query_musicbrainz: false,
+                                        album_is_favorite: true,
+                                        // Spotify track id is not a release id.
+                                        album_provider_track_id: None,
+                                    };
+                                    let _ = enrich_persist_with_locked_retry(
+                                        &enrichment_engine,
+                                        db,
+                                        sync_input,
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                    }
+                    match crate::services::import_pagination::next_offset(
+                        albums_offset,
+                        page.items.len() as i32,
+                        spotify_album_page,
+                        Some(page.total.max(0) as i64),
+                    ) {
+                        Some(next) => albums_offset = next,
+                        None => break,
+                    }
+                }
+                Err(e) => {
+                    arm.errors
+                        .push(format!("Spotify saved albums error: {}", e));
+                    break;
+                }
+            }
+        }
+    }
+
+    // Phase 4: Followed Artists — S189-Fase-2: full cursor iteration
+    // (previously only the first 50 followed artists were imported;
+    // Spotify's /me/following is cursor-paginated, not offset-based).
+    if prefs.favorite_artists {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "fetching_favorite_artists",
+            0,
+            None,
+            "Fetching Spotify artists...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut after: Option<String> = None;
+        loop {
+            let t_api = std::time::Instant::now();
+            match client.get_followed_artists(after.as_deref(), 50).await {
+                Ok(resp) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    let page_len = resp.artists.items.len();
+                    for art in &resp.artists.items {
+                        arm.favorite_artists_total += 1;
+                        let t_pers = std::time::Instant::now();
+                        if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
+                            let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP), spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
+                                .bind(&art.id)
+                                .bind(aid)
+                                .execute(db)).await;
+                        }
+                        arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
+                    }
+                    // Cursor semantics via the shared S187/S189 policy:
+                    // declared total wins over page length; without a
+                    // total, only a full page with a cursor continues.
+                    let declared_total = resp.artists.total.map(i64::from);
+                    after = crate::services::import_pagination::next_cursor(
+                        resp.artists.cursors.and_then(|c| c.after),
+                        page_len,
+                        50,
+                        declared_total,
+                        arm.favorite_artists_total,
+                    );
+                    if after.is_none() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if is_spotify_scope_forbidden_error(&e) {
+                        // S189-F2 graceful degradation: 403 scope = token
+                        // granted before `user-follow-read` was requested.
+                        // Omit followed artists (warning) and let the rest
+                        // of the sync succeed; re-auth grants the scope.
+                        tracing::warn!(
+                            "[S189-F2] Spotify followed artists skipped: missing user-follow-read scope; re-authentication required"
+                        );
+                        arm.warnings.push(
+                            "Spotify: followed artists omitted — re-authenticate to grant the new 'user-follow-read' scope (re-autentica para obtener seguidos — scope nuevo requerido)"
+                                .to_string(),
+                        );
+                    } else {
+                        arm.errors
+                            .push(format!("Spotify followed artists fetch error: {}", e));
+                    }
+                    break;
+                }
+            }
+        }
     }
     Ok(arm)
 }
@@ -6756,834 +7604,76 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             }
         }
         "spotify" => {
-            let access_token = match get_or_refresh_spotify_token(db, account_id, &creds).await {
-                Ok(tok) => tok,
-                Err(e) => {
-                    let err_msg = format!("RequiresAuth: Spotify authentication failed: {}", e);
-                    emit(SyncProgressEvent::requires_auth(
-                        &service_normalized,
-                        Some(account_id),
-                        &err_msg,
-                    ));
-                    return Err(err_msg);
-                }
-            };
-            let refresh_token = creds["refresh_token"].as_str().map(|s| s.to_string());
-            let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
-            let client = SpotifyClient::new(access_token, refresh_token, expires_at);
-            let spotify_service_id = client.get_service_id(db, "spotify").await.unwrap_or(1);
-
-            // Phase 1: Saved (Favorite) Tracks
-            if prefs.favorite_tracks {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "fetching_favorite_tracks",
-                    0,
-                    None,
-                    "Fetching Spotify library...",
+            let arm = sync_spotify_arm(
+                db,
+                &service_normalized,
+                account_id,
+                &creds,
+                &prefs,
+                emitter,
+                &enrichment_engine,
+                ArmOutcome {
+                    tracks_processed,
+                    tracks_expanded,
+                    tracks_new_global,
+                    sources_new_for_service,
+                    library_entries_new_for_account,
+                    tracks_already_present,
+                    tracks_changed_unique,
                     imported_tracks_total,
+                    skipped_tracks_total,
                     favorite_tracks_total,
-                ));
-                let mut offset = 0;
-                let limit = 50;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    match client.get_saved_tracks(offset, limit).await {
-                        Ok(page) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            let page_total = page.total as u64;
-                            reported_favorites = Some(page_total as i64);
-                            if page.items.is_empty() {
-                                break;
-                            }
-                            for item in &page.items {
-                                let track = &item.track;
-                                let artist_name = track
-                                    .artists
-                                    .first()
-                                    .map(|a| a.name.clone())
-                                    .unwrap_or_else(|| "Unknown".to_string());
-                                let album_title = track.album.as_ref().map(|a| a.name.clone());
-                                let album_cover = track
-                                    .album
-                                    .as_ref()
-                                    .and_then(|a| a.images.first())
-                                    .map(|img| img.url.clone());
-                                let isrc = track.external_ids.as_ref().and_then(|e| e.isrc.clone());
-                                let barcode = track
-                                    .album
-                                    .as_ref()
-                                    .and_then(|a| a.external_ids.as_ref())
-                                    .and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
-                                let label = track.album.as_ref().and_then(|a| a.label.clone());
-                                let release_date =
-                                    track.album.as_ref().and_then(|a| a.release_date.clone());
-                                let album_artist = track.artists.first().map(|a| a.name.clone());
-
-                                let sync_input = crate::services::enrichment::SyncTrackInput {
-                                    origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                        title: Some(track.name.clone()),
-                                        artist: Some(artist_name),
-                                        album: album_title,
-                                        album_artist,
-                                        track_number: track.track_number.map(|tn| tn as u32),
-                                        disc_number: track.disc_number.map(|dn| dn as u32),
-                                        isrc,
-                                        barcode,
-                                        label,
-                                        release_date,
-                                        explicit: Some(track.explicit),
-                                        source_name: "spotify".to_string(),
-                                        ..Default::default()
-                                    },
-                                    service_track_id: track.id.clone(),
-                                    service_name: "spotify".to_string(),
-                                    service_id: spotify_service_id,
-                                    account_id,
-                                    is_favorite: true,
-                                    is_purchased: false,
-                                    format: Some("OGG".to_string()),
-                                    bit_depth: None,
-                                    sample_rate: None,
-                                    quality_score: None,
-                                    audio_quality: Some(
-                                        classify_audio_tier(None, None, None, Some("OGG"))
-                                            .as_str()
-                                            .to_string(),
-                                    ),
-                                    cover_art_url: album_cover,
-                                    duration_ms: Some(track.duration_ms),
-                                    query_musicbrainz: false,
-                                    album_is_favorite: false,
-                                    album_provider_track_id: None,
-                                };
-
-                                let t_enrich = std::time::Instant::now();
-                                match enrich_persist_with_locked_retry(
-                                    &enrichment_engine,
-                                    db,
-                                    sync_input,
-                                )
-                                .await
-                                {
-                                    Ok(res) => {
-                                        enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                        tracks_processed += 1;
-                                        if res.is_new_global_track {
-                                            tracks_new_global += 1;
-                                        }
-                                        if res.is_new_source_for_service {
-                                            sources_new_for_service += 1;
-                                        }
-                                        if res.is_new_library_entry_for_account {
-                                            library_entries_new_for_account += 1;
-                                        }
-                                        if res.is_already_present {
-                                            tracks_already_present += 1;
-                                        }
-                                        if res.is_new_import {
-                                            tracks_changed_unique += 1;
-                                            imported_tracks_total += 1;
-                                        } else {
-                                            skipped_tracks_total += 1;
-                                        }
-                                        favorite_tracks_total += 1;
-                                        availability_checked += 1;
-                                        match res.completeness {
-                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
-                                            _ => metadata_partial += 1,
-                                        }
-                                    }
-                                    Err(e) => {
-                                        errors.push(format!(
-                                            "Spotify track error for {}: {}",
-                                            track.id, e
-                                        ));
-                                    }
-                                }
-
-                                emit(SyncProgressEvent::running(
-                                    &service_normalized,
-                                    Some(account_id),
-                                    "importing_favorite_tracks",
-                                    favorite_tracks_total,
-                                    Some(page_total),
-                                    format!(
-                                        "Importing Spotify favorite tracks ({}/{})",
-                                        favorite_tracks_total, page_total
-                                    ),
-                                    imported_tracks_total,
-                                    favorite_tracks_total,
-                                ));
-                            }
-                            offset += limit;
-                            if page.items.len() < limit as usize {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "[sync/spotify] favorite tracks page at offset {} failed after retries: {}",
-                                offset,
-                                e
-                            );
-                            errors.push(format!(
-                                "Spotify favorite tracks fetch error at offset {}: {}",
-                                offset, e
-                            ));
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Phase 2: Favorite Albums
-            if prefs.favorite_albums {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "fetching_favorite_albums",
-                    0,
-                    None,
-                    "Fetching Spotify albums...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut offset = 0;
-                let limit = 50;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    match client.get_saved_albums(offset, limit).await {
-                        Ok(page) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            let page_total = page.total as u64;
-                            reported_albums = Some(page_total as i64);
-                            if page.items.is_empty() {
-                                break;
-                            }
-                            for saved in &page.items {
-                                let album = &saved.album;
-                                favorite_albums_total += 1;
-                                albums_seen += 1;
-                                emit(SyncProgressEvent::running(
-                                    &service_normalized,
-                                    Some(account_id),
-                                    "importing_favorite_albums",
-                                    favorite_albums_total,
-                                    Some(page_total),
-                                    format!(
-                                        "Importing Spotify albums ({}/{})",
-                                        favorite_albums_total, page_total
-                                    ),
-                                    imported_tracks_total,
-                                    favorite_tracks_total,
-                                ));
-
-                                let album_cover = album.images.first().map(|img| img.url.clone());
-                                let barcode = album
-                                    .external_ids
-                                    .as_ref()
-                                    .and_then(|e| e.upc.clone().or_else(|| e.ean.clone()));
-
-                                let t_exp = std::time::Instant::now();
-                                let tracks_res = if let Some(ref tracks_pag) = album.tracks {
-                                    Ok(tracks_pag.clone())
-                                } else {
-                                    client.get_album_tracks(&album.id, 0, 100).await
-                                };
-
-                                if let Ok(tracks_page) = tracks_res {
-                                    entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
-                                    for track in &tracks_page.items {
-                                        tracks_expanded += 1;
-                                        let artist_name = track
-                                            .artists
-                                            .first()
-                                            .map(|a| a.name.clone())
-                                            .unwrap_or_else(|| "Unknown".to_string());
-                                        let isrc = track
-                                            .external_ids
-                                            .as_ref()
-                                            .and_then(|e| e.isrc.clone());
-
-                                        let sync_input = crate::services::enrichment::SyncTrackInput {
-                                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                                title: Some(track.name.clone()),
-                                                artist: Some(artist_name),
-                                                album: Some(album.name.clone()),
-                                                album_artist: None,
-                                                track_number: track.track_number.map(|tn| tn as u32),
-                                                disc_number: track.disc_number.map(|dn| dn as u32),
-                                                isrc,
-                                                barcode: barcode.clone(),
-                                                label: album.label.clone(),
-                                                release_date: album.release_date.clone(),
-                                                explicit: Some(track.explicit),
-                                                source_name: "spotify".to_string(),
-                                                ..Default::default()
-                                            },
-                                            service_track_id: track.id.clone(),
-                                            service_name: "spotify".to_string(),
-                                            service_id: spotify_service_id,
-                                            account_id,
-                                            is_favorite: false,
-                                            is_purchased: false,
-                                            format: Some("OGG".to_string()),
-                                            bit_depth: None,
-                                            sample_rate: None,
-                                            quality_score: None,
-                                            audio_quality: Some(
-                                                classify_audio_tier(None, None, None, Some("OGG"))
-                                                    .as_str()
-                                                    .to_string(),
-                                            ),
-                                            cover_art_url: album_cover.clone(),
-                                            duration_ms: Some(track.duration_ms),
-                                            query_musicbrainz: false,
-                                            album_is_favorite: false,
-                                            album_provider_track_id: None,
-                                        };
-
-                                        let t_enrich = std::time::Instant::now();
-                                        if let Ok(res) = enrich_persist_with_locked_retry(
-                                            &enrichment_engine,
-                                            db,
-                                            sync_input,
-                                        )
-                                        .await
-                                        {
-                                            enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                            tracks_processed += 1;
-                                            if res.is_new_global_track {
-                                                tracks_new_global += 1;
-                                            }
-                                            if res.is_new_source_for_service {
-                                                sources_new_for_service += 1;
-                                            }
-                                            if res.is_new_library_entry_for_account {
-                                                library_entries_new_for_account += 1;
-                                            }
-                                            if res.is_already_present {
-                                                tracks_already_present += 1;
-                                            }
-                                            if res.is_new_import {
-                                                tracks_changed_unique += 1;
-                                                imported_tracks_total += 1;
-                                            } else {
-                                                skipped_tracks_total += 1;
-                                            }
-                                            availability_checked += 1;
-                                            match res.completeness {
-                                                syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
-                                                _ => metadata_partial += 1,
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Mark album as favorite
-                                let t_pers = std::time::Instant::now();
-                                let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE title = ? COLLATE NOCASE")
-                                    .bind(&album.name)
-                                    .execute(db)).await;
-                                persistence_ms += t_pers.elapsed().as_millis() as u64;
-                            }
-                            offset += limit;
-                            if page.items.len() < limit as usize {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            errors.push(format!("Spotify favorite albums fetch error: {}", e));
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Phase 3: Playlists
-            if prefs.playlists {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "fetching_playlists",
-                    0,
-                    None,
-                    "Fetching Spotify playlists...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut offset = 0;
-                let limit = 50;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    match client.get_playlists(offset, limit).await {
-                        Ok(page) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            let page_total = page.total as u64;
-                            reported_playlists = Some(page_total as i64);
-                            if page.items.is_empty() {
-                                break;
-                            }
-                            for pl in &page.items {
-                                playlists_total += 1;
-                                playlists_seen += 1;
-                                emit(SyncProgressEvent::running(
-                                    &service_normalized,
-                                    Some(account_id),
-                                    "importing_playlists",
-                                    playlists_total,
-                                    Some(page_total),
-                                    format!(
-                                        "Importing Spotify playlist: {} ({}/{})",
-                                        pl.name, playlists_total, page_total
-                                    ),
-                                    imported_tracks_total,
-                                    favorite_tracks_total,
-                                ));
-
-                                let img_url = pl.images.first().map(|i| i.url.as_str());
-                                let t_pers = std::time::Instant::now();
-                                let playlist_db_id: Option<(i64,)> =
-                                    match upsert_playlist_and_source(
-                                        db,
-                                        account_id,
-                                        &pl.id,
-                                        &pl.name,
-                                        pl.description.as_deref(),
-                                        None,
-                                        pl.public.unwrap_or(true) as i32,
-                                        pl.collaborative as i32,
-                                        img_url,
-                                        pl.tracks.as_ref().map(|t| t.total).unwrap_or(0),
-                                    )
-                                    .await
-                                    {
-                                        Ok(id) => Some((id,)),
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Failed to upsert Spotify playlist '{}': {}",
-                                                pl.name,
-                                                e
-                                            );
-                                            None
-                                        }
-                                    };
-                                persistence_ms += t_pers.elapsed().as_millis() as u64;
-
-                                // S198: full pagination of Spotify playlist expansion.
-                                // Owner live audit (docs/s197_auditoria_importaciones.md §3):
-                                // 'Liked Songs Pt. 1' declared 9,946 but imported exactly 99
-                                // (single page, offset=0). S187 semantics generalized via
-                                // services::import_pagination; client already retries 429 x3.
-                                if let Some((p_id,)) = playlist_db_id {
-                                    let mut track_offset: i32 = 0;
-                                    let spotify_page_limit: i32 = 100;
-                                    let mut playlist_provider_total: i64 = pl
-                                        .tracks
-                                        .as_ref()
-                                        .map(|t| t.total.max(0) as i64)
-                                        .unwrap_or(0);
-                                    loop {
-                                        let t_exp = std::time::Instant::now();
-                                        let tracks_page = match client
-                                            .get_playlist_tracks(
-                                                &pl.id,
-                                                track_offset,
-                                                spotify_page_limit,
-                                            )
-                                            .await
-                                        {
-                                            Ok(p) => p,
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    "[S198] Spotify playlist '{}' expansion incomplete at offset {}: {}",
-                                                    pl.name, track_offset, e
-                                                );
-                                                break;
-                                            }
-                                        };
-                                        entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
-                                        if tracks_page.items.is_empty() {
-                                            break;
-                                        }
-                                        playlist_provider_total = playlist_provider_total
-                                            .max(tracks_page.total.max(0) as i64);
-                                        for (idx, item) in tracks_page.items.iter().enumerate() {
-                                            let pos = track_offset as usize + idx;
-                                            if let Some(ref track) = item.track {
-                                                tracks_expanded += 1;
-                                                let artist_name = track
-                                                    .artists
-                                                    .first()
-                                                    .map(|a| a.name.clone())
-                                                    .unwrap_or_else(|| "Unknown".to_string());
-                                                let album_title =
-                                                    track.album.as_ref().map(|a| a.name.clone());
-                                                let album_cover = track
-                                                    .album
-                                                    .as_ref()
-                                                    .and_then(|a| a.images.first())
-                                                    .map(|img| img.url.clone());
-                                                let isrc = track
-                                                    .external_ids
-                                                    .as_ref()
-                                                    .and_then(|e| e.isrc.clone());
-                                                let barcode = track
-                                                    .album
-                                                    .as_ref()
-                                                    .and_then(|a| a.external_ids.as_ref())
-                                                    .and_then(|e| {
-                                                        e.upc.clone().or_else(|| e.ean.clone())
-                                                    });
-                                                let label = track
-                                                    .album
-                                                    .as_ref()
-                                                    .and_then(|a| a.label.clone());
-                                                let release_date = track
-                                                    .album
-                                                    .as_ref()
-                                                    .and_then(|a| a.release_date.clone());
-                                                let album_artist =
-                                                    track.artists.first().map(|a| a.name.clone());
-
-                                                let sync_input = crate::services::enrichment::SyncTrackInput {
-                                                    origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                                        title: Some(track.name.clone()),
-                                                        artist: Some(artist_name),
-                                                        album: album_title,
-                                                        album_artist,
-                                                        track_number: track.track_number.map(|tn| tn as u32),
-                                                        disc_number: track.disc_number.map(|dn| dn as u32),
-                                                        isrc,
-                                                        barcode,
-                                                        label,
-                                                        release_date,
-                                                        explicit: Some(track.explicit),
-                                                        source_name: "spotify".to_string(),
-                                                        ..Default::default()
-                                                    },
-                                                    service_track_id: track.id.clone(),
-                                                    service_name: "spotify".to_string(),
-                                                    service_id: spotify_service_id,
-                                                    account_id,
-                                                    is_favorite: false,
-                                                    is_purchased: false,
-                                                    format: Some("OGG".to_string()),
-                                                    bit_depth: None,
-                                                    sample_rate: None,
-                                                    quality_score: None,
-                                                    audio_quality: Some(
-                                                        classify_audio_tier(None, None, None, Some("OGG"))
-                                                            .as_str()
-                                                            .to_string(),
-                                                    ),
-                                                    cover_art_url: album_cover,
-                                                    duration_ms: Some(track.duration_ms),
-                                                    query_musicbrainz: false,
-                                                    album_is_favorite: false,
-                                                    album_provider_track_id: None,
-                                                };
-
-                                                let t_enrich = std::time::Instant::now();
-                                                if let Ok(res) = enrich_persist_with_locked_retry(
-                                                    &enrichment_engine,
-                                                    db,
-                                                    sync_input,
-                                                )
-                                                .await
-                                                {
-                                                    enrichment_ms +=
-                                                        t_enrich.elapsed().as_millis() as u64;
-                                                    let t_pl_track = std::time::Instant::now();
-                                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
-                                                        "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
-                                                    )
-                                                    .bind(p_id)
-                                                    .bind(res.track_id)
-                                                    .bind(pos as i32 + 1)
-                                                    .execute(db)).await;
-                                                    persistence_ms +=
-                                                        t_pl_track.elapsed().as_millis() as u64;
-                                                    tracks_processed += 1;
-
-                                                    if res.is_new_global_track {
-                                                        tracks_new_global += 1;
-                                                    }
-                                                    if res.is_new_source_for_service {
-                                                        sources_new_for_service += 1;
-                                                    }
-                                                    if res.is_new_library_entry_for_account {
-                                                        library_entries_new_for_account += 1;
-                                                    }
-                                                    if res.is_already_present {
-                                                        tracks_already_present += 1;
-                                                    }
-                                                    if res.is_new_import {
-                                                        tracks_changed_unique += 1;
-                                                        imported_tracks_total += 1;
-                                                    } else {
-                                                        skipped_tracks_total += 1;
-                                                    }
-                                                    availability_checked += 1;
-                                                    match res.completeness {
-                                                        syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
-                                                        _ => metadata_partial += 1,
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        // S198: advance by the REAL page length; stop at
-                                        // total or on a page that cannot continue.
-                                        match crate::services::import_pagination::next_offset(
-                                            track_offset,
-                                            tracks_page.items.len() as i32,
-                                            spotify_page_limit,
-                                            Some(playlist_provider_total),
-                                        ) {
-                                            Some(next) => track_offset = next,
-                                            None => break,
-                                        }
-                                    }
-                                    // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
-                                    let _ =
-                                        crate::commands::playlists::recompact_playlist_positions(
-                                            db, p_id,
-                                        )
-                                        .await;
-                                }
-                            }
-                            offset += limit;
-                            if page.items.len() < limit as usize {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            errors.push(format!("Spotify playlists fetch error: {}", e));
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Phase 3b: Favorite Albums (S198 — owner live audit §4: only Tidal
-            // ever wrote albums.is_favorite; Spotify had no writer despite
-            // sync_albums=1). Materializes saved albums with spotify_id so the
-            // favorite flag and provider identity survive for migration/UI.
-            if prefs.favorite_albums {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "importing_favorite_albums",
-                    0,
-                    None,
-                    "Importing favorite albums (Spotify)...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut albums_offset: i32 = 0;
-                let spotify_album_page: i32 = 50;
-                loop {
-                    match client
-                        .get_saved_albums(albums_offset, spotify_album_page)
-                        .await
-                    {
-                        Ok(page) => {
-                            if page.items.is_empty() {
-                                break;
-                            }
-                            for saved in &page.items {
-                                let album = &saved.album;
-                                if album.id.is_empty() || album.name.is_empty() {
-                                    continue;
-                                }
-                                let artist_name = album
-                                    .artists
-                                    .first()
-                                    .map(|a| a.name.clone())
-                                    .unwrap_or_else(|| "Unknown".to_string());
-                                let artist_id =
-                                    match client.get_or_create_artist(db, &artist_name).await {
-                                        Ok(id) => id,
-                                        Err(_) => continue,
-                                    };
-                                let cover = album.images.first().map(|img| img.url.clone());
-                                let upc = album.external_ids.as_ref().and_then(|e| e.upc.clone());
-                                // Same upsert contract as the Tidal favorite-albums writer:
-                                // identity by partial-unique provider id, COALESCE preserves
-                                // richer local data, is_favorite is monotonic.
-                                let aid_res: Option<(i64,)> = sqlx::query_as(
-                                    r#"
-                                    INSERT INTO albums (title, release_date, total_tracks, cover_art_url, spotify_id, upc, label, is_favorite, favorite_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-                                    ON CONFLICT(spotify_id) WHERE spotify_id IS NOT NULL DO UPDATE SET
-                                        label = COALESCE(albums.label, excluded.label),
-                                        upc = COALESCE(albums.upc, excluded.upc),
-                                        is_favorite = 1,
-                                        favorite_at = COALESCE(albums.favorite_at, CURRENT_TIMESTAMP)
-                                    RETURNING id
-                                    "#
-                                )
-                                .bind(&album.name)
-                                .bind(&album.release_date)
-                                .bind(album.total_tracks)
-                                .bind(&cover)
-                                .bind(&album.id)
-                                .bind(upc)
-                                .bind(&album.label)
-                                .fetch_optional(db)
-                                .await
-                                .unwrap_or(None);
-                                if let Some((album_id,)) = aid_res {
-                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-                                        .bind(album_id)
-                                        .bind(artist_id)
-                                        .execute(db)).await;
-                                    favorite_albums_total += 1;
-
-                                    if let Ok(tracks_page) =
-                                        client.get_album_tracks(&album.id, 0, 50).await
-                                    {
-                                        for track in &tracks_page.items {
-                                            let track_artist = track
-                                                .artists
-                                                .first()
-                                                .map(|a| a.name.clone())
-                                                .unwrap_or_else(|| artist_name.clone());
-                                            let sync_input = crate::services::enrichment::SyncTrackInput {
-                                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                                    title: Some(track.name.clone()),
-                                                    artist: Some(track_artist),
-                                                    album: Some(album.name.clone()),
-                                                    album_artist: Some(artist_name.clone()),
-                                                    track_number: track.track_number.map(|n| n as u32),
-                                                    disc_number: track.disc_number.map(|n| n as u32),
-                                                    isrc: track.external_ids.as_ref().and_then(|e| e.isrc.clone()),
-                                                    barcode: album.external_ids.as_ref().and_then(|e| e.upc.clone()),
-                                                    label: album.label.clone(),
-                                                    release_date: album.release_date.clone(),
-                                                    source_name: "spotify".to_string(),
-                                                    ..Default::default()
-                                                },
-                                                service_track_id: track.id.clone(),
-                                                service_name: "spotify".to_string(),
-                                                service_id: spotify_service_id,
-                                                account_id,
-                                                is_favorite: false,
-                                                is_purchased: false,
-                                                format: Some("OGG_VORBIS".to_string()),
-                                                bit_depth: None,
-                                                sample_rate: None,
-                                                quality_score: None,
-                                                audio_quality: Some(
-                                                    classify_audio_tier(None, None, None, Some("OGG_VORBIS"))
-                                                        .as_str()
-                                                        .to_string(),
-                                                ),
-                                                cover_art_url: cover.clone(),
-                                                duration_ms: Some(track.duration_ms),
-                                                query_musicbrainz: false,
-                                                album_is_favorite: true,
-                                                // Spotify track id is not a release id.
-                                                album_provider_track_id: None,
-                                            };
-                                            let _ = enrich_persist_with_locked_retry(
-                                                &enrichment_engine,
-                                                db,
-                                                sync_input,
-                                            )
-                                            .await;
-                                        }
-                                    }
-                                }
-                            }
-                            match crate::services::import_pagination::next_offset(
-                                albums_offset,
-                                page.items.len() as i32,
-                                spotify_album_page,
-                                Some(page.total.max(0) as i64),
-                            ) {
-                                Some(next) => albums_offset = next,
-                                None => break,
-                            }
-                        }
-                        Err(e) => {
-                            errors.push(format!("Spotify saved albums error: {}", e));
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Phase 4: Followed Artists — S189-Fase-2: full cursor iteration
-            // (previously only the first 50 followed artists were imported;
-            // Spotify's /me/following is cursor-paginated, not offset-based).
-            if prefs.favorite_artists {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "fetching_favorite_artists",
-                    0,
-                    None,
-                    "Fetching Spotify artists...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut after: Option<String> = None;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    match client.get_followed_artists(after.as_deref(), 50).await {
-                        Ok(resp) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            let page_len = resp.artists.items.len();
-                            for art in &resp.artists.items {
-                                favorite_artists_total += 1;
-                                let t_pers = std::time::Instant::now();
-                                if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
-                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP), spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
-                                        .bind(&art.id)
-                                        .bind(aid)
-                                        .execute(db)).await;
-                                }
-                                persistence_ms += t_pers.elapsed().as_millis() as u64;
-                            }
-                            // Cursor semantics via the shared S187/S189 policy:
-                            // declared total wins over page length; without a
-                            // total, only a full page with a cursor continues.
-                            let declared_total = resp.artists.total.map(i64::from);
-                            after = crate::services::import_pagination::next_cursor(
-                                resp.artists.cursors.and_then(|c| c.after),
-                                page_len,
-                                50,
-                                declared_total,
-                                favorite_artists_total,
-                            );
-                            if after.is_none() {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            if is_spotify_scope_forbidden_error(&e) {
-                                // S189-F2 graceful degradation: 403 scope = token
-                                // granted before `user-follow-read` was requested.
-                                // Omit followed artists (warning) and let the rest
-                                // of the sync succeed; re-auth grants the scope.
-                                tracing::warn!(
-                                    "[S189-F2] Spotify followed artists skipped: missing user-follow-read scope; re-authentication required"
-                                );
-                                warnings.push(
-                                    "Spotify: followed artists omitted — re-authenticate to grant the new 'user-follow-read' scope (re-autentica para obtener seguidos — scope nuevo requerido)"
-                                        .to_string(),
-                                );
-                            } else {
-                                errors.push(format!("Spotify followed artists fetch error: {}", e));
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
+                    favorites_seen,
+                    metadata_enriched,
+                    metadata_partial,
+                    playlists_seen,
+                    playlists_total,
+                    api_fetch_ms,
+                    entity_expansion_ms,
+                    enrichment_ms,
+                    persistence_ms,
+                    albums_seen,
+                    availability_checked,
+                    favorite_albums_total,
+                    favorite_artists_total,
+                    reported_favorites,
+                    reported_albums,
+                    reported_playlists,
+                    album_expansion_metrics,
+                    errors,
+                    warnings,
+                },
+            )
+            .await?;
+            tracks_processed = arm.tracks_processed;
+            tracks_expanded = arm.tracks_expanded;
+            tracks_new_global = arm.tracks_new_global;
+            sources_new_for_service = arm.sources_new_for_service;
+            library_entries_new_for_account = arm.library_entries_new_for_account;
+            tracks_already_present = arm.tracks_already_present;
+            tracks_changed_unique = arm.tracks_changed_unique;
+            imported_tracks_total = arm.imported_tracks_total;
+            skipped_tracks_total = arm.skipped_tracks_total;
+            favorite_tracks_total = arm.favorite_tracks_total;
+            favorites_seen = arm.favorites_seen;
+            metadata_enriched = arm.metadata_enriched;
+            metadata_partial = arm.metadata_partial;
+            playlists_seen = arm.playlists_seen;
+            playlists_total = arm.playlists_total;
+            api_fetch_ms = arm.api_fetch_ms;
+            entity_expansion_ms = arm.entity_expansion_ms;
+            enrichment_ms = arm.enrichment_ms;
+            persistence_ms = arm.persistence_ms;
+            albums_seen = arm.albums_seen;
+            availability_checked = arm.availability_checked;
+            favorite_albums_total = arm.favorite_albums_total;
+            favorite_artists_total = arm.favorite_artists_total;
+            reported_favorites = arm.reported_favorites;
+            reported_albums = arm.reported_albums;
+            reported_playlists = arm.reported_playlists;
+            album_expansion_metrics = arm.album_expansion_metrics;
+            errors = arm.errors;
+            warnings = arm.warnings;
         }
         "deezer" => {
             let arm = sync_deezer_arm(
@@ -7618,6 +7708,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                     availability_checked,
                     favorite_albums_total,
                     favorite_artists_total,
+                    reported_favorites,
+                    reported_albums,
+                    reported_playlists,
                     album_expansion_metrics,
                     errors,
                     warnings,
@@ -7647,6 +7740,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             availability_checked = arm.availability_checked;
             favorite_albums_total = arm.favorite_albums_total;
             favorite_artists_total = arm.favorite_artists_total;
+            reported_favorites = arm.reported_favorites;
+            reported_albums = arm.reported_albums;
+            reported_playlists = arm.reported_playlists;
             album_expansion_metrics = arm.album_expansion_metrics;
             errors = arm.errors;
             warnings = arm.warnings;
@@ -8766,8 +8862,9 @@ mod sync_orchestrator_characterization {
 }
 
 #[cfg(test)]
-mod soundcloud_arm_tests {
-    //! Contrato de la precondición extraída del brazo SoundCloud (D-08).
+mod sync_arm_contracts {
+    //! Contratos offline de los brazos extraídos (D-08): precondiciones y
+    //! "sin fases activas no se toca nada", sin red y sin proveedor real.
 
     use super::*;
     use serde_json::json;
@@ -8848,6 +8945,36 @@ mod soundcloud_arm_tests {
             vec!["requires_auth".to_string()],
             "un solo evento terminal de autenticación"
         );
+    }
+
+    #[tokio::test]
+    async fn sin_credenciales_el_brazo_spotify_pide_autenticacion_antes_de_la_red() {
+        let pool = fixture_pool().await;
+        let emitter = ArmEmitter::default();
+        let engine = crate::services::enrichment::EnrichmentEngine::with_db(pool.clone());
+        let creds = json!({});
+
+        let error = match sync_spotify_arm(
+            &pool,
+            "spotify",
+            1,
+            &creds,
+            &prefs_sin_fases(),
+            Some(&emitter),
+            &engine,
+            ArmOutcome::default(),
+        )
+        .await
+        {
+            Ok(_) => panic!("sin credenciales Spotify el brazo no puede continuar"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.starts_with("RequiresAuth: Spotify authentication failed:"),
+            "el contrato del error es RequiresAuth de Spotify, llegó: {error}"
+        );
+        assert_eq!(emitter.phases(), vec!["requires_auth".to_string()]);
     }
 
     #[tokio::test]

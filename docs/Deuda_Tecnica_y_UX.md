@@ -169,8 +169,16 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 - **Límite conocido**: ningún test de integración recorre los brazos con red; la equivalencia
   se apoya en el compilador, en el contrato de cada brazo (autenticación sin red, sin fases
   no se toca nada) y en la suite completa, no en una reproducción con proveedor real.
-- **Siguiente**: spotify (~830 líneas), tidal (~1 099) y qobuz (~1 184), con el patrón de
-  siembra y volcado ya probado en dos brazos.
+- **Hecho (2026-10-19, tercer brazo)**: Spotify extraído a `sync_spotify_arm` (841 líneas).
+  El struct crece con `reported_favorites`/`reported_albums`/`reported_playlists`
+  (`Option<i64>`, los recuentos que declara el proveedor) y el call site de Deezer se alineó
+  para sembrarlos también: un struct con campos nuevos no puede dejar inicializadores
+  desactualizados. `service_name` volvió a aparecer en una firma sin usarse y se retiró igual
+  que en Deezer: el aviso del compilador es el que manda, no mi inventario. El módulo de
+  tests pasa a `sync_arm_contracts` porque ya cubre tres brazos (8 contratos).
+  El orquestador baja a **3 057 líneas** (desde 4 546: −33 %).
+- **Siguiente**: tidal (~1 099) y qobuz (~1 184), los dos grandes, con el patrón probado en
+  tres brazos.
 - **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
   después, y el orquestador reducido a un bucle corto sobre los brazos.
 
