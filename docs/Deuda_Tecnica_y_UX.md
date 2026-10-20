@@ -177,8 +177,16 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   que en Deezer: el aviso del compilador es el que manda, no mi inventario. El módulo de
   tests pasa a `sync_arm_contracts` porque ya cubre tres brazos (8 contratos).
   El orquestador baja a **3 057 líneas** (desde 4 546: −33 %).
-- **Siguiente**: tidal (~1 099) y qobuz (~1 184), los dos grandes, con el patrón probado en
-  tres brazos.
+- **Hecho (2026-10-19, cuarto brazo)**: TIDAL extraído a `sync_tidal_arm` (1 098 líneas), el
+  brazo con más fases. `ArmOutcome` llega a 33 campos con `albums_unavailable`,
+  `tracks_unavailable`, `tracks_expansion_deferred` y `tracks_expansion_failed`. Antes de
+  escribirlo hubo un casi-accidente que merece quedar: la línea `availability_checked,`
+  aparece también en el literal de `ServiceSyncResult` del final del orquestador, así que
+  insertar «detrás de la primera coincidencia» habría corrompido ese struct; el `assert` del
+  script lo paró antes de escribir y la inserción quedó restringida a literales
+  `ArmOutcome {` sin `..Default::default()`. `service_name` volvió a sobrar y se retiró.
+  El orquestador baja a **2 054 líneas** (desde 4 546: −55 %).
+- **Siguiente**: qobuz (~1 184), el último y el más grande.
 - **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
   después, y el orquestador reducido a un bucle corto sobre los brazos.
 

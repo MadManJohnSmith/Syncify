@@ -3330,6 +3330,10 @@ struct ArmOutcome {
     enrichment_ms: u64,
     albums_seen: u64,
     availability_checked: u64,
+    albums_unavailable: u64,
+    tracks_unavailable: u64,
+    tracks_expansion_deferred: u64,
+    tracks_expansion_failed: u64,
     entity_expansion_ms: u64,
     persistence_ms: u64,
     favorite_albums_total: u64,
@@ -5033,6 +5037,1108 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
     Ok(arm)
 }
 
+/// Brazo TIDAL del sync. Comparte el motor de enriquecimiento y es el que más
+/// fases abre: favoritos, álbumes, artistas y playlists.
+#[allow(clippy::too_many_arguments)]
+async fn sync_tidal_arm<E: SyncProgressEmitter>(
+    db: &sqlx::SqlitePool,
+    service_normalized: &str,
+    account_id: i64,
+    creds: &serde_json::Value,
+    prefs: &ImportPreferences,
+    emitter: Option<&E>,
+    enrichment_engine: &crate::services::enrichment::EnrichmentEngine,
+    mut arm: ArmOutcome,
+) -> Result<ArmOutcome, String> {
+    let emit = |event: SyncProgressEvent| {
+        if let Some(e) = emitter {
+            e.emit_sync_progress(&event);
+        }
+    };
+    // FIX 2026-08-25 ("credenciales de Tidal duran muy poco"): el sync
+    // usa la MISMA ruta refresh-aware que las descargas — refresca y
+    // PERSISTE tokens rotados ANTES de la primera llamada, de modo que
+    // el TTL natural del access token ya no produce un 401 que mate la
+    // cuenta en el primer sync.
+    let http_client = crate::download::http_client::create_http_client();
+    let (resolved_tidal_creds, _) =
+        crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials_for_account(
+            db,
+            &http_client,
+            Some(account_id),
+            false,
+        )
+        .await;
+    let resolved_tidal_creds = match resolved_tidal_creds {
+        Some(c) => c,
+        None => {
+            // resolve_and_refresh ya distingue "sin cuenta / rechazo
+            // real" (invalida ella misma) de fallo transitorio; aquí no
+            // re-invalidamos.
+            let err_msg = "RequiresAuth: no active or valid Tidal account available (si tu conexión acabó de caer, reintenta — la sesión puede seguir válida)".to_string();
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                Some(account_id),
+                &err_msg,
+            ));
+            return Err(err_msg);
+        }
+    };
+    let access_token = resolved_tidal_creds.access_token.clone();
+    let user_id = resolved_tidal_creds
+        .user_id
+        .as_ref()
+        .and_then(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .or_else(|| v.as_i64().map(|n| n.to_string()))
+        })
+        .or_else(|| creds["user_id"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "0".to_string());
+    let country = resolved_tidal_creds
+        .country_code
+        .clone()
+        .or_else(|| creds["country_code"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "US".to_string());
+
+    // FIX 2026-08-25: token ya refrescado proactivamente (ver arriba);
+    // `mut` habilita el hot-swap de token tras un refresh forzado post-401.
+    let mut client = crate::services::TidalClient::new(access_token.to_string())
+        .with_user(user_id.to_string(), country.to_string());
+    let tidal_service_id = client.get_service_id(db, "tidal").await.unwrap_or(3);
+
+    // Phase 1: Favorite Tracks
+    if prefs.favorite_tracks {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "fetching_favorite_tracks",
+            0,
+            None,
+            "Fetching Tidal favorite tracks...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut offset = 0;
+        let limit = 50;
+        // S187: provider-reported grand total, for honest X-of-Y reporting.
+        let mut favorites_provider_total: i64 = 0;
+        // Route 2 (2026-10-18): Tidal repeats items across pages (server-side
+        // filtering + offset arithmetic over the filtered subset). De-duplicate
+        // by track id so repeats neither inflate the walk nor truncate the
+        // tail; the page loop stops only on an empty page (defensive bound
+        // below). The old "accumulated >= total" stop let 569 favorites fall
+        // off the end of the list.
+        let mut favorite_item_ids: std::collections::HashSet<i64> =
+            std::collections::HashSet::new();
+        let mut favorite_items_duplicated: u64 = 0;
+        loop {
+            let t_api = std::time::Instant::now();
+            match client.get_favorites_with_retry(offset, limit).await {
+                Ok(page) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    let page_total = page.total as u64;
+                    favorites_provider_total = favorites_provider_total.max(page.total as i64);
+                    arm.reported_favorites = Some(favorites_provider_total);
+                    if page.items.is_empty() {
+                        break;
+                    }
+                    for item in &page.items {
+                        if !favorite_item_ids.insert(item.item.id) {
+                            favorite_items_duplicated += 1;
+                            continue;
+                        }
+                        arm.favorites_seen += 1;
+                        let track = &item.item;
+                        let artist_name = track
+                            .artist
+                            .as_ref()
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        let album_title = track.album.as_ref().map(|a| a.title.clone());
+                        let album_cover = track.album.as_ref().and_then(|a| a.cover_url());
+
+                        let sync_input = crate::services::enrichment::SyncTrackInput {
+                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                title: Some(track.title.clone()),
+                                artist: Some(artist_name),
+                                album: album_title,
+                                album_artist: track
+                                    .album
+                                    .as_ref()
+                                    .and_then(|a| a.artist.as_ref().map(|art| art.name.clone())),
+                                track_number: track.track_number.map(|tn| tn as u32),
+                                disc_number: track.disc_number.map(|dn| dn as u32),
+                                isrc: track.isrc.clone(),
+                                barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
+                                label: track.album.as_ref().and_then(|a| a.label.clone()),
+                                release_date: track
+                                    .album
+                                    .as_ref()
+                                    .and_then(|a| a.release_date.clone()),
+                                source_name: "tidal".to_string(),
+                                ..Default::default()
+                            },
+                            service_track_id: track.id.to_string(),
+                            service_name: "tidal".to_string(),
+                            service_id: tidal_service_id,
+                            account_id,
+                            is_favorite: true,
+                            is_purchased: false,
+                            // FIX 2026-08-25 (matriz de metadatos): calidad
+                            // declarada por Tidal, no un hardcode.
+                            format: Some("FLAC".to_string()),
+                            bit_depth: None,
+                            sample_rate: None,
+                            quality_score: None,
+                            audio_quality: Some(
+                                classify_audio_tier(
+                                    None,
+                                    None,
+                                    None,
+                                    track.audio_quality.as_deref().or(Some("FLAC")),
+                                )
+                                .as_str()
+                                .to_string(),
+                            ),
+                            cover_art_url: album_cover,
+                            duration_ms: Some(track.duration * 1000),
+                            query_musicbrainz: false,
+                            album_is_favorite: false,
+                            album_provider_track_id: None,
+                        };
+
+                        let t_enrich = std::time::Instant::now();
+                        match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input)
+                            .await
+                        {
+                            Ok(res) => {
+                                arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                arm.tracks_processed += 1;
+                                if res.is_new_global_track {
+                                    arm.tracks_new_global += 1;
+                                }
+                                if res.is_new_source_for_service {
+                                    arm.sources_new_for_service += 1;
+                                }
+                                if res.is_new_library_entry_for_account {
+                                    arm.library_entries_new_for_account += 1;
+                                }
+                                if res.is_already_present {
+                                    arm.tracks_already_present += 1;
+                                }
+                                if res.is_new_import {
+                                    arm.tracks_changed_unique += 1;
+                                    arm.imported_tracks_total += 1;
+                                } else {
+                                    arm.skipped_tracks_total += 1;
+                                }
+                                arm.favorite_tracks_total += 1;
+                                arm.availability_checked += 1;
+                                match res.completeness {
+                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                                        arm.metadata_enriched += 1
+                                    }
+                                    _ => arm.metadata_partial += 1,
+                                }
+                            }
+                            Err(e) => {
+                                arm.errors.push(format!(
+                                    "Tidal favorite track error for {}: {}",
+                                    track.id, e
+                                ));
+                            }
+                        }
+
+                        emit(SyncProgressEvent::running(
+                            &service_normalized,
+                            Some(account_id),
+                            "importing_favorite_tracks",
+                            arm.favorite_tracks_total,
+                            Some(page_total),
+                            format!(
+                                "Importing Tidal favorite tracks ({}/{})",
+                                arm.favorite_tracks_total, page_total
+                            ),
+                            arm.imported_tracks_total,
+                            arm.favorite_tracks_total,
+                        ));
+                    }
+                    // S187/Route 2: advance by the REAL page length; a short-but-
+                    // non-empty page is NOT end-of-data (Tidal sends no `next` and
+                    // may return filtered pages). Repeated items are de-duplicated
+                    // above, so the walk now ends only on an empty page; the bound
+                    // below is pure belt-and-braces against a provider that never
+                    // returns one.
+                    offset += page.items.len() as i32;
+                    if favorites_provider_total > 0
+                        && i64::from(offset) > favorites_provider_total + i64::from(limit) * 2
+                    {
+                        tracing::warn!(
+                            "[S187][tidal] favorite tracks pagination ran past the provider total (offset {}, total {}); stopping",
+                            offset,
+                            favorites_provider_total
+                        );
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Tidal favorite tracks fetch error: {}", e);
+                    if is_tidal_auth_error(&e) {
+                        // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
+                        // intenta UN refresh forzado; si el proveedor emite token fresco, la
+                        // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
+                        // queda registrado como warning para re-ejecutar el sync.
+                        if let Some(fresh_tok) = tidal_force_refresh_after_401(db, account_id).await
+                        {
+                            client.set_access_token(fresh_tok);
+                            arm.warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
+                            break;
+                        }
+                        let _ = mark_account_credentials_invalid(
+                            db,
+                            "tidal",
+                            "HTTP 401: Tidal session unauthorized or expired",
+                            Some(account_id),
+                        )
+                        .await;
+                        let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorites: {}", e);
+                        emit(SyncProgressEvent::requires_auth(
+                            &service_normalized,
+                            Some(account_id),
+                            &err_msg,
+                        ));
+                        return Err(err_msg);
+                    }
+                    // S187: transient failure survived retries — record the gap
+                    // honestly; NEVER silently truncate the import.
+                    arm.warnings.push(format!(
+                        "Tidal favorite tracks incomplete: imported {} of {} provider tracks (page at offset {} failed after retry)",
+                        arm.favorites_seen, favorites_provider_total, offset
+                    ));
+                    tracing::warn!(
+                        "[S187][tidal] favorite tracks: importadas {} de {} provider",
+                        arm.favorites_seen,
+                        favorites_provider_total
+                    );
+                    break;
+                }
+            }
+        }
+        if favorite_items_duplicated > 0 {
+            tracing::info!(
+                "[S187][tidal] favorite tracks: {} ítems repetidos entre páginas omitidos",
+                favorite_items_duplicated
+            );
+        }
+        tracing::info!(
+            "[S187][tidal] favorite tracks: importadas {} de {} provider",
+            arm.favorites_seen,
+            favorites_provider_total
+        );
+    }
+
+    // Phase 2: Favorite Albums
+    if prefs.favorite_albums {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "fetching_favorite_albums",
+            0,
+            None,
+            "Fetching Tidal favorite albums...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut offset = 0;
+        let limit = 50;
+        // S187: provider-reported grand total, for honest X-of-Y reporting.
+        let mut albums_provider_total: i64 = 0;
+        loop {
+            let t_api = std::time::Instant::now();
+            match client.get_favorite_albums_with_retry(offset, limit).await {
+                Ok(page) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    let page_total = page.total as u64;
+                    albums_provider_total = albums_provider_total.max(page.total as i64);
+                    arm.reported_albums = Some(albums_provider_total);
+                    if page.items.is_empty() {
+                        break;
+                    }
+                    for item in &page.items {
+                        let album = &item.item;
+                        arm.favorite_albums_total += 1;
+                        arm.albums_seen += 1;
+                        emit(SyncProgressEvent::running(
+                            &service_normalized,
+                            Some(account_id),
+                            "importing_favorite_albums",
+                            arm.favorite_albums_total,
+                            Some(page_total),
+                            format!(
+                                "Importing Tidal favorite albums ({}/{})",
+                                arm.favorite_albums_total, page_total
+                            ),
+                            arm.imported_tracks_total,
+                            arm.favorite_tracks_total,
+                        ));
+
+                        let album_tidal_id_str = album.tidal_id.to_string();
+
+                        // 1. Ensure artist and album exist in local DB and is marked favorite
+                        let artist_id = if let Some(ref artist) = album.artist {
+                            let clean_name =
+                                syncify_core_domain::metadata::sanitize_artist_name(&artist.name);
+                            let artist_res: Option<(i64,)> = sqlx::query_as(
+                                "INSERT OR IGNORE INTO artists (name) VALUES (?) RETURNING id",
+                            )
+                            .bind(&clean_name)
+                            .fetch_optional(db)
+                            .await
+                            .unwrap_or(None);
+
+                            if let Some(row) = artist_res {
+                                row.0
+                            } else {
+                                sqlx::query_as::<_, (i64,)>(
+                                    "SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1",
+                                )
+                                .bind(&clean_name)
+                                .fetch_one(db)
+                                .await
+                                .map(|r| r.0)
+                                .unwrap_or(1)
+                            }
+                        } else {
+                            1
+                        };
+
+                        let t_pers = std::time::Instant::now();
+                        let aid_res: Option<(i64,)> = sqlx::query_as(
+                            r#"
+                            INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc, is_favorite, favorite_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                            ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET
+                                label = COALESCE(albums.label, excluded.label),
+                                upc = COALESCE(albums.upc, excluded.upc),
+                                is_favorite = 1,
+                                favorite_at = COALESCE(albums.favorite_at, CURRENT_TIMESTAMP)
+                            RETURNING id
+                            "#
+                        )
+                        .bind(&album.title)
+                        .bind(&album.release_date)
+                        .bind(album.total_tracks)
+                        .bind(album.cover_url())
+                        .bind(&album_tidal_id_str)
+                        .bind(&album.label)
+                        .bind(&album.upc)
+                        .fetch_optional(db)
+                        .await
+                        .unwrap_or(None);
+
+                        if let Some((album_id,)) = aid_res {
+                            let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+                                .bind(album_id)
+                                .bind(artist_id)
+                                .execute(db)).await;
+                        }
+                        arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
+
+                        // 2. Check cached availability unless force_retry_unavailable is requested
+                        let mut is_cached_unavailable = false;
+                        if !prefs.force_retry_unavailable {
+                            if let Ok(Some((cached_status, reason))) =
+                                crate::services::tidal::check_album_availability(
+                                    db,
+                                    tidal_service_id,
+                                    &album_tidal_id_str,
+                                    crate::services::tidal::DEFAULT_UNAVAILABLE_ALBUM_TTL_SECS,
+                                )
+                                .await
+                            {
+                                is_cached_unavailable = true;
+                                arm.albums_unavailable += 1;
+                                let exp_count = album.total_tracks.unwrap_or(1) as u64;
+                                arm.tracks_unavailable += exp_count;
+                                arm.tracks_expansion_deferred += exp_count;
+                                arm.warnings.push(format!(
+                                    "Tidal album '{}' ({}) skipped (cached as {:?}: {})",
+                                    album.title, album.tidal_id, cached_status, reason
+                                ));
+                                tracing::info!(
+                                    album_id = album.tidal_id,
+                                    title = %album.title,
+                                    status = ?cached_status,
+                                    "[perform_sync_service/tidal] Album expansion skipped due to active TTL cache"
+                                );
+                            }
+                        }
+
+                        if is_cached_unavailable {
+                            continue;
+                        }
+
+                        // 3. Expand album tracks from Tidal API
+                        let t_exp = std::time::Instant::now();
+                        let exp_res = client
+                            .get_album_tracks_expanded(album.tidal_id, 0, 100)
+                            .await;
+                        arm.entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+
+                        match exp_res {
+                            Ok(res) => {
+                                match res.status {
+                                    crate::services::tidal::TidalAlbumExpansionStatus::Available => {
+                                        // Clear previous unavailable record if any
+                                        let _ = crate::services::tidal::clear_album_availability(db, tidal_service_id, &album_tidal_id_str).await;
+
+                                        for track_item in &res.tracks {
+                                            arm.tracks_expanded += 1;
+                                            let track = track_item.track();
+                                            let artist_name = track.artist.as_ref().map(|a| a.name.clone())
+                                                .or_else(|| album.artist.as_ref().map(|a| a.name.clone()))
+                                                .unwrap_or_else(|| "Unknown".to_string());
+                                            let album_cover = album.cover_url();
+
+                                            let sync_input = crate::services::enrichment::SyncTrackInput {
+                                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                    title: Some(track.title.clone()),
+                                                    artist: Some(artist_name),
+                                                    album: Some(album.title.clone()),
+                                                    album_artist: album.artist.as_ref().map(|a| a.name.clone()),
+                                                    track_number: track.track_number.map(|tn| tn as u32),
+                                                    disc_number: track.disc_number.map(|dn| dn as u32),
+                                                    isrc: track.isrc.clone(),
+                                                    barcode: album.upc.clone(),
+                                                    label: album.label.clone(),
+                                                    release_date: album.release_date.clone(),
+                                                    source_name: "tidal".to_string(),
+                                                    ..Default::default()
+                                                },
+                                                service_track_id: track.id.to_string(),
+                                                service_name: "tidal".to_string(),
+                                                service_id: tidal_service_id,
+                                                account_id,
+                                                is_favorite: false,
+                                                is_purchased: false,
+                                                format: Some("FLAC".to_string()),
+                                                bit_depth: None,
+                                                sample_rate: None,
+                                                quality_score: None,
+                                                audio_quality: Some(
+                                                    classify_audio_tier(
+                                                        None,
+                                                        None,
+                                                        None,
+                                                        track.audio_quality.as_deref().or(Some("FLAC")),
+                                                    )
+                                                    .as_str()
+                                                    .to_string(),
+                                                ),
+                                                cover_art_url: album_cover,
+                                                duration_ms: Some(track.duration * 1000),
+                                                query_musicbrainz: false,
+                                                album_is_favorite: true,
+                                                album_provider_track_id: None,
+                                            };
+
+                                            let t_enrich = std::time::Instant::now();
+                                            match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
+                                                Ok(res) => {
+                                                    arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                                    arm.tracks_processed += 1;
+                                                    if res.is_new_global_track {
+                                                        arm.tracks_new_global += 1;
+                                                    }
+                                                    if res.is_new_source_for_service {
+                                                        arm.sources_new_for_service += 1;
+                                                    }
+                                                    if res.is_new_library_entry_for_account {
+                                                        arm.library_entries_new_for_account += 1;
+                                                    }
+                                                    if res.is_already_present {
+                                                        arm.tracks_already_present += 1;
+                                                    }
+                                                    if res.is_new_import {
+                                                        arm.tracks_changed_unique += 1;
+                                                        arm.imported_tracks_total += 1;
+                                                    } else {
+                                                        arm.skipped_tracks_total += 1;
+                                                    }
+                                                    arm.availability_checked += 1;
+                                                    match res.completeness {
+                                                        syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
+                                                        _ => arm.metadata_partial += 1,
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    arm.tracks_expansion_failed += 1;
+                                                    arm.errors.push(format!("Tidal album track error for {}: {}", track.id, e));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    crate::services::tidal::TidalAlbumExpansionStatus::UnavailableFromProvider
+                                    | crate::services::tidal::TidalAlbumExpansionStatus::RegionRestricted => {
+                                        let _ = crate::services::tidal::record_album_availability(
+                                            db,
+                                            tidal_service_id,
+                                            &album_tidal_id_str,
+                                            res.status,
+                                            res.http_status,
+                                            res.sub_status,
+                                            res.reason.as_deref(),
+                                        ).await;
+
+                                        arm.albums_unavailable += 1;
+                                        let exp_count = album.total_tracks.unwrap_or(1) as u64;
+                                        arm.tracks_unavailable += exp_count;
+                                        let warn_msg = format!(
+                                            "Album '{}' ({}) is unavailable from Tidal ({:?}: {})",
+                                            album.title, album.tidal_id, res.status, res.reason.as_deref().unwrap_or("Asset not found")
+                                        );
+                                        tracing::warn!(
+                                            album_id = album.tidal_id,
+                                            title = %album.title,
+                                            status = ?res.status,
+                                            reason = ?res.reason,
+                                            "[perform_sync_service/tidal] Album unavailable from provider"
+                                        );
+                                        arm.warnings.push(warn_msg);
+                                    }
+                                    crate::services::tidal::TidalAlbumExpansionStatus::AuthFailed => {
+                                        let err_msg = format!("RequiresAuth: Tidal session unauthorized (401/403) while expanding album {}: {}", album.tidal_id, res.reason.unwrap_or_default());
+                                        // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
+                                        // intenta UN refresh forzado; si el proveedor emite token fresco, la
+                                        // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
+                                        // queda registrado como warning para re-ejecutar el sync.
+                                        if let Some(fresh_tok) = tidal_force_refresh_after_401(db, account_id).await {
+                                            client.set_access_token(fresh_tok);
+                                            arm.warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 expandiendo álbum {} — vuelve a ejecutar el sync para completarlo", album.tidal_id));
+                                            break;
+                                        }
+                                        let _ = mark_account_credentials_invalid(
+                                            db,
+                                            "tidal",
+                                            "HTTP 401: Tidal session unauthorized or expired",
+                                            Some(account_id),
+                                        )
+                                        .await;
+                                        emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
+                                        return Err(err_msg);
+                                    }
+                                    crate::services::tidal::TidalAlbumExpansionStatus::RateLimited
+                                    | crate::services::tidal::TidalAlbumExpansionStatus::TemporarilyFailed
+                                    | crate::services::tidal::TidalAlbumExpansionStatus::MalformedResponse => {
+                                        let exp_count = album.total_tracks.unwrap_or(1) as u64;
+                                        arm.tracks_expansion_failed += exp_count;
+                                        let err_msg = format!("Failed to expand album tracks for {} ({}): {:?}", album.title, album.tidal_id, res.reason);
+                                        tracing::error!("[perform_sync_service/tidal] {}", err_msg);
+                                        arm.errors.push(err_msg);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let exp_count = album.total_tracks.unwrap_or(1) as u64;
+                                arm.tracks_expansion_failed += exp_count;
+                                arm.errors.push(format!(
+                                    "Failed to expand album tracks for {} ({}): {}",
+                                    album.title, album.tidal_id, e
+                                ));
+                            }
+                        }
+                    }
+                    // S187: advance by the REAL page length; short pages continue.
+                    offset += page.items.len() as i32;
+                    if !crate::services::tidal::should_continue_tidal_pagination(
+                        page.items.len(),
+                        arm.albums_seen,
+                        page.total as i64,
+                    ) {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Tidal favorite albums fetch error: {}", e);
+                    if is_tidal_auth_error(&e) {
+                        // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
+                        // intenta UN refresh forzado; si el proveedor emite token fresco, la
+                        // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
+                        // queda registrado como warning para re-ejecutar el sync.
+                        if let Some(fresh_tok) = tidal_force_refresh_after_401(db, account_id).await
+                        {
+                            client.set_access_token(fresh_tok);
+                            arm.warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
+                            break;
+                        }
+                        let _ = mark_account_credentials_invalid(
+                            db,
+                            "tidal",
+                            "HTTP 401: Tidal session unauthorized or expired",
+                            Some(account_id),
+                        )
+                        .await;
+                        let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite albums: {}", e);
+                        emit(SyncProgressEvent::requires_auth(
+                            &service_normalized,
+                            Some(account_id),
+                            &err_msg,
+                        ));
+                        return Err(err_msg);
+                    }
+                    // S187: record the gap honestly instead of silently truncating.
+                    arm.warnings.push(format!(
+                        "Tidal favorite albums incomplete: imported {} of {} provider albums (page at offset {} failed after retry)",
+                        arm.albums_seen, albums_provider_total, offset
+                    ));
+                    tracing::warn!(
+                        "[S187][tidal] favorite albums: importados {} de {} provider",
+                        arm.albums_seen,
+                        albums_provider_total
+                    );
+                    break;
+                }
+            }
+        }
+        tracing::info!(
+            "[S187][tidal] favorite albums: importados {} de {} provider",
+            arm.albums_seen,
+            albums_provider_total
+        );
+    }
+
+    // Phase 3: Playlists
+    if prefs.playlists {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "fetching_playlists",
+            0,
+            None,
+            "Fetching Tidal playlists...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut offset = 0;
+        let limit = 50;
+        // S187: provider-reported grand total, for honest X-of-Y reporting.
+        let mut playlists_provider_total: i64 = 0;
+        loop {
+            let t_api = std::time::Instant::now();
+            match client.get_playlists_with_retry(offset, limit).await {
+                Ok(page) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    let page_total = page.total as u64;
+                    playlists_provider_total = playlists_provider_total.max(page.total as i64);
+                    arm.reported_playlists = Some(playlists_provider_total);
+                    if page.items.is_empty() {
+                        break;
+                    }
+                    for pl in &page.items {
+                        arm.playlists_total += 1;
+                        arm.playlists_seen += 1;
+                        emit(SyncProgressEvent::running(
+                            &service_normalized,
+                            Some(account_id),
+                            "importing_playlists",
+                            arm.playlists_total,
+                            Some(page_total),
+                            format!(
+                                "Importing Tidal playlist: {} ({}/{})",
+                                pl.title, arm.playlists_total, page_total
+                            ),
+                            arm.imported_tracks_total,
+                            arm.favorite_tracks_total,
+                        ));
+
+                        let t_pers = std::time::Instant::now();
+                        let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
+                            db,
+                            account_id,
+                            &pl.uuid,
+                            &pl.title,
+                            pl.description.as_deref(),
+                            None,
+                            pl.public_playlist.unwrap_or(true) as i32,
+                            0,
+                            None,
+                            pl.track_count,
+                        )
+                        .await
+                        {
+                            Ok(id) => Some((id,)),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to upsert Tidal playlist '{}': {}",
+                                    pl.title,
+                                    e
+                                );
+                                None
+                            }
+                        };
+                        arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
+
+                        // S187: paginate ALL pages of this playlist's tracks.
+                        // Previously a single page (offset always 0, limit 100) was fetched
+                        // and never advanced, so every playlist longer than ~100 items lost
+                        // its remainder (owner DB: 57 playlists declare 25220 provider tracks
+                        // but only 3846 playlist_tracks rows existed).
+                        let mut track_offset: i32 = 0;
+                        let track_limit: i32 = 100;
+                        let mut playlist_tracks_seen: u64 = 0;
+                        // Fallback when the API omits totalNumberOfItems: declared count.
+                        let mut playlist_provider_total: i64 = pl.track_count as i64;
+                        let mut playlist_fetch_error: Option<String> = None;
+
+                        if let Some((p_id,)) = playlist_db_id {
+                            loop {
+                                let t_exp = std::time::Instant::now();
+                                match client
+                                    .get_playlist_tracks_with_retry(
+                                        &pl.uuid,
+                                        track_offset,
+                                        track_limit,
+                                    )
+                                    .await
+                                {
+                                    Ok(tracks_page) => {
+                                        arm.entity_expansion_ms +=
+                                            t_exp.elapsed().as_millis() as u64;
+                                        if tracks_page.total > 0 {
+                                            playlist_provider_total = playlist_provider_total
+                                                .max(tracks_page.total as i64);
+                                        }
+                                        if tracks_page.items.is_empty() {
+                                            break;
+                                        }
+                                        for (pos, item) in tracks_page.items.iter().enumerate() {
+                                            arm.tracks_expanded += 1;
+                                            playlist_tracks_seen += 1;
+                                            let track = &item.item;
+                                            let artist_name = track
+                                                .artist
+                                                .as_ref()
+                                                .map(|a| a.name.clone())
+                                                .unwrap_or_else(|| "Unknown".to_string());
+                                            let album_title =
+                                                track.album.as_ref().map(|a| a.title.clone());
+                                            let album_cover =
+                                                track.album.as_ref().and_then(|a| a.cover_url());
+
+                                            let sync_input = crate::services::enrichment::SyncTrackInput {
+                                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                                    title: Some(track.title.clone()),
+                                                    artist: Some(artist_name),
+                                                    album: album_title,
+                                                    album_artist: track.album.as_ref().and_then(|a| a.artist.as_ref().map(|art| art.name.clone())),
+                                                    track_number: track.track_number.map(|tn| tn as u32),
+                                                    disc_number: track.disc_number.map(|dn| dn as u32),
+                                                    isrc: track.isrc.clone(),
+                                                    barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
+                                                    label: track.album.as_ref().and_then(|a| a.label.clone()),
+                                                    release_date: track.album.as_ref().and_then(|a| a.release_date.clone()),
+                                                    source_name: "tidal".to_string(),
+                                                    ..Default::default()
+                                                },
+                                                service_track_id: track.id.to_string(),
+                                                service_name: "tidal".to_string(),
+                                                service_id: tidal_service_id,
+                                                account_id,
+                                                is_favorite: false,
+                                                is_purchased: false,
+                                                format: Some("FLAC".to_string()),
+                                                bit_depth: None,
+                                                sample_rate: None,
+                                                quality_score: None,
+                                                audio_quality: Some(
+                                                    classify_audio_tier(
+                                                        None,
+                                                        None,
+                                                        None,
+                                                        track.audio_quality.as_deref().or(Some("FLAC")),
+                                                    )
+                                                    .as_str()
+                                                    .to_string(),
+                                                ),
+                                                cover_art_url: album_cover,
+                                                duration_ms: Some(track.duration * 1000),
+                                                query_musicbrainz: false,
+                                                album_is_favorite: false,
+                                                album_provider_track_id: None,
+                                            };
+
+                                            let t_enrich = std::time::Instant::now();
+                                            match enrich_persist_with_locked_retry(
+                                                &enrichment_engine,
+                                                db,
+                                                sync_input,
+                                            )
+                                            .await
+                                            {
+                                                Ok(res) => {
+                                                    arm.enrichment_ms +=
+                                                        t_enrich.elapsed().as_millis() as u64;
+                                                    arm.tracks_processed += 1;
+                                                    let t_pl_track = std::time::Instant::now();
+                                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
+                                                        "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                                                    )
+                                                    .bind(p_id)
+                                                    .bind(res.track_id)
+                                                    .bind(track_offset + pos as i32 + 1)
+                                                    .execute(db)).await;
+                                                    arm.persistence_ms +=
+                                                        t_pl_track.elapsed().as_millis() as u64;
+
+                                                    if res.is_new_global_track {
+                                                        arm.tracks_new_global += 1;
+                                                    }
+                                                    if res.is_new_source_for_service {
+                                                        arm.sources_new_for_service += 1;
+                                                    }
+                                                    if res.is_new_library_entry_for_account {
+                                                        arm.library_entries_new_for_account += 1;
+                                                    }
+                                                    if res.is_already_present {
+                                                        arm.tracks_already_present += 1;
+                                                    }
+                                                    if res.is_new_import {
+                                                        arm.tracks_changed_unique += 1;
+                                                        arm.imported_tracks_total += 1;
+                                                    } else {
+                                                        arm.skipped_tracks_total += 1;
+                                                    }
+                                                    arm.availability_checked += 1;
+                                                    match res.completeness {
+                                                        syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
+                                                        _ => arm.metadata_partial += 1,
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    arm.tracks_expansion_failed += 1;
+                                                    arm.errors.push(format!(
+                                                        "Tidal playlist track error for {}: {}",
+                                                        track.id, e
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        // S187: advance by the REAL page length; short-but-non-empty
+                                        // pages are NOT end-of-data.
+                                        track_offset += tracks_page.items.len() as i32;
+                                        if !crate::services::tidal::should_continue_tidal_pagination(
+                                            tracks_page.items.len(),
+                                            playlist_tracks_seen,
+                                            tracks_page.total as i64,
+                                        ) {
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // S187: transient failure survived retries. Record it,
+                                        // report X-of-Y below and continue with the next playlist;
+                                        // NEVER silently truncate the rest of the import.
+                                        playlist_fetch_error = Some(e);
+                                        break;
+                                    }
+                                }
+                            }
+                            // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
+                            let _ =
+                                crate::commands::playlists::recompact_playlist_positions(db, p_id)
+                                    .await;
+                        }
+
+                        if let Some(fetch_err) = playlist_fetch_error {
+                            let missing = (playlist_provider_total - playlist_tracks_seen as i64)
+                                .max(0) as u64;
+                            arm.tracks_expansion_failed += missing;
+                            arm.errors.push(format!(
+                                "Failed to expand playlist tracks for {} ({}): {}: imported {} of {} (offset {})",
+                                pl.title, pl.uuid, fetch_err, playlist_tracks_seen, playlist_provider_total, track_offset
+                            ));
+                            tracing::warn!(
+                                "[S187][tidal] playlist '{}': importadas {} de {} provider",
+                                pl.title,
+                                playlist_tracks_seen,
+                                playlist_provider_total
+                            );
+                        } else {
+                            tracing::info!(
+                                "[S187][tidal] playlist '{}': importadas {} de {} provider",
+                                pl.title,
+                                playlist_tracks_seen,
+                                playlist_provider_total
+                            );
+                            if playlist_provider_total > 0
+                                && (playlist_tracks_seen as i64) < playlist_provider_total
+                            {
+                                arm.warnings.push(format!(
+                                    "Tidal playlist '{}' incomplete: imported {} of {} tracks",
+                                    pl.title, playlist_tracks_seen, playlist_provider_total
+                                ));
+                            }
+                        }
+                    }
+                    // S187: advance by the REAL page length; short pages continue.
+                    offset += page.items.len() as i32;
+                    if !crate::services::tidal::should_continue_tidal_pagination(
+                        page.items.len(),
+                        arm.playlists_seen,
+                        page.total as i64,
+                    ) {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Tidal playlists fetch error: {}", e);
+                    if is_tidal_auth_error(&e) {
+                        // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
+                        // intenta UN refresh forzado; si el proveedor emite token fresco, la
+                        // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
+                        // queda registrado como warning para re-ejecutar el sync.
+                        if let Some(fresh_tok) = tidal_force_refresh_after_401(db, account_id).await
+                        {
+                            client.set_access_token(fresh_tok);
+                            arm.warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
+                            break;
+                        }
+                        let _ = mark_account_credentials_invalid(
+                            db,
+                            "tidal",
+                            "HTTP 401: Tidal session unauthorized or expired",
+                            Some(account_id),
+                        )
+                        .await;
+                        let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching playlists: {}", e);
+                        emit(SyncProgressEvent::requires_auth(
+                            &service_normalized,
+                            Some(account_id),
+                            &err_msg,
+                        ));
+                        return Err(err_msg);
+                    }
+                    // S187: record the gap honestly instead of silently truncating.
+                    arm.warnings.push(format!(
+                        "Tidal playlists incomplete: imported {} of {} provider playlists (page at offset {} failed after retry)",
+                        arm.playlists_seen, playlists_provider_total, offset
+                    ));
+                    tracing::warn!(
+                        "[S187][tidal] playlists: importadas {} de {} provider",
+                        arm.playlists_seen,
+                        playlists_provider_total
+                    );
+                    break;
+                }
+            }
+        }
+        tracing::info!(
+            "[S187][tidal] playlists: importadas {} de {} provider",
+            arm.playlists_seen,
+            playlists_provider_total
+        );
+    }
+
+    // Phase 4: Favorite Artists
+    if prefs.favorite_artists {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "fetching_favorite_artists",
+            0,
+            None,
+            "Fetching Tidal favorite artists...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut offset = 0;
+        let limit = 50;
+        // S187: provider-reported grand total, for honest X-of-Y reporting.
+        let mut artists_provider_total: i64 = 0;
+        loop {
+            let t_api = std::time::Instant::now();
+            match client.get_favorite_artists_with_retry(offset, limit).await {
+                Ok(page) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    artists_provider_total = artists_provider_total.max(page.total as i64);
+                    if page.items.is_empty() {
+                        break;
+                    }
+                    for item in &page.items {
+                        arm.favorite_artists_total += 1;
+                        let art = &item.item;
+                        let t_pers = std::time::Instant::now();
+                        if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
+                            let tidal_id_str = art.id.to_string();
+                            let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP), tidal_id = COALESCE(tidal_id, ?) WHERE id = ?")
+                                .bind(&tidal_id_str)
+                                .bind(aid)
+                                .execute(db)).await;
+                        }
+                        arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
+                    }
+                    // S187: advance by the REAL page length; short pages continue.
+                    offset += page.items.len() as i32;
+                    if !crate::services::tidal::should_continue_tidal_pagination(
+                        page.items.len(),
+                        arm.favorite_artists_total,
+                        page.total as i64,
+                    ) {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Tidal favorite artists fetch error: {}", e);
+                    if is_tidal_auth_error(&e) {
+                        // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
+                        // intenta UN refresh forzado; si el proveedor emite token fresco, la
+                        // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
+                        // queda registrado como warning para re-ejecutar el sync.
+                        if let Some(fresh_tok) = tidal_force_refresh_after_401(db, account_id).await
+                        {
+                            client.set_access_token(fresh_tok);
+                            arm.warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
+                            break;
+                        }
+                        let _ = mark_account_credentials_invalid(
+                            db,
+                            "tidal",
+                            "HTTP 401: Tidal session unauthorized or expired",
+                            Some(account_id),
+                        )
+                        .await;
+                        let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite artists: {}", e);
+                        emit(SyncProgressEvent::requires_auth(
+                            &service_normalized,
+                            Some(account_id),
+                            &err_msg,
+                        ));
+                        return Err(err_msg);
+                    }
+                    // S187: record the gap honestly instead of silently truncating.
+                    arm.warnings.push(format!(
+                        "Tidal favorite artists incomplete: imported {} of {} provider artists (page at offset {} failed after retry)",
+                        arm.favorite_artists_total, artists_provider_total, offset
+                    ));
+                    tracing::warn!(
+                        "[S187][tidal] favorite artists: importados {} de {} provider",
+                        arm.favorite_artists_total,
+                        artists_provider_total
+                    );
+                    break;
+                }
+            }
+        }
+        tracing::info!(
+            "[S187][tidal] favorite artists: importados {} de {} provider",
+            arm.favorite_artists_total,
+            artists_provider_total
+        );
+    }
+    Ok(arm)
+}
+
 /// Sync body. `journal` is `Some` whenever a recovery-journal entry is open for
 /// this sync; milestones are reported through it as the sync advances.
 pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitter>(
@@ -6505,1106 +7611,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             }
         }
         "tidal" => {
-            // FIX 2026-08-25 ("credenciales de Tidal duran muy poco"): el sync
-            // usa la MISMA ruta refresh-aware que las descargas — refresca y
-            // PERSISTE tokens rotados ANTES de la primera llamada, de modo que
-            // el TTL natural del access token ya no produce un 401 que mate la
-            // cuenta en el primer sync.
-            let http_client = crate::download::http_client::create_http_client();
-            let (resolved_tidal_creds, _) =
-                crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials_for_account(
-                    db,
-                    &http_client,
-                    Some(account_id),
-                    false,
-                )
-                .await;
-            let resolved_tidal_creds = match resolved_tidal_creds {
-                Some(c) => c,
-                None => {
-                    // resolve_and_refresh ya distingue "sin cuenta / rechazo
-                    // real" (invalida ella misma) de fallo transitorio; aquí no
-                    // re-invalidamos.
-                    let err_msg = "RequiresAuth: no active or valid Tidal account available (si tu conexión acabó de caer, reintenta — la sesión puede seguir válida)".to_string();
-                    emit(SyncProgressEvent::requires_auth(
-                        &service_normalized,
-                        Some(account_id),
-                        &err_msg,
-                    ));
-                    return Err(err_msg);
-                }
-            };
-            let access_token = resolved_tidal_creds.access_token.clone();
-            let user_id = resolved_tidal_creds
-                .user_id
-                .as_ref()
-                .and_then(|v| {
-                    v.as_str()
-                        .map(str::to_string)
-                        .or_else(|| v.as_i64().map(|n| n.to_string()))
-                })
-                .or_else(|| creds["user_id"].as_str().map(str::to_string))
-                .unwrap_or_else(|| "0".to_string());
-            let country = resolved_tidal_creds
-                .country_code
-                .clone()
-                .or_else(|| creds["country_code"].as_str().map(str::to_string))
-                .unwrap_or_else(|| "US".to_string());
-
-            // FIX 2026-08-25: token ya refrescado proactivamente (ver arriba);
-            // `mut` habilita el hot-swap de token tras un refresh forzado post-401.
-            let mut client = crate::services::TidalClient::new(access_token.to_string())
-                .with_user(user_id.to_string(), country.to_string());
-            let tidal_service_id = client.get_service_id(db, "tidal").await.unwrap_or(3);
-
-            // Phase 1: Favorite Tracks
-            if prefs.favorite_tracks {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "fetching_favorite_tracks",
-                    0,
-                    None,
-                    "Fetching Tidal favorite tracks...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut offset = 0;
-                let limit = 50;
-                // S187: provider-reported grand total, for honest X-of-Y reporting.
-                let mut favorites_provider_total: i64 = 0;
-                // Route 2 (2026-10-18): Tidal repeats items across pages (server-side
-                // filtering + offset arithmetic over the filtered subset). De-duplicate
-                // by track id so repeats neither inflate the walk nor truncate the
-                // tail; the page loop stops only on an empty page (defensive bound
-                // below). The old "accumulated >= total" stop let 569 favorites fall
-                // off the end of the list.
-                let mut favorite_item_ids: std::collections::HashSet<i64> =
-                    std::collections::HashSet::new();
-                let mut favorite_items_duplicated: u64 = 0;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    match client.get_favorites_with_retry(offset, limit).await {
-                        Ok(page) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            let page_total = page.total as u64;
-                            favorites_provider_total =
-                                favorites_provider_total.max(page.total as i64);
-                            reported_favorites = Some(favorites_provider_total);
-                            if page.items.is_empty() {
-                                break;
-                            }
-                            for item in &page.items {
-                                if !favorite_item_ids.insert(item.item.id) {
-                                    favorite_items_duplicated += 1;
-                                    continue;
-                                }
-                                favorites_seen += 1;
-                                let track = &item.item;
-                                let artist_name = track
-                                    .artist
-                                    .as_ref()
-                                    .map(|a| a.name.clone())
-                                    .unwrap_or_else(|| "Unknown".to_string());
-                                let album_title = track.album.as_ref().map(|a| a.title.clone());
-                                let album_cover = track.album.as_ref().and_then(|a| a.cover_url());
-
-                                let sync_input = crate::services::enrichment::SyncTrackInput {
-                                    origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                        title: Some(track.title.clone()),
-                                        artist: Some(artist_name),
-                                        album: album_title,
-                                        album_artist: track.album.as_ref().and_then(|a| {
-                                            a.artist.as_ref().map(|art| art.name.clone())
-                                        }),
-                                        track_number: track.track_number.map(|tn| tn as u32),
-                                        disc_number: track.disc_number.map(|dn| dn as u32),
-                                        isrc: track.isrc.clone(),
-                                        barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
-                                        label: track.album.as_ref().and_then(|a| a.label.clone()),
-                                        release_date: track
-                                            .album
-                                            .as_ref()
-                                            .and_then(|a| a.release_date.clone()),
-                                        source_name: "tidal".to_string(),
-                                        ..Default::default()
-                                    },
-                                    service_track_id: track.id.to_string(),
-                                    service_name: "tidal".to_string(),
-                                    service_id: tidal_service_id,
-                                    account_id,
-                                    is_favorite: true,
-                                    is_purchased: false,
-                                    // FIX 2026-08-25 (matriz de metadatos): calidad
-                                    // declarada por Tidal, no un hardcode.
-                                    format: Some("FLAC".to_string()),
-                                    bit_depth: None,
-                                    sample_rate: None,
-                                    quality_score: None,
-                                    audio_quality: Some(
-                                        classify_audio_tier(
-                                            None,
-                                            None,
-                                            None,
-                                            track.audio_quality.as_deref().or(Some("FLAC")),
-                                        )
-                                        .as_str()
-                                        .to_string(),
-                                    ),
-                                    cover_art_url: album_cover,
-                                    duration_ms: Some(track.duration * 1000),
-                                    query_musicbrainz: false,
-                                    album_is_favorite: false,
-                                    album_provider_track_id: None,
-                                };
-
-                                let t_enrich = std::time::Instant::now();
-                                match enrich_persist_with_locked_retry(
-                                    &enrichment_engine,
-                                    db,
-                                    sync_input,
-                                )
-                                .await
-                                {
-                                    Ok(res) => {
-                                        enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                        tracks_processed += 1;
-                                        if res.is_new_global_track {
-                                            tracks_new_global += 1;
-                                        }
-                                        if res.is_new_source_for_service {
-                                            sources_new_for_service += 1;
-                                        }
-                                        if res.is_new_library_entry_for_account {
-                                            library_entries_new_for_account += 1;
-                                        }
-                                        if res.is_already_present {
-                                            tracks_already_present += 1;
-                                        }
-                                        if res.is_new_import {
-                                            tracks_changed_unique += 1;
-                                            imported_tracks_total += 1;
-                                        } else {
-                                            skipped_tracks_total += 1;
-                                        }
-                                        favorite_tracks_total += 1;
-                                        availability_checked += 1;
-                                        match res.completeness {
-                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
-                                            _ => metadata_partial += 1,
-                                        }
-                                    }
-                                    Err(e) => {
-                                        errors.push(format!(
-                                            "Tidal favorite track error for {}: {}",
-                                            track.id, e
-                                        ));
-                                    }
-                                }
-
-                                emit(SyncProgressEvent::running(
-                                    &service_normalized,
-                                    Some(account_id),
-                                    "importing_favorite_tracks",
-                                    favorite_tracks_total,
-                                    Some(page_total),
-                                    format!(
-                                        "Importing Tidal favorite tracks ({}/{})",
-                                        favorite_tracks_total, page_total
-                                    ),
-                                    imported_tracks_total,
-                                    favorite_tracks_total,
-                                ));
-                            }
-                            // S187/Route 2: advance by the REAL page length; a short-but-
-                            // non-empty page is NOT end-of-data (Tidal sends no `next` and
-                            // may return filtered pages). Repeated items are de-duplicated
-                            // above, so the walk now ends only on an empty page; the bound
-                            // below is pure belt-and-braces against a provider that never
-                            // returns one.
-                            offset += page.items.len() as i32;
-                            if favorites_provider_total > 0
-                                && i64::from(offset)
-                                    > favorites_provider_total + i64::from(limit) * 2
-                            {
-                                tracing::warn!(
-                                    "[S187][tidal] favorite tracks pagination ran past the provider total (offset {}, total {}); stopping",
-                                    offset,
-                                    favorites_provider_total
-                                );
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Tidal favorite tracks fetch error: {}", e);
-                            if is_tidal_auth_error(&e) {
-                                // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
-                                // intenta UN refresh forzado; si el proveedor emite token fresco, la
-                                // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
-                                // queda registrado como warning para re-ejecutar el sync.
-                                if let Some(fresh_tok) =
-                                    tidal_force_refresh_after_401(db, account_id).await
-                                {
-                                    client.set_access_token(fresh_tok);
-                                    warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
-                                    break;
-                                }
-                                let _ = mark_account_credentials_invalid(
-                                    db,
-                                    "tidal",
-                                    "HTTP 401: Tidal session unauthorized or expired",
-                                    Some(account_id),
-                                )
-                                .await;
-                                let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorites: {}", e);
-                                emit(SyncProgressEvent::requires_auth(
-                                    &service_normalized,
-                                    Some(account_id),
-                                    &err_msg,
-                                ));
-                                return Err(err_msg);
-                            }
-                            // S187: transient failure survived retries — record the gap
-                            // honestly; NEVER silently truncate the import.
-                            warnings.push(format!(
-                                "Tidal favorite tracks incomplete: imported {} of {} provider tracks (page at offset {} failed after retry)",
-                                favorites_seen, favorites_provider_total, offset
-                            ));
-                            tracing::warn!(
-                                "[S187][tidal] favorite tracks: importadas {} de {} provider",
-                                favorites_seen,
-                                favorites_provider_total
-                            );
-                            break;
-                        }
-                    }
-                }
-                if favorite_items_duplicated > 0 {
-                    tracing::info!(
-                        "[S187][tidal] favorite tracks: {} ítems repetidos entre páginas omitidos",
-                        favorite_items_duplicated
-                    );
-                }
-                tracing::info!(
-                    "[S187][tidal] favorite tracks: importadas {} de {} provider",
-                    favorites_seen,
-                    favorites_provider_total
-                );
-            }
-
-            // Phase 2: Favorite Albums
-            if prefs.favorite_albums {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "fetching_favorite_albums",
-                    0,
-                    None,
-                    "Fetching Tidal favorite albums...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut offset = 0;
-                let limit = 50;
-                // S187: provider-reported grand total, for honest X-of-Y reporting.
-                let mut albums_provider_total: i64 = 0;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    match client.get_favorite_albums_with_retry(offset, limit).await {
-                        Ok(page) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            let page_total = page.total as u64;
-                            albums_provider_total = albums_provider_total.max(page.total as i64);
-                            reported_albums = Some(albums_provider_total);
-                            if page.items.is_empty() {
-                                break;
-                            }
-                            for item in &page.items {
-                                let album = &item.item;
-                                favorite_albums_total += 1;
-                                albums_seen += 1;
-                                emit(SyncProgressEvent::running(
-                                    &service_normalized,
-                                    Some(account_id),
-                                    "importing_favorite_albums",
-                                    favorite_albums_total,
-                                    Some(page_total),
-                                    format!(
-                                        "Importing Tidal favorite albums ({}/{})",
-                                        favorite_albums_total, page_total
-                                    ),
-                                    imported_tracks_total,
-                                    favorite_tracks_total,
-                                ));
-
-                                let album_tidal_id_str = album.tidal_id.to_string();
-
-                                // 1. Ensure artist and album exist in local DB and is marked favorite
-                                let artist_id = if let Some(ref artist) = album.artist {
-                                    let clean_name =
-                                        syncify_core_domain::metadata::sanitize_artist_name(
-                                            &artist.name,
-                                        );
-                                    let artist_res: Option<(i64,)> = sqlx::query_as("INSERT OR IGNORE INTO artists (name) VALUES (?) RETURNING id")
-                                        .bind(&clean_name)
-                                        .fetch_optional(db)
-                                        .await
-                                        .unwrap_or(None);
-
-                                    if let Some(row) = artist_res {
-                                        row.0
-                                    } else {
-                                        sqlx::query_as::<_, (i64,)>("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-                                            .bind(&clean_name)
-                                            .fetch_one(db)
-                                            .await
-                                            .map(|r| r.0)
-                                            .unwrap_or(1)
-                                    }
-                                } else {
-                                    1
-                                };
-
-                                let t_pers = std::time::Instant::now();
-                                let aid_res: Option<(i64,)> = sqlx::query_as(
-                                    r#"
-                                    INSERT INTO albums (title, release_date, total_tracks, cover_art_url, tidal_id, label, upc, is_favorite, favorite_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-                                    ON CONFLICT(tidal_id) WHERE tidal_id IS NOT NULL DO UPDATE SET
-                                        label = COALESCE(albums.label, excluded.label),
-                                        upc = COALESCE(albums.upc, excluded.upc),
-                                        is_favorite = 1,
-                                        favorite_at = COALESCE(albums.favorite_at, CURRENT_TIMESTAMP)
-                                    RETURNING id
-                                    "#
-                                )
-                                .bind(&album.title)
-                                .bind(&album.release_date)
-                                .bind(album.total_tracks)
-                                .bind(album.cover_url())
-                                .bind(&album_tidal_id_str)
-                                .bind(&album.label)
-                                .bind(&album.upc)
-                                .fetch_optional(db)
-                                .await
-                                .unwrap_or(None);
-
-                                if let Some((album_id,)) = aid_res {
-                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-                                        .bind(album_id)
-                                        .bind(artist_id)
-                                        .execute(db)).await;
-                                }
-                                persistence_ms += t_pers.elapsed().as_millis() as u64;
-
-                                // 2. Check cached availability unless force_retry_unavailable is requested
-                                let mut is_cached_unavailable = false;
-                                if !prefs.force_retry_unavailable {
-                                    if let Ok(Some((cached_status, reason))) = crate::services::tidal::check_album_availability(
-                                        db,
-                                        tidal_service_id,
-                                        &album_tidal_id_str,
-                                        crate::services::tidal::DEFAULT_UNAVAILABLE_ALBUM_TTL_SECS,
-                                    ).await {
-                                        is_cached_unavailable = true;
-                                        albums_unavailable += 1;
-                                        let exp_count = album.total_tracks.unwrap_or(1) as u64;
-                                        tracks_unavailable += exp_count;
-                                        tracks_expansion_deferred += exp_count;
-                                        warnings.push(format!(
-                                            "Tidal album '{}' ({}) skipped (cached as {:?}: {})",
-                                            album.title, album.tidal_id, cached_status, reason
-                                        ));
-                                        tracing::info!(
-                                            album_id = album.tidal_id,
-                                            title = %album.title,
-                                            status = ?cached_status,
-                                            "[perform_sync_service/tidal] Album expansion skipped due to active TTL cache"
-                                        );
-                                    }
-                                }
-
-                                if is_cached_unavailable {
-                                    continue;
-                                }
-
-                                // 3. Expand album tracks from Tidal API
-                                let t_exp = std::time::Instant::now();
-                                let exp_res = client
-                                    .get_album_tracks_expanded(album.tidal_id, 0, 100)
-                                    .await;
-                                entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
-
-                                match exp_res {
-                                    Ok(res) => {
-                                        match res.status {
-                                            crate::services::tidal::TidalAlbumExpansionStatus::Available => {
-                                                // Clear previous unavailable record if any
-                                                let _ = crate::services::tidal::clear_album_availability(db, tidal_service_id, &album_tidal_id_str).await;
-
-                                                for track_item in &res.tracks {
-                                                    tracks_expanded += 1;
-                                                    let track = track_item.track();
-                                                    let artist_name = track.artist.as_ref().map(|a| a.name.clone())
-                                                        .or_else(|| album.artist.as_ref().map(|a| a.name.clone()))
-                                                        .unwrap_or_else(|| "Unknown".to_string());
-                                                    let album_cover = album.cover_url();
-
-                                                    let sync_input = crate::services::enrichment::SyncTrackInput {
-                                                        origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                                            title: Some(track.title.clone()),
-                                                            artist: Some(artist_name),
-                                                            album: Some(album.title.clone()),
-                                                            album_artist: album.artist.as_ref().map(|a| a.name.clone()),
-                                                            track_number: track.track_number.map(|tn| tn as u32),
-                                                            disc_number: track.disc_number.map(|dn| dn as u32),
-                                                            isrc: track.isrc.clone(),
-                                                            barcode: album.upc.clone(),
-                                                            label: album.label.clone(),
-                                                            release_date: album.release_date.clone(),
-                                                            source_name: "tidal".to_string(),
-                                                            ..Default::default()
-                                                        },
-                                                        service_track_id: track.id.to_string(),
-                                                        service_name: "tidal".to_string(),
-                                                        service_id: tidal_service_id,
-                                                        account_id,
-                                                        is_favorite: false,
-                                                        is_purchased: false,
-                                                        format: Some("FLAC".to_string()),
-                                                        bit_depth: None,
-                                                        sample_rate: None,
-                                                        quality_score: None,
-                                                        audio_quality: Some(
-                                                            classify_audio_tier(
-                                                                None,
-                                                                None,
-                                                                None,
-                                                                track.audio_quality.as_deref().or(Some("FLAC")),
-                                                            )
-                                                            .as_str()
-                                                            .to_string(),
-                                                        ),
-                                                        cover_art_url: album_cover,
-                                                        duration_ms: Some(track.duration * 1000),
-                                                        query_musicbrainz: false,
-                                                        album_is_favorite: true,
-                                                        album_provider_track_id: None,
-                                                    };
-
-                                                    let t_enrich = std::time::Instant::now();
-                                                    match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await {
-                                                        Ok(res) => {
-                                                            enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                                            tracks_processed += 1;
-                                                            if res.is_new_global_track {
-                                                                tracks_new_global += 1;
-                                                            }
-                                                            if res.is_new_source_for_service {
-                                                                sources_new_for_service += 1;
-                                                            }
-                                                            if res.is_new_library_entry_for_account {
-                                                                library_entries_new_for_account += 1;
-                                                            }
-                                                            if res.is_already_present {
-                                                                tracks_already_present += 1;
-                                                            }
-                                                            if res.is_new_import {
-                                                                tracks_changed_unique += 1;
-                                                                imported_tracks_total += 1;
-                                                            } else {
-                                                                skipped_tracks_total += 1;
-                                                            }
-                                                            availability_checked += 1;
-                                                            match res.completeness {
-                                                                syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
-                                                                _ => metadata_partial += 1,
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            tracks_expansion_failed += 1;
-                                                            errors.push(format!("Tidal album track error for {}: {}", track.id, e));
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            crate::services::tidal::TidalAlbumExpansionStatus::UnavailableFromProvider
-                                            | crate::services::tidal::TidalAlbumExpansionStatus::RegionRestricted => {
-                                                let _ = crate::services::tidal::record_album_availability(
-                                                    db,
-                                                    tidal_service_id,
-                                                    &album_tidal_id_str,
-                                                    res.status,
-                                                    res.http_status,
-                                                    res.sub_status,
-                                                    res.reason.as_deref(),
-                                                ).await;
-
-                                                albums_unavailable += 1;
-                                                let exp_count = album.total_tracks.unwrap_or(1) as u64;
-                                                tracks_unavailable += exp_count;
-                                                let warn_msg = format!(
-                                                    "Album '{}' ({}) is unavailable from Tidal ({:?}: {})",
-                                                    album.title, album.tidal_id, res.status, res.reason.as_deref().unwrap_or("Asset not found")
-                                                );
-                                                tracing::warn!(
-                                                    album_id = album.tidal_id,
-                                                    title = %album.title,
-                                                    status = ?res.status,
-                                                    reason = ?res.reason,
-                                                    "[perform_sync_service/tidal] Album unavailable from provider"
-                                                );
-                                                warnings.push(warn_msg);
-                                            }
-                                            crate::services::tidal::TidalAlbumExpansionStatus::AuthFailed => {
-                                                let err_msg = format!("RequiresAuth: Tidal session unauthorized (401/403) while expanding album {}: {}", album.tidal_id, res.reason.unwrap_or_default());
-                                                // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
-                                                // intenta UN refresh forzado; si el proveedor emite token fresco, la
-                                                // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
-                                                // queda registrado como warning para re-ejecutar el sync.
-                                                if let Some(fresh_tok) = tidal_force_refresh_after_401(db, account_id).await {
-                                                    client.set_access_token(fresh_tok);
-                                                    warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 expandiendo álbum {} — vuelve a ejecutar el sync para completarlo", album.tidal_id));
-                                                    break;
-                                                }
-                                                let _ = mark_account_credentials_invalid(
-                                                    db,
-                                                    "tidal",
-                                                    "HTTP 401: Tidal session unauthorized or expired",
-                                                    Some(account_id),
-                                                )
-                                                .await;
-                                                emit(SyncProgressEvent::requires_auth(&service_normalized, Some(account_id), &err_msg));
-                                                return Err(err_msg);
-                                            }
-                                            crate::services::tidal::TidalAlbumExpansionStatus::RateLimited
-                                            | crate::services::tidal::TidalAlbumExpansionStatus::TemporarilyFailed
-                                            | crate::services::tidal::TidalAlbumExpansionStatus::MalformedResponse => {
-                                                let exp_count = album.total_tracks.unwrap_or(1) as u64;
-                                                tracks_expansion_failed += exp_count;
-                                                let err_msg = format!("Failed to expand album tracks for {} ({}): {:?}", album.title, album.tidal_id, res.reason);
-                                                tracing::error!("[perform_sync_service/tidal] {}", err_msg);
-                                                errors.push(err_msg);
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        let exp_count = album.total_tracks.unwrap_or(1) as u64;
-                                        tracks_expansion_failed += exp_count;
-                                        errors.push(format!(
-                                            "Failed to expand album tracks for {} ({}): {}",
-                                            album.title, album.tidal_id, e
-                                        ));
-                                    }
-                                }
-                            }
-                            // S187: advance by the REAL page length; short pages continue.
-                            offset += page.items.len() as i32;
-                            if !crate::services::tidal::should_continue_tidal_pagination(
-                                page.items.len(),
-                                albums_seen,
-                                page.total as i64,
-                            ) {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Tidal favorite albums fetch error: {}", e);
-                            if is_tidal_auth_error(&e) {
-                                // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
-                                // intenta UN refresh forzado; si el proveedor emite token fresco, la
-                                // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
-                                // queda registrado como warning para re-ejecutar el sync.
-                                if let Some(fresh_tok) =
-                                    tidal_force_refresh_after_401(db, account_id).await
-                                {
-                                    client.set_access_token(fresh_tok);
-                                    warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
-                                    break;
-                                }
-                                let _ = mark_account_credentials_invalid(
-                                    db,
-                                    "tidal",
-                                    "HTTP 401: Tidal session unauthorized or expired",
-                                    Some(account_id),
-                                )
-                                .await;
-                                let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite albums: {}", e);
-                                emit(SyncProgressEvent::requires_auth(
-                                    &service_normalized,
-                                    Some(account_id),
-                                    &err_msg,
-                                ));
-                                return Err(err_msg);
-                            }
-                            // S187: record the gap honestly instead of silently truncating.
-                            warnings.push(format!(
-                                "Tidal favorite albums incomplete: imported {} of {} provider albums (page at offset {} failed after retry)",
-                                albums_seen, albums_provider_total, offset
-                            ));
-                            tracing::warn!(
-                                "[S187][tidal] favorite albums: importados {} de {} provider",
-                                albums_seen,
-                                albums_provider_total
-                            );
-                            break;
-                        }
-                    }
-                }
-                tracing::info!(
-                    "[S187][tidal] favorite albums: importados {} de {} provider",
-                    albums_seen,
-                    albums_provider_total
-                );
-            }
-
-            // Phase 3: Playlists
-            if prefs.playlists {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "fetching_playlists",
-                    0,
-                    None,
-                    "Fetching Tidal playlists...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut offset = 0;
-                let limit = 50;
-                // S187: provider-reported grand total, for honest X-of-Y reporting.
-                let mut playlists_provider_total: i64 = 0;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    match client.get_playlists_with_retry(offset, limit).await {
-                        Ok(page) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            let page_total = page.total as u64;
-                            playlists_provider_total =
-                                playlists_provider_total.max(page.total as i64);
-                            reported_playlists = Some(playlists_provider_total);
-                            if page.items.is_empty() {
-                                break;
-                            }
-                            for pl in &page.items {
-                                playlists_total += 1;
-                                playlists_seen += 1;
-                                emit(SyncProgressEvent::running(
-                                    &service_normalized,
-                                    Some(account_id),
-                                    "importing_playlists",
-                                    playlists_total,
-                                    Some(page_total),
-                                    format!(
-                                        "Importing Tidal playlist: {} ({}/{})",
-                                        pl.title, playlists_total, page_total
-                                    ),
-                                    imported_tracks_total,
-                                    favorite_tracks_total,
-                                ));
-
-                                let t_pers = std::time::Instant::now();
-                                let playlist_db_id: Option<(i64,)> =
-                                    match upsert_playlist_and_source(
-                                        db,
-                                        account_id,
-                                        &pl.uuid,
-                                        &pl.title,
-                                        pl.description.as_deref(),
-                                        None,
-                                        pl.public_playlist.unwrap_or(true) as i32,
-                                        0,
-                                        None,
-                                        pl.track_count,
-                                    )
-                                    .await
-                                    {
-                                        Ok(id) => Some((id,)),
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Failed to upsert Tidal playlist '{}': {}",
-                                                pl.title,
-                                                e
-                                            );
-                                            None
-                                        }
-                                    };
-                                persistence_ms += t_pers.elapsed().as_millis() as u64;
-
-                                // S187: paginate ALL pages of this playlist's tracks.
-                                // Previously a single page (offset always 0, limit 100) was fetched
-                                // and never advanced, so every playlist longer than ~100 items lost
-                                // its remainder (owner DB: 57 playlists declare 25220 provider tracks
-                                // but only 3846 playlist_tracks rows existed).
-                                let mut track_offset: i32 = 0;
-                                let track_limit: i32 = 100;
-                                let mut playlist_tracks_seen: u64 = 0;
-                                // Fallback when the API omits totalNumberOfItems: declared count.
-                                let mut playlist_provider_total: i64 = pl.track_count as i64;
-                                let mut playlist_fetch_error: Option<String> = None;
-
-                                if let Some((p_id,)) = playlist_db_id {
-                                    loop {
-                                        let t_exp = std::time::Instant::now();
-                                        match client
-                                            .get_playlist_tracks_with_retry(
-                                                &pl.uuid,
-                                                track_offset,
-                                                track_limit,
-                                            )
-                                            .await
-                                        {
-                                            Ok(tracks_page) => {
-                                                entity_expansion_ms +=
-                                                    t_exp.elapsed().as_millis() as u64;
-                                                if tracks_page.total > 0 {
-                                                    playlist_provider_total =
-                                                        playlist_provider_total
-                                                            .max(tracks_page.total as i64);
-                                                }
-                                                if tracks_page.items.is_empty() {
-                                                    break;
-                                                }
-                                                for (pos, item) in
-                                                    tracks_page.items.iter().enumerate()
-                                                {
-                                                    tracks_expanded += 1;
-                                                    playlist_tracks_seen += 1;
-                                                    let track = &item.item;
-                                                    let artist_name = track
-                                                        .artist
-                                                        .as_ref()
-                                                        .map(|a| a.name.clone())
-                                                        .unwrap_or_else(|| "Unknown".to_string());
-                                                    let album_title = track
-                                                        .album
-                                                        .as_ref()
-                                                        .map(|a| a.title.clone());
-                                                    let album_cover = track
-                                                        .album
-                                                        .as_ref()
-                                                        .and_then(|a| a.cover_url());
-
-                                                    let sync_input = crate::services::enrichment::SyncTrackInput {
-                                                        origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                                            title: Some(track.title.clone()),
-                                                            artist: Some(artist_name),
-                                                            album: album_title,
-                                                            album_artist: track.album.as_ref().and_then(|a| a.artist.as_ref().map(|art| art.name.clone())),
-                                                            track_number: track.track_number.map(|tn| tn as u32),
-                                                            disc_number: track.disc_number.map(|dn| dn as u32),
-                                                            isrc: track.isrc.clone(),
-                                                            barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
-                                                            label: track.album.as_ref().and_then(|a| a.label.clone()),
-                                                            release_date: track.album.as_ref().and_then(|a| a.release_date.clone()),
-                                                            source_name: "tidal".to_string(),
-                                                            ..Default::default()
-                                                        },
-                                                        service_track_id: track.id.to_string(),
-                                                        service_name: "tidal".to_string(),
-                                                        service_id: tidal_service_id,
-                                                        account_id,
-                                                        is_favorite: false,
-                                                        is_purchased: false,
-                                                        format: Some("FLAC".to_string()),
-                                                        bit_depth: None,
-                                                        sample_rate: None,
-                                                        quality_score: None,
-                                                        audio_quality: Some(
-                                                            classify_audio_tier(
-                                                                None,
-                                                                None,
-                                                                None,
-                                                                track.audio_quality.as_deref().or(Some("FLAC")),
-                                                            )
-                                                            .as_str()
-                                                            .to_string(),
-                                                        ),
-                                                        cover_art_url: album_cover,
-                                                        duration_ms: Some(track.duration * 1000),
-                                                        query_musicbrainz: false,
-                                                        album_is_favorite: false,
-                                                        album_provider_track_id: None,
-                                                    };
-
-                                                    let t_enrich = std::time::Instant::now();
-                                                    match enrich_persist_with_locked_retry(
-                                                        &enrichment_engine,
-                                                        db,
-                                                        sync_input,
-                                                    )
-                                                    .await
-                                                    {
-                                                        Ok(res) => {
-                                                            enrichment_ms +=
-                                                                t_enrich.elapsed().as_millis()
-                                                                    as u64;
-                                                            tracks_processed += 1;
-                                                            let t_pl_track =
-                                                                std::time::Instant::now();
-                                                            let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
-                                                                "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
-                                                            )
-                                                            .bind(p_id)
-                                                            .bind(res.track_id)
-                                                            .bind(track_offset + pos as i32 + 1)
-                                                            .execute(db)).await;
-                                                            persistence_ms +=
-                                                                t_pl_track.elapsed().as_millis()
-                                                                    as u64;
-
-                                                            if res.is_new_global_track {
-                                                                tracks_new_global += 1;
-                                                            }
-                                                            if res.is_new_source_for_service {
-                                                                sources_new_for_service += 1;
-                                                            }
-                                                            if res.is_new_library_entry_for_account
-                                                            {
-                                                                library_entries_new_for_account +=
-                                                                    1;
-                                                            }
-                                                            if res.is_already_present {
-                                                                tracks_already_present += 1;
-                                                            }
-                                                            if res.is_new_import {
-                                                                tracks_changed_unique += 1;
-                                                                imported_tracks_total += 1;
-                                                            } else {
-                                                                skipped_tracks_total += 1;
-                                                            }
-                                                            availability_checked += 1;
-                                                            match res.completeness {
-                                                                syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
-                                                                _ => metadata_partial += 1,
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            tracks_expansion_failed += 1;
-                                                            errors.push(format!("Tidal playlist track error for {}: {}", track.id, e));
-                                                        }
-                                                    }
-                                                }
-                                                // S187: advance by the REAL page length; short-but-non-empty
-                                                // pages are NOT end-of-data.
-                                                track_offset += tracks_page.items.len() as i32;
-                                                if !crate::services::tidal::should_continue_tidal_pagination(
-                                                    tracks_page.items.len(),
-                                                    playlist_tracks_seen,
-                                                    tracks_page.total as i64,
-                                                ) {
-                                                    break;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                // S187: transient failure survived retries. Record it,
-                                                // report X-of-Y below and continue with the next playlist;
-                                                // NEVER silently truncate the rest of the import.
-                                                playlist_fetch_error = Some(e);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
-                                    let _ =
-                                        crate::commands::playlists::recompact_playlist_positions(
-                                            db, p_id,
-                                        )
-                                        .await;
-                                }
-
-                                if let Some(fetch_err) = playlist_fetch_error {
-                                    let missing =
-                                        (playlist_provider_total - playlist_tracks_seen as i64)
-                                            .max(0) as u64;
-                                    tracks_expansion_failed += missing;
-                                    errors.push(format!(
-                                        "Failed to expand playlist tracks for {} ({}): {}: imported {} of {} (offset {})",
-                                        pl.title, pl.uuid, fetch_err, playlist_tracks_seen, playlist_provider_total, track_offset
-                                    ));
-                                    tracing::warn!(
-                                        "[S187][tidal] playlist '{}': importadas {} de {} provider",
-                                        pl.title,
-                                        playlist_tracks_seen,
-                                        playlist_provider_total
-                                    );
-                                } else {
-                                    tracing::info!(
-                                        "[S187][tidal] playlist '{}': importadas {} de {} provider",
-                                        pl.title,
-                                        playlist_tracks_seen,
-                                        playlist_provider_total
-                                    );
-                                    if playlist_provider_total > 0
-                                        && (playlist_tracks_seen as i64) < playlist_provider_total
-                                    {
-                                        warnings.push(format!(
-                                            "Tidal playlist '{}' incomplete: imported {} of {} tracks",
-                                            pl.title, playlist_tracks_seen, playlist_provider_total
-                                        ));
-                                    }
-                                }
-                            }
-                            // S187: advance by the REAL page length; short pages continue.
-                            offset += page.items.len() as i32;
-                            if !crate::services::tidal::should_continue_tidal_pagination(
-                                page.items.len(),
-                                playlists_seen,
-                                page.total as i64,
-                            ) {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Tidal playlists fetch error: {}", e);
-                            if is_tidal_auth_error(&e) {
-                                // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
-                                // intenta UN refresh forzado; si el proveedor emite token fresco, la
-                                // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
-                                // queda registrado como warning para re-ejecutar el sync.
-                                if let Some(fresh_tok) =
-                                    tidal_force_refresh_after_401(db, account_id).await
-                                {
-                                    client.set_access_token(fresh_tok);
-                                    warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
-                                    break;
-                                }
-                                let _ = mark_account_credentials_invalid(
-                                    db,
-                                    "tidal",
-                                    "HTTP 401: Tidal session unauthorized or expired",
-                                    Some(account_id),
-                                )
-                                .await;
-                                let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching playlists: {}", e);
-                                emit(SyncProgressEvent::requires_auth(
-                                    &service_normalized,
-                                    Some(account_id),
-                                    &err_msg,
-                                ));
-                                return Err(err_msg);
-                            }
-                            // S187: record the gap honestly instead of silently truncating.
-                            warnings.push(format!(
-                                "Tidal playlists incomplete: imported {} of {} provider playlists (page at offset {} failed after retry)",
-                                playlists_seen, playlists_provider_total, offset
-                            ));
-                            tracing::warn!(
-                                "[S187][tidal] playlists: importadas {} de {} provider",
-                                playlists_seen,
-                                playlists_provider_total
-                            );
-                            break;
-                        }
-                    }
-                }
-                tracing::info!(
-                    "[S187][tidal] playlists: importadas {} de {} provider",
-                    playlists_seen,
-                    playlists_provider_total
-                );
-            }
-
-            // Phase 4: Favorite Artists
-            if prefs.favorite_artists {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "fetching_favorite_artists",
-                    0,
-                    None,
-                    "Fetching Tidal favorite artists...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut offset = 0;
-                let limit = 50;
-                // S187: provider-reported grand total, for honest X-of-Y reporting.
-                let mut artists_provider_total: i64 = 0;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    match client.get_favorite_artists_with_retry(offset, limit).await {
-                        Ok(page) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            artists_provider_total = artists_provider_total.max(page.total as i64);
-                            if page.items.is_empty() {
-                                break;
-                            }
-                            for item in &page.items {
-                                favorite_artists_total += 1;
-                                let art = &item.item;
-                                let t_pers = std::time::Instant::now();
-                                if let Ok(aid) = client.get_or_create_artist(db, &art.name).await {
-                                    let tidal_id_str = art.id.to_string();
-                                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP), tidal_id = COALESCE(tidal_id, ?) WHERE id = ?")
-                                        .bind(&tidal_id_str)
-                                        .bind(aid)
-                                        .execute(db)).await;
-                                }
-                                persistence_ms += t_pers.elapsed().as_millis() as u64;
-                            }
-                            // S187: advance by the REAL page length; short pages continue.
-                            offset += page.items.len() as i32;
-                            if !crate::services::tidal::should_continue_tidal_pagination(
-                                page.items.len(),
-                                favorite_artists_total,
-                                page.total as i64,
-                            ) {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Tidal favorite artists fetch error: {}", e);
-                            if is_tidal_auth_error(&e) {
-                                // FIX 2026-08-25: un 401 ya no condena la cuenta de inmediato. Se
-                                // intenta UN refresh forzado; si el proveedor emite token fresco, la
-                                // cuenta sigue válida (las descargas tampoco se bloquean) y el hueco
-                                // queda registrado como warning para re-ejecutar el sync.
-                                if let Some(fresh_tok) =
-                                    tidal_force_refresh_after_401(db, account_id).await
-                                {
-                                    client.set_access_token(fresh_tok);
-                                    warnings.push(format!("Tidal: sesión renovada a mitad de sync tras 401 — vuelve a ejecutar el sync para completar lo omitido ({} )", e));
-                                    break;
-                                }
-                                let _ = mark_account_credentials_invalid(
-                                    db,
-                                    "tidal",
-                                    "HTTP 401: Tidal session unauthorized or expired",
-                                    Some(account_id),
-                                )
-                                .await;
-                                let err_msg = format!("RequiresAuth: Tidal session rejected (401) while fetching favorite artists: {}", e);
-                                emit(SyncProgressEvent::requires_auth(
-                                    &service_normalized,
-                                    Some(account_id),
-                                    &err_msg,
-                                ));
-                                return Err(err_msg);
-                            }
-                            // S187: record the gap honestly instead of silently truncating.
-                            warnings.push(format!(
-                                "Tidal favorite artists incomplete: imported {} of {} provider artists (page at offset {} failed after retry)",
-                                favorite_artists_total, artists_provider_total, offset
-                            ));
-                            tracing::warn!(
-                                "[S187][tidal] favorite artists: importados {} de {} provider",
-                                favorite_artists_total,
-                                artists_provider_total
-                            );
-                            break;
-                        }
-                    }
-                }
-                tracing::info!(
-                    "[S187][tidal] favorite artists: importados {} de {} provider",
-                    favorite_artists_total,
-                    artists_provider_total
-                );
-            }
-        }
-        "spotify" => {
-            let arm = sync_spotify_arm(
+            let arm = sync_tidal_arm(
                 db,
                 &service_normalized,
                 account_id,
@@ -7634,6 +7641,10 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                     persistence_ms,
                     albums_seen,
                     availability_checked,
+                    albums_unavailable,
+                    tracks_unavailable,
+                    tracks_expansion_deferred,
+                    tracks_expansion_failed,
                     favorite_albums_total,
                     favorite_artists_total,
                     reported_favorites,
@@ -7666,6 +7677,90 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             persistence_ms = arm.persistence_ms;
             albums_seen = arm.albums_seen;
             availability_checked = arm.availability_checked;
+            albums_unavailable = arm.albums_unavailable;
+            tracks_unavailable = arm.tracks_unavailable;
+            tracks_expansion_deferred = arm.tracks_expansion_deferred;
+            tracks_expansion_failed = arm.tracks_expansion_failed;
+            favorite_albums_total = arm.favorite_albums_total;
+            favorite_artists_total = arm.favorite_artists_total;
+            reported_favorites = arm.reported_favorites;
+            reported_albums = arm.reported_albums;
+            reported_playlists = arm.reported_playlists;
+            album_expansion_metrics = arm.album_expansion_metrics;
+            errors = arm.errors;
+            warnings = arm.warnings;
+        }
+        "spotify" => {
+            let arm = sync_spotify_arm(
+                db,
+                &service_normalized,
+                account_id,
+                &creds,
+                &prefs,
+                emitter,
+                &enrichment_engine,
+                ArmOutcome {
+                    tracks_processed,
+                    tracks_expanded,
+                    tracks_new_global,
+                    sources_new_for_service,
+                    library_entries_new_for_account,
+                    tracks_already_present,
+                    tracks_changed_unique,
+                    imported_tracks_total,
+                    skipped_tracks_total,
+                    favorite_tracks_total,
+                    favorites_seen,
+                    metadata_enriched,
+                    metadata_partial,
+                    playlists_seen,
+                    playlists_total,
+                    api_fetch_ms,
+                    entity_expansion_ms,
+                    enrichment_ms,
+                    persistence_ms,
+                    albums_seen,
+                    availability_checked,
+                    albums_unavailable,
+                    tracks_unavailable,
+                    tracks_expansion_deferred,
+                    tracks_expansion_failed,
+                    favorite_albums_total,
+                    favorite_artists_total,
+                    reported_favorites,
+                    reported_albums,
+                    reported_playlists,
+                    album_expansion_metrics,
+                    errors,
+                    warnings,
+                },
+            )
+            .await?;
+            tracks_processed = arm.tracks_processed;
+            tracks_expanded = arm.tracks_expanded;
+            tracks_new_global = arm.tracks_new_global;
+            sources_new_for_service = arm.sources_new_for_service;
+            library_entries_new_for_account = arm.library_entries_new_for_account;
+            tracks_already_present = arm.tracks_already_present;
+            tracks_changed_unique = arm.tracks_changed_unique;
+            imported_tracks_total = arm.imported_tracks_total;
+            skipped_tracks_total = arm.skipped_tracks_total;
+            favorite_tracks_total = arm.favorite_tracks_total;
+            favorites_seen = arm.favorites_seen;
+            metadata_enriched = arm.metadata_enriched;
+            metadata_partial = arm.metadata_partial;
+            playlists_seen = arm.playlists_seen;
+            playlists_total = arm.playlists_total;
+            api_fetch_ms = arm.api_fetch_ms;
+            entity_expansion_ms = arm.entity_expansion_ms;
+            enrichment_ms = arm.enrichment_ms;
+            persistence_ms = arm.persistence_ms;
+            albums_seen = arm.albums_seen;
+            availability_checked = arm.availability_checked;
+            albums_unavailable = arm.albums_unavailable;
+            tracks_unavailable = arm.tracks_unavailable;
+            tracks_expansion_deferred = arm.tracks_expansion_deferred;
+            tracks_expansion_failed = arm.tracks_expansion_failed;
             favorite_albums_total = arm.favorite_albums_total;
             favorite_artists_total = arm.favorite_artists_total;
             reported_favorites = arm.reported_favorites;
@@ -7706,6 +7801,10 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                     persistence_ms,
                     albums_seen,
                     availability_checked,
+                    albums_unavailable,
+                    tracks_unavailable,
+                    tracks_expansion_deferred,
+                    tracks_expansion_failed,
                     favorite_albums_total,
                     favorite_artists_total,
                     reported_favorites,
@@ -7738,6 +7837,10 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             persistence_ms = arm.persistence_ms;
             albums_seen = arm.albums_seen;
             availability_checked = arm.availability_checked;
+            albums_unavailable = arm.albums_unavailable;
+            tracks_unavailable = arm.tracks_unavailable;
+            tracks_expansion_deferred = arm.tracks_expansion_deferred;
+            tracks_expansion_failed = arm.tracks_expansion_failed;
             favorite_albums_total = arm.favorite_albums_total;
             favorite_artists_total = arm.favorite_artists_total;
             reported_favorites = arm.reported_favorites;
@@ -8973,6 +9076,35 @@ mod sync_arm_contracts {
         assert!(
             error.starts_with("RequiresAuth: Spotify authentication failed:"),
             "el contrato del error es RequiresAuth de Spotify, llegó: {error}"
+        );
+        assert_eq!(emitter.phases(), vec!["requires_auth".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn sin_cuenta_valida_el_brazo_tidal_pide_autenticacion_antes_de_la_red() {
+        let pool = fixture_pool().await;
+        let emitter = ArmEmitter::default();
+        let engine = crate::services::enrichment::EnrichmentEngine::with_db(pool.clone());
+
+        let error = match sync_tidal_arm(
+            &pool,
+            "tidal",
+            1,
+            &json!({}),
+            &prefs_sin_fases(),
+            Some(&emitter),
+            &engine,
+            ArmOutcome::default(),
+        )
+        .await
+        {
+            Ok(_) => panic!("sin cuenta Tidal el brazo no puede continuar"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.starts_with("RequiresAuth: no active or valid Tidal account available"),
+            "contrato del error inesperado: {error}"
         );
         assert_eq!(emitter.phases(), vec!["requires_auth".to_string()]);
     }
