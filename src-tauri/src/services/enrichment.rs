@@ -3223,40 +3223,30 @@ impl EnrichmentEngine {
                 raw_insert_title
             };
 
-            let res = sqlx::query(
-                r#"
-                INSERT INTO tracks (
-                    title, album_id, duration_ms, track_number, disc_number,
-                    isrc, musicbrainz_id, explicit, genre, subgenre,
-                    release_year, record_label, bpm, musical_key, energy, acoustid_fingerprint, audio_quality,
-                    qobuz_id, spotify_id, enrichment_status, enriched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                RETURNING id
-                "#
-            )
-            .bind(effective_insert_title)
-            .bind(album_id_opt)
-            .bind(input.duration_ms)
-            .bind(parsed_track_num)
-            .bind(parsed_disc_num.unwrap_or(1))
-            .bind(enriched.isrc.value())
-            .bind(enriched.musicbrainz_recording_id.value())
-            .bind(parsed_explicit.unwrap_or(0))
-            .bind(clean_genre.as_deref())
-            .bind(enriched.style.value())
-            .bind(effective_year)
-            .bind(enriched.label.value())
-            .bind(parsed_bpm)
-            .bind(enriched.initial_key.value())
-            .bind(parsed_energy)
-            .bind(enriched.acoustid_fingerprint.value())
-            .bind(effective_audio_quality.as_deref())
-            .bind(qobuz_id_val)
-            .bind(spotify_id_val)
-            .bind(target_status)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to insert track '{}': {}", track_title, e))?;
+            let res = sqlx::query(INSERT_PISTA_SQL)
+                .bind(effective_insert_title)
+                .bind(album_id_opt)
+                .bind(input.duration_ms)
+                .bind(parsed_track_num)
+                .bind(parsed_disc_num.unwrap_or(1))
+                .bind(enriched.isrc.value())
+                .bind(enriched.musicbrainz_recording_id.value())
+                .bind(parsed_explicit.unwrap_or(0))
+                .bind(clean_genre.as_deref())
+                .bind(enriched.style.value())
+                .bind(effective_year)
+                .bind(enriched.label.value())
+                .bind(parsed_bpm)
+                .bind(enriched.initial_key.value())
+                .bind(parsed_energy)
+                .bind(enriched.acoustid_fingerprint.value())
+                .bind(effective_audio_quality.as_deref())
+                .bind(qobuz_id_val)
+                .bind(spotify_id_val)
+                .bind(target_status)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to insert track '{}': {}", track_title, e))?;
 
             use sqlx::Row;
             res.get::<i64, _>(0)
@@ -4287,10 +4277,82 @@ fn misma_familia_de_album(actual: &str, entrante: &str) -> bool {
     !a.is_empty() && !b.is_empty() && a == b
 }
 
+/// El alta de pista del sync. `tracks.isrc` es UNIQUE (0002:91): dos altas
+/// del mismo ISRC chocaban y la segunda se perdía en silencio (51 avisos
+/// `UNIQUE constraint failed: tracks.isrc` en la prueba manual del 2026-10-19).
+const INSERT_PISTA_SQL: &str = r#"
+                INSERT INTO tracks (
+                    title, album_id, duration_ms, track_number, disc_number,
+                    isrc, musicbrainz_id, explicit, genre, subgenre,
+                    release_year, record_label, bpm, musical_key, energy, acoustid_fingerprint, audio_quality,
+                    qobuz_id, spotify_id, enrichment_status, enriched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(isrc) DO UPDATE SET
+                    musicbrainz_id = COALESCE(tracks.musicbrainz_id, excluded.musicbrainz_id),
+                    enriched_at = CURRENT_TIMESTAMP
+                RETURNING id
+                "#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use syncify_metadata_domain::fixtures::*;
+
+    /// ED-04b: el alta de pista no puede perder la pista en silencio cuando su
+    /// ISRC ya está en la biblioteca. La prueba manual del 2026-10-19 dejó 51
+    /// avisos `UNIQUE constraint failed: tracks.isrc` durante el sync de Tidal.
+    #[tokio::test]
+    async fn el_alta_de_pista_tolera_un_isrc_ya_presente() {
+        use sqlx::Row;
+
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let previa: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc) VALUES ('Previa', 'ESABC2600002') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        async fn alta(pool: &sqlx::SqlitePool) -> Result<i64, sqlx::Error> {
+            let row = sqlx::query(super::INSERT_PISTA_SQL)
+                .bind("Entrante")
+                .bind(None::<i64>)
+                .bind(Some(180_000i64))
+                .bind(None::<i64>)
+                .bind(1i64)
+                .bind("ESABC2600002")
+                .bind(None::<String>)
+                .bind(0i64)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind(None::<i64>)
+                .bind(None::<String>)
+                .bind(None::<i64>)
+                .bind(None::<String>)
+                .bind(None::<f64>)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind("pending")
+                .fetch_one(pool)
+                .await?;
+            Ok(row.get::<i64, _>(0))
+        }
+
+        let id = alta(&pool)
+            .await
+            .expect("el alta no debe chocar con tracks.isrc");
+        assert_eq!(id, previa, "debe reutilizar la fila existente");
+        let album: Option<i64> = sqlx::query_scalar("SELECT album_id FROM tracks WHERE id = ?")
+            .bind(previa)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(album, None, "no debe mover de álbum la pista existente");
+    }
 
     /// Pares reales del log de la prueba manual del 2026-10-19 (sync de Tidal,
     /// Qobuz y Spotify): todos son la misma grabación en dos ediciones del
