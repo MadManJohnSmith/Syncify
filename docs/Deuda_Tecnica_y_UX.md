@@ -158,11 +158,19 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   vive en `soundcloud_credentials`, función pura con 5 tests, y el brazo tiene su contrato
   (sin fases activas no emite ni toca nada). `perform_sync_service_with_emitter_inner` baja
   de **4 546 a 4 330 líneas**.
-- **Límite conocido**: ningún test de integración recorre el brazo con red; la equivalencia
-  se apoya en el compilador, en el contrato del brazo y en la suite completa, no en una
-  reproducción con proveedor real.
-- **Siguiente**: los otros cuatro brazos (qobuz 3 576, tidal 4 760, spotify 5 859, deezer
-  6 689) con el mismo patrón, empezando por el más pequeño que quede.
+- **Hecho (2026-10-19, segundo brazo)**: Deezer extraído a `sync_deezer_arm` (591 líneas).
+  Aquí el patrón se generalizó: `ArmOutcome` crece a 26 contadores y el orquestador siembra
+  el struct entero y lo vuelca por asignación, sin sumas parciales; los `Vec` de errores y
+  avisos se mueven y se devuelven (el brazo corre en exclusiva, nadie más los toca mientras
+  tanto). `album_expansion_metrics` entra tal cual porque el brazo lo incrementa por campo.
+  El orquestador baja a **3 809 líneas** (desde 4 546: un 16 % menos) y el límite de 8
+  argumentos se marca con `allow(clippy::too_many_arguments)` en el brazo, no en el
+  orquestador.
+- **Límite conocido**: ningún test de integración recorre los brazos con red; la equivalencia
+  se apoya en el compilador, en el contrato de cada brazo (autenticación sin red, sin fases
+  no se toca nada) y en la suite completa, no en una reproducción con proveedor real.
+- **Siguiente**: spotify (~830 líneas), tidal (~1 099) y qobuz (~1 184), con el patrón de
+  siembra y volcado ya probado en dos brazos.
 - **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
   después, y el orquestador reducido a un bucle corto sobre los brazos.
 

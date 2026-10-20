@@ -3328,6 +3328,13 @@ struct ArmOutcome {
     playlists_total: u64,
     api_fetch_ms: u64,
     enrichment_ms: u64,
+    albums_seen: u64,
+    availability_checked: u64,
+    entity_expansion_ms: u64,
+    persistence_ms: u64,
+    favorite_albums_total: u64,
+    favorite_artists_total: u64,
+    album_expansion_metrics: crate::commands::types::AlbumSyncExpansionMetrics,
     errors: Vec<String>,
     warnings: Vec<String>,
 }
@@ -3578,6 +3585,601 @@ async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
     if prefs.favorite_albums || prefs.favorite_artists || prefs.purchases || prefs.library_history {
         arm.warnings.push(
             "SoundCloud: the API exposes a user's likes and own playlists — favorite albums/artists, purchases and listen history have no user endpoint; album and artist rows come from each track's own publisher_metadata".to_string(),
+        );
+    }
+    Ok(arm)
+}
+
+/// Brazo Deezer del sync. Recibe el motor de enriquecimiento ya construido por
+/// el orquestador porque lo comparte con los demás brazos.
+#[allow(clippy::too_many_arguments)]
+async fn sync_deezer_arm<E: SyncProgressEmitter>(
+    db: &sqlx::SqlitePool,
+    service_normalized: &str,
+    account_id: i64,
+    creds: &serde_json::Value,
+    prefs: &ImportPreferences,
+    emitter: Option<&E>,
+    enrichment_engine: &crate::services::enrichment::EnrichmentEngine,
+    mut arm: ArmOutcome,
+) -> Result<ArmOutcome, String> {
+    let emit = |event: SyncProgressEvent| {
+        if let Some(e) = emitter {
+            e.emit_sync_progress(&event);
+        }
+    };
+    // S189-Fase-1: real phases for tracks/albums/artists/playlists
+    // through the shared EnrichmentEngine (previously only favorite
+    // tracks ran, via the legacy raw-dedupe importer, and every other
+    // phase emitted an empty progress event).
+    let arl = match creds["arl"]
+        .as_str()
+        .or_else(|| creds["access_token"].as_str())
+    {
+        Some(a) => a,
+        None => {
+            let err_msg = "RequiresAuth: Deezer ARL missing".to_string();
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                Some(account_id),
+                &err_msg,
+            ));
+            return Err(err_msg);
+        }
+    };
+    let mut client = crate::services::DeezerClient::new(arl.to_string());
+    // Auth parity (Fase-1 item 3): SOLO un rechazo explícito de Deezer
+    // invalida las credenciales y produce RequiresAuth. Un 5xx, un 429
+    // o un corte de red son fallos de comprobación: se aborta esta
+    // sincronización y se deja la cuenta como estaba, porque invalidar
+    // por un 503 obligaba a re-loguear con la sesión perfectamente viva.
+    // Un 401/403 o una ARL rechazada (2xx sin token de sesión) siguen
+    // invalidando exactamente igual que antes.
+    let init_result = client.init().await;
+    // A-0: un único veredicto para toda la app. La traducción es
+    // TIPADA (deezer.rs), no por texto: releer el mensaje para decidir
+    // reintroduciría la ambigüedad que este fix elimina, y un rechazo
+    // real como "ARL may be invalid" no contiene ningún marcador 401.
+    let verdict = crate::worker::AuthVerdict::from_deezer_init(&init_result);
+    if let Err(e) = init_result {
+        // Solo un rechazo real emite `requires_auth`. Ese evento se
+        // traduce en `auth-session-expired` (commands/progress.rs:38) y
+        // la UI marca el servicio como `invalid`
+        // (AccountsView.vue:1555-1557), así que emitirlo ante un 503
+        // volvería a mostrar la sesión como caída aunque la BD esté
+        // intacta. Un fallo transitorio solo aborta esta sincronización.
+        let err_msg = if verdict.invalidates_session() {
+            let _ =
+                mark_account_credentials_invalid(db, "deezer", e.message(), Some(account_id)).await;
+            let err_msg = format!("RequiresAuth: Deezer session rejected ({})", e);
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                Some(account_id),
+                &err_msg,
+            ));
+            err_msg
+        } else {
+            format!("Deezer sync failed (transient, session left intact): {}", e)
+        };
+        return Err(err_msg);
+    }
+    let user_id = match client.user_id() {
+        Some(u) if !u.is_empty() && u != "0" => u,
+        _ => {
+            let err_msg = "RequiresAuth: Deezer user id unavailable".to_string();
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                Some(account_id),
+                &err_msg,
+            ));
+            return Err(err_msg);
+        }
+    };
+    let deezer_service_id: i64 = client.get_service_id(db, "deezer").await?;
+
+    // Unified page size for every phase (Fase-1 item 4).
+    const DEEZER_PAGE: i32 = 100;
+
+    let persist_deezer_track = |engine_track: crate::services::enrichment::SyncTrackInput| {
+        enrich_persist_with_locked_retry(&enrichment_engine, db, engine_track)
+    };
+
+    // Phase 1: Favorite Tracks
+    if prefs.favorite_tracks {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "fetching_favorite_tracks",
+            0,
+            None,
+            "Importing Deezer favorite tracks...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut track_offset: i32 = 0;
+        loop {
+            let t_api = std::time::Instant::now();
+            let (tracks, total) = match client
+                .get_favorites_public(&user_id, track_offset, DEEZER_PAGE)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    arm.errors.push(format!(
+                        "Deezer favorites error at offset {}: {}",
+                        track_offset, e
+                    ));
+                    break;
+                }
+            };
+            arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+            if tracks.is_empty() {
+                break;
+            }
+            for track in &tracks {
+                arm.favorite_tracks_total += 1;
+                arm.favorites_seen += 1;
+                let sync_input = crate::services::enrichment::SyncTrackInput {
+                    origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                        title: Some(track.title.clone()),
+                        artist: Some(
+                            track
+                                .artist_name
+                                .clone()
+                                .unwrap_or_else(|| "Unknown".to_string()),
+                        ),
+                        album: track.album_title.clone(),
+                        isrc: track.isrc.clone(),
+                        source_name: "deezer".to_string(),
+                        ..Default::default()
+                    },
+                    service_track_id: track.id.clone(),
+                    service_name: "deezer".to_string(),
+                    service_id: deezer_service_id,
+                    account_id,
+                    is_favorite: true,
+                    format: Some("FLAC".to_string()),
+                    bit_depth: Some(16),
+                    sample_rate: Some(44100),
+                    audio_quality: Some(
+                        classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
+                            .as_str()
+                            .to_string(),
+                    ),
+                    duration_ms: track.duration.parse::<i64>().ok().map(|d| d * 1000),
+                    query_musicbrainz: false,
+                    ..Default::default()
+                };
+                // S189-F2-6: canonical bookkeeping identical to the
+                // qobuz/tidal/spotify arms.
+                let t_enrich = std::time::Instant::now();
+                match persist_deezer_track(sync_input).await {
+                    Ok(res) => {
+                        arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                        arm.tracks_processed += 1;
+                        if res.is_new_global_track {
+                            arm.tracks_new_global += 1;
+                        }
+                        if res.is_new_source_for_service {
+                            arm.sources_new_for_service += 1;
+                        }
+                        if res.is_new_library_entry_for_account {
+                            arm.library_entries_new_for_account += 1;
+                        }
+                        if res.is_already_present {
+                            arm.tracks_already_present += 1;
+                        }
+                        if res.is_new_import {
+                            arm.tracks_changed_unique += 1;
+                            arm.imported_tracks_total += 1;
+                        } else {
+                            arm.skipped_tracks_total += 1;
+                        }
+                        arm.availability_checked += 1;
+                        match res.completeness {
+                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                                arm.metadata_enriched += 1
+                            }
+                            _ => arm.metadata_partial += 1,
+                        }
+                    }
+                    Err(e) => arm.errors.push(format!("Deezer track {}: {}", track.id, e)),
+                }
+            }
+            match crate::services::import_pagination::next_offset(
+                track_offset,
+                tracks.len() as i32,
+                DEEZER_PAGE,
+                (total > 0).then_some(total as i64),
+            ) {
+                Some(next) => track_offset = next,
+                None => break,
+            }
+        }
+    }
+
+    // Phase 2: Favorite Albums (catalog expansion + favorite marking)
+    if prefs.favorite_albums {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "importing_favorite_albums",
+            0,
+            None,
+            "Importing Deezer favorite albums...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut album_offset: i32 = 0;
+        loop {
+            let t_api = std::time::Instant::now();
+            let (albums, total) = match client
+                .get_user_albums_public(&user_id, album_offset, DEEZER_PAGE)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    arm.errors.push(format!(
+                        "Deezer albums error at offset {}: {}",
+                        album_offset, e
+                    ));
+                    break;
+                }
+            };
+            arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+            if albums.is_empty() {
+                break;
+            }
+            for album in &albums {
+                arm.albums_seen += 1;
+                let album_tracks = match client.get_album_tracks_public(&album.id).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        arm.album_expansion_metrics.album_detail_failed += 1;
+                        arm.warnings.push(format!(
+                            "Deezer album '{}' expansion failed: {}",
+                            album.title, e
+                        ));
+                        continue;
+                    }
+                };
+                arm.album_expansion_metrics.album_detail_success += 1;
+                for track in &album_tracks {
+                    let sync_input = crate::services::enrichment::SyncTrackInput {
+                        origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                            title: Some(track.title.clone()),
+                            artist: Some(track.artist_name.clone().unwrap_or_else(|| {
+                                album
+                                    .artist_name
+                                    .clone()
+                                    .unwrap_or_else(|| "Unknown".to_string())
+                            })),
+                            album: Some(album.title.clone()),
+                            album_artist: album.artist_name.clone(),
+                            isrc: track.isrc.clone(),
+                            source_name: "deezer".to_string(),
+                            ..Default::default()
+                        },
+                        service_track_id: track.id.clone(),
+                        service_name: "deezer".to_string(),
+                        service_id: deezer_service_id,
+                        account_id,
+                        is_favorite: false,
+                        // S198 engine extension works for deezer too:
+                        // the ALBUM is a favorite even though no
+                        // deezer_id column exists on albums (identity
+                        // stays title+artist per canonical matching).
+                        album_is_favorite: true,
+                        format: Some("FLAC".to_string()),
+                        bit_depth: Some(16),
+                        sample_rate: Some(44100),
+                        audio_quality: Some(
+                            classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
+                                .as_str()
+                                .to_string(),
+                        ),
+                        duration_ms: track.duration.parse::<i64>().ok().map(|d| d * 1000),
+                        query_musicbrainz: false,
+                        ..Default::default()
+                    };
+                    // S189-F2-6: canonical bookkeeping (album-expansion shape).
+                    let t_enrich = std::time::Instant::now();
+                    match persist_deezer_track(sync_input).await {
+                        Ok(res) => {
+                            arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                            arm.tracks_processed += 1;
+                            if res.is_new_global_track {
+                                arm.tracks_new_global += 1;
+                            }
+                            if res.is_new_source_for_service {
+                                arm.sources_new_for_service += 1;
+                            }
+                            if res.is_new_library_entry_for_account {
+                                arm.library_entries_new_for_account += 1;
+                            }
+                            if res.is_already_present {
+                                arm.tracks_already_present += 1;
+                            }
+                            if res.is_new_import {
+                                arm.imported_tracks_total += 1;
+                            } else {
+                                arm.skipped_tracks_total += 1;
+                            }
+                            arm.availability_checked += 1;
+                            match res.completeness {
+                                syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                                    arm.metadata_enriched += 1
+                                }
+                                _ => arm.metadata_partial += 1,
+                            }
+                        }
+                        Err(e) => arm
+                            .errors
+                            .push(format!("Deezer album track {}: {}", track.id, e)),
+                    }
+                }
+                arm.favorite_albums_total += 1;
+            }
+            match crate::services::import_pagination::next_offset(
+                album_offset,
+                albums.len() as i32,
+                DEEZER_PAGE,
+                (total > 0).then_some(total),
+            ) {
+                Some(next) => album_offset = next,
+                None => break,
+            }
+        }
+    }
+
+    // Phase 3: Favorite Artists
+    if prefs.favorite_artists {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "importing_favorite_artists",
+            0,
+            None,
+            "Importing Deezer favorite artists...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut artist_offset: i32 = 0;
+        loop {
+            let t_api = std::time::Instant::now();
+            let (artists, total) = match client
+                .get_user_artists_public(&user_id, artist_offset, DEEZER_PAGE)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                    arm.errors.push(format!(
+                        "Deezer artists error at offset {}: {}",
+                        artist_offset, e
+                    ));
+                    break;
+                }
+            };
+            arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+            if artists.is_empty() {
+                break;
+            }
+            for (_artist_provider_id, artist_name) in &artists {
+                if let Ok(artist_db_id) = client.get_or_create_artist(db, artist_name).await {
+                    let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
+                        .bind(artist_db_id)
+                        .execute(db)).await;
+                    arm.favorite_artists_total += 1;
+                }
+            }
+            match crate::services::import_pagination::next_offset(
+                artist_offset,
+                artists.len() as i32,
+                DEEZER_PAGE,
+                (total > 0).then_some(total),
+            ) {
+                Some(next) => artist_offset = next,
+                None => break,
+            }
+        }
+    }
+
+    // Phase 4: Playlists (upsert + full expansion via S187 pagination)
+    if prefs.playlists {
+        emit(SyncProgressEvent::running(
+            &service_normalized,
+            Some(account_id),
+            "importing_playlists",
+            0,
+            None,
+            "Importing Deezer playlists...",
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+        ));
+        let mut playlist_offset: i32 = 0;
+        loop {
+            let (playlists, total) = match client
+                .get_user_playlists_public(&user_id, playlist_offset, DEEZER_PAGE)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    arm.errors.push(format!(
+                        "Deezer playlists error at offset {}: {}",
+                        playlist_offset, e
+                    ));
+                    break;
+                }
+            };
+            if playlists.is_empty() {
+                break;
+            }
+            for pl in &playlists {
+                let t_pers = std::time::Instant::now();
+                let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
+                    db,
+                    account_id,
+                    &pl.id,
+                    &pl.title,
+                    pl.description.as_deref(),
+                    None,
+                    pl.is_public.unwrap_or(true) as i32,
+                    pl.is_collaborative.unwrap_or(false) as i32,
+                    pl.cover.as_deref(),
+                    pl.nb_tracks.unwrap_or(0),
+                )
+                .await
+                {
+                    Ok(id) => Some((id,)),
+                    Err(e) => {
+                        arm.errors.push(format!(
+                            "Deezer playlist '{}' upsert failed: {}",
+                            pl.title, e
+                        ));
+                        None
+                    }
+                };
+                arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
+
+                if playlist_db_id.is_none() {
+                    continue;
+                }
+                arm.playlists_total += 1;
+                arm.playlists_seen += 1;
+
+                if let Some((p_id,)) = playlist_db_id {
+                    let declared_total: i64 = pl.nb_tracks.unwrap_or(0).max(0) as i64;
+                    let mut track_offset: i32 = 0;
+                    loop {
+                        let t_exp = std::time::Instant::now();
+                        let (tracks, page_total) = match client
+                            .get_playlist_tracks_public(&pl.id, track_offset, DEEZER_PAGE)
+                            .await
+                        {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[S189] Deezer playlist '{}' expansion incomplete at offset {}: {}",
+                                    pl.title, track_offset, e
+                                );
+                                break;
+                            }
+                        };
+                        arm.entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
+                        if tracks.is_empty() {
+                            break;
+                        }
+                        let provider_total = declared_total.max(page_total);
+                        for (idx, track) in tracks.iter().enumerate() {
+                            let pos = track_offset as usize + idx;
+                            arm.tracks_expanded += 1;
+                            let sync_input = crate::services::enrichment::SyncTrackInput {
+                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                    title: Some(track.title.clone()),
+                                    artist: Some(
+                                        track
+                                            .artist_name
+                                            .clone()
+                                            .unwrap_or_else(|| "Unknown".to_string()),
+                                    ),
+                                    album: track.album_title.clone(),
+                                    isrc: track.isrc.clone(),
+                                    source_name: "deezer".to_string(),
+                                    ..Default::default()
+                                },
+                                service_track_id: track.id.clone(),
+                                service_name: "deezer".to_string(),
+                                service_id: deezer_service_id,
+                                account_id,
+                                is_favorite: false,
+                                format: Some("FLAC".to_string()),
+                                bit_depth: Some(16),
+                                sample_rate: Some(44100),
+                                audio_quality: Some(
+                                    classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
+                                        .as_str()
+                                        .to_string(),
+                                ),
+                                duration_ms: track.duration.parse::<i64>().ok().map(|d| d * 1000),
+                                query_musicbrainz: false,
+                                ..Default::default()
+                            };
+                            // S189-F2-6: canonical bookkeeping.
+                            let t_enrich = std::time::Instant::now();
+                            if let Ok(res) = persist_deezer_track(sync_input).await {
+                                let t_pl_track = std::time::Instant::now();
+                                let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
+                                    "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+                                )
+                                .bind(p_id)
+                                .bind(res.track_id)
+                                .bind(pos as i32 + 1)
+                                .execute(db)).await;
+                                arm.persistence_ms += t_pl_track.elapsed().as_millis() as u64;
+                                arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                arm.tracks_processed += 1;
+                                if res.is_new_global_track {
+                                    arm.tracks_new_global += 1;
+                                }
+                                if res.is_new_source_for_service {
+                                    arm.sources_new_for_service += 1;
+                                }
+                                if res.is_new_library_entry_for_account {
+                                    arm.library_entries_new_for_account += 1;
+                                }
+                                if res.is_already_present {
+                                    arm.tracks_already_present += 1;
+                                }
+                                if res.is_new_import {
+                                    arm.tracks_changed_unique += 1;
+                                    arm.imported_tracks_total += 1;
+                                } else {
+                                    arm.skipped_tracks_total += 1;
+                                }
+                                match res.completeness {
+                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                                        arm.metadata_enriched += 1
+                                    }
+                                    _ => arm.metadata_partial += 1,
+                                }
+                            }
+                        }
+                        match crate::services::import_pagination::next_offset(
+                            track_offset,
+                            tracks.len() as i32,
+                            DEEZER_PAGE,
+                            (provider_total > 0).then_some(provider_total),
+                        ) {
+                            Some(next) => track_offset = next,
+                            None => break,
+                        }
+                    }
+                    // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
+                    let _ =
+                        crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
+                }
+            }
+            match crate::services::import_pagination::next_offset(
+                playlist_offset,
+                playlists.len() as i32,
+                DEEZER_PAGE,
+                (total > 0).then_some(total),
+            ) {
+                Some(next) => playlist_offset = next,
+                None => break,
+            }
+        }
+    }
+
+    // Phase 5: Library history — Deezer's public API exposes no listen
+    // history endpoint; documented capacity constant, not an error.
+    if prefs.library_history {
+        arm.warnings.push(
+            "Deezer: listen history not exposed by the public API (documented capability gap)"
+                .to_string(),
         );
     }
     Ok(arm)
@@ -6984,591 +7586,70 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             }
         }
         "deezer" => {
-            // S189-Fase-1: real phases for tracks/albums/artists/playlists
-            // through the shared EnrichmentEngine (previously only favorite
-            // tracks ran, via the legacy raw-dedupe importer, and every other
-            // phase emitted an empty progress event).
-            let arl = match creds["arl"]
-                .as_str()
-                .or_else(|| creds["access_token"].as_str())
-            {
-                Some(a) => a,
-                None => {
-                    let err_msg = "RequiresAuth: Deezer ARL missing".to_string();
-                    emit(SyncProgressEvent::requires_auth(
-                        &service_normalized,
-                        Some(account_id),
-                        &err_msg,
-                    ));
-                    return Err(err_msg);
-                }
-            };
-            let mut client = crate::services::DeezerClient::new(arl.to_string());
-            // Auth parity (Fase-1 item 3): SOLO un rechazo explícito de Deezer
-            // invalida las credenciales y produce RequiresAuth. Un 5xx, un 429
-            // o un corte de red son fallos de comprobación: se aborta esta
-            // sincronización y se deja la cuenta como estaba, porque invalidar
-            // por un 503 obligaba a re-loguear con la sesión perfectamente viva.
-            // Un 401/403 o una ARL rechazada (2xx sin token de sesión) siguen
-            // invalidando exactamente igual que antes.
-            let init_result = client.init().await;
-            // A-0: un único veredicto para toda la app. La traducción es
-            // TIPADA (deezer.rs), no por texto: releer el mensaje para decidir
-            // reintroduciría la ambigüedad que este fix elimina, y un rechazo
-            // real como "ARL may be invalid" no contiene ningún marcador 401.
-            let verdict = crate::worker::AuthVerdict::from_deezer_init(&init_result);
-            if let Err(e) = init_result {
-                // Solo un rechazo real emite `requires_auth`. Ese evento se
-                // traduce en `auth-session-expired` (commands/progress.rs:38) y
-                // la UI marca el servicio como `invalid`
-                // (AccountsView.vue:1555-1557), así que emitirlo ante un 503
-                // volvería a mostrar la sesión como caída aunque la BD esté
-                // intacta. Un fallo transitorio solo aborta esta sincronización.
-                let err_msg = if verdict.invalidates_session() {
-                    let _ = mark_account_credentials_invalid(
-                        db,
-                        "deezer",
-                        e.message(),
-                        Some(account_id),
-                    )
-                    .await;
-                    let err_msg = format!("RequiresAuth: Deezer session rejected ({})", e);
-                    emit(SyncProgressEvent::requires_auth(
-                        &service_normalized,
-                        Some(account_id),
-                        &err_msg,
-                    ));
-                    err_msg
-                } else {
-                    format!("Deezer sync failed (transient, session left intact): {}", e)
-                };
-                return Err(err_msg);
-            }
-            let user_id = match client.user_id() {
-                Some(u) if !u.is_empty() && u != "0" => u,
-                _ => {
-                    let err_msg = "RequiresAuth: Deezer user id unavailable".to_string();
-                    emit(SyncProgressEvent::requires_auth(
-                        &service_normalized,
-                        Some(account_id),
-                        &err_msg,
-                    ));
-                    return Err(err_msg);
-                }
-            };
-            let deezer_service_id: i64 = client.get_service_id(db, "deezer").await?;
-
-            // Unified page size for every phase (Fase-1 item 4).
-            const DEEZER_PAGE: i32 = 100;
-
-            let persist_deezer_track =
-                |engine_track: crate::services::enrichment::SyncTrackInput| {
-                    enrich_persist_with_locked_retry(&enrichment_engine, db, engine_track)
-                };
-
-            // Phase 1: Favorite Tracks
-            if prefs.favorite_tracks {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "fetching_favorite_tracks",
-                    0,
-                    None,
-                    "Importing Deezer favorite tracks...",
+            let arm = sync_deezer_arm(
+                db,
+                &service_normalized,
+                account_id,
+                &creds,
+                &prefs,
+                emitter,
+                &enrichment_engine,
+                ArmOutcome {
+                    tracks_processed,
+                    tracks_expanded,
+                    tracks_new_global,
+                    sources_new_for_service,
+                    library_entries_new_for_account,
+                    tracks_already_present,
+                    tracks_changed_unique,
                     imported_tracks_total,
+                    skipped_tracks_total,
                     favorite_tracks_total,
-                ));
-                let mut track_offset: i32 = 0;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    let (tracks, total) = match client
-                        .get_favorites_public(&user_id, track_offset, DEEZER_PAGE)
-                        .await
-                    {
-                        Ok(v) => v,
-                        Err(e) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            errors.push(format!(
-                                "Deezer favorites error at offset {}: {}",
-                                track_offset, e
-                            ));
-                            break;
-                        }
-                    };
-                    api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                    if tracks.is_empty() {
-                        break;
-                    }
-                    for track in &tracks {
-                        favorite_tracks_total += 1;
-                        favorites_seen += 1;
-                        let sync_input = crate::services::enrichment::SyncTrackInput {
-                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                title: Some(track.title.clone()),
-                                artist: Some(
-                                    track
-                                        .artist_name
-                                        .clone()
-                                        .unwrap_or_else(|| "Unknown".to_string()),
-                                ),
-                                album: track.album_title.clone(),
-                                isrc: track.isrc.clone(),
-                                source_name: "deezer".to_string(),
-                                ..Default::default()
-                            },
-                            service_track_id: track.id.clone(),
-                            service_name: "deezer".to_string(),
-                            service_id: deezer_service_id,
-                            account_id,
-                            is_favorite: true,
-                            format: Some("FLAC".to_string()),
-                            bit_depth: Some(16),
-                            sample_rate: Some(44100),
-                            audio_quality: Some(
-                                classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
-                                    .as_str()
-                                    .to_string(),
-                            ),
-                            duration_ms: track.duration.parse::<i64>().ok().map(|d| d * 1000),
-                            query_musicbrainz: false,
-                            ..Default::default()
-                        };
-                        // S189-F2-6: canonical bookkeeping identical to the
-                        // qobuz/tidal/spotify arms.
-                        let t_enrich = std::time::Instant::now();
-                        match persist_deezer_track(sync_input).await {
-                            Ok(res) => {
-                                enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                tracks_processed += 1;
-                                if res.is_new_global_track {
-                                    tracks_new_global += 1;
-                                }
-                                if res.is_new_source_for_service {
-                                    sources_new_for_service += 1;
-                                }
-                                if res.is_new_library_entry_for_account {
-                                    library_entries_new_for_account += 1;
-                                }
-                                if res.is_already_present {
-                                    tracks_already_present += 1;
-                                }
-                                if res.is_new_import {
-                                    tracks_changed_unique += 1;
-                                    imported_tracks_total += 1;
-                                } else {
-                                    skipped_tracks_total += 1;
-                                }
-                                availability_checked += 1;
-                                match res.completeness {
-                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                                        metadata_enriched += 1
-                                    }
-                                    _ => metadata_partial += 1,
-                                }
-                            }
-                            Err(e) => errors.push(format!("Deezer track {}: {}", track.id, e)),
-                        }
-                    }
-                    match crate::services::import_pagination::next_offset(
-                        track_offset,
-                        tracks.len() as i32,
-                        DEEZER_PAGE,
-                        (total > 0).then_some(total as i64),
-                    ) {
-                        Some(next) => track_offset = next,
-                        None => break,
-                    }
-                }
-            }
-
-            // Phase 2: Favorite Albums (catalog expansion + favorite marking)
-            if prefs.favorite_albums {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "importing_favorite_albums",
-                    0,
-                    None,
-                    "Importing Deezer favorite albums...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut album_offset: i32 = 0;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    let (albums, total) = match client
-                        .get_user_albums_public(&user_id, album_offset, DEEZER_PAGE)
-                        .await
-                    {
-                        Ok(v) => v,
-                        Err(e) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            errors.push(format!(
-                                "Deezer albums error at offset {}: {}",
-                                album_offset, e
-                            ));
-                            break;
-                        }
-                    };
-                    api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                    if albums.is_empty() {
-                        break;
-                    }
-                    for album in &albums {
-                        albums_seen += 1;
-                        let album_tracks = match client.get_album_tracks_public(&album.id).await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                album_expansion_metrics.album_detail_failed += 1;
-                                warnings.push(format!(
-                                    "Deezer album '{}' expansion failed: {}",
-                                    album.title, e
-                                ));
-                                continue;
-                            }
-                        };
-                        album_expansion_metrics.album_detail_success += 1;
-                        for track in &album_tracks {
-                            let sync_input = crate::services::enrichment::SyncTrackInput {
-                                origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                    title: Some(track.title.clone()),
-                                    artist: Some(track.artist_name.clone().unwrap_or_else(|| {
-                                        album
-                                            .artist_name
-                                            .clone()
-                                            .unwrap_or_else(|| "Unknown".to_string())
-                                    })),
-                                    album: Some(album.title.clone()),
-                                    album_artist: album.artist_name.clone(),
-                                    isrc: track.isrc.clone(),
-                                    source_name: "deezer".to_string(),
-                                    ..Default::default()
-                                },
-                                service_track_id: track.id.clone(),
-                                service_name: "deezer".to_string(),
-                                service_id: deezer_service_id,
-                                account_id,
-                                is_favorite: false,
-                                // S198 engine extension works for deezer too:
-                                // the ALBUM is a favorite even though no
-                                // deezer_id column exists on albums (identity
-                                // stays title+artist per canonical matching).
-                                album_is_favorite: true,
-                                format: Some("FLAC".to_string()),
-                                bit_depth: Some(16),
-                                sample_rate: Some(44100),
-                                audio_quality: Some(
-                                    classify_audio_tier(Some(16), Some(44100), None, Some("FLAC"))
-                                        .as_str()
-                                        .to_string(),
-                                ),
-                                duration_ms: track.duration.parse::<i64>().ok().map(|d| d * 1000),
-                                query_musicbrainz: false,
-                                ..Default::default()
-                            };
-                            // S189-F2-6: canonical bookkeeping (album-expansion shape).
-                            let t_enrich = std::time::Instant::now();
-                            match persist_deezer_track(sync_input).await {
-                                Ok(res) => {
-                                    enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                    tracks_processed += 1;
-                                    if res.is_new_global_track {
-                                        tracks_new_global += 1;
-                                    }
-                                    if res.is_new_source_for_service {
-                                        sources_new_for_service += 1;
-                                    }
-                                    if res.is_new_library_entry_for_account {
-                                        library_entries_new_for_account += 1;
-                                    }
-                                    if res.is_already_present {
-                                        tracks_already_present += 1;
-                                    }
-                                    if res.is_new_import {
-                                        imported_tracks_total += 1;
-                                    } else {
-                                        skipped_tracks_total += 1;
-                                    }
-                                    availability_checked += 1;
-                                    match res.completeness {
-                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
-                                    _ => metadata_partial += 1,
-                                }
-                                }
-                                Err(e) => {
-                                    errors.push(format!("Deezer album track {}: {}", track.id, e))
-                                }
-                            }
-                        }
-                        favorite_albums_total += 1;
-                    }
-                    match crate::services::import_pagination::next_offset(
-                        album_offset,
-                        albums.len() as i32,
-                        DEEZER_PAGE,
-                        (total > 0).then_some(total),
-                    ) {
-                        Some(next) => album_offset = next,
-                        None => break,
-                    }
-                }
-            }
-
-            // Phase 3: Favorite Artists
-            if prefs.favorite_artists {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "importing_favorite_artists",
-                    0,
-                    None,
-                    "Importing Deezer favorite artists...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut artist_offset: i32 = 0;
-                loop {
-                    let t_api = std::time::Instant::now();
-                    let (artists, total) = match client
-                        .get_user_artists_public(&user_id, artist_offset, DEEZER_PAGE)
-                        .await
-                    {
-                        Ok(v) => v,
-                        Err(e) => {
-                            api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                            errors.push(format!(
-                                "Deezer artists error at offset {}: {}",
-                                artist_offset, e
-                            ));
-                            break;
-                        }
-                    };
-                    api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                    if artists.is_empty() {
-                        break;
-                    }
-                    for (_artist_provider_id, artist_name) in &artists {
-                        if let Ok(artist_db_id) = client.get_or_create_artist(db, artist_name).await
-                        {
-                            let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
-                                .bind(artist_db_id)
-                                .execute(db)).await;
-                            favorite_artists_total += 1;
-                        }
-                    }
-                    match crate::services::import_pagination::next_offset(
-                        artist_offset,
-                        artists.len() as i32,
-                        DEEZER_PAGE,
-                        (total > 0).then_some(total),
-                    ) {
-                        Some(next) => artist_offset = next,
-                        None => break,
-                    }
-                }
-            }
-
-            // Phase 4: Playlists (upsert + full expansion via S187 pagination)
-            if prefs.playlists {
-                emit(SyncProgressEvent::running(
-                    &service_normalized,
-                    Some(account_id),
-                    "importing_playlists",
-                    0,
-                    None,
-                    "Importing Deezer playlists...",
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                ));
-                let mut playlist_offset: i32 = 0;
-                loop {
-                    let (playlists, total) = match client
-                        .get_user_playlists_public(&user_id, playlist_offset, DEEZER_PAGE)
-                        .await
-                    {
-                        Ok(v) => v,
-                        Err(e) => {
-                            errors.push(format!(
-                                "Deezer playlists error at offset {}: {}",
-                                playlist_offset, e
-                            ));
-                            break;
-                        }
-                    };
-                    if playlists.is_empty() {
-                        break;
-                    }
-                    for pl in &playlists {
-                        let t_pers = std::time::Instant::now();
-                        let playlist_db_id: Option<(i64,)> = match upsert_playlist_and_source(
-                            db,
-                            account_id,
-                            &pl.id,
-                            &pl.title,
-                            pl.description.as_deref(),
-                            None,
-                            pl.is_public.unwrap_or(true) as i32,
-                            pl.is_collaborative.unwrap_or(false) as i32,
-                            pl.cover.as_deref(),
-                            pl.nb_tracks.unwrap_or(0),
-                        )
-                        .await
-                        {
-                            Ok(id) => Some((id,)),
-                            Err(e) => {
-                                errors.push(format!(
-                                    "Deezer playlist '{}' upsert failed: {}",
-                                    pl.title, e
-                                ));
-                                None
-                            }
-                        };
-                        persistence_ms += t_pers.elapsed().as_millis() as u64;
-
-                        if playlist_db_id.is_none() {
-                            continue;
-                        }
-                        playlists_total += 1;
-                        playlists_seen += 1;
-
-                        if let Some((p_id,)) = playlist_db_id {
-                            let declared_total: i64 = pl.nb_tracks.unwrap_or(0).max(0) as i64;
-                            let mut track_offset: i32 = 0;
-                            loop {
-                                let t_exp = std::time::Instant::now();
-                                let (tracks, page_total) = match client
-                                    .get_playlist_tracks_public(&pl.id, track_offset, DEEZER_PAGE)
-                                    .await
-                                {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "[S189] Deezer playlist '{}' expansion incomplete at offset {}: {}",
-                                            pl.title, track_offset, e
-                                        );
-                                        break;
-                                    }
-                                };
-                                entity_expansion_ms += t_exp.elapsed().as_millis() as u64;
-                                if tracks.is_empty() {
-                                    break;
-                                }
-                                let provider_total = declared_total.max(page_total);
-                                for (idx, track) in tracks.iter().enumerate() {
-                                    let pos = track_offset as usize + idx;
-                                    tracks_expanded += 1;
-                                    let sync_input = crate::services::enrichment::SyncTrackInput {
-                                        origin_meta:
-                                            crate::services::enrichment::OriginTrackMetadata {
-                                                title: Some(track.title.clone()),
-                                                artist: Some(
-                                                    track
-                                                        .artist_name
-                                                        .clone()
-                                                        .unwrap_or_else(|| "Unknown".to_string()),
-                                                ),
-                                                album: track.album_title.clone(),
-                                                isrc: track.isrc.clone(),
-                                                source_name: "deezer".to_string(),
-                                                ..Default::default()
-                                            },
-                                        service_track_id: track.id.clone(),
-                                        service_name: "deezer".to_string(),
-                                        service_id: deezer_service_id,
-                                        account_id,
-                                        is_favorite: false,
-                                        format: Some("FLAC".to_string()),
-                                        bit_depth: Some(16),
-                                        sample_rate: Some(44100),
-                                        audio_quality: Some(
-                                            classify_audio_tier(
-                                                Some(16),
-                                                Some(44100),
-                                                None,
-                                                Some("FLAC"),
-                                            )
-                                            .as_str()
-                                            .to_string(),
-                                        ),
-                                        duration_ms: track
-                                            .duration
-                                            .parse::<i64>()
-                                            .ok()
-                                            .map(|d| d * 1000),
-                                        query_musicbrainz: false,
-                                        ..Default::default()
-                                    };
-                                    // S189-F2-6: canonical bookkeeping.
-                                    let t_enrich = std::time::Instant::now();
-                                    if let Ok(res) = persist_deezer_track(sync_input).await {
-                                        let t_pl_track = std::time::Instant::now();
-                                        let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query(
-                                            "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
-                                        )
-                                        .bind(p_id)
-                                        .bind(res.track_id)
-                                        .bind(pos as i32 + 1)
-                                        .execute(db)).await;
-                                        persistence_ms += t_pl_track.elapsed().as_millis() as u64;
-                                        enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                        tracks_processed += 1;
-                                        if res.is_new_global_track {
-                                            tracks_new_global += 1;
-                                        }
-                                        if res.is_new_source_for_service {
-                                            sources_new_for_service += 1;
-                                        }
-                                        if res.is_new_library_entry_for_account {
-                                            library_entries_new_for_account += 1;
-                                        }
-                                        if res.is_already_present {
-                                            tracks_already_present += 1;
-                                        }
-                                        if res.is_new_import {
-                                            tracks_changed_unique += 1;
-                                            imported_tracks_total += 1;
-                                        } else {
-                                            skipped_tracks_total += 1;
-                                        }
-                                        match res.completeness {
-                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => metadata_enriched += 1,
-                                            _ => metadata_partial += 1,
-                                        }
-                                    }
-                                }
-                                match crate::services::import_pagination::next_offset(
-                                    track_offset,
-                                    tracks.len() as i32,
-                                    DEEZER_PAGE,
-                                    (provider_total > 0).then_some(provider_total),
-                                ) {
-                                    Some(next) => track_offset = next,
-                                    None => break,
-                                }
-                            }
-                            // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
-                            let _ =
-                                crate::commands::playlists::recompact_playlist_positions(db, p_id)
-                                    .await;
-                        }
-                    }
-                    match crate::services::import_pagination::next_offset(
-                        playlist_offset,
-                        playlists.len() as i32,
-                        DEEZER_PAGE,
-                        (total > 0).then_some(total),
-                    ) {
-                        Some(next) => playlist_offset = next,
-                        None => break,
-                    }
-                }
-            }
-
-            // Phase 5: Library history — Deezer's public API exposes no listen
-            // history endpoint; documented capacity constant, not an error.
-            if prefs.library_history {
-                warnings.push("Deezer: listen history not exposed by the public API (documented capability gap)".to_string());
-            }
+                    favorites_seen,
+                    metadata_enriched,
+                    metadata_partial,
+                    playlists_seen,
+                    playlists_total,
+                    api_fetch_ms,
+                    entity_expansion_ms,
+                    enrichment_ms,
+                    persistence_ms,
+                    albums_seen,
+                    availability_checked,
+                    favorite_albums_total,
+                    favorite_artists_total,
+                    album_expansion_metrics,
+                    errors,
+                    warnings,
+                },
+            )
+            .await?;
+            tracks_processed = arm.tracks_processed;
+            tracks_expanded = arm.tracks_expanded;
+            tracks_new_global = arm.tracks_new_global;
+            sources_new_for_service = arm.sources_new_for_service;
+            library_entries_new_for_account = arm.library_entries_new_for_account;
+            tracks_already_present = arm.tracks_already_present;
+            tracks_changed_unique = arm.tracks_changed_unique;
+            imported_tracks_total = arm.imported_tracks_total;
+            skipped_tracks_total = arm.skipped_tracks_total;
+            favorite_tracks_total = arm.favorite_tracks_total;
+            favorites_seen = arm.favorites_seen;
+            metadata_enriched = arm.metadata_enriched;
+            metadata_partial = arm.metadata_partial;
+            playlists_seen = arm.playlists_seen;
+            playlists_total = arm.playlists_total;
+            api_fetch_ms = arm.api_fetch_ms;
+            entity_expansion_ms = arm.entity_expansion_ms;
+            enrichment_ms = arm.enrichment_ms;
+            persistence_ms = arm.persistence_ms;
+            albums_seen = arm.albums_seen;
+            availability_checked = arm.availability_checked;
+            favorite_albums_total = arm.favorite_albums_total;
+            favorite_artists_total = arm.favorite_artists_total;
+            album_expansion_metrics = arm.album_expansion_metrics;
+            errors = arm.errors;
+            warnings = arm.warnings;
         }
         "apple_music" => {
             // F3-2: brazo propio del motor unificado. Delega en el importador de
@@ -8736,6 +8817,37 @@ mod soundcloud_arm_tests {
             incremental_sync: false,
             force_retry_unavailable: false,
         }
+    }
+
+    #[tokio::test]
+    async fn sin_arl_el_brazo_deezer_pide_autenticacion_antes_de_la_red() {
+        let pool = fixture_pool().await;
+        let emitter = ArmEmitter::default();
+        let engine = crate::services::enrichment::EnrichmentEngine::with_db(pool.clone());
+        let creds = json!({"user_id": 1});
+
+        let error = match sync_deezer_arm(
+            &pool,
+            "deezer",
+            1,
+            &creds,
+            &prefs_sin_fases(),
+            Some(&emitter),
+            &engine,
+            ArmOutcome::default(),
+        )
+        .await
+        {
+            Ok(_) => panic!("sin ARL el brazo debe pedir autenticación, no continuar"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "RequiresAuth: Deezer ARL missing");
+        assert_eq!(
+            emitter.phases(),
+            vec!["requires_auth".to_string()],
+            "un solo evento terminal de autenticación"
+        );
     }
 
     #[tokio::test]
