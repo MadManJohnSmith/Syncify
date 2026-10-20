@@ -697,3 +697,50 @@ async fn test_s198_favorite_album_marking_and_qobuz_id_persistence() {
         .unwrap();
     assert_eq!(qid_other.as_deref(), Some("qb-alb-200"));
 }
+
+/// ED-04b: dos altas con el mismo ISRC no pueden perder la segunda pista en
+/// silencio. Antes del arreglo el INSERT chocaba con `tracks.isrc` (UNIQUE,
+/// 0002:91) y el error se tragaba, dejando la pista fuera del álbum.
+#[tokio::test]
+async fn test_isrc_repetido_no_pierde_la_pista_por_unicidad() {
+    let pool = setup_test_db().await;
+    let (service_id, account_id) = create_test_account(&pool, "isrc-dup@test.local").await;
+    let engine = EnrichmentEngine::new();
+
+    let make = |service_track_id: &str| SyncTrackInput {
+        origin_meta: OriginTrackMetadata {
+            title: Some("Misma grabación".to_string()),
+            artist: Some("Artista de prueba".to_string()),
+            album: Some("Álbum de prueba".to_string()),
+            album_artist: Some("Artista de prueba".to_string()),
+            isrc: Some("ESABC2600001".to_string()),
+            ..Default::default()
+        },
+        service_track_id: service_track_id.to_string(),
+        service_name: "qobuz".to_string(),
+        service_id,
+        account_id,
+        duration_ms: Some(185_000),
+        query_musicbrainz: false,
+        ..Default::default()
+    };
+
+    let first = engine
+        .enrich_and_persist_sync_track(&pool, make("qobuz-1"))
+        .await
+        .expect("primera alta");
+    let second = engine
+        .enrich_and_persist_sync_track(&pool, make("qobuz-2"))
+        .await
+        .expect("la segunda alta con el mismo ISRC no debe perderse");
+
+    assert_eq!(
+        first.track_id, second.track_id,
+        "el mismo ISRC debe resolverse a la misma pista"
+    );
+    let filas: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE isrc = 'ESABC2600001'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(filas, 1, "una sola fila por ISRC");
+}

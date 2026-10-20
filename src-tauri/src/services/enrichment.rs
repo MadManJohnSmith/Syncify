@@ -2979,18 +2979,10 @@ impl EnrichmentEngine {
                 current_album_title.as_deref(),
                 input.origin_meta.album.as_deref(),
             ) {
-                let normalize = |s: &str| {
-                    s.split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .to_lowercase()
-                };
-                let current_norm = normalize(current);
-                let incoming_norm = normalize(incoming);
                 if !has_release_evidence
-                    && !current_norm.is_empty()
-                    && !incoming_norm.is_empty()
-                    && current_norm != incoming_norm
+                    && !current.trim().is_empty()
+                    && !incoming.trim().is_empty()
+                    && !misma_familia_de_album(current, incoming)
                 {
                     return Err(format!(
                         "needs_review: la grabación ya existe en «{current}» y llegó con «{incoming}» sin evidencia de release (ED-04)"
@@ -4205,10 +4197,157 @@ pub async fn backfill_social_metadata(
     Ok(report)
 }
 
+/// Sufijos que marcan una edición del mismo álbum, no un álbum distinto.
+const MARCADORES_DE_EDICION: &[&str] = &[
+    "deluxe",
+    "remaster",
+    "remastered",
+    "remasterizado",
+    "remasterizada",
+    "anniversary",
+    "aniversario",
+    "expanded",
+    "complete edition",
+    "special edition",
+    "bonus",
+    "reissue",
+    "collector",
+    "legacy edition",
+    "definitive edition",
+    "edición especial",
+    "edicion especial",
+    "edición deluxe",
+    "edicion deluxe",
+    "edición aniversario",
+    "edicion aniversario",
+];
+
+/// `«X»` y `«X (Deluxe Edition)»` son la misma familia de álbum; `«X»` y `«Y»`
+/// no. Quita sufijos entre paréntesis o corchetes que solo nombran una edición
+/// (Deluxe, Remastered, Anniversary, Complete, Bonus…) y también el sufijo
+/// ` - Remastered 2011`. Un paréntesis con contenido que no es de edición
+/// (`(feat. Alguien)`, `(Live)`) se conserva: ahí sí puede haber otra grabación.
+fn familia_de_album(titulo: &str) -> String {
+    let mut base = titulo
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let es_marcador = |s: &str| {
+        MARCADORES_DE_EDICION
+            .iter()
+            .any(|m| s.to_lowercase().contains(m))
+    };
+    loop {
+        let recortado = base.trim_end();
+        let (nuevo, quitado) = if let Some(pos) = recortado.rfind('(') {
+            if recortado.ends_with(')') && es_marcador(&recortado[pos..]) {
+                (recortado[..pos].trim_end().to_string(), true)
+            } else {
+                (recortado.to_string(), false)
+            }
+        } else {
+            (recortado.to_string(), false)
+        };
+        let (nuevo, quitado) = if quitado {
+            (nuevo, true)
+        } else if let Some(pos) = nuevo.rfind('[') {
+            if nuevo.ends_with(']') && es_marcador(&nuevo[pos..]) {
+                (nuevo[..pos].trim_end().to_string(), true)
+            } else {
+                (nuevo, false)
+            }
+        } else {
+            (nuevo, false)
+        };
+        let (nuevo, quitado) = if quitado {
+            (nuevo, true)
+        } else if let Some(pos) = nuevo.rfind(" - ") {
+            if es_marcador(&nuevo[pos..]) {
+                (nuevo[..pos].trim_end().to_string(), true)
+            } else {
+                (nuevo, false)
+            }
+        } else {
+            (nuevo, false)
+        };
+        base = nuevo;
+        if !quitado {
+            break;
+        }
+    }
+    base.trim_matches(|c: char| c == '-' || c.is_whitespace())
+        .to_string()
+}
+
+/// ¿Los dos títulos describen la misma familia de álbum, ignorando la edición?
+fn misma_familia_de_album(actual: &str, entrante: &str) -> bool {
+    let a = familia_de_album(actual);
+    let b = familia_de_album(entrante);
+    !a.is_empty() && !b.is_empty() && a == b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use syncify_metadata_domain::fixtures::*;
+
+    /// Pares reales del log de la prueba manual del 2026-10-19 (sync de Tidal,
+    /// Qobuz y Spotify): todos son la misma grabación en dos ediciones del
+    /// mismo álbum y el guardián ED-04 los estaba rechazando.
+    #[test]
+    fn ed04_una_edicion_no_es_un_album_distinto() {
+        let pares = [
+            ("Nothing But Thieves", "Nothing But Thieves (Deluxe)"),
+            ("Moral Panic", "Moral Panic (The Complete Edition)"),
+            ("1", "1 (Remastered 2015)"),
+            ("The Beatles", "The Beatles (Remastered 2009)"),
+            (
+                "Hybrid Theory (DMD Album + 3 Bonus Tracks)",
+                "Hybrid Theory (Bonus Edition)",
+            ),
+            ("Back To Black", "Back To Black (Deluxe Edition)"),
+            ("Brothers", "Brothers (Deluxe Edition)"),
+            ("Album", "Album [Deluxe]"),
+            ("Album", "Album - Remastered 2011"),
+            (
+                "The Velvet Underground (45th Anniversary / Deluxe Edition)",
+                "The Velvet Underground",
+            ),
+        ];
+        for (a, b) in pares {
+            assert!(
+                super::misma_familia_de_album(a, b),
+                "«{a}» y «{b}» deberían ser la misma familia"
+            );
+            assert!(
+                super::misma_familia_de_album(b, a),
+                "la comprobación debe ser simétrica: «{b}» y «{a}»"
+            );
+        }
+    }
+
+    /// Lo que sí debe seguir yendo a revisión: lanzamientos distintos, no
+    /// ediciones. Si el guardián se relaja de más, estos pares lo delatan.
+    #[test]
+    fn ed04_un_lanzamiento_distinto_sigue_siendo_otro_album() {
+        let pares = [
+            ("Jazz Dance", "60s Stars"),
+            (".getawayfortheweekend.", "-!-"),
+            (
+                "The Essentials: Tommy James & The Shondells",
+                "60s Essential Hits",
+            ),
+            ("Album (feat. Alguien)", "Album"),
+            ("", "Album"),
+        ];
+        for (a, b) in pares {
+            assert!(
+                !super::misma_familia_de_album(a, b),
+                "«{a}» y «{b}» no pueden tratarse como la misma familia"
+            );
+        }
+    }
 
     #[test]
     fn test_enrichment_precedence_streaming_over_musicbrainz() {
