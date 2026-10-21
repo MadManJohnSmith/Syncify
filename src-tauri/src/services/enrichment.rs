@@ -3039,7 +3039,14 @@ impl EnrichmentEngine {
                         duration_ms = COALESCE(duration_ms, ?),
                         track_number = COALESCE(track_number, ?),
                         disc_number = COALESCE(disc_number, ?),
-                        isrc = COALESCE(isrc, ?),
+                        isrc = CASE
+                            WHEN isrc IS NOT NULL THEN isrc
+                            WHEN NOT EXISTS (
+                                SELECT 1 FROM tracks vecino
+                                WHERE vecino.isrc = ? COLLATE NOCASE AND vecino.id <> tracks.id
+                            ) THEN ?
+                            ELSE isrc
+                        END,
                         musicbrainz_id = COALESCE(musicbrainz_id, ?),
                         audio_quality = COALESCE(?, audio_quality)
                     WHERE id = ?
@@ -3049,6 +3056,9 @@ impl EnrichmentEngine {
                     .bind(input.duration_ms)
                     .bind(parsed_track_num)
                     .bind(parsed_disc_num)
+                    // el ISRC solo se rellena si ninguna otra fila lo tiene ya
+                    // (indice NOCASE de 0064:186); si lo tiene, se deja como esta
+                    .bind(enriched.isrc.value())
                     .bind(enriched.isrc.value())
                     .bind(enriched.musicbrainz_recording_id.value())
                     .bind(effective_audio_quality.as_deref())
@@ -3104,51 +3114,30 @@ impl EnrichmentEngine {
                 // Update with resolved metadata (StreamingService > MusicBrainz > Inferred)
                 let _ = crate::db::write_or_log(
                     "enrich_and_persist_sync_track",
-                    sqlx::query(
-                        r#"
-                    UPDATE tracks SET
-                        title = COALESCE(?, title),
-                        album_id = COALESCE(album_id, ?),
-                        duration_ms = COALESCE(duration_ms, ?),
-                        track_number = COALESCE(track_number, ?),
-                        disc_number = COALESCE(disc_number, ?),
-                        isrc = COALESCE(isrc, ?),
-                        musicbrainz_id = COALESCE(musicbrainz_id, ?),
-                        explicit = COALESCE(explicit, ?),
-                        genre = COALESCE(genre, ?),
-                        subgenre = COALESCE(subgenre, ?),
-                        release_year = COALESCE(release_year, ?),
-                        record_label = COALESCE(record_label, ?),
-                        bpm = COALESCE(bpm, ?),
-                        musical_key = COALESCE(musical_key, ?),
-                        energy = COALESCE(energy, ?),
-                        acoustid_fingerprint = COALESCE(?, acoustid_fingerprint),
-                        audio_quality = COALESCE(?, audio_quality),
-                        enrichment_status = ?,
-                        enriched_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    "#,
-                    )
-                    .bind(title_update_val)
-                    .bind(album_id_opt)
-                    .bind(input.duration_ms)
-                    .bind(parsed_track_num)
-                    .bind(parsed_disc_num)
-                    .bind(enriched.isrc.value())
-                    .bind(enriched.musicbrainz_recording_id.value())
-                    .bind(parsed_explicit)
-                    .bind(clean_genre.as_deref())
-                    .bind(enriched.style.value())
-                    .bind(effective_year)
-                    .bind(enriched.label.value())
-                    .bind(parsed_bpm)
-                    .bind(enriched.initial_key.value())
-                    .bind(parsed_energy)
-                    .bind(enriched.acoustid_fingerprint.value())
-                    .bind(effective_audio_quality.as_deref())
-                    .bind(target_status)
-                    .bind(tid)
-                    .execute(&mut *tx),
+                    sqlx::query(UPDATE_PISTA_SQL)
+                        .bind(title_update_val)
+                        .bind(album_id_opt)
+                        .bind(input.duration_ms)
+                        .bind(parsed_track_num)
+                        .bind(parsed_disc_num)
+                        // el ISRC solo se rellena si ninguna otra fila lo tiene ya
+                        // (indice NOCASE de 0064:186); si lo tiene, se deja como esta
+                        .bind(enriched.isrc.value())
+                        .bind(enriched.isrc.value())
+                        .bind(enriched.musicbrainz_recording_id.value())
+                        .bind(parsed_explicit)
+                        .bind(clean_genre.as_deref())
+                        .bind(enriched.style.value())
+                        .bind(effective_year)
+                        .bind(enriched.label.value())
+                        .bind(parsed_bpm)
+                        .bind(enriched.initial_key.value())
+                        .bind(parsed_energy)
+                        .bind(enriched.acoustid_fingerprint.value())
+                        .bind(effective_audio_quality.as_deref())
+                        .bind(target_status)
+                        .bind(tid)
+                        .execute(&mut *tx),
                 )
                 .await;
             }
@@ -4326,10 +4315,111 @@ const INSERT_PISTA_SQL: &str = r#"
                 RETURNING id
                 "#;
 
+/// Relleno de metadatos de una pista ya existente. El ISRC solo se asigna
+/// si ninguna otra fila lo tiene ya (indice NOCASE de 0064:186); con
+/// `COALESCE(isrc, ?)` a secas el sync perdia la pista con 2067.
+const UPDATE_PISTA_SQL: &str = r#"
+                    UPDATE tracks SET
+                        title = COALESCE(?, title),
+                        album_id = COALESCE(album_id, ?),
+                        duration_ms = COALESCE(duration_ms, ?),
+                        track_number = COALESCE(track_number, ?),
+                        disc_number = COALESCE(disc_number, ?),
+                        isrc = CASE
+                            WHEN isrc IS NOT NULL THEN isrc
+                            WHEN NOT EXISTS (
+                                SELECT 1 FROM tracks vecino
+                                WHERE vecino.isrc = ? COLLATE NOCASE AND vecino.id <> tracks.id
+                            ) THEN ?
+                            ELSE isrc
+                        END,
+                        musicbrainz_id = COALESCE(musicbrainz_id, ?),
+                        explicit = COALESCE(explicit, ?),
+                        genre = COALESCE(genre, ?),
+                        subgenre = COALESCE(subgenre, ?),
+                        release_year = COALESCE(release_year, ?),
+                        record_label = COALESCE(record_label, ?),
+                        bpm = COALESCE(bpm, ?),
+                        musical_key = COALESCE(musical_key, ?),
+                        energy = COALESCE(energy, ?),
+                        acoustid_fingerprint = COALESCE(?, acoustid_fingerprint),
+                        audio_quality = COALESCE(?, audio_quality),
+                        enrichment_status = ?,
+                        enriched_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    "#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use syncify_metadata_domain::fixtures::*;
+
+    /// ED-04c: rellenar el ISRC que falta en una pista no puede chocar con otra
+    /// que ya lo tiene (índice NOCASE de 0064:186). Es el 2067 que la prueba
+    /// manual del 2026-10-20 repitió 65 veces sobre 736 descargas: el `UPDATE`
+    /// usaba `COALESCE(isrc, ?)` a secas.
+    #[tokio::test]
+    async fn el_relleno_de_isrc_no_pisa_el_de_otra_pista() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let duena: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc) VALUES ('Dueña', 'ESABC2600003') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let vacia: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Sin isrc') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        async fn rellenar(pool: &sqlx::SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+            sqlx::query(super::UPDATE_PISTA_SQL)
+                .bind(Some("Sin isrc"))
+                .bind(None::<i64>)
+                .bind(Some(180_000i64))
+                .bind(None::<i64>)
+                .bind(None::<i64>)
+                .bind("esabc2600003")
+                .bind("esabc2600003")
+                .bind(None::<String>)
+                .bind(None::<i64>)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind(None::<i64>)
+                .bind(None::<String>)
+                .bind(None::<f64>)
+                .bind(None::<String>)
+                .bind(None::<f64>)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind("pending")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            Ok(())
+        }
+
+        rellenar(&pool, vacia)
+            .await
+            .expect("el relleno no debe chocar con el ISRC de otra pista");
+
+        let suyo: Option<String> = sqlx::query_scalar("SELECT isrc FROM tracks WHERE id = ?")
+            .bind(vacia)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(suyo, None, "no debe robar el ISRC de otra pista");
+        let de_la_duena: Option<String> =
+            sqlx::query_scalar("SELECT isrc FROM tracks WHERE id = ?")
+                .bind(duena)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(de_la_duena.as_deref(), Some("ESABC2600003"));
+    }
 
     /// ED-04b: el alta de pista no puede perder la pista en silencio cuando su
     /// ISRC ya está en la biblioteca. La prueba manual del 2026-10-19 dejó 51

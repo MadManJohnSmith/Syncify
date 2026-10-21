@@ -275,13 +275,17 @@ a propósito. Los ED-04 que quedan son lanzamientos realmente distintos (recopil
 bandas sonoras, «B-Sides», reediciones) o variantes de formato que el guardián no debe
 unificar a ciegas.
 
-La misma prueba destapó que el primer arreglo del ISRC era incompleto: la tabla tiene
+La misma prueba destapó que el arreglo del ISRC seguía incompleto, y por dos motivos
+encadenados. Primero, la tabla tiene
 **dos** restricciones sobre la columna (`tracks.isrc` UNIQUE BINARY y
 `idx_tracks_isrc_unique` NOCASE parcial, 0064:186) y el `ON CONFLICT(isrc)` solo veía la
 primera, así que un ISRC enriquecido que solo cambiaba de caja seguía perdiendo la fila:
-65 de 736 descargas. Corregido con `ON CONFLICT DO NOTHING` sin objetivo más resolución
-por `isrc COLLATE NOCASE`, con un test que reproduce la variante de caja y el mismo
-código 2067.
+65 de 736 descargas. Segundo, el 2067 persistía porque el camino que fallaba no era el
+alta sino **dos `UPDATE tracks SET … isrc = COALESCE(isrc, ?)`** (líneas 3037 y 3109) que
+rellenan el ISRC que falta: cuando otra fila ya lo tenía (misma grabación, otra caja), el
+UPDATE chocaba y se perdía el relleno. Ahora el ISRC solo se asigna si ninguna otra fila
+lo tiene (`NOT EXISTS … COLLATE NOCASE`), el alta usa `ON CONFLICT DO NOTHING` sin
+objetivo y resuelve por `isrc COLLATE NOCASE`, y dos tests cubren ambos caminos.
 
 ### D-02 — Cerrada, y con qué alcance exacto
 
