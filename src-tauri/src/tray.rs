@@ -884,16 +884,25 @@ async fn sync_all_services_inner<R: Runtime>(app: &AppHandle<R>) -> Result<usize
 pub fn update_tray_icon_state<R: Runtime>(app: &AppHandle<R>, state: TrayState) {
     tracing::debug!("Tray icon state changed to: {:?}", state);
 
-    if let Some(tray) = app.tray_by_id(SYNCIFY_TRAY_ID) {
-        let tooltip = match state {
-            TrayState::Default => "Syncify - Ready",
-            TrayState::Downloading => "Syncify - Downloading",
-            TrayState::Syncing => "Syncify - Syncing",
-            TrayState::Error => "Syncify - Error occurred",
-            TrayState::Paused => "Syncify - Downloads paused",
-        };
-        let _ = tray.set_tooltip(Some(tooltip));
+    let tooltip = match state {
+        TrayState::Default => "Syncify - Ready",
+        TrayState::Downloading => "Syncify - Downloading",
+        TrayState::Syncing => "Syncify - Syncing",
+        TrayState::Error => "Syncify - Error occurred",
+        TrayState::Paused => "Syncify - Downloads paused",
     }
+    .to_string();
+
+    // Diferido a propósito: `set_tooltip` no puede ejecutarse mientras `tray-icon`
+    // despacha un evento de bandeja (mantiene su `RefCell` prestado y panickea con
+    // «RefCell already borrowed»). El crash del 2026-10-21T00:44:48Z fue justo eso,
+    // con un menú de bandeja abierto durante una descarga.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(tray) = handle.tray_by_id(SYNCIFY_TRAY_ID) {
+            let _ = tray.set_tooltip(Some(tooltip.as_str()));
+        }
+    });
 }
 
 /// Update tray menu with current status
