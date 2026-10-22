@@ -4234,6 +4234,14 @@ const MARCADORES_DE_EDICION: &[&str] = &[
     "version",
     "edición",
     "edicion",
+    // Empaquetado y formato vistos en la pasada del 2026-10-22.
+    "dmd",
+    "int'l only",
+    "intl only",
+    "altered iliner",
+    "archive collection",
+    "hi-res",
+    "hires",
 ];
 
 /// `«X»` y `«X (Deluxe Edition)»` son la misma familia de álbum; `«X»` y `«Y»`
@@ -4258,6 +4266,27 @@ fn familia_de_album(titulo: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase();
+    // «(((((ultraSOUND)))))» y «(((((ultraSOUND)))))+» son el mismo título; los
+    // paréntesis repetidos salen del corchete convertido.
+    while base.contains("((") {
+        base = base.replace("((", "(");
+    }
+    while base.contains("))") {
+        base = base.replace("))", ")");
+    }
+    // «Appetite For Destruction (Super Deluxe) - 192 kHz»: la frecuencia es
+    // formato, no otra edición.
+    if let Some(pos) = base.rfind(" - ") {
+        let cola = base[pos + 3..].trim().to_string();
+        let es_frecuencia = cola
+            .split(|c: char| c == '/' || c.is_whitespace())
+            .all(|p| {
+                p.chars().all(|c| c.is_ascii_digit()) || matches!(p, "khz" | "bit" | "bits" | "hz")
+            });
+        if es_frecuencia && !cola.is_empty() {
+            base = base[..pos].trim_end().to_string();
+        }
+    }
 
     let es_marcador = |s: &str| MARCADORES_DE_EDICION.iter().any(|m| s.contains(m));
     let es_numero = |s: &str| {
@@ -4308,7 +4337,7 @@ fn familia_de_album(titulo: &str) -> String {
     }
 
     base.chars()
-        .filter(|c| !matches!(c, ',' | ';' | ':' | '\'' | '’' | '.' | '!' | '?'))
+        .filter(|c| !matches!(c, ',' | ';' | ':' | '\'' | '’' | '.' | '!' | '?' | '+'))
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -4666,6 +4695,22 @@ mod tests {
                 "Songs For Swingin' Lovers !",
                 "Songs For Swingin' Lovers! (Remastered)",
             ),
+            // Pasada del 2026-10-22: empaquetado, frecuencia y paréntesis dobles.
+            (
+                "BLUE LIPS ([lady wood phase II])",
+                "BLUE LIPS (lady wood phase II)",
+            ),
+            ("(((((ultraSOUND)))))", "(((((ultraSOUND)))))+"),
+            ("Californication", "Californication (DMD Album)"),
+            (
+                "Appetite For Destruction",
+                "Appetite For Destruction (Super Deluxe) - 192 kHz",
+            ),
+            ("Band On The Run", "Band On The Run (Archive Collection)"),
+            (
+                "Hybrid Theory (Bonus Edition)",
+                "Hybrid Theory (Int'l Only DMD w/ Altered iLiner)",
+            ),
         ] {
             assert!(
                 super::misma_familia_de_album(actual, entrante),
@@ -4681,6 +4726,10 @@ mod tests {
         for (actual, entrante) in [
             ("The Best Of 1990-2000", "The Best Of 1990-2000 & B-Sides"),
             ("BLUE LIPS", "BLUE LIPS ([lady wood phase II])"),
+            // Un subtítulo sin marca de edición no es formato.
+            ("RUSH!", "RUSH! (ARE U COMING?)"),
+            // Títulos distintos por una letra siguen siendo decisión humana.
+            ("Euphoria Morning", "Euphoria Mourning"),
         ] {
             assert!(
                 !super::misma_familia_de_album(actual, entrante),
