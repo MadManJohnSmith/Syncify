@@ -303,6 +303,15 @@ item falla, asi que el rechazo ED-04 se clasifica en el momento (`MismoTexto`, `
 proxima pasada real da el reparto con el que decidir la politica, sin adivinar por el top de
 motivos.
 
+**Reparto medido (pasada del 2026-10-22, 16 633 intentos clasificados).**
+`distinto` 59,6 %, `empaquetado` 26,2 %, `subtitulo` 10,8 %, `conjunto` 2,5 %,
+`mismo_texto` 0,9 %. El histograma cuenta intentos (un item aparece en favoritos, album y
+playlist), no items unicos: ~3x los 5 575 errores. Las muestras del log muestran el patron
+dominante: la grabacion ya vive en un album de estudio y llega desde un recopilatorio, banda
+sonora o playlist («The Best Of Crystal Waters» vs «Storyteller», «Pop Internacional 2022»,
+«Twisted Sister: Essentials», «Lucky (Apple Original Series Soundtrack)»). Las 148 de
+`mismo_texto` eran un fallo real: familias vacias comparadas como distintas, corregido.
+
 **El techo, medido.** Las 5 575 restantes son rechazos de ED-04: la grabacion existe en un
 album y llega con otro sin evidencia de release. Ademas la adopcion no persiste, porque
 ED-04 revierte la transaccion y la evidencia adoptada se pierde: el sync informo 5 043
