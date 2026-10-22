@@ -303,9 +303,16 @@ item falla, asi que el rechazo ED-04 se clasifica en el momento (`MismoTexto`, `
 proxima pasada real da el reparto con el que decidir la politica, sin adivinar por el top de
 motivos.
 
-**Resuelto con ED-04b (2026-10-22).** Ya no se rechazan: se registran como aparicion
-(ledger, `needs_review`) y el Track no se mueve. Se ven en la UI con el comando
-`ediciones_de_pista`, dentro del modal de metadatos. Pendiente de medir en la proxima pasada.
+**Resuelto y medido con ED-04b (2026-10-22).** Pasada real posterior: **8** errores de
+item frente a 5 575 (−99,9 %), y los 8 son otra causa legitima («Rejected garbage or empty
+artist name»), no ED-04. Se registraron **5 917** apariciones (Qobuz 2 876, Spotify 1 857,
+Tidal 1 184), sin `UNIQUE` y sin panics. Se ven en la UI con `ediciones_de_pista`, dentro del
+modal de metadatos.
+
+El contador de adopciones de ED-02a ya no mide una migracion sino intentos por pasada
+(21 142 en esta): el item aparece en favoritos, album y playlist y cada aparicion vuelve a
+adoptarse porque el retorno temprano no escribe `track_sources`. Es estable e idempotente,
+pero no sirve como cifra de progreso.
 
 **Reparto medido (pasada del 2026-10-22, 16 633 intentos clasificados).**
 `distinto` 59,6 %, `empaquetado` 26,2 %, `subtitulo` 10,8 %, `conjunto` 2,5 %,
