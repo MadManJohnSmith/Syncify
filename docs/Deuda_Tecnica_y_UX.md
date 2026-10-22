@@ -297,6 +297,12 @@ contradicciones: la identidad dejo de bloquear. La cifra de errores comparable e
 5 664 → **5 575** (−89) al anadir la normalizacion de formato; el −2 118 que se cito antes
 mezclaba pasadas con conjuntos de items distintos y queda retirado.
 
+**Clasificacion instrumentada (2026-10-22).** El album de llegada no se guarda cuando el
+item falla, asi que el rechazo ED-04 se clasifica en el momento (`MismoTexto`, `Subtitulo`,
+`Conjunto`, `Empaquetado`, `Distinto`) y el sync informa el histograma por servicio. La
+proxima pasada real da el reparto con el que decidir la politica, sin adivinar por el top de
+motivos.
+
 **El techo, medido.** Las 5 575 restantes son rechazos de ED-04: la grabacion existe en un
 album y llega con otro sin evidencia de release. Ademas la adopcion no persiste, porque
 ED-04 revierte la transaccion y la evidencia adoptada se pierde: el sync informo 5 043
