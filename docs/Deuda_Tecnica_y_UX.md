@@ -286,6 +286,12 @@ Version)`, `XX Anniversary`, `(2016 Rerecorded Version)`, corchetes y puntuacion
 cuatro casos del log estan fijados en tests, y se mantiene fuera a proposito lo que si
 distingue lanzamientos (`& B-Sides`, `([lady wood phase II])`).
 
+**Segunda vuelta (2026-10-22, tarde).** Top real de la pasada anterior: 6 pares de
+formato y empaquetado normalizados (corchetes dobles, `- 192 kHz`, `+`, `(DMD Album)`,
+`(Archive Collection)`, `(Int'l Only DMD w/ Altered iLiner)`). Se mantienen en revision los
+tres que no son formato: `& B-Sides` (88), `RUSH! (ARE U COMING?)` y `Euphoria Morning` vs
+`Euphoria Mourning`. Pendiente la pasada real para medir.
+
 **Medido el 2026-10-22.** Con ED-02a y la normalizacion ED-04 dentro, la pasada real
 cerro con **5 664** errores de item frente a 7 782 (−2 118, −27 %), **0** «identity
 collision» y **0** contradicciones, y el sync informo **2 821** adopciones del ledger
