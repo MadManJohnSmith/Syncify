@@ -238,6 +238,7 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 | C-19 | El subsistema de reproducción retirado seguía registrado (puerta de higiene en rojo) | `resolve_playback_source`, el protocolo y sus tests borrados; `playback.rs` 628 → 194 líneas; puerta 9/9, suite 1 rojo menos |
 | C-20 | Misma grabación en otra edición pasaba sin revisión (ED-04 inalcanzable en ese camino) | Guarda antes de escribir: álbum canónico ≠ entrante sin evidencia de release → `needs_review`; suite 2740/0/13. **Corregida el 2026-10-19**: la comparación solo normalizaba espacios y mayúsculas y rechazaba ediciones legítimas; `misma_familia_de_album` las unifica (`46e0a57`) |
 | C-21 | El alta de pista con un ISRC ya presente se perdía en silencio (`UNIQUE constraint failed: tracks.isrc`: 51 avisos el 2026-10-19 y 65 el 2026-10-20, sobre 736 descargas) | `INSERT_PISTA_SQL` con `ON CONFLICT DO NOTHING` (sin objetivo: cubre el UNIQUE BINARY de la columna y el índice NOCASE parcial de 0064:186) y resolución por `isrc COLLATE NOCASE`; completa lo que falte sin mover la pista de álbum; test rojo→verde con el 2067 real (variante de caja) |
+| C-22 | La app se cerraba al abrir el menú de bandeja durante una descarga: `RefCell already borrowed` en `tray-icon-0.25.1` (`set_tooltip` dentro del despacho del evento), panic en el hilo principal y cierre sin aviso | `0e53dad`: el tooltip se publica con `run_on_main_thread`, fuera del despacho; lib 478/0, suite 2779/0/13. Verificación en runtime (menú abierto con descarga activa) pendiente del usuario |
 
 ### D-07 — Cerrada, con corrección de rumbo tras la prueba manual (2026-10-19)
 
@@ -266,6 +267,13 @@ lados con los pares reales del log, en ambas direcciones (`46e0a57`).
 La misma prueba destapó un fallo preexistente que la frontera de escritura de D-06
 hizo visible: 51 altas de pista perdidas por `tracks.isrc` UNIQUE. Se corrigió con
 `ON CONFLICT(isrc)` que reutiliza la fila y no la mueve de álbum (`c7325a7`).
+
+**Cierre inesperado (2026-10-21T00:44:48Z).** Con descargas en marcha y el menú de
+bandeja abierto, la app murió con `RefCell already borrowed` en `tray-icon` desde
+`update_tray_icon_state` (`tray.rs:895`): `set_tooltip` no puede ejecutarse mientras la
+bandeja despacha un evento. Diferido con `run_on_main_thread` (`0e53dad`). El manifiesto se
+había escrito de forma atómica justo antes y las escrituras de BD van en transacción, así
+que no hubo estado a medias; la recuperación de arranque informó `recovered=0`.
 
 **Segunda prueba manual (2026-10-20).** Repetido el sync con el arreglo de ED-04
 aplicado: los errores de ítem bajan de 16 766 a **7 864** (Tidal 3 834, Spotify 1 773,
