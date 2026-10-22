@@ -4234,64 +4234,97 @@ const MARCADORES_DE_EDICION: &[&str] = &[
     "edicion deluxe",
     "edición aniversario",
     "edicion aniversario",
+    // Marcas de formato que no cambian de álbum: la prueba manual del
+    // 2026-10-21 las vio ir a revisión («Happier Than Ever (Explicit)»,
+    // «Beauty Behind The Madness (Explicit Version)»).
+    "explicit",
+    "explícito",
+    "explicito",
+    "clean",
+    "edited",
+    "rerecorded",
+    "version",
+    "edición",
+    "edicion",
 ];
 
 /// `«X»` y `«X (Deluxe Edition)»` son la misma familia de álbum; `«X»` y `«Y»`
-/// no. Quita sufijos entre paréntesis o corchetes que solo nombran una edición
-/// (Deluxe, Remastered, Anniversary, Complete, Bonus…) y también el sufijo
-/// ` - Remastered 2011`. Un paréntesis con contenido que no es de edición
-/// (`(feat. Alguien)`, `(Live)`) se conserva: ahí sí puede haber otra grabación.
+/// no. Normaliza solo lo que no cambia de álbum, según los pares que la prueba
+/// manual del 2026-10-21 dejó en revisión:
+///
+/// - marcas de formato entre paréntesis o corchetes: `(Deluxe)`, `[Remastered]`,
+///   `(Explicit)`, `(Explicit Version)`, `(2016 Rerecorded Version)`;
+/// - sufijos sueltos, con o sin número delante: `Absolution XX Anniversary`,
+///   `Sol-Fa Rerecorded Version`;
+/// - corchetes como paréntesis y puntuación que no distingue títulos
+///   (`Songs For Swingin' Lovers!` frente a `Songs For Swingin' Lovers !`).
+///
+/// Lo que sí distingue lanzamientos se queda: `The Best Of 1990-2000 & B-Sides`
+/// sigue siendo otro álbum, y un paréntesis con contenido propio
+/// (`BLUE LIPS ([lady wood phase II])`) no se recorta.
 fn familia_de_album(titulo: &str) -> String {
     let mut base = titulo
+        .replace('[', "(")
+        .replace(']', ")")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase();
-    let es_marcador = |s: &str| {
-        MARCADORES_DE_EDICION
-            .iter()
-            .any(|m| s.to_lowercase().contains(m))
+
+    let es_marcador = |s: &str| MARCADORES_DE_EDICION.iter().any(|m| s.contains(m));
+    let es_numero = |s: &str| {
+        !s.is_empty()
+            && (s.chars().all(|c| c.is_ascii_digit()) || s.chars().all(|c| "ivxlcdm".contains(c)))
     };
+
     loop {
-        let recortado = base.trim_end();
-        let (nuevo, quitado) = if let Some(pos) = recortado.rfind('(') {
-            if recortado.ends_with(')') && es_marcador(&recortado[pos..]) {
-                (recortado[..pos].trim_end().to_string(), true)
-            } else {
-                (recortado.to_string(), false)
+        let recortado = base.trim_end().to_string();
+        let mut nuevo = recortado.clone();
+        let mut quitado = false;
+
+        if let Some(pos) = nuevo.rfind('(') {
+            if nuevo.ends_with(')') && es_marcador(&nuevo[pos..]) {
+                nuevo = nuevo[..pos].trim_end().to_string();
+                quitado = true;
             }
-        } else {
-            (recortado.to_string(), false)
-        };
-        let (nuevo, quitado) = if quitado {
-            (nuevo, true)
-        } else if let Some(pos) = nuevo.rfind('[') {
-            if nuevo.ends_with(']') && es_marcador(&nuevo[pos..]) {
-                (nuevo[..pos].trim_end().to_string(), true)
-            } else {
-                (nuevo, false)
+        }
+        if !quitado {
+            if let Some(pos) = nuevo.rfind(" - ") {
+                if es_marcador(&nuevo[pos..]) {
+                    nuevo = nuevo[..pos].trim_end().to_string();
+                    quitado = true;
+                }
             }
-        } else {
-            (nuevo, false)
-        };
-        let (nuevo, quitado) = if quitado {
-            (nuevo, true)
-        } else if let Some(pos) = nuevo.rfind(" - ") {
-            if es_marcador(&nuevo[pos..]) {
-                (nuevo[..pos].trim_end().to_string(), true)
-            } else {
-                (nuevo, false)
+        }
+        if !quitado {
+            let palabras: Vec<&str> = nuevo.split(' ').collect();
+            for n in 1..=3.min(palabras.len()) {
+                let cola = palabras[palabras.len() - n..].join(" ");
+                if MARCADORES_DE_EDICION.iter().any(|m| cola.ends_with(m)) {
+                    let mut fin = palabras.len() - n;
+                    // «XX Anniversary»: se va también el número romano o el año.
+                    while fin > 0 && es_numero(palabras[fin - 1]) {
+                        fin -= 1;
+                    }
+                    nuevo = palabras[..fin].join(" ").trim_end().to_string();
+                    quitado = true;
+                    break;
+                }
             }
-        } else {
-            (nuevo, false)
-        };
+        }
+
         base = nuevo;
         if !quitado {
             break;
         }
     }
-    base.trim_matches(|c: char| c == '-' || c.is_whitespace())
-        .to_string()
+
+    base.chars()
+        .filter(|c| !matches!(c, ',' | ';' | ':' | '\'' | '’' | '.' | '!' | '?'))
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// ¿Los dos títulos describen la misma familia de álbum, ignorando la edición?
@@ -4419,6 +4452,46 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(de_la_duena.as_deref(), Some("ESABC2600003"));
+    }
+
+    /// Los pares que la prueba manual del 2026-10-21 dejó en revisión y que solo
+    /// se diferencian en formato: marca entre paréntesis, número ante el
+    /// aniversario, puntuación. Deben unificarse en las dos direcciones.
+    #[test]
+    fn ed04_las_marcas_de_formato_no_son_otro_album() {
+        for (actual, entrante) in [
+            ("Happier Than Ever", "Happier Than Ever (Explicit)"),
+            (
+                "Beauty Behind The Madness",
+                "Beauty Behind The Madness (Explicit Version)",
+            ),
+            ("Absolution", "Absolution XX Anniversary"),
+            ("Sol-fa", "Sol-Fa (2016 Rerecorded Version)"),
+            (
+                "Songs For Swingin' Lovers !",
+                "Songs For Swingin' Lovers! (Remastered)",
+            ),
+        ] {
+            assert!(
+                super::misma_familia_de_album(actual, entrante),
+                "«{actual}» y «{entrante}» son la misma familia"
+            );
+            assert!(super::misma_familia_de_album(entrante, actual));
+        }
+    }
+
+    /// Lo que sí distingue lanzamientos sigue yendo a revisión.
+    #[test]
+    fn ed04_lo_que_distingue_lanzamientos_no_se_unifica() {
+        for (actual, entrante) in [
+            ("The Best Of 1990-2000", "The Best Of 1990-2000 & B-Sides"),
+            ("BLUE LIPS", "BLUE LIPS ([lady wood phase II])"),
+        ] {
+            assert!(
+                !super::misma_familia_de_album(actual, entrante),
+                "«{actual}» y «{entrante}» no son la misma familia"
+            );
+        }
     }
 
     /// ED-04b: el alta de pista no puede perder la pista en silencio cuando su
