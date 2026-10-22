@@ -2972,6 +2972,7 @@ impl EnrichmentEngine {
                     && !incoming.trim().is_empty()
                     && !misma_familia_de_album(current, incoming)
                 {
+                    anotar_rechazo_ed04(current, incoming);
                     return Err(format!(
                         "needs_review: la grabación ya existe en «{current}» y llegó con «{incoming}» sin evidencia de release (ED-04)"
                     ));
@@ -4351,6 +4352,94 @@ fn misma_familia_de_album(actual: &str, entrante: &str) -> bool {
     !a.is_empty() && !b.is_empty() && a == b
 }
 
+/// Clase de un rechazo ED-04. Sirve para decidir con datos si el álbum de
+/// llegada es el mismo con otro texto (se puede unir) o un lanzamiento distinto
+/// (debe seguir en revisión).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaseRechazoEd04 {
+    /// Sólo cambia el texto (mayúsculas, espacios, puntuación).
+    MismoTexto,
+    /// El de llegada añade un subtítulo entre paréntesis: «RUSH! (ARE U COMING?)».
+    Subtitulo,
+    /// El de llegada añade un conjunto al título: «… & B-Sides», «… - Bonus».
+    Conjunto,
+    /// El de llegada nombra un empaquetado: recopilatorio, banda sonora, directo.
+    Empaquetado,
+    /// Títulos que no comparten base: otra edición o un error del proveedor.
+    Distinto,
+}
+
+static RECHAZOS_ED04: [AtomicU64; 5] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+/// Devuelve y reinicia el histograma de rechazos ED-04 de la pasada.
+pub fn rechazos_ed04_tomar() -> [u64; 5] {
+    let mut salida = [0u64; 5];
+    for (indice, celda) in RECHAZOS_ED04.iter().enumerate() {
+        salida[indice] = celda.swap(0, Ordering::Relaxed);
+    }
+    salida
+}
+
+/// Clasifica un rechazo ED-04 sin adivinar: compara las dos familias ya
+/// normalizadas y mira qué añade el álbum de llegada.
+fn clase_de_rechazo_ed04(actual: &str, entrante: &str) -> ClaseRechazoEd04 {
+    let a = familia_de_album(actual);
+    let b = familia_de_album(entrante);
+    if a == b {
+        return ClaseRechazoEd04::MismoTexto;
+    }
+    let (corto, largo) = if a.len() <= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    if largo.starts_with(corto.as_str()) {
+        let cola = largo[corto.len()..].trim_start();
+        if cola.starts_with('(') {
+            return ClaseRechazoEd04::Subtitulo;
+        }
+        if cola.starts_with('&') || cola.starts_with(" - ") || cola.starts_with("- ") {
+            return ClaseRechazoEd04::Conjunto;
+        }
+    }
+    const EMPAQUETADO: [&str; 9] = [
+        "best of",
+        "greatest",
+        "hits",
+        "anthology",
+        "soundtrack",
+        "banda sonora",
+        "collection",
+        "live",
+        "directo",
+    ];
+    if EMPAQUETADO
+        .iter()
+        .any(|marca| a.contains(marca) || b.contains(marca))
+    {
+        return ClaseRechazoEd04::Empaquetado;
+    }
+    ClaseRechazoEd04::Distinto
+}
+
+/// Registra la clase del rechazo que se está a punto de devolver.
+fn anotar_rechazo_ed04(actual: &str, entrante: &str) {
+    let indice = match clase_de_rechazo_ed04(actual, entrante) {
+        ClaseRechazoEd04::MismoTexto => 0,
+        ClaseRechazoEd04::Subtitulo => 1,
+        ClaseRechazoEd04::Conjunto => 2,
+        ClaseRechazoEd04::Empaquetado => 3,
+        ClaseRechazoEd04::Distinto => 4,
+    };
+    RECHAZOS_ED04[indice].fetch_add(1, Ordering::Relaxed);
+}
+
 /// Resultado de resolver la identidad de un ítem del proveedor antes de tocarlo.
 #[derive(Debug, PartialEq, Eq)]
 enum IdentidadDeItem {
@@ -4546,6 +4635,35 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    /// ED-04: el rechazo se clasifica para decidir con datos, no a ojo.
+    #[test]
+    fn ed04_el_rechazo_se_clasifica_por_lo_que_anade_el_album_de_llegada() {
+        use super::ClaseRechazoEd04::*;
+        assert_eq!(
+            super::clase_de_rechazo_ed04("Californication", "californication"),
+            MismoTexto
+        );
+        assert_eq!(
+            super::clase_de_rechazo_ed04("RUSH!", "RUSH! (ARE U COMING?)"),
+            Subtitulo
+        );
+        assert_eq!(
+            super::clase_de_rechazo_ed04(
+                "The Best Of 1990-2000",
+                "The Best Of 1990-2000 & B-Sides"
+            ),
+            Conjunto
+        );
+        assert_eq!(
+            super::clase_de_rechazo_ed04("Album", "The Best Of Album"),
+            Empaquetado
+        );
+        assert_eq!(
+            super::clase_de_rechazo_ed04("Euphoria Morning", "Euphoria Mourning"),
+            Distinto
+        );
     }
 
     /// ED-02a: sin evidencia, el ledger decide y la adopción se cuenta.

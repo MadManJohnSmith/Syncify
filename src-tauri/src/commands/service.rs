@@ -8243,6 +8243,26 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
 
     // ED-02a: cuántas identidades se adoptaron del ledger en esta pasada. Se
     // informa en una línea por servicio, no una por ítem.
+    // ED-04: qué añade el álbum de llegada, para decidir la política con datos.
+    let rechazos_ed04 = crate::services::enrichment::rechazos_ed04_tomar();
+    if rechazos_ed04.iter().any(|n| *n > 0) {
+        tracing::info!(
+            service = %service_normalized,
+            mismo_texto = rechazos_ed04[0],
+            subtitulo = rechazos_ed04[1],
+            conjunto = rechazos_ed04[2],
+            empaquetado = rechazos_ed04[3],
+            distinto = rechazos_ed04[4],
+            "[ED-04] rechazos en {}: mismo_texto={} subtitulo={} conjunto={} empaquetado={} distinto={}",
+            service_normalized,
+            rechazos_ed04[0],
+            rechazos_ed04[1],
+            rechazos_ed04[2],
+            rechazos_ed04[3],
+            rechazos_ed04[4]
+        );
+    }
+
     let adoptados_del_ledger = crate::services::enrichment::adoptados_del_ledger_tomar();
     if adoptados_del_ledger > 0 {
         tracing::info!(
