@@ -1255,6 +1255,7 @@ fn main() {
             commands::update_track_metadata,
             commands::get_metadata_stats,
             commands::ediciones_de_pista,
+            commands::resolver_aparicion_de_pista,
             commands::get_tracks_needing_metadata,
             commands::fetch_missing_cover_art,
             commands::get_tidal_repair_dry_run,

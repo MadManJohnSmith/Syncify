@@ -4,20 +4,25 @@ import EdicionesDePista from '../EdicionesDePista.vue'
 
 vi.mock('../../api/editions', () => ({
   getEdicionesDePista: vi.fn(),
+  resolverAparicion: vi.fn(),
 }))
 
-import { getEdicionesDePista } from '../../api/editions'
+import { getEdicionesDePista, resolverAparicion } from '../../api/editions'
 
 const listar = vi.mocked(getEdicionesDePista)
+const resolver = vi.mocked(resolverAparicion)
 
 describe('EdicionesDePista', () => {
   beforeEach(() => {
     listar.mockReset()
+    resolver.mockReset()
+    resolver.mockResolvedValue(undefined)
   })
 
   it('muestra el álbum de llegada y el servicio de cada aparición', async () => {
     listar.mockResolvedValue([
       {
+        item_id: 11,
         service: 'qobuz',
         service_track_id: '434547369',
         album: 'Lucky (Apple Original Series Soundtrack)',
@@ -47,5 +52,44 @@ describe('EdicionesDePista', () => {
     await flushPromises()
 
     expect(listar).not.toHaveBeenCalled()
+  })
+})
+
+describe('EdicionesDePista: resolver', () => {
+  beforeEach(() => {
+    listar.mockReset()
+    resolver.mockReset()
+    resolver.mockResolvedValue(undefined)
+    listar.mockResolvedValue([
+      {
+        item_id: 11,
+        service: 'qobuz',
+        service_track_id: '434547369',
+        album: 'Lucky (Apple Original Series Soundtrack)',
+        validation_status: 'needs_review',
+      },
+    ])
+  })
+
+  it('confirmar conserva la aparición y recarga', async () => {
+    const wrapper = mount(EdicionesDePista, { props: { trackId: 7 } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="edicion-confirmar"]').trigger('click')
+    await flushPromises()
+
+    expect(resolver).toHaveBeenCalledWith(11, 7, true)
+    expect(listar).toHaveBeenCalledTimes(2)
+  })
+
+  it('descartar borra la aparición y recarga', async () => {
+    const wrapper = mount(EdicionesDePista, { props: { trackId: 7 } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="edicion-descartar"]').trigger('click')
+    await flushPromises()
+
+    expect(resolver).toHaveBeenCalledWith(11, 7, false)
+    expect(listar).toHaveBeenCalledTimes(2)
   })
 })

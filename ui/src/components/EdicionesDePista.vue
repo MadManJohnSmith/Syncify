@@ -27,9 +27,31 @@
             {{ edicion.service }}
           </span>
         </div>
-        <p class="text-xs text-gray-500 dark:text-gray-400">
-          {{ edicion.service_track_id }} · {{ edicion.validation_status }}
-        </p>
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            {{ edicion.service_track_id }} · {{ edicion.validation_status }}
+          </p>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              :disabled="resolviendo === edicion.item_id"
+              class="text-xs font-medium text-emerald-600 hover:text-emerald-700 disabled:opacity-50"
+              data-testid="edicion-confirmar"
+              @click="resolver(edicion, true)"
+            >
+              Confirmar
+            </button>
+            <button
+              type="button"
+              :disabled="resolviendo === edicion.item_id"
+              class="text-xs font-medium text-gray-500 hover:text-red-600 disabled:opacity-50"
+              data-testid="edicion-descartar"
+              @click="resolver(edicion, false)"
+            >
+              Descartar
+            </button>
+          </div>
+        </div>
       </li>
     </ul>
   </section>
@@ -37,13 +59,14 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { getEdicionesDePista, type EdicionDePista } from '../api/editions'
+import { getEdicionesDePista, resolverAparicion, type EdicionDePista } from '../api/editions'
 
 const props = defineProps<{ trackId: number | null }>()
 
 const ediciones = ref<EdicionDePista[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
+const resolviendo = ref<number | null>(null)
 
 async function cargar(trackId: number | null) {
   if (!trackId) {
@@ -59,6 +82,20 @@ async function cargar(trackId: number | null) {
     ediciones.value = []
   } finally {
     loading.value = false
+  }
+}
+
+async function resolver(edicion: EdicionDePista, confirmar: boolean) {
+  if (!props.trackId) return
+  resolviendo.value = edicion.item_id
+  error.value = null
+  try {
+    await resolverAparicion(edicion.item_id, props.trackId, confirmar)
+    await cargar(props.trackId)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    resolviendo.value = null
   }
 }
 

@@ -238,8 +238,11 @@ La escritura es idempotente por `(service_id, service_track_id)` y por
 Alternativas descartadas: seguir rechazando (5 575 errores permanentes sin
 decisión posible); mover el Track al álbum de llegada (pierde el álbum canónico
 y contradice ED-04); saltar el ítem sin registrarlo (pierde el dato de que
-existe). La UI las muestra con el comando `ediciones_de_pista`, que devuelve
-servicio, id del ítem, álbum de llegada y estado.
+existe). La UI las muestra con el comando `ediciones_de_pista` (servicio, id del
+ítem, álbum de llegada y estado) y permite resolverlas: **confirmar** deja la
+aparición en `verified`, **descartar** borra el enlace
+(`resolver_aparicion_de_pista`). En ninguno de los dos casos se mueve el Track ni
+su álbum.
 
 ### ED-03 — Descubrimiento acotado y selector puro
 
