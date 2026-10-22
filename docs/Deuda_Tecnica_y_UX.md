@@ -292,11 +292,15 @@ formato y empaquetado normalizados (corchetes dobles, `- 192 kHz`, `+`, `(DMD Al
 tres que no son formato: `& B-Sides` (88), `RUSH! (ARE U COMING?)` y `Euphoria Morning` vs
 `Euphoria Mourning`. Pendiente la pasada real para medir.
 
-**Medido el 2026-10-22.** Con ED-02a y la normalizacion ED-04 dentro, la pasada real
-cerro con **5 664** errores de item frente a 7 782 (−2 118, −27 %), **0** «identity
-collision» y **0** contradicciones, y el sync informo **2 821** adopciones del ledger
-(Tidal 1 340, Spotify 1 069, Qobuz 412). Sin fallos de `UNIQUE constraint failed:
-tracks.isrc` y sin panics.
+**Medido el 2026-10-22.** Con ED-02a dentro, **0** «identity collision» y **0**
+contradicciones: la identidad dejo de bloquear. La cifra de errores comparable es
+5 664 → **5 575** (−89) al anadir la normalizacion de formato; el −2 118 que se cito antes
+mezclaba pasadas con conjuntos de items distintos y queda retirado.
+
+**El techo, medido.** Las 5 575 restantes son rechazos de ED-04: la grabacion existe en un
+album y llega con otro sin evidencia de release. Ademas la adopcion no persiste, porque
+ED-04 revierte la transaccion y la evidencia adoptada se pierde: el sync informo 5 043
+adopciones en la segunda pasada y en la BD siguen 2 213 items solo en el ledger.
 
 **Cierre inesperado (2026-10-21T00:44:48Z).** Con descargas en marcha y el menú de
 bandeja abierto, la app murió con `RefCell already borrowed` en `tray-icon` desde

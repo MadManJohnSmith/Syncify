@@ -203,9 +203,17 @@ informa cuántas se adoptaron. El caso de `bridge_provider_item` (resolver de
 descargas) no se toca en este cambio: allí el ítem ya está ligado a otro Track,
 que es una contradicción real.
 
-**Verificado en runtime (2026-10-22).** Pasada real: 2 821 adopciones (Tidal 1 340,
-Spotify 1 069, Qobuz 412), 0 «identity collision», 0 contradicciones, y los errores de
-item bajan de 7 782 a 5 664 (−2 118).
+**Verificado en runtime (2026-10-22).** 0 «identity collision» y 0 contradicciones en
+todas las pasadas: la identidad ya no bloquea. La comparación honesta es entre pasadas
+comparables con el mismo conjunto de ítems: 5 664 → 5 575 (−89) al añadir la normalización
+de formato. La cifra anterior de −2 118 mezclaba pasadas con conjuntos distintos y no se
+debe citar.
+
+**Adopción no persistente (limitación conocida).** El contador informa adopciones por
+pasada —2 821 la primera, 5 043 la segunda—, no una migración única: si el ítem falla
+después en ED-04, la transacción se revierte y la evidencia adoptada no se guarda, así que
+la siguiente pasada vuelve a adoptarlo. En la BD siguen 2 213 ítems solo en el ledger.
+Arreglarlo exige decidir antes la política de ED-04, no tocar ED-02a.
 
 ### ED-03 — Descubrimiento acotado y selector puro
 
