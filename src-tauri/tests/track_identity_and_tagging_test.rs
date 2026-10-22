@@ -134,10 +134,19 @@ async fn test_same_artist_and_title_in_different_albums() {
     let review = engine
         .enrich_and_persist_sync_track(&pool, input2)
         .await
-        .expect_err("Same ISRC in a different album needs edition review");
+        .expect("el mismo ISRC en otro album se registra como aparicion, no como error");
 
     assert!(res1.is_new_global_track);
-    assert!(review.starts_with("needs_review:"));
+    assert_eq!(review.availability_status, "needs_review");
+    assert_eq!(review.track_id, res1.track_id);
+    assert!(!review.is_new_import);
+    let apariciones: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM edition_item_tracks link          JOIN edition_provider_items i ON i.id = link.item_id          WHERE i.service_track_id = '35549999' AND link.validation_status = 'needs_review'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(apariciones, 1, "la llegada queda registrada como aparicion");
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM track_sources WHERE service_track_id = '35549999'",
     )

@@ -2973,9 +2973,40 @@ impl EnrichmentEngine {
                     && !misma_familia_de_album(current, incoming)
                 {
                     anotar_rechazo_ed04(current, incoming);
-                    return Err(format!(
-                        "needs_review: la grabación ya existe en «{current}» y llegó con «{incoming}» sin evidencia de release (ED-04)"
-                    ));
+                    registrar_aparicion_de_edicion(
+                        &mut tx,
+                        input.service_id,
+                        &input.service_track_id,
+                        tid,
+                        incoming,
+                        &input.service_name,
+                    )
+                    .await?;
+                    let (artist_id, album_id): (Option<i64>, Option<i64>) = sqlx::query_as(
+                        "SELECT (SELECT artist_id FROM track_artists WHERE track_id = ? LIMIT 1), (SELECT album_id FROM tracks WHERE id = ?)",
+                    )
+                    .bind(tid)
+                    .bind(tid)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| format!("ED-04b track lookup failed: {e}"))?;
+                    // El retorno temprano tiene que confirmar: si no, la
+                    // aparición se escribe y se revierte al soltar `tx`.
+                    tx.commit()
+                        .await
+                        .map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
+                    return Ok(SyncTrackResult {
+                        track_id: tid,
+                        artist_id: artist_id.unwrap_or(0),
+                        album_id,
+                        is_new_global_track: false,
+                        is_new_source_for_service: false,
+                        is_new_library_entry_for_account: false,
+                        is_already_present: true,
+                        is_new_import: false,
+                        completeness: syncify_metadata_domain::EnrichmentCompleteness::Minimal,
+                        availability_status: "needs_review".to_string(),
+                    });
                 }
             }
         }
@@ -4440,6 +4471,50 @@ fn clase_de_rechazo_ed04(actual: &str, entrante: &str) -> ClaseRechazoEd04 {
     ClaseRechazoEd04::Distinto
 }
 
+/// ED-04b: la grabación ya vive en otro álbum de estudio. En vez de rechazar el
+/// ítem, se registra la llegada como aparición: el Track no se mueve, no se
+/// escribe evidencia nueva y la decisión queda para una persona.
+///
+/// Idempotente: la clave `(service_id, service_track_id)` y el enlace
+/// `(item_id, track_id)` hacen que repetir la pasada no duplique nada.
+async fn registrar_aparicion_de_edicion(
+    conn: &mut sqlx::SqliteConnection,
+    service_id: i64,
+    service_track_id: &str,
+    track_id: i64,
+    album_entrante: &str,
+    service_name: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO edition_provider_items(service_id, service_track_id, release_id, evidence_status, provenance) VALUES (?, ?, NULL, 'unknown', ?) ON CONFLICT(service_id, service_track_id) DO NOTHING",
+    )
+    .bind(service_id)
+    .bind(service_track_id)
+    .bind(format!("{service_name}: album={album_entrante}"))
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| format!("ED-04b appearance insert failed: {e}"))?;
+
+    let item_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM edition_provider_items WHERE service_id = ? AND service_track_id = ?",
+    )
+    .bind(service_id)
+    .bind(service_track_id)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(|e| format!("ED-04b appearance lookup failed: {e}"))?;
+
+    sqlx::query(
+        "INSERT INTO edition_item_tracks(item_id, track_id, validation_status, provenance) VALUES (?, ?, 'needs_review', 'ed04:album-family') ON CONFLICT(item_id, track_id) DO NOTHING",
+    )
+    .bind(item_id)
+    .bind(track_id)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| format!("ED-04b appearance link failed: {e}"))?;
+    Ok(())
+}
+
 /// Registra la clase del rechazo que se está a punto de devolver.
 fn anotar_rechazo_ed04(actual: &str, entrante: &str) {
     let indice = match clase_de_rechazo_ed04(actual, entrante) {
@@ -4654,6 +4729,69 @@ mod tests {
     fn ed04_un_titulo_sin_texto_util_no_es_otra_familia() {
         assert!(super::misma_familia_de_album("...", "..."));
         assert!(super::misma_familia_de_album("(Untitled)", "(untitled)"));
+    }
+
+    /// ED-04b: una llegada de otro álbum se registra como aparición, una sola
+    /// vez, sin mover el Track y con el álbum de llegada en la procedencia.
+    #[tokio::test]
+    async fn ed04b_la_llegada_de_otro_album_se_registra_como_aparicion() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let servicio = servicio_de_prueba(&pool, "qobuz").await;
+        let track = track_de_prueba(&pool, "Lucky").await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        for _ in 0..2 {
+            super::registrar_aparicion_de_edicion(
+                &mut conn,
+                servicio,
+                "item-9",
+                track,
+                "Lucky (Apple Original Series Soundtrack)",
+                "qobuz",
+            )
+            .await
+            .unwrap();
+        }
+
+        let items: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM edition_provider_items WHERE service_track_id = 'item-9'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(items, 1, "la segunda pasada no duplica el item");
+
+        let (estado, procedencia, ligados): (String, String, i64) = sqlx::query_as(
+            "SELECT t.validation_status, t.provenance,
+                    (SELECT COUNT(*) FROM edition_item_tracks x WHERE x.item_id = t.item_id)
+             FROM edition_item_tracks t
+             JOIN edition_provider_items i ON i.id = t.item_id
+             WHERE i.service_track_id = 'item-9'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(estado, "needs_review");
+        assert_eq!(ligados, 1);
+        let album: String = sqlx::query_scalar(
+            "SELECT provenance FROM edition_provider_items WHERE service_track_id = 'item-9'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            album.contains("Lucky (Apple Original Series Soundtrack)"),
+            "la procedencia guarda el album de llegada: {album} ({procedencia})"
+        );
+
+        let evidencia: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM track_sources WHERE service_track_id = 'item-9'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(evidencia, 0, "la aparicion no escribe evidencia del Track");
     }
 
     /// ED-04: el rechazo se clasifica para decidir con datos, no a ojo.

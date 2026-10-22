@@ -215,6 +215,32 @@ después en ED-04, la transacción se revierte y la evidencia adoptada no se gua
 la siguiente pasada vuelve a adoptarlo. En la BD siguen 2 213 ítems solo en el ledger.
 Arreglarlo exige decidir antes la política de ED-04, no tocar ED-02a.
 
+#### ED-04b — La llegada de otro álbum se registra como aparición (2026-10-22)
+
+Medido con el clasificador de ED-04 (16 633 intentos): 59,6 % `distinto`, 26,2 %
+`empaquetado`, 10,8 % `subtitulo`, 2,5 % `conjunto`. Las muestras del log
+mostraron el patrón dominante: la grabación ya vive en su álbum de estudio y
+llega desde un recopilatorio, una banda sonora o una playlist de catálogo
+(«The Best Of Crystal Waters» vs «Storyteller», «Twisted Sister: Essentials» vs
+«Stay Hungry», «Lucky (Apple Original Series Soundtrack)» vs «Lucky»). Eran
+5 575 errores por pasada, todos correctos y todos ruidosos.
+
+Decisión: cuando ED-04 detecta que la grabación ya está en otro álbum y no hay
+evidencia de release, el ítem **no falla**. Se registra una **aparición** en el
+ledger (`edition_provider_items` con `release_id` nulo y el álbum de llegada en
+`provenance`, más `edition_item_tracks` con `needs_review`) y se devuelve el
+Track existente como ya presente. El Track no se mueve, no se escribe
+`track_sources` y no se crea entrada de biblioteca para el recopilatorio.
+
+La escritura es idempotente por `(service_id, service_track_id)` y por
+`(item_id, track_id)`, así que repetir la pasada no duplica apariciones.
+
+Alternativas descartadas: seguir rechazando (5 575 errores permanentes sin
+decisión posible); mover el Track al álbum de llegada (pierde el álbum canónico
+y contradice ED-04); saltar el ítem sin registrarlo (pierde el dato de que
+existe). La UI las muestra con el comando `ediciones_de_pista`, que devuelve
+servicio, id del ítem, álbum de llegada y estado.
+
 ### ED-03 — Descubrimiento acotado y selector puro
 
 Inventariar adaptadores Qobuz/Tidal, SongLink, cola, resolver, orchestrator y

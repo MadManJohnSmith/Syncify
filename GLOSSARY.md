@@ -34,6 +34,12 @@ independiente: la escribe el propio importador.
 *No confundir con* **TrackSource**, que es la evidencia de que el ítem existe en
 la cuenta.
 
+**Aparición** — un Provider item que se vio y quedó asignado a un **Track** sin
+mover su álbum canónico: la grabación ya vivía en otro álbum y llegó desde un
+recopilatorio, una banda sonora o una playlist de catálogo. Queda `needs_review`
+para que una persona decida; no es **Evidencia** ni modifica el Track.
+*Evitar*: «colisión», «conflicto de identidad».
+
 **Evidencia** — la aparición de un Provider item en la cuenta, registrada como
 **TrackSource**. Manda sobre el **Ledger de edición**: si hay evidencia, el Track
 que liga es el bueno y el ledger solo puede confirmarlo. El ledger decide
