@@ -280,6 +280,13 @@ sumando las tres fuentes), «Happier Than Ever (Explicit)» frente a «Happier T
 «Absolution XX Anniversary» frente a «Absolution» (el marcador va sin paréntesis) y
 «BLUE LIPS ([lady wood phase II])» frente a «BLUE LIPS».
 
+**Normalizacion ED-04 medida (2026-10-21).** De los pares que quedaron en revision, la
+mayoria solo difiere en formato y ya no va a `needs_review`: `(Explicit)`, `(Explicit
+Version)`, `XX Anniversary`, `(2016 Rerecorded Version)`, corchetes y puntuacion. Los
+cuatro casos del log estan fijados en tests, y se mantiene fuera a proposito lo que si
+distingue lanzamientos (`& B-Sides`, `([lady wood phase II])`). Pendiente medir el efecto
+en la proxima pasada real: eran unos 6 080 de los 7 782 errores de item.
+
 **Cierre inesperado (2026-10-21T00:44:48Z).** Con descargas en marcha y el menú de
 bandeja abierto, la app murió con `RefCell already borrowed` en `tray-icon` desde
 `update_tray_icon_state` (`tray.rs:895`): `set_tooltip` no puede ejecutarse mientras la
