@@ -176,6 +176,33 @@ Eliminar upserts destructivos de ID por `(track_id,service_id)` en URL/import;
 preservar el origen y hacer idempotentes reimportaciones. Revalidar lock en
 worker antes de acceder a red. No implementar nuevos proveedores.
 
+#### ED-02a — La evidencia manda; el ledger cubre su ausencia (2026-10-22)
+
+El texto de ED-02 dice que el ítem exacto del proveedor es la única prueba de
+identidad. La medición del 2026-10-21 mostró que la guarda iba más lejos: trataba
+«sin evidencia» como «desacuerdo». Resultado, 2 051 Provider items bloqueados en
+bucle, porque el ítem nunca podía escribir la evidencia que lo habría
+desbloqueado, y 1 702 errores por pasada. Los datos: 53 119 ítems en el ledger,
+2 051 sin evidencia, **0** con evidencia que contradijera al ledger, y los 1 692
+Tracks implicados ya tenían fuente del mismo servicio.
+
+Decisión: la **Evidencia** manda. Si liga el ítem a un Track, ese Track es el
+bueno y el ledger solo puede confirmarlo; si no coincide, `needs_review`. Si no
+hay evidencia, el **Ledger de edición** decide y el TrackSource se escribe a
+continuación. Un mismo ítem ligado a más de un Track sigue cerrando.
+
+Alternativas descartadas: mantener el cierre (bucle permanente, ~1 700 errores por
+pasada); backfill offline y guarda intacta (misma escritura, más riesgo
+operativo y vuelve a atascarse con cada ítem nuevo); adoptar solo con
+`evidence_status` distinto de `unknown` (hoy no cambiaría nada: los 53 119 están
+en `unknown`).
+
+Consecuencias: una fuente puede nacer de una prueba débil, y el enlace del ledger
+queda con `validation_status='unknown'` como rastro; el resumen por servicio
+informa cuántas se adoptaron. El caso de `bridge_provider_item` (resolver de
+descargas) no se toca en este cambio: allí el ítem ya está ligado a otro Track,
+que es una contradicción real.
+
 ### ED-03 — Descubrimiento acotado y selector puro
 
 Inventariar adaptadores Qobuz/Tidal, SongLink, cola, resolver, orchestrator y

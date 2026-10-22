@@ -24,14 +24,31 @@ evidencia de que existió.
 **ISRC** — código internacional de grabación. Identifica la **grabación**, no la
 edición; el mismo ISRC puede aparecer en un álbum y en una recopilación.
 
+**Provider item** — el ítem tal como lo identifica un servicio: su id propio dentro
+de ese servicio. Es la unidad que llega en favoritos, álbumes, playlists y URLs.
+*No confundir con* **Track** (la grabación canónica) ni con **LibraryItem**.
+
+**Ledger de edición** — el registro de qué Track se asignó a cada Provider item
+cuando se decidió una **Edition**. Es una decisión ya tomada, no una prueba
+independiente: la escribe el propio importador.
+*No confundir con* **TrackSource**, que es la evidencia de que el ítem existe en
+la cuenta.
+
+**Evidencia** — la aparición de un Provider item en la cuenta, registrada como
+**TrackSource**. Manda sobre el **Ledger de edición**: si hay evidencia, el Track
+que liga es el bueno y el ledger solo puede confirmarlo. El ledger decide
+únicamente cuando todavía no hay evidencia.
+
 **Edition / Release / Recording** — el modelo de ediciones (`edition_recordings`,
 `edition_releases`, `edition_provider_items`, `edition_item_tracks`), gobernado por
 `docs/DECISION_SELECCION_EDICION.md`. Una grabación puede pertenecer a varias
 ediciones materialmente distintas.
 
-**needs_review** — resultado explícito de identidad/edición: falta evidencia o hay
-conflicto relevante, así que la decisión no se toma sola. No es un error: es un
-estado que la UI debe mostrar. (12 usos en `src-tauri/src`.)
+**needs_review** — resultado explícito de identidad/edición: hay conflicto relevante
+entre **Evidencia** y **Ledger de edición**, o falta el dato mínimo para decidir. No es un
+error: es un estado que la UI debe mostrar. (12 usos en `src-tauri/src`.)
+_Evitar_: «colisión de identidad del ítem» — no hay colisión cuando un ítem solo está en el
+ledger; eso es ausencia de evidencia y tiene su propia regla (ED-02a).
 
 **Fallback** — permitido para la **misma** edición (cuenta o calidad alternativa).
 Un cambio de edición exige autorización separada; no lo cubre el `allow_fallback`
