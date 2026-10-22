@@ -203,6 +203,10 @@ informa cuántas se adoptaron. El caso de `bridge_provider_item` (resolver de
 descargas) no se toca en este cambio: allí el ítem ya está ligado a otro Track,
 que es una contradicción real.
 
+**Verificado en runtime (2026-10-22).** Pasada real: 2 821 adopciones (Tidal 1 340,
+Spotify 1 069, Qobuz 412), 0 «identity collision», 0 contradicciones, y los errores de
+item bajan de 7 782 a 5 664 (−2 118).
+
 ### ED-03 — Descubrimiento acotado y selector puro
 
 Inventariar adaptadores Qobuz/Tidal, SongLink, cola, resolver, orchestrator y
