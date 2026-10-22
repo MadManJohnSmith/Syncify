@@ -8241,6 +8241,19 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
         }
     }
 
+    // ED-02a: cuántas identidades se adoptaron del ledger en esta pasada. Se
+    // informa en una línea por servicio, no una por ítem.
+    let adoptados_del_ledger = crate::services::enrichment::adoptados_del_ledger_tomar();
+    if adoptados_del_ledger > 0 {
+        tracing::info!(
+            service = %service_normalized,
+            adoptados = adoptados_del_ledger,
+            "[ED-02] adoptados del ledger: {} en {}",
+            adoptados_del_ledger,
+            service_normalized
+        );
+    }
+
     if success {
         emit(SyncProgressEvent::completed(
             &service_normalized,

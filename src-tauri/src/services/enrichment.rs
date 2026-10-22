@@ -4,6 +4,7 @@
 //! to resolve the first group of enriched metadata fields safely and deterministically.
 
 use crate::services::musicbrainz::{MusicBrainzClient, MusicBrainzRecording};
+use std::sync::atomic::{AtomicU64, Ordering};
 use syncify_core_domain::quality::{classify_audio_tier, AudioTier};
 #[allow(unused_imports)]
 pub use syncify_metadata_domain::{
@@ -2776,34 +2777,21 @@ impl EnrichmentEngine {
             album_id_opt = Some(aid);
         }
 
-        // ED-02: exact provider item is the only identity proof. ISRC/title
-        // remain discovery hints, never permission to merge distinct editions.
-        let source_tracks: Vec<(i64,)> = sqlx::query_as(
-            "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?",
-        )
-        .bind(input.service_id)
-        .bind(&input.service_track_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| format!("ED-02 source lookup failed: {e}"))?;
-        if source_tracks.len() > 1 {
-            return Err("needs_review: provider item maps to multiple tracks".to_string());
-        }
-        let mut existing_track_id = source_tracks.first().map(|row| row.0);
-        let ledger_tracks: Vec<(i64,)> = sqlx::query_as(
-            "SELECT link.track_id FROM edition_provider_items item JOIN edition_item_tracks link ON link.item_id = item.id WHERE item.service_id = ? AND item.service_track_id = ?"
-        )
-        .bind(input.service_id)
-        .bind(&input.service_track_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| format!("ED-02 item lookup failed: {e}"))?;
-        if ledger_tracks
-            .iter()
-            .any(|row| Some(row.0) != existing_track_id)
-        {
-            return Err("needs_review: provider item identity collision".to_string());
-        }
+        // ED-02: la evidencia manda; el ledger decide solo cuando la evidencia
+        // aún no existe. ISRC y título siguen siendo pistas, no permiso.
+        let mut existing_track_id =
+            match resolver_identidad_de_item(&mut tx, input.service_id, &input.service_track_id)
+                .await?
+            {
+                IdentidadDeItem::Nuevo => None,
+                IdentidadDeItem::Existente(id) | IdentidadDeItem::AdoptarDelLedger(id) => Some(id),
+                IdentidadDeItem::EvidenciaMultiple => {
+                    return Err("needs_review: provider item maps to multiple tracks".to_string());
+                }
+                IdentidadDeItem::Contradiccion => {
+                    return Err("needs_review: provider item contradice el ledger".to_string());
+                }
+            };
         // The legacy UNIQUE(tracks.isrc) prevents two canonical rows with the
         // same ISRC. Cross-service, that ISRC is the same recording exported by
         // another provider, not a different edition: reuse the canonical track
@@ -4334,6 +4322,81 @@ fn misma_familia_de_album(actual: &str, entrante: &str) -> bool {
     !a.is_empty() && !b.is_empty() && a == b
 }
 
+/// Resultado de resolver la identidad de un ítem del proveedor antes de tocarlo.
+#[derive(Debug, PartialEq, Eq)]
+enum IdentidadDeItem {
+    /// Sin evidencia ni ledger: el ítem es nuevo.
+    Nuevo,
+    /// La evidencia ya lo liga a un Track.
+    Existente(i64),
+    /// No hay evidencia todavía, pero el ledger dice a qué Track pertenece: se
+    /// adopta ese Track y la evidencia se escribe a continuación.
+    AdoptarDelLedger(i64),
+    /// El mismo ítem aparece ligado a más de un Track: no se decide solo.
+    EvidenciaMultiple,
+    /// La evidencia existe y no coincide con el ledger: no se decide solo.
+    Contradiccion,
+}
+
+/// Adopciones del ledger en la pasada actual. Contador de diagnóstico: el
+/// resumen del sync lo drena con `adoptados_del_ledger_tomar`.
+static ADOPTADOS_DEL_LEDGER: AtomicU64 = AtomicU64::new(0);
+
+/// Devuelve y reinicia el contador de adopciones del ledger.
+pub fn adoptados_del_ledger_tomar() -> u64 {
+    ADOPTADOS_DEL_LEDGER.swap(0, Ordering::Relaxed)
+}
+
+/// ED-02: decide la identidad de un ítem con las dos pruebas que existen.
+///
+/// La evidencia (`track_sources`) manda: si ya liga el ítem a un Track, ese
+/// Track es el bueno, y el ledger solo puede confirmarlo. Si la evidencia aún
+/// no existe, el ledger es lo único que hay y se adopta su Track: la prueba
+/// manual del 2026-10-21 mostró 2 051 ítems bloqueados para siempre porque el
+/// guard trataba «sin evidencia» como «desacuerdo», y el ítem nunca llegaba a
+/// escribir la evidencia que lo habría desbloqueado.
+async fn resolver_identidad_de_item(
+    conn: &mut sqlx::SqliteConnection,
+    service_id: i64,
+    service_track_id: &str,
+) -> Result<IdentidadDeItem, String> {
+    let fuentes: Vec<(i64,)> = sqlx::query_as(
+        "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?",
+    )
+    .bind(service_id)
+    .bind(service_track_id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| format!("ED-02 source lookup failed: {e}"))?;
+    if fuentes.len() > 1 {
+        return Ok(IdentidadDeItem::EvidenciaMultiple);
+    }
+
+    let mut del_ledger: Vec<(i64,)> = sqlx::query_as(
+        "SELECT link.track_id FROM edition_provider_items item JOIN edition_item_tracks link ON link.item_id = item.id WHERE item.service_id = ? AND item.service_track_id = ?",
+    )
+    .bind(service_id)
+    .bind(service_track_id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| format!("ED-02 item lookup failed: {e}"))?;
+    del_ledger.sort_unstable();
+    del_ledger.dedup();
+
+    let fuente = fuentes.first().map(|row| row.0);
+    match (fuente, del_ledger.len()) {
+        (Some(track), 0) => Ok(IdentidadDeItem::Existente(track)),
+        (Some(track), 1) if del_ledger[0].0 == track => Ok(IdentidadDeItem::Existente(track)),
+        (Some(_), _) => Ok(IdentidadDeItem::Contradiccion),
+        (None, 0) => Ok(IdentidadDeItem::Nuevo),
+        (None, 1) => {
+            ADOPTADOS_DEL_LEDGER.fetch_add(1, Ordering::Relaxed);
+            Ok(IdentidadDeItem::AdoptarDelLedger(del_ledger[0].0))
+        }
+        (None, _) => Ok(IdentidadDeItem::Contradiccion),
+    }
+}
+
 /// El alta de pista del sync. `tracks.isrc` es UNIQUE (0002:91): dos altas
 /// del mismo ISRC chocaban y la segunda se perdía en silencio (51 avisos
 /// `UNIQUE constraint failed: tracks.isrc` en la prueba manual del 2026-10-19).
@@ -4391,6 +4454,138 @@ mod tests {
     /// que ya lo tiene (índice NOCASE de 0064:186). Es el 2067 que la prueba
     /// manual del 2026-10-20 repitió 65 veces sobre 736 descargas: el `UPDATE`
     /// usaba `COALESCE(isrc, ?)` a secas.
+    /// Las migraciones siembran `services`; se usa uno sembrado.
+    async fn servicio_de_prueba(pool: &sqlx::SqlitePool, nombre: &str) -> i64 {
+        let id: Option<i64> = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
+            .bind(nombre)
+            .fetch_optional(pool)
+            .await
+            .unwrap();
+        id.unwrap_or_else(|| panic!("servicio sembrado '{nombre}' no encontrado"))
+    }
+
+    async fn track_de_prueba(pool: &sqlx::SqlitePool, titulo: &str) -> i64 {
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES (?) RETURNING id")
+            .bind(titulo)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Un ítem del proveedor en el ledger, ligado a `track`, sin evidencia.
+    async fn ledger_de_prueba(
+        pool: &sqlx::SqlitePool,
+        servicio: i64,
+        item: &str,
+        track: i64,
+    ) -> i64 {
+        let release: i64 = sqlx::query_scalar(
+            "INSERT INTO edition_releases (service_id, provider_release_id, evidence_status, provenance) VALUES (?, ?, 'observed', 'test') RETURNING id",
+        )
+        .bind(servicio)
+        .bind(format!("release-{item}"))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let item_id: i64 = sqlx::query_scalar(
+            "INSERT INTO edition_provider_items (service_id, service_track_id, release_id, evidence_status, provenance) VALUES (?, ?, ?, 'unknown', 'test') RETURNING id",
+        )
+        .bind(servicio)
+        .bind(item)
+        .bind(release)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO edition_item_tracks (item_id, track_id, validation_status, provenance) VALUES (?, ?, 'unknown', 'test')",
+        )
+        .bind(item_id)
+        .bind(track)
+        .execute(pool)
+        .await
+        .unwrap();
+        item_id
+    }
+
+    async fn evidencia_de_prueba(pool: &sqlx::SqlitePool, servicio: i64, item: &str, track: i64) {
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, ?)",
+        )
+        .bind(track)
+        .bind(servicio)
+        .bind(item)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// ED-02a: sin evidencia, el ledger decide y la adopción se cuenta.
+    #[tokio::test]
+    async fn ed02_sin_evidencia_adopta_el_track_del_ledger() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let servicio = servicio_de_prueba(&pool, "tidal").await;
+        let track = track_de_prueba(&pool, "In Dreams").await;
+        ledger_de_prueba(&pool, servicio, "item-1", track).await;
+        let _ = super::adoptados_del_ledger_tomar();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let resuelto = super::resolver_identidad_de_item(&mut conn, servicio, "item-1")
+            .await
+            .unwrap();
+        assert_eq!(resuelto, super::IdentidadDeItem::AdoptarDelLedger(track));
+        assert_eq!(super::adoptados_del_ledger_tomar(), 1);
+    }
+
+    /// ED-02b: la evidencia y el ledger de acuerdo no son una adopción.
+    #[tokio::test]
+    async fn ed02_evidencia_y_ledger_de_acuerdo_es_existente() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let servicio = servicio_de_prueba(&pool, "spotify").await;
+        let track = track_de_prueba(&pool, "Overcome").await;
+        ledger_de_prueba(&pool, servicio, "item-2", track).await;
+        evidencia_de_prueba(&pool, servicio, "item-2", track).await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        let resuelto = super::resolver_identidad_de_item(&mut conn, servicio, "item-2")
+            .await
+            .unwrap();
+        assert_eq!(resuelto, super::IdentidadDeItem::Existente(track));
+    }
+
+    /// ED-02c: si la evidencia contradice al ledger, no se decide solo.
+    #[tokio::test]
+    async fn ed02_evidencia_que_contradice_al_ledger_es_conflicto() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let servicio = servicio_de_prueba(&pool, "qobuz").await;
+        let del_ledger = track_de_prueba(&pool, "Lucky").await;
+        let de_la_evidencia = track_de_prueba(&pool, "Lucky (otra pista)").await;
+        ledger_de_prueba(&pool, servicio, "item-3", del_ledger).await;
+        evidencia_de_prueba(&pool, servicio, "item-3", de_la_evidencia).await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        let resuelto = super::resolver_identidad_de_item(&mut conn, servicio, "item-3")
+            .await
+            .unwrap();
+        assert_eq!(resuelto, super::IdentidadDeItem::Contradiccion);
+    }
+
+    /// ED-02d: un ítem que no está en ninguna de las dos pruebas es nuevo.
+    #[tokio::test]
+    async fn ed02_item_desconocido_es_nuevo() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let servicio = servicio_de_prueba(&pool, "deezer").await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        let resuelto = super::resolver_identidad_de_item(&mut conn, servicio, "item-4")
+            .await
+            .unwrap();
+        assert_eq!(resuelto, super::IdentidadDeItem::Nuevo);
+    }
+
     #[tokio::test]
     async fn el_relleno_de_isrc_no_pisa_el_de_otra_pista() {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
