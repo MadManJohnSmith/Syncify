@@ -309,10 +309,14 @@ artist name»), no ED-04. Se registraron **5 917** apariciones (Qobuz 2 876, Spo
 Tidal 1 184), sin `UNIQUE` y sin panics. Se ven en la UI con `ediciones_de_pista`, dentro del
 modal de metadatos.
 
-El contador de adopciones de ED-02a ya no mide una migracion sino intentos por pasada
-(21 142 en esta): el item aparece en favoritos, album y playlist y cada aparicion vuelve a
-adoptarse porque el retorno temprano no escribe `track_sources`. Es estable e idempotente,
-pero no sirve como cifra de progreso.
+**Corregido el 2026-10-22.** El contador de adopciones de ED-02a marcaba 21 142 porque
+sumaba intentos: el item aparece en favoritos, album y playlist y cada aparicion vuelve a
+adoptarse. Ahora cuenta items unicos por pasada (conjunto `(service_id, service_track_id)`),
+asi que la cifra vuelve a significar algo.
+
+Los 8 errores restantes de la pasada eran «Rejected garbage or empty artist name», el aborto
+crudo del trigger de la migracion 0079. Ahora se detectan antes de insertar y el motivo es
+accionable: «el artista del proveedor está vacío o es «Unknown Artist»; no se importa».
 
 **Reparto medido (pasada del 2026-10-22, 16 633 intentos clasificados).**
 `distinto` 59,6 %, `empaquetado` 26,2 %, `subtitulo` 10,8 %, `conjunto` 2,5 %,

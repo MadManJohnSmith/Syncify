@@ -66,6 +66,50 @@ async fn create_test_account(
 }
 
 #[tokio::test]
+async fn test_unknown_artist_is_reported_with_an_actionable_reason() {
+    let pool = setup_test_db().await;
+    let (service_id, account_id) = create_test_account(&pool, "tidal", "Tidal User 1").await;
+    let engine = EnrichmentEngine::new();
+
+    let input = SyncTrackInput {
+        origin_meta: OriginTrackMetadata {
+            title: Some("Garbage".to_string()),
+            artist: Some("Unknown Artist".to_string()),
+            album: Some("Whatever".to_string()),
+            isrc: None,
+            source_name: "tidal".to_string(),
+            ..Default::default()
+        },
+        service_track_id: "999001".to_string(),
+        service_name: "tidal".to_string(),
+        service_id,
+        account_id,
+        is_favorite: true,
+        is_purchased: false,
+        format: Some("FLAC".to_string()),
+        bit_depth: Some(24),
+        sample_rate: Some(44100),
+        quality_score: Some(1284),
+        audio_quality: Some("lossless".to_string()),
+        cover_art_url: None,
+        duration_ms: Some(200000),
+        query_musicbrainz: false,
+        album_is_favorite: false,
+        album_provider_track_id: None,
+    };
+
+    let error = engine
+        .enrich_and_persist_sync_track(&pool, input)
+        .await
+        .expect_err("un artista vacio o «Unknown Artist» no se importa");
+
+    assert!(
+        error.contains("el artista del proveedor está vacío o es «Unknown Artist»"),
+        "el motivo debe ser accionable, no un aborto de SQL: {error}"
+    );
+}
+
+#[tokio::test]
 async fn test_same_artist_and_title_in_different_albums() {
     let pool = setup_test_db().await;
     let (service_id, account_id) = create_test_account(&pool, "qobuz", "Qobuz User 1").await;

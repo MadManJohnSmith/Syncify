@@ -2332,6 +2332,13 @@ impl EnrichmentEngine {
                 FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&artist_name))
             });
 
+            if es_artista_no_utilizable(&artist_name) {
+                return Err(
+                    "needs_review: el artista del proveedor está vacío o es «Unknown Artist»; no se importa"
+                        .to_string(),
+                );
+            }
+
             let res = sqlx::query(
                 "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)
                  ON CONFLICT(name COLLATE NOCASE) DO UPDATE SET
@@ -4471,6 +4478,16 @@ fn clase_de_rechazo_ed04(actual: &str, entrante: &str) -> ClaseRechazoEd04 {
     ClaseRechazoEd04::Distinto
 }
 
+/// Nombres que el esquema rechaza (trigger de la migración 0079). Se comprueban
+/// antes de insertar para dar un motivo accionable en vez de un aborto de SQL.
+fn es_artista_no_utilizable(nombre: &str) -> bool {
+    let limpio = nombre.trim().to_lowercase();
+    limpio.is_empty()
+        || matches!(limpio.as_str(), "unknown" | "unknown artist")
+        || limpio == "\\p"
+        || limpio == "\\\\p"
+}
+
 /// ED-04b: la grabación ya vive en otro álbum de estudio. En vez de rechazar el
 /// ítem, se registra la llegada como aparición: el Track no se mueve, no se
 /// escribe evidencia nueva y la decisión queda para una persona.
@@ -4545,11 +4562,42 @@ enum IdentidadDeItem {
 
 /// Adopciones del ledger en la pasada actual. Contador de diagnóstico: el
 /// resumen del sync lo drena con `adoptados_del_ledger_tomar`.
-static ADOPTADOS_DEL_LEDGER: AtomicU64 = AtomicU64::new(0);
+/// Adopciones de la pasada. Cuenta **items únicos**, no intentos: el mismo
+/// ítem aparece en favoritos, álbum y playlist, y cada aparición volvería a
+/// adoptarse.
+#[derive(Default)]
+struct ContadorDeAdopciones {
+    vistos: std::collections::HashSet<(i64, String)>,
+}
+
+impl ContadorDeAdopciones {
+    fn anotar(&mut self, service_id: i64, service_track_id: &str) {
+        self.vistos
+            .insert((service_id, service_track_id.to_string()));
+    }
+
+    fn tomar(&mut self) -> u64 {
+        let total = self.vistos.len() as u64;
+        self.vistos.clear();
+        total
+    }
+}
+
+static ADOPTADOS_DEL_LEDGER: std::sync::LazyLock<std::sync::Mutex<ContadorDeAdopciones>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(ContadorDeAdopciones::default()));
+
+fn anotar_adopcion(service_id: i64, service_track_id: &str) {
+    if let Ok(mut contador) = ADOPTADOS_DEL_LEDGER.lock() {
+        contador.anotar(service_id, service_track_id);
+    }
+}
 
 /// Devuelve y reinicia el contador de adopciones del ledger.
 pub fn adoptados_del_ledger_tomar() -> u64 {
-    ADOPTADOS_DEL_LEDGER.swap(0, Ordering::Relaxed)
+    ADOPTADOS_DEL_LEDGER
+        .lock()
+        .map(|mut contador| contador.tomar())
+        .unwrap_or(0)
 }
 
 /// ED-02: decide la identidad de un ítem con las dos pruebas que existen.
@@ -4595,7 +4643,7 @@ async fn resolver_identidad_de_item(
         (Some(_), _) => Ok(IdentidadDeItem::Contradiccion),
         (None, 0) => Ok(IdentidadDeItem::Nuevo),
         (None, 1) => {
-            ADOPTADOS_DEL_LEDGER.fetch_add(1, Ordering::Relaxed);
+            anotar_adopcion(service_id, service_track_id);
             Ok(IdentidadDeItem::AdoptarDelLedger(del_ledger[0].0))
         }
         (None, _) => Ok(IdentidadDeItem::Contradiccion),
@@ -4729,6 +4777,33 @@ mod tests {
     fn ed04_un_titulo_sin_texto_util_no_es_otra_familia() {
         assert!(super::misma_familia_de_album("...", "..."));
         assert!(super::misma_familia_de_album("(Untitled)", "(untitled)"));
+    }
+
+    /// ED-02a: el contador mide items, no apariciones del mismo item.
+    #[test]
+    fn el_contador_de_adopciones_cuenta_items_no_intentos() {
+        let mut contador = super::ContadorDeAdopciones::default();
+        contador.anotar(1, "item-1");
+        contador.anotar(1, "item-1");
+        contador.anotar(1, "item-2");
+        contador.anotar(2, "item-1");
+        assert_eq!(contador.tomar(), 3, "tres items distintos");
+        assert_eq!(contador.tomar(), 0, "tomar reinicia la pasada");
+    }
+
+    /// El nombre que el esquema rechaza se detecta antes de tocar la base.
+    #[test]
+    fn el_artista_no_utilizable_se_reconoce_igual_que_el_esquema() {
+        use super::es_artista_no_utilizable;
+        for nombre in ["", "   ", "Unknown", "unknown artist", "UNKNOWN ARTIST"] {
+            assert!(
+                es_artista_no_utilizable(nombre),
+                "«{nombre}» no es utilizable"
+            );
+        }
+        for nombre in ["Gorillaz", "Unknown Mortal Orchestra", "The Unknown"] {
+            assert!(!es_artista_no_utilizable(nombre), "«{nombre}» sí lo es");
+        }
     }
 
     /// ED-04b: una llegada de otro álbum se registra como aparición, una sola
