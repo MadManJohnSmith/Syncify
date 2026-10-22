@@ -303,6 +303,10 @@ item falla, asi que el rechazo ED-04 se clasifica en el momento (`MismoTexto`, `
 proxima pasada real da el reparto con el que decidir la politica, sin adivinar por el top de
 motivos.
 
+**Resuelto con ED-04b (2026-10-22).** Ya no se rechazan: se registran como aparicion
+(ledger, `needs_review`) y el Track no se mueve. Se ven en la UI con el comando
+`ediciones_de_pista`, dentro del modal de metadatos. Pendiente de medir en la proxima pasada.
+
 **Reparto medido (pasada del 2026-10-22, 16 633 intentos clasificados).**
 `distinto` 59,6 %, `empaquetado` 26,2 %, `subtitulo` 10,8 %, `conjunto` 2,5 %,
 `mismo_texto` 0,9 %. El histograma cuenta intentos (un item aparece en favoritos, album y

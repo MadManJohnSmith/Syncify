@@ -1,5 +1,7 @@
 //! Syncify Tauri Commands - organized as formal Rust submodules
 
+pub mod editions;
+pub use editions::*;
 pub mod types;
 pub use types::*;
 
