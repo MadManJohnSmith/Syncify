@@ -237,8 +237,8 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 | C-18 | No había mapa de entrada para un agente | `b4a9588`; `AGENTS.md` escaneado por `scripts/tests/test_docs_consistency.py` |
 | C-19 | El subsistema de reproducción retirado seguía registrado (puerta de higiene en rojo) | `resolve_playback_source`, el protocolo y sus tests borrados; `playback.rs` 628 → 194 líneas; puerta 9/9, suite 1 rojo menos |
 | C-20 | Misma grabación en otra edición pasaba sin revisión (ED-04 inalcanzable en ese camino) | Guarda antes de escribir: álbum canónico ≠ entrante sin evidencia de release → `needs_review`; suite 2740/0/13. **Corregida el 2026-10-19**: la comparación solo normalizaba espacios y mayúsculas y rechazaba ediciones legítimas; `misma_familia_de_album` las unifica (`46e0a57`) |
-| C-21 | El alta de pista con un ISRC ya presente se perdía en silencio (`UNIQUE constraint failed: tracks.isrc`: 51 avisos el 2026-10-19 y 65 el 2026-10-20, sobre 736 descargas) | `INSERT_PISTA_SQL` con `ON CONFLICT DO NOTHING` (sin objetivo: cubre el UNIQUE BINARY de la columna y el índice NOCASE parcial de 0064:186) y resolución por `isrc COLLATE NOCASE`; completa lo que falte sin mover la pista de álbum; test rojo→verde con el 2067 real (variante de caja) |
-| C-22 | La app se cerraba al abrir el menú de bandeja durante una descarga: `RefCell already borrowed` en `tray-icon-0.25.1` (`set_tooltip` dentro del despacho del evento), panic en el hilo principal y cierre sin aviso | `0e53dad`: el tooltip se publica con `run_on_main_thread`, fuera del despacho; lib 478/0, suite 2779/0/13. Verificación en runtime (menú abierto con descarga activa) pendiente del usuario |
+| C-21 ✔ | El alta de pista con un ISRC ya presente se perdía en silencio (`UNIQUE constraint failed: tracks.isrc`: 51 avisos el 2026-10-19 y 65 el 2026-10-20, sobre 736 descargas) | `INSERT_PISTA_SQL` con `ON CONFLICT DO NOTHING` (sin objetivo: cubre el UNIQUE BINARY de la columna y el índice NOCASE parcial de 0064:186) y resolución por `isrc COLLATE NOCASE`; completa lo que falte sin mover la pista de álbum; test rojo→verde con el 2067 real (variante de caja) |
+| C-22 ✔ | La app se cerraba al abrir el menú de bandeja durante una descarga: `RefCell already borrowed` en `tray-icon-0.25.1` (`set_tooltip` dentro del despacho del evento), panic en el hilo principal y cierre sin aviso | `0e53dad`: el tooltip se publica con `run_on_main_thread`, fuera del despacho; lib 478/0, suite 2779/0/13. Verificación en runtime (menú abierto con descarga activa) pendiente del usuario |
 
 ### D-07 — Cerrada, con corrección de rumbo tras la prueba manual (2026-10-19)
 
@@ -267,6 +267,18 @@ lados con los pares reales del log, en ambas direcciones (`46e0a57`).
 La misma prueba destapó un fallo preexistente que la frontera de escritura de D-06
 hizo visible: 51 altas de pista perdidas por `tracks.isrc` UNIQUE. Se corrigió con
 `ON CONFLICT(isrc)` que reutiliza la fila y no la mueve de álbum (`c7325a7`).
+
+**Tercera prueba manual (2026-10-21).** Con los tres arreglos dentro, sync + descargas
+durante 51 minutos: **447** descargas finalizadas, **0** avisos de
+`UNIQUE constraint failed: tracks.isrc` y **0** avisos de la frontera de escritura
+(`escritura SQLx fallida`), es decir, ninguna escritura perdida en toda la sesión; **0**
+panics y la app viva al terminar. El reparto de errores de ítem queda así: identidad del
+ítem 1 702 (724 Tidal, 721 Spotify, 257 Qobuz) y el resto, unos 6 080, son la guarda ED-04
+sobre lanzamientos que siguen siendo distintos o variantes de formato que el guardián no
+normaliza: «The Best Of 1990-2000 & B-Sides» frente a «The Best Of 1990-2000» (88 casos
+sumando las tres fuentes), «Happier Than Ever (Explicit)» frente a «Happier Than Ever»,
+«Absolution XX Anniversary» frente a «Absolution» (el marcador va sin paréntesis) y
+«BLUE LIPS ([lady wood phase II])» frente a «BLUE LIPS».
 
 **Cierre inesperado (2026-10-21T00:44:48Z).** Con descargas en marcha y el menú de
 bandeja abierto, la app murió con `RefCell already borrowed` en `tray-icon` desde
