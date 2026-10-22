@@ -4337,12 +4337,24 @@ fn familia_de_album(titulo: &str) -> String {
         }
     }
 
-    base.chars()
+    let familia = base
+        .chars()
         .filter(|c| !matches!(c, ',' | ';' | ':' | '\'' | '’' | '.' | '!' | '?' | '+'))
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+
+    if familia.is_empty() {
+        // «(...)» o «...»: sin texto no hay familia que comparar. Se usa el
+        // título tal cual para que dos iguales no se traten como distintos.
+        return titulo
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+    }
+    familia
 }
 
 /// ¿Los dos títulos describen la misma familia de álbum, ignorando la edición?
@@ -4635,6 +4647,13 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    /// ED-04: un título sin texto útil no puede rechazarse contra sí mismo.
+    #[test]
+    fn ed04_un_titulo_sin_texto_util_no_es_otra_familia() {
+        assert!(super::misma_familia_de_album("...", "..."));
+        assert!(super::misma_familia_de_album("(Untitled)", "(untitled)"));
     }
 
     /// ED-04: el rechazo se clasifica para decidir con datos, no a ojo.
