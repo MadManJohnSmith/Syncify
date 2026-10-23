@@ -8221,7 +8221,16 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     // Group them into stable reasons so the next run's log identifies the
     // causes (duplicate editions, identity collisions, DB errors) without
     // dumping the full error list.
-    if !errors.is_empty() {
+    // Cierre observable: la línea se emite siempre. Antes solo aparecía con
+    // errores, así que un servicio con cero se leía como un servicio colgado.
+    if errors.is_empty() {
+        tracing::info!(
+            service = %service_normalized,
+            tracks_expansion_failed,
+            "[sync] 0 item error(s) for {} — servicio completo",
+            service_normalized
+        );
+    } else {
         let kinds = sync_error_kinds(&errors);
         tracing::warn!(
             service = %service_normalized,

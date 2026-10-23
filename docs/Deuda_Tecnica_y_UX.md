@@ -392,7 +392,19 @@ traen (`publisher_metadata` y `date_added`). El brazo inexistente devuelve
 verificación end-to-end es la parte de D-01, y depende de credenciales del
 propietario.
 
-### D-03 — Cerrada, y con qué límite exacto
+### Observabilidad del sync — el cierre ya siempre se informa
+
+**Resuelto el 2026-10-22.** El resumen `[sync] N item error(s) for <servicio>` solo se
+imprimía cuando `errors` no estaba vacío. Eso hizo leer una pasada terminada como una pasada
+colgada: Tidal cerró con cero errores y no dejó línea, y se interpretó como cuelgue durante dos
+pasadas seguidas (comprobado en el log: `adoptados del ledger: 4671 en tidal` a las 01:56 y
+ninguna línea de error después). Ahora la línea se emite siempre: `0 item error(s) … servicio
+completo` a nivel info, o el resumen de motivos a nivel warn.
+
+Lección para la auditoría: una señal que solo existe en el caso malo no sirve para distinguir
+«bien» de «no terminó». Toda fase que se quiera observar necesita su línea de cierre.
+
+## D-03 — Cerrada, y con qué límite exacto
 
 La entrada D-03 pedía una ruta de recuperación antes de declarar cerrado el descarte
 del bloque PICTURE. Se implementaron **las dos** opciones que la dejaban como decisión
