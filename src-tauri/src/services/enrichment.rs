@@ -4480,7 +4480,7 @@ fn clase_de_rechazo_ed04(actual: &str, entrante: &str) -> ClaseRechazoEd04 {
 
 /// Nombres que el esquema rechaza (trigger de la migración 0079). Se comprueban
 /// antes de insertar para dar un motivo accionable en vez de un aborto de SQL.
-fn es_artista_no_utilizable(nombre: &str) -> bool {
+pub(crate) fn es_artista_no_utilizable(nombre: &str) -> bool {
     let limpio = nombre.trim().to_lowercase();
     limpio.is_empty()
         || matches!(limpio.as_str(), "unknown" | "unknown artist")

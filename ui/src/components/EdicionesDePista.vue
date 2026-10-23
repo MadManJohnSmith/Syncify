@@ -1,6 +1,15 @@
 <template>
   <section class="space-y-2" data-testid="ediciones-de-pista">
-    <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Ediciones</h3>
+    <div class="flex items-baseline justify-between gap-3">
+      <h3 class="text-sm font-semibold text-gray-900 dark:text-white">Ediciones</h3>
+      <span class="text-[11px] text-gray-500 dark:text-gray-400">
+        El álbum de la pista no cambia
+      </span>
+    </div>
+    <p class="text-xs text-gray-500 dark:text-gray-400">
+      Otras apariciones de esta grabación. <strong>Confirmar</strong> la conserva como
+      comprobada; <strong>Descartar</strong> la quita de la lista.
+    </p>
     <p v-if="loading" class="text-sm text-gray-500 dark:text-gray-400">Cargando ediciones…</p>
     <p v-else-if="error" class="text-sm text-red-600 dark:text-red-400" data-testid="ediciones-error">
       {{ error }}

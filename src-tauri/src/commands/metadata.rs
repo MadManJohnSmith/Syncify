@@ -72,6 +72,25 @@ pub struct MetadataSearchParams {
 // COMMANDS
 // ==============================================
 
+/// Qué hacer con el artista que llega del formulario de edición.
+#[derive(Debug, PartialEq, Eq)]
+enum ArtistaDeEdicion {
+    /// El campo vino vacío: no se toca el artista actual y se guarda el resto.
+    SinCambios,
+    Usar(String),
+}
+
+fn artista_de_edicion(nombre: &str) -> Result<ArtistaDeEdicion, String> {
+    let limpio = syncify_core_domain::metadata::sanitize_artist_name(nombre);
+    if limpio.trim().is_empty() {
+        return Ok(ArtistaDeEdicion::SinCambios);
+    }
+    if crate::services::enrichment::es_artista_no_utilizable(&limpio) {
+        return Err("El artista no puede llamarse «Unknown» ni «Unknown Artist».".to_string());
+    }
+    Ok(ArtistaDeEdicion::Usar(limpio))
+}
+
 #[tauri::command]
 pub async fn update_track_metadata(
     state: State<'_, AppState>,
@@ -181,36 +200,45 @@ pub async fn update_track_metadata(
 
     // 2. Handle Artist Change
     if let Some(raw_artist_name) = metadata.artist_name {
-        let artist_name = syncify_core_domain::metadata::sanitize_artist_name(&raw_artist_name);
-        // Find or create artist
-        let artist_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
-            .bind(&artist_name)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| format!("DB error: {}", e))?
-        {
-            Some(id) => id,
-            None => sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
-                .bind(&artist_name)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|e| format!("Failed to insert artist: {}", e))?
-                .get(0),
+        // Un campo vacío no es un artista nuevo: se guarda el resto y se deja
+        // el artista actual. Antes abortaba dentro del trigger de 0079.
+        let artist_name = match artista_de_edicion(&raw_artist_name)? {
+            ArtistaDeEdicion::SinCambios => String::new(),
+            ArtistaDeEdicion::Usar(nombre) => nombre,
         };
+        if !artist_name.is_empty() {
+            // Find or create artist
+            let artist_id: i64 = match sqlx::query_scalar("SELECT id FROM artists WHERE name = ? COLLATE NOCASE LIMIT 1")
+                .bind(&artist_name)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| format!("DB error: {}", e))?
+            {
+                Some(id) => id,
+                None => sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET id=id RETURNING id")
+                    .bind(&artist_name)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Failed to insert artist: {}", e))?
+                    .get(0),
+            };
 
-        // Update link
-        sqlx::query("DELETE FROM track_artists WHERE track_id = ?")
-            .bind(track_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
+            // Update link
+            sqlx::query("DELETE FROM track_artists WHERE track_id = ?")
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
 
-        sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'main')")
+            sqlx::query(
+                "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'main')",
+            )
             .bind(track_id)
             .bind(artist_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
+        }
     }
 
     // 3. Handle Album Change
@@ -772,4 +800,34 @@ pub async fn reconcile_musicbrainz_tags(
 ) -> Result<crate::services::musicbrainz::MusicBrainzTagReconciliationReport, String> {
     let p = path_override.as_deref().map(std::path::Path::new);
     crate::services::musicbrainz::reconcile_musicbrainz_from_physical_flacs(&state.db, p).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{artista_de_edicion, ArtistaDeEdicion};
+
+    /// Un campo vacío no crea un artista: se guarda el resto y no se toca el
+    /// actual. Antes abortaba dentro del trigger de la migración 0079 y
+    /// bloqueaba cualquier edición de la pista.
+    #[test]
+    fn un_artista_vacio_no_bloquea_el_guardado() {
+        assert_eq!(artista_de_edicion(""), Ok(ArtistaDeEdicion::SinCambios));
+        assert_eq!(artista_de_edicion("   "), Ok(ArtistaDeEdicion::SinCambios));
+    }
+
+    /// Un nombre que el esquema rechaza se explica antes de tocar la base.
+    #[test]
+    fn un_artista_que_el_esquema_rechaza_tiene_motivo() {
+        let error = artista_de_edicion("Unknown Artist").unwrap_err();
+        assert!(error.contains("«Unknown Artist»"), "motivo claro: {error}");
+        assert!(artista_de_edicion("Unknown").is_err());
+    }
+
+    #[test]
+    fn un_artista_normal_se_usa_tal_cual() {
+        assert_eq!(
+            artista_de_edicion("  Gorillaz  "),
+            Ok(ArtistaDeEdicion::Usar("Gorillaz".to_string()))
+        );
+    }
 }
