@@ -790,8 +790,10 @@ pub struct TidalDownloader {
     cached_oauth_token: RwLock<Option<(String, Instant)>>,
     /// Mercado con el que se consulta el catálogo (ISO-3166 alfa-2). Antes se
     /// fijaba `US` en la búsqueda: una cuenta mexicana o británica recibía el
-    /// catálogo estadounidense, que no es el que puede reproducir.
-    country_code: String,
+    /// catálogo estadounidense, que no es el que puede reproducir. Va en un
+    /// `RwLock` porque el orquestador de descargas resuelve la cuenta (y su
+    /// país) después de construir el descargador compartido.
+    country_code: RwLock<String>,
 }
 
 impl TidalDownloader {
@@ -817,7 +819,7 @@ impl TidalDownloader {
             client_secret,
             user_token: RwLock::new(None),
             cached_oauth_token: RwLock::new(None),
-            country_code: DEFAULT_TIDAL_SEARCH_COUNTRY.to_string(),
+            country_code: RwLock::new(DEFAULT_TIDAL_SEARCH_COUNTRY.to_string()),
         }
     }
 
@@ -831,16 +833,26 @@ impl TidalDownloader {
 
     /// Fija el mercado de las búsquedas con el país de la cuenta. Un código que
     /// no sea ISO-3166 alfa-2 se ignora y se conserva el de por defecto.
-    pub fn with_country_code(mut self, code: Option<String>) -> Self {
-        if let Some(normalized) = normalize_country_code(code.as_deref()) {
-            self.country_code = normalized;
-        }
+    pub fn with_country_code(self, code: Option<String>) -> Self {
+        self.set_country_code(code);
         self
     }
 
+    /// Fija el mercado de las búsquedas; `None` o un código inválido no lo cambian.
+    pub fn set_country_code(&self, code: Option<String>) {
+        let Some(normalized) = normalize_country_code(code.as_deref()) else {
+            return;
+        };
+        let mut guard = self.country_code.write().unwrap_or_else(|p| p.into_inner());
+        *guard = normalized;
+    }
+
     /// Mercado con el que se consulta el catálogo.
-    pub fn country_code(&self) -> &str {
-        &self.country_code
+    pub fn country_code(&self) -> String {
+        self.country_code
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     pub fn set_user_token(&self, token: Option<String>) {
@@ -1335,9 +1347,10 @@ impl TidalDownloader {
         };
 
         let mut candidate_tracks: Vec<TidalTrack> = Vec::new();
+        let country = self.country_code();
 
         for token in &search_tokens {
-            let official_urls = official_search_urls(query, &self.country_code);
+            let official_urls = official_search_urls(query, &country);
 
             for official_url in &official_urls {
                 if let Ok(response) = self

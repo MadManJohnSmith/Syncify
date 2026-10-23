@@ -411,6 +411,10 @@ impl DownloadOrchestrator {
                     .await;
                 if let Some(c) = creds {
                     self.tidal.set_user_token(Some(c.access_token));
+                    // La búsqueda debe consultar el catálogo del país de la
+                    // cuenta: con `US` fijo no veía lo que esa cuenta puede
+                    // reproducir.
+                    self.tidal.set_country_code(c.country_code);
                 }
             }
             None

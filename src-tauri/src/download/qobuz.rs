@@ -3359,6 +3359,10 @@ pub fn title_matches(expected: &str, found: &str) -> bool {
 /// publica `田中 望` donde Spotify guardó `田中 望(CV:赤﨑千夏)`, y sin
 /// normalizar ese paréntesis la etapa de metadatos no podía acertar nunca. Los
 /// separadores cubren también `、`, `，`, `／` y `＆` de los catálogos JP.
+///
+/// A diferencia de `syncify_core_domain::metadata::artist_matches`, aquí no se
+/// admite contención de subtítulos: esta variante decide una descarga, así que
+/// sólo acepta igualdad de crédito o de una de sus partes.
 pub fn artist_matches(expected: &str, found: &str) -> bool {
     let expected_lower =
         syncify_core_domain::metadata::strip_artist_role_annotations(expected).to_lowercase();
