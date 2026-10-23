@@ -311,8 +311,12 @@ modal de metadatos.
 
 **Corregido el 2026-10-22.** El contador de adopciones de ED-02a marcaba 21 142 porque
 sumaba intentos: el item aparece en favoritos, album y playlist y cada aparicion vuelve a
-adoptarse. Ahora cuenta items unicos por pasada (conjunto `(service_id, service_track_id)`),
-asi que la cifra vuelve a significar algo.
+adoptarse. Ahora cuenta items unicos por pasada (conjunto `(service_id, service_track_id)`).
+
+**Ojo con lo que mide.** No es una cifra de progreso: cuenta exactamente los items que solo
+existen en el ledger, y ED-04b los mantiene ahi a proposito (la aparicion no escribe
+`track_sources`). Tras la pasada del 2026-10-22 hay 10 050 items en esa situacion, asi que el
+contador rondara esa cifra, no los 2 213 de antes de ED-04b.
 
 Los 8 errores restantes de la pasada eran «Rejected garbage or empty artist name», el aborto
 crudo del trigger de la migracion 0079. Ahora se detectan antes de insertar y el motivo es
