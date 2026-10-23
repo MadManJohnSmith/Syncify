@@ -244,6 +244,39 @@ aparición en `verified`, **descartar** borra el enlace
 (`resolver_aparicion_de_pista`). En ninguno de los dos casos se mueve el Track ni
 su álbum.
 
+#### ED-04c — Qué significa resolver una aparición, y por qué no hay nada que reconciliar (2026-10-22)
+
+La primera versión de la sección mostraba el id del proveedor, el estado crudo y el
+título del álbum solo cuando existía; parecía una lista de tareas sin consecuencia.
+Medido antes de rediseñar: de 7 072 apariciones, 4 162 tienen título de álbum y
+2 910 no (son anteriores a ED-04b, que empezó a guardarlo).
+
+**No hay reconciliación pendiente.** La biblioteca ya conserva una sola versión de
+la grabación: el Track con su álbum canónico. Una aparición no crea pista, ni
+archivo, ni entrada de biblioteca. Descartarla no adelgaza nada: borra el dato de
+que la grabación existe en ese otro álbum. Por eso «reconciliar» no aplica.
+
+Decisión de presentación: la sección es **informativa y plegada**. Arriba, una
+frase con lo único que importa —«También aparece en N álbumes · M por revisar»—;
+al desplegar, una fila por aparición con el álbum (o «sin datos de álbum» cuando es
+anterior al registro), el servicio con su nombre legible y el estado en palabras.
+El id del proveedor queda en el tooltip: no ayuda a decidir.
+
+Semántica de las acciones:
+
+- **Confirmar**: la marca como comprobada y deja de contar como pendiente. No toca
+  el Track ni su álbum.
+- **Descartar**: borra el enlace. Si el servicio vuelve a traerla, se registrará de
+  nuevo; por eso no es una decisión irreversible sobre la biblioteca.
+
+Las dos se explican en la propia sección, porque una acción sin consecuencia
+declarada es una trampa.
+
+Descartadas: mostrar contadores de pendientes como tarea (convierte 7 072 filas en
+deuda falsa); ocultar solo las apariciones sin título (esconde la mitad del
+problema); convertir «confirmar» en «mover el Track a ese álbum» (contradice el
+pilar B y reabre las colisiones de identidad).
+
 ### ED-03 — Descubrimiento acotado y selector puro
 
 Inventariar adaptadores Qobuz/Tidal, SongLink, cola, resolver, orchestrator y

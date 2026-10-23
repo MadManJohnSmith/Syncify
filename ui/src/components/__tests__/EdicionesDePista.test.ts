@@ -12,6 +12,15 @@ import { getEdicionesDePista, resolverAparicion } from '../../api/editions'
 const listar = vi.mocked(getEdicionesDePista)
 const resolver = vi.mocked(resolverAparicion)
 
+const aparicion = (extra: Record<string, unknown> = {}) => ({
+  item_id: 11,
+  service: 'qobuz',
+  service_track_id: '434547369',
+  album: 'Greatest Hits',
+  validation_status: 'needs_review',
+  ...extra,
+})
+
 describe('EdicionesDePista', () => {
   beforeEach(() => {
     listar.mockReset()
@@ -19,61 +28,73 @@ describe('EdicionesDePista', () => {
     resolver.mockResolvedValue(undefined)
   })
 
-  it('muestra el álbum de llegada y el servicio de cada aparición', async () => {
+  it('esta plegada y resume cuantos albumes hay sin listar nada', async () => {
     listar.mockResolvedValue([
-      {
-        item_id: 11,
-        service: 'qobuz',
-        service_track_id: '434547369',
-        album: 'Lucky (Apple Original Series Soundtrack)',
-        validation_status: 'needs_review',
-      },
+      aparicion(),
+      aparicion({ item_id: 12, service: 'tidal', album: 'Greatest Hits' }),
+      aparicion({ item_id: 13, service: 'spotify', album: 'The Singles Collection' }),
     ])
     const wrapper = mount(EdicionesDePista, { props: { trackId: 7 } })
     await flushPromises()
 
-    expect(listar).toHaveBeenCalledWith(7)
-    const filas = wrapper.findAll('[data-testid="edicion"]')
-    expect(filas).toHaveLength(1)
-    expect(filas[0].text()).toContain('Lucky (Apple Original Series Soundtrack)')
-    expect(filas[0].text()).toContain('qobuz')
+    expect(wrapper.find('[data-testid="ediciones-resumen"]').text()).toBe(
+      'También aparece en 2 álbumes · 3 por revisar',
+    )
+    expect(wrapper.find('[data-testid="ediciones-lista"]').exists()).toBe(false)
   })
 
-  it('dice que no hay apariciones en vez de mostrar una lista vacía', async () => {
+  it('al desplegar muestra album legible, servicio y estado', async () => {
+    listar.mockResolvedValue([aparicion()])
+    const wrapper = mount(EdicionesDePista, { props: { trackId: 7 } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="ediciones-toggle"]').trigger('click')
+
+    const fila = wrapper.find('[data-testid="edicion"]')
+    expect(fila.find('[data-testid="edicion-album"]').text()).toBe('Greatest Hits')
+    expect(fila.text()).toContain('Qobuz')
+    expect(fila.find('[data-testid="edicion-estado-needs_review"]').text()).toBe('Por revisar')
+    // El id del proveedor no ensucia la fila: queda en el tooltip.
+    expect(fila.text()).not.toContain('434547369')
+  })
+
+  it('una aparicion antigua sin album lo dice en vez de dejarlo vacio', async () => {
+    listar.mockResolvedValue([aparicion({ album: null })])
+    const wrapper = mount(EdicionesDePista, { props: { trackId: 7 } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="ediciones-toggle"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="edicion-album"]').text()).toBe(
+      'Sin datos de álbum (aparición antigua)',
+    )
+  })
+
+  it('una aparicion comprobada no se puede volver a confirmar', async () => {
+    listar.mockResolvedValue([aparicion({ validation_status: 'verified' })])
+    const wrapper = mount(EdicionesDePista, { props: { trackId: 7 } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="ediciones-toggle"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="edicion-estado-verified"]').text()).toBe('Comprobada')
+    expect(wrapper.find('[data-testid="edicion-confirmar"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="edicion-descartar"]').exists()).toBe(true)
+  })
+
+  it('dice que no hay otras apariciones en vez de mostrar una lista vacia', async () => {
     listar.mockResolvedValue([])
     const wrapper = mount(EdicionesDePista, { props: { trackId: 7 } })
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="ediciones-vacio"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ediciones-resumen"]').text()).toBe('Sin otras apariciones')
   })
 
-  it('no consulta si no hay pista seleccionada', async () => {
-    mount(EdicionesDePista, { props: { trackId: null } })
-    await flushPromises()
-
-    expect(listar).not.toHaveBeenCalled()
-  })
-})
-
-describe('EdicionesDePista: resolver', () => {
-  beforeEach(() => {
-    listar.mockReset()
-    resolver.mockReset()
-    resolver.mockResolvedValue(undefined)
-    listar.mockResolvedValue([
-      {
-        item_id: 11,
-        service: 'qobuz',
-        service_track_id: '434547369',
-        album: 'Lucky (Apple Original Series Soundtrack)',
-        validation_status: 'needs_review',
-      },
-    ])
-  })
-
-  it('confirmar conserva la aparición y recarga', async () => {
+  it('confirmar conserva la aparicion y recarga', async () => {
+    listar.mockResolvedValue([aparicion()])
     const wrapper = mount(EdicionesDePista, { props: { trackId: 7 } })
     await flushPromises()
+    await wrapper.find('[data-testid="ediciones-toggle"]').trigger('click')
 
     await wrapper.find('[data-testid="edicion-confirmar"]').trigger('click')
     await flushPromises()
@@ -82,14 +103,23 @@ describe('EdicionesDePista: resolver', () => {
     expect(listar).toHaveBeenCalledTimes(2)
   })
 
-  it('descartar borra la aparición y recarga', async () => {
+  it('descartar borra la aparicion y recarga', async () => {
+    listar.mockResolvedValue([aparicion()])
     const wrapper = mount(EdicionesDePista, { props: { trackId: 7 } })
     await flushPromises()
+    await wrapper.find('[data-testid="ediciones-toggle"]').trigger('click')
 
     await wrapper.find('[data-testid="edicion-descartar"]').trigger('click')
     await flushPromises()
 
     expect(resolver).toHaveBeenCalledWith(11, 7, false)
     expect(listar).toHaveBeenCalledTimes(2)
+  })
+
+  it('no consulta si no hay pista seleccionada', async () => {
+    mount(EdicionesDePista, { props: { trackId: null } })
+    await flushPromises()
+
+    expect(listar).not.toHaveBeenCalled()
   })
 })

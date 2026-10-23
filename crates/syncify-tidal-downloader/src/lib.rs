@@ -18,9 +18,9 @@ pub use syncify_core_domain::errors::{PipelineError, RequiresAuthReason};
 pub use syncify_core_domain::events::{PipelineProgressEvent, PipelineStepStatus};
 pub use syncify_core_domain::manifest::TrackManifestEntry;
 pub use syncify_core_domain::metadata::{
-    artist_matches, clean_title, score_tidal_candidate, score_tidal_release, title_matches,
-    TidalAlbum, TidalArtist, TidalMediaMetadata, TidalSearchResponse, TidalSearchTracks,
-    TidalTrack,
+    artist_matches, clean_title, score_tidal_candidate, score_tidal_release,
+    strip_artist_role_annotations, title_matches, TidalAlbum, TidalArtist, TidalMediaMetadata,
+    TidalSearchResponse, TidalSearchTracks, TidalTrack,
 };
 pub use syncify_core_domain::quality::{
     classify_audio_tier, normalize_audio_quality, AudioTier, QualityClass, QualityPolicy,
@@ -89,6 +89,36 @@ pub const DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK: &str =
     "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8=";
 /// Client id público del cliente PKCE (Hi-Res / HiFi+).
 pub const DEFAULT_TIDAL_CLIENT_ID_PKCE: &str = "6BDSRdpK9hqEBTgU";
+
+/// Mercado usado cuando la cuenta no declara país.
+pub const DEFAULT_TIDAL_SEARCH_COUNTRY: &str = "US";
+
+/// Acepta un país ISO-3166 alfa-2 y lo devuelve en mayúsculas; cualquier otra
+/// cosa se descarta para no construir una URL con un mercado inválido.
+fn normalize_country_code(raw: Option<&str>) -> Option<String> {
+    let code = raw?.trim().to_uppercase();
+    (code.len() == 2 && code.chars().all(|c| c.is_ascii_alphabetic())).then_some(code)
+}
+
+/// URLs oficiales de búsqueda de pistas en el mercado indicado. Se construyen
+/// aparte para poder afirmar en un test que el país de la cuenta llega a la
+/// petición: con `US` fijo, una cuenta MX consultaba un catálogo que no puede
+/// reproducir.
+fn official_search_urls(query: &str, country_code: &str) -> [String; 2] {
+    let country = normalize_country_code(Some(country_code))
+        .unwrap_or_else(|| DEFAULT_TIDAL_SEARCH_COUNTRY.to_string());
+    let encoded = urlencoding::encode(query);
+    [
+        format!(
+            "https://api.tidal.com/v1/search/tracks?query={}&limit=50&countryCode={}",
+            encoded, country
+        ),
+        format!(
+            "https://api.tidal.com/v1/search?query={}&types=TRACKS&limit=50&countryCode={}",
+            encoded, country
+        ),
+    ]
+}
 
 /// Maximum number of DASH MPD segments allowed to prevent resource exhaustion / DoS attacks (SEC-023).
 pub const MAX_DASH_SEGMENTS: u32 = 500;
@@ -758,6 +788,10 @@ pub struct TidalDownloader {
     client_secret: String,
     user_token: RwLock<Option<String>>,
     cached_oauth_token: RwLock<Option<(String, Instant)>>,
+    /// Mercado con el que se consulta el catálogo (ISO-3166 alfa-2). Antes se
+    /// fijaba `US` en la búsqueda: una cuenta mexicana o británica recibía el
+    /// catálogo estadounidense, que no es el que puede reproducir.
+    country_code: String,
 }
 
 impl TidalDownloader {
@@ -783,6 +817,7 @@ impl TidalDownloader {
             client_secret,
             user_token: RwLock::new(None),
             cached_oauth_token: RwLock::new(None),
+            country_code: DEFAULT_TIDAL_SEARCH_COUNTRY.to_string(),
         }
     }
 
@@ -792,6 +827,20 @@ impl TidalDownloader {
             *guard = Some(tok);
         }
         self
+    }
+
+    /// Fija el mercado de las búsquedas con el país de la cuenta. Un código que
+    /// no sea ISO-3166 alfa-2 se ignora y se conserva el de por defecto.
+    pub fn with_country_code(mut self, code: Option<String>) -> Self {
+        if let Some(normalized) = normalize_country_code(code.as_deref()) {
+            self.country_code = normalized;
+        }
+        self
+    }
+
+    /// Mercado con el que se consulta el catálogo.
+    pub fn country_code(&self) -> &str {
+        &self.country_code
     }
 
     pub fn set_user_token(&self, token: Option<String>) {
@@ -1065,7 +1114,11 @@ impl TidalDownloader {
         artist_name: &str,
         expected_duration_sec: i32,
     ) -> Result<TidalTrack> {
-        let query = format!("{} {}", artist_name, track_name);
+        let query = format!(
+            "{} {}",
+            strip_artist_role_annotations(artist_name),
+            track_name
+        );
         let items = self.fetch_search_candidates(&query).await?;
 
         for track in &items {
@@ -1284,16 +1337,7 @@ impl TidalDownloader {
         let mut candidate_tracks: Vec<TidalTrack> = Vec::new();
 
         for token in &search_tokens {
-            let official_urls = [
-                format!(
-                    "https://api.tidal.com/v1/search/tracks?query={}&limit=50&countryCode=US",
-                    urlencoding::encode(query)
-                ),
-                format!(
-                    "https://api.tidal.com/v1/search?query={}&types=TRACKS&limit=50&countryCode=US",
-                    urlencoding::encode(query)
-                ),
-            ];
+            let official_urls = official_search_urls(query, &self.country_code);
 
             for official_url in &official_urls {
                 if let Ok(response) = self
@@ -1399,7 +1443,11 @@ impl TidalDownloader {
         artist_name: &str,
         expected_duration_sec: i32,
     ) -> Result<TidalTrack> {
-        let query = format!("{} {}", artist_name, track_name);
+        let query = format!(
+            "{} {}",
+            strip_artist_role_annotations(artist_name),
+            track_name
+        );
         let candidate_tracks = self.fetch_search_candidates(&query).await?;
 
         let mut matches: Vec<TidalTrack> = candidate_tracks
@@ -1455,7 +1503,11 @@ impl TidalDownloader {
         expected_duration_sec: i32,
         smart_studio_origin: bool,
     ) -> Result<TidalTrack> {
-        let query = format!("{} {}", artist_name, track_name);
+        let query = format!(
+            "{} {}",
+            strip_artist_role_annotations(artist_name),
+            track_name
+        );
         let candidate_tracks = self.fetch_search_candidates(&query).await?;
 
         if candidate_tracks.is_empty() {
@@ -2482,6 +2534,36 @@ mod tests {
         assert_eq!(anonymize_identifier("キラキラネーム"), "キラキ...ネーム");
         assert_eq!(anonymize_identifier("abc"), "***");
         assert_eq!(anonymize_identifier("  "), "none");
+    }
+
+    /// La búsqueda fijaba `countryCode=US`: una cuenta MX/GB consultaba un
+    /// catálogo que no puede reproducir. El país de la cuenta debe llegar a
+    /// las dos URLs oficiales.
+    #[test]
+    fn test_search_urls_use_account_country() {
+        let [by_track, by_type] = official_search_urls("JPD731900230", "mx");
+        assert!(by_track.contains("countryCode=MX"), "{}", by_track);
+        assert!(by_type.contains("countryCode=MX"), "{}", by_type);
+        assert!(!by_track.contains("countryCode=US"));
+        assert!(!by_type.contains("countryCode=US"));
+        // Un país inválido no se cuela en la petición.
+        let [fallback, _] = official_search_urls("x", "not-a-country");
+        assert!(fallback.contains("countryCode=US"), "{}", fallback);
+    }
+
+    #[test]
+    fn test_downloader_country_code_defaults_and_overrides() {
+        let downloader = TidalDownloader::new();
+        assert_eq!(downloader.country_code(), DEFAULT_TIDAL_SEARCH_COUNTRY);
+
+        let downloader = TidalDownloader::new().with_country_code(Some("gb".to_string()));
+        assert_eq!(downloader.country_code(), "GB");
+
+        // `None` y basura conservan el mercado por defecto.
+        let downloader = TidalDownloader::new().with_country_code(None);
+        assert_eq!(downloader.country_code(), DEFAULT_TIDAL_SEARCH_COUNTRY);
+        let downloader = TidalDownloader::new().with_country_code(Some("XX1".to_string()));
+        assert_eq!(downloader.country_code(), DEFAULT_TIDAL_SEARCH_COUNTRY);
     }
 
     #[test]

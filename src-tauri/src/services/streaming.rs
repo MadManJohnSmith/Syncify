@@ -507,6 +507,23 @@ async fn resolve_spotify_bearer_token(
     Ok(new_access_token)
 }
 
+/// Motivos únicos, en orden de aparición.
+///
+/// La cascada prueba cada cuenta de un proveedor y el mismo fallo de catálogo
+/// se repite idéntico: al usuario le sirve una vez por causa, no una por
+/// cuenta (el mensaje llegó a veinte líneas con el mismo texto).
+fn dedupe_reasons(reasons: &[String]) -> Vec<String> {
+    let mut unique: Vec<String> = Vec::with_capacity(reasons.len());
+    for reason in reasons {
+        let reason = reason.trim();
+        if reason.is_empty() || unique.iter().any(|seen| seen == reason) {
+            continue;
+        }
+        unique.push(reason.to_string());
+    }
+    unique
+}
+
 /// `true` cuando este (`service`, `service_track_id`) no se ha intentado ya en
 /// la pasada directa. Evita repetir la misma resolución (y el mismo fallo).
 fn should_try(tried: &HashSet<(String, String)>, service: &str, id: &str) -> bool {
@@ -540,7 +557,7 @@ async fn qobuz_isrc_match(
         {
             Ok(token) => token,
             Err(QobuzAuthStatus::RequiresAuth(msg)) => {
-                reasons.push(format!("cuenta {}: {}", account_id, msg));
+                reasons.push(msg);
                 continue;
             }
         };
@@ -569,19 +586,16 @@ async fn qobuz_isrc_match(
                         .await
                     {
                         Ok(track) => return Ok(track),
-                        Err(second_err) => reasons.push(format!(
-                            "cuenta {}: {} / {}",
-                            account_id, first_err, second_err
-                        )),
+                        Err(second_err) => reasons.push(format!("{} / {}", first_err, second_err)),
                     }
                 } else {
-                    reasons.push(format!("cuenta {}: {}", account_id, first_err));
+                    reasons.push(first_err.to_string());
                 }
             }
         }
     }
 
-    Err(reasons.join(" · "))
+    Err(dedupe_reasons(&reasons).join(" · "))
 }
 
 /// Lo mismo para Tidal. La búsqueda usa el token de usuario de la cuenta (la
@@ -607,12 +621,13 @@ async fn tidal_isrc_match(
             resolve_and_refresh_gui_credentials_for_account(db, http, Some(account_id), false)
                 .await;
         let Some(creds) = creds else {
-            reasons.push(format!("cuenta {}: sin credenciales válidas", account_id));
+            reasons.push("sin credenciales válidas".to_string());
             continue;
         };
 
         let downloader = syncify_tidal_downloader::TidalDownloader::new()
-            .with_user_token(Some(creds.access_token.clone()));
+            .with_user_token(Some(creds.access_token.clone()))
+            .with_country_code(creds.country_code.clone());
 
         match downloader
             .search_by_isrc_verified(isrc, &context.title, &context.artist, expected_sec)
@@ -626,19 +641,16 @@ async fn tidal_isrc_match(
                         .await
                     {
                         Ok(track) => return Ok(track),
-                        Err(second_err) => reasons.push(format!(
-                            "cuenta {}: {} / {}",
-                            account_id, first_err, second_err
-                        )),
+                        Err(second_err) => reasons.push(format!("{} / {}", first_err, second_err)),
                     }
                 } else {
-                    reasons.push(format!("cuenta {}: {}", account_id, first_err));
+                    reasons.push(first_err.to_string());
                 }
             }
         }
     }
 
-    Err(reasons.join(" · "))
+    Err(dedupe_reasons(&reasons).join(" · "))
 }
 
 /// Busca la grabación en Qobuz/Tidal y resuelve su stream.
@@ -772,7 +784,7 @@ async fn isrc_cascade(
     Err(if reasons.is_empty() {
         "las fuentes ya se habían intentado en la pasada directa".to_string()
     } else {
-        reasons.join(" · ")
+        dedupe_reasons(&reasons).join(" · ")
     })
 }
 
@@ -931,7 +943,8 @@ async fn metadata_stage_match(
             return Err("sin credenciales válidas".to_string());
         };
         let downloader = syncify_tidal_downloader::TidalDownloader::new()
-            .with_user_token(Some(creds.access_token.clone()));
+            .with_user_token(Some(creds.access_token.clone()))
+            .with_country_code(creds.country_code.clone());
         match downloader
             .search_by_metadata_strict(&context.title, &context.artist, expected_sec)
             .await
@@ -1738,6 +1751,32 @@ fn format_sample_rate(rate: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La cascada acumula un motivo por cuenta y por etapa: cuatro cuentas de
+    /// Qobuz con el mismo fallo de catálogo producían cuatro líneas idénticas
+    /// (el mensaje real llegó a veinte). Se colapsa sin perder el orden ni
+    /// causas distintas.
+    #[test]
+    fn dedupe_reasons_collapses_repeated_account_failures() {
+        let reasons = vec![
+            "No exact ISRC match found for: JPD731900230".to_string(),
+            "No exact ISRC match found for: JPD731900230".to_string(),
+            "sin credenciales válidas".to_string(),
+            "No exact ISRC match found for: JPD731900230".to_string(),
+            "  ".to_string(),
+            "No matching track found on Qobuz for strict metadata: A - B".to_string(),
+            "sin credenciales válidas".to_string(),
+        ];
+        assert_eq!(
+            dedupe_reasons(&reasons),
+            vec![
+                "No exact ISRC match found for: JPD731900230".to_string(),
+                "sin credenciales válidas".to_string(),
+                "No matching track found on Qobuz for strict metadata: A - B".to_string(),
+            ]
+        );
+        assert!(dedupe_reasons(&[]).is_empty());
+    }
 
     #[test]
     fn qobuz_format_ids_map_to_honest_quality() {

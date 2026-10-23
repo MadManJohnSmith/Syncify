@@ -1967,9 +1967,15 @@ function surfacePlayFailure(track: Track, error: unknown) {
   // cause and the next step.
   const message = String((error as { message?: string })?.message || error || 'Unknown error');
   const hasLocalFile = !!track.filePath;
+  // La cascada de fuentes (ISRC + metadatos) es la misma para reproducir y
+  // para descargar: si no encontró fuente, descargar falla igual. Decir sólo
+  // "no está descargada" mandaba al usuario a un botón que repite el fallo.
+  const noReproducibleSource = message.includes('No se pudo resolver ninguna fuente reproducible');
   const hint = hasLocalFile
     ? ''
-    : ' This track is not downloaded: local playback requires the file on disk.';
+    : noReproducibleSource
+      ? ' No provider carries this recording, so downloading it would fail the same way.'
+      : ' This track is not downloaded: local playback requires the file on disk.';
   toast.error(`Could not play "${track.title}"`, message + hint);
 }
 

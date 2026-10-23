@@ -1102,7 +1102,9 @@ where
                 )),
         );
 
-        let downloader = TidalDownloader::new().with_user_token(user_token);
+        let downloader = TidalDownloader::new()
+            .with_user_token(user_token)
+            .with_country_code(active_account_region.clone());
 
         // 2. Searching & Candidate Resolution
         phase_tracker.start_phase(DownloadPhase::ResolveStream);
@@ -4299,7 +4301,8 @@ pub async fn reenrich_download_file_with_baseline(
     let http_client = crate::download::http_client::create_http_client();
     let (resolved_creds, _) = resolve_and_refresh_gui_credentials(db, &http_client).await;
     let downloader = TidalDownloader::new()
-        .with_user_token(resolved_creds.as_ref().map(|c| c.access_token.clone()));
+        .with_user_token(resolved_creds.as_ref().map(|c| c.access_token.clone()))
+        .with_country_code(resolved_creds.as_ref().and_then(|c| c.country_code.clone()));
     let country_code = resolved_creds
         .as_ref()
         .and_then(|c| c.country_code.as_deref())

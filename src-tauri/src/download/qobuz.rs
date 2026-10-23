@@ -1241,7 +1241,13 @@ impl QobuzDownloader {
     ) -> Result<Vec<QobuzTrack>> {
         QOBUZ_LIMITER.wait("qobuz").await;
 
-        let query = format!("{} {}", artist_name, track_name);
+        // La consulta va sin la anotación de rol: `田中 望(CV:赤﨑千夏)` no
+        // aparece así en el catálogo y el paréntesis sólo añade ruido al
+        // buscador. El filtro posterior compara con `artist_matches`, que
+        // normaliza igual.
+        let query_artist =
+            syncify_core_domain::metadata::strip_artist_role_annotations(artist_name);
+        let query = format!("{} {}", query_artist, track_name);
         let url = format!("{}/track/search", QOBUZ_API_BASE);
         let mut params = vec![
             ("app_id", self.app_id.clone()),
@@ -3348,22 +3354,30 @@ pub fn title_matches(expected: &str, found: &str) -> bool {
 }
 
 /// Check if two artist names match (fuzzy)
+///
+/// La comparación se hace sobre el crédito sin anotaciones de rol: Qobuz
+/// publica `田中 望` donde Spotify guardó `田中 望(CV:赤﨑千夏)`, y sin
+/// normalizar ese paréntesis la etapa de metadatos no podía acertar nunca. Los
+/// separadores cubren también `、`, `，`, `／` y `＆` de los catálogos JP.
 pub fn artist_matches(expected: &str, found: &str) -> bool {
-    let expected_lower = expected.to_lowercase();
-    let found_lower = found.to_lowercase();
+    let expected_lower =
+        syncify_core_domain::metadata::strip_artist_role_annotations(expected).to_lowercase();
+    let found_lower =
+        syncify_core_domain::metadata::strip_artist_role_annotations(found).to_lowercase();
+
+    if expected_lower.is_empty() || found_lower.is_empty() {
+        return false;
+    }
 
     if expected_lower == found_lower {
         return true;
     }
 
-    let expected_parts: Vec<&str> = expected_lower
-        .split(&[',', ';', '&', '/', '|'][..])
-        .collect();
-    let found_parts: Vec<&str> = found_lower.split(&[',', ';', '&', '/', '|'][..]).collect();
+    let separators = syncify_core_domain::metadata::ARTIST_CREDIT_SEPARATORS;
 
-    for ep in &expected_parts {
-        for fp in &found_parts {
-            if ep.trim() == fp.trim() {
+    for ep in expected_lower.split(separators) {
+        for fp in found_lower.split(separators) {
+            if ep.trim() == fp.trim() && !ep.trim().is_empty() {
                 return true;
             }
         }
@@ -3831,6 +3845,24 @@ mod tests {
     fn test_title_and_artist_matching() {
         assert!(title_matches("Heroes", "Heroes (2017 Remaster)"));
         assert!(artist_matches("David Bowie", "David Bowie"));
+    }
+
+    /// El catálogo publica `田中 望` donde Spotify guardó la anotación de
+    /// seiyuu: sin normalizarla, la etapa de metadatos rechazaba la única
+    /// edición que existe.
+    #[test]
+    fn test_artist_matches_ignores_cv_annotation() {
+        assert!(artist_matches("田中 望(CV:赤﨑千夏)", "田中 望"));
+        assert!(artist_matches("田中 望", "田中 望(CV:赤﨑千夏)"));
+        assert!(artist_matches(
+            "NOZOMU TANAKA(CV:CHINATSU AKASAKI)、AKANE KIKUCHI(CV:HARUKA TOMATSU)",
+            "Nozomu Tanaka"
+        ));
+        // Separadores de ancho completo en el crédito del proveedor.
+        assert!(artist_matches("A、B", "A／B"));
+        // Sigue sin aceptar créditos vacíos ni artistas distintos.
+        assert!(!artist_matches("(CV: X)", "Cualquiera"));
+        assert!(!artist_matches("田中 望", "赤﨑千夏"));
     }
 
     #[test]

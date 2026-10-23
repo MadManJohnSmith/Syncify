@@ -49,9 +49,10 @@ pub use metadata::{
     is_various_artists_variant, normalize_compilation_artist, normalize_compilation_artist_name,
     parse_credit_role_and_name, parse_credits_string, sanitize_album_title, sanitize_artist_name,
     sanitize_track_title, score_tidal_candidate, score_tidal_release,
-    split_technical_role_and_name, strip_redundant_remaster, title_matches, MetadataClassification,
-    ProviderTrackIdentity, TidalAlbum, TidalArtist, TidalMediaMetadata, TidalSearchResponse,
-    TidalSearchTracks, TidalTrack, CANONICAL_VARIOUS_ARTISTS,
+    split_technical_role_and_name, strip_artist_role_annotations, strip_redundant_remaster,
+    title_matches, MetadataClassification, ProviderTrackIdentity, TidalAlbum, TidalArtist,
+    TidalMediaMetadata, TidalSearchResponse, TidalSearchTracks, TidalTrack,
+    CANONICAL_VARIOUS_ARTISTS,
 };
 pub use operation_recovery::{
     OperationJournalEntry, OperationPhase, OperationRecoveryDetail, OperationStatus, OperationType,

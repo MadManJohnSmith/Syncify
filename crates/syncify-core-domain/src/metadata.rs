@@ -584,11 +584,92 @@ pub fn title_matches(expected: &str, candidate: &str) -> bool {
     clean_exp == clean_cand || clean_cand.contains(&clean_exp) || clean_exp.contains(&clean_cand)
 }
 
+/// Separadores de créditos multiartista. Incluye las formas de ancho completo
+/// (`、`, `，`, `／`, `＆`) porque los catálogos japoneses usan ésas y no las
+/// ASCII: el mismo crédito llega como "A, B", "A、B" o "A／B" según el proveedor.
+pub const ARTIST_CREDIT_SEPARATORS: [char; 9] = [',', ';', '&', '/', '|', '、', '，', '／', '＆'];
+
+/// Quita anotaciones de rol entre paréntesis del crédito de artista, del tipo
+/// `田中 望(CV:赤﨑千夏)` o `NAME（CV：NAME）`.
+///
+/// Los singles de seiyuu llegan así desde Spotify y ningún proveedor repite la
+/// anotación igual: Qobuz y Tidal publican `田中 望` o el crédito romanizado
+/// sin ella. Comparar el crédito literal hacía imposible el match por
+/// metadatos justo en ese repertorio. Sólo se quitan los grupos cuyo contenido
+/// empieza por `CV`, para no tocar nombres con paréntesis legítimos; un
+/// paréntesis sin cerrar se conserva tal cual en vez de tragárselo.
+pub fn strip_artist_role_annotations(artist: &str) -> String {
+    let mut out = String::with_capacity(artist.len());
+    let mut depth = 0usize;
+    let mut opener = '(';
+    let mut group = String::new();
+
+    for ch in artist.chars() {
+        match ch {
+            '(' | '（' => {
+                if depth == 0 {
+                    opener = ch;
+                    group.clear();
+                } else {
+                    group.push(ch);
+                }
+                depth += 1;
+            }
+            ')' | '）' => {
+                if depth == 0 {
+                    // Cierre sin apertura: no es una anotación, se conserva.
+                    out.push(ch);
+                    continue;
+                }
+                depth -= 1;
+                if depth > 0 {
+                    group.push(ch);
+                    continue;
+                }
+                if !is_role_annotation(&group) {
+                    out.push(opener);
+                    out.push_str(&group);
+                    out.push(ch);
+                }
+            }
+            _ => {
+                if depth == 0 {
+                    out.push(ch);
+                } else {
+                    group.push(ch);
+                }
+            }
+        }
+    }
+
+    if depth > 0 {
+        out.push(opener);
+        out.push_str(&group);
+    }
+
+    out.trim().to_string()
+}
+
+/// ¿El contenido de un paréntesis es una anotación de rol (`CV: …`)?
+fn is_role_annotation(inner: &str) -> bool {
+    let head = inner.trim().to_lowercase();
+    head == "cv"
+        || head.starts_with("cv:")
+        || head.starts_with("cv：")
+        || head.starts_with("cv ")
+        || head.starts_with("cv.")
+}
+
 pub fn artist_matches(expected: &str, candidate: &str) -> bool {
-    let exp_low = expected.to_lowercase();
-    let cand_low = candidate.to_lowercase();
+    let exp_low = strip_artist_role_annotations(expected).to_lowercase();
+    let cand_low = strip_artist_role_annotations(candidate).to_lowercase();
+    if exp_low.is_empty() || cand_low.is_empty() {
+        // `contains("")` es siempre cierto: un crédito vacío no identifica nada.
+        return false;
+    }
     exp_low == cand_low
         || cand_low.contains(&exp_low)
+        || exp_low.contains(&cand_low)
         || clean_artist_parts_match(&exp_low, &cand_low)
 }
 
@@ -596,14 +677,13 @@ fn clean_artist_parts_match(expected_lower: &str, found_lower: &str) -> bool {
     if found_lower.contains(expected_lower) {
         return true;
     }
-    let sep = [',', ';', '&', '/', '|'];
     for ep in expected_lower
-        .split(&sep[..])
+        .split(ARTIST_CREDIT_SEPARATORS)
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
         for fp in found_lower
-            .split(&sep[..])
+            .split(ARTIST_CREDIT_SEPARATORS)
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
@@ -2063,6 +2143,50 @@ mod tests {
             .as_deref()
             .map(is_placeholder_artist)
             .unwrap_or(true));
+    }
+
+    #[test]
+    fn test_strip_artist_role_annotations() {
+        assert_eq!(
+            strip_artist_role_annotations("田中 望(CV:赤﨑千夏)"),
+            "田中 望"
+        );
+        assert_eq!(
+            strip_artist_role_annotations("NOZOMU TANAKA（CV：CHINATSU AKASAKI）"),
+            "NOZOMU TANAKA"
+        );
+        // Un paréntesis que no es de rol se conserva: son nombres legítimos.
+        assert_eq!(strip_artist_role_annotations("Aiden (US)"), "Aiden (US)");
+        assert_eq!(
+            strip_artist_role_annotations("Eurythmics (Live)"),
+            "Eurythmics (Live)"
+        );
+        // Sin cierre no se puede afirmar que sea anotación: se devuelve tal cual.
+        assert_eq!(
+            strip_artist_role_annotations("Artist (CV: X"),
+            "Artist (CV: X"
+        );
+    }
+
+    #[test]
+    fn test_artist_matches_ignores_cv_annotation() {
+        // El caso real: Spotify guarda la anotación de seiyuu, el proveedor no.
+        assert!(artist_matches("田中 望(CV:赤﨑千夏)", "田中 望"));
+        assert!(artist_matches("田中 望", "田中 望(CV:赤﨑千夏)"));
+        // Crédito romanizado multiartista con separador y anotación de ancho completo.
+        assert!(artist_matches(
+            "NOZOMU TANAKA(CV:CHINATSU AKASAKI)、AKANE KIKUCHI(CV:HARUKA TOMATSU)",
+            "nozomu tanaka"
+        ));
+        // Separadores de ancho completo en ambos lados.
+        assert!(artist_matches("A、B", "B"));
+        assert!(artist_matches("A／B", "a"));
+        // Un crédito que queda vacío no identifica nada (antes `contains("")`
+        // hacía que casara con cualquier artista).
+        assert!(!artist_matches("", "Cualquiera"));
+        assert!(!artist_matches("(CV: X)", "Cualquiera"));
+        // Sigue distinguiendo artistas distintos.
+        assert!(!artist_matches("田中 望", "赤﨑千夏"));
     }
 
     #[test]
