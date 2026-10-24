@@ -375,7 +375,7 @@
       </div>
 
       <!-- Status Bar -->
-      <StatusBar :overlay-active="showOnboarding" />
+      <StatusBar v-if="!isPrototypeRoute" :overlay-active="showOnboarding" />
     </main>
     </div>
     <!-- Global Components -->
@@ -486,7 +486,11 @@ const gpProgress = computed(() => {
 })
 
 // Global state
-const showSplash = ref(true)
+// PROTOTIPO desechable: la ruta /__prototype/* se renderiza sin arrancar el
+// backend (no hay Tauri en el navegador). Se elimina con la carpeta prototype.
+const isPrototypeRoute =
+  import.meta.env.DEV && typeof window !== 'undefined' && window.location.pathname.startsWith('/__prototype/')
+const showSplash = ref(!isPrototypeRoute)
 const splashError = ref<string | null>(null)
 const splashStatusText = ref('Initializing...')
 const splashProgress = ref(15)
@@ -643,6 +647,10 @@ function handleOnboardingSkip() {
 }
 
 async function initializeApp() {
+  if (isPrototypeRoute) {
+    showSplash.value = false
+    return
+  }
   splashError.value = null
   splashProgress.value = 15
   splashStatusText.value = 'Initializing system listeners...'

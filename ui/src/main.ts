@@ -16,6 +16,22 @@ export const routes: RouteRecordRaw[] = [
     { path: '/downloads', name: 'Downloads', component: () => import('./views/DownloadsView.vue') },
     { path: '/queue', redirect: '/downloads' },
     { path: '/accounts', name: 'Accounts', component: () => import('./views/AccountsView.vue') },
+    // PROTOTIPO desechable (solo dev): prototipo del tab de accounts.
+    // Se elimina al cerrar la decision; no entra en el bundle de produccion.
+    ...(import.meta.env.DEV
+      ? [
+          {
+            path: '/__prototype',
+            name: 'prototype-index',
+            component: () => import('./views/__prototype__/Indice.vue'),
+          },
+          {
+            path: '/__prototype/accounts',
+            name: 'AccountsPrototype',
+            component: () => import('./views/__prototype__/AccountsPrototype.vue'),
+          },
+        ]
+      : []),
     // Settings is lazy-loaded to reduce bundle size (Sprint 31)
     { path: '/settings', name: 'Settings', component: () => import('./views/SettingsView.vue') },
     { path: '/logs', name: 'Logs', component: () => import('./views/LogsView.vue') },
