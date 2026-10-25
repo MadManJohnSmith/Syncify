@@ -34,7 +34,7 @@ relaxed, and the landmines. Start there.
 | `PLAN_UNIFICACION_IMPORTACION.md` | Spanish only |
 | `MATRIZ_PARIDAD_IMPORTACION.md` | Spanish only |
 | `Deuda_Tecnica_y_UX.md` | Spanish only |
-| `LYRICS_PROVIDER_MATRIX.md` | English |
+| `LYRICS_PROVIDER_MATRIX.md` | Spanish only |
 | `diagrams/*.en.html` | English (`*.html` are the Spanish builds) |
 
 Every Spanish-only document listed above still carries the guarantee the CI
