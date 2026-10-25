@@ -15,7 +15,7 @@
 
 ## 1. Verificación previa y análisis de evidencias
 
-Siguiendo las directrices del plan v2 (`docs/PLAN-Correccion-168.md`), la auditoría de incidencias (`docs/Errores-Pruebas-2026-10-08.md`) y las reglas R1–R5, se inspeccionó exhaustivamente el código:
+Siguiendo las directrices del plan v2 (`docs/historico/PLAN-Correccion-168.md`), la auditoría de incidencias (`docs/historico/Errores-Pruebas-2026-10-08.md`) y las reglas R1–R5, se inspeccionó exhaustivamente el código:
 
 1. **FS-05 — Política de fallback entre servicios y calidad:**
    - **Comportamiento previo auditado:**

@@ -1,5 +1,8 @@
 # Pendientes heredados de los workflows de agente
 
+> **Estado actual (2026-10-25):** acta de cierre del backlog v0.4.1 (veredicto del propio fichero: sin trabajo abierto). No es una lista de pendientes; el trabajo vivo está en `docs/Deuda_Tecnica_y_UX.md`, las colas `docs/COLA_*.md` y `docs/PLAN_MEJORA_POST_BETA.md`.
+
+
 **Cerrado el:** 2026-10-24. **Origen:** dos guiones de agente del workflow v0.4.1
 que vivían en la raíz del workspace, fuera del repo, y que se retiraron en la limpieza
 de esa fecha (registro recuperable en el manifiesto de papelera del workspace).

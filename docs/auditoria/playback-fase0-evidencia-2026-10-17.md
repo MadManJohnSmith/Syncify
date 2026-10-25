@@ -6,7 +6,7 @@
 
 ## 1. Pregunta a resolver
 
-R-13 ([`Errores-Pruebas-2026-10-13.md:126-131`](../Errores-Pruebas-2026-10-13.md)) dejó abierto si el
+R-13 ([`Errores-Pruebas-2026-10-13.md:126-131`](../historico/Errores-Pruebas-2026-10-13.md)) dejó abierto si el
 fallo total de reproducción estaba **en el archivo, en el protocolo `syncify-media://` o en la
 decodificación**. La explicación anterior (faltaban `autoaudiosink`/`flacdec`) quedó invalidada al
 comprobarse su presencia en el host.

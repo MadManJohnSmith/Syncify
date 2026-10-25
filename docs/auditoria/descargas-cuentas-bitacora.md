@@ -17,7 +17,7 @@
 
 ## 1. Verificación previa y análisis de evidencias
 
-Siguiendo el plan v2 (`docs/PLAN-Correccion-168.md`), la auditoría de incidencias (`docs/Errores-Pruebas-2026-10-08.md`) y las reglas R1–R5, se inspeccionó exhaustivamente el código:
+Siguiendo el plan v2 (`docs/historico/PLAN-Correccion-168.md`), la auditoría de incidencias (`docs/historico/Errores-Pruebas-2026-10-08.md`) y las reglas R1–R5, se inspeccionó exhaustivamente el código:
 
 1. **Invariante de exclusividad de cuenta activa (`commands/accounts.rs:225` y `:524`):**  
    En `commands/accounts.rs:225` y `:524`, la base de datos SQLite mantiene `is_active = 1` de forma estrictamente exclusiva por servicio. Alternar o mutar `is_active` durante el proceso de descarga rompería la coherencia del estado de autenticación en la UI y en otros módulos en segundo plano. Por tanto, el fallback entre cuentas debía resolverse en memoria a nivel de petición ("en el plano de la petición"), resolviendo tokens/credenciales por intento sin mutar `is_active`.

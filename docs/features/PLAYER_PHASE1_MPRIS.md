@@ -4,7 +4,7 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
-**Estado de revisión:** 2026-10-06 — fase 1 implementada en UI (cola con identidad, modos persistentes, acreditación de 30 s, restauración tras reinicio). MediaSession integrado con feature detection y degradación limpia. **MPRIS NO verificado en GUI**: no se ejecutó sesión gráfica ni D-Bus de Syncify; la prueba manual queda definida abajo y no debe darse por hecha hasta ejecutarse.
+**Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): existe implementación MPRIS nativa en Rust (`src-tauri/src/services/mpris.rs`, `MprisService::start` en el setup de `src-tauri/src/main.rs`, bus `org.mpris.MediaPlayer2.syncify` en `/org/mpris/MediaPlayer2`); el spike WebKitGTK→D-Bus pasa a registro histórico. Añadida la sección del motor nativo (Fase 2: `PlayerState`, `player_load_track`, ticker, `services/stream_cache.rs`). Sin verificar en sesión gráfica real: la comprobación D-Bus end-to-end del panel MPRIS (prueba manual abajo) y la reproducción de audio real (README §"Verification and limitations").
 
 > **Actualización 2026-10-19 — la ruta de audio de este documento está retirada.**
 > El cuerpo describe la fase 1 original (elemento HTML Audio + `resolve_playback_source` +
@@ -16,13 +16,15 @@
 > `ui/src/composables/usePlayer.ts`. El resto del documento se conserva como registro
 > histórico de la fase 1.
 
-**Último cambio:** fase 1 del player — archivos: `ui/src/composables/usePlayer.ts`, `ui/src/components/StatusBar.vue` (mini reproductor, desde PL-08) y `ui/src/components/player/FullscreenPlayer.vue`, `ui/src/api/library.ts` (`recordLocalPlay`), vistas consumidoras (`AlbumDetailView.vue`, `ArtistDetailView.vue`, `PlaylistView.vue`, `LibraryView.vue`).
-**Leer antes de modificar:** `ui/src/composables/usePlayer.ts` (única fuente de verdad del estado de reproducción), `src-tauri/src/commands/playback.rs` (`resolve_playback_source`, `record_local_play` — lado Rust, propiedad de su implementador), `src-tauri/migrations/0091_local_play_stats.sql`.
+**Último cambio:** re-revisión 2026-10-25 — MPRIS nativo (`services/mpris.rs`) y motor nativo Fase 2 documentados; el registro de la fase 1 queda intacto. Antes: fase 1 del player — archivos: `ui/src/composables/usePlayer.ts`, `ui/src/components/StatusBar.vue` (mini reproductor, desde PL-08) y `ui/src/components/player/FullscreenPlayer.vue`, `ui/src/api/library.ts` (`recordLocalPlay`), vistas consumidoras (`AlbumDetailView.vue`, `ArtistDetailView.vue`, `PlaylistView.vue`, `LibraryView.vue`).
+**Leer antes de modificar el reproductor actual:** `ui/src/composables/usePlayer.ts` (estado de reproducción), `src-tauri/src/commands/player.rs` (`player_load_track`, motor nativo), `src-tauri/src/commands/playback.rs` (`record_local_play`, solo escucha local) y `src-tauri/migrations/0091_local_play_stats.sql`. La antigua resolución de fuentes que aparece más abajo es contexto histórico, no una ruta que deba reutilizarse.
 **Archivos core:**
 - `ui/src/composables/usePlayer.ts` (player, cola, modos, acreditación 30 s, persistencia, MediaSession)
 - `ui/src/components/StatusBar.vue` (mini reproductor y controles globales; PL-08 borró el `NowPlayingBar.vue` duplicado) + `ui/src/components/player/FullscreenPlayer.vue` (panel expandido/cola)
 - `src-tauri/migrations/0091_local_play_stats.sql` (schema `play_count`/`last_played`/`playback_listens`)
 - `src-tauri/src/commands/playback.rs` (`record_local_play`: INSERT-primero, idempotente por `listen_session_id`)
+- `src-tauri/src/services/mpris.rs` (MPRIS nativo: `MprisService::start`, interface `org.mpris.MediaPlayer2` + `.Player`)
+- `src-tauri/src/services/stream_cache.rs` (sesión de streaming progresivo de la Fase 2)
 
 ---
 
@@ -48,7 +50,36 @@ Player HTML Audio para archivos locales ya descargados, vía `resolve_playback_s
 - Feature detection por símbolo: `navigator.mediaSession`, el constructor `MediaMetadata`, y **cada método por separado** (`setActionHandler`, `setPlaybackState`, `setPositionState`). Sin MediaSession el player funciona igual (degradación limpia, probado en Vitest con jsdom, que no lo implementa).
 - Metadatos al confirmar el inicio; `playbackState` desde `play`/`pause`/`ended`/error; `setPositionState` solo con valores finitos; cleanup en `stop()`; los handlers (`play`, `pause`, `previoustrack`, `nexttrack`, `seekto`) delegan en las mismas acciones del player.
 
+## Motor nativo (Fase 2): el reproductor vigente
+
+El motor HTML Audio descrito arriba ya no es el camino activo: el audio se carga en
+un motor nativo Rust (rodio + symphonia) gestionado desde el setup de
+`src-tauri/src/main.rs`:
+
+- `PlayerState` (`src-tauri/src/commands/player.rs`): estado del motor, gestionado en el arranque.
+- `player_load` / `player_load_track` (mismo fichero): carga de pista, con streaming
+  progresivo de proveedores vía `src-tauri/src/services/stream_cache.rs`
+  (`StreamSession` / `StreamCacheState`, caché temporal Qobuz/Tidal).
+- `spawn_player_ticker` (mismo fichero, llamado una vez en `setup`): tick periódico de
+  progreso y detección de fin de pista.
+- `player_mpris_update`: alimenta los metadatos y modos del panel MPRIS (ver sección siguiente).
+
+La fuente de verdad del estado de reproducción en la UI sigue siendo
+`ui/src/composables/usePlayer.ts`. Sin verificación de escritorio real: la
+reproducción de audio en sesión gráfica y la prueba D-Bus del panel MPRIS
+(README §"Verification and limitations").
+
 ## Spike MPRIS (Linux): qué se comprobó y qué no
+
+**Actualización 2026-10-25:** la hipótesis WebKitGTK→D-Bus quedó superada: hay
+implementación MPRIS nativa en Rust en `src-tauri/src/services/mpris.rs`
+(`MprisService::start`, arrancada en el setup de `src-tauri/src/main.rs`), que expone
+el bus `org.mpris.MediaPlayer2.syncify` en `/org/mpris/MediaPlayer2` con el interface
+`org.mpris.MediaPlayer2.Player`, sin depender del reflejo de MediaSession de
+WebKitGTK. Lo que **sigue sin verificar** es la comprobación D-Bus end-to-end en
+sesión gráfica real: la prueba manual de abajo sigue siendo su definición, y el nombre
+de bus esperado es `org.mpris.MediaPlayer2.syncify`. Lo que sigue es el registro
+histórico del spike.
 
 Honestidad del inventario (encargo previo de esta fase), conservada literalmente: se comprobaron **símbolos de MediaSession en una ventana WebKitGTK de prueba** (`pkg-config --modversion webkit2gtk-4.1` → `2.52.6`), **no** MPRIS de Syncify. **No hay sesión GUI ni D-Bus ejecutados de Syncify.** Re-verificación de este encargo (2026-10-06): `pkg-config --modversion webkit2gtk-4.1` → `2.52.6`; `busctl --user list` no mostró ningún propietario `org.mpris.MediaPlayer2.*`.
 

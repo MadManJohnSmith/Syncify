@@ -50,7 +50,7 @@
 | `sync_playlists` | lectura agregada REAL por servicio (**F2-5**, `2043672`) |
 | Rate limiting | GLOBAL_RATE_LIMITER con perfiles por servicio; `get_playlists` spotify incorporado (**F2-3**, `2d43e5e`) |
 | Verificación de credenciales | `perform_get_service_auth_status` presenta el token guardado a la API antes de declarar `connected_valid`; un 401 revocado ya no se ve como sano (fase 8, ítem 8.3) |
-| Criterio de reintentos | un único `ErrorTaxonomy` (`services/http_retry.rs`) en vez de tres criterios escritos a mano; SoundCloud y Apple Music ya pasan por el rate limiter compartido |
+| Criterio de reintentos | un único `ErrorTaxonomy` (`crates/syncify-core-domain/src/errors.rs`; `services/http_retry.rs` aporta la política de reintentos HTTP) en vez de tres criterios escritos a mano; SoundCloud y Apple Music ya pasan por el rate limiter compartido |
 | Código muerto retirado | `SpotifyClient::import_library`, `refresh_from_sp_dc`, pipeline audio-features S68, `upsert_canonical_favorite_track` (**F4-1**, `aa806b8`) |
 
 ## Migración entre servicios (fase 4 del plan post-auditoría)

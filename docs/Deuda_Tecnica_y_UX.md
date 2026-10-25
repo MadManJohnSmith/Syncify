@@ -8,6 +8,12 @@ Registro vivo de la deuda conocida del proyecto. Es el documento al que apuntan
 > pero **no existía en el árbol**: `workspace/` está en `.gitignore` y ningún
 > archivo bajo esa ruta llega a un checkout ni a CI (misma causa raíz que
 > SYNC-AUD-058 y SYNC-AUD-065). Esta es la versión versionada.
+>
+> Nota de trazabilidad (2026-10-25): el commit `b9559da`, citado en esta
+> cabecera y como evidencia de C-01/C-02, **no es resoluble en la historia
+> alcanzable del repositorio** (probablemente se perdió en una reescritura).
+> La evidencia de esas dos entradas queda sin anclaje de commit; el
+> comportamiento que describen está vigilado por las puertas de CI.
 
 ## Cómo se registra una entrada
 
@@ -227,7 +233,7 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 | C-11 | Los docs de `docs/features/` no declaraban su estado de revalidación | SYNC-AUD-070 |
 | C-12 | `sanitize_flac_pictures` no se ejecutaba en la app y el bloque PICTURE irreparable se perdía sin recuperación (D-03) | Ítem 5.3 del plan post-auditoría: `sanitize_flac_pictures_with_recovery` + `salvage_cover_to_jpeg` en `crates/syncify-flac-writer`, `services::flac_cover_sanitizer` con las dos rutas de D-03 (re-encode en el host y sidecar externo `<track>.unrecovered-cover.<sha8>.<ext>`) y registro en `repair_history`; wired en las cinco rutas de escritura FLAC de producción (post-promoción del pipeline Tidal, finalización de descarga Qobuz, re-tag de enriquecimiento, editor manual de tags y el fallback sin BD del descargador Tidal), con `tests/flac_cover_sanitizer_recovery_test.rs` como guardia |
 | C-13 | `sync_favorites` solo cubría 3 de los 6 servicios (D-02) | Fase 8 del plan post-auditoría, ítem 8.3: `perform_sync_favorites` tiene los seis brazos (`tidal`, `qobuz`, `spotify`, `deezer`, `soundcloud`, `apple_music`), cada uno paginando completo y persistiendo en `favorites` y en el catálogo vía `persist_favorite_track_via_engine`; `tests/favorites_service_arms_test.rs` los cubre contra servidor mock |
-| C-14 | La narrativa de `docs/features/` afirmaba capacidades que el código ya no tiene (DO-4, DO-5) | Ítem 9.1: `metadata-enrichment.md` re-derivado sin Spotify Audio Features y con el worker real (MusicBrainz), `playlist-system.md` re-derivado con la importación real por servicio, README sin «apariciones» ni la cifra de migraciones, `LYRICS_16_PROVIDER_MATRIX.md` sin la ruta `legacy/syncify-cli` |
+| C-14 | La narrativa de `docs/features/` afirmaba capacidades que el código ya no tiene (DO-4, DO-5) | Ítem 9.1: `metadata-enrichment.md` re-derivado sin Spotify Audio Features y con el worker real (MusicBrainz), `playlist-system.md` re-derivado con la importación real por servicio, README sin «apariciones» ni la cifra de migraciones, `LYRICS_PROVIDER_MATRIX.md` sin la ruta `legacy/syncify-cli` |
 | C-12 | `cargo fmt --all -- --check` estaba en rojo (9 ficheros) | `ff11167`; equivalencia probada normalizando whitespace y comas |
 | C-13 | `cargo clippy -D warnings` en rojo: 2 lints, no 1 (clippy para por crate) | `3174642`; el segundo apareció al arreglar el primero |
 | C-14 | El selector de hilos de la biblioteca invocaba un comando inexistente y el error se tragaba | `f5e2317`; vitest 1 failed/44 → 45 passed |
@@ -239,6 +245,13 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 | C-20 | Misma grabación en otra edición pasaba sin revisión (ED-04 inalcanzable en ese camino) | Guarda antes de escribir: álbum canónico ≠ entrante sin evidencia de release → `needs_review`; suite 2740/0/13. **Corregida el 2026-10-19**: la comparación solo normalizaba espacios y mayúsculas y rechazaba ediciones legítimas; `misma_familia_de_album` las unifica (`46e0a57`) |
 | C-21 ✔ | El alta de pista con un ISRC ya presente se perdía en silencio (`UNIQUE constraint failed: tracks.isrc`: 51 avisos el 2026-10-19 y 65 el 2026-10-20, sobre 736 descargas) | `INSERT_PISTA_SQL` con `ON CONFLICT DO NOTHING` (sin objetivo: cubre el UNIQUE BINARY de la columna y el índice NOCASE parcial de 0064:186) y resolución por `isrc COLLATE NOCASE`; completa lo que falte sin mover la pista de álbum; test rojo→verde con el 2067 real (variante de caja) |
 | C-22 ✔ | La app se cerraba al abrir el menú de bandeja durante una descarga: `RefCell already borrowed` en `tray-icon-0.25.1` (`set_tooltip` dentro del despacho del evento), panic en el hilo principal y cierre sin aviso | `0e53dad`: el tooltip se publica con `run_on_main_thread`, fuera del despacho; lib 478/0, suite 2779/0/13. Verificación en runtime (menú abierto con descarga activa) pendiente del usuario |
+
+Nota sobre esta tabla: los IDs **C-12, C-13 y C-14 aparecen dos veces**
+(filas 12–14: flac/sync_favorites/docs; filas 15–17: fmt/clippy/selector de
+hilos). La segunda tanda reutilizó los números durante la fase de puertas
+rojas de 2026-10-18. No se renumeran para no romper referencias externas; el
+texto de cada fila desambigua. Tampoco existe D-05: la numeración abierta
+salta de D-04 a D-06.
 
 ### D-07 — Cerrada, con corrección de rumbo tras la prueba manual (2026-10-19)
 

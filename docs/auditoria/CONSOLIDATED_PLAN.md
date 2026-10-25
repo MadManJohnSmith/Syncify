@@ -1,5 +1,13 @@
 # Plan de implementación consolidado — Syncify
 
+> **Errata (2026-10-25):** plan histórico ya ejecutado en lo esencial (A-0/A-1/A-2/A-4a
+> y B-1 aplicados; B-4 superado por el throttle de PR-01/PR-02; B-5 aplicado). La
+> referencia a `/home/alan/Documents/Syncify/Syncify` y al commit `5036217` del §0 ya
+> no resuelve: el repo vive en la raíz y el commit no está en la historia alcanzable.
+> Su valor residual es la lista de «Rechazados y por qué» (§4) y el registro de las
+> decisiones de clasificador de auth que Track A implementó (`AuthVerdict`, guard de
+> transporte, decay del latch en `src-tauri/src/worker.rs`).
+
 Consolida la auditoría de sesión OAuth (A) y la de rendimiento (B) sobre el **mismo**
 repo. Deduplicadas, priorizadas y con un hallazgo de B **corregido**: la reescritura
 de favoritos tal como estaba descrita es más lenta que la original.

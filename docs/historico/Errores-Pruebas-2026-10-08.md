@@ -1,5 +1,8 @@
 # Errores y peticiones detectados en pruebas manuales
 
+> **Estado actual (2026-10-25):** registro en crudo ya consumido: su triaje está en `docs/auditoria/triaje.md`, su estado por ítem en `docs/auditoria/matriz-ajustes.md` y la ejecución en `docs/historico/PLAN-Correccion-168.md`. No uses este fichero como lista de trabajo.
+
+
 Registro en crudo de lo que se observó usando la aplicación. **No está planificado ni
 priorizado**: es la lista tal cual salió de las pruebas, agrupada solo por pantalla para
 poder localizarla. Cuando se planifique, el orden de este archivo no implica orden de

@@ -9,8 +9,15 @@ La identidad canónica de una pista en Syncify es el par
 el motor unificado (`EnrichmentEngine::enrich_and_persist_sync_track`).
 
 **No se crearán columnas dedicadas por proveedor** (`tidal_id`, `deezer_id`,
-`soundcloud_id`, …) en `tracks`. Las únicas columnas de identidad externa que
-existen son históricas y concretas:
+`soundcloud_id`, …) nuevas en `tracks`. Las columnas de identidad externa que
+existen son las de la tabla siguiente **más** el legado pre-decisión que sigue
+en uso activo: `tracks.spotify_id` (`migrations/0034`), `albums.spotify_id`
+(`0036`), `albums.tidal_id` (`0037`) y `artists.tidal_id` (`0038`) — el motor
+y las consultas de favoritos las siguen leyendo/escribiendo
+(`src-tauri/src/commands/favorites.rs`, `src-tauri/src/services/enrichment.rs`),
+así que un agente no debe asumir que «no hay columnas por proveedor» a la hora
+de tocar esas rutas. La decisión prohíbe **añadir** columnas nuevas, no borra
+las que ya existen.
 
 | Columna | Motivo de existencia | Política |
 |---|---|---|

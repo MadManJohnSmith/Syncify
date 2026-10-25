@@ -267,7 +267,7 @@ change from `5dcf4b6` was squash-merged as `ed440a9` (PR #27). Tag `v0.6.0`
 points exactly to `ed440a96f669c264a7e477e76b791e325e900b7f`, and the
 [Syncify v0.6.0 release](https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.0)
 is published with five Linux and Windows assets. Its notes come from
-[the v0.6.0 release notes](docs/RELEASE_NOTES_v0.6.0.md). CI (Rust, Frontend,
+[the v0.6.0 release notes](docs/historico/RELEASE_NOTES_v0.6.0.md). CI (Rust, Frontend,
 Python), the release gate, and both release builds (Linux and Windows) are
 green on that exact SHA. What has **not** been proven here:
 
@@ -321,7 +321,7 @@ npm run build
   language status of every document; the design specs under `docs/features/`
   are Spanish-only today
 - [`docs/MATRIZ_PARIDAD_IMPORTACION.md`](docs/MATRIZ_PARIDAD_IMPORTACION.md) — the living import-parity matrix (Spanish)
-- [`docs/LYRICS_16_PROVIDER_MATRIX.md`](docs/LYRICS_16_PROVIDER_MATRIX.md) — the lyrics cascade, audited (English)
+- [`docs/LYRICS_PROVIDER_MATRIX.md`](docs/LYRICS_PROVIDER_MATRIX.md) — the lyrics cascade, audited (English)
 - [`docs/Deuda_Tecnica_y_UX.md`](docs/Deuda_Tecnica_y_UX.md) — open technical debt, tracked in the open (Spanish)
 
 ## Contributing

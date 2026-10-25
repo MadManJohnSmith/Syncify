@@ -1,5 +1,8 @@
 ## Novedades
 
+> Notas de la versión 0.6.0 (tag `v0.6.0`, 2026-10-12). Histórico; las limitaciones vigentes del proyecto se declaran en `README.md` §"Verification and limitations".
+
+
 ### 📁 Biblioteca local
 - Escaneo e importación de carpetas de audio, con opción recursiva y detección de duplicados por ISRC y hash SHA-256 del archivo.
 - Nuevo diálogo de sincronización de biblioteca local con selección de carpeta y resumen de resultados.

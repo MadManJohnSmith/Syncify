@@ -13,6 +13,18 @@ una linea suelta en una automatización de ZCode
 (`.zcode/workflows/resolutor-unico-descargas.dwf.ts:177`, sobre no hacer i18n hasta
 después de la beta). Todo lo demás de esta conversación vivía solo en la sesión.
 
+**Estado de ejecución (re-verificado el 2026-10-25):** las tres palancas muertas del
+punto 3 (`incremental_sync`, `snapshot_id`, `auto_download_favorites`) siguen sin
+consumidor en código. De la cola del punto 2, Q-04/Q-06/Q-07/Q-09/Q-12/Q-15/Q-16 están
+HECHO con pruebas y Q-02/Q-03 se resolvieron después; siguen abiertos Q-13, Q-14 y
+Q-17 (ver `historico/Errores-Pruebas-2026-10-11.md` y
+`auditoria/matriz-ajustes.md`). Las rejillas de favoritos del punto 4 ya tienen
+consumidor en la UI (`ui/src/api/library.ts` invoca `get_favorites_albums`/
+`get_favorites_artists`). Del carril de reproducción de la enmienda, las Fases 1 y 2
+están implementadas (`crates/syncify-player`, `src-tauri/src/services/mpris.rs`,
+`src-tauri/src/services/stream_cache.rs`); su verificación en sesión gráfica real
+sigue pendiente.
+
 ---
 
 ## 1. La decisión
@@ -39,7 +51,7 @@ repositorio ya está en estado delicado: HEAD está en `docs/v0.6.0-released-sta
 commitear** (16 modificados + 5 nuevas), incluyendo un importador de MusicBrainz de 374
 líneas (`src-tauri/src/services/mb_dump_import.rs`) que está registrado en
 `services/mod.rs:21` pero **sin flujo web/UI conectado**. El handoff
-(`docs/HANDOFF-2026-10-11.md:303`) ya marcaba esto como el paso más urgente por riesgo
+(`docs/historico/HANDOFF-2026-10-11.md:303`) ya marcaba esto como el paso más urgente por riesgo
 de pérdida, y sigue siendo verdad el 2026-10-12.
 
 ---
@@ -62,7 +74,7 @@ y verificado solo a medias. Concreto:
    (`services/mb_dump_import.rs` + `migrations/0096_mb_dump_catalog.sql` + test).
    La segunda está **sin conectar**: decidir si se conecta ahora o se aparta.
 2. **Vaciar la cola de triaje de pruebas manuales del 2026-10-11**
-   (`docs/Errores-Pruebas-2026-10-11.md`). Solo Q-01 está cerrado (con test
+   (`docs/historico/Errores-Pruebas-2026-10-11.md`). Solo Q-01 está cerrado (con test
    `LayoutSpacing.spec.ts`, 8/8). El resto (Q-02 en adelante) sigue pendiente. El caso
    general de overlays flotantes frente a la `.status-bar` no se ha comprobado
    visualmente.
@@ -81,11 +93,13 @@ y verificado solo a medias. Concreto:
    S194 que declaró el propio proyecto: streaming de proveedores y búsqueda externa
    quedan fuera (`commands/playback.rs:14`, `ui/src/composables/usePlayer.ts:8-9`). Lo
    que sí es scope: atajos de teclado de reproducción, verificar MPRIS en sesión gráfica
-   real (nunca se ejecutó: `docs/README.md:16` lo declara sin verificar), y las dos
+   real (nunca se ejecutó: `docs/README.md` §features lo declara sin verificar), y las dos
    rejillas de favoritos de álbumes y artistas cuyo backend está completo
-   (`favorites.rs:186`, `:363`) pero sin un solo sitio de llamada en la UI.
+   (`favorites.rs:186`, `:363`) pero sin un solo sitio de llamada en la UI
+   *(superado el 2026-10-25: `ui/src/api/library.ts` ya invoca ambos comandos)*.
 5. **Cerrar la verificación que el README declara pendiente**: sin login en vivo, sin
-   descargas reales, sin GUI/audio/tray/MPRIS comprobados (`README.es.md:246-263`). Un
+   descargas reales, sin GUI/audio/tray/MPRIS comprobados (§"Verification and limitations"
+   de `README.md`/`README.es.md`). Un
    beta honesto necesita esa lista reducida, no ampliada.
 6. **Tests y CI en verde en Windows**, que hoy está bloqueado en esta máquina
    (`HANDOFF-2026-10-11.md:6`).

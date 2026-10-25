@@ -191,5 +191,5 @@ la puerta de beta: un build verde no es rendimiento demostrado.
 - `docs/DECISION_ALCANCE_BETA.md` (punto 7): requisito de cierre; no amplía proveedores ni rangos.
 - `docs/auditoria/matriz-ajustes.md`: filas R1 DLX-01…06 y DFL-01 **antes** de código; el workflow
   activo coordina un único escritor.
-- `docs/Errores-Pruebas-2026-10-13.md`: DL-SVC-01…03 siguen como defectos separados; esta cola no los
+- `docs/historico/Errores-Pruebas-2026-10-13.md`: DL-SVC-01…03 siguen como defectos separados; esta cola no los
   marca resueltos.

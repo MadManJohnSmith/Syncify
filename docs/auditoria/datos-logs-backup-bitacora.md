@@ -13,7 +13,7 @@
 
 ## 1. Verificación previa y análisis de evidencias
 
-Siguiendo el plan v2 (`docs/PLAN-Correccion-168.md`), las directrices de la auditoría y las reglas transversales R1–R5, se inspeccionó exhaustivamente el código de backend y frontend antes de realizar modificaciones:
+Siguiendo el plan v2 (`docs/historico/PLAN-Correccion-168.md`), las directrices de la auditoría y las reglas transversales R1–R5, se inspeccionó exhaustivamente el código de backend y frontend antes de realizar modificaciones:
 
 ### Descargas (DSC-01 .. DSC-06)
 1. **DSC-01 (Reorganización de la pantalla de descargas):**

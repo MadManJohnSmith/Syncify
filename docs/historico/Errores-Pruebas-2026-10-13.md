@@ -1,5 +1,8 @@
 # Errores y peticiones detectados en pruebas manuales — 2026-10-13
 
+> **Estado actual (2026-10-25):** registro fechado con estados fiables. Actualizaciones posteriores: D-16/DL-SVC-01 aplicado en código (el worker ya pasa `account_id: planned` con cuenta bloqueada); DL-SVC-02 con rechazo estricto de AAC implementado, verificación con cuenta real pendiente; DL-SVC-03 y el resto siguen abiertos (estado canónico en `docs/auditoria/matriz-ajustes.md`).
+
+
 Registro de lo que se observó usando la aplicación el 13-oct-2026, agrupado por pantalla.
 El orden no implica prioridad. Sigue el mismo proceso que
 `Errores-Pruebas-2026-10-11.md` (triaje → matriz `docs/auditoria/matriz-ajustes.md` → plan → workflow).

@@ -13,12 +13,12 @@ Fork the repository, create a focused branch, and open the PR against
 **`main`**. That is the integration branch: `.github/workflows/ci.yml` triggers
 its jobs on pushes to `main`, and releases are cut from it.
 
-`main` is not the only branch upstream — `syncify-graphical` and the
-`fix/*` topics also exist — but `syncify-graphical` stopped receiving work and
-is not an integration target. A branch that no longer exists upstream cannot
-receive your PR at all, which is why the READMEs name `main` and a gate
-(`scripts/tests/test_docs_consistency.py`) fails if they ever name one that
-has been deleted.
+`main` is not the only branch upstream — the `fix/*` topics also exist — but
+only `main` is an integration target; topics like `syncify-app` and
+`syncify-graphical` have been deleted upstream. A branch that no longer exists
+upstream cannot receive your PR at all, which is why the READMEs name `main`
+and a gate (`scripts/tests/test_docs_consistency.py`) fails if they ever name
+one that has been deleted.
 
 ### Checks to run before you submit
 
@@ -78,10 +78,10 @@ Haz fork del repositorio, crea una rama enfocada y abre el PR contra
 **`main`**. Esa es la rama de integración: `.github/workflows/ci.yml` dispara
 sus jobs con los pushes a `main`, y de ella salen las releases.
 
-`main` no es la única rama en el remoto — también existen `syncify-graphical`
-y los topics `fix/*` — pero `syncify-graphical` dejó de recibir trabajo y no es
-un destino de integración. Una rama que ya no existe en el remoto no puede
-recibir tu PR, y por eso las README nombran `main` y un gate
+`main` no es la única rama en el remoto — también existen los topics `fix/*` —
+pero solo `main` es destino de integración; ramas como `syncify-app` y
+`syncify-graphical` fueron borradas del remoto. Una rama que ya no existe en el
+remoto no puede recibir tu PR, y por eso las README nombran `main` y un gate
 (`scripts/tests/test_docs_consistency.py`) falla si alguna vez nombran una
 que se haya borrado.
 

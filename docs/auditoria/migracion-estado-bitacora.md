@@ -13,7 +13,7 @@
 
 ## 1. Verificación previa y análisis de evidencias
 
-En cumplimiento del plan v2 (`docs/PLAN-Correccion-168.md`), el registro de pruebas (`docs/Errores-Pruebas-2026-10-08.md`) y las reglas transversales R1–R5, se contrastó el estado de cada incidencia en el código fuente antes de aplicar cambios:
+En cumplimiento del plan v2 (`docs/historico/PLAN-Correccion-168.md`), el registro de pruebas (`docs/historico/Errores-Pruebas-2026-10-08.md`) y las reglas transversales R1–R5, se contrastó el estado de cada incidencia en el código fuente antes de aplicar cambios:
 
 1. **M-01 (Saved Templates):**
    - *Hallazgo en código:* En `ui/src/views/MigrationView.vue:858-905` existe la sección `#saved-templates` y en `src-tauri/src/commands/migration.rs:1770-1845` los comandos `get_migration_templates`, `save_migration_template`, `delete_migration_template` y `use_migration_template`, respaldados por la tabla SQLite `migration_templates`. La afirmación del plan v1 de que era inexistente resultó falsa. El problema real era de usabilidad: el concepto de "Templates" no explicaba su propósito al usuario.

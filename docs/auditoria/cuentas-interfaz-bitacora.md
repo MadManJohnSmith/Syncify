@@ -12,7 +12,7 @@
 
 ## 1. Verificación previa y evidencias del código
 
-Siguiendo el plan v2 (`docs/PLAN-Correccion-168.md`), la auditoría de incidencias (`docs/Errores-Pruebas-2026-10-08.md`) y las reglas transversales R1–R5, se inspeccionó exhaustivamente el código antes de aplicar cambios:
+Siguiendo el plan v2 (`docs/historico/PLAN-Correccion-168.md`), la auditoría de incidencias (`docs/historico/Errores-Pruebas-2026-10-08.md`) y las reglas transversales R1–R5, se inspeccionó exhaustivamente el código antes de aplicar cambios:
 
 1. **C-01 & C-02 (Credenciales de Spotify en cabecera vs. primer plano de cuentas):**
    - *Evidencia:* En `ui/src/views/AccountsView.vue:28-32`, la sección `#spotify-api-config` (`SpotifyApiConfigCard`) figuraba al principio del contenedor con scroll (`<section id="spotify-api-config" ...>`). En pantallas estándar ocupaba todo el espacio visible, obligando al usuario a desplazarse hacia abajo para encontrar sus servicios conectados y cuentas.

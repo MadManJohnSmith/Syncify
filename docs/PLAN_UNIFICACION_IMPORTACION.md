@@ -40,8 +40,8 @@ Asimetrías **intencionales que se conservan**: compras (solo Qobuz lo expone), 
 
 ## Fase 0 — Infraestructura compartida (base, ~2-3 días)
 
-1. **Helper de paginación común** (`services/import_pagination.rs`): `paginate_offset()` y `paginate_cursor()` con la semántica S187 generalizada (página corta ≠ fin si hay total; avanzar por longitud real; warn-and-continue con registro del hueco). Tidal ya lo tiene inline → se refactoriza para usarlo.
-2. **Taxonomía de errores compartida**: extraer `is_transient_page_error` de `tidal.rs:163` y fusionarla con `http_retry.rs` en un solo criterio transitorio/terminal/auth usado por los 6 clientes.
+1. **Helper de paginación común** (`services/import_pagination.rs`): `next_offset()` / `next_cursor()` / `is_short_page()` con la semántica S187 generalizada (los nombres `paginate_offset`/`paginate_cursor` del plan original nunca aterrizaron) (página corta ≠ fin si hay total; avanzar por longitud real; warn-and-continue con registro del hueco). Tidal ya lo tiene inline → se refactoriza para usarlo.
+2. **Taxonomía de errores compartida**: extraer el criterio transitorio (hoy `is_transient_status` / `is_transient_error_message` en `services/http_retry.rs`; el nombre `is_transient_page_error` del plan nunca existió) y fusionarla con `http_retry.rs` en un solo criterio transitorio/terminal/auth usado por los 6 clientes.
 3. **Throttle real para los rezagados**: invocar `GLOBAL_RATE_LIMITER.acquire()` + `penalize_service()` en 429 dentro de Deezer, SoundCloud y Apple Music (la configuración ya existe en `rate_limiter.rs:53`, nadie la llama).
 4. **Contrato único de resultado**: `ServiceSyncResult` como única respuesta; definir `skipped = ya presente` formalmente; los comandos heredados se convierten en wrappers.
 

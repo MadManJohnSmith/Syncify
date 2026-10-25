@@ -3,7 +3,7 @@
 **Fecha:** 2026-10-08
 **Carril:** `1-procesos-windows`
 **IDs:** G-01 (ventana al incrustar metadatos), G-06 (ninguna ventana de terminal, nunca)
-**Plan:** `docs/PLAN-Correccion-168.md` v2, entrada de §1 fila "14 sitios lanzan
+**Plan:** `docs/historico/PLAN-Correccion-168.md` v2, entrada de §1 fila "14 sitios lanzan
 procesos sin `CREATE_NO_WINDOW`".
 **Ficheros tocados (los 4 del encargo, ninguno más):**
 `src-tauri/src/cmd_utils.rs`, `src-tauri/src/tray.rs`,

@@ -1296,7 +1296,7 @@ function notify(message: string, type: 'success' | 'error' | 'info' = 'info'): v
   actionTimer = setTimeout(() => { actionMessage.value = null }, 5000)
 }
 
-// Real audio player singleton (syncify-media:// protocol)
+// Audio playback via the usePlayer singleton (native player engine)
 const player = usePlayer()
 const isPlayingAudio = computed(() => player.isPlaying.value)
 const playbackPosition = computed(() => player.positionSec.value)

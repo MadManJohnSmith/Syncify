@@ -929,7 +929,7 @@ mod tests {
 // LY-02 — boundary cleanup of lyrics payload headers.
 //
 // Declared at the END of the file on purpose: adding it at the top would shift
-// every line number cited by `docs/PLAN-Correccion-168.md`, `docs/auditoria/`
+// every line number cited by `docs/historico/PLAN-Correccion-168.md`, `docs/auditoria/`
 // and the test comments inside this file.
 pub mod header;
 

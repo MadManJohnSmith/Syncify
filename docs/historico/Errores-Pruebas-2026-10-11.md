@@ -1,5 +1,8 @@
 # Errores y peticiones detectados en pruebas manuales — 2026-10-11
 
+> **Estado actual (2026-10-25):** registro fechado. HECHO verificados en código: Q-04, Q-06, Q-07/Q-09, Q-12, Q-15, Q-16. Resueltos después: Q-02 (identidad por fila), Q-03 (absorbido por la pista de auth: `AuthVerdict`, guard de transporte y decay del latch). Obsoleto: Q-10 describía `resolve_playback_source`/`syncify-media://`, retirados por C-19 — la versión válida del síntoma es R-13 en `docs/historico/Errores-Pruebas-2026-10-13.md`. **Siguen abiertos y solo viven aquí:** Q-13, Q-14 y Q-17 (Q-17 verificado el 2026-10-25: `scripts/services/deezer_service.py` sigue deduciendo el plan de `web_hq`/`web_lossless`).
+
+
 Registro de lo que se observó usando la aplicación, agrupado por pantalla. El orden
 de este archivo no implica prioridad. Las entradas Q-04, Q-06, Q-07 y Q-12 están
 marcadas **HECHO** con cambios de código y pruebas automatizadas; las demás siguen

@@ -175,7 +175,7 @@ remove duplicates and renumber.
 From Library, Search, Album, Artist or Playlist, the UI calls:
 
 - `add_to_queue` for one track,
-- `enqueue_tracks` for a multi-selection,
+- `enqueue_tracks` (in `src-tauri/src/commands/library.rs`) for a multi-selection,
 - `add_batch_to_queue`/`enqueue_eligible_batch` for batches.
 
 The backend (`src-tauri/src/commands/queue.rs`):
@@ -281,6 +281,7 @@ retried automatically. Retrying is manual from the Downloads view.
 | `playlists`, `playlist_tracks` | Imported playlists and their order |
 | `download_queue` | State of each download |
 | `downloads` | Ledger of downloaded files |
+| `edition_recordings`, `edition_releases`, `edition_provider_items`, `edition_item_tracks` | Edition identity behind the ED-01…ED-04 contracts (`migrations/0097_edition_identity.sql`) |
 | `operation_journal` | Checkpoints and recovery after an unexpected shutdown |
 
 ---

@@ -1,6 +1,6 @@
 # Bitácora — carril `1-shell` (ola 1)
 
-IDs asignados: **G-03, G-04, G-05, BP-01, BP-02, BP-03, BP-04, PL-01, PL-02, PL-03, PL-06, PL-07**. Se deja preparado el punto de entrada solicitado para **PL-10**, cuya vista de pantalla completa pertenece a la ola 7. Antes de editar el shell se pre-registraron las filas de estos IDs en `docs/auditoria/matriz-ajustes.md:31-51` (R1). Las retractaciones del plan v2 están en `docs/PLAN-Correccion-168.md:45-97`; ninguna decisión de este carril se basa en los nombres de campo/funciones retirados allí.
+IDs asignados: **G-03, G-04, G-05, BP-01, BP-02, BP-03, BP-04, PL-01, PL-02, PL-03, PL-06, PL-07**. Se deja preparado el punto de entrada solicitado para **PL-10**, cuya vista de pantalla completa pertenece a la ola 7. Antes de editar el shell se pre-registraron las filas de estos IDs en `docs/auditoria/matriz-ajustes.md:31-51` (R1). Las retractaciones del plan v2 están en `docs/historico/PLAN-Correccion-168.md:45-97`; ninguna decisión de este carril se basa en los nombres de campo/funciones retirados allí.
 
 ## Evidencia verificada y cambios
 
@@ -25,7 +25,7 @@ IDs asignados: **G-03, G-04, G-05, BP-01, BP-02, BP-03, BP-04, PL-01, PL-02, PL-
 
 ## Abierto y riesgos
 
-1. **PL-10 no implementado de extremo a extremo:** no hay componente de reproducción grande ni listener del evento del menú; depende de la ola 7. El enlace actual no abre nada hasta entonces. `ui/src/App.vue:149-159, :481-484`; `docs/PLAN-Correccion-168.md:140` sitúa PL-09/PL-10 en `7-reproductor`.
+1. **PL-10 no implementado de extremo a extremo:** no hay componente de reproducción grande ni listener del evento del menú; depende de la ola 7. El enlace actual no abre nada hasta entonces. `ui/src/App.vue:149-159, :481-484`; `docs/historico/PLAN-Correccion-168.md:140` sitúa PL-09/PL-10 en `7-reproductor`.
 2. **Geometría y accesibilidad en Tauri no verificadas:** jsdom prueba clases/estructura, no pixels, focus trap ni navegación del tour. Se requiere comprobación visual de ancho, solape de popovers/reproductor y foco en drawer. Evidencia estática: `ui/src/App.vue:29-35, :164-166, :297-314`, `ui/src/components/StatusBar.vue:7, :49-50, :136, :191`; prueba de estructura `ShellCascaron.spec.ts:44-68`.
 3. **Progreso sin suavizado/ETA en el shell:** el composable anterior agrega descargas (incompatible con BP-02) y por ello no se usa en estos ficheros; porcentaje ponderado directo implementado en `ui/src/App.vue:419-436` y `ui/src/components/StatusBar.vue:333-350`. Si luego se modifica el composable de forma coordinada, se podría recuperar el suavizado sin mezclar descargas. El composable mismo y sus tests no se tocaron (propiedad de otro carril).
 4. **FAB y acceso rápido:** se pierden los atajos específicos del FAB, a propósito por PL-07; los flujos de Accounts y CommandPalette siguen existiendo (`ui/src/views/AccountsView.vue:234-263`; `ui/src/components/CommandPalette.vue:320-349`). La suite completa no se ha corrido, por instrucción del encargo.

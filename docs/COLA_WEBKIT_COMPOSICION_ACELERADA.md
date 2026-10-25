@@ -1,7 +1,7 @@
 # Cola técnica: composición WebKitGTK sin perder compatibilidad Intel Iris Xe
 
 **Estado:** pendiente de diseño, reproducción y benchmark; sin cambio de código.
-**Fecha:** 2026-10-13. Este fichero es separado porque `docs/Errores-Pruebas-2026-10-11.md` y `docs/auditoria/matriz-ajustes.md` están reservados por el workflow de descargas concurrente. Integrar la entrada a la cola canónica cuando se libere.
+**Fecha:** 2026-10-13. *(Nota 2026-10-25: el motivo original para separar este fichero —ficheros «reservados» por el workflow de descargas concurrente— ya no aplica; la cola sigue viva por sí misma y su estado canónico está en `docs/auditoria/matriz-ajustes.md`. El incidente del pánico de bandeja de su sección «Incidente» quedó resuelto por C-22 (`0e53dad`, ver `docs/Deuda_Tecnica_y_UX.md`).)*
 
 ## Incidencia y evidencia
 

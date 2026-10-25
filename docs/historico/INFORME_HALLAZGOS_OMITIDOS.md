@@ -1,5 +1,8 @@
 # Hallazgos verificados que NO se implementaron
 
+> **Estado actual (2026-10-25):** fotografía del 2026-10-03 de lo deliberadamente descartado. Sigue siendo la referencia de *por qué* no se hicieron esas cosas; los hechos que cita se re-verificaron contra el árbol el 2026-10-25 y siguen vigentes.
+
+
 Documento para el propietario. No es una lista de pendientes: es el registro de
 lo que se dejó intacto y **por qué**, con el coste de hacerlo mal medido o
 razonado. Todo lo que aquí aparece fue marcado CONFIRMADO por la verificación y

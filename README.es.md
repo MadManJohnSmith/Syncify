@@ -281,7 +281,7 @@ tag `v0.6.0` apunta exactamente a
 `ed440a96f669c264a7e477e76b791e325e900b7f` y la
 [release de Syncify v0.6.0](https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.0)
 está publicada con cinco artefactos para Linux y Windows. Sus notas provienen
-de [las notas de la versión 0.6.0](docs/RELEASE_NOTES_v0.6.0.md). La CI de
+de [las notas de la versión 0.6.0](docs/historico/RELEASE_NOTES_v0.6.0.md). La CI de
 Rust, frontend y Python, la puerta de release y ambos builds de publicación
 (Linux y Windows) quedaron en verde sobre esa misma revisión. Lo que **no** se
 ha demostrado aquí:
@@ -336,7 +336,7 @@ npm run build
 
 - [`docs/`](docs/README.md) — arquitectura y features · [índice en inglés](docs/README.en.md)
 - [`docs/MATRIZ_PARIDAD_IMPORTACION.md`](docs/MATRIZ_PARIDAD_IMPORTACION.md) — matriz viva de paridad de importación
-- [`docs/LYRICS_16_PROVIDER_MATRIX.md`](docs/LYRICS_16_PROVIDER_MATRIX.md) — la cascada de letras, auditada
+- [`docs/LYRICS_PROVIDER_MATRIX.md`](docs/LYRICS_PROVIDER_MATRIX.md) — la cascada de letras, auditada
 - [`docs/Deuda_Tecnica_y_UX.md`](docs/Deuda_Tecnica_y_UX.md) — deuda técnica abierta, rastreada a la vista
 
 ## Contribuir

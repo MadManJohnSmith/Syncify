@@ -1,5 +1,8 @@
 # Prueba de rendimiento aislada de MusicBrainz (2026-10-12)
 
+> **Estado actual (2026-10-25):** ensayo de medición fechado. Su hallazgo más cargante (índice de expresión sobre ISRC normalizado) sigue sin implementarse: la migración 0064 normaliza la columna y crea el índice NOCASE, pero no el índice de expresión. Continuación en `docs/historico/perf-run-2026-10-12.md`.
+
+
 **Alcance:** se copió la base SQLite de `~/.local/share/com.syncify.app/syncify.db` a
 `/home/alan/perf-probe/probe.db` antes de ensayar cambios. No se modificó la base viva, el
 código, las migraciones ni los ficheros del workflow de descargas. El otro workflow puede
@@ -64,7 +67,7 @@ flujo concurrente real.
 Los scripts de la prueba están fuera del repositorio en `/home/alan/perf-probe/`:
 `bench.py`, `bench_hit.py` y `bench_exists.py`; las copias probadas son
 `probe-no-index.db` y `probe-with-index.db`. El informe general, con 23 hallazgos
-confirmados, está en `docs/perf-run-2026-10-12.md`.
+confirmados, está en `docs/historico/perf-run-2026-10-12.md`.
 
 ## Ensayos adicionales sin interferir con el workflow de descargas
 

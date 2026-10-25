@@ -1,3 +1,6 @@
+
+> Notas de la versión 0.6.1 (tag `v0.6.1`, 2026-10-14). Histórico; las limitaciones vigentes del proyecto se declaran en `README.md` §"Verification and limitations".
+
 Syncify v0.6.1 — fiabilidad de la cola de descargas
 
 ## Novedades

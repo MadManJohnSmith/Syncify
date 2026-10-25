@@ -1,8 +1,8 @@
 # Cola técnica: rendimiento de la interfaz al navegar y hacer scroll
 
-**Estado:** registrado, sin cambio de código. Todas las evidencias se verificaron el 2026-10-13 contra el árbol de trabajo y sobre una copia de solo lectura de la base real (~390 MB, 30.527 pistas).
+**Estado:** actualizado el 2026-10-25: **FE-PERF-02 aplicado en código** (parcial: la clonación está corregida; ver su sección), el resto `registrado`, sin cambio de código. Las evidencias originales se verificaron el 2026-10-13 contra el árbol de trabajo y sobre una copia de solo lectura de la base real (~390 MB, 30.527 pistas); el estado canónico por ítem está en `docs/auditoria/matriz-ajustes.md`.
 **Fecha:** 2026-10-13. **Motivo:** el usuario observa retardos superiores a un segundo al cambiar de pantalla o pestaña, y scroll que tarda y da tirones, en toda la aplicación.
-**Frontera de trabajo:** este fichero es propio y no toca `docs/Errores-Pruebas-2026-10-11.md`, `docs/Errores-Pruebas-2026-10-13.md` ni `docs/auditoria/matriz-ajustes.md`, reservados por el flujo de descargas concurrente. Integrar los ítems en la cola canónica cuando se libere, igual que se acordó con `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md`.
+**Frontera de trabajo:** este fichero es propio y no toca `docs/historico/Errores-Pruebas-2026-10-11.md`, `docs/historico/Errores-Pruebas-2026-10-13.md` ni `docs/auditoria/matriz-ajustes.md`, reservados por el flujo de descargas concurrente. Integrar los ítems en la cola canónica cuando se libere, igual que se acordó con `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md`.
 
 ## Qué se descartó con medición (para no invertir esfuerzo donde no está el problema)
 
@@ -28,7 +28,9 @@ Medido sobre `/tmp/perf-hard/db-copy.db` (copia de solo lectura de la base real)
 **Diseño obligatorio del arreglo:** `<KeepAlive>` con `include`/`exclude` acotado, no global, para no retener todas las vistas en memoria (el caso contrario también degrada). Decidir explícitamente si `mode="out-in"` debe mantenerse en las vistas que se cachean. Nombres de componente consistentes: `include` filtra por el `name` del componente, y conviene confirmar que las vistas lo declaran.
 **Qué no se ha demostrado:** que esto sea la causa única del retraso; se verificó el mecanismo y el coste repetido, no la latencia de navegación medida en la ventana real.
 
-## FE-PERF-02 · `registrado` · `loadMore` clona el array entero y `filteredTracks` reordena todo en cada invalidación.
+## FE-PERF-02 · `aplicado en código (2026-10-25, parcial)` · `loadMore` clona el array entero y `filteredTracks` reordena todo en cada invalidación.
+
+**Actualización 2026-10-25:** la clonación está corregida en `ui/src/views/LibraryView.vue` — `loadMore` acumula con `tracks.value.push(...newTracks)` y `filteredTracks` ya no recopia/reordena el conjunto entero en cada invalidación; `docs/auditoria/matriz-ajustes.md` la registra como «parcial (clonación corregida)». El análisis original que motivó el arreglo queda abajo como contexto.
 
 `ui/src/views/LibraryView.vue:1613` hace `tracks.value = [...tracks.value, ...newTracks]` al acumular una página, y `:2358` hace `trackList = [...trackList].sort(...)` dentro del `computed` `filteredTracks` (`:2326`). Con `PAGE_SIZE = 100` (`:1572`) y 30.527 pistas, recorrer la biblioteca son ~306 páginas, y **cada** una invalida el computado que recopia y reordena todo el conjunto. La medida de referencia es **31,16 ms** por reordenada de 30.527 elementos.
 **Diseño obligatorio del arreglo:** acumular sin clonar (mutación controlada del array o `concat` sobre referencia no reactiva), y que el computado dependa de las claves que realmente cambian (filtros y `sortBy`) para no reordenar cuando solo crece la lista. No debe cambiar el resultado observable: mismas filas, mismo orden.
@@ -49,11 +51,11 @@ Medido sobre el build real (`ui/dist`): `index-*.js` = 429 kB raw / 133 kB gz, `
 
 ## Orden recomendado y verificación
 
-1. **FE-PERF-02** (sin clonar, sin reordenar en falso): ataca directamente los tirones de scroll y es acotado a `LibraryView.vue`.
+1. ~~**FE-PERF-02** (sin clonar, sin reordenar en falso)~~ **aplicado (parcial)**: atacaba directamente los tirones de scroll y era acotado a `LibraryView.vue`.
 2. **FE-PERF-01** (`KeepAlive` acotado): ataca el retraso al cambiar de pantalla y evita repetir las 12 llamadas del Dashboard.
 3. **FE-PERF-03** (división del bundle) solo con medición de arranque.
 4. **FE-PERF-04** al tocar el Dashboard por otra razón.
 
 **Verificación obligatoria antes y después:** medir en la app real el tiempo desde el clic hasta el primer frame con contenido, scroll sostenido con cuenta de fotogramas perdidos, y llamadas a `get_library` por minuto durante el uso normal. Tests automatizados puros para `loadMore` (mismas filas, mismo orden, sin clonar) y para el listado con `sortBy`. Mantener la ruta compatible de WebKit intacta: nada de este fichero toca `src-tauri/src/main.rs` ni las variables de composición.
 
-**Relacionado:** `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md` (composición y compatibilidad Intel Iris Xe) y `docs/perf-run-2026-10-12.md` (revisión de backend).
+**Relacionado:** `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md` (composición y compatibilidad Intel Iris Xe) y `docs/historico/perf-run-2026-10-12.md` (revisión de backend).

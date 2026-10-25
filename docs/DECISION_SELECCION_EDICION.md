@@ -4,6 +4,18 @@
 2026-10-13) · **Prerrequisito:** este documento + las filas `ED-*` de
 [docs/auditoria/matriz-ajustes.md](auditoria/matriz-ajustes.md).
 
+**Estado de ejecución (re-verificado el 2026-10-25):** ED-01 implementado
+(`migrations/0097_edition_identity.sql`: `edition_recordings`, `edition_releases`,
+`edition_provider_items`, `edition_item_tracks`, `edition_legacy_collisions`) y
+ED-04b/04c cableados a UI (`src-tauri/src/commands/editions.rs` con
+`ediciones_de_pista`/`resolver_aparicion_de_pista`, `ui/src/api/editions.ts`,
+`ui/src/components/EdicionesDePista.vue`). Deuda ED-02 residual: el patrón ISRC
+`LIMIT 1` que esta decisión manda eliminar sigue vivo fuera de Qobuz —
+`src-tauri/src/services/tidal.rs` (ruta de importación), `services/deezer.rs`,
+`services/apple_music.rs`, `commands/library.rs` y `commands/backup.rs` (en
+`download/qobuz.rs` ya no queda ninguno). Las citas de línea del cuerpo son la
+fotografía del 2026-10-13; los símbolos mandan sobre los números.
+
 **Justificación de alcance:** `DECISION_ALCANCE_BETA.md` §1 prohíbe añadir alcance
 nuevo. El propietario autorizó expresamente esta corrección dentro de la beta
 (2026-10-13). Cambia la implementación de importación y descarga existentes para

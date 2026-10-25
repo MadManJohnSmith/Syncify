@@ -1,26 +1,39 @@
 # Syncify — sistema de temas
 
-La UI tiene 4 temas conmutables **en runtime**. El mecanismo: un atributo
-`data-theme` en `<html>` que re-tematiza toda la app al vuelo, porque las
-utilidades de Tailwind referencian variables CSS (`@theme inline`), no valores.
+La UI tiene 10 temas conmutables **en runtime**: 4 estándar y 6 de servicio.
+El mecanismo: un atributo `data-theme` en `<html>` que re-tematiza toda la app
+al vuelo, porque las utilidades de Tailwind referencian variables CSS
+(`@theme inline`), no valores.
 
-- Temas: `camaleon` (default) · `tinta` · `consola` · `riso`
-- Definición de tokens: `ui/src/styles/main.css` (un bloque por tema)
-- Estado/conmutación: `ui/src/composables/useTheme.ts` (clave `syncify.theme`)
+- Temas estándar: `tinta` (default/fallback) · `camaleon` · `consola` · `riso`
+- Temas de servicio: `spotify` · `apple_music` · `tidal` · `qobuz` · `deezer` ·
+  `soundcloud` (paletas de marca, seleccionables en Ajustes → Apariencia)
+- Definición de tokens: `ui/src/styles/main.css` (un bloque `[data-theme]` por
+  cada uno de los 10)
+- Registro: `ui/src/composables/useTheme.ts` — `VALID_STANDARD`,
+  `VALID_SERVICE` y `THEMES` (clave `syncify.theme`; el fallback si no hay
+  tema guardado es `tinta`, también en el bootstrap de `ui/index.html`)
 - Anti-FOUC: script inline en `ui/index.html` que fija el tema guardado antes
-  del primer paint
-- Variante `dark:`: sigue al tema de la app (los 3 oscuros), no al SO
+  del primer paint; su lista `validos` contiene los 10 ids
+- Variante `dark:`: `@custom-variant dark` en `main.css` se define sobre los
+  10 skins (incluido `riso`, que es light), no sigue al SO
 - Tinte Camaleón: `ui/src/composables/useTint.ts` publica `--tint-h` (matiz
   dominante de la carátula) y `--tint-k` (intensidad, clave `syncify.tint`)
 
-## Los 4 temas
+## Temas estándar
 
 | Tema | Idea | color-scheme |
 |---|---|---|
-| `camaleon` | Se tiñe con el color del disco en reproducción | dark |
 | `tinta` | Monocromo: el único color llega de la carátula | dark |
+| `camaleon` | Se tiñe con el color del disco en reproducción | dark |
 | `consola` | Ámbar sobre carbón neutro, plano, sin glow | dark |
 | `riso` | Papel frío con dos tintas: azul (interactivo) y rosa (suena) | light |
+
+## Temas de servicio
+
+Los 6 ids de `VALID_SERVICE` en `useTheme.ts` llevan la paleta de marca de su
+servicio. Se definen igual que los estándar (bloque `[data-theme]` en
+`main.css`) y aparecen en la misma selector de Ajustes → Apariencia.
 
 ## Tokens semánticos y sus utilidades
 
@@ -52,13 +65,15 @@ funcionando: resuelven contra estos mismos tokens vía `@theme inline` en
 
 1. **Tokens**: añade un bloque `[data-theme="mi-tema"] { ... }` en
    `ui/src/styles/main.css` con TODAS las variables de un tema existente
-   (`color-scheme` incluido).
-2. **Registro**: añade su `id` a `VALID` y su metadato (nombre, descripción) a
-   `THEMES` en `ui/src/composables/useTheme.ts`.
+   (`color-scheme` incluido) y añádelo a la `@custom-variant dark` del mismo
+   fichero si participa en la variante `dark:`.
+2. **Registro**: añade su `id` a `VALID_STANDARD` o `VALID_SERVICE` (según su
+   tipo) y su metadato a `THEMES` en `ui/src/composables/useTheme.ts`.
 3. **Anti-FOUC**: añade el `id` a la lista `validos` del script inline de
-   `ui/index.html`.
+   `ui/index.html` (y al bootstrap por defecto si corresponde).
 4. Nada más: los alias y las utilidades semánticas lo recogen solas, y la
-   pestaña Ajustes → Apariencia lo lista automáticamente.
+   pestaña Ajustes → Apariencia lo lista automáticamente (sus tarjetas de
+   preview llevan su propio `data-theme`).
 
 ## Contrato del proyecto
 

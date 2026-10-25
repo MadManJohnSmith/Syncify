@@ -23,10 +23,10 @@ Desde la raíz. El target de Rust va **fuera del repo** para no llenar el disco:
 CARGO_TARGET_DIR=/tmp/syncify-target cargo check --workspace --all-targets --locked
 CARGO_TARGET_DIR=/tmp/syncify-target cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
-CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 318 objetivos: recuento real
+CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 310 objetivos: recuento real
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --test batch_50_audit_test -- --test-threads=1
-npm --prefix ui run build && npm --prefix ui run test:run                  # 125 ficheros / 1075 tests
-python3 -m unittest discover -s scripts/tests                             # 307 tests
+npm --prefix ui run build && npm --prefix ui run test:run                  # 126 ficheros / 1083 tests
+python3 -m unittest discover -s scripts/tests                             # 310 tests
 ```
 
 Todo corre sin red salvo los 13 tests `#[ignore]`, que necesitan servicios reales.
@@ -58,7 +58,8 @@ que pase.
   sustituyó a `resolve_playback_source` y al protocolo `syncify-media://`, que se
   borraron (C-19 en `docs/Deuda_Tecnica_y_UX.md`). `commands/playback.rs` conserva
   solo la escucha local (`record_local_play`).
-- **Escrituras silenciosas:** hay ~243 `let _ = sqlx::query(...)` en producción: una
+- **Escrituras silenciosas:** hay ~113 `let _ = sqlx::query(...)` en producción (el
+  registro D-06 de `docs/Deuda_Tecnica_y_UX.md` lleva el ratchet y no debe subir): una
   escritura puede fallar y la transacción confirmar sin rastro. Si tocas una, propaga
   el error o registra con `tracing::warn!`.
 - **Entorno:** `.venv`, `node_modules` y los lockfiles son el entorno; no los
@@ -71,19 +72,27 @@ que pase.
   Úsalo en vez de construir `Command` a mano.
 - `src-tauri/src/db.rs` monta el pool y las migraciones. El `generate_handler!` con
   todos los comandos está en `src-tauri/src/main.rs`.
-- **Evita** `src-tauri/src/commands/service.rs`
-  (`perform_sync_service_with_emitter_inner`, ~4,5k líneas) y
-  `src-tauri/src/download/qobuz.rs` (`resolve_token_for_account`, ~2,9k): ahí un
-  cambio se vuelve invisible. Si hay que tocarlos, tests de caracterización delante.
+- **Evita** `src-tauri/src/commands/service.rs` (~9,4k líneas; ahí vive el orquestador
+  `perform_sync_service_with_emitter_inner`) y `src-tauri/src/download/qobuz.rs`
+  (~4,1k líneas; ahí vive `resolve_token_for_account`): ahí un cambio se vuelve
+  invisible. Si hay que tocarlos, tests de caracterización delante.
+- `crates/README.md` explica qué hace cada crate del workspace.
 - `ui/src/api/` es la única puerta a Rust desde la UI: cada comando tiene su wrapper.
   No llames a `invoke` desde una vista; así nació el bug de `set_max_concurrency`.
 
 ## Más contexto
 
+- `docs/README.md` (y `docs/README.en.md`): índice completo de la documentación,
+  con qué fichero es la referencia vigente de qué.
 - `GLOSSARY.md`: vocabulario de dominio (track vs. track source vs. edición,
   y los dos sentidos de «migración»).
 - `docs/DECISION_*.md`: decisiones de alcance y arquitectura.
 - `docs/Deuda_Tecnica_y_UX.md`: deuda conocida y su prioridad.
 - `docs/features/`: comportamiento por área (reproductor, biblioteca, descargas).
+- Registros vivos en `docs/`: la Deuda, las colas `docs/COLA_*.md` y
+  `docs/PLAN_MEJORA_POST_BETA.md`; el ledger de ajustes es
+  `docs/auditoria/matriz-ajustes.md`. En `docs/historico/` está el registro
+  fechado (handoffs, Errores-Pruebas, perf, release notes): evidencia, **no**
+  estado actual.
 - `README.md` §"Building from source" y §"Verification and limitations": lo que
   **no** está verificado en escritorio real (GUI, audio, bandeja, MPRIS/D-Bus, red viva).

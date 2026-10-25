@@ -1,5 +1,8 @@
 # Plan de ejecución — 168 incidencias de pruebas manuales (v2)
 
+> **Estado actual (2026-10-25):** plan de ejecución ya consumido; el estado por ítem vive en `docs/auditoria/matriz-ajustes.md`. Su valor permanente es §2 (retractaciones de la v1) y la trazabilidad ID→carril de §3.
+
+
 Derivado de [`Errores-Pruebas-2026-10-08.md`](./Errores-Pruebas-2026-10-08.md).
 **v2**: reescrito tras auditar el plan v1 contra el código con tres revisores independientes.
 La v1 contenía afirmaciones falsas; están retractadas explícitamente en §2.
