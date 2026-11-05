@@ -35,7 +35,7 @@
       </button>
     </div>
 
-    <!-- Dashboard grid: una sola pantalla en xl, la página no hace scroll -->
+    <!-- Dashboard grid: a single screen at xl, the page does not scroll -->
     <div v-else class="flex-1 min-h-0 overflow-y-auto xl:overflow-hidden p-3">
       <div class="xl:h-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-3 xl:grid-rows-3 auto-rows-fr">
         <!-- Row 1: Library Overview (5 cols) -->
@@ -121,7 +121,7 @@
           </div>
         </div>
 
-        <!-- Row 1: Storage Usage (2 cols - D-03: reducido proporcional a su contenido) -->
+        <!-- Row 1: Storage Usage (2 cols - D-03: reduced proportionally to its content) -->
         <div class="stat-card storage-usage xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-1.5 shrink-0">Storage Usage</h3>
           <p class="text-xl font-bold text-ink shrink-0">{{ stats.storageUsed }}</p>
@@ -179,7 +179,7 @@
           </div>
         </div>
 
-        <!-- Row 2: Sources / Services (3 cols - D-05: nombre formateado centralizadamente) -->
+        <!-- Row 2: Sources / Services (3 cols - D-05: name formatted centrally) -->
         <div class="stat-card service-distribution xl:col-span-3 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-1 shrink-0">Sources</h3>
           <p class="text-[11px] text-gray-500 mb-2 shrink-0">Active account tracks / unique library tracks per service. Coverage overlaps; bars do not sum to 100%.</p>
@@ -229,7 +229,7 @@
           <div v-else class="flex-1 min-h-0 flex items-center justify-center text-gray-500 italic text-xs">No queue data</div>
         </div>
 
-        <!-- Row 2: Recent Activity (4 cols - expandido para legibilidad de títulos tras eliminar System Diagnostics) -->
+        <!-- Row 2: Recent Activity (4 cols - expanded for title legibility after removing System Diagnostics) -->
         <div class="stat-card recent-activity xl:col-span-4 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Recent Activity</h3>
           <div v-if="recentActivity.length > 0" class="flex-1 min-h-0 space-y-1.5 overflow-y-auto custom-scrollbar">
@@ -289,7 +289,7 @@
           <div v-else class="flex-1 min-h-0 flex items-center justify-center text-gray-500 italic text-xs">No metadata data</div>
         </div>
 
-        <!-- Row 3: Lyrics Coverage (2 cols - D-04: reducido proporcional a su contenido) -->
+        <!-- Row 3: Lyrics Coverage (2 cols - D-04: reduced proportionally to its content) -->
         <div class="stat-card lyrics-coverage xl:col-span-2 bg-surface-dark rounded-xl border border-border-dark p-3 flex flex-col min-h-0 overflow-hidden">
           <h3 class="text-xs font-semibold text-ink mb-2 shrink-0">Lyrics Coverage</h3>
           <div v-if="lyricsStats" class="flex-1 min-h-0 flex flex-col justify-between overflow-hidden">
@@ -389,7 +389,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { getVersion } from '@tauri-apps/api/app'
-// R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
+// R13: unified confirm (previously the native plugin-dialog, outside the window).
 import { confirm } from '@/composables/useToast'
 import { libraryApi } from '@/api/library'
 import { queueApi } from '@/api/queue'
@@ -433,10 +433,10 @@ const isAutoResolving = ref(false)
 const recentActivity = ref<{id: number, icon: string, color: string, text: string, time: string}[]>([])
 
 /**
- * Color de la barra asignado por NOMBRE de servicio normalizado, nunca por
- * posición: si el backend reordena los servicios (ORDER BY s.id) los colores no
- * deben permutarse. `formatServiceName` ya normaliza el nombre a su forma
- * canónica, así que ambos caminos caen en la misma clave.
+ * Bar color assigned by normalized service NAME, never by position: if the
+ * backend reorders services (ORDER BY s.id), colors must not permute.
+ * `formatServiceName` already normalizes the name to its canonical form,
+ * so both paths land on the same key.
  */
 function serviceColorFor(serviceName: string): string {
   const normalized = formatServiceName((serviceName || '').trim()).toLowerCase()
@@ -510,16 +510,16 @@ const stats = computed(() => {
       ? formatBytes(storageData.value.used_bytes / lib!.total_tracks)
       : '—',
     services: serviceStatuses.value.map(s => {
-      // Denominador único: pistas únicas de la biblioteca (`COUNT(*) FROM tracks`,
-      // ver la VIEW library_stats en migrations/0085_alignment_audit.sql:213-218).
-      // NO se usa `COUNT(*) FROM library_entries` porque una misma pista puede
-      // estar en varias cuentas (UNIQUE(account_id, track_id)) y sumaría más
-      // que las pistas únicas.
+      // Single denominator: unique library tracks (`COUNT(*) FROM tracks`,
+      // see the library_stats VIEW in migrations/0085_alignment_audit.sql:213-218).
+      // `COUNT(*) FROM library_entries` is NOT used because the same track can
+      // be in several accounts (UNIQUE(account_id, track_id)) and would add up
+      // to more than the unique tracks.
       const uniqueTracks = lib && lib.total_tracks > 0 ? lib.total_tracks : 0
-      // library_count son entradas de biblioteca de LA cuenta activa de ese
-      // servicio (service.rs:1230-1251), así que una pista presente en dos
-      // servicios cuenta 1 en cada uno. Esto mide cobertura, no reparto
-      // exclusivo: los porcentajes pueden solaparse y no suman 100 %.
+      // library_count is the library entries of THE active account for that
+      // service (service.rs:1230-1251), so a track present in two
+      // services counts 1 in each. This measures coverage, not exclusive
+      // allocation: percentages can overlap and do not add up to 100%.
       const libraryEntries = s.library_count > 0 ? s.library_count : 0
       const percent = uniqueTracks > 0 ? Math.round((libraryEntries / uniqueTracks) * 100) : 0
       return {

@@ -68,6 +68,12 @@ pub struct DeezerResults {
 pub struct DeezerUser {
     #[serde(rename = "USER_ID", deserialize_with = "deserialize_id")]
     pub id: String,
+    /// Username Deezer shows for the account (`BLOG_NAME` in the private API).
+    #[serde(rename = "BLOG_NAME")]
+    pub blog_name: Option<String>,
+    /// Email, when the private API includes it. Optional by design.
+    #[serde(rename = "EMAIL")]
+    pub email: Option<String>,
 }
 
 /// S189-Fase-1: album summary from the public API user-albums listing.
@@ -158,6 +164,10 @@ pub struct DeezerClient {
     arl: String,
     api_token: Option<String>,
     user_id: Option<String>,
+    /// Identity reported by `deezer.getUserData` during `init()`, exposed for
+    /// the accounts surface (never logs, never part of sync).
+    user_display_name: Option<String>,
+    user_email: Option<String>,
     /// Injectable endpoints (S189 tests): production always uses the consts.
     api_base: String,
     public_api_base: String,
@@ -170,9 +180,21 @@ impl DeezerClient {
             arl,
             api_token: None,
             user_id: None,
+            user_display_name: None,
+            user_email: None,
             api_base: base_from_env(DEEZER_API_BASE_ENV, DEEZER_API_BASE),
             public_api_base: base_from_env(DEEZER_PUBLIC_API_BASE_ENV, DEEZER_PUBLIC_API),
         }
+    }
+
+    /// Username Deezer reports for the account, once `init()` succeeded.
+    pub fn user_display_name(&self) -> Option<&str> {
+        self.user_display_name.as_deref()
+    }
+
+    /// Email Deezer reports for the account, when it includes one.
+    pub fn user_email(&self) -> Option<&str> {
+        self.user_email.as_deref()
     }
 
     /// S189 test seam: redirect the gw-light endpoint (init/auth).
@@ -251,7 +273,20 @@ impl DeezerClient {
 
         if let Some(results) = data.results {
             self.api_token = results.check_form;
-            self.user_id = results.user.map(|u| u.id);
+            if let Some(user) = results.user {
+                self.user_id = Some(user.id);
+                // Identity for the accounts surface. BLOG_NAME is the username
+                // Deezer shows to other users; the email is only present when
+                // the provider includes it. Both stay optional.
+                self.user_display_name = user
+                    .blog_name
+                    .map(|n| n.trim().to_string())
+                    .filter(|n| !n.is_empty());
+                self.user_email = user
+                    .email
+                    .map(|e| e.trim().to_string())
+                    .filter(|e| !e.is_empty());
+            }
         }
 
         if self.api_token.is_none() {

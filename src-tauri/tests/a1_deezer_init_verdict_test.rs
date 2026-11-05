@@ -159,3 +159,30 @@ fn error_message_is_preserved_for_logging_callers() {
     assert_eq!(e.message(), "Deezer API error (503): busy");
     assert_eq!(e.to_string(), "Deezer API error (503): busy");
 }
+
+// --- Identidad de la cuenta: campos opcionales de `getUserData` ---
+
+/// `init()` ya llama a `getUserData`; la identidad visible (`BLOG_NAME` es el
+/// username del API privado, `EMAIL` viaja cuando el proveedor lo incluye)
+/// viene en la misma respuesta y se captura sin petición extra. La fila de la
+/// cuenta la usa para distinguirse de sus gemelas.
+#[tokio::test]
+async fn init_captures_optional_identity_fields() {
+    let body = r#"{"results":{"checkForm":"TOKEN-OK","USER":{"USER_ID":42,"BLOG_NAME":"ana_dzr","EMAIL":"Ana@Example.com"}}}"#;
+    let base = spawn_mock(200, body).await;
+    let mut client = client_for(base);
+    client.init().await.expect("init must succeed");
+    assert_eq!(client.user_display_name(), Some("ana_dzr"));
+    assert_eq!(client.user_email(), Some("Ana@Example.com"));
+}
+
+/// Un USER sin identidad no rompe nada: la cuenta queda sin nombre visible y
+/// el refresco de identidad lo reintentará más tarde.
+#[tokio::test]
+async fn init_tolerates_a_user_without_identity_fields() {
+    let base = spawn_mock(200, OK_BODY).await;
+    let mut client = client_for(base);
+    client.init().await.expect("init must succeed");
+    assert_eq!(client.user_display_name(), None);
+    assert_eq!(client.user_email(), None);
+}

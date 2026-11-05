@@ -105,16 +105,16 @@ describe('LyricsView (fully wired tab)', () => {
         expect(wrapper.text()).toContain(`Sync · ${level}`);
         await wrapper.find('button[title="Edit"]').trigger('click');
         expect(wrapper.find('[data-testid="token-editor"]').exists()).toBe(true);
-        await wrapper.find('input[aria-label="Texto token 1-1"]').setValue('改 ');
+        await wrapper.find('input[aria-label="Text token 1-1"]').setValue('改 ');
         await wrapper.findAll('.lyrics-editor button').find(b => b.text().includes('Cancel'))!.trigger('click');
         expect(writes).toHaveLength(0);
         await wrapper.find('button[title="Edit"]').trigger('click');
-        expect((wrapper.find('input[aria-label="Texto token 1-1"]').element as HTMLInputElement).value).not.toBe('改 ');
+        expect((wrapper.find('input[aria-label="Text token 1-1"]').element as HTMLInputElement).value).not.toBe('改 ');
         await wrapper.find('input[aria-label="Timestamp token 1-1"]').setValue('bad');
         await wrapper.findAll('.lyrics-editor button').find(b => b.text().includes('Save Changes'))!.trigger('click');
         expect(writes).toHaveLength(0);
         await wrapper.find('input[aria-label="Timestamp token 1-1"]').setValue(level === 'word' ? '00:01.20' : '100,500,0');
-        await wrapper.find('input[aria-label="Texto token 1-1"]').setValue('改 ');
+        await wrapper.find('input[aria-label="Text token 1-1"]').setValue('改 ');
         await wrapper.findAll('.lyrics-editor button').find(b => b.text().includes('Save Changes'))!.trigger('click');
         await flushPromises();
         expect(writes).toHaveLength(1);
@@ -260,7 +260,7 @@ describe('LyricsView (fully wired tab)', () => {
         await flushPromises();
 
         expect(fetchCalled).toBe(true);
-        expect(wrapper.text()).toContain('Letra obtenida desde lrclib');
+        expect(wrapper.text()).toContain('Lyrics fetched from lrclib');
     });
 
     it('quality report computes its numbers from real stats, not placeholders', async () => {
@@ -314,7 +314,7 @@ describe('LyricsView (fully wired tab)', () => {
         const wrapper = mount(LyricsView);
         await flushPromises();
 
-        await wrapper.find('[title="Fuentes de letras y preferencias"]').trigger('click');
+        await wrapper.find('[title="Lyrics sources and preferences"]').trigger('click');
         await flushPromises();
 
         const modalEl = document.body.querySelector('.provider-settings');
@@ -386,7 +386,7 @@ describe('LyricsView (fully wired tab)', () => {
         await wrapper.findAll('.lyrics-track-list .cursor-pointer')[0].trigger('click');
         await flushPromises();
 
-        await wrapper.find('[title="Exportar letra en su formato nativo"]').trigger('click');
+        await wrapper.find('[title="Export lyrics in their native format"]').trigger('click');
         await flushPromises();
 
         expect(writes.length).toBe(1);
@@ -464,7 +464,7 @@ describe('S200: local lyrics harvest', () => {
 
         expect(probeCalls).toEqual([7]);
         expect(wrapper.text()).toContain('Chorus text');
-        expect(wrapper.text()).toContain('Letra encontrada como archivo .lrc junto al audio');
+        expect(wrapper.text()).toContain('Lyrics found as an .lrc file next to the audio');
     });
 
     it('"Escanear disco" sweeps sidecars + embedded lyrics and refreshes stats', async () => {
@@ -484,12 +484,12 @@ describe('S200: local lyrics harvest', () => {
         await wrapper.findAll('.lyrics-track-list .cursor-pointer')[0].trigger('click');
         await flushPromises();
 
-        const scanBtn = wrapper.findAll('button').find(b => b.text().includes('Escanear disco'))!;
+        const scanBtn = wrapper.findAll('button').find(b => b.text().includes('Scan disk'))!;
         expect(scanBtn).toBeTruthy();
         await scanBtn.trigger('click');
         await flushPromises();
 
         expect(harvests).toHaveLength(1);
-        expect(wrapper.text()).toContain('5 letras recuperadas (3 sidecar, 2 incrustadas) de 12 pistas');
+        expect(wrapper.text()).toContain('Scan: 5 lyrics recovered (3 sidecar, 2 embedded) from 12 tracks');
     });
 });

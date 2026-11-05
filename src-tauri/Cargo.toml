@@ -1,6 +1,6 @@
 [package]
 name = "syncify-tauri"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 description = "Syncify Tauri application"
 default-run = "syncify-tauri"
@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 # Ítem 31: autoinicio en el arranque del sistema, controlado por `start_on_boot`
@@ -43,7 +43,15 @@ rand = "0.8"
 # sesión y no persiste entre arranques. Con el backend por defecto, la app
 # guardaba la clave "con éxito" y al siguiente arranque no la encontraba,
 # generaba otra y marcaba TODAS las cuentas como credenciales irrecuperables.
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+#
+# windows-native es imprescindible: keyring cae a su store "mock" (EntryOnly,
+# sin persistencia) cuando ninguna feature de backend aplica al target, y con
+# solo sync-secret-service Windows compilaba ese mock: escribía con Ok y al
+# siguiente arranque la clave no existía. crypto.rs verifica la persistencia
+# declarada y usa el archivo de fallback en ese caso, pero el backend real de
+# Windows es el Credential Manager. windows-sys solo se compila en targets
+# Windows (dependencia target-gated de keyring), no afecta a Linux/macOS.
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "windows-native"] }
 dirs = "5"
 libc = "0.2"
 hostname = "0.4"
@@ -59,9 +67,16 @@ regex = "1.10"
 mp4ameta = "0.13"
 syncify-core-domain = { path = "../crates/syncify-core-domain" }
 syncify-flac-writer = { path = "../crates/syncify-flac-writer" }
+syncify-fmp4-flac = { path = "../crates/syncify-fmp4-flac" }
 syncify-lyrics-domain = { path = "../crates/syncify-lyrics-domain" }
 syncify-metadata-domain = { path = "../crates/syncify-metadata-domain" }
 syncify-tidal-downloader = { path = "../crates/syncify-tidal-downloader" }
+# Fase 1 del player: motor de audio nativo (rodio + symphonia)
+syncify-player = { path = "../crates/syncify-player" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Fase 1 del player: MPRIS nativo (el WebKit MediaSession antiguo ya no existe).
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 
 

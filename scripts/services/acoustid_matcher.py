@@ -22,9 +22,9 @@ except ImportError:
 class AcoustIDNotConfiguredError(RuntimeError):
     """Raised when a lookup is attempted without `ACOUSTID_API_KEY`.
 
-    Sin esta distinción el puente traducía "falta la credencial" a una lista
-    vacía y la mostraba como `No matches found`, que empujaba al usuario a
-    reintentar un comando que no podía funcionar nunca.
+    Without this distinction the bridge translated "missing credential" into an
+    empty list and displayed it as `No matches found`, which pushed the user
+    to retry a command that could never work.
     """
 
 
@@ -69,10 +69,10 @@ class AcoustIDMatcher:
     
     def _log(self, message: str):
         if self.verbose:
-            # stderr, no stdout: el puente se serializa como único objeto JSON
-            # desde stdout, y cualquier aviso previo lo hacía fallar al
-            # deserializar (`scripts/commands/tools.rs` deserializa la salida
-            # entera).
+            # stderr, not stdout: the bridge serializes a single JSON object
+            # from stdout, and any warning printed before it made it fail to
+            # deserialize (`scripts/commands/tools.rs` deserializes the whole
+            # output).
             print(f"[AcoustID] {message}", file=sys.stderr, flush=True)
     
     def _get_api_key(self) -> Optional[str]:

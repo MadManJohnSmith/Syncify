@@ -1,5 +1,5 @@
-// Tinte Camaleón: extrae el matiz dominante de la carátula y lo publica en
-// --tint-h (matiz) y --tint-k (intensidad) sobre <html>.
+// Chameleon tint: extracts the dominant hue from the cover art and publishes it
+// as --tint-h (hue) and --tint-k (intensity) on <html>.
 import { ref } from "vue";
 
 const hueCache = new Map<string, number>();
@@ -11,11 +11,11 @@ function loadIntensity() {
   try {
     const v = localStorage.getItem("syncify.tint");
     if (v !== null) tintIntensity.value = Math.min(1, Math.max(0, Number(v) || 0));
-    // Aplica la intensidad persistida al DOM: sin esto, tras reiniciar la app
-    // los tokens usarían --tint-k: 1 hasta que una carátula repusiera el tinte.
+    // Apply the persisted intensity to the DOM: without this, after an app
+    // restart the tokens would use --tint-k: 1 until a cover art restored the tint.
     document.documentElement.style.setProperty("--tint-k", String(tintIntensity.value));
   } catch {
-    /* sin almacenamiento: intensidad por defecto */
+    /* no storage: default intensity */
   }
 }
 loadIntensity();

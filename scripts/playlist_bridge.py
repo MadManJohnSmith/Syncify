@@ -450,14 +450,39 @@ def get_soundcloud_playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
 # LOCAL PLAYLIST & DATABASE INTEGRATION
 # ==============================================================================
 
+def _app_data_db_candidates() -> List[Path]:
+    """OS-native locations of the app profile database, per platform.
+
+    Mirrors Tauri's `app_local_data_dir` for the `com.syncify.app` identifier:
+    %LOCALAPPDATA% on Windows, ~/Library/Application Support on macOS and
+    XDG_DATA_HOME (~/.local/share) on Linux. The Rust host also publishes
+    `SYNCIFY_DB_PATH`, which find_syncify_db() prefers before these.
+    """
+    candidates: List[Path] = []
+
+    local_appdata = os.getenv("LOCALAPPDATA")
+    if local_appdata:
+        candidates.append(Path(local_appdata) / "com.syncify.app" / "syncify.db")
+
+    candidates.append(
+        Path.home() / "Library" / "Application Support" / "com.syncify.app" / "syncify.db"
+    )
+
+    xdg_data_home = os.getenv("XDG_DATA_HOME")
+    if xdg_data_home:
+        candidates.append(Path(xdg_data_home) / "com.syncify.app" / "syncify.db")
+    candidates.append(Path.home() / ".local" / "share" / "com.syncify.app" / "syncify.db")
+
+    return candidates
+
+
 def find_syncify_db() -> Optional[Path]:
     """Find syncify.db on the local machine."""
     env_path = os.getenv("SYNCIFY_DB_PATH")
     if env_path and Path(env_path).is_file():
         return Path(env_path)
 
-    candidates = [
-        Path.home() / ".local" / "share" / "com.syncify.app" / "syncify.db",
+    candidates = _app_data_db_candidates() + [
         SCRIPTS_DIR.parent / "src-tauri" / "data" / "syncify.db",
         SCRIPTS_DIR.parent / "data" / "syncify.db",
         SCRIPTS_DIR.parent / "syncify.db",

@@ -123,3 +123,12 @@ src-tauri/binaries/*
 
 # Archify: los borradores y recibos son locales; los HTML finales viven en docs/diagrams/
 .archify/
+
+# Copias locales de codigo y staging de herramientas: nunca son producto, y ese
+# tipo de fichero ya viajo una vez en el arbol (SYNC-AUD-074).
+*.bak
+src-tauri/.staging/
+
+# Guiones de flujo de los agentes (DSH): su sitio es .zcode/ o fuera del arbol.
+# Uno de ellos llego a la raiz del repositorio y solo se vio en la auditoria.
+*.dwf.ts

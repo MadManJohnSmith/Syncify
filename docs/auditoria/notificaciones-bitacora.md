@@ -164,13 +164,13 @@ no me corresponde: este carril no entra en `src-tauri/tests/`.
 
 ## 5. Nota sobre el plan v1
 
-`docs/PLAN-Correccion-168.md:36` afirma para NT-01: *"Ninguna notificación
+`docs/historico/PLAN-Correccion-168.md:36` afirma para NT-01: *"Ninguna notificación
 tiene acción al hacer clic: al pulsarla solo se marca como leída"* con
 evidencia `App.vue:291`. **He verificado esa evidencia y es correcta.** No es
 una de las afirmaciones falsas del plan v1.
 
 Donde el plan y el informe original **se quedan cortos**:
-- El informe (`docs/Errores-Pruebas-2026-10-08.md:230`) atribuye el bombard a
+- El informe (`docs/historico/Errores-Pruebas-2026-10-08.md:230`) atribuye el bombard a
   inicio y contador; el inicio **no** aparece como popup en el flujo inspeccionado,
   y el contador **puede** ser popup agregado o badge/menú (H6).
 - El informe no menciona `"Download Complete"` × N, que es el mayor (H1).

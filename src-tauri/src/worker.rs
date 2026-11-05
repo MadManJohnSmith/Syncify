@@ -224,6 +224,81 @@ pub fn download_operation_type(service: Option<&str>) -> syncify_core_domain::Op
     }
 }
 
+/// Punto 3: ¿procede intentar una resolución viva por ISRC cuando el resolver
+/// no encontró ninguna fuente descargable?
+///
+/// Solo cuando el fallo ES "sin fuente" (cualquier otro error del resolver no
+/// se disfraza de ello), hay ISRC que buscar y la fila permite sustituir de
+/// proveedor. Con `allow_fallback=false` una fuente recién insertada de otro
+/// servicio no podría usarse igualmente, así que la búsqueda viva sería trabajo
+/// regalado y el fallo debe seguir siendo inmediato.
+fn should_live_resolve_missing_source(
+    error: &crate::download::ResolutionError,
+    isrc_present: bool,
+    allow_fallback: bool,
+    smart_studio: bool,
+) -> bool {
+    isrc_present
+        && (allow_fallback || smart_studio)
+        && matches!(
+            error,
+            crate::download::ResolutionError::NoDownloadableSource { .. }
+        )
+}
+
+/// Punto 3: resuelve una fuente viva por ISRC con el core verificado del
+/// preflight (S197: Tidal y luego Qobuz, coincidencia de identidad obligatoria)
+/// y, si persistió una fila en `track_sources`, recalcula el plan UNA vez.
+///
+/// Devuelve `None` — sin inventar fuente — cuando no hay ISRC, no hay
+/// coincidencia verificada o el plan sigue sin candidato tras persistir la
+/// fila.
+async fn resolve_plan_with_live_isrc(
+    db: &SqlitePool,
+    track_id: i64,
+    meta: &TrackMeta,
+    intent: &crate::download::DownloadIntent,
+) -> Option<crate::download::DownloadPlan> {
+    let isrc = meta
+        .isrc
+        .as_deref()
+        .map(str::trim)
+        .filter(|isrc| !isrc.is_empty())?;
+    let expected = crate::download::identity::IdentityCandidate::new(
+        meta.title.clone().unwrap_or_default(),
+        meta.artist_name.clone().unwrap_or_default(),
+        meta.duration_ms.unwrap_or(0),
+    );
+    let service =
+        crate::commands::queue::s197_insert_live_isrc_source(db, track_id, isrc, &expected).await?;
+
+    match crate::download::resolve_download_plan(
+        db,
+        intent,
+        &crate::download::ResolutionExclusions::default(),
+    )
+    .await
+    {
+        Ok(plan) => {
+            tracing::info!(
+                track_id,
+                service = %service,
+                "[WF-RES-01] Live ISRC resolution persisted a source; download plan re-resolved"
+            );
+            Some(plan)
+        }
+        Err(e) => {
+            tracing::warn!(
+                track_id,
+                service = %service,
+                plan_error = ?e,
+                "[WF-RES-01] Live ISRC resolution persisted a source but the plan still found no candidate"
+            );
+            None
+        }
+    }
+}
+
 /// Metadata needed to create a download request
 #[derive(Debug, FromRow)]
 struct TrackMeta {
@@ -1475,75 +1550,154 @@ impl DownloadWorker {
             locked_track_source_id,
             preferred_account_id: None,
         };
-        let (quality, resolution_plan) = match crate::download::resolve_download_plan(
-            &self.db,
-            &resolver_intent,
-            &crate::download::ResolutionExclusions::default(),
-        )
-        .await
-        {
-            Ok(plan) => {
-                let quality = plan.quality.effective.clone();
-                // Registro libre de credenciales: pista, cuenta cuando se
-                // resolvió, calidad e identidad. Sin token ni payloads.
-                if let Some(log) = plan.log(0) {
-                    if let Some(account_id) = log.account_id {
-                        tracing::info!(
-                            queue_id,
-                            canonical_track_id = log.canonical_track_id,
-                            service = %log.service_name,
-                            service_track_id = %log.service_track_id,
-                            account_id,
-                            effective_quality = %log.effective_quality,
-                            candidate_tier = %log.candidate_tier,
-                            alternatives = plan.candidates.len().saturating_sub(1),
-                            "[WF-RES-01] Resolved download plan (single decision)"
-                        );
+        let (quality, resolution_plan, live_dispatch_identity) =
+            match crate::download::resolve_download_plan(
+                &self.db,
+                &resolver_intent,
+                &crate::download::ResolutionExclusions::default(),
+            )
+            .await
+            {
+                Ok(plan) => {
+                    let quality = plan.quality.effective.clone();
+                    // Registro libre de credenciales: pista, cuenta cuando se
+                    // resolvió, calidad e identidad. Sin token ni payloads.
+                    if let Some(log) = plan.log(0) {
+                        if let Some(account_id) = log.account_id {
+                            tracing::info!(
+                                queue_id,
+                                canonical_track_id = log.canonical_track_id,
+                                service = %log.service_name,
+                                service_track_id = %log.service_track_id,
+                                account_id,
+                                effective_quality = %log.effective_quality,
+                                candidate_tier = %log.candidate_tier,
+                                alternatives = plan.candidates.len().saturating_sub(1),
+                                "[WF-RES-01] Resolved download plan (single decision)"
+                            );
+                        } else {
+                            tracing::info!(
+                                queue_id,
+                                canonical_track_id = log.canonical_track_id,
+                                service = %log.service_name,
+                                service_track_id = %log.service_track_id,
+                                effective_quality = %log.effective_quality,
+                                candidate_tier = %log.candidate_tier,
+                                "[WF-RES-01] Resolved download plan (no account bound)"
+                            );
+                        }
+                    }
+                    (quality, Some(plan), None)
+                }
+                Err(resolution_error) => {
+                    // Punto 3 — resolución viva verificada: el resolver solo lee
+                    // `track_sources`. Una pista catálogo-solo (Spotify) con ISRC
+                    // puede existir en Qobuz/Tidal sin fila local, y eso NO es "no
+                    // hay fuente" hasta comprobarlo. Antes de marcar el ítem como
+                    // fallo permanente se intenta UNA resolución viva por ISRC (el
+                    // mismo core verificado del preflight S197) y, si persiste una
+                    // fuente, se vuelve a resolver el plan. Sin ISRC o sin
+                    // coincidencia verificada no se inventa nada: el fallo sigue
+                    // siendo el del resolver.
+                    let live_plan = if should_live_resolve_missing_source(
+                        &resolution_error,
+                        track_meta
+                            .as_ref()
+                            .and_then(|meta| meta.isrc.as_deref())
+                            .is_some_and(|isrc| !isrc.trim().is_empty()),
+                        is_allowed_fallback,
+                        is_smart_studio,
+                    ) {
+                        match track_meta.as_ref() {
+                            Some(meta) => {
+                                resolve_plan_with_live_isrc(
+                                    &self.db,
+                                    track_id,
+                                    meta,
+                                    &resolver_intent,
+                                )
+                                .await
+                            }
+                            None => None,
+                        }
                     } else {
-                        tracing::info!(
+                        None
+                    };
+
+                    if let Some(plan) = live_plan {
+                        let quality = plan.quality.effective.clone();
+                        let dispatch_identity = plan
+                            .primary()
+                            .map(|c| (c.service_name.clone(), c.service_track_id.clone()));
+                        if let Some(log) = plan.log(0) {
+                            if let Some(account_id) = log.account_id {
+                                tracing::info!(
+                                    queue_id,
+                                    canonical_track_id = log.canonical_track_id,
+                                    service = %log.service_name,
+                                    service_track_id = %log.service_track_id,
+                                    account_id,
+                                    effective_quality = %log.effective_quality,
+                                    candidate_tier = %log.candidate_tier,
+                                    alternatives = plan.candidates.len().saturating_sub(1),
+                                    "[WF-RES-01] Resolved download plan (live ISRC resolution)"
+                                );
+                            } else {
+                                tracing::info!(
+                                    queue_id,
+                                    canonical_track_id = log.canonical_track_id,
+                                    service = %log.service_name,
+                                    service_track_id = %log.service_track_id,
+                                    effective_quality = %log.effective_quality,
+                                    candidate_tier = %log.candidate_tier,
+                                    alternatives = plan.candidates.len().saturating_sub(1),
+                                    "[WF-RES-01] Resolved download plan (live ISRC resolution, no account bound)"
+                                );
+                            }
+                        }
+                        (quality, Some(plan), dispatch_identity)
+                    } else if s_track_id
+                        .as_deref()
+                        .is_some_and(|id| !id.trim().is_empty())
+                    {
+                        // A queued item with an explicit provider identity must never
+                        // bypass failed identity/account/quality resolution and search
+                        // for a different edition through the legacy ad-hoc path.
+                        let reason = format!("{:?}", resolution_error);
+                        self.mark_permanent_failure(queue_id, "failed", &reason)
+                            .await;
+                        return;
+                    } else {
+                        // Only a genuinely ad-hoc item without an identity can use
+                        // the legacy resolver until every ED-04 boundary is verified.
+                        let legacy = self
+                            .resolve_effective_download_quality(
+                                queue_id,
+                                s_name.as_deref(),
+                                q_pref.as_deref(),
+                            )
+                            .await;
+                        tracing::debug!(
                             queue_id,
-                            canonical_track_id = log.canonical_track_id,
-                            service = %log.service_name,
-                            service_track_id = %log.service_track_id,
-                            effective_quality = %log.effective_quality,
-                            candidate_tier = %log.candidate_tier,
-                            "[WF-RES-01] Resolved download plan (no account bound)"
+                            canonical_track_id = track_id,
+                            reason = %format!("{:?}", resolution_error),
+                            "[WF-RES-01] Resolver produced no plan; falling back to legacy quality resolution"
                         );
+                        (legacy, None, None)
                     }
                 }
-                (quality, Some(plan))
-            }
-            Err(resolution_error) => {
-                // A queued item with an explicit provider identity must never
-                // bypass failed identity/account/quality resolution and search
-                // for a different edition through the legacy ad-hoc path.
-                if s_track_id
-                    .as_deref()
-                    .is_some_and(|id| !id.trim().is_empty())
-                {
-                    let reason = format!("{:?}", resolution_error);
-                    self.mark_permanent_failure(queue_id, "failed", &reason)
-                        .await;
-                    return;
-                }
-                // Only a genuinely ad-hoc item without an identity can use
-                // the legacy resolver until every ED-04 boundary is verified.
-                let legacy = self
-                    .resolve_effective_download_quality(
-                        queue_id,
-                        s_name.as_deref(),
-                        q_pref.as_deref(),
-                    )
-                    .await;
-                tracing::debug!(
-                    queue_id,
-                    canonical_track_id = track_id,
-                    reason = %format!("{:?}", resolution_error),
-                    "[WF-RES-01] Resolver produced no plan; falling back to legacy quality resolution"
-                );
-                (legacy, None)
-            }
+            };
+
+        // Punto 3: cuando el plan nació de una resolución viva, la petición debe
+        // viajar con ESA identidad (servicio + edición del candidato primario),
+        // no con la de la fila catálogo-solo: el orquestador despacha por
+        // `service_name` y el adaptador nativo exige que petición y plan
+        // coincidan. Sin resolución viva, la identidad de la fila no se toca.
+        let (s_name, s_track_id) = match live_dispatch_identity {
+            Some((service_name, service_track_id)) => (Some(service_name), Some(service_track_id)),
+            None => (s_name, s_track_id),
         };
+
         let output_dir = self.resolve_download_output_dir().await;
         let operation_id = format!("op-{}", uuid::Uuid::new_v4());
 
@@ -2985,5 +3139,46 @@ mod embed_preferences_tests {
             .await
             .unwrap();
         assert!(worker.resolve_embed_preferences().await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod live_isrc_resolution_tests {
+    use super::*;
+
+    /// Punto 3: la resolución viva solo corre para el fallo "sin fuente", con
+    /// ISRC buscable y sustitución de proveedor permitida. Cualquier otra
+    /// combinación conserva el comportamiento previo (fallo honesto).
+    #[test]
+    fn live_resolution_requires_missing_source_isrc_and_fallback_permission() {
+        let missing = crate::download::ResolutionError::NoDownloadableSource {
+            reason: "No available source with a usable account for this track".to_string(),
+        };
+        assert!(should_live_resolve_missing_source(
+            &missing, true, true, false
+        ));
+        assert!(should_live_resolve_missing_source(
+            &missing, true, false, true
+        ));
+        // Sin ISRC no hay nada que buscar en el catálogo: no se inventa fuente.
+        assert!(!should_live_resolve_missing_source(
+            &missing, false, true, true
+        ));
+        // Sin sustitución permitida, una fuente de otro servicio no se usaría.
+        assert!(!should_live_resolve_missing_source(
+            &missing, true, false, false
+        ));
+    }
+
+    /// Otros fallos del resolver (DB, ambigüedad, cuentas...) no se disfrazan de
+    /// "sin fuente": la búsqueda viva no es un comodín para todo error.
+    #[test]
+    fn live_resolution_does_not_cover_other_resolution_errors() {
+        let db_error = crate::download::ResolutionError::DatabaseError {
+            reason: "reading track_sources: database is locked".to_string(),
+        };
+        assert!(!should_live_resolve_missing_source(
+            &db_error, true, true, true
+        ));
     }
 }

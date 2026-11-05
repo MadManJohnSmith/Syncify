@@ -272,10 +272,10 @@ export async function syncPlaylists(service?: string): Promise<SyncPlaylistsResu
 }
 
 // ==============================================
-// S201 - EXPORT M3U «SOLO LAS QUE YA TENGO» (Modo A)
+// S201 - M3U EXPORT "ONLY THE ONES I ALREADY HAVE" (Mode A)
 // ==============================================
 
-/** Pista que no pudo verificarse en disco (lista de faltantes). */
+/** Track that could not be verified on disk (missing list). */
 export interface MissingPlaylistFile {
     track_id: number;
     title: string;
@@ -284,7 +284,7 @@ export interface MissingPlaylistFile {
     reason: string;
 }
 
-/** Contrato del comando export_playlist_m3u (conteos reales, sin inventar). */
+/** Contract of the export_playlist_m3u command (real counts, no invention). */
 export interface PlaylistM3uExportResult {
     playlist_id: number;
     playlist_name: string;
@@ -298,10 +298,10 @@ export interface PlaylistM3uExportResult {
 }
 
 /**
- * S201 Modo A «Solo las que ya tengo»: verifica con stat() real los archivos
- * locales de las pistas de la playlist y exporta un .m3u con SOLO las
- * verificadas. Con filePath escribe el archivo en backend; sin filePath
- * devuelve solo contenido y conteos (dry-run).
+ * S201 Mode A "Only the ones I already have": verifies the playlist tracks'
+ * local files with a real stat() and exports an .m3u with ONLY the
+ * verified ones. With filePath it writes the file in the backend; without filePath
+ * it returns only content and counts (dry-run).
  */
 export async function exportPlaylistM3u(playlistId: number, filePath?: string | null): Promise<PlaylistM3uExportResult> {
     const raw = await invokeCommand<unknown>('export_playlist_m3u', {
@@ -424,22 +424,22 @@ export async function sanitizePlaylists(): Promise<PlaylistSanitizationStats> {
 }
 
 // ==============================================
-// FE-6: IMPORT DE PLAYLISTS DESDE ARCHIVO
+// FE-6: PLAYLIST IMPORT FROM FILE
 // ==============================================
 
-/** Pista del archivo que no se pudo enlazar (camelCase, matches Rust UnmatchedImportedEntry). */
+/** Track from the file that could not be linked (camelCase, matches Rust UnmatchedImportedEntry). */
 export interface UnmatchedImportedEntry {
     title: string;
     artist: string | null;
 }
 
-/** Resultado del import desde archivo (camelCase, matches Rust ImportPlaylistFromFileResult). */
+/** Result of the import from a file (camelCase, matches Rust ImportPlaylistFromFileResult). */
 export interface ImportPlaylistFromFileResult {
     playlistId: number;
     playlistName: string;
-    /** Entradas totales parseadas del archivo. */
+    /** Total entries parsed from the file. */
     totalEntries: number;
-    /** Entradas enlazadas a pistas existentes. */
+    /** Entries linked to existing tracks. */
     matchedCount: number;
     unmatched: UnmatchedImportedEntry[];
 }

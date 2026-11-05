@@ -85,7 +85,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { settingsApi, setGlobalMaxQuality } from '@/api/settings'
-// R13: confirm unificado (antes plugin-dialog nativo, fuera de la ventana).
+// R13: unified confirm (previously the native plugin-dialog, outside the window).
 import { confirm } from '@/composables/useToast'
 import { useToast } from '@/composables/useToast'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
@@ -301,7 +301,7 @@ async function resetCategoryDefaults() {
 
 const settingsCategories = [
   { id: 'general', name: 'General', icon: 'tune', desc: 'Application behavior and storage paths' },
-  { id: 'appearance', name: 'Apariencia', icon: 'palette', desc: 'Temas de color y tinte de la interfaz' },
+  { id: 'appearance', name: 'Appearance', icon: 'palette', desc: 'Color themes and interface tint' },
   { id: 'services', name: 'Services & Priorities', icon: 'hub', desc: 'Manage connections and download order' },
   { id: 'quality', name: 'Audio Quality', icon: 'high_quality', desc: 'Format preferences and limits' },
   { id: 'metadata', name: 'Metadata & Tags', icon: 'tag', desc: 'Tagging sources and rules' },

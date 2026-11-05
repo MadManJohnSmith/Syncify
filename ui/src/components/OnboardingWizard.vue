@@ -381,10 +381,10 @@
               </div>
             </div>
             
-            <!-- Persistence failure (ítem 44): si la calidad o las
-                 preferencias de importación no se guardaron de verdad vía la
-                 API de settings, el asistente NO se cierra y no se marca el
-                 onboarding como completado hasta que el reintento confirme. -->
+            <!-- Persistence failure (item 44): if quality or import
+                 preferences were not really saved through the settings
+                 API, the wizard does NOT close and onboarding is not marked
+                 as completed until the retry confirms. -->
             <div
               v-if="setupSaveErrors.length > 0"
               class="save-errors mb-6 max-w-md mx-auto p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-left"
@@ -558,9 +558,9 @@ const importPlanLabel = computed(() => {
 // Step 5: Completion
 const takeTour = ref(false)
 const autoUpdate = ref(true)
-// Ítem 44: estado de guardado del paso final. Mientras `isSavingSetup` el
-// botón espera la confirmación de la API de settings; `setupSaveErrors` lista
-// lo que NO se guardó para que el usuario reintente antes de cerrar.
+// Item 44: save state of the final step. While `isSavingSetup` the button
+// waits for the settings API confirmation; `setupSaveErrors` lists what
+// did NOT save so the user can retry before closing.
 const isSavingSetup = ref(false)
 const setupSaveErrors = ref<string[]>([])
 
@@ -959,7 +959,7 @@ async function connectService(service: OnboardingService) {
 
 /**
  * Persists every onboarding choice, waits for the settings API to confirm and
- * ONLY THEN closes the wizard (ítem 44). If quality or import preferences
+ * ONLY THEN closes the wizard (item 44). If quality or import preferences
  * did not really save, the wizard stays open, shows what failed and lets the
  * user retry: `complete` is never emitted with unconfirmed settings, so
  * App.vue cannot mark the onboarding as done.

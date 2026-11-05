@@ -88,7 +88,7 @@
             :disabled="isImporting"
             class="px-4 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-surface-highlight dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg text-xs font-semibold transition-colors"
           >
-            Cancelar
+            Cancel
           </button>
         </div>
       </div>
@@ -101,7 +101,7 @@
       </div>
     </div>
 
-    <!-- S152A: Physical Library Integrity & Reconciliation Safety Gate (BR-03: Explicación amigable) -->
+    <!-- S152A: Physical Library Integrity & Reconciliation Safety Gate (BR-03: friendly explanation) -->
     <div class="p-6 rounded-2xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-sm space-y-6">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-3">
@@ -118,7 +118,7 @@
         </span>
       </div>
 
-      <!-- Ayuda contextual para el usuario (BR-03) -->
+      <!-- Contextual help for the user (BR-03) -->
       <div class="p-4 rounded-xl bg-amber-500/5 border border-amber-500/20 text-xs text-text-secondary space-y-2">
         <div class="flex items-center gap-1.5 font-bold text-gray-900 dark:text-white">
           <span class="material-symbols-outlined text-[16px] text-amber-500">help</span>

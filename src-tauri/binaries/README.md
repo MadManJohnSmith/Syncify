@@ -14,7 +14,8 @@ static builds and place them here automatically. For local production builds
 
 ```bash
 python3 scripts/dependency_manager.py   # downloads to bin/
-bash scripts/prepare_bundled_binaries.sh
+bash scripts/prepare_bundled_binaries.sh          # Linux
+powershell -File scripts/prepare_bundled_binaries.ps1   # Windows
 ```
 
 Without these files `tauri build` fails; `tauri dev` and `cargo check/test`

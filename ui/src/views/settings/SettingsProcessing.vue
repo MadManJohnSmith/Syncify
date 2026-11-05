@@ -11,8 +11,8 @@
       <div class="p-3.5 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-start gap-3 text-xs text-text-secondary">
         <span class="material-symbols-outlined text-blue-500 text-[20px] shrink-0 mt-0.5">info</span>
         <div>
-          <span class="font-medium text-gray-900 dark:text-white block mb-0.5">¿Cuándo usar el procesamiento de audio?</span>
-          <span>Por defecto viene desactivado porque Syncify prioriza descargas bit-perfect directas de las plataformas. Actívalo solo si tu reproductor portátil o equipo de sonido no reproduce formatos avanzados (DSD, FLAC 24-bit, MQA) y necesitas conversión a MP3 o AAC estándar.</span>
+          <span class="font-medium text-gray-900 dark:text-white block mb-0.5">When should you use audio processing?</span>
+          <span>Disabled by default because Syncify prioritizes direct bit-perfect downloads from the platforms. Enable it only if your portable player or sound system cannot play advanced formats (DSD, 24-bit FLAC, MQA) and you need conversion to standard MP3 or AAC.</span>
         </div>
       </div>
 
@@ -26,7 +26,7 @@
           <BaseToggle
             title="Enable transcoding"
             subtitle="Convert rare or hi-res formats to standard consumer formats (MP3/AAC/FLAC)"
-            tooltip="Activa la transcodificación con FFmpeg. Si se desactiva, los archivos se conservan en su formato nativo tal como se descargaron."
+            tooltip="Enables transcoding with FFmpeg. When disabled, files are kept in their native format exactly as downloaded."
             :checked="audioProcessing.transcode_enabled"
             @click="toggleTranscoding"
           />
@@ -38,11 +38,11 @@
                   <label class="block text-xs font-medium text-gray-600 dark:text-gray-400">Target format</label>
                   <span
                     class="relative group/fmt-tip inline-flex items-center"
-                    title="Formato destino al que convertir las pistas."
+                    title="Target format to convert tracks to."
                   >
                     <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 dark:bg-surface-highlight text-gray-600 dark:text-gray-300 text-[10px] font-bold cursor-help">?</span>
                     <span role="tooltip" class="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 hidden group-hover/fmt-tip:block z-40 w-52 p-2 text-xs font-normal text-white bg-gray-900 dark:bg-gray-800 rounded-lg shadow-xl pointer-events-none">
-                      Formato final del archivo codificado (MP3, AAC, FLAC, Opus).
+                      Final format of the encoded file (MP3, AAC, FLAC, Opus).
                     </span>
                   </span>
                 </div>
@@ -63,11 +63,11 @@
                   <label class="block text-xs font-medium text-gray-600 dark:text-gray-400">Bitrate</label>
                   <span
                     class="relative group/br-tip inline-flex items-center"
-                    title="Tasa de bits objetivo para formatos con pérdida (CBR)."
+                    title="Target bitrate for lossy formats (CBR)."
                   >
                     <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 dark:bg-surface-highlight text-gray-600 dark:text-gray-300 text-[10px] font-bold cursor-help">?</span>
                     <span role="tooltip" class="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 hidden group-hover/br-tip:block z-40 w-52 p-2 text-xs font-normal text-white bg-gray-900 dark:bg-gray-800 rounded-lg shadow-xl pointer-events-none">
-                      Bitrate de compresión. 320 kbps es la máxima calidad para MP3.
+                      Compression bitrate. 320 kbps is the maximum quality for MP3.
                     </span>
                   </span>
                 </div>
@@ -90,21 +90,21 @@
         <div class="p-4 bg-white dark:bg-surface-dark rounded-xl border border-gray-200 dark:border-border-dark space-y-4">
           <div class="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-border-dark">
             <h4 class="text-sm font-semibold text-gray-900 dark:text-white">Embedding & Tags</h4>
-            <span class="text-[11px] text-text-secondary">Metadatos físicos dentro del audio</span>
+            <span class="text-[11px] text-text-secondary">Physical metadata inside the audio</span>
           </div>
 
           <BaseToggle
             title="Embed lyrics in audio files"
-            subtitle="Incrustar letras sincronizadas y no sincronizadas (LYRICS / UNSYNCEDLYRICS)"
-            tooltip="Incrusta letras dentro del contenedor de audio. Las descargas directas FLAC ya integran las letras disponibles automáticamente; este ajuste controla la incrustación en conversiones y tareas por lotes."
+            subtitle="Embed synced and unsynced lyrics (LYRICS / UNSYNCEDLYRICS)"
+            tooltip="Embeds lyrics inside the audio container. Direct FLAC downloads already include available lyrics automatically; this setting controls embedding in conversions and batch jobs."
             :checked="audioProcessing.embed_lyrics"
             @click="toggleEmbedLyrics"
           />
 
           <BaseToggle
             title="Embed album artwork"
-            subtitle="Incrustar carátula en los bloques de imagen de los archivos descargados"
-            tooltip="Incrusta la imagen de portada en METADATA_BLOCK_PICTURE. Por estándar de Symfonium se preservan imágenes WebP/JPEG optimizadas hasta un límite seguro de 800 KB."
+            subtitle="Embed cover art in the image blocks of downloaded files"
+            tooltip="Embeds the cover image in METADATA_BLOCK_PICTURE. Following the Symfonium standard, optimized WebP/JPEG images are preserved up to a safe limit of 800 KB."
             :checked="audioProcessing.embed_artwork"
             @click="toggleEmbedArtwork"
           />
@@ -115,11 +115,11 @@
                 <label class="font-medium text-gray-700 dark:text-gray-300">Max artwork resolution</label>
                 <span
                   class="relative group/art-tip inline-flex items-center"
-                  title="Resolución máxima deseada para la carátula embebida."
+                  title="Maximum desired resolution for the embedded cover art."
                 >
                   <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 dark:bg-surface-highlight text-gray-600 dark:text-gray-300 text-[10px] font-bold cursor-help">?</span>
                   <span role="tooltip" class="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 hidden group-hover/art-tip:block z-40 w-56 p-2 text-xs font-normal text-white bg-gray-900 dark:bg-gray-800 rounded-lg shadow-xl pointer-events-none">
-                    Dimensión de ancho/alto máxima deseada. Durante la descarga nativa, Syncify obtiene la portada original de alta resolución y limita el peso a 800 KB para máxima compatibilidad móvil.
+                    Maximum desired width/height dimension. During native download, Syncify fetches the original high-resolution cover and caps the file size at 800 KB for maximum mobile compatibility.
                   </span>
                 </span>
               </div>
@@ -142,10 +142,10 @@
               <h4 class="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
                 <span>ReplayGain & Normalization</span>
                 <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                  Post-Procesamiento
+                  Post-Processing
                 </span>
               </h4>
-              <p class="text-xs text-text-secondary mt-0.5">Calcula metadatos de ganancia para evitar saltos bruscos de volumen entre canciones sin alterar la calidad del audio.</p>
+              <p class="text-xs text-text-secondary mt-0.5">Calculates gain metadata to avoid abrupt volume jumps between songs without altering audio quality.</p>
             </div>
           </div>
 
@@ -154,11 +154,11 @@
               <label class="block text-xs font-medium text-gray-600 dark:text-gray-400">ReplayGain mode</label>
               <span
                 class="relative group/rg-tip inline-flex items-center"
-                title="Modo de cálculo para las etiquetas de ReplayGain."
+                title="Calculation mode for the ReplayGain tags."
               >
                 <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 dark:bg-surface-highlight text-gray-600 dark:text-gray-300 text-[10px] font-bold cursor-help">?</span>
                 <span role="tooltip" class="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 hidden group-hover/rg-tip:block z-40 w-56 p-2 text-xs font-normal text-white bg-gray-900 dark:bg-gray-800 rounded-lg shadow-xl pointer-events-none">
-                  Off: sin normalización. Track: normaliza cada pista individualmente. Album: preserva la dinámica original del álbum completo. Both: escribe ambas etiquetas.
+                  Off: no normalization. Track: normalizes each track individually. Album: preserves the original dynamics of the full album. Both: writes both tags.
                 </span>
               </span>
             </div>
@@ -167,7 +167,7 @@
               @change="setReplayGainMode(getEventValue($event))"
               class="w-full px-3 py-1.5 bg-gray-50 dark:bg-surface-highlight border border-gray-300 dark:border-gray-600 rounded-lg text-xs text-gray-900 dark:text-white"
             >
-              <option value="off">Off (desactivado)</option>
+              <option value="off">Off (disabled)</option>
               <option value="track">Track gain</option>
               <option value="album">Album gain</option>
               <option value="both">Both (Track + Album)</option>
@@ -180,11 +180,11 @@
                 <label class="font-medium text-gray-700 dark:text-gray-300">Target loudness</label>
                 <span
                   class="relative group/lufs-tip inline-flex items-center"
-                  title="Nivel de sonoridad integrado objetivo según estándar EBU R128."
+                  title="Target integrated loudness level per the EBU R128 standard."
                 >
                   <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 dark:bg-surface-highlight text-gray-600 dark:text-gray-300 text-[10px] font-bold cursor-help">?</span>
                   <span role="tooltip" class="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 hidden group-hover/lufs-tip:block z-40 w-56 p-2 text-xs font-normal text-white bg-gray-900 dark:bg-gray-800 rounded-lg shadow-xl pointer-events-none">
-                    Valor estándar EBU R128 es -18 o -14 LUFS. Los valores más cercanos a 0 son más altos pero reducen el rango dinámico.
+                    The EBU R128 standard value is -18 or -14 LUFS. Values closer to 0 are louder but reduce dynamic range.
                   </span>
                 </span>
               </div>

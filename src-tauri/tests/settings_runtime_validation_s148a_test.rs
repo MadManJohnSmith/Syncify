@@ -294,7 +294,15 @@ async fn test_runtime_validation_suite_s148a() {
         .await
         .expect("Fetching effective settings from Sync view");
 
-    assert_eq!(effective_downloads, effective_sync);
+    // `free_space_bytes` se lee del disco en cada llamada: bajo la suite completa
+    // puede cambiar entre las dos (se observó 85 880 vs 85 881) y hacía fallar la
+    // comparación por un byte. Se compara todo lo demás, que es lo que debe
+    // coincidir entre las dos vistas.
+    let mut desde_descargas = effective_downloads.clone();
+    let mut desde_sync = effective_sync.clone();
+    desde_descargas.free_space_bytes = 0;
+    desde_sync.free_space_bytes = 0;
+    assert_eq!(desde_descargas, desde_sync);
     assert_eq!(effective_downloads.max_concurrent_downloads, 4);
     assert_eq!(effective_downloads.download_path, valid_path);
     assert_eq!(effective_downloads.fallback_action, "skip");

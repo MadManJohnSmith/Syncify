@@ -346,7 +346,7 @@ async function handleDisconnect(serviceIdOrName?: string | number, accountId?: n
   }
 
   try {
-    // Desconectar retains the account and its library; deletion is separate.
+    // Disconnect retains the account and its library; deletion is separate.
     await logoutService(name, id)
     await loadServicesAndAccounts()
   } catch (err) {

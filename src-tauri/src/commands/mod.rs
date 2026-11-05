@@ -1,5 +1,7 @@
 //! Syncify Tauri Commands - organized as formal Rust submodules
 
+pub mod editions;
+pub use editions::*;
 pub mod types;
 pub use types::*;
 
@@ -50,6 +52,9 @@ pub use notifications::*;
 
 pub mod playback;
 pub use playback::*;
+
+pub mod player;
+pub use player::*;
 
 pub mod playlists;
 pub use playlists::*;

@@ -14,6 +14,7 @@ base64 = "0.22"
 urlencoding = "2"
 anyhow = "1"
 syncify-core-domain = { path = "../syncify-core-domain" }
+syncify-fmp4-flac = { path = "../syncify-fmp4-flac" }
 syncify-flac-writer = { path = "../syncify-flac-writer" }
 
 [dev-dependencies]

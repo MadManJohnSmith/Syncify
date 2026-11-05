@@ -90,6 +90,11 @@ impl TidalOrchestratorExt for TidalDownloader {
                     Some(request.album_name.clone())
                 },
                 hint_isrc: request.isrc.clone(),
+                hint_duration_ms: if request.duration_ms > 0 {
+                    Some(request.duration_ms)
+                } else {
+                    None
+                },
                 hint_track_number: if request.track_number > 0 {
                     Some(request.track_number)
                 } else {
@@ -168,7 +173,12 @@ impl TidalOrchestratorExt for TidalDownloader {
                     )
                 } else if let Some(ref isrc) = request.isrc {
                     let t = self
-                        .search_by_isrc(isrc, (request.duration_ms / 1000) as i32)
+                        .search_by_isrc_verified(
+                            isrc,
+                            &request.track_name,
+                            &request.artist_name,
+                            (request.duration_ms / 1000) as i32,
+                        )
                         .await?;
                     (
                         t.id,
@@ -201,7 +211,12 @@ impl TidalOrchestratorExt for TidalDownloader {
                 }
             } else if let Some(ref isrc) = request.isrc {
                 let t = match self
-                    .search_by_isrc(isrc, (request.duration_ms / 1000) as i32)
+                    .search_by_isrc_verified(
+                        isrc,
+                        &request.track_name,
+                        &request.artist_name,
+                        (request.duration_ms / 1000) as i32,
+                    )
                     .await
                 {
                     Ok(t) => t,

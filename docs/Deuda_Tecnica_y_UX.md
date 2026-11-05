@@ -1,5 +1,8 @@
 # Deuda técnica y de UX
 
+**Estado:** registro vivo de la deuda conocida (abierta, aceptada y cerrada).
+**Última revisión:** 2026-10-25 (nota de trazabilidad de esta cabecera).
+
 Registro vivo de la deuda conocida del proyecto. Es el documento al que apuntan
 `docs/PLAN_UNIFICACION_IMPORTACION.md` (Fase 4, entregable 3) y el núcleo
 `sync_soundcloud_likes_with_engine` de `src-tauri/src/commands/service.rs`.
@@ -8,6 +11,12 @@ Registro vivo de la deuda conocida del proyecto. Es el documento al que apuntan
 > pero **no existía en el árbol**: `workspace/` está en `.gitignore` y ningún
 > archivo bajo esa ruta llega a un checkout ni a CI (misma causa raíz que
 > SYNC-AUD-058 y SYNC-AUD-065). Esta es la versión versionada.
+>
+> Nota de trazabilidad (2026-10-25): el commit `b9559da`, citado en esta
+> cabecera y como evidencia de C-01/C-02, **no es resoluble en la historia
+> alcanzable del repositorio** (probablemente se perdió en una reescritura).
+> La evidencia de esas dos entradas queda sin anclaje de commit; el
+> comportamiento que describen está vigilado por las puertas de CI.
 
 ## Cómo se registra una entrada
 
@@ -15,8 +24,10 @@ Cada entrada dice **qué se observó**, **dónde** y **qué la cerraría**. Una
 entrada sin observación reproducible no entra aquí. Los riesgos aceptados se
 declaran como tales y no se reopened por reflejo.
 
-Última revisión: auditoría 73 ítems, entrada A-01 reescrita contra el árbol
-(2026-10-05) — el par `app_id`/`app_secret` está versionado en Python y en
+Última revisión: auditoría de pilares y reparación posterior (2026-10-19) —
+se abren D-05 a D-08 (subsistema de reproducción retirado, escrituras silenciosas,
+contrato de identidad por edición y funciones monstruo) y se cierran C-12 a C-18.
+Antes: auditoría 73 ítems, entrada A-01 reescrita contra el árbol (2026-10-05) — el par `app_id`/`app_secret` está versionado en Python y en
 Rust, no solo el `app_id`. Antes de eso: ítem 9.1 del plan post-auditoría
 (2026-10-02), que cierra D-02 y redefine D-01 y D-04 a la luz de las fases 4 y
 8. Y antes: `b9559da` + reparaciones de SYNC-AUD-062 a SYNC-AUD-071.
@@ -59,6 +70,8 @@ Rust, no solo el `app_id`. Antes de eso: ítem 9.1 del plan post-auditoría
 
 ### D-01 — Fase 3 implementada; falta verificarla contra las APIs reales
 
+- **Ejecución**: [#56](https://github.com/MadManJohnSmith/Syncify/issues/56) y [#57](https://github.com/MadManJohnSmith/Syncify/issues/57) (spec [#36](https://github.com/MadManJohnSmith/Syncify/issues/36)).
+
 - **Observado**: la Fase 3 del plan de unificación ya no está bloqueada en código.
   El brazo `"soundcloud"` de `perform_sync_service_with_emitter` pasa cada like por
   `sync_soundcloud_likes_with_engine` → `EnrichmentEngine`, con identidad canónica,
@@ -75,6 +88,8 @@ Rust, no solo el `app_id`. Antes de eso: ítem 9.1 del plan post-auditoría
   developer token de Apple Music—. Es una comprobación, no una implementación.
 
 ### D-04 — 4 de los 6 documentos de `docs/features/` siguen re-derivados solo por rutas
+
+- **Ejecución**: [#58](https://github.com/MadManJohnSmith/Syncify/issues/58), [#59](https://github.com/MadManJohnSmith/Syncify/issues/59), [#60](https://github.com/MadManJohnSmith/Syncify/issues/60) y [#61](https://github.com/MadManJohnSmith/Syncify/issues/61) (spec [#36](https://github.com/MadManJohnSmith/Syncify/issues/36)).
 
 - **Observado**: esta revisión re-derivó del código la narrativa de
   `docs/features/metadata-enrichment.md` y `docs/features/playlist-system.md`, que
@@ -109,6 +124,109 @@ hecha, y `docs/MATRIZ_PARIDAD_IMPORTACION.md` lo dice en cada fila afectada (⚠
   externa, y se convierte en deuda abierta solo si aparece trabajo que el equipo sí
   pueda hacer.
 
+## Deuda abierta accionable (auditoría de pilares, 2026-10-19)
+
+Las entradas de esta sección **no** están condicionadas a una entrada externa: son
+trabajo que el equipo puede hacer ya. Por eso no aparecen en la tabla de alcance
+condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
+
+### D-06 — Escrituras SQLx silenciosas
+
+- **Ejecución**: [#37](https://github.com/MadManJohnSmith/Syncify/issues/37), [#38](https://github.com/MadManJohnSmith/Syncify/issues/38) y [#39](https://github.com/MadManJohnSmith/Syncify/issues/39) (spec [#32](https://github.com/MadManJohnSmith/Syncify/issues/32)).
+
+- **Observado**: 243 `let _ = sqlx::query(...)` en producción (125 UPDATE, 82 INSERT,
+  11 DELETE). Una escritura puede fallar y la transacción confirmar sin rastro. Reparto:
+  `src-tauri/src/services/enrichment.rs` 45, `src-tauri/src/commands/service.rs` 28,
+  `src-tauri/src/services/qobuz.rs` 21.
+- **Corrección medida al migrar (2026-10-19)**: de esos 243, **18 terminan en
+  `.await.map_err(..)?`**, o sea que propagan el error y nunca fueron silencios (10 en
+  `commands/favorites.rs`, 8 en `services/tidal.rs`). Los silenciosos reales eran **225**.
+- **Frontera creada**: `crate::db::write_or_log(contexto, futuro)` en `src-tauri/src/db.rs`
+  concentra la política (registra con `tracing::warn!` y devuelve `Option`), con sus tests.
+  Las escrituras que deban abortar tendrán su variante cuando exista el primer llamador.
+- **Progreso**: 130 de los 225 silenciosos migrados a `crate::db::write_or_log` —
+  `commands/library.rs` 18, `services/enrichment.rs` 45 (los caminos calientes
+  `apply_to_database` 25 y `enrich_and_persist_sync_track` 19), `commands/favorites.rs` 9,
+  `services/tidal.rs` 9, `services/qobuz.rs` 21 y `commands/service.rs` 28. Los cinco
+  ficheros de mayor riesgo del plan quedan cubiertos; el ratchet baja de 243 a 113 (patrón
+  bruto; 95 silenciosos + 18 que propagan) y solo puede bajar.
+- **Lo que la frontera destapó (2026-10-19)**: en la primera prueba manual,
+  `context="enrich_and_persist_sync_track"` registró 51 fallos que antes eran
+  invisibles: `UNIQUE constraint failed: tracks.isrc`. Corregido en `c7325a7`
+  (ver D-07). Es el argumento de la frontera: no cambia el comportamiento, pero
+  convierte un fallo mudo en una línea de log accionable.
+- **Cierra**: migrar el resto por lotes (enrichment 45, service 28, qobuz 21, favorites 19,
+  tidal 17), un fichero por commit con su suite verde, y seguir bajando el baseline.
+
+### D-08 — Dos funciones monstruo
+
+- **Ejecución**: [#40](https://github.com/MadManJohnSmith/Syncify/issues/40) y [#41](https://github.com/MadManJohnSmith/Syncify/issues/41) (spec [#32](https://github.com/MadManJohnSmith/Syncify/issues/32)).
+
+- **Observado**: `perform_sync_service_with_emitter_inner`
+  (`src-tauri/src/commands/service.rs:3285`) mide 4 556 líneas y
+  `resolve_token_for_account` (`src-tauri/src/download/qobuz.rs:417`) 2 860; el censo del
+  hub da mediana 23 líneas y máximo 4 559.
+- **Medido de nuevo (2026-10-19, tras migrar D-06)**: la función ocupa las líneas
+  3291-7836 de `src-tauri/src/commands/service.rs`, **4 546 líneas**, con 214 `if`, 88
+  `match`, 40 `for` y 122 `.await`; los brazos se distinguen por servicio (qobuz 16
+  comparaciones, tidal 13, spotify 10, deezer 9, soundcloud 4).
+- **Primer brazo a extraer**: soundcloud, el más pequeño y el que menos comparte con los
+  demás. Antes de mover una línea: tests de caracterización del orquestador (secuencia de
+  progreso emitida, recuento por servicio, mapeo de errores y qué escribe cada brazo).
+- **Hecho (2026-10-19)**: tests de caracterización del orquestador (3 contratos sin red:
+  `requires_auth` terminal, emisor opcional y determinismo) y el brazo SoundCloud extraído
+  entero a `sync_soundcloud_arm` (249 líneas) con un `ArmOutcome` de 19 acumuladores:
+  el `match` pasa a ser una llamada y un volcado explícito. La precondición de credenciales
+  vive en `soundcloud_credentials`, función pura con 5 tests, y el brazo tiene su contrato
+  (sin fases activas no emite ni toca nada). `perform_sync_service_with_emitter_inner` baja
+  de **4 546 a 4 330 líneas**.
+- **Hecho (2026-10-19, segundo brazo)**: Deezer extraído a `sync_deezer_arm` (591 líneas).
+  Aquí el patrón se generalizó: `ArmOutcome` crece a 26 contadores y el orquestador siembra
+  el struct entero y lo vuelca por asignación, sin sumas parciales; los `Vec` de errores y
+  avisos se mueven y se devuelven (el brazo corre en exclusiva, nadie más los toca mientras
+  tanto). `album_expansion_metrics` entra tal cual porque el brazo lo incrementa por campo.
+  El orquestador baja a **3 809 líneas** (desde 4 546: un 16 % menos) y el límite de 8
+  argumentos se marca con `allow(clippy::too_many_arguments)` en el brazo, no en el
+  orquestador.
+- **Límite conocido**: ningún test de integración recorre los brazos con red; la equivalencia
+  se apoya en el compilador, en el contrato de cada brazo (autenticación sin red, sin fases
+  no se toca nada) y en la suite completa, no en una reproducción con proveedor real.
+- **Hecho (2026-10-19, tercer brazo)**: Spotify extraído a `sync_spotify_arm` (841 líneas).
+  El struct crece con `reported_favorites`/`reported_albums`/`reported_playlists`
+  (`Option<i64>`, los recuentos que declara el proveedor) y el call site de Deezer se alineó
+  para sembrarlos también: un struct con campos nuevos no puede dejar inicializadores
+  desactualizados. `service_name` volvió a aparecer en una firma sin usarse y se retiró igual
+  que en Deezer: el aviso del compilador es el que manda, no mi inventario. El módulo de
+  tests pasa a `sync_arm_contracts` porque ya cubre tres brazos (8 contratos).
+  El orquestador baja a **3 057 líneas** (desde 4 546: −33 %).
+- **Hecho (2026-10-19, cuarto brazo)**: TIDAL extraído a `sync_tidal_arm` (1 098 líneas), el
+  brazo con más fases. `ArmOutcome` llega a 33 campos con `albums_unavailable`,
+  `tracks_unavailable`, `tracks_expansion_deferred` y `tracks_expansion_failed`. Antes de
+  escribirlo hubo un casi-accidente que merece quedar: la línea `availability_checked,`
+  aparece también en el literal de `ServiceSyncResult` del final del orquestador, así que
+  insertar «detrás de la primera coincidencia» habría corrompido ese struct; el `assert` del
+  script lo paró antes de escribir y la inserción quedó restringida a literales
+  `ArmOutcome {` sin `..Default::default()`. `service_name` volvió a sobrar y se retiró.
+  El orquestador baja a **2 054 líneas** (desde 4 546: −55 %).
+- **Hecho (2026-10-19, quinto y último brazo)**: Qobuz extraído a `sync_qobuz_arm`
+  (1 237 líneas), el más grande. `ArmOutcome` queda en 34 campos con `purchases_total`.
+  `perform_sync_service_with_emitter_inner` baja a **958 líneas**: de 4 546 a 958 (−79 %),
+  sin cambiar el contrato del orquestador (los 3 tests de caracterización y los 10 contratos
+  de brazo siguen verdes).
+- **Validado en la app real (2026-10-19)**: un sync completo de los cinco servicios
+  recorrió los cinco brazos sin panic ni cuelgue, con los tiempos que registra el
+  orquestador: Tidal 670 s (enriquecimiento 348 s, persistencia 124 s), Qobuz 81 s,
+  Apple Music 29 s, Deezer 4 s, SoundCloud 1,4 s. Tidal importó 16 087 de 17 492
+  favoritos y 27 832 de 27 832 pistas de playlist.
+- **Estado de D-08**: los cinco brazos extraídos (soundcloud 249, deezer 591, spotify 841,
+  tidal 1 098, qobuz 1 237). Lo que queda **no** es mover líneas: el `match` ya es una
+  llamada y un volcado por brazo, y el siguiente trabajo real es decidir si `ArmOutcome` se
+  convierte en el contador único del orquestador (hoy se siembra y se vuelca por brazo) y
+  escribir la caracterización con red que hoy falta (secuencia de progreso completa y
+  recuento por servicio contra un proveedor simulado).
+- **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
+  después, y el orquestador reducido a un bucle corto sobre los brazos.
+
 ## Cerrado en esta revisión
 
 | ID | Qué se cerró | Evidencia |
@@ -126,7 +244,148 @@ hecha, y `docs/MATRIZ_PARIDAD_IMPORTACION.md` lo dice en cada fila afectada (⚠
 | C-11 | Los docs de `docs/features/` no declaraban su estado de revalidación | SYNC-AUD-070 |
 | C-12 | `sanitize_flac_pictures` no se ejecutaba en la app y el bloque PICTURE irreparable se perdía sin recuperación (D-03) | Ítem 5.3 del plan post-auditoría: `sanitize_flac_pictures_with_recovery` + `salvage_cover_to_jpeg` en `crates/syncify-flac-writer`, `services::flac_cover_sanitizer` con las dos rutas de D-03 (re-encode en el host y sidecar externo `<track>.unrecovered-cover.<sha8>.<ext>`) y registro en `repair_history`; wired en las cinco rutas de escritura FLAC de producción (post-promoción del pipeline Tidal, finalización de descarga Qobuz, re-tag de enriquecimiento, editor manual de tags y el fallback sin BD del descargador Tidal), con `tests/flac_cover_sanitizer_recovery_test.rs` como guardia |
 | C-13 | `sync_favorites` solo cubría 3 de los 6 servicios (D-02) | Fase 8 del plan post-auditoría, ítem 8.3: `perform_sync_favorites` tiene los seis brazos (`tidal`, `qobuz`, `spotify`, `deezer`, `soundcloud`, `apple_music`), cada uno paginando completo y persistiendo en `favorites` y en el catálogo vía `persist_favorite_track_via_engine`; `tests/favorites_service_arms_test.rs` los cubre contra servidor mock |
-| C-14 | La narrativa de `docs/features/` afirmaba capacidades que el código ya no tiene (DO-4, DO-5) | Ítem 9.1: `metadata-enrichment.md` re-derivado sin Spotify Audio Features y con el worker real (MusicBrainz), `playlist-system.md` re-derivado con la importación real por servicio, README sin «apariciones» ni la cifra de migraciones, `LYRICS_16_PROVIDER_MATRIX.md` sin la ruta `legacy/syncify-cli` |
+| C-14 | La narrativa de `docs/features/` afirmaba capacidades que el código ya no tiene (DO-4, DO-5) | Ítem 9.1: `metadata-enrichment.md` re-derivado sin Spotify Audio Features y con el worker real (MusicBrainz), `playlist-system.md` re-derivado con la importación real por servicio, README sin «apariciones» ni la cifra de migraciones, `LYRICS_PROVIDER_MATRIX.md` sin la ruta `legacy/syncify-cli` |
+| C-12 | `cargo fmt --all -- --check` estaba en rojo (9 ficheros) | `ff11167`; equivalencia probada normalizando whitespace y comas |
+| C-13 | `cargo clippy -D warnings` en rojo: 2 lints, no 1 (clippy para por crate) | `3174642`; el segundo apareció al arreglar el primero |
+| C-14 | El selector de hilos de la biblioteca invocaba un comando inexistente y el error se tragaba | `f5e2317`; vitest 1 failed/44 → 45 passed |
+| C-15 | La puerta IPC no vigilaba comandos que la UI invoca y no existen, ni veía `logs_history::*` | `f5e2317`; test nuevo + parser generalizado |
+| C-16 | Dos objetivos de test rojos por fixtures que usaban `account_id: 1` sin crear la cuenta | `41b2f08`; 4/4 y 5/5 verdes |
+| C-17 | El README afirmaba 9 tests ignorados y el árbol tiene 13 | `1e35108`; puerta que compara la cifra en ambos idiomas |
+| C-18 | No había mapa de entrada para un agente | `b4a9588`; `AGENTS.md` escaneado por `scripts/tests/test_docs_consistency.py` |
+| C-19 | El subsistema de reproducción retirado seguía registrado (puerta de higiene en rojo) | `resolve_playback_source`, el protocolo y sus tests borrados; `playback.rs` 628 → 194 líneas; puerta 9/9, suite 1 rojo menos |
+| C-20 | Misma grabación en otra edición pasaba sin revisión (ED-04 inalcanzable en ese camino) | Guarda antes de escribir: álbum canónico ≠ entrante sin evidencia de release → `needs_review`; suite 2740/0/13. **Corregida el 2026-10-19**: la comparación solo normalizaba espacios y mayúsculas y rechazaba ediciones legítimas; `misma_familia_de_album` las unifica (`46e0a57`) |
+| C-21 ✔ | El alta de pista con un ISRC ya presente se perdía en silencio (`UNIQUE constraint failed: tracks.isrc`: 51 avisos el 2026-10-19 y 65 el 2026-10-20, sobre 736 descargas) | `INSERT_PISTA_SQL` con `ON CONFLICT DO NOTHING` (sin objetivo: cubre el UNIQUE BINARY de la columna y el índice NOCASE parcial de 0064:186) y resolución por `isrc COLLATE NOCASE`; completa lo que falte sin mover la pista de álbum; test rojo→verde con el 2067 real (variante de caja) |
+| C-22 ✔ | La app se cerraba al abrir el menú de bandeja durante una descarga: `RefCell already borrowed` en `tray-icon-0.25.1` (`set_tooltip` dentro del despacho del evento), panic en el hilo principal y cierre sin aviso | `0e53dad`: el tooltip se publica con `run_on_main_thread`, fuera del despacho; lib 478/0, suite 2779/0/13. Verificación en runtime (menú abierto con descarga activa) pendiente del usuario |
+
+Nota sobre esta tabla: los IDs **C-12, C-13 y C-14 aparecen dos veces**
+(filas 12–14: flac/sync_favorites/docs; filas 15–17: fmt/clippy/selector de
+hilos). La segunda tanda reutilizó los números durante la fase de puertas
+rojas de 2026-10-18. No se renumeran para no romper referencias externas; el
+texto de cada fila desambigua. Tampoco existe D-05: la numeración abierta
+salta de D-04 a D-06.
+
+### D-07 — Cerrada, con corrección de rumbo tras la prueba manual (2026-10-19)
+
+La guarda de ED-04 se validó primero en la app real, no solo en la suite: un sync
+completo de los cinco servicios (guion `syncify-prueba-limpia.sh`, logs en
+`~/.local/state/syncify-manual-test`) dejó **16 766 errores de ítem** en seis
+pasadas (Tidal 7 644, Qobuz 5 098, Spotify 4 023, SoundCloud 1) y los favoritos de
+Tidal se quedaron en **16 087 de 17 492** (92 %). Los motivos dominantes eran la
+guarda nueva, con pares que son la misma grabación en dos ediciones:
+
+    «Nothing But Thieves»          <- «Nothing But Thieves (Deluxe)»
+    «Moral Panic»                  <- «Moral Panic (The Complete Edition)»
+    «1»                            <- «1 (Remastered 2015)»
+    «Hybrid Theory (DMD Album + 3 Bonus Tracks)» <- «Hybrid Theory (Bonus Edition)»
+
+La comparación normalizaba solo espacios y mayúsculas, así que cualquier sufijo de
+edición contaba como álbum distinto y, como `album_provider_track_id` no llega en
+estas rutas, el resultado era `needs_review` para todo. `misma_familia_de_album`
+quita ahora los sufijos de edición (Deluxe, Remastered, Anniversary, Expanded,
+Complete, Bonus, Reissue, Collector, Legacy/Definitive y sus equivalentes en
+español; entre paréntesis, corchetes o tras « - ») y solo entonces compara. Siguen
+yendo a revisión los lanzamientos distintos de verdad («Jazz Dance» vs «60s Stars»,
+recopilatorios «The Essentials» vs «60s Essential Hits»). Dos tests fijan ambos
+lados con los pares reales del log, en ambas direcciones (`46e0a57`).
+
+La misma prueba destapó un fallo preexistente que la frontera de escritura de D-06
+hizo visible: 51 altas de pista perdidas por `tracks.isrc` UNIQUE. Se corrigió con
+`ON CONFLICT(isrc)` que reutiliza la fila y no la mueve de álbum (`c7325a7`).
+
+**Tercera prueba manual (2026-10-21).** Con los tres arreglos dentro, sync + descargas
+durante 51 minutos: **447** descargas finalizadas, **0** avisos de
+`UNIQUE constraint failed: tracks.isrc` y **0** avisos de la frontera de escritura
+(`escritura SQLx fallida`), es decir, ninguna escritura perdida en toda la sesión; **0**
+panics y la app viva al terminar. El reparto de errores de ítem queda así: identidad del
+ítem 1 702 (724 Tidal, 721 Spotify, 257 Qobuz) y el resto, unos 6 080, son la guarda ED-04
+sobre lanzamientos que siguen siendo distintos o variantes de formato que el guardián no
+normaliza: «The Best Of 1990-2000 & B-Sides» frente a «The Best Of 1990-2000» (88 casos
+sumando las tres fuentes), «Happier Than Ever (Explicit)» frente a «Happier Than Ever»,
+«Absolution XX Anniversary» frente a «Absolution» (el marcador va sin paréntesis) y
+«BLUE LIPS ([lady wood phase II])» frente a «BLUE LIPS».
+
+**Normalizacion ED-04 medida (2026-10-21).** De los pares que quedaron en revision, la
+mayoria solo difiere en formato y ya no va a `needs_review`: `(Explicit)`, `(Explicit
+Version)`, `XX Anniversary`, `(2016 Rerecorded Version)`, corchetes y puntuacion. Los
+cuatro casos del log estan fijados en tests, y se mantiene fuera a proposito lo que si
+distingue lanzamientos (`& B-Sides`, `([lady wood phase II])`).
+
+**Segunda vuelta (2026-10-22, tarde).** Top real de la pasada anterior: 6 pares de
+formato y empaquetado normalizados (corchetes dobles, `- 192 kHz`, `+`, `(DMD Album)`,
+`(Archive Collection)`, `(Int'l Only DMD w/ Altered iLiner)`). Se mantienen en revision los
+tres que no son formato: `& B-Sides` (88), `RUSH! (ARE U COMING?)` y `Euphoria Morning` vs
+`Euphoria Mourning`. Pendiente la pasada real para medir.
+
+**Medido el 2026-10-22.** Con ED-02a dentro, **0** «identity collision» y **0**
+contradicciones: la identidad dejo de bloquear. La cifra de errores comparable es
+5 664 → **5 575** (−89) al anadir la normalizacion de formato; el −2 118 que se cito antes
+mezclaba pasadas con conjuntos de items distintos y queda retirado.
+
+**Clasificacion instrumentada (2026-10-22).** El album de llegada no se guarda cuando el
+item falla, asi que el rechazo ED-04 se clasifica en el momento (`MismoTexto`, `Subtitulo`,
+`Conjunto`, `Empaquetado`, `Distinto`) y el sync informa el histograma por servicio. La
+proxima pasada real da el reparto con el que decidir la politica, sin adivinar por el top de
+motivos.
+
+**Resuelto y medido con ED-04b (2026-10-22).** Pasada real posterior: **8** errores de
+item frente a 5 575 (−99,9 %), y los 8 son otra causa legitima («Rejected garbage or empty
+artist name»), no ED-04. Se registraron **5 917** apariciones (Qobuz 2 876, Spotify 1 857,
+Tidal 1 184), sin `UNIQUE` y sin panics. Se ven en la UI con `ediciones_de_pista`, dentro del
+modal de metadatos.
+
+**Corregido el 2026-10-22.** El contador de adopciones de ED-02a marcaba 21 142 porque
+sumaba intentos: el item aparece en favoritos, album y playlist y cada aparicion vuelve a
+adoptarse. Ahora cuenta items unicos por pasada (conjunto `(service_id, service_track_id)`).
+
+**Ojo con lo que mide.** No es una cifra de progreso: cuenta exactamente los items que solo
+existen en el ledger, y ED-04b los mantiene ahi a proposito (la aparicion no escribe
+`track_sources`). Tras la pasada del 2026-10-22 hay 10 050 items en esa situacion, asi que el
+contador rondara esa cifra, no los 2 213 de antes de ED-04b.
+
+Los 8 errores restantes de la pasada eran «Rejected garbage or empty artist name», el aborto
+crudo del trigger de la migracion 0079. Ahora se detectan antes de insertar y el motivo es
+accionable: «el artista del proveedor está vacío o es «Unknown Artist»; no se importa».
+
+**Reparto medido (pasada del 2026-10-22, 16 633 intentos clasificados).**
+`distinto` 59,6 %, `empaquetado` 26,2 %, `subtitulo` 10,8 %, `conjunto` 2,5 %,
+`mismo_texto` 0,9 %. El histograma cuenta intentos (un item aparece en favoritos, album y
+playlist), no items unicos: ~3x los 5 575 errores. Las muestras del log muestran el patron
+dominante: la grabacion ya vive en un album de estudio y llega desde un recopilatorio, banda
+sonora o playlist («The Best Of Crystal Waters» vs «Storyteller», «Pop Internacional 2022»,
+«Twisted Sister: Essentials», «Lucky (Apple Original Series Soundtrack)»). Las 148 de
+`mismo_texto` eran un fallo real: familias vacias comparadas como distintas, corregido.
+
+**El techo, medido.** Las 5 575 restantes son rechazos de ED-04: la grabacion existe en un
+album y llega con otro sin evidencia de release. Ademas la adopcion no persiste, porque
+ED-04 revierte la transaccion y la evidencia adoptada se pierde: el sync informo 5 043
+adopciones en la segunda pasada y en la BD siguen 2 213 items solo en el ledger.
+
+**Cierre inesperado (2026-10-21T00:44:48Z).** Con descargas en marcha y el menú de
+bandeja abierto, la app murió con `RefCell already borrowed` en `tray-icon` desde
+`update_tray_icon_state` (`tray.rs:895`): `set_tooltip` no puede ejecutarse mientras la
+bandeja despacha un evento. Diferido con `run_on_main_thread` (`0e53dad`). El manifiesto se
+había escrito de forma atómica justo antes y las escrituras de BD van en transacción, así
+que no hubo estado a medias; la recuperación de arranque informó `recovered=0`.
+
+**Segunda prueba manual (2026-10-20).** Repetido el sync con el arreglo de ED-04
+aplicado: los errores de ítem bajan de 16 766 a **7 864** (Tidal 3 834, Spotify 1 773,
+Qobuz 2 257) y el motivo dominante deja de ser la guarda ED-04 para pasar a ser la
+**colisión de identidad del ítem** (620 + 497 + 597), que sigue yendo a `needs_review`
+a propósito. Los ED-04 que quedan son lanzamientos realmente distintos (recopilatorios,
+bandas sonoras, «B-Sides», reediciones) o variantes de formato que el guardián no debe
+unificar a ciegas.
+
+La misma prueba destapó que el arreglo del ISRC seguía incompleto, y por dos motivos
+encadenados. Primero, la tabla tiene
+**dos** restricciones sobre la columna (`tracks.isrc` UNIQUE BINARY y
+`idx_tracks_isrc_unique` NOCASE parcial, 0064:186) y el `ON CONFLICT(isrc)` solo veía la
+primera, así que un ISRC enriquecido que solo cambiaba de caja seguía perdiendo la fila:
+65 de 736 descargas. Segundo, el 2067 persistía porque el camino que fallaba no era el
+alta sino **dos `UPDATE tracks SET … isrc = COALESCE(isrc, ?)`** (líneas 3037 y 3109) que
+rellenan el ISRC que falta: cuando otra fila ya lo tenía (misma grabación, otra caja), el
+UPDATE chocaba y se perdía el relleno. Ahora el ISRC solo se asigna si ninguna otra fila
+lo tiene (`NOT EXISTS … COLLATE NOCASE`), el alta usa `ON CONFLICT DO NOTHING` sin
+objetivo y resuelve por `isrc COLLATE NOCASE`, y dos tests cubren ambos caminos.
 
 ### D-02 — Cerrada, y con qué alcance exacto
 
@@ -157,7 +416,19 @@ traen (`publisher_metadata` y `date_added`). El brazo inexistente devuelve
 verificación end-to-end es la parte de D-01, y depende de credenciales del
 propietario.
 
-### D-03 — Cerrada, y con qué límite exacto
+### Observabilidad del sync — el cierre ya siempre se informa
+
+**Resuelto el 2026-10-22.** El resumen `[sync] N item error(s) for <servicio>` solo se
+imprimía cuando `errors` no estaba vacío. Eso hizo leer una pasada terminada como una pasada
+colgada: Tidal cerró con cero errores y no dejó línea, y se interpretó como cuelgue durante dos
+pasadas seguidas (comprobado en el log: `adoptados del ledger: 4671 en tidal` a las 01:56 y
+ninguna línea de error después). Ahora la línea se emite siempre: `0 item error(s) … servicio
+completo` a nivel info, o el resumen de motivos a nivel warn.
+
+Lección para la auditoría: una señal que solo existe en el caso malo no sirve para distinguir
+«bien» de «no terminó». Toda fase que se quiera observar necesita su línea de cierre.
+
+## D-03 — Cerrada, y con qué límite exacto
 
 La entrada D-03 pedía una ruta de recuperación antes de declarar cerrado el descarte
 del bloque PICTURE. Se implementaron **las dos** opciones que la dejaban como decisión

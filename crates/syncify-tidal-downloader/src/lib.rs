@@ -18,9 +18,9 @@ pub use syncify_core_domain::errors::{PipelineError, RequiresAuthReason};
 pub use syncify_core_domain::events::{PipelineProgressEvent, PipelineStepStatus};
 pub use syncify_core_domain::manifest::TrackManifestEntry;
 pub use syncify_core_domain::metadata::{
-    artist_matches, clean_title, score_tidal_candidate, score_tidal_release, title_matches,
-    TidalAlbum, TidalArtist, TidalMediaMetadata, TidalSearchResponse, TidalSearchTracks,
-    TidalTrack,
+    artist_matches, clean_title, score_tidal_candidate, score_tidal_release,
+    strip_artist_role_annotations, title_matches, TidalAlbum, TidalArtist, TidalMediaMetadata,
+    TidalSearchResponse, TidalSearchTracks, TidalTrack,
 };
 pub use syncify_core_domain::quality::{
     classify_audio_tier, normalize_audio_quality, AudioTier, QualityClass, QualityPolicy,
@@ -67,6 +67,14 @@ pub struct TidalGuiCredentials {
     pub country_code: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+    /// Real Tidal playback session id obtained from `GET /v1/sessions`.
+    ///
+    /// The playback endpoints expect this value in `X-Tidal-SessionId`. It is
+    /// NOT the access token; sending the token there was the recurring
+    /// `401 PlaybackUnauthorized` on `streamUrl`/`url`. Old credential payloads
+    /// do not carry it, so it is optional and fetched lazily.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Credenciales PÚBLICAS del cliente oficial de escritorio de Tidal: son los
@@ -81,6 +89,36 @@ pub const DEFAULT_TIDAL_CLIENT_SECRET_FALLBACK: &str =
     "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8=";
 /// Client id público del cliente PKCE (Hi-Res / HiFi+).
 pub const DEFAULT_TIDAL_CLIENT_ID_PKCE: &str = "6BDSRdpK9hqEBTgU";
+
+/// Mercado usado cuando la cuenta no declara país.
+pub const DEFAULT_TIDAL_SEARCH_COUNTRY: &str = "US";
+
+/// Acepta un país ISO-3166 alfa-2 y lo devuelve en mayúsculas; cualquier otra
+/// cosa se descarta para no construir una URL con un mercado inválido.
+fn normalize_country_code(raw: Option<&str>) -> Option<String> {
+    let code = raw?.trim().to_uppercase();
+    (code.len() == 2 && code.chars().all(|c| c.is_ascii_alphabetic())).then_some(code)
+}
+
+/// URLs oficiales de búsqueda de pistas en el mercado indicado. Se construyen
+/// aparte para poder afirmar en un test que el país de la cuenta llega a la
+/// petición: con `US` fijo, una cuenta MX consultaba un catálogo que no puede
+/// reproducir.
+fn official_search_urls(query: &str, country_code: &str) -> [String; 2] {
+    let country = normalize_country_code(Some(country_code))
+        .unwrap_or_else(|| DEFAULT_TIDAL_SEARCH_COUNTRY.to_string());
+    let encoded = urlencoding::encode(query);
+    [
+        format!(
+            "https://api.tidal.com/v1/search/tracks?query={}&limit=50&countryCode={}",
+            encoded, country
+        ),
+        format!(
+            "https://api.tidal.com/v1/search?query={}&types=TRACKS&limit=50&countryCode={}",
+            encoded, country
+        ),
+    ]
+}
 
 /// Maximum number of DASH MPD segments allowed to prevent resource exhaustion / DoS attacks (SEC-023).
 pub const MAX_DASH_SEGMENTS: u32 = 500;
@@ -247,9 +285,75 @@ pub async fn refresh_gui_token(
             .or_else(|| creds.country_code.clone()),
         client_id: creds.client_id.clone(),
         client_secret: creds.client_secret.clone(),
+        // The OAuth refresh response does not carry a session id: preserve the
+        // one already resolved from `GET /v1/sessions` instead of dropping it.
+        session_id: creds.session_id.clone(),
     };
 
     Ok((access_token, updated_creds))
+}
+
+/// The value the playback endpoints expect in `X-Tidal-SessionId`.
+///
+/// Returns `None` for missing/blank values. Sending the access token here (the
+/// previous behavior) is what triggered the recurring `401 PlaybackUnauthorized`
+/// on `streamUrl`/`url`.
+pub fn tidal_session_header_value(creds: &TidalGuiCredentials) -> Option<&str> {
+    creds
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Fetch the real playback session id from `GET /v1/sessions` using the OAuth
+/// bearer token. Returns `None` on any transport/parse failure so callers can
+/// degrade to bearer-only requests instead of sending a bogus header.
+pub async fn fetch_tidal_session_id(
+    client: &reqwest::Client,
+    creds: &TidalGuiCredentials,
+) -> Option<String> {
+    let resp = client
+        .get("https://api.tidal.com/v1/sessions")
+        .timeout(Duration::from_secs(10))
+        .header("Authorization", format!("Bearer {}", creds.access_token))
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        )
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        debug!(
+            http_status = resp.status().as_u16(),
+            "[Tidal] GET /v1/sessions did not return a usable session id"
+        );
+        return None;
+    }
+    let json: serde_json::Value = resp.json().await.ok()?;
+    json.get("sessionId")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Failure precedence when no endpoint delivered an acceptable resolution.
+///
+/// A 2xx response that merely failed the quality gate proves the session is
+/// alive: the provider refused to serve the requested tier and offered a lower
+/// one instead. The legacy `streamUrl`/`url` endpoints answer 401 for any
+/// non-`HIGH` `soundQuality` on HiRes-class sessions regardless of account
+/// health, so letting that 401 win would report a quality limitation as an
+/// account-auth failure and trip the entitlement-recording path. The downgrade
+/// reason is the honest verdict; the auth text only wins when no endpoint ever
+/// explained the failure with a real answer.
+pub fn select_playback_failure(
+    auth_error: Option<String>,
+    downgrade_error: Option<String>,
+) -> Option<String> {
+    downgrade_error.or(auth_error)
 }
 
 #[derive(Debug, Deserialize)]
@@ -328,6 +432,49 @@ pub fn tidal_quality_param_for_endpoint(endpoint_name: &str, target_quality_para
         target_quality_param.to_string()
     } else {
         "HI_RES".to_string()
+    }
+}
+
+/// Quality attempts to run against one official endpoint, in order.
+///
+/// The classic CD tier (`audioquality=LOSSLESS`) is not served to every client
+/// class. Sessions bound to a HiRes-class client answer a CD-tier request with
+/// the AAC fallback of `application/vnd.tidal.bts` even when the account holds
+/// FLAC entitlements — while the very same session serves the real FLAC asset
+/// when asked for `HI_RES`. Taking that first AAC answer at face value is what
+/// pinned lossless requests to `.m4a` plus a misleading 401 from the legacy
+/// endpoints (which reject any non-`HIGH` `soundQuality` for those clients), so
+/// the modern endpoint gets exactly one escalation attempt before the cascade
+/// moves on.
+pub fn quality_attempt_sequence(endpoint_name: &str, target_quality_param: &str) -> Vec<String> {
+    let mut attempts = vec![target_quality_param.to_string()];
+    if endpoint_name == "playbackinfopostpaywall" && target_quality_param == "LOSSLESS" {
+        attempts.push("HI_RES".to_string());
+    }
+    attempts
+}
+
+/// Build the official playback URL for one endpoint/quality attempt.
+pub fn official_endpoint_url(
+    endpoint_name: &str,
+    track_id: i64,
+    quality_param: &str,
+    country_code: &str,
+) -> String {
+    match endpoint_name {
+        "playbackinfopostpaywall" => format!(
+            "https://api.tidal.com/v1/tracks/{}/playbackinfopostpaywall?audioquality={}&playbackmode=STREAM&assetpresentation=FULL&countryCode={}",
+            track_id,
+            tidal_quality_param_for_endpoint(endpoint_name, quality_param),
+            country_code
+        ),
+        _ => format!(
+            "https://api.tidal.com/v1/tracks/{}/{}?soundQuality={}&countryCode={}",
+            track_id,
+            endpoint_name,
+            tidal_quality_param_for_endpoint(endpoint_name, quality_param),
+            country_code
+        ),
     }
 }
 
@@ -641,6 +788,12 @@ pub struct TidalDownloader {
     client_secret: String,
     user_token: RwLock<Option<String>>,
     cached_oauth_token: RwLock<Option<(String, Instant)>>,
+    /// Mercado con el que se consulta el catálogo (ISO-3166 alfa-2). Antes se
+    /// fijaba `US` en la búsqueda: una cuenta mexicana o británica recibía el
+    /// catálogo estadounidense, que no es el que puede reproducir. Va en un
+    /// `RwLock` porque el orquestador de descargas resuelve la cuenta (y su
+    /// país) después de construir el descargador compartido.
+    country_code: RwLock<String>,
 }
 
 impl TidalDownloader {
@@ -666,6 +819,7 @@ impl TidalDownloader {
             client_secret,
             user_token: RwLock::new(None),
             cached_oauth_token: RwLock::new(None),
+            country_code: RwLock::new(DEFAULT_TIDAL_SEARCH_COUNTRY.to_string()),
         }
     }
 
@@ -675,6 +829,35 @@ impl TidalDownloader {
             *guard = Some(tok);
         }
         self
+    }
+
+    /// Fija el mercado de las búsquedas con el país de la cuenta. Un código que
+    /// no sea ISO-3166 alfa-2 se ignora y se conserva el de por defecto.
+    pub fn with_country_code(self, code: Option<String>) -> Self {
+        self.set_country_code(code);
+        self
+    }
+
+    /// Fija el mercado de las búsquedas; `None` o un código inválido no lo cambian.
+    pub fn set_country_code(&self, code: Option<String>) {
+        let Some(normalized) = normalize_country_code(code.as_deref()) else {
+            return;
+        };
+        let mut guard = self.country_code.write().unwrap_or_else(|p| p.into_inner());
+        *guard = normalized;
+    }
+
+    /// Mercado con el que se consulta el catálogo.
+    pub fn country_code(&self) -> String {
+        self.country_code
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    pub fn set_user_token(&self, token: Option<String>) {
+        let mut guard = self.user_token.write().unwrap_or_else(|p| p.into_inner());
+        *guard = token.filter(|t| !t.trim().is_empty());
     }
 
     /// Read-only access to user token if set
@@ -825,49 +1008,11 @@ impl TidalDownloader {
         isrc: &str,
         expected_duration_sec: i32,
     ) -> Result<TidalTrack> {
-        let token = match self.check_auth_status(None).await {
-            TidalAuthStatus::UserToken(t) => t,
-            TidalAuthStatus::ClientCredentials(t) => t,
-            TidalAuthStatus::RequiresAuth => {
-                return Err(anyhow!("Tidal authentication required for search"))
-            }
-            TidalAuthStatus::SourceUnavailable(msg) => {
-                return Err(anyhow!("Tidal API unavailable: {}", msg))
-            }
-            TidalAuthStatus::Failed(msg) => return Err(anyhow!("Tidal auth failed: {}", msg)),
-        };
-
-        let url = format!(
-            "https://api.tidal.com/v1/search/tracks?query={}&limit=50&countryCode=US",
-            urlencoding::encode(isrc)
-        );
-
         debug!("[Tidal] Searching track by ISRC: {}", isrc);
 
-        let response = self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", token))
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            )
-            .send()
-            .await?;
+        let items = self.fetch_search_candidates(isrc).await?;
 
-        if !response.status().is_success() {
-            return Err(anyhow!(
-                "Tidal ISRC search failed: HTTP {}",
-                response.status()
-            ));
-        }
-
-        let result: TidalSearchResponse = response.json().await?;
-        let tracks = result
-            .tracks
-            .ok_or_else(|| anyhow!("No tracks section returned by Tidal search"))?;
-
-        for track in &tracks.items {
+        for track in &items {
             if track.isrc.as_deref() == Some(isrc) {
                 if expected_duration_sec > 0 {
                     let duration_diff = (track.duration - expected_duration_sec).abs();
@@ -890,6 +1035,122 @@ impl TidalDownloader {
         }
 
         Err(anyhow!("No exact ISRC match found on Tidal for: {}", isrc))
+    }
+
+    /// Exact-ISRC lookup that disambiguates same-ISRC catalogue duplicates.
+    ///
+    /// `search_by_isrc` returns the first hit passing the exact-ISRC + `±10 s`
+    /// rule, but one ISRC can be labelled on several recordings (manifest
+    /// corruption at the provider). Among every passing hit, prefer the one
+    /// whose title (then artist) agrees with the request; ties keep catalogue
+    /// order. With no agreeing hit the result matches the legacy first hit.
+    pub async fn search_by_isrc_verified(
+        &self,
+        isrc: &str,
+        track_name: &str,
+        artist_name: &str,
+        expected_duration_sec: i32,
+    ) -> Result<TidalTrack> {
+        debug!(
+            "[Tidal] Searching track by ISRC (identity-verified): {}",
+            isrc
+        );
+
+        let items = self.fetch_search_candidates(isrc).await?;
+
+        let mut candidates: Vec<TidalTrack> = Vec::new();
+        for track in items {
+            if track.isrc.as_deref() != Some(isrc) {
+                continue;
+            }
+            if expected_duration_sec > 0 && (track.duration - expected_duration_sec).abs() > 10 {
+                warn!(
+                    "[Tidal] ISRC match '{}' found but duration mismatch (expected {}s, got {}s)",
+                    track.title, expected_duration_sec, track.duration
+                );
+                continue;
+            }
+            candidates.push(track);
+        }
+
+        let track = Self::select_identity_isrc_candidate(&candidates, track_name, artist_name)
+            .ok_or_else(|| anyhow!("No exact ISRC match found on Tidal for: {}", isrc))?
+            .clone();
+
+        info!(
+            "[Tidal] Found exact ISRC match (identity-verified): '{}' by '{}' (ID: {})",
+            track.title,
+            track.artist_name().unwrap_or_default(),
+            track.id
+        );
+        Ok(track)
+    }
+
+    /// Pure selector shared by [`Self::search_by_isrc_verified`]: among hits
+    /// that already passed the exact-ISRC + duration rules, prefer title
+    /// agreement, then artist agreement; ties keep catalogue order.
+    fn select_identity_isrc_candidate<'a>(
+        candidates: &'a [TidalTrack],
+        track_name: &str,
+        artist_name: &str,
+    ) -> Option<&'a TidalTrack> {
+        let evidence = |track: &TidalTrack| -> u8 {
+            let mut score = 0u8;
+            if !track_name.trim().is_empty() && title_matches(track_name, &track.title) {
+                score += 2;
+            }
+            if !artist_name.trim().is_empty()
+                && artist_matches(artist_name, &track.artist_name().unwrap_or_default())
+            {
+                score += 1;
+            }
+            score
+        };
+
+        let mut best: Option<(usize, u8)> = None;
+        for (idx, track) in candidates.iter().enumerate() {
+            let score = evidence(track);
+            if best.is_none_or(|(_, best_score)| score > best_score) {
+                best = Some((idx, score));
+            }
+        }
+        best.map(|(idx, _)| &candidates[idx])
+    }
+
+    /// Exact-ISRC lookup via an artist+title query when Tidal's bare-ISRC
+    /// search returns noisy/unrelated results instead of indexing the ISRC.
+    pub async fn search_by_isrc_broad(
+        &self,
+        isrc: &str,
+        track_name: &str,
+        artist_name: &str,
+        expected_duration_sec: i32,
+    ) -> Result<TidalTrack> {
+        let query = format!(
+            "{} {}",
+            strip_artist_role_annotations(artist_name),
+            track_name
+        );
+        let items = self.fetch_search_candidates(&query).await?;
+
+        for track in &items {
+            if track.isrc.as_deref() != Some(isrc) {
+                continue;
+            }
+            if expected_duration_sec > 0 && (track.duration - expected_duration_sec).abs() > 10 {
+                continue;
+            }
+            info!(
+                "[Tidal] Found exact ISRC match via broad query: '{}' (ID: {})",
+                track.title, track.id
+            );
+            return Ok(track.clone());
+        }
+
+        Err(anyhow!(
+            "No exact ISRC match found on Tidal for: {} (broad query)",
+            isrc
+        ))
     }
 
     /// Get track metadata by Tidal numeric track ID
@@ -1068,13 +1329,10 @@ impl TidalDownloader {
         .await
     }
 
-    pub async fn search_by_metadata_with_studio_option(
-        &self,
-        track_name: &str,
-        artist_name: &str,
-        expected_duration_sec: i32,
-        smart_studio_origin: bool,
-    ) -> Result<TidalTrack> {
+    /// Fetch raw search candidates for a metadata query: official API (client
+    /// and user tokens) first, then the proxy cascade. Shared by the scored and
+    /// the strict matchers.
+    async fn fetch_search_candidates(&self, query: &str) -> Result<Vec<TidalTrack>> {
         let client_creds_token = self.get_access_token().await.ok();
         let user_tok = match self.check_auth_status(None).await {
             TidalAuthStatus::UserToken(t) => Some(t),
@@ -1088,20 +1346,11 @@ impl TidalDownloader {
             (None, None) => return Err(anyhow!("Tidal authentication required for search")),
         };
 
-        let query = format!("{} {}", artist_name, track_name);
         let mut candidate_tracks: Vec<TidalTrack> = Vec::new();
+        let country = self.country_code();
 
         for token in &search_tokens {
-            let official_urls = [
-                format!(
-                    "https://api.tidal.com/v1/search/tracks?query={}&limit=50&countryCode=US",
-                    urlencoding::encode(&query)
-                ),
-                format!(
-                    "https://api.tidal.com/v1/search?query={}&types=TRACKS&limit=50&countryCode=US",
-                    urlencoding::encode(&query)
-                ),
-            ];
+            let official_urls = official_search_urls(query, &country);
 
             for official_url in &official_urls {
                 if let Ok(response) = self
@@ -1118,11 +1367,10 @@ impl TidalDownloader {
                 {
                     if response.status().is_success() {
                         if let Ok(result) = response.json::<TidalSearchResponse>().await {
-                            if let Some(tracks) = result.tracks {
-                                if !tracks.items.is_empty() {
-                                    candidate_tracks = tracks.items;
-                                    break;
-                                }
+                            let items = result.into_items();
+                            if !items.is_empty() {
+                                candidate_tracks = items;
+                                break;
                             }
                         }
                     }
@@ -1140,7 +1388,7 @@ impl TidalDownloader {
                 let proxy_search_url = format!(
                     "{}/search?query={}&type=tracks",
                     api,
-                    urlencoding::encode(&query)
+                    urlencoding::encode(query)
                 );
                 if let Ok(response) = self
                     .client
@@ -1156,11 +1404,10 @@ impl TidalDownloader {
                     if response.status().is_success() {
                         let text = response.text().await.unwrap_or_default();
                         if let Ok(result) = serde_json::from_str::<TidalSearchResponse>(&text) {
-                            if let Some(tracks) = result.tracks {
-                                if !tracks.items.is_empty() {
-                                    candidate_tracks = tracks.items;
-                                    break;
-                                }
+                            let items = result.into_items();
+                            if !items.is_empty() {
+                                candidate_tracks = items;
+                                break;
                             }
                         }
                         if let Ok(items) = serde_json::from_str::<Vec<TidalTrack>>(&text) {
@@ -1173,6 +1420,108 @@ impl TidalDownloader {
                 }
             }
         }
+
+        Ok(candidate_tracks)
+    }
+
+    /// Strict metadata acceptance rule: compatible title, compatible artist and a
+    /// duration within ±3 s of the real catalog duration. Kept as a free function
+    /// so the rule is unit-testable without network access.
+    fn strict_metadata_match(
+        track_name: &str,
+        artist_name: &str,
+        expected_duration_sec: i32,
+        track: &TidalTrack,
+    ) -> bool {
+        if !title_matches(track_name, &track.title) {
+            return false;
+        }
+        let track_artist_owned = track.artist_name().unwrap_or_default();
+        if !artist_matches(artist_name, &track_artist_owned) {
+            return false;
+        }
+        expected_duration_sec <= 0 || (track.duration - expected_duration_sec).abs() <= 3
+    }
+
+    /// Strict title + artist + duration match that must be UNIQUE (or resolve
+    /// same-recording re-releases deterministically by studio-origin score).
+    ///
+    /// Unlike `search_by_metadata`, it never falls back to an arbitrary first
+    /// candidate: a text-only match is only trusted when catalog entries
+    /// agree on the normalized title, artist and real catalog duration (±3 s,
+    /// so genuine 30 s tracks like "(Archive 76)" stay eligible).
+    pub async fn search_by_metadata_strict(
+        &self,
+        track_name: &str,
+        artist_name: &str,
+        expected_duration_sec: i32,
+    ) -> Result<TidalTrack> {
+        let query = format!(
+            "{} {}",
+            strip_artist_role_annotations(artist_name),
+            track_name
+        );
+        let candidate_tracks = self.fetch_search_candidates(&query).await?;
+
+        let mut matches: Vec<TidalTrack> = candidate_tracks
+            .into_iter()
+            .filter(|track| {
+                Self::strict_metadata_match(track_name, artist_name, expected_duration_sec, track)
+            })
+            .collect();
+
+        if matches.len() == 1 {
+            return Ok(matches.remove(0));
+        }
+        if matches.len() > 1 {
+            let norm = |s: &str| {
+                clean_title(s)
+                    .replace(" & ", " and ")
+                    .replace(['(', ')'], "")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            let first_norm = norm(&matches[0].title);
+            let same_title = matches.iter().all(|m| norm(&m.title) == first_norm);
+            if same_title {
+                matches.sort_by(|a, b| {
+                    let sa = score_tidal_release(a, artist_name);
+                    let sb = score_tidal_release(b, artist_name);
+                    let da = (a.duration - expected_duration_sec).abs();
+                    let db = (b.duration - expected_duration_sec).abs();
+                    sb.cmp(&sa).then_with(|| da.cmp(&db))
+                });
+                return Ok(matches.remove(0));
+            }
+            return Err(anyhow!(
+                "AmbiguousSource: {} competing strict metadata matches on Tidal for '{}' by '{}'",
+                matches.len(),
+                track_name,
+                artist_name
+            ));
+        }
+
+        Err(anyhow!(
+            "No matching track found on Tidal for strict metadata: {} - {}",
+            artist_name,
+            track_name
+        ))
+    }
+
+    pub async fn search_by_metadata_with_studio_option(
+        &self,
+        track_name: &str,
+        artist_name: &str,
+        expected_duration_sec: i32,
+        smart_studio_origin: bool,
+    ) -> Result<TidalTrack> {
+        let query = format!(
+            "{} {}",
+            strip_artist_role_annotations(artist_name),
+            track_name
+        );
+        let candidate_tracks = self.fetch_search_candidates(&query).await?;
 
         if candidate_tracks.is_empty() {
             return Err(anyhow!(
@@ -1190,7 +1539,8 @@ impl TidalDownloader {
                 continue;
             }
 
-            let track_artist = track.artist.as_ref().map(|a| a.name.as_str()).unwrap_or("");
+            let track_artist_owned = track.artist_name().unwrap_or_default();
+            let track_artist = track_artist_owned.as_str();
             if !artist_matches(artist_name, track_artist) {
                 continue;
             }
@@ -1266,6 +1616,7 @@ impl TidalDownloader {
             country_code: None,
             client_id: None,
             client_secret: None,
+            session_id: None,
         });
 
         self.get_stream_resolution_with_credentials(
@@ -1303,6 +1654,7 @@ impl TidalDownloader {
                     country_code: None,
                     client_id: None,
                     client_secret: None,
+                    session_id: None,
                 })
             } else {
                 None
@@ -1338,54 +1690,45 @@ impl TidalDownloader {
             // S195(a): legacy `streamUrl`/`url` endpoints must receive a value from their
             // classic enum (HI_RES), never the modern HI_RES_LOSSLESS label, or Tidal may
             // silently serve its default lossy tier instead of erroring.
-            let official_endpoints = vec![
-                (
-                    "playbackinfopostpaywall",
-                    format!(
-                        "https://api.tidal.com/v1/tracks/{}/playbackinfopostpaywall?audioquality={}&playbackmode=STREAM&assetpresentation=FULL&countryCode={}",
-                        track_id, tidal_quality_param_for_endpoint("playbackinfopostpaywall", target_quality_param), country_code
-                    ),
-                ),
-                (
-                    "streamUrl",
-                    format!(
-                        "https://api.tidal.com/v1/tracks/{}/streamUrl?soundQuality={}&countryCode={}",
-                        track_id, tidal_quality_param_for_endpoint("streamUrl", target_quality_param), country_code
-                    ),
-                ),
-                (
-                    "url",
-                    format!(
-                        "https://api.tidal.com/v1/tracks/{}/url?soundQuality={}&countryCode={}",
-                        track_id, tidal_quality_param_for_endpoint("url", target_quality_param), country_code
-                    ),
-                ),
-            ];
+            // A CD-tier request additionally gets one `HI_RES` escalation attempt on the
+            // modern endpoint (`quality_attempt_sequence`) so sessions that cap the
+            // classic LOSSLESS tier at AAC still reach the real FLAC asset.
+            let mut official_attempts: Vec<(&str, String)> = Vec::new();
+            for endpoint_name in ["playbackinfopostpaywall", "streamUrl", "url"] {
+                for quality_param in quality_attempt_sequence(endpoint_name, target_quality_param) {
+                    official_attempts.push((endpoint_name, quality_param));
+                }
+            }
 
             let mut last_auth_error: Option<String> = None;
             let mut best_resolution: Option<TidalStreamResolution> = None;
             let mut downgrade_error: Option<String> = None;
 
-            for (endpoint_name, official_url) in &official_endpoints {
-                match self
+            for (endpoint_name, attempt_param) in official_attempts {
+                let official_url =
+                    official_endpoint_url(endpoint_name, track_id, &attempt_param, country_code);
+                // OAuth always travels in `Authorization: Bearer`. The session
+                // id travels in `X-Tidal-SessionId` ONLY when a real one was
+                // resolved from `/v1/sessions`; never fall back to the token.
+                let mut request = self
                     .client
                     .get(official_url)
                     .header("Authorization", format!("Bearer {}", user_tok))
-                    .header("X-Tidal-SessionId", user_tok)
                     .header(
                         "User-Agent",
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    )
-                    .send()
-                    .await
-                {
+                    );
+                if let Some(session_id) = tidal_session_header_value(creds) {
+                    request = request.header("X-Tidal-SessionId", session_id);
+                }
+
+                match request.send().await {
                     Ok(resp) => {
                         let status = resp.status();
                         let text = resp.text().await.unwrap_or_default();
 
                         if status.is_success() {
-                            if let Ok(parsed) =
-                                parse_tidal_playback_manifest(&text, target_quality_param)
+                            if let Ok(parsed) = parse_tidal_playback_manifest(&text, &attempt_param)
                             {
                                 let obtained_q = if parsed.quality_class == QualityClass::Lossy {
                                     "320"
@@ -1405,7 +1748,7 @@ impl TidalDownloader {
                                     client_id_anon = %client_id_anon,
                                     endpoint = endpoint_name,
                                     http_status = status.as_u16(),
-                                    audio_quality = target_quality_param,
+                                    audio_quality = attempt_param.as_str(),
                                     format_obtained = %parsed.format_id_obtained,
                                     codec_obtained = %parsed.codec,
                                     final_extension = %parsed.extension,
@@ -1420,7 +1763,7 @@ impl TidalDownloader {
                                     source_name: "Tidal Official API".to_string(),
                                     requested_quality: requested_q.to_string(),
                                     obtained_quality: obtained_q.to_string(),
-                                    format_id_requested: target_quality_param.to_string(),
+                                    format_id_requested: attempt_param.clone(),
                                     format_id_obtained: parsed.format_id_obtained,
                                     quality_class_requested,
                                     quality_class_obtained: parsed.quality_class,
@@ -1486,7 +1829,7 @@ impl TidalDownloader {
                                 client_id_anon = %client_id_anon,
                                 endpoint = endpoint_name,
                                 http_status = status.as_u16(),
-                                audio_quality = target_quality_param,
+                                audio_quality = attempt_param.as_str(),
                                 manifest_mime_type = "none",
                                 final_error_classification = classification,
                                 "[Tidal] Official stream endpoint failed"
@@ -1499,7 +1842,10 @@ impl TidalDownloader {
                                     substatus,
                                     text.chars().take(150).collect::<String>()
                                 ));
-                                break;
+                                // Do NOT break: a 401 on one endpoint is not a
+                                // verdict on the others. The next endpoint may
+                                // still serve lossless with the same session.
+                                continue;
                             }
                         }
                     }
@@ -1513,7 +1859,7 @@ impl TidalDownloader {
                             client_id_anon = %client_id_anon,
                             endpoint = endpoint_name,
                             http_status = 0,
-                            audio_quality = target_quality_param,
+                            audio_quality = attempt_param.as_str(),
                             manifest_mime_type = "none",
                             final_error_classification = "NetworkError",
                             "[Tidal] Network error requesting official stream: {}", e
@@ -1539,11 +1885,7 @@ impl TidalDownloader {
                 return Ok(best);
             }
 
-            if let Some(reason) = downgrade_error {
-                return Err(anyhow!("{}", reason));
-            }
-
-            if let Some(err_msg) = last_auth_error {
+            if let Some(err_msg) = select_playback_failure(last_auth_error, downgrade_error) {
                 return Err(anyhow!("{}", err_msg));
             }
             return Err(anyhow!(
@@ -1967,23 +2309,77 @@ impl TidalDownloader {
                 file.flush().await?;
                 drop(file);
             } else {
-                let mut file = File::create(&temp_file_path).await?;
-                let mut resp = self.client.get(stream_url).send().await?;
-                if !resp.status().is_success() {
+                // The client-wide 30s timeout is sized for API calls, not for
+                // a payload transfer. A direct (non-DASH) stream — AAC 320 or
+                // a single-file FLAC — routinely takes longer, and the client
+                // timeout aborts the body mid-transfer as "error decoding
+                // response body". Override it per request and retry the whole
+                // transfer instead of failing the track.
+                let mut last_direct_err = String::new();
+                let mut direct_downloaded = false;
+                for attempt in 1..=MAX_SEGMENT_RETRIES {
+                    let direct_start = Instant::now();
+                    let attempt_result: Result<()> = async {
+                        downloaded = 0;
+                        let mut file = File::create(&temp_file_path).await?;
+                        let mut resp = self
+                            .client
+                            .get(stream_url)
+                            .timeout(TOTAL_DOWNLOAD_TIMEOUT)
+                            .send()
+                            .await?;
+                        if !resp.status().is_success() {
+                            return Err(anyhow!(
+                                "Tidal stream download failed: HTTP {}",
+                                resp.status()
+                            ));
+                        }
+
+                        while let Some(chunk) = resp.chunk().await? {
+                            file.write_all(&chunk).await?;
+                            downloaded += chunk.len() as u64;
+                            progress_callback(1, 1, downloaded);
+                        }
+
+                        file.flush().await?;
+                        Ok(())
+                    }
+                    .await;
+
+                    match attempt_result {
+                        Ok(()) => {
+                            direct_downloaded = true;
+                            info!(
+                                bytes = downloaded,
+                                elapsed_ms = direct_start.elapsed().as_millis(),
+                                retries = attempt - 1,
+                                "[Tidal] Direct stream download completed"
+                            );
+                            break;
+                        }
+                        Err(e) => {
+                            last_direct_err = format!("Attempt {}: {}", attempt, e);
+                            warn!(
+                                attempt = attempt,
+                                error = %e,
+                                "[Tidal] Direct stream download attempt failed; retrying"
+                            );
+                        }
+                    }
+
+                    if attempt < MAX_SEGMENT_RETRIES {
+                        tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                    }
+                }
+
+                if !direct_downloaded {
+                    let _ = tokio::fs::remove_file(&temp_file_path).await;
                     return Err(anyhow!(
-                        "Tidal stream download failed: HTTP {}",
-                        resp.status()
+                        "Tidal stream download failed after {} retries: {}",
+                        MAX_SEGMENT_RETRIES,
+                        last_direct_err
                     ));
                 }
-
-                while let Some(chunk) = resp.chunk().await? {
-                    file.write_all(&chunk).await?;
-                    downloaded += chunk.len() as u64;
-                    progress_callback(1, 1, downloaded);
-                }
-
-                file.flush().await?;
-                drop(file);
             }
 
             if downloaded == 0 {
@@ -2019,24 +2415,12 @@ impl TidalDownloader {
             let is_flac_path = ext_str == "flac";
             let is_isobmff = AudioByteValidator::is_isobmff_container(valid_header);
             if is_flac_path && is_isobmff {
-                info!("[Tidal] Remuxing ISOBMFF FLAC container to native FLAC container via ffmpeg...");
+                // Remux en Rust puro (sin ffmpeg): copia los frames FLAC del
+                // ISOBMFF fragmentado a un FLAC nativo con su STREAMINFO real.
+                info!("[Tidal] Remuxing ISOBMFF FLAC container to native FLAC (pure Rust)...");
                 let native_temp_path = output_path.with_extension("native.tmp");
-                let remux_output = hidden_tokio_command("ffmpeg")
-                    .args([
-                        "-y",
-                        "-i",
-                        temp_file_path.to_str().unwrap_or(""),
-                        "-c:a",
-                        "copy",
-                        "-f",
-                        "flac",
-                        native_temp_path.to_str().unwrap_or(""),
-                    ])
-                    .output()
-                    .await;
-
-                match remux_output {
-                    Ok(out) if out.status.success() && native_temp_path.exists() => {
+                match syncify_fmp4_flac::convert_fmp4_to_flac(&temp_file_path, &native_temp_path) {
+                    Ok(samples) => {
                         let (native_header, native_read) =
                             read_audio_header_bounded(&native_temp_path)
                                 .await
@@ -2045,7 +2429,7 @@ impl TidalDownloader {
                             let _ = tokio::fs::remove_file(&native_temp_path).await;
                             let _ = tokio::fs::remove_file(&temp_file_path).await;
                             return Err(anyhow!(
-                                "RemuxError: ffmpeg output is not a valid native FLAC bitstream"
+                                "RemuxError: el FLAC nativo no lleva cabecera fLaC"
                             ));
                         }
                         let _ = tokio::fs::remove_file(&temp_file_path).await;
@@ -2055,25 +2439,17 @@ impl TidalDownloader {
                             .map(|m| m.len())
                             .unwrap_or(downloaded);
                         info!(
+                            samples = samples,
                             "[Tidal] Remuxed & saved native FLAC payload: {} bytes -> {}",
                             final_len,
                             output_path.display()
                         );
                         return Ok(final_len);
                     }
-                    Ok(out) => {
-                        let stderr_msg = String::from_utf8_lossy(&out.stderr);
-                        let _ = tokio::fs::remove_file(&temp_file_path).await;
-                        let _ = tokio::fs::remove_file(&native_temp_path).await;
-                        return Err(anyhow!(
-                            "RemuxError: ffmpeg remuxing failed (exit code {:?}): {}",
-                            out.status.code(),
-                            stderr_msg
-                        ));
-                    }
                     Err(e) => {
                         let _ = tokio::fs::remove_file(&temp_file_path).await;
-                        return Err(anyhow!("RemuxError: failed to invoke ffmpeg: {}", e));
+                        let _ = tokio::fs::remove_file(&native_temp_path).await;
+                        return Err(anyhow!("RemuxError: {}", e));
                     }
                 }
             }
@@ -2173,6 +2549,36 @@ mod tests {
         assert_eq!(anonymize_identifier("  "), "none");
     }
 
+    /// La búsqueda fijaba `countryCode=US`: una cuenta MX/GB consultaba un
+    /// catálogo que no puede reproducir. El país de la cuenta debe llegar a
+    /// las dos URLs oficiales.
+    #[test]
+    fn test_search_urls_use_account_country() {
+        let [by_track, by_type] = official_search_urls("JPD731900230", "mx");
+        assert!(by_track.contains("countryCode=MX"), "{}", by_track);
+        assert!(by_type.contains("countryCode=MX"), "{}", by_type);
+        assert!(!by_track.contains("countryCode=US"));
+        assert!(!by_type.contains("countryCode=US"));
+        // Un país inválido no se cuela en la petición.
+        let [fallback, _] = official_search_urls("x", "not-a-country");
+        assert!(fallback.contains("countryCode=US"), "{}", fallback);
+    }
+
+    #[test]
+    fn test_downloader_country_code_defaults_and_overrides() {
+        let downloader = TidalDownloader::new();
+        assert_eq!(downloader.country_code(), DEFAULT_TIDAL_SEARCH_COUNTRY);
+
+        let downloader = TidalDownloader::new().with_country_code(Some("gb".to_string()));
+        assert_eq!(downloader.country_code(), "GB");
+
+        // `None` y basura conservan el mercado por defecto.
+        let downloader = TidalDownloader::new().with_country_code(None);
+        assert_eq!(downloader.country_code(), DEFAULT_TIDAL_SEARCH_COUNTRY);
+        let downloader = TidalDownloader::new().with_country_code(Some("XX1".to_string()));
+        assert_eq!(downloader.country_code(), DEFAULT_TIDAL_SEARCH_COUNTRY);
+    }
+
     #[test]
     fn test_tidal_auth_status_hierarchy() {
         let user = TidalAuthStatus::UserToken("secret".to_string());
@@ -2206,6 +2612,233 @@ mod tests {
     }
 
     #[test]
+    fn test_select_playback_failure_prefers_real_downgrade_over_noisy_legacy_401() {
+        // A 2xx answer from the modern endpoint (an AAC manifest answering a
+        // CD-tier request) proves the session is healthy; the 401 from the
+        // legacy endpoints is a client-class artifact, not an account verdict
+        // (see quality_attempt_sequence). The quality downgrade must win so
+        // callers neither flag the account as auth-broken nor mask the real
+        // cause behind a misleading 401.
+        let chosen = select_playback_failure(
+            Some("PlaybackUnauthorized: HTTP 401 on streamUrl".to_string()),
+            Some("Quality rejection: requested_lossless_but_received_aac".to_string()),
+        );
+        assert_eq!(
+            chosen.as_deref(),
+            Some("Quality rejection: requested_lossless_but_received_aac")
+        );
+
+        // A bare auth failure (no endpoint ever answered) is still surfaced.
+        let only_auth = select_playback_failure(
+            Some("PlaybackUnauthorized: HTTP 401 on streamUrl".to_string()),
+            None,
+        );
+        assert_eq!(
+            only_auth.as_deref(),
+            Some("PlaybackUnauthorized: HTTP 401 on streamUrl")
+        );
+
+        assert_eq!(select_playback_failure(None, None), None);
+    }
+
+    #[test]
+    fn test_cd_tier_request_escalates_to_hi_res_on_the_modern_endpoint() {
+        // HiRes-class sessions answer `audioquality=LOSSLESS` with the AAC
+        // fallback while the very same session serves the real FLAC asset for
+        // HI_RES: the modern endpoint must get exactly one escalation attempt.
+        assert_eq!(
+            quality_attempt_sequence("playbackinfopostpaywall", "LOSSLESS"),
+            vec!["LOSSLESS".to_string(), "HI_RES".to_string()]
+        );
+        // The legacy endpoints reject anything above HIGH for those clients;
+        // escalating them would only add another noisy 401.
+        assert_eq!(
+            quality_attempt_sequence("streamUrl", "LOSSLESS"),
+            vec!["LOSSLESS".to_string()]
+        );
+        assert_eq!(
+            quality_attempt_sequence("url", "LOSSLESS"),
+            vec!["LOSSLESS".to_string()]
+        );
+        // Non-CD targets keep a single attempt.
+        assert_eq!(
+            quality_attempt_sequence("playbackinfopostpaywall", "HIGH"),
+            vec!["HIGH".to_string()]
+        );
+        assert_eq!(
+            quality_attempt_sequence("playbackinfopostpaywall", "HI_RES_LOSSLESS"),
+            vec!["HI_RES_LOSSLESS".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_official_endpoint_url_keeps_legacy_enum_mapping() {
+        assert_eq!(
+            official_endpoint_url("playbackinfopostpaywall", 42, "HI_RES", "MX"),
+            "https://api.tidal.com/v1/tracks/42/playbackinfopostpaywall?audioquality=HI_RES&playbackmode=STREAM&assetpresentation=FULL&countryCode=MX"
+        );
+        // S195(a): the legacy endpoints never receive the modern label.
+        assert_eq!(
+            official_endpoint_url("streamUrl", 42, "HI_RES_LOSSLESS", "MX"),
+            "https://api.tidal.com/v1/tracks/42/streamUrl?soundQuality=HI_RES&countryCode=MX"
+        );
+        assert_eq!(
+            official_endpoint_url("url", 42, "LOSSLESS", "ES"),
+            "https://api.tidal.com/v1/tracks/42/url?soundQuality=LOSSLESS&countryCode=ES"
+        );
+    }
+
+    #[test]
+    fn test_gui_credentials_session_id_is_backward_compatible() {
+        // Credentials stored before the session_id field existed must still
+        // deserialize (serde default) and serialize without the field.
+        let legacy = r#"{"access_token":"tok","refresh_token":"ref","token_expiry":1000.0}"#;
+        let creds: TidalGuiCredentials =
+            serde_json::from_str(legacy).expect("legacy payload must deserialize");
+        assert_eq!(creds.session_id, None);
+
+        let serialized = serde_json::to_string(&creds).unwrap();
+        assert!(
+            !serialized.contains("session_id"),
+            "None session_id must not be serialized"
+        );
+
+        let with_session = r#"{"access_token":"tok","session_id":"sess-123"}"#;
+        let creds: TidalGuiCredentials =
+            serde_json::from_str(with_session).expect("session payload must deserialize");
+        assert_eq!(creds.session_id.as_deref(), Some("sess-123"));
+    }
+
+    #[test]
+    fn test_strict_metadata_match_rules() {
+        let make = |title: &str, artist: &str, duration: i32| TidalTrack {
+            id: 560396903,
+            title: title.to_string(),
+            version: None,
+            isrc: None,
+            duration,
+            audio_quality: Some("LOSSLESS".to_string()),
+            album: None,
+            artist: Some(TidalArtist {
+                id: None,
+                name: artist.to_string(),
+            }),
+            artists: None,
+            track_number: None,
+            volume_number: None,
+            media_metadata: None,
+            bpm: None,
+            copyright: None,
+            explicit: None,
+        };
+
+        // Genuine 30s track (e.g. "(Archive 76)"): accepted against its real
+        // catalog duration, not against a fixed preview threshold.
+        let short = make("(Archive 76)", "Artist", 30);
+        assert!(TidalDownloader::strict_metadata_match(
+            "(Archive 76)",
+            "Artist",
+            30,
+            &short
+        ));
+        assert!(TidalDownloader::strict_metadata_match(
+            "(Archive 76)",
+            "Artist",
+            27,
+            &short
+        ));
+        // ±3s stays strict: 4s apart is rejected.
+        assert!(!TidalDownloader::strict_metadata_match(
+            "(Archive 76)",
+            "Artist",
+            34,
+            &short
+        ));
+        // Different title or artist is rejected even with matching duration.
+        assert!(!TidalDownloader::strict_metadata_match(
+            "(Archive 77)",
+            "Artist",
+            30,
+            &short
+        ));
+        assert!(!TidalDownloader::strict_metadata_match(
+            "(Archive 76)",
+            "Another Singer",
+            30,
+            &short
+        ));
+        // Unknown expected duration (<=0) accepts any catalog duration.
+        assert!(TidalDownloader::strict_metadata_match(
+            "(Archive 76)",
+            "Artist",
+            0,
+            &short
+        ));
+    }
+
+    /// Same-ISRC catalogue duplicates: the selector must prefer the hit whose
+    /// title/artist agree with the request, keep catalogue order on ties, and
+    /// fall back to the first hit only when no hit agrees.
+    #[test]
+    fn test_identity_isrc_candidate_selection() {
+        let make = |title: &str, artist: &str, duration: i32, isrc: &str| TidalTrack {
+            id: 1,
+            title: title.to_string(),
+            version: None,
+            isrc: Some(isrc.to_string()),
+            duration,
+            audio_quality: Some("LOSSLESS".to_string()),
+            album: None,
+            artist: Some(TidalArtist {
+                id: None,
+                name: artist.to_string(),
+            }),
+            artists: None,
+            track_number: None,
+            volume_number: None,
+            media_metadata: None,
+            bpm: None,
+            copyright: None,
+            explicit: None,
+        };
+
+        let wrong = make("Run River", "Mozez", 463, "GB53R1200006");
+        let right = make("After Dark", "Mang Dynasty", 367, "GB53R1200006");
+
+        // The agreeing hit wins regardless of catalogue order.
+        assert_eq!(
+            TidalDownloader::select_identity_isrc_candidate(
+                &[wrong.clone(), right.clone()],
+                "After Dark - Dub Mix",
+                "Mang Dynasty"
+            )
+            .map(|t| t.duration),
+            Some(right.duration)
+        );
+        assert_eq!(
+            TidalDownloader::select_identity_isrc_candidate(
+                &[right.clone(), wrong.clone()],
+                "After Dark - Dub Mix",
+                "Mang Dynasty"
+            )
+            .map(|t| t.duration),
+            Some(right.duration)
+        );
+
+        // No agreeing hit: catalogue order (legacy first-hit behavior).
+        let only_wrong = [wrong.clone()];
+        let picked = TidalDownloader::select_identity_isrc_candidate(&only_wrong, "After Dark", "")
+            .expect("first hit must remain selectable");
+        assert_eq!(picked.title, "Run River");
+
+        // Empty candidate set yields None.
+        assert!(
+            TidalDownloader::select_identity_isrc_candidate(&[], "After Dark", "Mang Dynasty")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn test_anonymize_identifier() {
         assert_eq!(anonymize_identifier(""), "none");
         assert_eq!(anonymize_identifier("short"), "***");
@@ -2225,7 +2858,28 @@ mod tests {
             country_code: Some("ES".to_string()),
             client_id: None,
             client_secret: None,
+            session_id: Some("session_abc".to_string()),
         };
+
+        assert_eq!(
+            tidal_session_header_value(&creds),
+            Some("session_abc"),
+            "a real session id must be used for X-Tidal-SessionId"
+        );
+        let mut no_session = creds.clone();
+        no_session.session_id = None;
+        assert_eq!(
+            tidal_session_header_value(&no_session),
+            None,
+            "without a session id the header must be omitted, never the token"
+        );
+        let mut blank_session = creds.clone();
+        blank_session.session_id = Some("   ".to_string());
+        assert_eq!(
+            tidal_session_header_value(&blank_session),
+            None,
+            "blank session ids must be treated as missing"
+        );
 
         assert_eq!(
             creds.get_client_id().as_ref(),

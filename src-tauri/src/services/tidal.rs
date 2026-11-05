@@ -413,6 +413,46 @@ pub struct TidalSinglePlaylistImportReport {
 }
 
 /// Tidal API client
+/// Public profile of the account behind a stored session (`GET /users/{id}`).
+///
+/// Used by the per-account identity refresh: the device-flow payload carries no
+/// profile, so the username (or written name) comes from this endpoint. Every
+/// field is optional — Tidal omits what it does not want to expose.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TidalUserProfile {
+    #[allow(dead_code)]
+    // contrato de datos (serde): lo puebla la deserialización, no el código Rust.
+    pub id: Option<i64>,
+    pub username: Option<String>,
+    pub email: Option<String>,
+    #[serde(rename = "firstName")]
+    pub first_name: Option<String>,
+    #[serde(rename = "lastName")]
+    pub last_name: Option<String>,
+}
+
+impl TidalUserProfile {
+    /// Best human-readable name available: the written name first, then the
+    /// username Tidal shows to other users.
+    pub fn best_display_name(&self) -> Option<String> {
+        let full: String = [self.first_name.as_deref(), self.last_name.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !full.trim().is_empty() {
+            return Some(full);
+        }
+        self.username
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+}
+
 pub struct TidalClient {
     client: Client,
     access_token: String,
@@ -568,6 +608,36 @@ impl TidalClient {
             self.get_playlist_tracks(playlist_id, offset, limit)
         })
         .await
+    }
+
+    /// Profile of the account behind the stored session (`GET /users/{id}`).
+    ///
+    /// Identity refresh only: never used by sync, so a failure here can only
+    /// leave the account with its generic name.
+    pub async fn get_user_profile(&self) -> Result<TidalUserProfile, String> {
+        let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
+
+        let url = format!("{}/users/{}", self.base_url, user_id);
+
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[("countryCode", self.country_code.as_str())])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::handle_api_error(status, &body, &url));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse user profile: {}", e))
     }
 
     /// Get user's favorite tracks (paginated)
@@ -1100,6 +1170,13 @@ impl TidalClient {
         let limit = 10; // Reduced for constant feedback (S78)
         let mut imported = 0;
         let mut skipped = 0;
+        // Route 2 (2026-10-18): Tidal re-reads offset windows (server-side
+        // filtering + offset arithmetic), so a walk that counts repeats as
+        // progress stops early and loses the tail. De-duplicate by item id and
+        // stop only on an empty page (bounded below).
+        let mut favorite_item_ids: std::collections::HashSet<i64> =
+            std::collections::HashSet::new();
+        let mut favorite_items_duplicated: u64 = 0;
 
         loop {
             // S187: a transient failure that survives retries must NOT abort the
@@ -1133,6 +1210,10 @@ impl TidalClient {
                 .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
             for item in page.items.iter() {
+                if !favorite_item_ids.insert(item.item.id) {
+                    favorite_items_duplicated += 1;
+                    continue;
+                }
                 let track = &item.item;
 
                 // 1. Artist
@@ -1194,13 +1275,12 @@ impl TidalClient {
                     };
 
                     let album_id = if let Some(eid) = existing_id {
-                        let _ = sqlx::query(
+                        let _ = crate::db::write_or_log("import_favorites", sqlx::query(
                             "UPDATE albums SET is_compilation = 1, tidal_id = COALESCE(tidal_id, ?) WHERE id = ?"
                         )
                         .bind(album.tidal_id)
                         .bind(eid)
-                        .execute(&mut *tx)
-                        .await;
+                        .execute(&mut *tx)).await;
                         eid
                     } else {
                         let aid: (i64,) = sqlx::query_as::<sqlx::Sqlite, (i64,)>(
@@ -1310,11 +1390,10 @@ impl TidalClient {
                         }
                     };
                     if final_feat_id > 0 && final_feat_id != artist_id {
-                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                        let _ = crate::db::write_or_log("import_favorites", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
                             .bind(track_id)
                             .bind(final_feat_id)
-                            .execute(&mut *tx)
-                            .await;
+                            .execute(&mut *tx)).await;
                     }
                 }
 
@@ -1366,18 +1445,27 @@ impl TidalClient {
                 .await
                 .map_err(|e| format!("Failed to commit favorites: {}", e))?;
 
-            // S187: advance by the REAL page length (a short page mid-list is
-            // not end-of-data) and keep walking until the provider total is met.
+            // S187/Route 2: advance by the REAL page length (a short page mid-list
+            // is not end-of-data). Items repeated across pages are skipped above,
+            // so the walk only ends on an empty page; the bound below is a
+            // belt-and-braces stop against a provider that never sends one.
             offset += page.items.len() as i32;
-            if !should_continue_tidal_pagination(
-                page.items.len(),
-                (imported + skipped) as u64,
-                page.total as i64,
-            ) {
+            if page.total > 0 && offset > page.total + limit * 2 {
+                tracing::warn!(
+                    "[S187][tidal] legacy favorites pagination ran past the provider total (offset {}, total {}); stopping",
+                    offset,
+                    page.total
+                );
                 break;
             }
         }
 
+        if favorite_items_duplicated > 0 {
+            tracing::info!(
+                "[S187][tidal] legacy import_favorites: {} ítems repetidos entre páginas omitidos",
+                favorite_items_duplicated
+            );
+        }
         tracing::info!(
             "[S187][tidal] legacy import_favorites: importadas {} de {} (skipped {})",
             imported,
@@ -1935,11 +2023,10 @@ impl TidalClient {
                                 }
                             };
                             if final_feat_id > 0 && final_feat_id != artist_id {
-                                let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                                let _ = crate::db::write_or_log("import_playlists", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
                                     .bind(track_id)
                                     .bind(final_feat_id)
-                                    .execute(&mut *tx)
-                                    .await;
+                                    .execute(&mut *tx)).await;
                             }
                         }
 
@@ -2033,20 +2120,23 @@ impl TidalClient {
                 .unwrap_or(None)
                 .unwrap_or_else(|| "Tidal Playlist".to_string());
 
-        let _ = sqlx::query(
-            r#"
+        let _ = crate::db::write_or_log(
+            "import_single_playlist_scoped",
+            sqlx::query(
+                r#"
             INSERT INTO playlists (account_id, service_playlist_id, name, track_count, last_synced)
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(account_id, service_playlist_id) DO UPDATE SET
                 track_count = excluded.track_count,
                 last_synced = CURRENT_TIMESTAMP
             "#,
+            )
+            .bind(account_id)
+            .bind(playlist_uuid)
+            .bind(&playlist_name)
+            .bind(total_available)
+            .execute(db),
         )
-        .bind(account_id)
-        .bind(playlist_uuid)
-        .bind(&playlist_name)
-        .bind(total_available)
-        .execute(db)
         .await;
 
         let playlist_db_id: i64 = sqlx::query_scalar(
@@ -2138,13 +2228,12 @@ impl TidalClient {
                 };
 
                 let album_id = if let Some(eid) = existing_id {
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_single_playlist_scoped", sqlx::query(
                         "UPDATE albums SET is_compilation = 1, tidal_id = COALESCE(tidal_id, ?) WHERE id = ?"
                     )
                     .bind(album.tidal_id.to_string())
                     .bind(eid)
-                    .execute(&mut *tx)
-                    .await;
+                    .execute(&mut *tx)).await;
                     eid
                 } else {
                     let aid: Option<i64> = sqlx::query_scalar(
@@ -2180,11 +2269,10 @@ impl TidalClient {
                     }
                 };
 
-                let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
+                let _ = crate::db::write_or_log("import_single_playlist_scoped", sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
                     .bind(album_id)
                     .bind(effective_album_artist_id)
-                    .execute(&mut *tx)
-                    .await;
+                    .execute(&mut *tx)).await;
 
                 Some(album_id)
             } else {
@@ -2250,7 +2338,7 @@ impl TidalClient {
             let track_id = if let Some(ext_id) = existing_track_id {
                 report.deduped_existing_tracks += 1;
                 // Update missing/richer metadata
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_single_playlist_scoped", sqlx::query(
                     r#"UPDATE tracks SET
                         album_id = COALESCE(tracks.album_id, ?),
                         duration_ms = CASE WHEN duration_ms IS NULL OR duration_ms = 0 THEN ? ELSE duration_ms END,
@@ -2275,8 +2363,7 @@ impl TidalClient {
                 .bind(canonical_q.as_deref())
                 .bind(isrc_clean)
                 .bind(ext_id)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx)).await;
                 report.metadata_updates += 1;
                 ext_id
             } else {
@@ -2301,11 +2388,10 @@ impl TidalClient {
                 .await
                 .map_err(|e| format!("Failed to insert track: {}", e))?;
 
-                let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+                let _ = crate::db::write_or_log("import_single_playlist_scoped", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
                     .bind(new_id)
                     .bind(artist_id)
-                    .execute(&mut *tx)
-                    .await;
+                    .execute(&mut *tx)).await;
 
                 // F4.3: Detect featured artists in track title and link with role = 'featured'
                 for feat_name in feat_artists {
@@ -2329,11 +2415,10 @@ impl TidalClient {
                         }
                     };
                     if final_feat_id > 0 && final_feat_id != artist_id {
-                        let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                        let _ = crate::db::write_or_log("import_single_playlist_scoped", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
                             .bind(new_id)
                             .bind(final_feat_id)
-                            .execute(&mut *tx)
-                            .await;
+                            .execute(&mut *tx)).await;
                     }
                 }
 
@@ -2530,19 +2615,35 @@ impl TidalClient {
         Ok(results)
     }
 
+    /// All exact-ISRC hits, catalogue duplicates included.
+    ///
+    /// Provider catalogues can label one ISRC on two different recordings;
+    /// callers must disambiguate with the shared identity rules instead of
+    /// trusting catalogue order.
+    pub async fn search_isrc_candidates(
+        &self,
+        isrc: &str,
+        limit: i32,
+    ) -> Result<Vec<TidalSearchResult>, String> {
+        let results = self.search_track(isrc, limit).await?;
+        Ok(results
+            .into_iter()
+            .filter(|r| {
+                r.isrc
+                    .as_ref()
+                    .map(|i| i.eq_ignore_ascii_case(isrc))
+                    .unwrap_or(false)
+            })
+            .collect())
+    }
+
     /// Search for a track by ISRC code
     pub async fn search_by_isrc(&self, isrc: &str) -> Result<Option<TidalSearchResult>, String> {
-        let results = self.search_track(isrc, 5).await?;
-
-        // Find exact ISRC match
-        let match_result = results.into_iter().find(|r| {
-            r.isrc
-                .as_ref()
-                .map(|i| i.eq_ignore_ascii_case(isrc))
-                .unwrap_or(false)
-        });
-
-        Ok(match_result)
+        Ok(self
+            .search_isrc_candidates(isrc, 5)
+            .await?
+            .into_iter()
+            .next())
     }
 
     /// Add a track to user's favorites
@@ -3125,6 +3226,48 @@ pub mod s187_tests {
             liked, 141,
             "library_entries.is_liked drives the UI favorites count"
         );
+    }
+
+    /// Route 2 regression: every page overlaps the previous one by 5 positions
+    /// (provider offset drift). The old walk counted the re-read items as
+    /// progress and stopped 5 favorites short of the catalogue; the de-duplicated
+    /// walk must import every unique item and finish exactly at the total.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn test_s187_mock_favorites_overlapping_pages_import_every_unique_item(
+        pool: sqlx::SqlitePool,
+    ) {
+        let catalog_total: i64 = 100;
+        let responder: Responder = Arc::new(move |target: &str| {
+            let (path, query) = split_target(target);
+            if path.ends_with("/favorites/tracks") {
+                let offset = query_param(query, "offset").unwrap_or(0);
+                let limit = query_param(query, "limit").unwrap_or(10);
+                let effective = (offset - 5).max(0);
+                let items = slice_catalog(catalog_total, effective, limit, false);
+                return (200, tidal_page_body(items, catalog_total, offset, limit));
+            }
+            (404, "{}".to_string())
+        });
+        let (base, _requests) = spawn_mock_tidal(responder).await;
+        let client = mock_client(base);
+        ensure_test_account(&pool, 9).await;
+
+        let result = client
+            .import_favorites(&pool, 9, None)
+            .await
+            .expect("favorites import must succeed");
+
+        assert_eq!(
+            result.imported, 100,
+            "overlapping pages must not truncate the tail of the favorites walk"
+        );
+        let liked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM library_entries WHERE account_id = 9 AND is_liked = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(liked, 100);
     }
 
     /// Transient failures that exhaust retries must NOT abort silently: the

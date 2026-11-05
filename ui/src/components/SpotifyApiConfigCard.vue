@@ -10,17 +10,17 @@
       </div>
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
-          <h3 class="font-semibold text-gray-900 dark:text-white">Spotify — credenciales de la aplicación</h3>
+          <h3 class="font-semibold text-gray-900 dark:text-white">Spotify — app credentials</h3>
           <span data-testid="spotify-api-status" :class="[
             'px-2 py-0.5 rounded-full text-xs font-medium flex items-center gap-1',
             configured ? 'bg-success/10 text-success' : 'bg-amber-500/10 text-amber-500'
           ]">
             <span class="material-symbols-outlined text-[14px]">{{ configured ? 'check_circle' : 'warning' }}</span>
-            {{ configured ? 'Configurado' : 'No configurado' }}
+            {{ configured ? 'Configured' : 'Not configured' }}
           </span>
         </div>
         <p class="text-sm text-text-secondary mt-0.5">
-          Necesarias para iniciar sesión con tu cuenta de Spotify desde la app instalada.
+          Required to sign in with your Spotify account from the installed app.
         </p>
       </div>
     </div>
@@ -28,9 +28,9 @@
     <!-- Not-configured hint -->
     <div v-if="!configured" class="mb-4 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
       <p class="text-xs text-amber-600 dark:text-amber-400 leading-relaxed">
-        Sin estas credenciales el botón «Conectar» de Spotify falla con
+        Without these credentials, Spotify's "Connect" button fails with
         <code class="font-mono">SPOTIFY_CLIENT_ID not set</code>.
-        Son gratis y se obtienen en 2 minutos siguiendo los pasos de más abajo.
+        They are free and take 2 minutes to get by following the steps below.
       </p>
     </div>
 
@@ -45,7 +45,7 @@
       <span class="flex-1">{{ error }}</span>
       <button
         type="button"
-        aria-label="Descartar error"
+        aria-label="Dismiss error"
         class="shrink-0 text-red-500 hover:text-red-700 transition-colors"
         @click="error = ''"
       >
@@ -76,7 +76,7 @@
           type="text"
           autocomplete="off"
           spellcheck="false"
-          placeholder="Pega aquí el Client ID del dashboard de Spotify"
+          placeholder="Paste the Client ID from your Spotify dashboard here"
           class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/40 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 font-mono"
         />
       </div>
@@ -92,7 +92,7 @@
             :type="showSecret ? 'text' : 'password'"
             autocomplete="new-password"
             spellcheck="false"
-            :placeholder="secretMask !== '' ? secretMask : 'Pega aquí el Client Secret'"
+            :placeholder="secretMask !== '' ? secretMask : 'Paste the Client Secret here'"
             class="w-full px-3 py-2 pr-20 rounded-lg border border-gray-300 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/40 text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 font-mono"
           />
           <button
@@ -101,17 +101,17 @@
             class="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs text-text-secondary hover:text-primary transition-colors flex items-center gap-1"
           >
             <span class="material-symbols-outlined text-[16px]">{{ showSecret ? 'visibility_off' : 'visibility' }}</span>
-            {{ showSecret ? 'Ocultar' : 'Ver' }}
+            {{ showSecret ? 'Hide' : 'Show' }}
           </button>
         </div>
         <p v-if="secretMask !== ''" class="text-[11px] text-text-secondary mt-1">
-          Guardado: <span class="font-mono">{{ secretMask }}</span> — deja el campo vacío para conservarlo.
+          Saved: <span class="font-mono">{{ secretMask }}</span> — leave the field empty to keep it.
         </p>
       </div>
 
       <div>
         <label class="block text-xs font-medium text-text-secondary uppercase mb-1" for="spotify-redirect-uri">
-          Redirect URI (registrada en tu app de Spotify)
+          Redirect URI (registered in your Spotify app)
         </label>
         <div class="flex items-center gap-2">
           <input
@@ -128,7 +128,7 @@
             class="px-3 py-2 rounded-lg border border-gray-300 dark:border-border-dark text-sm text-gray-700 dark:text-gray-300 hover:border-primary hover:text-primary transition-colors flex items-center gap-1 shrink-0"
           >
             <span class="material-symbols-outlined text-[16px]">{{ redirectCopied ? 'check' : 'content_copy' }}</span>
-            {{ redirectCopied ? 'Copiada' : 'Copiar' }}
+            {{ redirectCopied ? 'Copied' : 'Copy' }}
           </button>
         </div>
       </div>
@@ -147,7 +147,7 @@
           ]"
         >
           <span v-if="saving" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
-          Guardar credenciales
+          Save credentials
         </button>
         <button
           v-if="configured"
@@ -156,7 +156,7 @@
           :disabled="saving"
           class="px-4 py-2 rounded-lg text-sm text-error hover:bg-error/10 transition-colors disabled:opacity-50"
         >
-          Borrar credenciales
+          Clear credentials
         </button>
         <button
           type="button"
@@ -164,11 +164,11 @@
           :disabled="loading"
           class="px-3 py-2 text-sm text-text-secondary hover:text-primary transition-colors disabled:opacity-50"
         >
-          Actualizar estado
+          Refresh status
         </button>
       </div>
       <p v-if="!canSave" class="text-xs text-text-secondary pt-1">
-        Introduce el Client ID{{ configured ? '' : ' y el Client Secret' }} para habilitar el guardado.
+        Enter the Client ID{{ configured ? '' : ' and Client Secret' }} to enable saving.
       </p>
     </div>
 
@@ -182,7 +182,7 @@
       >
         <span class="flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-white group-hover:text-primary transition-colors">
           <span class="material-symbols-outlined text-[18px] text-primary">help</span>
-          ¿Cómo consigo mis Client ID y Client Secret? (2 minutos)
+          How do I get my Client ID and Client Secret? (2 minutes)
         </span>
         <span class="material-symbols-outlined text-[20px] text-text-secondary transition-transform"
               :class="{ 'rotate-180': instructionsOpen }">expand_more</span>
@@ -193,24 +193,24 @@
         <li class="flex gap-3">
           <span class="shrink-0 h-6 w-6 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center mt-0.5">1</span>
           <p>
-            Entra en
+            Go to
             <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer"
                class="text-primary underline underline-offset-2 break-all">developer.spotify.com/dashboard</a>
-            e inicia sesión <strong>con tu cuenta de Spotify</strong> (la normal, de música).
+            and sign in <strong>with your Spotify account</strong> (a regular music account).
           </p>
         </li>
         <li class="flex gap-3">
           <span class="shrink-0 h-6 w-6 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center mt-0.5">2</span>
           <p>
-            Pulsa <strong>«Create app»</strong>. El nombre y la descripción son libres
-            (por ejemplo <em>«Syncify»</em>). Acepta los términos y crea la app.
+            Click <strong>"Create app"</strong>. The name and description are up to you
+            (for example <em>"Syncify"</em>). Accept the terms and create the app.
           </p>
         </li>
         <li class="flex gap-3">
           <span class="shrink-0 h-6 w-6 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center mt-0.5">3</span>
           <p>
-            En <strong>«Redirect URI»</strong> registra EXACTAMENTE esta dirección
-            (cópiala con el botón de arriba y pégala ahí):
+            Under <strong>"Redirect URI"</strong> register EXACTLY this address
+            (copy it with the button above and paste it there):
           </p>
         </li>
         <li class="-mt-1.5 pl-9">
@@ -220,25 +220,25 @@
         <li class="flex gap-3">
           <span class="shrink-0 h-6 w-6 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center mt-0.5">4</span>
           <p>
-            En <strong>«Which API/SDKs are you planning to use?»</strong> marca
-            <strong>«Web API»</strong>. («Web Playback SDK» no es necesaria para Syncify;
-            márcala solo si además quieres usar este mismo dashboard para otros proyectos.)
-            Después pulsa <strong>«Save»</strong>.
+            Under <strong>"Which API/SDKs are you planning to use?"</strong> check
+            <strong>"Web API"</strong>. ("Web Playback SDK" is not needed for Syncify;
+            check it only if you also want to use this same dashboard for other projects.)
+            Then click <strong>"Save"</strong>.
           </p>
         </li>
         <li class="flex gap-3">
           <span class="shrink-0 h-6 w-6 rounded-full bg-primary/10 text-primary text-xs font-bold flex items-center justify-center mt-0.5">5</span>
           <p>
-            Dentro de tu app, entra en <strong>«Settings»</strong> y copia
-            <strong>«Client ID»</strong>; luego pulsa <strong>«View client secret»</strong> y copia el secret.
-            Pégalos arriba en sus campos y guarda. Listo: ya puedes pulsar
-            <strong>«Conectar»</strong> en la tarjeta de Spotify.
+            Inside your app, go to <strong>"Settings"</strong> and copy the
+            <strong>"Client ID"</strong>; then click <strong>"View client secret"</strong> and copy the secret.
+            Paste them into their fields above and save. Done: you can now click
+            <strong>"Connect"</strong> on the Spotify card.
           </p>
         </li>
         <li class="pl-9 pt-1">
           <p class="text-xs text-text-secondary leading-relaxed">
-            🔒 El Client Secret se guarda <strong>cifrado</strong> en la base de datos local de la app
-            y nunca se vuelve a mostrar completo (solo sus últimos 4 caracteres).
+            🔒 The Client Secret is stored <strong>encrypted</strong> in the app's local database
+            and is never shown in full again (only its last 4 characters).
           </p>
         </li>
       </ol>
@@ -316,10 +316,10 @@ async function reload(): Promise<boolean> {
     }
     return true
   } catch (e) {
-    console.error('No se pudo cargar la configuración de Spotify:', e)
+    console.error('Could not load the Spotify configuration:', e)
     error.value = toUserMessage(
       e,
-      'No se pudo leer el estado de las credenciales de Spotify desde la base de datos. Pulsa «Actualizar estado» para reintentar.'
+      'Could not read the Spotify credentials status from the database. Click "Refresh status" to try again.'
     )
     return false
   } finally {
@@ -331,11 +331,11 @@ async function save() {
   if (saving.value) return
   // Pre-save validation: never invoke the backend with incomplete data.
   if (clientId.value.trim() === '') {
-    error.value = 'El Client ID es obligatorio. Cópialo desde el dashboard de Spotify (Settings → Client ID).'
+    error.value = 'The Client ID is required. Copy it from the Spotify dashboard (Settings → Client ID).'
     return
   }
   if (clientSecret.value.trim() === '' && !configured.value) {
-    error.value = 'El Client Secret es obligatorio la primera vez. Cópialo desde el dashboard de Spotify (View client secret).'
+    error.value = 'The Client Secret is required the first time. Copy it from the Spotify dashboard (View client secret).'
     return
   }
   saving.value = true
@@ -351,14 +351,14 @@ async function save() {
     emit('saved', true)
     const reloaded = await reload()
     if (reloaded) {
-      showSuccess('Credenciales guardadas correctamente.')
+      showSuccess('Credentials saved successfully.')
     }
   } catch (e) {
-    console.error('No se pudieron guardar las credenciales:', e)
+    console.error('Could not save the credentials:', e)
     successMessage.value = ''
     error.value = toUserMessage(
       e,
-      'No se pudieron guardar las credenciales. Revisa los valores e inténtalo de nuevo.'
+      'Could not save the credentials. Check the values and try again.'
     )
   } finally {
     saving.value = false
@@ -376,14 +376,14 @@ async function clearCredentials() {
     emit('saved', false)
     const reloaded = await reload()
     if (reloaded) {
-      showSuccess('Credenciales borradas.')
+      showSuccess('Credentials cleared.')
     }
   } catch (e) {
-    console.error('No se pudieron borrar las credenciales:', e)
+    console.error('Could not clear the credentials:', e)
     successMessage.value = ''
     error.value = toUserMessage(
       e,
-      'No se pudieron borrar las credenciales. Inténtalo de nuevo.'
+      'Could not clear the credentials. Try again.'
     )
   } finally {
     saving.value = false

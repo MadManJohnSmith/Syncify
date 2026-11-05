@@ -26,6 +26,12 @@ export interface GlobalTask {
     startedAt: number
     error?: string
     requiresAuth?: boolean
+    /**
+     * Who started the task. `'auto'` marks tasks created by autonomous
+     * backend loops (the background enrichment worker); the header progress
+     * bar ignores them. Undefined is treated as user-initiated.
+     */
+    origin?: 'user' | 'auto'
 }
 
 // Global state (singleton pattern)
@@ -244,13 +250,21 @@ export function useGlobalTasks() {
     ): void {
         const task = tasks.value.get(id)
         if (task) {
-            const isAuth = options?.requiresAuth || (error && (
-                error.includes('RequiresAuth') ||
-                error.includes('401') ||
-                error.includes('authentication required') ||
-                error.includes('credentials invalid') ||
-                error.includes('Session expired')
-            ))
+            // Sync callers always pass an explicit `requiresAuth` flag; trust
+            // it instead of re-classifying error text. A provider item ID that
+            // happens to contain "401" must not turn a partial sync into a
+            // reconnect prompt. Legacy callers (downloads) keep the fallback.
+            const hasStructuredAuth =
+                options !== undefined && Object.prototype.hasOwnProperty.call(options, 'requiresAuth')
+            const isAuth = hasStructuredAuth
+                ? !!options?.requiresAuth
+                : !!(error && (
+                    error.includes('RequiresAuth') ||
+                    error.includes('401') ||
+                    error.includes('authentication required') ||
+                    error.includes('credentials invalid') ||
+                    error.includes('Session expired')
+                ))
 
             const status: GlobalTask['status'] = isAuth
                 ? 'requires_auth'
@@ -653,7 +667,8 @@ export function useGlobalTasks() {
                         description: message,
                         status: 'running',
                         progress: 0,
-                        total: pending || 100
+                        total: pending || 100,
+                        origin: 'auto'
                     })
                 } else {
                     updateTask(taskId, { description: message })
@@ -692,7 +707,8 @@ export function useGlobalTasks() {
                         description: message,
                         status: 'failed',
                         progress: 0,
-                        error: message
+                        error: message,
+                        origin: 'auto'
                     })
                 }
             } else if (status === 'waiting') {

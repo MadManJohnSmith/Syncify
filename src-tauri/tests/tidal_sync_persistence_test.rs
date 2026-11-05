@@ -288,11 +288,17 @@ async fn test_shared_isrc_qobuz_and_tidal_creates_separate_sources_without_dupli
         album_provider_track_id: None,
     };
 
-    let review = engine
+    // Cross-service: the same ISRC is the same recording exported by another
+    // provider, so the canonical track is reused and the Tidal source/entry
+    // are attached without creating a second global track.
+    let tidal_res = engine
         .enrich_and_persist_sync_track(&pool, tidal_input)
         .await
-        .expect_err("Shared ISRC without edition evidence must require review");
-    assert!(review.starts_with("needs_review:"));
+        .expect("cross-service ISRC must reuse the canonical track");
+    assert_eq!(tidal_res.track_id, qobuz_res.track_id);
+    assert!(!tidal_res.is_new_global_track);
+    assert!(tidal_res.is_new_source_for_service);
+    assert!(tidal_res.is_new_library_entry_for_account);
     let tracks_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
         .fetch_one(&pool)
         .await
@@ -309,7 +315,7 @@ async fn test_shared_isrc_qobuz_and_tidal_creates_separate_sources_without_dupli
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!((tracks_total, tidal_sources, tidal_entries), (1, 0, 0));
+    assert_eq!((tracks_total, tidal_sources, tidal_entries), (1, 1, 1));
 }
 
 #[tokio::test]
@@ -975,7 +981,7 @@ fn test_service_sync_result_camel_case_ipc_serialization() {
 }
 
 #[tokio::test]
-async fn test_favorite_already_exists_globally_without_tidal_source() {
+async fn test_favorite_already_exists_globally_attaches_tidal_source_without_duplicating_track() {
     let pool = setup_test_db().await;
     let (spotify_svc_id, spotify_acc_id) =
         create_test_account(&pool, "spotify", "Spotify User").await;
@@ -1045,11 +1051,16 @@ async fn test_favorite_already_exists_globally_without_tidal_source() {
         album_provider_track_id: None,
     };
 
-    let review = engine
+    // Cross-service ISRC reuse: the Tidal favorite attaches to the existing
+    // canonical track instead of failing closed and losing the source/entry.
+    let tidal_res = engine
         .enrich_and_persist_sync_track(&pool, tidal_input)
         .await
-        .expect_err("Shared ISRC without edition evidence must require review");
-    assert!(review.starts_with("needs_review:"));
+        .expect("cross-service ISRC must reuse the canonical track");
+    assert_eq!(tidal_res.track_id, sp_res.track_id);
+    assert!(!tidal_res.is_new_global_track);
+    assert!(tidal_res.is_new_source_for_service);
+    assert!(tidal_res.is_new_library_entry_for_account);
     let global_tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
         .fetch_one(&pool)
         .await
@@ -1066,7 +1077,7 @@ async fn test_favorite_already_exists_globally_without_tidal_source() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!((global_tracks, tidal_sources, tidal_entries), (1, 0, 0));
+    assert_eq!((global_tracks, tidal_sources, tidal_entries), (1, 1, 1));
 }
 
 #[tokio::test]

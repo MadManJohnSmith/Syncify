@@ -150,9 +150,9 @@ function formatNow(): string {
     return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-// Toast default durations. `error` antes valía 0 y por eso ningún error se
-// iba solo: se quedaba en pantalla hasta que el usuario lo cerraba a mano
-// (R16). Se le da un plazo más largo que al resto porque exige leerlo.
+// Toast default durations. `error` used to be 0, so no error ever went away
+// on its own: it stayed on screen until the user closed it by hand (R16).
+// It gets a longer window than the rest because it demands reading.
 const defaultDurations: Record<string, number> = {
     success: 3000,
     error: 8000,
@@ -391,8 +391,8 @@ function completeProgress(id: string, success: boolean, message?: string) {
         if (message) toast.title = message
         toast.progress = undefined
         toast.timeRemaining = undefined
-        // Un download fallido también se retira solo: antes `duration = 0`
-        // dejaba el aviso clavado en pantalla para siempre.
+        // A failed download also dismisses itself: `duration = 0` used to
+        // leave the notice stuck on screen forever.
         toast.autoDismiss = true
         toast.duration = success ? 3000 : defaultDurations.error
         toast.createdAt = Date.now()
@@ -422,8 +422,8 @@ function clearAllHistory() {
 }
 
 // ============================================================
-// Diálogos internos (R13): sustituyen a alert()/confirm()/message()
-// nativos de plugin-dialog, que se abrían fuera de la ventana de la app.
+// Internal dialogs (R13): they replace the native alert()/confirm()/message()
+// from plugin-dialog, which opened outside the app window.
 export type DialogVariant = 'info' | 'warning' | 'danger'
 export type DialogKind = 'alert' | 'confirm' | 'prompt'
 
@@ -513,7 +513,7 @@ export function useDialog() {
     }
 }
 
-// Se exportan sueltos para que migrar un fichero sea cambiar el import:
+// Exported standalone so migrating a file is just changing the import:
 // `import { confirm } from '@tauri-apps/plugin-dialog'` ->
 // `import { confirm } from '@/composables/useToast'`.
 export const alert = alertDialog
@@ -606,7 +606,7 @@ export function useToast() {
         /** Feed the real backend `TraySettings` into the taxonomy. */
         applyTrayPreferences,
 
-        // Avisos con respuesta: el mismo canal que los toasts, sin salir de la app.
+        // Notices with a response: same channel as toasts, without leaving the app.
         alert: alertDialog,
         confirm: confirmDialog,
         prompt: promptDialog

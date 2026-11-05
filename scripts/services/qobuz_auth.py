@@ -14,12 +14,12 @@ from urllib.parse import parse_qs, urlparse
 
 
 def cookie_names(cookies: Dict[str, Any]) -> list:
-    """Nombres de las cookies presentes, nunca sus valores.
+    """Names of the cookies present, never their values.
 
-    `auth_token` y `uid` son fragmentos de sesión que Qobuz reutiliza como
-    credencial, y la redacción de `src-tauri/src/commands/auth.rs` sólo cubre
-    claves JSON: un valor —ni siquiera truncado a 50 caracteres— acababa en el
-    log de autenticación. Para diagnosticar qué falta basta con los nombres.
+    `auth_token` and `uid` are session fragments that Qobuz reuses as
+    credentials, and the redaction in `src-tauri/src/commands/auth.rs` only covers
+    JSON keys: a value —not even truncated to 50 characters— ended up in the
+    authentication log. The names alone are enough to diagnose what is missing.
     """
     return sorted(cookies.keys())
 
@@ -41,7 +41,7 @@ def should_attempt_token_capture_navigation(
     looked logged-in, which aborts Qobuz's still-in-flight post-login redirect
     ("net::ERR_ABORTED" => the cancelled load). If the session bootstrap had not fully
     settled yet, play.qobuz.com bounces straight back to /login and the user must submit
-    again — each new submit racing the same auxiliary navigation. Reautenticar only
+    again — each new submit racing the same auxiliary navigation. Re-authenticating only
     *appeared* healthier because its backend path can succeed via the persisted
     username/password fallback (cache["qobuz"], which logout does not clear) even when
     the browser dance misfires.
@@ -100,6 +100,7 @@ class QobuzAuth:
 
         return True
 
+    @staticmethod
     def _is_error_artifact(value) -> bool:
         """S186: detect console-error strings captured as credential values.
 
@@ -201,7 +202,7 @@ class QobuzAuth:
                     ],
                 )
             except Exception as e:
-                self._log(f"Canal Chrome falló ({e}); usando navegador del sistema")
+                self._log(f"Chrome channel failed ({e}); using system browser")
                 browser = await p.chromium.launch(
                     **chrome_launch_kwargs(),
                     headless=False,
@@ -224,6 +225,11 @@ class QobuzAuth:
             captured_user_id = None
             captured_username = None
             captured_password = None
+            # Identity captured from the logged-in page (`user/get`), the only
+            # source of email/display name the browser flow can offer. Rust
+            # validates them before storing or showing anything.
+            captured_email = None
+            captured_display_name = None
 
             def on_request(request):
                 nonlocal captured_auth_token, captured_user_id, captured_username, captured_password
@@ -310,14 +316,14 @@ class QobuzAuth:
             token_nav_cooldown_polls = 0
             awaiting_nav_settle = False
             
-            # FIX: detección de ventana cerrada compatible con cualquier
-            # versión de Playwright (eventos en vez de is_closed()).
+            # FIX: closed-window detection compatible with any
+            # Playwright version (events instead of is_closed()).
             _window_closed = {"v": False}
             browser.on("disconnected", lambda _: _window_closed.update(v=True))
             
             while time.time() - start_time < timeout_seconds:
                 if _window_closed["v"]:
-                    return False, "Cerraste la ventana del navegador sin completar el inicio de sesión — vuelve a intentar la conexión."
+                    return False, "You closed the browser window before completing sign-in — please try connecting again."
 
                 try:
                     cookies = await context.cookies()
@@ -481,6 +487,9 @@ class QobuzAuth:
                                                     return {
                                                         user_auth_token: (data.user && data.user.auth_token) || data.user_auth_token || null,
                                                         user_id: (data.user && data.user.id && data.user.id.toString()) || (data.id && data.id.toString()) || null,
+                                                        login: (data.user && (data.user.login || data.user.email)) || null,
+                                                        email: (data.user && data.user.email) || null,
+                                                        display_name: (data.user && (data.user.display_name || data.user.nickname)) || null,
                                                     };
                                                 }
                                                 return { error: resp.status + ' ' + resp.statusText };
@@ -497,6 +506,15 @@ class QobuzAuth:
                                             self._log(f"Got auth token via JS fetch! (len={len(auth_token)})")
                                         if js_user:
                                             user_id = user_id or str(js_user)
+                                        js_email = (js_result.get("email") or "").strip() or None
+                                        js_login = (js_result.get("login") or "").strip() or None
+                                        js_name = (js_result.get("display_name") or "").strip() or None
+                                        if js_email and not self._is_error_artifact(js_email):
+                                            captured_email = js_email
+                                        if js_name and not self._is_error_artifact(js_name):
+                                            captured_display_name = js_name
+                                        if js_login and not captured_username and not self._is_error_artifact(js_login):
+                                            captured_username = js_login
                                         if js_result.get("error"):
                                             self._log(f"JS fetch error: {js_result['error']}")
                                 except Exception as e:
@@ -516,6 +534,8 @@ class QobuzAuth:
                                 "browser_login": True,
                                 "username": captured_username,
                                 "password": captured_password,
+                                "email": captured_email,
+                                "display_name": captured_display_name,
                             }
                             self._log("Session captured from logged-in page!")
                             break
@@ -627,6 +647,8 @@ class QobuzAuth:
                         "cookies": full_cookies,
                         "username": captured_username,
                         "password": captured_password,
+                        "email": captured_email,
+                        "display_name": captured_display_name,
                         "browser_login": True
                     }
                     self._log("Session captured!")

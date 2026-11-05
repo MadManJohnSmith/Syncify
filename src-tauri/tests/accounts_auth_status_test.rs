@@ -1,7 +1,8 @@
 use sqlx::sqlite::SqlitePoolOptions;
 use syncify_tauri_lib::commands::types::{StoredCredentialKind, StoredCredentialState};
 use syncify_tauri_lib::commands::{
-    perform_get_accounts, perform_get_service_auth_status, perform_reset_database,
+    perform_get_accounts, perform_get_service_auth_status, perform_reset_account_sync_data,
+    perform_reset_database,
 };
 use syncify_tauri_lib::crypto;
 
@@ -257,6 +258,40 @@ async fn test_reset_database_preserves_accounts_and_credentials() {
         .await
         .unwrap();
 
+    // Favorites, cached totals, import counters and dashboard history: the
+    // reset used to leave these behind even though they describe the library
+    // that was just deleted.
+    sqlx::query(
+        "INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title)
+         VALUES (?, ?, 'track', 'fav-reset', 'Fav')",
+    )
+    .bind(account_id)
+    .bind(qobuz_svc_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO favorites_cache (service_name, item_type, total_count)
+         VALUES ('qobuz', 'all', 7)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO account_import_counts (account_id, collection, reported_total, imported_total, completeness)
+         VALUES (?, 'favorites', 10, 7, 'complete')",
+    )
+    .bind(account_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO library_snapshots (snapshot_date, total_tracks) VALUES (date('now'), 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
     // Execute perform_reset_database directly
     let msg = perform_reset_database(&pool).await.unwrap();
     assert!(msg.contains("Accounts and settings were preserved"));
@@ -270,8 +305,28 @@ async fn test_reset_database_preserves_accounts_and_credentials() {
         .fetch_one(&pool)
         .await
         .unwrap();
+    let favorites_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM favorites")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let favorites_cache_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM favorites_cache")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let import_counts_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_import_counts")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let snapshots_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM library_snapshots")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(tracks_count, 0);
     assert_eq!(entries_count, 0);
+    assert_eq!(favorites_count, 0);
+    assert_eq!(favorites_cache_count, 0);
+    assert_eq!(import_counts_count, 0);
+    assert_eq!(snapshots_count, 0);
 
     // Verify account and token are intact and still valid
     let status_after_reset = perform_get_service_auth_status(&pool, "qobuz", Some(account_id))
@@ -280,6 +335,158 @@ async fn test_reset_database_preserves_accounts_and_credentials() {
     assert_eq!(status_after_reset.status, "connected_valid");
     assert!(status_after_reset.is_authenticated);
     assert_eq!(status_after_reset.account_id, Some(account_id));
+}
+
+#[tokio::test]
+async fn test_reset_account_sync_data_clears_only_that_account() {
+    let pool = setup_test_db().await;
+
+    let qobuz_svc_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'qobuz'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let account_a = insert_account_with_creds(
+        &pool,
+        "qobuz",
+        "Account A",
+        serde_json::json!({ "user_auth_token": "token_a" }),
+    )
+    .await;
+    let account_b = insert_account_with_creds(
+        &pool,
+        "qobuz",
+        "Account B",
+        serde_json::json!({ "user_auth_token": "token_b" }),
+    )
+    .await;
+
+    let track_id: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Shared Track') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    for (account_id, suffix) in [(account_a, "a"), (account_b, "b")] {
+        sqlx::query(
+            "INSERT INTO library_entries (account_id, track_id, is_liked) VALUES (?, ?, 1)",
+        )
+        .bind(account_id)
+        .bind(track_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title)
+             VALUES (?, ?, 'track', ?, 'Favorite')",
+        )
+        .bind(account_id)
+        .bind(qobuz_svc_id)
+        .bind(format!("fav-{suffix}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO playlists (account_id, service_playlist_id, name)
+             VALUES (?, ?, 'Playlist')",
+        )
+        .bind(account_id)
+        .bind(format!("playlist-{suffix}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO account_import_counts (account_id, collection, reported_total, imported_total, completeness)
+             VALUES (?, 'favorites', 10, 1, 'complete')",
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE accounts SET last_synced = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(account_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    // Service-scoped cache and a global download that must survive the reset.
+    sqlx::query(
+        "INSERT INTO favorites_cache (service_name, item_type, total_count)
+         VALUES ('qobuz', 'all', 20)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO downloads (track_id, file_path, file_format)
+         VALUES (?, '/tmp/preserved-download.flac', 'FLAC')",
+    )
+    .bind(track_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let summary = perform_reset_account_sync_data(&pool, account_a)
+        .await
+        .unwrap();
+    assert_eq!(summary.account_id, account_a);
+    assert_eq!(summary.service, "qobuz");
+    assert_eq!(summary.library_entries, 1);
+    assert_eq!(summary.playlists, 1);
+    assert_eq!(summary.favorites, 1);
+
+    async fn count(pool: &sqlx::SqlitePool, table: &str, account_id: i64) -> i64 {
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE account_id = ?");
+        sqlx::query_scalar(&sql)
+            .bind(account_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    for table in [
+        "library_entries",
+        "favorites",
+        "playlists",
+        "account_import_counts",
+    ] {
+        assert_eq!(count(&pool, table, account_a).await, 0, "{table} A");
+        assert_eq!(count(&pool, table, account_b).await, 1, "{table} B");
+    }
+
+    let favorites_cache_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM favorites_cache")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(favorites_cache_count, 0);
+
+    let downloads_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM downloads")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(downloads_count, 1, "downloads are global and must survive");
+
+    let last_synced_a: Option<String> =
+        sqlx::query_scalar("SELECT last_synced FROM accounts WHERE id = ?")
+            .bind(account_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let last_synced_b: Option<String> =
+        sqlx::query_scalar("SELECT last_synced FROM accounts WHERE id = ?")
+            .bind(account_b)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(last_synced_a.is_none());
+    assert!(last_synced_b.is_some());
+
+    let status_a = perform_get_service_auth_status(&pool, "qobuz", Some(account_a))
+        .await
+        .unwrap();
+    assert_eq!(status_a.status, "connected_valid");
+    assert!(status_a.is_authenticated);
 }
 
 // ==============================================

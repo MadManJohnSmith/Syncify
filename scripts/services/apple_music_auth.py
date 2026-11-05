@@ -105,13 +105,13 @@ class AppleMusicAuth:
         return True
     
     def _fetch_access_token(self) -> Optional[str]:
-        """Respaldo: extraer el developer JWT de la web de Apple con requests.
+        """Fallback: extract the Apple developer JWT from the site using requests.
 
-        FIX 2026-08-25: la red del propietario está marcada por el anti-bot de
-        Apple (respuestas vacías), así que esto puede fallar aunque el navegador
-        real funcione — por eso primero se intenta SIEMPRE la interceptación en
-        el navegador. Aquí: UA real, timeouts, escaneo del HTML y hasta 6
-        bundles JS, con diagnóstico por etapa."""
+        FIX 2026-08-25: the owner's network is flagged by Apple's anti-bot
+        (empty responses), so this can fail even when the real browser works —
+        that is why browser interception is ALWAYS attempted first. Here: real
+        UA, timeouts, HTML scanning and up to 6 JS bundles, with per-stage
+        diagnostics."""
         import requests as _rq
         H = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
              "Accept-Language": "en-US,en;q=0.9"}
@@ -119,12 +119,12 @@ class AppleMusicAuth:
         try:
             r = _rq.get(f'{self.APPLE_MUSIC_URL}/us/browse', headers=H, timeout=15)
             if r.status_code != 200 or not r.text:
-                self._log(f"Página Apple no accesible (HTTP {r.status_code}, {len(r.text)} bytes) — ¿red bloqueada?")
+                self._log(f"Apple page not reachable (HTTP {r.status_code}, {len(r.text)} bytes) — network blocked?")
                 return None
             m = jwt_re.search(r.text)
             if m:
                 self._access_token = m.group(1)
-                self._log("Dev token extraído del HTML")
+                self._log("Dev token extracted from HTML")
                 return self._access_token
             bundles = list(dict.fromkeys(re.findall(r"/assets/[^\"]+[.]js", r.text)))[:6]
             for b in bundles:
@@ -134,11 +134,11 @@ class AppleMusicAuth:
                         mj = jwt_re.search(rj.text)
                         if mj:
                             self._access_token = mj.group(1)
-                            self._log(f"Dev token extraído de {b[:40]}…")
+                            self._log(f"Dev token extracted from {b[:40]}…")
                             return self._access_token
                 except Exception as ej:
-                    self._log(f"Bundle {b[:40]}… falló: {ej}")
-            self._log("Sin JWT en HTML ni bundles")
+                    self._log(f"Bundle {b[:40]}… failed: {ej}")
+            self._log("No JWT in HTML or bundles")
             return None
         except Exception as e:
             self._log(f"Error fetching access token: {e}")
@@ -149,15 +149,15 @@ class AppleMusicAuth:
         Validate the media-user-token against Apple Music API.
 
         Returns a THREE-valued verdict (A-2):
-          * True  → el token sirve de verdad (comprobado con un 200).
-          * False → el proveedor lo rechazó (401/403). Realmente caducado.
-          * None  → NO SE PUDO COMPROBAR (5xx, 429, timeout, DNS, parseo).
+          * True  → the token really works (verified with a 200).
+          * False → the provider rejected it (401/403). Truly expired.
+          * None  → COULD NOT BE VERIFIED (5xx, 429, timeout, DNS, parse).
 
-        El tercer valor es el que faltaba: antes, cualquier status distinto de
-        200 y cualquier excepción caían en el mismo `else`/`except` y
-        devolvían False, y el consumidor lo traducía a "Token expired". Eso
-        mandaba a re-loguear al usuario porque Apple tuviera un 503, cuando la
-        sesión seguía perfectamente viva.
+        The third value is what was missing: before, any status other than
+        200 and any exception fell into the same `else`/`except` and
+        returned False, and the consumer translated that to "Token expired". That
+        pushed the user to re-login just because Apple had a 503, when the
+        session was still perfectly alive.
 
         Returns:
             (is_valid_or_None, storefront_or_error_message)
@@ -171,9 +171,9 @@ class AppleMusicAuth:
             self._fetch_access_token()
 
         if not self._access_token:
-            # No se obtuvo el developer token: es un fallo de entorno/red, no
-            # un rechazo del token del usuario. Antes esto también salía como
-            # False y por tanto como "Token expired".
+            # The developer token was not obtained: this is an environment/network
+            # failure, not a rejection of the user's token. Before, this also showed
+            # up as False and therefore as "Token expired".
             return None, ("could not obtain the Apple developer token "
                           "(its network looks blocked for direct requests); "
                           "retry — normally the second attempt gets it")
@@ -198,21 +198,81 @@ class AppleMusicAuth:
                 self._log(f"Token valid (storefront: {storefront})")
                 return True, storefront
             elif response.status_code in (401, 403):
-                # Rechazo explícito: aquí sí se puede decir que caducó.
+                # Explicit rejection: here we can indeed say it expired.
                 self._log(f"Token invalid: HTTP {response.status_code}")
                 return False, f"Invalid token (HTTP {response.status_code})"
             else:
-                # 429, 5xx, y cualquier otro status: indisponibilidad. NO dice
-                # nada del token del usuario.
+                # 429, 5xx, and any other status: unavailability. Says NOTHING
+                # about the user's token.
                 self._log(f"Could not verify token: HTTP {response.status_code}")
                 return None, (f"Could not verify session "
                               f"(upstream HTTP {response.status_code})")
 
         except Exception as e:
-            # Timeout, DNS, SSL, JSON mal formado: no verificable.
+            # Timeout, DNS, SSL, malformed JSON: not verifiable.
             self._log(f"Validation error: {e}")
             return None, f"Could not verify session ({e})"
     
+    async def _read_typed_apple_id(self, context):
+        """Read the Apple ID email typed in the sign-in form, when visible.
+
+        Apple exposes no profile API for the `media-user-token`, so the Apple
+        ID typed during sign-in is the only identity this flow can capture.
+        Best effort: any failure leaves the account generic (the user can
+        always rename it from the accounts settings).
+        """
+        try:
+            pages = context.pages
+        except Exception:
+            return None
+        for page in pages:
+            try:
+                frames = page.frames
+            except Exception:
+                continue
+            for frame in frames:
+                try:
+                    value = await frame.evaluate(
+                        """() => {
+                            const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}$/;
+                            const read = (el) => {
+                                if (!el) return null;
+                                const value = typeof el.value === 'string' ? el.value.trim() : '';
+                                return EMAIL_RE.test(value) ? value : null;
+                            };
+                            const selectors = [
+                                'input#account_name_text_field',
+                                'input[type="email"]',
+                                'input[name="accountName"]',
+                                'input[name="appleId"]',
+                                'input[autocomplete="username"]',
+                            ];
+                            for (const selector of selectors) {
+                                const value = read(document.querySelector(selector));
+                                if (value) return value;
+                            }
+                            // Markup-drift safety net: only on Apple pages and only
+                            // for fully typed addresses in visible inputs.
+                            if (/(^|\\.)apple\\.com$/.test(location.hostname)) {
+                                const inputs = document.querySelectorAll('input[type="text"], input[type="email"]');
+                                for (const el of inputs) {
+                                    if (el.offsetParent === null) continue;
+                                    const value = read(el);
+                                    if (value) return value;
+                                }
+                            }
+                            return null;
+                        }"""
+                    )
+                except Exception:
+                    continue
+                if not value:
+                    continue
+                candidate = str(value).strip()
+                if "@" in candidate and "." in candidate.split("@")[-1]:
+                    return candidate
+        return None
+
     async def login_with_browser(self, timeout_seconds: int = 300) -> Tuple[bool, str]:
         """
         Open browser for user to log in and capture the media-user-token.
@@ -223,13 +283,16 @@ class AppleMusicAuth:
         Returns:
             (success, token_or_error_message)
         """
+        # Identity captured from the sign-in form; cleared on every attempt so a
+        # retry can never persist a previous account's email.
+        self._captured_apple_id = None
         try:
             from playwright.async_api import async_playwright
         except ImportError:
             return False, "Playwright not installed. Run: pip install playwright && python -m playwright install chromium"
 
-        # Navegador del sistema (decisión propietario 2026-08-25): nunca el
-        # Chromium descargable de ms-playwright.
+        # System browser (owner decision 2026-08-25): never the
+        # downloadable Chromium from ms-playwright.
         from services.browser_launcher import chrome_launch_kwargs
         
         self._log("Starting browser login flow...")
@@ -258,10 +321,10 @@ class AppleMusicAuth:
                     ignore_default_args=["--enable-automation"],
                 )
             except Exception as e:
-                # FIX 2026-08-25: el fallback ya NO intenta el Chromium gestionado
-                # por Playwright (binario no descargado → "Executable doesn't
-                # exist"); resolvemos SIEMPRE un navegador del sistema.
-                self._log(f"Chrome vía canal falló ({e}); usando navegador del sistema")
+                # FIX 2026-08-25: the fallback no longer tries Playwright's
+                # managed Chromium (binary not downloaded → "Executable doesn't
+                # exist"); we ALWAYS resolve a system browser.
+                self._log(f"Chrome via channel failed ({e}); using system browser")
                 context = await p.chromium.launch_persistent_context(
                     user_data_dir=user_data_dir,
                     **chrome_launch_kwargs(),
@@ -304,15 +367,16 @@ class AppleMusicAuth:
             
             start_time = time.time()
             token = None
+            captured_apple_id = None
             
-            # FIX: detección de ventana cerrada compatible con cualquier
-            # versión de Playwright (eventos en vez de is_closed()).
+            # FIX: closed-window detection compatible with any
+            # Playwright version (events instead of is_closed()).
             _window_closed = {"v": False}
             context.on("close", lambda _: _window_closed.update(v=True))
             
             while time.time() - start_time < timeout_seconds:
                 if _window_closed["v"]:
-                    return False, "Cerraste la ventana del navegador sin completar el inicio de sesión — vuelve a intentar la conexión."
+                    return False, "You closed the browser window before completing sign-in — please try connecting again."
 
                 # Check for the media-user-token cookie
                 cookies = await context.cookies()
@@ -325,46 +389,61 @@ class AppleMusicAuth:
                     self._log("Token captured!")
                     break
                 
+                # The Apple ID is typed in the sign-in form: capture it while
+                # the user is on that page so the account is not generic. Read
+                # on every poll and keep the LAST complete address seen: a
+                # value read mid-typing ("user@gmail.co") must not win over
+                # the final one ("user@gmail.com").
+                value = await self._read_typed_apple_id(context)
+                if value:
+                    captured_apple_id = value
+
                 # Wait a bit before checking again
                 await asyncio.sleep(1)
             
-            # FIX 2026-08-25 (orden): el close() estaba ANTES de la recarga — con
-            # sesión recordada el token aparecía en ~1s, el navegador se cerraba,
-            # y la recarga corría sobre un contexto muerto. Ahora la recarga
-            # ocurre PRIMERO (con sesión recordada esto le da al reproductor los
-            # segundos que necesita para emitir su developer token) y el cierre
-            # va al final de cada rama.
+            # FIX 2026-08-25 (ordering): the close() used to come BEFORE the reload — with
+            # a remembered session the token appeared in ~1s, the browser closed,
+            # and the reload ran against a dead context. Now the reload
+            # happens FIRST (with a remembered session this gives the player the
+            # seconds it needs to emit its developer token) and the close
+            # happens at the end of each branch.
             if token and not dev_token_found:
-                self._log("Developer token ausente; recargando para forzar llamadas a la API…")
+                self._log("Developer token missing; reloading to force API calls…")
                 try:
                     await page.reload(wait_until="domcontentloaded", timeout=20000)
                     deadline = time.time() + 15
                     while time.time() < deadline and not dev_token_found:
                         await asyncio.sleep(1)
                 except Exception as e2:
-                    self._log(f"Recarga falló: {e2}")
+                    self._log(f"Reload failed: {e2}")
 
             if dev_token_found:
                 self._access_token = dev_token_found
 
             await context.close()
 
+            # Never the value itself, only whether it could be captured: this
+            # distinguishes "typed but not read" from "never typed".
+            self._log("Apple ID email captured: " + ("yes" if captured_apple_id else "no"))
+
             if token:
                 
                 # Validate the token
                 is_valid, result = self.validate_token(token)
                 if is_valid:
+                    self._captured_apple_id = captured_apple_id
                     self.save_token(token, self._access_token)
                     return True, token
                 elif is_valid is None:
-                    # A-2: el token se acaba de capturar de una sesión real del
-                    # navegador, así que la prueba de la API es un veredicto
-                    # sobre NUESTRA comprobación, no sobre el token. Descartarlo
-                    # obligaría a repetir un login que sí funcionó (típico
-                    # cuando Apple devuelve un 5xx justo en ese momento).
-                    # Se guarda y se devuelve el error de comprobación.
+                    # A-2: the token was just captured from a real browser
+                    # session, so the API check is a verdict
+                    # on OUR verification, not on the token. Discarding it
+                    # would force repeating a login that did work (typical
+                    # when Apple returns a 5xx right then).
+                    # It is saved and the verification error is returned.
+                    self._captured_apple_id = captured_apple_id
                     self.save_token(token, self._access_token)
-                    self._log(f"Token guardado sin verificar: {result}")
+                    self._log(f"Token saved unverified: {result}")
                     return True, token
                 else:
                     return False, f"Token captured but invalid: {result}"
@@ -393,9 +472,9 @@ class AppleMusicAuth:
                 "storefront": result
             }
         elif is_valid is None:
-            # A-2: no se pudo comprobar. La sesión NO se declara caducada: se
-            # informa del fallo de comprobación para que la UI ofrezca
-            # reintentar en vez de obligar a re-loguear.
+            # A-2: could not be verified. The session is NOT declared expired: the
+            # verification failure is reported so the UI can offer
+            # retry instead of forcing a re-login.
             return {
                 "connected": False,
                 "status": f"Could not verify session: {result}",
@@ -421,7 +500,10 @@ def apple_music_login() -> dict:
         success, result = loop.run_until_complete(auth.login_with_browser())
         return {
             "success": success,
-            "message": "Successfully connected to Apple Music" if success else result
+            "message": "Successfully connected to Apple Music" if success else result,
+            # Apple exposes no profile API; this is the Apple ID typed at
+            # sign-in, when the browser flow could read it. None otherwise.
+            "email": getattr(auth, "_captured_apple_id", None),
         }
     finally:
         loop.close()

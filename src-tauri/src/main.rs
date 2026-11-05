@@ -94,16 +94,6 @@ fn main() {
     let concurrency_manager = services::get_global_concurrency_manager();
 
     tauri::Builder::default()
-        // S194/S200: local playback protocol - serves byte ranges of files that
-        // resolve_playback_source explicitly granted (downloads-verified).
-        // S200: ASYNC registration — the handler does blocking file IO (up to
-        // 8 MB per request); the synchronous variant ran it on the MAIN thread
-        // (webkit/WebView2 serve custom schemes there) and froze the UI while
-        // audio played. The async variant answers via UriSchemeResponder from a
-        // plain OS thread.
-        .register_asynchronous_uri_scheme_protocol("syncify-media", |_ctx, request, responder| {
-            commands::handle_media_protocol_request_async(request, responder)
-        })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         // Ítem 31: autoinicio al arrancar el sistema, gobernado por el ajuste
@@ -224,6 +214,14 @@ fn main() {
                 concurrency_manager: concurrency_manager.clone(),
             });
             app.manage(import_lock);
+            // Fase 1 del player: motor nativo (rodio + symphonia). El motor de
+            // audio se abre perezosamente en el primer `player_load`.
+            app.manage(commands::player::PlayerState::default());
+            // Fase 2: sesión de streaming progresivo (caché temporal Qobuz/Tidal).
+            app.manage(services::stream_cache::StreamCacheState::default());
+            // MPRIS (Linux): panel de medios del escritorio para el motor nativo.
+            app.manage(services::mpris::MprisService::start(&init_handle));
+            commands::player::spawn_player_ticker(&init_handle);
 
             // PAUSE MusicBrainz enrichment as requested (S78) - Commented out to restore user persistence
             /*
@@ -1001,6 +999,7 @@ fn main() {
             commands::import_library,
             commands::emit_test_notification,
             commands::show_in_folder,
+            commands::open_local_sidecar,
             commands::get_track_metadata,
             commands::get_track_sources_availability,
             commands::check_track_availability,
@@ -1102,8 +1101,16 @@ fn main() {
             // S202 / TASK-7.1 CR-5: country & region tag repair (dry-run + apply)
             commands::plan_country_tag_repair,
             commands::apply_country_tag_repair,
-            // S194: local playback of downloaded tracks
-            commands::resolve_playback_source,
+            // Fase 1 del player: motor nativo (rodio + symphonia)
+            commands::player_load,
+            commands::player_load_track,
+            commands::player_pause,
+            commands::player_resume,
+            commands::player_stop,
+            commands::player_seek,
+            commands::player_set_volume,
+            commands::player_set_rate,
+            commands::player_mpris_update,
             // Fase 1 del player: estadísticas de reproducción local
             commands::record_local_play,
             // Downloads
@@ -1168,6 +1175,9 @@ fn main() {
             commands::get_accounts,
             commands::add_account,
             commands::remove_account,
+            commands::reset_account_sync_data,
+            commands::refresh_account_identities,
+            commands::set_account_display_name,
             commands::update_account_sync_time,
             commands::toggle_account_active,
             commands::set_active_account,
@@ -1244,6 +1254,8 @@ fn main() {
             // Metadata Tab
             commands::update_track_metadata,
             commands::get_metadata_stats,
+            commands::ediciones_de_pista,
+            commands::resolver_aparicion_de_pista,
             commands::get_tracks_needing_metadata,
             commands::fetch_missing_cover_art,
             commands::get_tidal_repair_dry_run,

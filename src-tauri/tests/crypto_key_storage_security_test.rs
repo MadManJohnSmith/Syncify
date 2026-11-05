@@ -6,7 +6,9 @@
 //! 3. When Keychain fails (e.g. headless, missing D-Bus Secret Service), `.crypto_key` is used as fallback.
 //! 4. On Unix platforms, fallback `.crypto_key` is created with strict 0600 permissions.
 //! 5. Pre-existing insecure fallback files (0644/0666) have their permissions hardened to 0600 upon load.
-//! 6. When a fallback key exists and Keychain becomes available, the key is migrated to Keychain and the file purged.
+//! 6. When a fallback key exists and Keychain becomes available, the key is migrated to
+//!    Keychain and the file purged — but ONLY when the migrated write can be read back
+//!    as the same key; a store that lies or does not persist keeps the file.
 //! 7. AES-256-GCM encryption and decryption function identically and interoperably between keychain and fallback keys.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -17,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use syncify_tauri_lib::crypto::{
     decrypt_with_key, encrypt_with_key, generate_random_key, load_fallback_key,
-    resolve_or_create_key, write_fallback_key,
+    resolve_or_create_key_with_persistence, write_fallback_key,
 };
 
 #[test]
@@ -44,8 +46,9 @@ fn test_keychain_success_does_not_create_crypto_key_file() {
         *stored_key.borrow_mut() = Some(*k);
         Ok(())
     };
-    let resolved_key = resolve_or_create_key(load, store, Some(&fallback_key_path))
-        .expect("resolve_or_create_key failed");
+    let resolved_key =
+        resolve_or_create_key_with_persistence(load, store, Some(&fallback_key_path), true)
+            .expect("resolve_or_create_key failed");
 
     assert_eq!(stored_key.borrow().as_ref().copied(), Some(resolved_key));
     // SEC-009 Core Invariant: Master key MUST NOT be written to disk when Keychain is functional
@@ -68,10 +71,11 @@ fn test_keychain_load_success_removes_preexisting_fallback_file() {
     let existing_kc_key = generate_random_key();
 
     // Simulate: Keychain load succeeds immediately
-    let resolved_key = resolve_or_create_key(
+    let resolved_key = resolve_or_create_key_with_persistence(
         || Ok(existing_kc_key),
         |_| panic!("store_kc must not be called when load_kc succeeds"),
         Some(&fallback_key_path),
+        true,
     )
     .expect("resolve_or_create_key failed");
 
@@ -106,8 +110,9 @@ fn test_keychain_store_success_removes_preexisting_fallback_file() {
         *stored_key.borrow_mut() = Some(*k);
         Ok(())
     };
-    let resolved_key = resolve_or_create_key(load, store, Some(&fallback_key_path))
-        .expect("resolve_or_create_key failed");
+    let resolved_key =
+        resolve_or_create_key_with_persistence(load, store, Some(&fallback_key_path), true)
+            .expect("resolve_or_create_key failed");
 
     assert_eq!(stored_key.borrow().as_ref().copied(), Some(resolved_key));
     assert!(
@@ -124,10 +129,11 @@ fn test_keychain_failure_triggers_fallback_with_strict_0600_permissions() {
     assert!(!fallback_key_path.exists());
 
     // Simulate: Headless / missing Secret Service / D-Bus failure
-    let resolved_key = resolve_or_create_key(
+    let resolved_key = resolve_or_create_key_with_persistence(
         || Err("D-Bus Secret Service not available".to_string()),
         |_| Err("D-Bus Secret Service connection refused".to_string()),
         Some(&fallback_key_path),
+        true,
     )
     .expect("resolve_or_create_key should succeed using fallback");
 
@@ -228,17 +234,28 @@ fn test_fallback_migration_to_keychain_when_available() {
     let migrated_to_kc = Arc::new(AtomicBool::new(false));
     let migrated_to_kc_clone = Arc::clone(&migrated_to_kc);
 
-    // Keychain load fails (not yet in keychain), but store succeeds (keychain is now alive)
-    let resolved_key = resolve_or_create_key(
-        || Err("Key not yet in keychain".to_string()),
-        move |k| {
-            assert_eq!(*k, fallback_key);
-            migrated_to_kc_clone.store(true, Ordering::SeqCst);
-            Ok(())
-        },
-        Some(&fallback_key_path),
-    )
-    .expect("resolve_or_create_key failed");
+    // Keychain load fails (not yet in keychain); the store persists and the
+    // read-back returns the same key (a working keychain).
+    let stored_key = Arc::new(std::sync::Mutex::new(None::<[u8; 32]>));
+    let stored_for_load = Arc::clone(&stored_key);
+    let load = move || {
+        stored_for_load
+            .lock()
+            .expect("stored key mutex")
+            .as_ref()
+            .copied()
+            .ok_or_else(|| "Key not yet in keychain".to_string())
+    };
+    let stored_for_store = Arc::clone(&stored_key);
+    let store = move |k: &[u8; 32]| {
+        assert_eq!(*k, fallback_key);
+        migrated_to_kc_clone.store(true, Ordering::SeqCst);
+        *stored_for_store.lock().expect("stored key mutex") = Some(*k);
+        Ok(())
+    };
+    let resolved_key =
+        resolve_or_create_key_with_persistence(load, store, Some(&fallback_key_path), true)
+            .expect("resolve_or_create_key failed");
 
     assert_eq!(resolved_key, fallback_key);
     assert!(
@@ -248,6 +265,36 @@ fn test_fallback_migration_to_keychain_when_available() {
     assert!(
         !fallback_key_path.exists(),
         "Fallback file should be purged after migration to Keychain"
+    );
+}
+
+#[test]
+fn test_fallback_migration_keeps_file_when_keychain_cannot_read_back() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+    let fallback_key_path = temp_dir.path().join(".crypto_key");
+    let fallback_key = generate_random_key();
+
+    write_fallback_key(&fallback_key_path, &fallback_key).expect("Failed to write fallback");
+
+    // A store that accepts writes but never persists them (keyring mock store,
+    // a dead KWallet). The read-back fails, so the file must survive intact:
+    // deleting it would lose the only copy of the key.
+    let resolved_key = resolve_or_create_key_with_persistence(
+        || Err("Key not yet in keychain".to_string()),
+        |_| Ok(()),
+        Some(&fallback_key_path),
+        true,
+    )
+    .expect("resolve_or_create_key failed");
+
+    assert_eq!(resolved_key, fallback_key);
+    assert!(
+        fallback_key_path.exists(),
+        "The fallback file must NOT be purged when the keychain write cannot be read back"
+    );
+    assert_eq!(
+        load_fallback_key(&fallback_key_path).expect("fallback file must remain readable"),
+        fallback_key
     );
 }
 

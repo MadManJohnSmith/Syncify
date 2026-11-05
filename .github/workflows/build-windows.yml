@@ -228,6 +228,14 @@ jobs:
         working-directory: ui
         run: npm run build
 
+      # Guardia de regresión del bug de credenciales en Windows: sin la feature
+      # `windows-native`, keyring compila su store mock (EntryOnly, sin
+      # persistencia) y cada dos arranques se rotaba la clave de cifrado,
+      # dejando TODAS las cuentas marcadas como irrecuperables. Linux no puede
+      # cazar ese fallo porque el test es `#[cfg(target_os = "windows")]`.
+      - name: Guardia del keyring de Windows (store persistente)
+        run: cargo test --locked -p syncify-tauri --lib crypto::tests::windows_build_uses_a_persistent_credential_store -- --nocapture
+
       - name: Compilar con Tauri v2 (Instalador NSIS y Binarios)
         run: npx --prefix ui tauri build
 

@@ -414,7 +414,7 @@ describe('S126A Accounts & Sync Unification Suite', () => {
 
     // Total library count = 1540, favorites count = 320
     expect(spotifyCard!.text()).toContain('1,540')
-    expect(spotifyCard!.text()).toContain('Imported')
+    expect(spotifyCard!.text()).toContain('Total Imported')
     expect(spotifyCard!.text()).toContain('320')
     expect(spotifyCard!.text()).toContain('Favorites')
   })
@@ -449,6 +449,105 @@ describe('S126A Accounts & Sync Unification Suite', () => {
     expect(updatedSpotifyCard!.text()).not.toContain('RequiresAuth')
     const reconnectBtn = updatedSpotifyCard!.findAll('button').find(b => b.text().includes('Reconnect'))
     expect(reconnectBtn).toBeDefined()
+  })
+
+  it('7b. A resolved partial sync with "401" inside an item error does NOT ask for reauthentication', async () => {
+    const { useGlobalTasks, resetGlobalTasks } = await import('@/composables/useGlobalTasks')
+    resetGlobalTasks()
+    const globalTasks = useGlobalTasks()
+    globalTasks.initEventListeners()
+
+    mockInvoke((command, args: any) => {
+      if (command === 'get_services') return mockServices
+      if (command === 'get_accounts') return mockAccounts
+      if (command === 'get_service_statuses') return mockStatuses
+      if (command === 'sync_service') {
+        return {
+          service: args.service,
+          account_id: 1,
+          success: false,
+          message: 'Sync completed with 1 errors',
+          imported_tracks_total: 0,
+          favorite_tracks_total: 0,
+          favorite_albums_total: 0,
+          favorite_artists_total: 0,
+          playlists_total: 0,
+          purchases_total: 0,
+          skipped_tracks_total: 0,
+          errors: ['Tidal favorites error: item 4012345 could not be imported'],
+        }
+      }
+      return null
+    })
+
+    const wrapper = mount(AccountsView)
+    await flushPromises()
+
+    const spotifyCard = wrapper.findAll('.service-card').find(c => c.text().includes('Spotify'))
+    const syncButton = spotifyCard!.findAll('button').find(b => b.text().includes('Sync'))
+    await syncButton!.trigger('click')
+    await flushPromises()
+
+    const updatedSpotifyCard = wrapper.findAll('.service-card').find(c => c.text().includes('Spotify'))
+    expect(updatedSpotifyCard!.text()).not.toContain('needs reauthentication')
+    expect(updatedSpotifyCard!.text()).not.toContain('Reconnect Required')
+    // The card remains syncable instead of switching to the invalid state.
+    expect(updatedSpotifyCard!.findAll('button').some(b => b.text().includes('Sync'))).toBe(true)
+
+    const task = globalTasks.tasks.value.get('sync-spotify')
+    expect(task?.status).toBe('failed')
+    expect(task?.requiresAuth).toBe(false)
+  })
+
+  it('7c. A sync with skipped items and imported data completes as a partial success without the connection error', async () => {
+    const { useGlobalTasks, resetGlobalTasks } = await import('@/composables/useGlobalTasks')
+    resetGlobalTasks()
+    const globalTasks = useGlobalTasks()
+    globalTasks.initEventListeners()
+
+    mockInvoke((command, args: any) => {
+      if (command === 'get_services') return mockServices
+      if (command === 'get_accounts') return mockAccounts
+      if (command === 'get_service_statuses') return mockStatuses
+      if (command === 'sync_service') {
+        return {
+          service: args.service,
+          account_id: 1,
+          success: true,
+          message:
+            'Sync completed for Spotify with 3 skipped item(s) (1 expansion failures): 100 favorites, 2 albums, 5 playlists',
+          imported_tracks_total: 42,
+          favorite_tracks_total: 100,
+          favorite_albums_total: 2,
+          favorite_artists_total: 0,
+          playlists_total: 5,
+          purchases_total: 0,
+          skipped_tracks_total: 0,
+          tracks_changed_unique: 42,
+          tracks_already_present: 10,
+          errors: ['a', 'b', 'c'],
+        }
+      }
+      return null
+    })
+
+    const wrapper = mount(AccountsView)
+    await flushPromises()
+
+    const spotifyCard = wrapper.findAll('.service-card').find(c => c.text().includes('Spotify'))
+    const syncButton = spotifyCard!.findAll('button').find(b => b.text().includes('Sync'))
+    await syncButton!.trigger('click')
+    await flushPromises()
+
+    // The partial result is a completed sync with skipped items: it must not
+    // take the "check the service connection" failure path nor prompt a
+    // reconnect just because item errors exist.
+    const task = globalTasks.tasks.value.get('sync-spotify')
+    expect(task?.status).toBe('completed')
+    expect(task?.requiresAuth).toBe(false)
+    const updatedSpotifyCard = wrapper.findAll('.service-card').find(c => c.text().includes('Spotify'))
+    expect(updatedSpotifyCard!.text()).not.toContain('needs reauthentication')
+    expect(updatedSpotifyCard!.text()).not.toContain('Reconnect Required')
   })
 
   it('8. S128A: Sync button registers an active task in useGlobalTasks and updates on success', async () => {

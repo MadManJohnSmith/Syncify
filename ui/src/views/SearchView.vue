@@ -56,7 +56,7 @@
             <p>Searching for "{{ searchQuery }}"...</p>
           </div>
 
-          <!-- Error: una búsqueda fallida no es «sin resultados» -->
+          <!-- Error: a failed search is not "no results" -->
           <div v-else-if="searchError" class="py-10 text-center text-text-secondary" data-testid="search-modal-error">
             <span class="material-symbols-outlined text-5xl mb-4 text-error">cloud_off</span>
             <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-1">Search failed</h3>
@@ -136,11 +136,11 @@
 
 <script setup lang="ts">
 /**
- * Búsqueda como modal (R17).
+ * Search as a modal (R17).
  *
- * Antes era una vista con su propia pestaña en la barra lateral y su ruta
- * `/search`. Ahora es una capa modal abierta desde el botón del navbar y desde
- * el atajo `Ctrl+F`, así que la única entrada posible es ella.
+ * It used to be a view with its own sidebar tab and its own `/search` route.
+ * It is now a modal layer opened from the navbar button and the `Ctrl+F`
+ * shortcut, so it is the only possible entry point.
  */
 import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -160,7 +160,7 @@ const player = usePlayer()
 const searchQuery = ref('')
 const tracks = ref<LibraryTrack[]>([])
 const isLoading = ref(false)
-/** Fallo de la última búsqueda; distingue «sin resultados» de «no se pudo buscar». */
+/** Last search failure; separates "no results" from "could not search". */
 const searchError = ref<string | null>(null)
 const searchInput = ref<HTMLInputElement | null>(null)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null

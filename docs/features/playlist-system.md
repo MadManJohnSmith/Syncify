@@ -4,15 +4,16 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
-**Estado de revisión:** 2026-10-02 — narrativa re-derivada del código (ítem 9.1 del plan post-auditoría, DO-5): la sección "Sync Per-Service" ya no afirma que solo Spotify importe playlists en Rust; el motor unificado las importa para Qobuz, Tidal, Spotify, Deezer y Apple Music. Gate de rutas: `scripts/tests/test_docs_consistency.py` — todas las rutas citadas existen o están declaradas como eliminadas.
+**Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): citas de línea de `commands/service.rs` y `commands/tools.rs` sustituidas por símbolos; reescrito el razonamiento de SoundCloud (`SoundcloudClient::get_playlists`/`get_playlist_tracks` existen en `services/soundcloud.rs` tras `#[allow(dead_code)]`, sin comando que los invoque) y corregido el punto de ruptura de `create_playlist` (hace `account_id.unwrap_or(1)`, nunca inserta `NULL`). Sin verificar: importaciones contra servicios reales en vivo.
 
-**Último cambio:** ítem 9.1 del plan post-auditoría (2026-10-02) — estado real de la importación de playlists por servicio. Antes: S40 — 2026-03-30 — archivos: `migrations/0006_playlists.sql`, `commands/library.rs`, `commands/service.rs`
+**Último cambio:** re-revisión 2026-10-25 — símbolos en lugar de números de línea, razonamiento de SoundCloud corregido y punto de ruptura de `create_playlist` actualizado. Antes: ítem 9.1 del plan post-auditoría (2026-10-02) — estado real de la importación de playlists por servicio. Antes: S40 — 2026-03-30 — archivos: `migrations/0006_playlists.sql`, `commands/library.rs`, `commands/service.rs`
 **Leer antes de modificar:** `commands/tools.rs` (Python bridge playlist commands), `scripts/playlist_bridge.py`
 **Archivos core:**
-- `migrations/0006_playlists.sql` (schema)
-- `src-tauri/src/commands/service.rs` L816 (`import_spotify_playlists`), L1352 (`import_qobuz_playlists`), L1384 (`import_tidal_library`), L1470 (`import_deezer_library`), L2165 (`import_apple_music_library`), L43 (`upsert_playlist_and_source`)
+- `migrations/0006_playlists.sql` (schema) y `migrations/0048_playlist_sync.sql` (identidad remota `playlist_sources`)
+- `src-tauri/src/commands/service.rs` — `upsert_playlist_and_source`, `import_spotify_playlists`, `import_qobuz_playlists`, `import_tidal_library`, `import_deezer_library`, `import_apple_music_library` (helpers `emit_import_progress`/`emit_import_complete`)
 - `src-tauri/src/commands/library.rs` (`get_local_playlist_tracks`, `get_playlists`, `add_to_playlist`, `create_playlist`)
-- `src-tauri/src/commands/tools.rs` L857 (`fetch_remote_playlist_tracks`), L866 (`export_playlist`), L885 (`match_playlist_to_service`)
+- `src-tauri/src/commands/playlists.rs` (`recompact_playlist_positions`, `match_entry_to_track`)
+- `src-tauri/src/commands/tools.rs` — `fetch_remote_playlist_tracks`, `export_playlist`, `match_playlist_to_service` (Python bridge playlist commands)
 - `scripts/playlist_bridge.py` (Python bridge for cross-service ops)
 
 ---
@@ -52,7 +53,8 @@ service.rs::import_spotify_playlists()
 
 ```
 FRONTEND → invoke("create_playlist", { name, description })
-    → library.rs: INSERT INTO playlists (account_id=NULL, name, ...)
+    → library.rs: INSERT INTO playlists (account_id = account_id.unwrap_or(1),
+      service_playlist_id = 'local_' || name, name, ...)
 
 FRONTEND → invoke("add_to_playlist", { playlist_id, track_ids })
     → library.rs: INSERT OR IGNORE INTO playlist_tracks per track_id
@@ -92,7 +94,7 @@ ningún command de Rust lo invoca; la UI lista las playlists locales con
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
 | `id` | INTEGER | PK AUTOINCREMENT | |
-| `account_id` | INTEGER | NOT NULL FK → accounts(id) ON DELETE CASCADE | NULL for local playlists |
+| `account_id` | INTEGER | NOT NULL FK → accounts(id) ON DELETE CASCADE | `create_playlist` usa la cuenta 1 para playlists locales (nunca `NULL`) |
 | `service_playlist_id` | TEXT | NOT NULL | Service-specific ID |
 | `name` | TEXT | NOT NULL | Playlist name |
 | `description` | TEXT | | Optional description |
@@ -153,8 +155,13 @@ UNIQUE constraint: `(playlist_id, track_id)`
 El motor unificado `perform_sync_service_with_emitter` llama a
 `upsert_playlist_and_source()` en las ramas `qobuz`, `tidal`, `spotify` y `deezer`, y
 la rama `apple_music` importa las suyas vía `AppleMusicClient::import_playlists`
-(expansión paginada cuando la relación viene truncada). SoundCloud no entra: su API
-pública no expone playlists de usuario.
+(expansión paginada cuando la relación viene truncada). SoundCloud no entra en la
+importación, pero no por falta de capacidad: `SoundcloudClient::get_playlists` y
+`SoundcloudClient::get_playlist_tracks` existen en `src-tauri/src/services/soundcloud.rs`
+(detrás de `#[allow(dead_code)]`, cubiertos por `tests/soundcloud_playlists_client_test.rs`)
+y el puente Python sí tiene `get_user_playlists` para sus servicios. Lo que falta es el
+cableado: ningún comando Rust invoca a esos métodos del cliente para importar, y la UI
+rechaza el servicio en `importPlaylists` con `Unsupported playlist service`.
 
 | Servicio | Ruta de importación en Rust | Comando |
 |---|---|---|
@@ -163,7 +170,7 @@ pública no expone playlists de usuario.
 | Tidal | motor (rama `tidal`) | `import_tidal_library` |
 | Deezer | motor (rama `deezer`) | `import_deezer_library` |
 | Apple Music | `AppleMusicClient::import_playlists` desde el brazo `apple_music` | `import_apple_music_library` |
-| SoundCloud | — (capacidad no expuesta por la API pública) | — |
+| SoundCloud | — (cliente capaz en `services/soundcloud.rs`, sin comando que lo invoque) | — |
 
 La UI enruta por servicio en `ui/src/api/playlists.ts::importPlaylists`
 (spotify/qobuz/tidal/deezer) y rechaza el resto con `Unsupported playlist service`.
@@ -188,6 +195,9 @@ de archivo, no la importación:
 | PlaylistView.vue | `importPlaylists` (el wrapper que enruta por servicio) |
 | TrackContextMenu | `add_to_playlist`, `create_playlist` |
 
+Los wrappers de estos comandos viven en `ui/src/api/` (`libraryApi.getPlaylists` y el
+objeto `playlistsApi`, entre otros); las vistas no invocan `invoke` directamente.
+
 ---
 
 ## Puntos de ruptura conocidos
@@ -195,5 +205,5 @@ de archivo, no la importación:
 1. **CASCADE on account deletion**: Deleting an account CASCADE-deletes all its playlists AND their playlist_tracks. This is intentional but destructive.
 2. **Re-importar no duplica playlists**: `upsert_playlist_and_source()` busca primero en `playlist_sources` por `(account_id, service_playlist_id)` y, si no encuentra, actualiza o inserta en `playlists`; las rutas que no pasan por él (p. ej. `AppleMusicClient::import_playlists`) hacen su propio `ON CONFLICT` sobre la misma clave. Lo que sí cambia en una reimportación son `playlist_tracks`: las pistas se re-vinculan y el orden se rehace.
 3. **Playlist tracks vs library entries**: una pista puede estar en `playlist_tracks` sin fila en `library_entries`, y entonces la vista de biblioteca no la muestra. El motor unificado (`EnrichmentEngine`) y el importador de Apple Music crean la entrada (`library_entries` con `is_liked=1`); las rutas que solo escriben `playlist_tracks` no.
-4. **Local playlists (account_id=NULL)**: The schema says `account_id NOT NULL` but `create_playlist` in library.rs may set it to NULL for locally-created playlists. This violates the constraint if not handled.
+4. **Local playlists cuelgan de la cuenta 1**: la columna `account_id` es `NOT NULL` con FK a `accounts`, y `create_playlist` (`commands/library.rs`) hace `account_id.unwrap_or(1)`, así que nunca inserta `NULL` — las playlists creadas desde la UI quedan asociadas a la cuenta 1, con `service_playlist_id = 'local_' || name` y `track_count = 0`.
 5. **Position tracking**: solo las rutas que recomprimen al final lo garantizan. `import_spotify_playlists` llama a `recompact_playlist_positions(playlist_id)` tras cada playlist y deja las posiciones en 1..N; las que no (p. ej. `AppleMusicClient::import_playlists`, que escribe `position` desde el índice de la relación) dejan la posición como vino del servicio, así que un reordenado en el origen se propaga como desalineación local.

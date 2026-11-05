@@ -70,11 +70,11 @@ class DeezerService(MusicService):
     CLIENT_ID = "447462"
     CLIENT_SECRET = ""
 
-    # Clave Blowfish PÚBLICA de Deezer: es la clave de descifrado que la propia
-    # Deezer usa para sus streams y que todos los clientes open-source traen
-    # incluida. NO es un secreto personal de nadie y NO debe volver a exigirse
-    # por variable de entorno como si lo fuera. La variable
-    # DEEZER_BLOWFISH_KEY (o credentials.extra) solo existe para sobrescribirla.
+    # Deezer's PUBLIC Blowfish key: it is the decryption key that Deezer itself
+    # uses for its streams and that every open-source client ships
+    # built in. It is NOT anyone's personal secret and must NOT be required
+    # again via environment variable as if it were. The
+    # DEEZER_BLOWFISH_KEY variable (or credentials.extra) exists only to override it.
     PUBLIC_BLOWFISH_KEY: bytes = b"g4el58wc0zvf9na1"
 
     @classmethod

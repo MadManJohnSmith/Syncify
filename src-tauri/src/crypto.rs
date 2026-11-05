@@ -179,16 +179,75 @@ pub fn load_fallback_key(path: &std::path::Path) -> Result<[u8; 32], String> {
     Ok(key)
 }
 
+/// Whether the compiled credential store really persists secrets across
+/// process restarts.
+///
+/// `keyring` silently falls back to its in-memory `mock` store when no
+/// platform backend feature applies to the target (e.g. a Windows build that
+/// only enables `sync-secret-service`). That store answers `Ok` to writes and
+/// reads them back within the same process, but every new `Entry` starts
+/// empty, so the "keychain" is empty again on the next launch. Trusting it
+/// rotates the encryption key and marks every stored credential
+/// irrecoverable on the following start.
+///
+/// Only `UntilDelete` (disk-backed: Secret Service, Windows Credential
+/// Manager) is trusted. `UntilReboot` (kernel keyutils) already proved not to
+/// survive restarts in production and is treated like the mock store: the
+/// fallback file is the only trusted storage.
+pub fn keychain_is_persistent() -> bool {
+    use keyring::credential::CredentialPersistence;
+    matches!(
+        keyring::default::default_credential_builder().persistence(),
+        CredentialPersistence::UntilDelete
+    )
+}
+
+/// Fallback-file-only resolution used when the compiled credential store is
+/// not persistent: load the file, or generate and persist a new key there.
+fn fallback_key_only(fallback_path: Option<&std::path::Path>) -> Result<[u8; 32], String> {
+    if let Some(path) = fallback_path {
+        if let Ok(key) = load_fallback_key(path) {
+            tracing::info!("Encryption key loaded from fallback file");
+            return Ok(key);
+        }
+        let key = generate_random_key();
+        write_fallback_key(path, &key)?;
+        return Ok(key);
+    }
+
+    Err(
+        "No existing encryption key and none could be persisted: the platform credential \
+         store does not persist across restarts and no fallback file location is available. \
+         Refusing to start with an ephemeral key: existing credentials would be marked \
+         irrecoverable."
+            .to_string(),
+    )
+}
+
 /// Internal key resolution pipeline: Keychain -> Fallback -> Generate -> (Keychain / Fallback 0600)
-pub fn resolve_or_create_key<FLoad, FStore>(
+///
+/// `keychain_persistent` selects between the full pipeline (`true`) and the
+/// fallback file as the single source of truth (`false`, see
+/// [`keychain_is_persistent`]). Keeping it as a parameter makes the decision
+/// testable without touching a real credential store.
+pub fn resolve_or_create_key_with_persistence<FLoad, FStore>(
     mut load_kc: FLoad,
     mut store_kc: FStore,
     fallback_path: Option<&std::path::Path>,
+    keychain_persistent: bool,
 ) -> Result<[u8; 32], String>
 where
     FLoad: FnMut() -> Result<[u8; 32], String>,
     FStore: FnMut(&[u8; 32]) -> Result<(), String>,
 {
+    if !keychain_persistent {
+        tracing::warn!(
+            "The compiled credential store does not persist across restarts on this \
+             platform; using the fallback key file exclusively"
+        );
+        return fallback_key_only(fallback_path);
+    }
+
     // 1. Try to load from keychain first
     if let Ok(key) = load_kc() {
         tracing::info!("Encryption key loaded from OS Keychain");
@@ -211,12 +270,38 @@ where
     if let Some(path) = fallback_path {
         if let Ok(key) = load_fallback_key(path) {
             tracing::info!("Encryption key loaded from fallback file");
-            // If Keychain is now available, migrate fallback key to Keychain and delete fallback file
-            if store_kc(&key).is_ok() {
-                tracing::info!("Successfully migrated fallback key to OS Keychain");
-                if let Err(e) = std::fs::remove_file(path) {
-                    tracing::warn!("Failed to remove migrated fallback key file: {}", e);
-                }
+            // Migrate to the keychain ONLY when the write can be read back as
+            // the same key. A store that accepts writes and drops them (mock
+            // store, a keyring backend that does not persist) would otherwise
+            // make us delete the only real copy of the key; the next launch
+            // would generate a different one and destroy every stored
+            // credential. Same read-back rule the generate branch uses.
+            match store_kc(&key) {
+                Ok(()) => match load_kc() {
+                    Ok(stored) if stored == key => {
+                        tracing::info!("Successfully migrated fallback key to OS Keychain");
+                        if let Err(e) = std::fs::remove_file(path) {
+                            tracing::warn!("Failed to remove migrated fallback key file: {}", e);
+                        }
+                    }
+                    Ok(_) => tracing::error!(
+                        "OS Keychain holds a different key after the migration write; \
+                         keeping the fallback file {}",
+                        path.display()
+                    ),
+                    Err(e) => tracing::warn!(
+                        "Migrated key could not be read back from the OS Keychain ({}); \
+                         keeping the fallback file {}",
+                        e,
+                        path.display()
+                    ),
+                },
+                Err(e) => tracing::warn!(
+                    "Failed to migrate fallback key to the OS Keychain ({}); keeping the \
+                     fallback file {}",
+                    e,
+                    path.display()
+                ),
             }
             return Ok(key);
         }
@@ -309,6 +394,25 @@ where
     }
 
     Ok(key)
+}
+
+/// Key resolution against the real platform credential store (see
+/// [`resolve_or_create_key_with_persistence`]).
+pub fn resolve_or_create_key<FLoad, FStore>(
+    load_kc: FLoad,
+    store_kc: FStore,
+    fallback_path: Option<&std::path::Path>,
+) -> Result<[u8; 32], String>
+where
+    FLoad: FnMut() -> Result<[u8; 32], String>,
+    FStore: FnMut(&[u8; 32]) -> Result<(), String>,
+{
+    resolve_or_create_key_with_persistence(
+        load_kc,
+        store_kc,
+        fallback_path,
+        keychain_is_persistent(),
+    )
 }
 
 /// Initialize crypto from the OS Keychain or fallback file.
@@ -760,8 +864,13 @@ mod tests {
         // no persistía nada. La app arrancaba con una clave efímera, y en el
         // siguiente arranque TODAS las credenciales se marcaban como
         // irrecuperables. Aquí el store mente y no hay ruta de fallback.
-        let err = resolve_or_create_key(|| Err("no key".to_string()), |_| Ok(()), None)
-            .expect_err("must refuse to start with an unverifiable key");
+        let err = resolve_or_create_key_with_persistence(
+            || Err("no key".to_string()),
+            |_| Ok(()),
+            None,
+            true,
+        )
+        .expect_err("must refuse to start with an unverifiable key");
         assert!(err.contains("cannot read it back"), "{}", err);
     }
 
@@ -771,8 +880,13 @@ mod tests {
         // persistir ahí en vez de perder la clave.
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let fallback = temp_dir.path().join(".crypto_key");
-        let key = resolve_or_create_key(|| Err("no key".to_string()), |_| Ok(()), Some(&fallback))
-            .expect("fallback must succeed");
+        let key = resolve_or_create_key_with_persistence(
+            || Err("no key".to_string()),
+            |_| Ok(()),
+            Some(&fallback),
+            true,
+        )
+        .expect("fallback must succeed");
         assert_eq!(load_fallback_key(&fallback).expect("read back"), key);
     }
 
@@ -786,7 +900,7 @@ mod tests {
         // Secuencia: 1er load falla, store dice Ok, read-back devuelve la clave
         // que otro proceso escribió (distinta de la generada).
         let mut loads = 0;
-        let resolved = resolve_or_create_key(
+        let resolved = resolve_or_create_key_with_persistence(
             || {
                 loads += 1;
                 if loads == 1 {
@@ -797,6 +911,7 @@ mod tests {
             },
             |_| Ok(()),
             None,
+            true,
         )
         .expect("existing key must be recovered");
         assert_eq!(resolved, existing);
@@ -943,7 +1058,7 @@ mod tests {
             *stored_key.borrow_mut() = Some(*k);
             Ok(())
         };
-        let key = resolve_or_create_key(load, store, Some(&fallback_file))
+        let key = resolve_or_create_key_with_persistence(load, store, Some(&fallback_file), true)
             .expect("resolve_or_create_key failed");
 
         assert_eq!(stored_key.borrow().as_ref().copied(), Some(key));
@@ -966,10 +1081,11 @@ mod tests {
         let kc_key = generate_random_key();
 
         // Simulate: load from keychain succeeds
-        let key = resolve_or_create_key(
+        let key = resolve_or_create_key_with_persistence(
             || Ok(kc_key),
             |_| panic!("store should not be called when load succeeds"),
             Some(&fallback_file),
+            true,
         )
         .expect("resolve_or_create_key failed");
 
@@ -986,10 +1102,11 @@ mod tests {
         let fallback_file = temp_dir.path().join(".crypto_key");
 
         // Simulate: load from keychain fails, and store in keychain also fails
-        let key = resolve_or_create_key(
+        let key = resolve_or_create_key_with_persistence(
             || Err("Keychain load error".into()),
             |_| Err("Keychain store error".into()),
             Some(&fallback_file),
+            true,
         )
         .expect("resolve_or_create_key failed");
 
@@ -1014,5 +1131,168 @@ mod tests {
 
         let loaded = load_fallback_key(&fallback_file).expect("Failed to load fallback file");
         assert_eq!(key, loaded);
+    }
+
+    // ── Persistencia declarada del store (regresión Windows mock store) ──────
+
+    /// Un store no persistente (el mock de `keyring` cuando ninguna feature de
+    /// backend aplica al target, o keyutils) nunca debe leerse ni escribirse:
+    /// el archivo de fallback es la única fuente de verdad. Su read-back
+    /// in-process haría creer que la clave quedó persistida.
+    #[test]
+    fn test_non_persistent_store_uses_fallback_file_exclusively() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let fallback = temp_dir.path().join(".crypto_key");
+        let existing = generate_random_key();
+        write_fallback_key(&fallback, &existing).expect("seed fallback");
+
+        let key = resolve_or_create_key_with_persistence(
+            || panic!("load must not be called for a non-persistent store"),
+            |_| panic!("store must not be called for a non-persistent store"),
+            Some(&fallback),
+            false,
+        )
+        .expect("fallback file must resolve");
+        assert_eq!(key, existing);
+        assert!(fallback.exists(), "the fallback file must be kept");
+    }
+
+    #[test]
+    fn test_non_persistent_store_generates_and_reuses_fallback_file() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let fallback = temp_dir.path().join(".crypto_key");
+
+        let first = resolve_or_create_key_with_persistence(
+            || panic!("load must not be called for a non-persistent store"),
+            |_| panic!("store must not be called for a non-persistent store"),
+            Some(&fallback),
+            false,
+        )
+        .expect("a new fallback key must be generated");
+        assert!(fallback.exists());
+
+        let second = resolve_or_create_key_with_persistence(
+            || panic!("load must not be called for a non-persistent store"),
+            |_| panic!("store must not be called for a non-persistent store"),
+            Some(&fallback),
+            false,
+        )
+        .expect("the same fallback key must be reused");
+        assert_eq!(first, second, "the key must be stable across resolutions");
+    }
+
+    #[test]
+    fn test_non_persistent_store_without_fallback_path_refuses_to_start() {
+        let err = resolve_or_create_key_with_persistence(
+            || panic!("load must not be called for a non-persistent store"),
+            |_| panic!("store must not be called for a non-persistent store"),
+            None,
+            false,
+        )
+        .expect_err("an ephemeral key must never be used");
+        assert!(err.contains("does not persist"), "{}", err);
+    }
+
+    /// La migración a keychain solo borra el archivo de fallback cuando la
+    /// escritura se puede releer IDÉNTICA. Antes bastaba un `store_kc` Ok, así
+    /// que un store mentiroso destruía la única copia de la clave.
+    #[test]
+    fn test_migration_keeps_fallback_file_when_readback_fails() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let fallback = temp_dir.path().join(".crypto_key");
+        let existing = generate_random_key();
+        write_fallback_key(&fallback, &existing).expect("seed fallback");
+
+        let key = resolve_or_create_key_with_persistence(
+            || Err("keychain empty".to_string()),
+            |_| Ok(()),
+            Some(&fallback),
+            true,
+        )
+        .expect("key must resolve from fallback");
+
+        assert_eq!(key, existing);
+        assert!(
+            fallback.exists(),
+            "a migration whose write cannot be read back must keep the fallback file"
+        );
+        assert_eq!(load_fallback_key(&fallback).expect("read back"), existing);
+    }
+
+    #[test]
+    fn test_migration_keeps_fallback_file_when_readback_returns_other_key() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let fallback = temp_dir.path().join(".crypto_key");
+        let existing = generate_random_key();
+        write_fallback_key(&fallback, &existing).expect("seed fallback");
+
+        let other = generate_random_key();
+        let mut loads = 0;
+        let key = resolve_or_create_key_with_persistence(
+            || {
+                loads += 1;
+                if loads == 1 {
+                    Err("keychain empty".to_string())
+                } else {
+                    Ok(other)
+                }
+            },
+            |_| Ok(()),
+            Some(&fallback),
+            true,
+        )
+        .expect("key must resolve from fallback");
+
+        assert_eq!(key, existing, "the fallback copy is the one in use");
+        assert!(
+            fallback.exists(),
+            "a keychain that answers with a different key must not make us delete the file"
+        );
+    }
+
+    /// La migración feliz sigue funcionando: escribirse y releerse la misma
+    /// clave purga el archivo.
+    #[test]
+    fn test_migration_purges_fallback_file_when_readback_matches() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let fallback = temp_dir.path().join(".crypto_key");
+        let existing = generate_random_key();
+        write_fallback_key(&fallback, &existing).expect("seed fallback");
+
+        let stored = std::cell::RefCell::new(None::<[u8; 32]>);
+        let load = || {
+            stored
+                .borrow()
+                .as_ref()
+                .copied()
+                .ok_or_else(|| "keychain empty".to_string())
+        };
+        let store = |k: &[u8; 32]| {
+            *stored.borrow_mut() = Some(*k);
+            Ok(())
+        };
+        let key = resolve_or_create_key_with_persistence(load, store, Some(&fallback), true)
+            .expect("key must resolve from fallback");
+
+        assert_eq!(key, existing);
+        assert_eq!(stored.borrow().as_ref().copied(), Some(existing));
+        assert!(
+            !fallback.exists(),
+            "a verified migration must purge the fallback file"
+        );
+    }
+
+    /// Guardia de configuración: el build de Windows debe llevar el backend
+    /// nativo (Credential Manager). Sin la feature `windows-native`, keyring
+    /// compila el store mock y esta comprobación falla en el CI de Windows.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_build_uses_a_persistent_credential_store() {
+        assert!(
+            keychain_is_persistent(),
+            "The Windows build must enable the `windows-native` keyring feature: without \
+             it, keyring falls back to its in-memory mock store and every launch would \
+             rotate the encryption key"
+        );
     }
 }

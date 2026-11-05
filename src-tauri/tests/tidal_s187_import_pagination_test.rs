@@ -273,3 +273,56 @@ async fn test_s187_page_shape_tolerance_and_429_retried_then_complete() {
         "three pages + exactly one retried attempt (2 attempts max)"
     );
 }
+
+// --- Identidad de la cuenta: perfil público para el refresco ---
+
+/// El refresco de identidad usa el perfil público (`GET /users/{id}`) cuando
+/// el flujo de dispositivo no trajo nombre. `best_display_name` prefiere el
+/// nombre escrito y cae al username que Tidal muestra a los demás.
+#[tokio::test]
+async fn test_get_user_profile_exposes_identity_for_the_accounts_surface() {
+    let responder: Responder = Arc::new(|_target: &str| {
+        (
+            200,
+            serde_json::json!({
+                "id": 1,
+                "username": "ana_tdl",
+                "email": "Ana@Example.com",
+                "firstName": "Ana",
+                "lastName": "Martínez"
+            })
+            .to_string(),
+        )
+    });
+    let (base, requests) = spawn_mock_tidal(responder).await;
+    let client = mock_client(base);
+    let profile = client.get_user_profile().await.expect("profile fetch");
+
+    assert_eq!(profile.best_display_name().as_deref(), Some("Ana Martínez"));
+    assert_eq!(profile.email.as_deref(), Some("Ana@Example.com"));
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0], "/users/1?countryCode=US");
+}
+
+/// Un perfil sin nombre escrito da el username; un perfil vacío no da nada y
+/// no puede tumbar el refresco.
+#[tokio::test]
+async fn test_get_user_profile_tolerates_sparse_payloads() {
+    let responder: Responder = Arc::new(|_target: &str| {
+        (
+            200,
+            serde_json::json!({"id": 1, "username": "ana_tdl"}).to_string(),
+        )
+    });
+    let (base, _requests) = spawn_mock_tidal(responder).await;
+    let profile = mock_client(base).get_user_profile().await.unwrap();
+    assert_eq!(profile.best_display_name().as_deref(), Some("ana_tdl"));
+    assert_eq!(profile.email, None);
+
+    let responder: Responder = Arc::new(|_target: &str| (200, "{}".to_string()));
+    let (base, _requests) = spawn_mock_tidal(responder).await;
+    let profile = mock_client(base).get_user_profile().await.unwrap();
+    assert_eq!(profile.best_display_name(), None);
+    assert_eq!(profile.email, None);
+}

@@ -193,6 +193,22 @@ configurar:
 - Un runtime de Python privado con los puentes de servicios ya instalados, así
   que nunca se pide el Python del sistema.
 
+Algunas funciones dependen de algo que los paquetes no pueden incluir:
+
+- **Los logins por navegador** (Qobuz, Deezer, SoundCloud, Apple Music) usan un
+  navegador de la familia Chromium ya instalado en tu sistema (Chrome,
+  Chromium, Brave, Edge, Vivaldi…). Tidal entra por su página de código de
+  dispositivo en tu navegador por defecto y Spotify usa el WebView propio de la
+  app: esos dos no necesitan nada extra.
+- **El AppImage necesita FUSE 2** en el sistema (Ubuntu 23.04+ lo trae como
+  `libfuse2t64`). Si no arranca, ejecútalo con `--appimage-extract-and-run`, o
+  usa el DEB o el tarball.
+- **El audio en Linux** va por ALSA; en un sistema solo-PipeWire instala
+  `pipewire-alsa` (o los plugins de ALSA).
+- **En Windows**, el instalador aún no está firmado: SmartScreen puede mostrar
+  una vez "Windows protegió tu PC" — elige *Más información* → *Ejecutar de
+  todas formas*.
+
 Después:
 
 1. Corre el asistente de primera ejecución: conecta tus cuentas, elige tu
@@ -220,11 +236,12 @@ directamente.
 
 Cifradas dentro de la base de datos SQLite propia de Syncify, en la carpeta
 de perfil de la app en tu máquina. La clave de cifrado se guarda en el
-llavero de tu sistema operativo cuando hay uno disponible; donde no lo hay
-(Linux sin sesión gráfica, sin Secret Service), la clave cae a un archivo
-`.crypto_key` con permisos `0600` en esa misma carpeta de perfil. Cada login
-corre por tu navegador y ninguna credencial se escribe nunca en un archivo de
-configuración plano.
+llavero de tu sistema operativo cuando hay uno disponible — el Administrador
+de credenciales en Windows, el Secret Service (GNOME Keyring/KWallet) en
+Linux; donde no lo hay (Linux sin sesión gráfica, sin Secret Service), la
+clave cae a un archivo `.crypto_key` con permisos `0600` en esa misma carpeta
+de perfil. Cada login corre por tu navegador y ninguna credencial se escribe
+nunca en un archivo de configuración plano.
 
 **¿Qué calidad puedo esperar?**
 
@@ -264,7 +281,7 @@ tag `v0.6.0` apunta exactamente a
 `ed440a96f669c264a7e477e76b791e325e900b7f` y la
 [release de Syncify v0.6.0](https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.0)
 está publicada con cinco artefactos para Linux y Windows. Sus notas provienen
-de [las notas de la versión 0.6.0](docs/RELEASE_NOTES_v0.6.0.md). La CI de
+de [las notas de la versión 0.6.0](docs/historico/RELEASE_NOTES_v0.6.0.md). La CI de
 Rust, frontend y Python, la puerta de release y ambos builds de publicación
 (Linux y Windows) quedaron en verde sobre esa misma revisión. Lo que **no** se
 ha demostrado aquí:
@@ -274,8 +291,9 @@ ha demostrado aquí:
   ejercitado en un escritorio real.
 - **La red en vivo.** Ningún login de arranque, enriquecimiento con proveedores,
   descarga ni resolución de letras ha corrido contra servicios reales.
-- **Tests de Rust ignorados.** Los 9 tests ignorados que necesitan red o
-  credenciales no se han ejercitado.
+- **Tests de Rust ignorados.** Los 13 tests ignorados —fuera de CI porque
+  necesitan red real, credenciales reales, una base SQLite de ejecución,
+  almacenamiento físico o medida de tiempo real— no se han ejercitado.
 - **Windows.** La comprobación cruzada del target `x86_64-pc-windows-msvc` no
   se ha ejecutado en esta máquina, aunque la CI produjo los instaladores de
   Windows.
@@ -318,7 +336,7 @@ npm run build
 
 - [`docs/`](docs/README.md) — arquitectura y features · [índice en inglés](docs/README.en.md)
 - [`docs/MATRIZ_PARIDAD_IMPORTACION.md`](docs/MATRIZ_PARIDAD_IMPORTACION.md) — matriz viva de paridad de importación
-- [`docs/LYRICS_16_PROVIDER_MATRIX.md`](docs/LYRICS_16_PROVIDER_MATRIX.md) — la cascada de letras, auditada
+- [`docs/LYRICS_PROVIDER_MATRIX.md`](docs/LYRICS_PROVIDER_MATRIX.md) — la cascada de letras, auditada
 - [`docs/Deuda_Tecnica_y_UX.md`](docs/Deuda_Tecnica_y_UX.md) — deuda técnica abierta, rastreada a la vista
 
 ## Contribuir

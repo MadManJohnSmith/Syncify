@@ -97,7 +97,7 @@ describe('useAccountsStatus Composable (TASK-16)', () => {
     expect(hasError.value).toBe(true)
     expect(isLoading.value).toBe(false)
     expect(mockToast.error).toHaveBeenCalledTimes(1)
-    expect(mockToast.error).toHaveBeenCalledWith('Error al cargar cuentas', 'Tauri IPC backend failure')
+    expect(mockToast.error).toHaveBeenCalledWith('Error loading accounts', 'Tauri IPC backend failure')
   })
 
   it('handles string rejection errors gracefully and exposes the error message', async () => {
@@ -113,7 +113,7 @@ describe('useAccountsStatus Composable (TASK-16)', () => {
     expect(hasError.value).toBe(true)
     expect(isLoading.value).toBe(false)
     expect(mockToast.error).toHaveBeenCalledTimes(1)
-    expect(mockToast.error).toHaveBeenCalledWith('Error al cargar cuentas', 'Connection timeout from SQLite')
+    expect(mockToast.error).toHaveBeenCalledWith('Error loading accounts', 'Connection timeout from SQLite')
   })
 
   it('clears error.value to null and populates accounts when backend returns successfully', async () => {

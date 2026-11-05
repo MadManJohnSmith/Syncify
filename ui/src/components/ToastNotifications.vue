@@ -69,8 +69,8 @@
             @click.stop="handleAction(toast, action)"
             :class="[
               'px-3 py-1.5 rounded text-xs font-medium transition-colors',
-              // WF-INK-01: un toast de progreso se pinta con --accent (casi blanco en
-              // Tinta, main.css:58), así que sus botones usan la tinta del token.
+              // WF-INK-01: a progress toast is painted with --accent (almost white
+              // in Ink, main.css:58), so its buttons use the token ink.
               toast.type === 'progress'
                 ? (action.primary
                     ? 'bg-on-accent text-accent hover:opacity-90'
@@ -101,7 +101,7 @@
     </TransitionGroup>
   </div>
 
-  <!-- Diálogos internos: sustituyen a los alert/confirm/message nativos -->
+  <!-- Internal dialogs: they replace the native alert/confirm/message -->
   <Teleport to="body">
     <Transition name="dialog-overlay">
       <div
@@ -188,9 +188,9 @@ const dialogIconClass = computed(() => {
 
 const dialogConfirmClass = computed(() => {
     if (activeDialog.value?.variant === 'danger') return 'bg-error text-white hover:bg-error/80'
-    // WF-INK-01: tinta pinta --accent casi blanco (main.css:58) y --on-accent casi
-    // negro (main.css:61). Un text-white fijo sobre bg-accent dejaba el título y el
-    // botón del diálogo invisibles; el par real sale del token del tema.
+    // WF-INK-01: Ink paints --accent almost white (main.css:58) and --on-accent
+    // almost black (main.css:61). A fixed text-white over bg-accent left the dialog
+    // title and button invisible; the real pair comes from the theme token.
     return 'bg-accent text-on-accent hover:bg-accent-hover'
 })
 
@@ -235,8 +235,8 @@ function handleAction(toast: { id: string }, action: { handler: () => void }) {
 </script>
 
 <style scoped>
-/* Toast Types: color semántico + un paso más oscuro al final del degradado
-   (equivalente al -500 → -600 anterior, ahora en tokens de tema). */
+/* Toast Types: semantic color + one darker step at the end of the gradient
+   (equivalent to the previous -500 → -600, now in theme tokens). */
 .toast-success {
   background: linear-gradient(135deg, var(--ok), color-mix(in srgb, var(--ok) 70%, black));
 }

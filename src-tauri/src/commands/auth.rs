@@ -1057,6 +1057,23 @@ pub async fn start_auth_and_save(
     // login into the same row, even when the captured usernames differ.
     let external_user_id = login_external_user_id(&service, &data, user_id.as_deref());
 
+    // Provider identity beyond the bridge payload (SoundCloud username, Tidal
+    // profile, Deezer user data, Qobuz `user/get`). Best effort: a provider
+    // hiccup must never fail a login that already succeeded, and the automatic
+    // identity refresh retries later.
+    let provider_identity =
+        match crate::commands::accounts::resolve_provider_identity(&service, &credentials_payload)
+            .await
+        {
+            Ok(identity) => identity,
+            Err(err) => {
+                tracing::debug!("{} identity lookup unavailable: {}", service, err);
+                Default::default()
+            }
+        };
+    let email = email.or(provider_identity.email);
+    let display_name = display_name.or(provider_identity.display_name);
+
     // Step 3: Look up service ID
     let service_row: Option<(i64,)> = sqlx::query_as("SELECT id FROM services WHERE name = ?")
         .bind(&service)
@@ -1356,7 +1373,10 @@ pub async fn upsert_service_account(
         let full_update = sqlx::query(
             r#"
             UPDATE accounts
-            SET display_name = ?,
+            SET display_name = CASE
+                    WHEN IFNULL(display_name_custom, 0) = 1 THEN display_name
+                    ELSE ?
+                END,
                 email = ?,
                 external_user_id = ?,
                 credentials_json = ?,
@@ -1399,7 +1419,10 @@ pub async fn upsert_service_account(
                     sqlx::query(
                         r#"
                         UPDATE accounts
-                        SET display_name = ?,
+                        SET display_name = CASE
+                                WHEN IFNULL(display_name_custom, 0) = 1 THEN display_name
+                                ELSE ?
+                            END,
                             external_user_id = ?,
                             credentials_json = ?,
                             credentials_invalid = 0,

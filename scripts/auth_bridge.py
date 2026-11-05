@@ -74,16 +74,16 @@ def is_viable_qobuz_token(token) -> bool:
 
 
 def qobuz_visible_display_name(user_id, username) -> str:
-    """Nombre visible de la cuenta Qobuz, NUNCA el id numérico del proveedor.
+    """Qobuz account's visible display name, NEVER the provider's numeric id.
 
-    `login_with_browser` devuelve el id capturado ("browser_session" cuando no
-    descubrió ninguno), que el handler guardaba tal cual en `display_name`: la UI
-    lo mostraba como "Conectado como 123456789" y dos cuentas de la misma
-    persona quedaban indistinguibles. Prioridad: marcador de sesión o id opaco ->
-    email capturado; si tampoco hay email, un genérico del servicio.
+    `login_with_browser` returns the captured id ("browser_session" when it
+    found none), which the handler stored as-is in `display_name`: the UI
+    showed it as "Connected as 123456789" and two accounts of the same
+    person became indistinguishable. Priority: session marker or opaque id ->
+    captured email; if there is no email either, a service generic.
 
-    El id real sigue saliendo en `user_id`: Rust lo usa como `external_user_id`
-    (identidad deduplicada), nunca como nombre visible.
+    The real id still comes out in `user_id`: Rust uses it as `external_user_id`
+    (deduplicated identity), never as a visible name.
     """
     email = (username or "").strip()
     if email and "@" in email and "." in email.split("@")[-1]:
@@ -231,22 +231,34 @@ def handle_tidal(action: str):
     if action == "login":
         auth = TidalAuth(verbose=False)
         result = tidal_login(auth)
-        # La URL de verificación viaja en la respuesta aunque el flujo falle: es
-        # el único modo de que el usuario pueda completar la conexión a mano
-        # cuando el escritorio no abre el navegador.
+        # The verification URL travels in the response even when the flow fails: it is
+        # the only way the user can complete the connection by hand
+        # when the desktop does not open the browser.
         verification_url = (result.get("device_info") or {}).get("verification_url")
         # tidal_login returns {"status": "success"} not {"success": true}
         if result.get("status") == "success":
             tokens = result.get("tokens") or auth.get_stored_tokens()
             if tokens:
+                # Tidal's device-flow token response carries a `user` object;
+                # whichever identity fields it includes travel up so the account
+                # row is never a generic name. Rust validates every value
+                # (`sanitize_visible_display_name`) before storing it.
+                user_obj = tokens.get("user") or {}
+                tidal_name = (
+                    user_obj.get("username")
+                    or user_obj.get("profileName")
+                    or user_obj.get("userName")
+                    or user_obj.get("displayName")
+                )
                 json_response(True, {
                     "message": result.get("message", "Connected to Tidal"),
                     "access_token": tokens.get("access_token"),
                     "refresh_token": tokens.get("refresh_token"),
                     "token_expiry": tokens.get("token_expiry"),
-                    "user_id": str(tokens.get("user_id", tokens.get("user", {}).get("userId", ""))),
-                    "country_code": tokens.get("user", {}).get("countryCode", "US"),
-                    "email": tokens.get("user", {}).get("email"),
+                    "user_id": str(tokens.get("user_id", user_obj.get("userId", ""))),
+                    "country_code": user_obj.get("countryCode", "US"),
+                    "email": user_obj.get("email"),
+                    "display_name": tidal_name,
                     "verification_url": verification_url,
                 })
             else:
@@ -328,19 +340,22 @@ def handle_qobuz(action: str):
                     ),
                 )
 
-            # Identidad VISIBLE jamás el id numérico del proveedor ni un marcador
-            # de sesión: `display_name` se muestra en la UI y se guarda en
-            # accounts.display_name, así que un id opaco ("123456789") o el
-            # placeholder del puente son indistinguibles entre dos cuentas de la
-            # misma persona y dejan de ser legibles. El id real viaja igual como
-            # `user_id` (Rust lo mapea a external_user_id, la identidad
-            # deduplicada), y `username` solo se propaga como email cuando es un
-            # email plausible (lo decide Rust, no este puente).
+            # VISIBLE identity, never the provider's numeric id or a session
+            # marker: `display_name` is shown in the UI and stored in
+            # accounts.display_name, so an opaque id ("123456789") or the
+            # bridge's placeholder are indistinguishable between two accounts of the
+            # same person and stop being readable. The real id still travels as
+            # `user_id` (Rust maps it to external_user_id, the deduplicated
+            # identity), and `username` is only propagated as an email when it is a
+            # plausible email (decided by Rust, not this bridge).
+            session_name = (session.get("display_name") if session else None) or None
+            session_email = (session.get("email") if session else None) or None
             json_response(True, {
                 "user_id": result,
                 "user_auth_token": auth_token,  # Key expected by Rust
                 "auth_token": auth_token,
-                "display_name": qobuz_visible_display_name(result, username),
+                "display_name": session_name or qobuz_visible_display_name(result, username),
+                "email": session_email,
                 "username": username,
                 "password": password,
             })
@@ -475,7 +490,10 @@ def handle_apple_music(action: str):
                 "developer_token": dev_token,
                 # Catalog storefront of the account: the Rust client stores it with
                 # the credentials and uses it for every /catalog/{storefront}/ call.
-                "storefront": auth.storefront
+                "storefront": auth.storefront,
+                # Apple ID typed at sign-in when the form was readable; Apple's
+                # APIs expose no profile, so this is the only identity available.
+                "email": getattr(auth, "_captured_apple_id", None),
             })
         else:
             json_response(False, error=str(result))

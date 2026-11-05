@@ -4,6 +4,7 @@ use crate::download::http_client::{
     calculate_backoff_with_jitter, create_http_client, get_user_agent, parse_retry_after,
     QOBUZ_LIMITER,
 };
+use crate::download::identity::{identity_conflicts, IdentityCandidate};
 use crate::download::lyrics::{
     validate_and_embed_flac_lyrics, LyricsPipelineService, LyricsResolution, LyricsSyncType,
     ResolutionStatus,
@@ -321,6 +322,20 @@ async fn validate_staged_qobuz_payload(
     Ok(header)
 }
 
+/// Punto 2: ¿el fallo de payload es evidencia sobre la CUENTA que sirvió el
+/// stream (sample de 30 s, MP3 para un FLAC pedido, FLAC truncado) y no una
+/// propiedad de la pista/edición?
+///
+/// Usa el mismo marcador que `classify_attempt_failure`
+/// (`ReResolutionTrigger::QobuzPreview`): cuando el payload prueba que ESTA
+/// cuenta sirvió un preview, otra cuenta candidata del plan (mismo servicio,
+/// MISMA edición, entitlement distinto) puede entregar el flujo completo. Un
+/// `InvalidAudioPayload` (sin magic reconocible) NO entra aquí: puede ser un
+/// corte de red y no acredita nada contra la cuenta.
+fn is_account_scoped_payload_failure(error: &anyhow::Error) -> bool {
+    error.to_string().contains("QobuzPreviewPayload")
+}
+
 /// Build pure deterministic MD5 signature for `track/getFileUrl`
 pub fn build_request_signature(
     format_id: &str,
@@ -620,6 +635,28 @@ impl QobuzDownloader {
                         if let Ok(resp_json) = resp.json::<serde_json::Value>().await {
                             if let Some(stream_url) = resp_json["url"].as_str() {
                                 if !stream_url.trim().is_empty() {
+                                    // A 200 with a URL is not proof of the requested
+                                    // quality: an account without streaming entitlement
+                                    // receives fmt=5 (MP3) URLs even for FLAC format
+                                    // requests. Detect the mismatch HERE so the caller
+                                    // can move to a sibling account instead of failing
+                                    // only after the payload is already streaming.
+                                    let delivered_mime =
+                                        resp_json["mime_type"].as_str().unwrap_or("");
+                                    let delivered_lossy =
+                                        delivered_mime.to_ascii_lowercase().contains("mpeg")
+                                            || stream_url.contains("fmt=5");
+                                    if *format_id != "5" && delivered_lossy {
+                                        warn!(
+                                            "[Qobuz] Account delivered a lossy/preview stream for format_id={} (mime='{}'): per-account entitlement failure",
+                                            format_id, delivered_mime
+                                        );
+                                        last_error = format!(
+                                            "QobuzPreviewPayload: account delivered MP3 instead of the requested lossless stream (format_id={})",
+                                            format_id
+                                        );
+                                        continue;
+                                    }
                                     info!("[Qobuz] ✓ Acquired official Qobuz stream URL (format_id: {})", format_id);
                                     return Ok(StreamResolution {
                                         url: stream_url.to_string(),
@@ -638,6 +675,13 @@ impl QobuzDownloader {
                     last_error = e.to_string();
                 }
             }
+        }
+
+        // Keep the taxonomy prefix when every allowed format failed for the
+        // same classified reason (e.g. an account-limited preview), so callers
+        // can tell a per-account entitlement failure from a generic one.
+        if last_error.starts_with("QobuzPreviewPayload:") {
+            return Err(anyhow!(last_error));
         }
 
         Err(anyhow!(
@@ -714,6 +758,14 @@ impl QobuzDownloader {
                         {
                             return Err(e);
                         }
+                        // A per-account preview is also a verdict about THIS
+                        // account, not about the track: skip the third-party
+                        // proxy (which can serve wrong payloads and mask the
+                        // problem) so the caller moves to a sibling account
+                        // whose official stream really is lossless.
+                        if err_str.starts_with("QobuzPreviewPayload:") {
+                            return Err(e);
+                        }
                         warn!("[Qobuz] Official stream resolution failed: {}. Falling back to proxy...", e);
                     }
                 }
@@ -742,13 +794,16 @@ impl QobuzDownloader {
         }
     }
 
-    /// Search for a track by ISRC
-    pub async fn search_by_isrc(
+    /// Collect every exact-ISRC candidate that passes the `±10 s` duration
+    /// filter. When a user token is available, `track/get` is verified so dead
+    /// index ghosts (404 on retrieval, observed live on retired Trojan/Qobuz
+    /// catalogue rows) are skipped in favour of a live sibling.
+    async fn fetch_exact_isrc_candidates(
         &self,
         isrc: &str,
         expected_duration_sec: i32,
         user_auth_token: Option<&str>,
-    ) -> Result<QobuzTrack> {
+    ) -> Result<Vec<QobuzTrack>> {
         QOBUZ_LIMITER.wait("qobuz").await;
 
         let url = format!("{}/track/search", QOBUZ_API_BASE);
@@ -785,30 +840,201 @@ impl QobuzDownloader {
             .tracks
             .ok_or_else(|| anyhow!("No tracks in response"))?;
 
-        // Find exact ISRC match with duration verification
+        let mut candidates = Vec::new();
         for track in &tracks.items {
-            if track.isrc.as_deref() == Some(isrc) {
-                if expected_duration_sec > 0 {
-                    let duration_diff = (track.duration - expected_duration_sec).abs();
-                    if duration_diff <= 10 {
-                        info!(
-                            "[Qobuz] Found ISRC match: '{}' (duration verified)",
-                            track.title
-                        );
-                        return Ok(track.clone());
-                    } else {
-                        warn!(
-                            "[Qobuz] ISRC match but duration mismatch: expected {}s, got {}s",
-                            expected_duration_sec, track.duration
-                        );
-                    }
-                } else {
-                    return Ok(track.clone());
+            if !Self::isrc_matches_candidate(track, isrc, expected_duration_sec) {
+                continue;
+            }
+            if let Some(tok) = user_auth_token.filter(|t| !t.trim().is_empty()) {
+                if self.get_track_by_id(track.id, Some(tok)).await.is_err() {
+                    debug!(
+                        "[Qobuz] Skipping dead ISRC search candidate {} (404 on track/get)",
+                        track.id
+                    );
+                    continue;
                 }
             }
+            candidates.push(track.clone());
         }
 
-        Err(anyhow!("No exact ISRC match found for: {}", isrc))
+        if candidates.is_empty() {
+            warn!(
+                "[Qobuz] ISRC search produced no exact match (queried {}, {} candidates)",
+                isrc,
+                tracks.items.len()
+            );
+        }
+
+        Ok(candidates)
+    }
+
+    /// Search for a track by ISRC, catalogue order (legacy behavior). Prefer
+    /// [`Self::search_by_isrc_verified`] whenever the expected title/artist are
+    /// known: one ISRC can be labelled on several recordings.
+    ///
+    /// Kept as the catalogue-order compatibility arm; every identity-aware
+    /// download/stream path now calls the verified variant, which degrades to
+    /// exactly this behavior when no title/artist context exists.
+    #[allow(dead_code)]
+    pub async fn search_by_isrc(
+        &self,
+        isrc: &str,
+        expected_duration_sec: i32,
+        user_auth_token: Option<&str>,
+    ) -> Result<QobuzTrack> {
+        let track = self
+            .fetch_exact_isrc_candidates(isrc, expected_duration_sec, user_auth_token)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("No exact ISRC match found for: {}", isrc))?;
+        info!(
+            "[Qobuz] Found ISRC match: '{}' (ID: {}, duration verified)",
+            track.title, track.id
+        );
+        Ok(track)
+    }
+
+    /// Exact-ISRC lookup that disambiguates same-ISRC catalogue duplicates with
+    /// the shared identity rules: a hit contradicted by the request metadata is
+    /// never returned, and among the rest the best evidence (title agreement)
+    /// wins instead of catalogue order.
+    pub async fn search_by_isrc_verified(
+        &self,
+        isrc: &str,
+        track_name: &str,
+        artist_name: &str,
+        expected_duration_sec: i32,
+        user_auth_token: Option<&str>,
+    ) -> Result<QobuzTrack> {
+        let candidates = self
+            .fetch_exact_isrc_candidates(isrc, expected_duration_sec, user_auth_token)
+            .await?;
+
+        let identities: Vec<crate::download::identity::IdentityCandidate> = candidates
+            .iter()
+            .map(Self::qobuz_identity_candidate)
+            .collect();
+
+        match crate::download::identity::pick_identity_candidate(
+            track_name,
+            artist_name,
+            (expected_duration_sec as i64).saturating_mul(1000),
+            &identities,
+        ) {
+            Some(idx) => {
+                let track = candidates[idx].clone();
+                info!(
+                    "[Qobuz] Found ISRC match: '{}' (ID: {}, identity-verified)",
+                    track.title, track.id
+                );
+                Ok(track)
+            }
+            None => Err(anyhow!("No exact ISRC match found for: {}", isrc)),
+        }
+    }
+
+    /// RSQ-01: pure exact-ISRC + duration (`±10 s`) check shared by direct and
+    /// broad ISRC searches (case-insensitive, matching the S197 preflight).
+    fn isrc_matches_candidate(track: &QobuzTrack, isrc: &str, expected_duration_sec: i32) -> bool {
+        let Some(candidate_isrc) = track.isrc.as_deref() else {
+            return false;
+        };
+        if !candidate_isrc.trim().eq_ignore_ascii_case(isrc.trim()) {
+            return false;
+        }
+        if expected_duration_sec > 0 {
+            let duration_diff = (track.duration - expected_duration_sec).abs();
+            if duration_diff > 10 {
+                warn!(
+                    "[Qobuz] ISRC match but duration mismatch: expected {}s, got {}s",
+                    expected_duration_sec, track.duration
+                );
+                return false;
+            }
+        }
+        true
+    }
+
+    /// RSQ-01: pure selector over `track/search` candidates for unit testing
+    /// without network access.
+    #[cfg(test)]
+    fn select_exact_isrc_match(
+        tracks: &[QobuzTrack],
+        isrc: &str,
+        expected_duration_sec: i32,
+    ) -> Option<QobuzTrack> {
+        tracks
+            .iter()
+            .find(|track| Self::isrc_matches_candidate(track, isrc, expected_duration_sec))
+            .cloned()
+    }
+
+    /// Exact-ISRC lookup with a broader query fallback.
+    ///
+    /// Qobuz's search index does not answer a bare-ISRC query for every ISRC:
+    /// a streamable edition can return zero results while the very same ISRC
+    /// resolves through an artist+title query (observed live on GBPVV1501060).
+    /// An exact `isrc` field match is still exact identity, so when the direct
+    /// query misses, retry with the standard artist+title query and accept
+    /// only items whose ISRC equals the requested one, with the same duration
+    /// verification the direct search applies.
+    pub async fn search_by_isrc_broad(
+        &self,
+        isrc: &str,
+        track_name: &str,
+        artist_name: &str,
+        expected_duration_sec: i32,
+        user_auth_token: Option<&str>,
+    ) -> Result<QobuzTrack> {
+        let tracks = self
+            .fetch_metadata_candidates(track_name, artist_name, user_auth_token)
+            .await?;
+
+        let mut candidates = Vec::new();
+        for track in &tracks {
+            if !Self::isrc_matches_candidate(track, isrc, expected_duration_sec) {
+                continue;
+            }
+            if let Some(tok) = user_auth_token.filter(|t| !t.trim().is_empty()) {
+                if self.get_track_by_id(track.id, Some(tok)).await.is_err() {
+                    debug!(
+                        "[Qobuz] Skipping dead broad-ISRC candidate {} (404 on track/get)",
+                        track.id
+                    );
+                    continue;
+                }
+            }
+            candidates.push(track.clone());
+        }
+
+        // Same-ISRC duplicates can pass the duration filter together: prefer
+        // the candidate whose identity agrees with the query instead of
+        // trusting catalogue order.
+        let identities: Vec<crate::download::identity::IdentityCandidate> = candidates
+            .iter()
+            .map(Self::qobuz_identity_candidate)
+            .collect();
+
+        match crate::download::identity::pick_identity_candidate(
+            track_name,
+            artist_name,
+            (expected_duration_sec as i64).saturating_mul(1000),
+            &identities,
+        ) {
+            Some(idx) => {
+                let track = candidates[idx].clone();
+                info!(
+                    "[Qobuz] Found ISRC match via broad metadata query: '{}' (ID: {}, identity-verified)",
+                    track.title, track.id
+                );
+                Ok(track)
+            }
+            None => Err(anyhow!(
+                "No exact ISRC match found for: {} (broad query)",
+                isrc
+            )),
+        }
     }
 
     /// Search for a track by metadata (artist + track name)
@@ -819,9 +1045,209 @@ impl QobuzDownloader {
         expected_duration_sec: i32,
         user_auth_token: Option<&str>,
     ) -> Result<QobuzTrack> {
+        let tracks = self
+            .fetch_metadata_candidates(track_name, artist_name, user_auth_token)
+            .await?;
+
+        // Find best match by title and duration
+        for track in &tracks {
+            if !title_matches(track_name, &track.title) {
+                continue;
+            }
+
+            if let Some(performer) = &track.performer {
+                if !artist_matches(artist_name, &performer.name) {
+                    continue;
+                }
+            }
+
+            if expected_duration_sec > 0 {
+                let duration_diff = (track.duration - expected_duration_sec).abs();
+                if duration_diff > 10 {
+                    continue;
+                }
+            }
+
+            info!(
+                "[Qobuz] Found metadata match: '{}' by '{}'",
+                track.title,
+                track
+                    .performer
+                    .as_ref()
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("Unknown")
+            );
+            return Ok(track.clone());
+        }
+
+        Err(anyhow!(
+            "No matching track found for: {} - {}",
+            artist_name,
+            track_name
+        ))
+    }
+
+    /// Strict title + artist + duration (±3s) match that must be UNIQUE (or
+    /// resolve same-recording re-releases deterministically by studio-origin
+    /// score after filtering dead 404 index ghosts).
+    ///
+    /// Authorized only after every identity-based rule (ISRC/MBID/AcoustID)
+    /// failed. Never falls back to an arbitrary first result: a text-only match
+    /// is only trusted when live catalog entries agree on the normalized title,
+    /// artist and real catalog duration (±3s, so a genuine 30s track like
+    /// "(Archive 76)" stays eligible).
+    pub async fn search_by_metadata_strict(
+        &self,
+        track_name: &str,
+        artist_name: &str,
+        expected_duration_sec: i32,
+        user_auth_token: Option<&str>,
+    ) -> Result<QobuzTrack> {
+        let mut tracks = self
+            .fetch_metadata_candidates(track_name, artist_name, user_auth_token)
+            .await?;
+
+        let filter_strict = |items: Vec<QobuzTrack>| -> Vec<QobuzTrack> {
+            items
+                .into_iter()
+                .filter(|track| {
+                    if !title_matches(track_name, &track.title) {
+                        return false;
+                    }
+                    if let Some(performer) = &track.performer {
+                        if !artist_matches(artist_name, &performer.name) {
+                            return false;
+                        }
+                    }
+                    expected_duration_sec <= 0
+                        || (track.duration - expected_duration_sec).abs() <= 3
+                })
+                .collect()
+        };
+
+        let matches = filter_strict(std::mem::take(&mut tracks));
+
+        // Filter out dead search-index ghosts (404 on `track/get`) when a token
+        // is present.
+        let mut live_matches = Vec::new();
+        if let Some(tok) = user_auth_token.filter(|t| !t.trim().is_empty()) {
+            for cand in matches {
+                if self.get_track_by_id(cand.id, Some(tok)).await.is_ok() {
+                    live_matches.push(cand);
+                } else {
+                    debug!(
+                        "[Qobuz] Skipping dead strict-metadata candidate {} (404 on track/get)",
+                        cand.id
+                    );
+                }
+            }
+        } else {
+            live_matches = matches;
+        }
+
+        // If the literal query only hit dead index ghosts (e.g. a retired
+        // parenthetical variant like "(Poor Mi) Israelites" with a duplicated
+        // artist credit), retry once with the primary artist and the title
+        // stripped of a leading parenthetical alias.
+        if live_matches.is_empty() {
+            let primary_artist = artist_name
+                .split(&[',', ';'][..])
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(artist_name);
+            let stripped_title = if track_name.trim_start().starts_with('(') {
+                track_name
+                    .find(')')
+                    .map(|idx| track_name[idx + 1..].trim())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(track_name)
+            } else {
+                track_name
+            };
+            if primary_artist != artist_name || stripped_title != track_name {
+                if let Ok(extra) = self
+                    .fetch_metadata_candidates(stripped_title, primary_artist, user_auth_token)
+                    .await
+                {
+                    let extra_matches = filter_strict(extra);
+                    if let Some(tok) = user_auth_token.filter(|t| !t.trim().is_empty()) {
+                        for cand in extra_matches {
+                            if self.get_track_by_id(cand.id, Some(tok)).await.is_ok() {
+                                live_matches.push(cand);
+                            }
+                        }
+                    } else {
+                        live_matches = extra_matches;
+                    }
+                }
+            }
+        }
+
+        if live_matches.len() == 1 {
+            return Ok(live_matches.remove(0));
+        }
+        if live_matches.len() > 1 {
+            let norm = |s: &str| {
+                clean_title(s)
+                    .replace(" & ", " and ")
+                    .replace(['(', ')'], "")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            let first_norm = norm(&live_matches[0].title);
+            let same_title = live_matches.iter().all(|m| norm(&m.title) == first_norm);
+            if same_title {
+                let rank = |t: &QobuzTrack| -> (i32, i32, i32) {
+                    let own_album = t
+                        .album
+                        .as_ref()
+                        .and_then(|a| a.artist.as_ref())
+                        .map(|art| {
+                            !art.name.to_lowercase().contains("various")
+                                && artist_matches(artist_name, &art.name)
+                        })
+                        .unwrap_or(false) as i32;
+                    let bd = t.max_bit_depth.unwrap_or(16);
+                    let dur_diff = -(t.duration - expected_duration_sec).abs();
+                    (own_album, bd, dur_diff)
+                };
+                live_matches.sort_by_key(|a| std::cmp::Reverse(rank(a)));
+                return Ok(live_matches.remove(0));
+            }
+            return Err(anyhow!(
+                "AmbiguousSource: {} competing strict metadata matches on Qobuz for '{}' by '{}'",
+                live_matches.len(),
+                track_name,
+                artist_name
+            ));
+        }
+
+        Err(anyhow!(
+            "No matching track found on Qobuz for strict metadata: {} - {}",
+            artist_name,
+            track_name
+        ))
+    }
+
+    /// Fetch raw Qobuz metadata-search candidates (signed API, identical
+    /// params for the loose and strict matchers).
+    async fn fetch_metadata_candidates(
+        &self,
+        track_name: &str,
+        artist_name: &str,
+        user_auth_token: Option<&str>,
+    ) -> Result<Vec<QobuzTrack>> {
         QOBUZ_LIMITER.wait("qobuz").await;
 
-        let query = format!("{} {}", artist_name, track_name);
+        // La consulta va sin la anotación de rol: `田中 望(CV:赤﨑千夏)` no
+        // aparece así en el catálogo y el paréntesis sólo añade ruido al
+        // buscador. El filtro posterior compara con `artist_matches`, que
+        // normaliza igual.
+        let query_artist =
+            syncify_core_domain::metadata::strip_artist_role_annotations(artist_name);
+        let query = format!("{} {}", query_artist, track_name);
         let url = format!("{}/track/search", QOBUZ_API_BASE);
         let mut params = vec![
             ("app_id", self.app_id.clone()),
@@ -859,42 +1285,7 @@ impl QobuzDownloader {
             .tracks
             .ok_or_else(|| anyhow!("No tracks in search response"))?;
 
-        // Find best match by title and duration
-        for track in &tracks.items {
-            if !title_matches(track_name, &track.title) {
-                continue;
-            }
-
-            if let Some(performer) = &track.performer {
-                if !artist_matches(artist_name, &performer.name) {
-                    continue;
-                }
-            }
-
-            if expected_duration_sec > 0 {
-                let duration_diff = (track.duration - expected_duration_sec).abs();
-                if duration_diff > 10 {
-                    continue;
-                }
-            }
-
-            info!(
-                "[Qobuz] Found metadata match: '{}' by '{}'",
-                track.title,
-                track
-                    .performer
-                    .as_ref()
-                    .map(|p| p.name.as_str())
-                    .unwrap_or("Unknown")
-            );
-            return Ok(track.clone());
-        }
-
-        Err(anyhow!(
-            "No matching track found for: {} - {}",
-            artist_name,
-            track_name
-        ))
+        Ok(tracks.items)
     }
 
     /// Get track metadata directly by Qobuz track ID (deterministic entity resolution)
@@ -943,6 +1334,130 @@ impl QobuzDownloader {
             track.title, track.id
         );
         Ok(track)
+    }
+
+    /// Identity candidate of a fetched/locked Qobuz entity.
+    fn qobuz_identity_candidate(track: &QobuzTrack) -> IdentityCandidate {
+        IdentityCandidate::new(
+            track.title.clone(),
+            track
+                .performer
+                .as_ref()
+                .map(|p| p.name.clone())
+                .unwrap_or_default(),
+            (track.duration as i64).saturating_mul(1000),
+        )
+    }
+
+    /// Accepts a recovered candidate only when it no longer contradicts the
+    /// requested identity (same rule that triggered the recovery).
+    fn verified_replacement(request: &DownloadRequest, track: QobuzTrack) -> Option<QobuzTrack> {
+        let identity = Self::qobuz_identity_candidate(&track);
+        if identity_conflicts(&request.track_name, request.duration_ms, &identity) {
+            return None;
+        }
+        info!(
+            "[Qobuz] ✓ Re-resolved locked source to '{}' (ID: {})",
+            track.title, track.id
+        );
+        Some(track)
+    }
+
+    /// Download-time identity guard for a locked `service_track_id`.
+    ///
+    /// Provider catalogues are not always trustworthy: Qobuz has been observed
+    /// serving two different recordings under one ISRC (observed live: Mang
+    /// Dynasty "After Dark" and Mozez "Run River" both carry `GB53R1200006`),
+    /// and a queue preflight that locked the wrong catalogue hit used to
+    /// download the wrong audio silently. A locked id whose `track/get`
+    /// metadata contradicts BOTH the requested title and duration is never
+    /// downloaded: the exact-ISRC search (which already applies the ±10 s
+    /// rule), the broad ISRC query and the strict metadata search run in
+    /// order, and only a candidate that no longer contradicts the request is
+    /// accepted. Otherwise the attempt fails with `IdentityConflict` so the
+    /// caller re-resolves the identity instead of writing foreign audio.
+    async fn verify_or_recover_locked_entity(
+        &self,
+        request: &DownloadRequest,
+        locked: QobuzTrack,
+        user_auth_token: Option<&str>,
+    ) -> Result<QobuzTrack> {
+        let locked_identity = Self::qobuz_identity_candidate(&locked);
+        if !identity_conflicts(&request.track_name, request.duration_ms, &locked_identity) {
+            return Ok(locked);
+        }
+
+        warn!(
+            "[Qobuz] Locked source {} ('{}', {}s) contradicts requested '{}' by '{}' ({} ms); re-resolving identity",
+            locked.id,
+            locked.title,
+            locked.duration,
+            request.track_name,
+            request.artist_name,
+            request.duration_ms
+        );
+
+        let duration_sec = (request.duration_ms / 1000) as i32;
+
+        if let Some(isrc) = request
+            .isrc
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if let Ok(track) = self
+                .search_by_isrc_verified(
+                    isrc,
+                    &request.track_name,
+                    &request.artist_name,
+                    duration_sec,
+                    user_auth_token,
+                )
+                .await
+            {
+                if let Some(verified) = Self::verified_replacement(request, track) {
+                    return Ok(verified);
+                }
+            }
+            if let Ok(track) = self
+                .search_by_isrc_broad(
+                    isrc,
+                    &request.track_name,
+                    &request.artist_name,
+                    duration_sec,
+                    user_auth_token,
+                )
+                .await
+            {
+                if let Some(verified) = Self::verified_replacement(request, track) {
+                    return Ok(verified);
+                }
+            }
+        }
+
+        if let Ok(track) = self
+            .search_by_metadata_strict(
+                &request.track_name,
+                &request.artist_name,
+                duration_sec,
+                user_auth_token,
+            )
+            .await
+        {
+            if let Some(verified) = Self::verified_replacement(request, track) {
+                return Ok(verified);
+            }
+        }
+
+        Err(anyhow!(
+            "IdentityConflict: locked Qobuz source {} resolves to '{}' ({}s) but the request is '{}' by '{}' ({} ms) and no verified replacement was found",
+            locked.id,
+            locked.title,
+            locked.duration,
+            request.track_name,
+            request.artist_name,
+            request.duration_ms
+        ))
     }
 
     /// Get album metadata directly by Qobuz album ID (fetches full album entity with goodies)
@@ -1263,6 +1778,77 @@ impl QobuzDownloader {
     }
 
     /// Full download flow: search/entity resolution → get stream URL → staging download → validation → tagging → atomic promotion
+    /// Punto 2 — descarga el stream resuelto a staging y valida el payload
+    /// ANTES de que empiece cualquier trabajo de tagging.
+    ///
+    /// Devuelve los bytes descargados cuando el payload supera el mismo
+    /// validador que usa `process_downloaded_staging`. En cualquier fallo limpia
+    /// el `.part` y devuelve el error tal cual para que el llamador decida: un
+    /// fallo clasificable como `QobuzPreviewPayload`
+    /// (`is_account_scoped_payload_failure`) es evidencia sobre la CUENTA y el
+    /// bucle de cuentas candidatas puede probar la siguiente con la MISMA
+    /// edición; el resto se propaga como hasta ahora.
+    #[allow(clippy::too_many_arguments)]
+    async fn download_and_validate_staged_payload<'a>(
+        &'a self,
+        request: &'a DownloadRequest,
+        track: &'a QobuzTrack,
+        stream_res: &'a StreamResolution,
+        token_ref: Option<&'a str>,
+        staging_path: &'a Path,
+        phase_tracker: &'a mut DownloadPhaseTracker,
+    ) -> Result<u64> {
+        if let Some(parent) = staging_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        // Transfer phase (Audio streaming to disk until flush)
+        phase_tracker.start_phase(DownloadPhase::Transfer);
+        let downloaded_bytes = match Box::pin(self.download_to_staging_internal(
+            &stream_res.url,
+            staging_path,
+            &request.item_id,
+            Some((
+                self,
+                track.id,
+                &request.quality,
+                token_ref,
+                request.allow_fallback,
+            )),
+        ))
+        .await
+        {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(staging_path).await;
+                return Err(e);
+            }
+        };
+
+        if downloaded_bytes == 0 {
+            let _ = tokio::fs::remove_file(staging_path).await;
+            return Err(anyhow!(
+                "NetworkExhausted: Qobuz downloaded audio payload is 0 bytes"
+            ));
+        }
+        phase_tracker.set_transfer_metrics(downloaded_bytes, "network");
+
+        // ValidateAudio: el `format_id` resuelto solo dice lo que se PIDIÓ; el
+        // payload decide lo que se sirvió de verdad. `process_downloaded_staging`
+        // re-ejecuta este mismo validador sobre el fichero sin cambios (prefijo
+        // acotado a 64 KiB); el coste es despreciable frente al stream.
+        phase_tracker.start_phase(DownloadPhase::ValidateAudio);
+        if let Err(e) =
+            validate_staged_qobuz_payload(staging_path, &stream_res.format_id, request.duration_ms)
+                .await
+        {
+            let _ = tokio::fs::remove_file(staging_path).await;
+            return Err(e);
+        }
+
+        Ok(downloaded_bytes)
+    }
+
     pub fn download_track<'a>(
         &'a self,
         request: &'a DownloadRequest,
@@ -1308,7 +1894,22 @@ impl QobuzDownloader {
                         "SourceIdentityMissing: Qobuz request does not match its resolution plan"
                     ));
                 }
-                vec![planned_account.account_id]
+                let mut candidate_ids = vec![planned_account.account_id];
+                // Punto 2: los hermanos del plan (MISMO servicio, MISMA pista,
+                // orden ya decidido por `get_service_fallback_account_ids`) se
+                // añaden como recuperación de payload/entitlement. La cuenta
+                // primaria sigue yendo primera: esto no reordena la decisión,
+                // solo evita que un sample servido por la primaria condene el
+                // ítem cuando otra cuenta del plan puede entregar el flujo
+                // completo. El carril sin plan ya aplica esta misma política.
+                for sibling in &primary.sibling_accounts {
+                    if sibling.account_id != planned_account.account_id
+                        && !candidate_ids.contains(&sibling.account_id)
+                    {
+                        candidate_ids.push(sibling.account_id);
+                    }
+                }
+                candidate_ids
             } else if let Some(pool) = db_opt {
                 crate::commands::accounts::get_service_fallback_account_ids(pool, "qobuz", None)
                     .await
@@ -1318,8 +1919,26 @@ impl QobuzDownloader {
             };
 
             let mut last_error: Option<anyhow::Error> = None;
-            let mut resolved_stream_context: Option<(i64, String, QobuzTrack, StreamResolution)> =
-                None;
+            let mut resolved_stream_context: Option<(
+                i64,
+                String,
+                QobuzTrack,
+                StreamResolution,
+                u64,
+            )> = None;
+
+            // 4. Staging path setup — antes del primer intento de payload: cada
+            // cuenta candidata descarga y valida su propio intento en el mismo
+            // `.part`; todo fallo lo limpia antes del siguiente.
+            let out_dir = PathBuf::from(&request.output_dir);
+            let staging_dir = out_dir.join(".staging");
+            tokio::fs::create_dir_all(&staging_dir).await?;
+            let nomedia_path = staging_dir.join(".nomedia");
+            if !nomedia_path.exists() {
+                let _ = tokio::fs::write(&nomedia_path, b"").await;
+            }
+            let staging_path =
+                staging_dir.join(format!("{}.part", sanitize_filename(&request.item_id)));
 
             if !candidate_account_ids.is_empty() {
                 let pool = db_opt.expect("pool exists if candidate_account_ids is not empty");
@@ -1355,10 +1974,25 @@ impl QobuzDownloader {
                     phase_tracker.start_phase(DownloadPhase::ResolveStream);
                     let track = if let Some(ref s_track_id) = request.service_track_id {
                         if let Ok(tid) = s_track_id.parse::<i64>() {
-                            match self.get_track_by_id(tid, token_ref).await {
+                            let locked = match self.get_track_by_id(tid, token_ref).await {
                                 Ok(t) => t,
                                 Err(e) => {
                                     warn!(account_id = cand_account_id, error = %e, "Qobuz get_track_by_id failed with candidate account");
+                                    last_error = Some(e);
+                                    continue;
+                                }
+                            };
+                            match self
+                                .verify_or_recover_locked_entity(request, locked, token_ref)
+                                .await
+                            {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    warn!(
+                                        account_id = cand_account_id,
+                                        error = %e,
+                                        "Qobuz locked-source identity verification failed"
+                                    );
                                     last_error = Some(e);
                                     continue;
                                 }
@@ -1376,7 +2010,16 @@ impl QobuzDownloader {
                         ));
                         }
                         if let Some(isrc) = &request.isrc {
-                            match self.search_by_isrc(isrc, duration_sec, token_ref).await {
+                            match self
+                                .search_by_isrc_verified(
+                                    isrc,
+                                    &request.track_name,
+                                    &request.artist_name,
+                                    duration_sec,
+                                    token_ref,
+                                )
+                                .await
+                            {
                                 Ok(t) => t,
                                 Err(_) => {
                                     match self
@@ -1439,15 +2082,52 @@ impl QobuzDownloader {
                         }
                     };
 
-                    resolved_stream_context = Some((cand_account_id, token, track, stream_res));
-                    break;
+                    // 3b. Payload gate: descargar y VALIDAR antes de dar la
+                    // cuenta por buena. Una URL válida puede esconder un sample
+                    // de 30 s (evidencia en vivo con cuentas sin entitlement
+                    // completo) que solo el payload delata. Ese fallo es
+                    // evidencia POR CUENTA: la siguiente cuenta candidata del
+                    // plan prueba la MISMA edición en lugar de que el ítem falle
+                    // con el primer intento.
+                    match self
+                        .download_and_validate_staged_payload(
+                            request,
+                            &track,
+                            &stream_res,
+                            token_ref,
+                            &staging_path,
+                            &mut phase_tracker,
+                        )
+                        .await
+                    {
+                        Ok(downloaded_bytes) => {
+                            resolved_stream_context =
+                                Some((cand_account_id, token, track, stream_res, downloaded_bytes));
+                            break;
+                        }
+                        Err(e) if is_account_scoped_payload_failure(&e) => {
+                            warn!(
+                                account_id = cand_account_id,
+                                error = %e,
+                                "Qobuz candidate account served a preview/short payload; checking sibling account"
+                            );
+                            last_error = Some(e);
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
             }
 
-            let (token, track, stream_res) = if let Some((_account_id, token, track, stream_res)) =
-                resolved_stream_context
+            let (token, track, stream_res, downloaded_bytes) = if let Some((
+                _account_id,
+                token,
+                track,
+                stream_res,
+                downloaded_bytes,
+            )) = resolved_stream_context
             {
-                (token, track, stream_res)
+                (token, track, stream_res, downloaded_bytes)
             } else if candidate_account_ids.is_empty() {
                 // Fallback for cases with no pool or no candidate accounts in SQLite
                 let token = match self.resolve_token(db_opt).await {
@@ -1464,7 +2144,9 @@ impl QobuzDownloader {
                 phase_tracker.start_phase(DownloadPhase::ResolveStream);
                 let track = if let Some(ref s_track_id) = request.service_track_id {
                     if let Ok(tid) = s_track_id.parse::<i64>() {
-                        self.get_track_by_id(tid, token_ref).await?
+                        let locked = self.get_track_by_id(tid, token_ref).await?;
+                        self.verify_or_recover_locked_entity(request, locked, token_ref)
+                            .await?
                     } else {
                         return Err(anyhow!(
                             "SourceIdentityMissing: Non-numeric service_track_id '{}'",
@@ -1478,7 +2160,16 @@ impl QobuzDownloader {
                     ));
                     }
                     if let Some(isrc) = &request.isrc {
-                        match self.search_by_isrc(isrc, duration_sec, token_ref).await {
+                        match self
+                            .search_by_isrc_verified(
+                                isrc,
+                                &request.track_name,
+                                &request.artist_name,
+                                duration_sec,
+                                token_ref,
+                            )
+                            .await
+                        {
                             Ok(t) => t,
                             Err(_) => {
                                 self.search_by_metadata(
@@ -1511,7 +2202,18 @@ impl QobuzDownloader {
                     )
                     .await?;
 
-                (token, track, stream_res)
+                let downloaded_bytes = self
+                    .download_and_validate_staged_payload(
+                        request,
+                        &track,
+                        &stream_res,
+                        token_ref,
+                        &staging_path,
+                        &mut phase_tracker,
+                    )
+                    .await?;
+
+                (token, track, stream_res, downloaded_bytes)
             } else {
                 let err = last_error.unwrap_or_else(|| {
                 anyhow!("RequiresAuth: Tu cuenta de Qobuz está desconectada. Inicia sesión en Syncify (Ajustes > Cuentas).")
@@ -1522,48 +2224,9 @@ impl QobuzDownloader {
             };
             let token_ref = Some(token.as_str());
 
-            // 4. Staging path setup
-            let out_dir = PathBuf::from(&request.output_dir);
-            let staging_dir = out_dir.join(".staging");
-            tokio::fs::create_dir_all(&staging_dir).await?;
-            let nomedia_path = staging_dir.join(".nomedia");
-            if !nomedia_path.exists() {
-                let _ = tokio::fs::write(&nomedia_path, b"").await;
-            }
-            let staging_path =
-                staging_dir.join(format!("{}.part", sanitize_filename(&request.item_id)));
-
-            // 5. Transfer phase (Audio streaming to disk until flush)
-            phase_tracker.start_phase(DownloadPhase::Transfer);
-            let downloaded_bytes = match Box::pin(self.download_to_staging_internal(
-                &stream_res.url,
-                &staging_path,
-                item_id,
-                Some((
-                    self,
-                    track.id,
-                    &request.quality,
-                    token_ref,
-                    request.allow_fallback,
-                )),
-            ))
-            .await
-            {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    let _ = tokio::fs::remove_file(&staging_path).await;
-                    return Err(e);
-                }
-            };
-
-            if downloaded_bytes == 0 {
-                let _ = tokio::fs::remove_file(&staging_path).await;
-                return Err(anyhow!(
-                    "NetworkExhausted: Qobuz downloaded audio payload is 0 bytes"
-                ));
-            }
-            phase_tracker.set_transfer_metrics(downloaded_bytes, "network");
-
+            // 5. La transferencia y la validación del payload ya ocurrieron por
+            // cuenta (o en la cuenta única del carril sin plan); aquí solo queda
+            // el trabajo de tagging/promoción sobre un payload ya validado.
             self.process_downloaded_staging(
                 request,
                 &track,
@@ -2676,8 +3339,8 @@ pub async fn promote_webp_sidecars(
 
 /// Check if two titles match (fuzzy)
 pub fn title_matches(expected: &str, found: &str) -> bool {
-    let expected_clean = clean_title(expected);
-    let found_clean = clean_title(found);
+    let expected_clean = clean_title(expected).replace(" & ", " and ");
+    let found_clean = clean_title(found).replace(" & ", " and ");
 
     if expected_clean == found_clean {
         return true;
@@ -2691,22 +3354,34 @@ pub fn title_matches(expected: &str, found: &str) -> bool {
 }
 
 /// Check if two artist names match (fuzzy)
+///
+/// La comparación se hace sobre el crédito sin anotaciones de rol: Qobuz
+/// publica `田中 望` donde Spotify guardó `田中 望(CV:赤﨑千夏)`, y sin
+/// normalizar ese paréntesis la etapa de metadatos no podía acertar nunca. Los
+/// separadores cubren también `、`, `，`, `／` y `＆` de los catálogos JP.
+///
+/// A diferencia de `syncify_core_domain::metadata::artist_matches`, aquí no se
+/// admite contención de subtítulos: esta variante decide una descarga, así que
+/// sólo acepta igualdad de crédito o de una de sus partes.
 pub fn artist_matches(expected: &str, found: &str) -> bool {
-    let expected_lower = expected.to_lowercase();
-    let found_lower = found.to_lowercase();
+    let expected_lower =
+        syncify_core_domain::metadata::strip_artist_role_annotations(expected).to_lowercase();
+    let found_lower =
+        syncify_core_domain::metadata::strip_artist_role_annotations(found).to_lowercase();
+
+    if expected_lower.is_empty() || found_lower.is_empty() {
+        return false;
+    }
 
     if expected_lower == found_lower {
         return true;
     }
 
-    let expected_parts: Vec<&str> = expected_lower
-        .split(&[',', ';', '&', '/', '|'][..])
-        .collect();
-    let found_parts: Vec<&str> = found_lower.split(&[',', ';', '&', '/', '|'][..]).collect();
+    let separators = syncify_core_domain::metadata::ARTIST_CREDIT_SEPARATORS;
 
-    for ep in &expected_parts {
-        for fp in &found_parts {
-            if ep.trim() == fp.trim() {
+    for ep in expected_lower.split(separators) {
+        for fp in found_lower.split(separators) {
+            if ep.trim() == fp.trim() && !ep.trim().is_empty() {
                 return true;
             }
         }
@@ -2847,6 +3522,55 @@ fn lyrics_blocked_without_db_identity() -> bool {
 mod tests {
     use super::*;
 
+    /// RSQ-01: synthetic catalogue entries shaped like `track/search` returns.
+    fn rsq_qobuz_track(id: i64, isrc: &str, duration: i32) -> QobuzTrack {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "title": "RSQ synthetic",
+            "duration": duration,
+            "isrc": isrc,
+        }))
+        .expect("synthetic QobuzTrack must deserialize")
+    }
+
+    #[test]
+    fn rsq01_exact_isrc_match_is_case_insensitive_and_duration_bounded() {
+        let tracks = vec![
+            rsq_qobuz_track(11, "gbAAA1234567", 210),
+            rsq_qobuz_track(12, "GBAAA7654321", 90),
+        ];
+
+        // Catalog lowercase vs query uppercase (and vice versa) must match:
+        // same identity-proof semantics as the S197 preflight.
+        let hit = QobuzDownloader::select_exact_isrc_match(&tracks, "GBAAA1234567", 210)
+            .expect("case-insensitive identity match");
+        assert_eq!(hit.id, 11);
+
+        // The duration window stays ±10 s when the request knows the duration.
+        assert!(QobuzDownloader::select_exact_isrc_match(&tracks, "GBAAA1234567", 224).is_none());
+        assert_eq!(
+            QobuzDownloader::select_exact_isrc_match(&tracks, "GBAAA1234567", 220)
+                .expect("boundary duration match")
+                .id,
+            11
+        );
+
+        // Unknown duration (0) keeps the historical accept-any-duration path.
+        assert_eq!(
+            QobuzDownloader::select_exact_isrc_match(&tracks, "gbaaa1234567", 0)
+                .expect("duration-less match")
+                .id,
+            11
+        );
+
+        // No identity match → None, never "closest".
+        assert!(QobuzDownloader::select_exact_isrc_match(&tracks, "USAAA0000000", 210).is_none());
+
+        // Candidates without a usable ISRC are skipped without panicking.
+        let untagged = vec![rsq_qobuz_track(13, "", 210)];
+        assert!(QobuzDownloader::select_exact_isrc_match(&untagged, "GBAAA1234567", 210).is_none());
+    }
+
     #[test]
     fn direct_download_without_db_identity_keeps_resolved_lyrics() {
         // Resolution and promotion must agree when neither canonical_track_id
@@ -2986,6 +3710,39 @@ mod tests {
         assert!(invalid.to_string().contains("InvalidAudioPayload"));
     }
 
+    /// Punto 2: un sample/preview servido por UNA cuenta es evidencia sobre esa
+    /// cuenta, no sobre la pista; el bucle de cuentas candidatas debe seguir con
+    /// la siguiente. La detección reutiliza el marcador del clasificador global
+    /// (`ReResolutionTrigger::QobuzPreview`); los fallos que no acreditan nada
+    /// contra la cuenta no deben disparar el barrido de hermanas.
+    #[test]
+    fn account_scoped_payload_failure_only_matches_preview_evidence() {
+        let preview = anyhow!(ErrorTaxonomy::QobuzPreviewPayload {
+            requested_format: "MP3 320 format_id=5".to_string(),
+            obtained_format: "MP3 short/under 320 kbps".to_string(),
+            reason: "payload cannot cover the full track duration at the 320 kbps floor"
+                .to_string(),
+        }
+        .ui_message());
+        assert!(is_account_scoped_payload_failure(&preview));
+
+        let lossy_for_flac = anyhow!(ErrorTaxonomy::QobuzPreviewPayload {
+            requested_format: "FLAC format_id=6".to_string(),
+            obtained_format: "MP3".to_string(),
+            reason: "stream URL returned lossy audio, not a full lossless track".to_string(),
+        }
+        .ui_message());
+        assert!(is_account_scoped_payload_failure(&lossy_for_flac));
+
+        // Payload sin magic reconocible: puede ser un corte de red; probar otra
+        // cuenta no está justificado con esta evidencia.
+        let invalid = anyhow!("InvalidAudioPayload: Qobuz format_id=5 stream has no MP3 magic");
+        assert!(!is_account_scoped_payload_failure(&invalid));
+
+        let transport = anyhow!("NetworkExhausted: connection reset after 3 attempts");
+        assert!(!is_account_scoped_payload_failure(&transport));
+    }
+
     #[test]
     fn short_flac_streaminfo_is_preview_but_full_flac_is_accepted() {
         fn flac_header(total_samples: u32) -> [u8; 42] {
@@ -3092,6 +3849,24 @@ mod tests {
     fn test_title_and_artist_matching() {
         assert!(title_matches("Heroes", "Heroes (2017 Remaster)"));
         assert!(artist_matches("David Bowie", "David Bowie"));
+    }
+
+    /// El catálogo publica `田中 望` donde Spotify guardó la anotación de
+    /// seiyuu: sin normalizarla, la etapa de metadatos rechazaba la única
+    /// edición que existe.
+    #[test]
+    fn test_artist_matches_ignores_cv_annotation() {
+        assert!(artist_matches("田中 望(CV:赤﨑千夏)", "田中 望"));
+        assert!(artist_matches("田中 望", "田中 望(CV:赤﨑千夏)"));
+        assert!(artist_matches(
+            "NOZOMU TANAKA(CV:CHINATSU AKASAKI)、AKANE KIKUCHI(CV:HARUKA TOMATSU)",
+            "Nozomu Tanaka"
+        ));
+        // Separadores de ancho completo en el crédito del proveedor.
+        assert!(artist_matches("A、B", "A／B"));
+        // Sigue sin aceptar créditos vacíos ni artistas distintos.
+        assert!(!artist_matches("(CV: X)", "Cualquiera"));
+        assert!(!artist_matches("田中 望", "赤﨑千夏"));
     }
 
     #[test]

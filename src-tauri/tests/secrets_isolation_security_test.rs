@@ -328,6 +328,7 @@ fn test_tidal_credentials_resolution() {
         expires_in: None,
         user_id: None,
         country_code: None,
+        session_id: None,
         client_id: None,
         client_secret: None,
     };
@@ -360,6 +361,7 @@ fn test_tidal_credentials_resolution() {
         expires_in: None,
         user_id: None,
         country_code: None,
+        session_id: None,
         client_id: Some("explicit_override_id".to_string()),
         client_secret: Some("explicit_override_secret".to_string()),
     };

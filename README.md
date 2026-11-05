@@ -186,6 +186,22 @@ install has nothing extra to fetch or configure:
   which it would launch but make no sound.
 - A private Python runtime with the service bridges already installed, so the
   user's Python is never needed.
+
+A few features rely on something the packages cannot bundle:
+
+- **Browser-based logins** (Qobuz, Deezer, SoundCloud, Apple Music) use a
+  Chromium-family browser already installed on your system (Chrome, Chromium,
+  Brave, Edge, Vivaldi…). Tidal signs in through its device-code page in your
+  default browser and Spotify uses the app's own WebView, so those two need
+  nothing extra.
+- **The AppImage needs FUSE 2** on the host (Ubuntu 23.04+ ships it as
+  `libfuse2t64`). If it refuses to start, run it with
+  `--appimage-extract-and-run`, or use the DEB or the tarball instead.
+- **Audio on Linux** goes through ALSA; on a PipeWire-only system install
+  `pipewire-alsa` (or the ALSA plugins).
+- **On Windows**, the installer is not code-signed yet: SmartScreen may show
+  "Windows protected your PC" once — choose *More info* → *Run anyway*.
+
 2. Run the first-run wizard: connect your accounts, pick your music folder,
    done. Credentials are encrypted and stored in Syncify's own SQLite
    database, inside the app profile folder. The encryption key lives in your
@@ -210,10 +226,11 @@ Symfonium, Plexamp, Roon or any player reads them directly.
 
 Encrypted inside Syncify's own SQLite database, in the app profile folder on
 your machine. The encryption key is kept in your operating system's keyring
-when one is available; where it is not (headless Linux, no Secret Service),
-the key falls back to a `.crypto_key` file with `0600` permissions in that
-same profile folder. Each login runs through your browser, and no credential
-is ever written to a plain config file.
+when one is available — the Windows Credential Manager on Windows, the Secret
+Service (GNOME Keyring/KWallet) on Linux; where it is not (headless Linux, no
+Secret Service), the key falls back to a `.crypto_key` file with `0600`
+permissions in that same profile folder. Each login runs through your browser,
+and no credential is ever written to a plain config file.
 
 **What quality can I expect?**
 
@@ -250,7 +267,7 @@ change from `5dcf4b6` was squash-merged as `ed440a9` (PR #27). Tag `v0.6.0`
 points exactly to `ed440a96f669c264a7e477e76b791e325e900b7f`, and the
 [Syncify v0.6.0 release](https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.0)
 is published with five Linux and Windows assets. Its notes come from
-[the v0.6.0 release notes](docs/RELEASE_NOTES_v0.6.0.md). CI (Rust, Frontend,
+[the v0.6.0 release notes](docs/historico/RELEASE_NOTES_v0.6.0.md). CI (Rust, Frontend,
 Python), the release gate, and both release builds (Linux and Windows) are
 green on that exact SHA. What has **not** been proven here:
 
@@ -258,8 +275,9 @@ green on that exact SHA. What has **not** been proven here:
   and window-manager behaviour have not been exercised on a real desktop.
 - **Live network paths.** No launch login, provider enrichment, download, or
   lyrics resolution ran against real services.
-- **Ignored Rust tests.** The 9 ignored tests requiring network access or
-  credentials have not been exercised.
+- **Ignored Rust tests.** The 13 ignored tests — kept out of CI because they
+  need live network, real credentials, a runtime SQLite database, physical
+  storage or wall-clock timing — have not been exercised.
 - **Windows.** The cross-check for the `x86_64-pc-windows-msvc` target has not
   been run on this machine, although Windows installers were produced by CI.
 
@@ -303,7 +321,7 @@ npm run build
   language status of every document; the design specs under `docs/features/`
   are Spanish-only today
 - [`docs/MATRIZ_PARIDAD_IMPORTACION.md`](docs/MATRIZ_PARIDAD_IMPORTACION.md) — the living import-parity matrix (Spanish)
-- [`docs/LYRICS_16_PROVIDER_MATRIX.md`](docs/LYRICS_16_PROVIDER_MATRIX.md) — the lyrics cascade, audited (English)
+- [`docs/LYRICS_PROVIDER_MATRIX.md`](docs/LYRICS_PROVIDER_MATRIX.md) — the lyrics cascade, audited (English)
 - [`docs/Deuda_Tecnica_y_UX.md`](docs/Deuda_Tecnica_y_UX.md) — open technical debt, tracked in the open (Spanish)
 
 ## Contributing

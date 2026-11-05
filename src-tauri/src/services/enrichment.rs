@@ -4,6 +4,7 @@
 //! to resolve the first group of enriched metadata fields safely and deterministically.
 
 use crate::services::musicbrainz::{MusicBrainzClient, MusicBrainzRecording};
+use std::sync::atomic::{AtomicU64, Ordering};
 use syncify_core_domain::quality::{classify_audio_tier, AudioTier};
 #[allow(unused_imports)]
 pub use syncify_metadata_domain::{
@@ -1746,11 +1747,14 @@ impl EnrichmentEngine {
             let (clean_t, feat_from_title) =
                 crate::services::tag_writer::clean_title_and_extract_featured(t);
             let title_to_save = if !clean_t.is_empty() { &clean_t } else { t };
-            let _ = sqlx::query("UPDATE tracks SET title = ? WHERE id = ?")
-                .bind(title_to_save)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET title = ? WHERE id = ?")
+                    .bind(title_to_save)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
 
             for feat_name in feat_from_title {
                 let clean_feat = syncify_core_domain::metadata::sanitize_artist_name(&feat_name);
@@ -1788,8 +1792,8 @@ impl EnrichmentEngine {
                     }
                 };
                 if final_feat_id > 0 {
-                    let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
-                        .bind(track_id).bind(final_feat_id).execute(&mut *tx).await;
+                    let _ = crate::db::write_or_log("apply_to_database", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                        .bind(track_id).bind(final_feat_id).execute(&mut *tx)).await;
                 }
             }
         }
@@ -1798,127 +1802,175 @@ impl EnrichmentEngine {
             .value()
             .and_then(|s| s.parse::<i32>().ok())
         {
-            let _ = sqlx::query("UPDATE tracks SET track_number = ? WHERE id = ?")
-                .bind(tn)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET track_number = ? WHERE id = ?")
+                    .bind(tn)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(dn) = meta.disc_number.value().and_then(|s| s.parse::<i32>().ok()) {
-            let _ = sqlx::query("UPDATE tracks SET disc_number = ? WHERE id = ?")
-                .bind(dn)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET disc_number = ? WHERE id = ?")
+                    .bind(dn)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(i) = meta.isrc.value() {
-            let _ = sqlx::query("UPDATE tracks SET isrc = ? WHERE id = ?")
-                .bind(i)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET isrc = ? WHERE id = ?")
+                    .bind(i)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(y) = meta
             .release_year
             .value()
             .and_then(|s| s.chars().take(4).collect::<String>().parse::<i32>().ok())
         {
-            let _ = sqlx::query("UPDATE tracks SET release_year = ? WHERE id = ?")
-                .bind(y)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET release_year = ? WHERE id = ?")
+                    .bind(y)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(l) = meta.label.value() {
-            let _ = sqlx::query("UPDATE tracks SET record_label = ? WHERE id = ?")
-                .bind(l)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET record_label = ? WHERE id = ?")
+                    .bind(l)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(mb_track) = meta.musicbrainz_recording_id.value() {
-            let _ = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
-                .bind(mb_track)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                    .bind(mb_track)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(b) = meta.bpm.value().and_then(|s| s.parse::<f64>().ok()) {
-            let _ = sqlx::query("UPDATE tracks SET bpm = ? WHERE id = ?")
-                .bind(b)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET bpm = ? WHERE id = ?")
+                    .bind(b)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(k) = meta.initial_key.value() {
-            let _ = sqlx::query("UPDATE tracks SET musical_key = ? WHERE id = ?")
-                .bind(k)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET musical_key = ? WHERE id = ?")
+                    .bind(k)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(en) = meta.energy.value().and_then(|s| s.parse::<f64>().ok()) {
-            let _ = sqlx::query("UPDATE tracks SET energy = ? WHERE id = ?")
-                .bind(en)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET energy = ? WHERE id = ?")
+                    .bind(en)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(fp) = meta.acoustid_fingerprint.value() {
-            let _ = sqlx::query("UPDATE tracks SET acoustid_fingerprint = ? WHERE id = ?")
-                .bind(fp)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET acoustid_fingerprint = ? WHERE id = ?")
+                    .bind(fp)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(g) = meta.genre.value() {
             if let Some(cg) = clean_primary_genre(g) {
-                let _ = sqlx::query("UPDATE tracks SET genre = ? WHERE id = ?")
-                    .bind(cg)
-                    .bind(track_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE tracks SET genre = ? WHERE id = ?")
+                        .bind(cg)
+                        .bind(track_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
         }
         if let Some(lo) = meta.loudness.value().and_then(|s| s.parse::<f64>().ok()) {
-            let _ = sqlx::query("UPDATE tracks SET loudness = ? WHERE id = ?")
-                .bind(lo)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET loudness = ? WHERE id = ?")
+                    .bind(lo)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(rg_gain) = meta.replaygain_track_gain.value() {
-            let _ = sqlx::query("UPDATE tracks SET replaygain_track_gain = ? WHERE id = ?")
-                .bind(rg_gain)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET replaygain_track_gain = ? WHERE id = ?")
+                    .bind(rg_gain)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(rg_peak) = meta.replaygain_track_peak.value() {
-            let _ = sqlx::query("UPDATE tracks SET replaygain_track_peak = ? WHERE id = ?")
-                .bind(rg_peak)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET replaygain_track_peak = ? WHERE id = ?")
+                    .bind(rg_peak)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(rg_again) = meta.replaygain_album_gain.value() {
-            let _ = sqlx::query("UPDATE tracks SET replaygain_album_gain = ? WHERE id = ?")
-                .bind(rg_again)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET replaygain_album_gain = ? WHERE id = ?")
+                    .bind(rg_again)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
         if let Some(rg_apeak) = meta.replaygain_album_peak.value() {
-            let _ = sqlx::query("UPDATE tracks SET replaygain_album_peak = ? WHERE id = ?")
-                .bind(rg_apeak)
-                .bind(track_id)
-                .execute(&mut *tx)
-                .await;
+            let _ = crate::db::write_or_log(
+                "apply_to_database",
+                sqlx::query("UPDATE tracks SET replaygain_album_peak = ? WHERE id = ?")
+                    .bind(rg_apeak)
+                    .bind(track_id)
+                    .execute(&mut *tx),
+            )
+            .await;
         }
 
         // Update global job status and timestamp
-        let _ = sqlx::query("UPDATE tracks SET enrichment_status = 'complete', enriched_at = CURRENT_TIMESTAMP WHERE id = ?")
-            .bind(track_id).execute(&mut *tx).await;
+        let _ = crate::db::write_or_log("apply_to_database", sqlx::query("UPDATE tracks SET enrichment_status = 'complete', enriched_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(track_id).execute(&mut *tx)).await;
 
         // 4. Resolve / link Artist safely (NEVER rename artists.name)
         if let Some(art_name_raw) = meta.artist.value() {
@@ -1971,8 +2023,8 @@ impl EnrichmentEngine {
             };
 
             // Link track_artists safely
-            let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
-                .bind(track_id).bind(artist_id).execute(&mut *tx).await;
+            let _ = crate::db::write_or_log("apply_to_database", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+                .bind(track_id).bind(artist_id).execute(&mut *tx)).await;
         }
 
         // 5. Update Album if track has album_id
@@ -1986,25 +2038,34 @@ impl EnrichmentEngine {
 
         if let Some((Some(album_id),)) = album_row {
             if let Some(alb_title) = meta.album.value() {
-                let _ = sqlx::query("UPDATE albums SET title = ? WHERE id = ?")
-                    .bind(alb_title)
-                    .bind(album_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE albums SET title = ? WHERE id = ?")
+                        .bind(alb_title)
+                        .bind(album_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
             if let Some(rel_date) = meta.original_date.value() {
-                let _ = sqlx::query("UPDATE albums SET release_date = ? WHERE id = ?")
-                    .bind(rel_date)
-                    .bind(album_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE albums SET release_date = ? WHERE id = ?")
+                        .bind(rel_date)
+                        .bind(album_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
             if let Some(upc) = meta.barcode.value() {
-                let _ = sqlx::query("UPDATE albums SET upc = ? WHERE id = ?")
-                    .bind(upc)
-                    .bind(album_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE albums SET upc = ? WHERE id = ?")
+                        .bind(upc)
+                        .bind(album_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
             if let Some(tt) = meta.track_total.value().and_then(|s| s.parse::<i32>().ok()) {
                 // The provider's track_total is authoritative album metadata: it describes the
@@ -2025,18 +2086,24 @@ impl EnrichmentEngine {
                 }
             }
             if let Some(lbl) = meta.label.value() {
-                let _ = sqlx::query("UPDATE albums SET label = ? WHERE id = ?")
-                    .bind(lbl)
-                    .bind(album_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE albums SET label = ? WHERE id = ?")
+                        .bind(lbl)
+                        .bind(album_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
             if let Some(mb_rel) = meta.musicbrainz_release_id.value() {
-                let _ = sqlx::query("UPDATE albums SET musicbrainz_id = ? WHERE id = ?")
-                    .bind(mb_rel)
-                    .bind(album_id)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "apply_to_database",
+                    sqlx::query("UPDATE albums SET musicbrainz_id = ? WHERE id = ?")
+                        .bind(mb_rel)
+                        .bind(album_id)
+                        .execute(&mut *tx),
+                )
+                .await;
             }
 
             // TASK-138: for non-stub albums without a declared track count, derive it from the
@@ -2248,11 +2315,14 @@ impl EnrichmentEngine {
             if !current_is_valid {
                 if let Some(mb_art) = enriched.musicbrainz_artist_id.value() {
                     if FieldValidator::is_valid_musicbrainz_artist_id(mb_art, Some(&artist_name)) {
-                        let _ = sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
-                            .bind(mb_art)
-                            .bind(aid)
-                            .execute(&mut *tx)
-                            .await;
+                        let _ = crate::db::write_or_log(
+                            "enrich_and_persist_sync_track",
+                            sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
+                                .bind(mb_art)
+                                .bind(aid)
+                                .execute(&mut *tx),
+                        )
+                        .await;
                     }
                 }
             }
@@ -2261,6 +2331,13 @@ impl EnrichmentEngine {
             let mb_art = enriched.musicbrainz_artist_id.value().filter(|id| {
                 FieldValidator::is_valid_musicbrainz_artist_id(id, Some(&artist_name))
             });
+
+            if es_artista_no_utilizable(&artist_name) {
+                return Err(
+                    "needs_review: el artista del proveedor está vacío o es «Unknown Artist»; no se importa"
+                        .to_string(),
+                );
+            }
 
             let res = sqlx::query(
                 "INSERT INTO artists (name, musicbrainz_id) VALUES (?, ?)
@@ -2503,8 +2580,10 @@ impl EnrichmentEngine {
 
             let aid = if let Some((existing_aid,)) = album_row {
                 // Update missing album fields
-                let _ = sqlx::query(
-                    r#"
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
+                    sqlx::query(
+                        r#"
                     UPDATE albums SET
                         release_date = COALESCE(release_date, ?),
                         musicbrainz_id = COALESCE(musicbrainz_id, ?),
@@ -2514,25 +2593,26 @@ impl EnrichmentEngine {
                         label = COALESCE(label, ?)
                     WHERE id = ?
                     "#,
+                    )
+                    .bind(
+                        enriched
+                            .original_date
+                            .value()
+                            .or_else(|| enriched.release_date.value()),
+                    )
+                    .bind(enriched.musicbrainz_release_id.value())
+                    .bind(enriched.barcode.value())
+                    .bind(
+                        enriched
+                            .track_total
+                            .value()
+                            .and_then(|s| s.parse::<i32>().ok()),
+                    )
+                    .bind(input.cover_art_url.as_deref())
+                    .bind(enriched.label.value())
+                    .bind(existing_aid)
+                    .execute(&mut *tx),
                 )
-                .bind(
-                    enriched
-                        .original_date
-                        .value()
-                        .or_else(|| enriched.release_date.value()),
-                )
-                .bind(enriched.musicbrainz_release_id.value())
-                .bind(enriched.barcode.value())
-                .bind(
-                    enriched
-                        .track_total
-                        .value()
-                        .and_then(|s| s.parse::<i32>().ok()),
-                )
-                .bind(input.cover_art_url.as_deref())
-                .bind(enriched.label.value())
-                .bind(existing_aid)
-                .execute(&mut *tx)
                 .await;
 
                 existing_aid
@@ -2614,27 +2694,28 @@ impl EnrichmentEngine {
                     res.get::<i64, _>(0)
                 };
 
-                let _ = sqlx::query("UPDATE album_artists SET is_primary = 0 WHERE album_id = ?")
-                    .bind(aid)
-                    .execute(&mut *tx)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
+                    sqlx::query("UPDATE album_artists SET is_primary = 0 WHERE album_id = ?")
+                        .bind(aid)
+                        .execute(&mut *tx),
+                )
+                .await;
 
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                     "INSERT INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)
                      ON CONFLICT(album_id, artist_id) DO UPDATE SET is_primary = 1",
                 )
                 .bind(aid)
                 .bind(va_id)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx)).await;
 
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                     "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 0)"
                 )
                 .bind(aid)
                 .bind(artist_id)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx)).await;
 
                 enriched.compilation.merge_candidate(
                     Some("1".to_string()),
@@ -2653,13 +2734,12 @@ impl EnrichmentEngine {
                     );
                 }
             } else {
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                     "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
                 )
                 .bind(aid)
                 .bind(album_artist_id)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx)).await;
             }
 
             // S198: favorite-album marking + provider album id (guarded, idempotent).
@@ -2667,12 +2747,11 @@ impl EnrichmentEngine {
             // timestamp; the provider id is written once and never stolen from
             // another row (NOT EXISTS guards the partial-unique index).
             if input.album_is_favorite {
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                     "UPDATE albums SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?"
                 )
                 .bind(aid)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx)).await;
             }
             if let Some(provider_album_id) = input.album_provider_track_id.as_deref() {
                 if !provider_album_id.trim().is_empty() {
@@ -2690,59 +2769,61 @@ impl EnrichmentEngine {
                             "UPDATE albums SET {col} = ? WHERE id = ? AND {col} IS NULL \
                              AND NOT EXISTS (SELECT 1 FROM albums a2 WHERE a2.{col} = ?)"
                         );
-                        let _ = sqlx::query(&sql)
-                            .bind(provider_album_id)
-                            .bind(aid)
-                            .bind(provider_album_id)
-                            .execute(&mut *tx)
-                            .await;
+                        let _ = crate::db::write_or_log(
+                            "enrich_and_persist_sync_track",
+                            sqlx::query(&sql)
+                                .bind(provider_album_id)
+                                .bind(aid)
+                                .bind(provider_album_id)
+                                .execute(&mut *tx),
+                        )
+                        .await;
                     }
                 }
             }
             album_id_opt = Some(aid);
         }
 
-        // ED-02: exact provider item is the only identity proof. ISRC/title
-        // remain discovery hints, never permission to merge distinct editions.
-        let source_tracks: Vec<(i64,)> = sqlx::query_as(
-            "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?",
-        )
-        .bind(input.service_id)
-        .bind(&input.service_track_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| format!("ED-02 source lookup failed: {e}"))?;
-        if source_tracks.len() > 1 {
-            return Err("needs_review: provider item maps to multiple tracks".to_string());
-        }
-        let existing_track_id = source_tracks.first().map(|row| row.0);
-        let ledger_tracks: Vec<(i64,)> = sqlx::query_as(
-            "SELECT link.track_id FROM edition_provider_items item JOIN edition_item_tracks link ON link.item_id = item.id WHERE item.service_id = ? AND item.service_track_id = ?"
-        )
-        .bind(input.service_id)
-        .bind(&input.service_track_id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| format!("ED-02 item lookup failed: {e}"))?;
-        if ledger_tracks
-            .iter()
-            .any(|row| Some(row.0) != existing_track_id)
-        {
-            return Err("needs_review: provider item identity collision".to_string());
-        }
+        // ED-02: la evidencia manda; el ledger decide solo cuando la evidencia
+        // aún no existe. ISRC y título siguen siendo pistas, no permiso.
+        let mut existing_track_id =
+            match resolver_identidad_de_item(&mut tx, input.service_id, &input.service_track_id)
+                .await?
+            {
+                IdentidadDeItem::Nuevo => None,
+                IdentidadDeItem::Existente(id) | IdentidadDeItem::AdoptarDelLedger(id) => Some(id),
+                IdentidadDeItem::EvidenciaMultiple => {
+                    return Err("needs_review: provider item maps to multiple tracks".to_string());
+                }
+                IdentidadDeItem::Contradiccion => {
+                    return Err("needs_review: provider item contradice el ledger".to_string());
+                }
+            };
         // The legacy UNIQUE(tracks.isrc) prevents two canonical rows with the
-        // same ISRC. Until that constraint changes, fail closed, not merge.
+        // same ISRC. Cross-service, that ISRC is the same recording exported by
+        // another provider, not a different edition: reuse the canonical track
+        // and let the source-slot guard below keep same-service editions apart.
+        // Ambiguous ISRCs (more than one canonical row) still fail closed.
         if existing_track_id.is_none() {
             if let Some(isrc) = isrc_opt.filter(|value| !value.trim().is_empty()) {
-                let matches: Vec<(i64,)> = sqlx::query_as("SELECT id FROM tracks WHERE isrc = ?")
-                    .bind(isrc.trim())
-                    .fetch_all(&mut *tx)
-                    .await
-                    .map_err(|e| format!("ED-02 ISRC lookup failed: {e}"))?;
-                if !matches.is_empty() {
-                    return Err(
-                        "needs_review: ISRC alone cannot establish edition identity".to_string()
-                    );
+                // Route 2 (2026-10-18): the unique index is `isrc COLLATE NOCASE`,
+                // so the lookup must be NOCASE too. A case-sensitive compare here
+                // treated `USCGH...` and `uscgh...` as different recordings and
+                // the later INSERT blew up on the unique index.
+                let matches: Vec<(i64,)> =
+                    sqlx::query_as("SELECT id FROM tracks WHERE isrc = ? COLLATE NOCASE")
+                        .bind(isrc.trim())
+                        .fetch_all(&mut *tx)
+                        .await
+                        .map_err(|e| format!("ED-02 ISRC lookup failed: {e}"))?;
+                match matches.as_slice() {
+                    [] => {}
+                    [(track_id,)] => existing_track_id = Some(*track_id),
+                    _ => {
+                        return Err(
+                            "needs_review: ISRC maps to multiple canonical tracks".to_string()
+                        )
+                    }
                 }
             }
         }
@@ -2849,11 +2930,10 @@ impl EnrichmentEngine {
                 let inferred_year = min_track_year.or(parsed_year);
                 if let Some(iy) = inferred_year {
                     let formatted = format!("{:04}-01-01", iy);
-                    let _ = sqlx::query("UPDATE albums SET release_date = ? WHERE id = ? AND (release_date IS NULL OR release_date = '')")
+                    let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query("UPDATE albums SET release_date = ? WHERE id = ? AND (release_date IS NULL OR release_date = '')")
                         .bind(&formatted)
                         .bind(aid)
-                        .execute(&mut *tx)
-                        .await;
+                        .execute(&mut *tx)).await;
                     album_release_year = Some(iy);
                 }
             }
@@ -2871,6 +2951,72 @@ impl EnrichmentEngine {
         };
 
         let is_new_global_track = existing_track_id.is_none();
+
+        // ED-04: la identidad por grabación (ISRC) no autoriza a mover una
+        // grabación a otra edición. Si el track ya existe con álbum conocido y
+        // llega un álbum distinto sin evidencia de release que lo corrobore, la
+        // decisión es de una persona (`needs_review`), no una reasignación
+        // silenciosa. Ver `docs/adr/0003-seleccion-de-edicion.md` y D-07.
+        if let Some(tid) = existing_track_id {
+            let current_album_title: Option<String> = sqlx::query_scalar(
+                "SELECT a.title FROM tracks t JOIN albums a ON a.id = t.album_id WHERE t.id = ?",
+            )
+            .bind(tid)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| format!("ED-04 album lookup failed: {e}"))?;
+            let has_release_evidence = input
+                .album_provider_track_id
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|s| !s.is_empty());
+            if let (Some(current), Some(incoming)) = (
+                current_album_title.as_deref(),
+                input.origin_meta.album.as_deref(),
+            ) {
+                if !has_release_evidence
+                    && !current.trim().is_empty()
+                    && !incoming.trim().is_empty()
+                    && !misma_familia_de_album(current, incoming)
+                {
+                    anotar_rechazo_ed04(current, incoming);
+                    registrar_aparicion_de_edicion(
+                        &mut tx,
+                        input.service_id,
+                        &input.service_track_id,
+                        tid,
+                        incoming,
+                        &input.service_name,
+                    )
+                    .await?;
+                    let (artist_id, album_id): (Option<i64>, Option<i64>) = sqlx::query_as(
+                        "SELECT (SELECT artist_id FROM track_artists WHERE track_id = ? LIMIT 1), (SELECT album_id FROM tracks WHERE id = ?)",
+                    )
+                    .bind(tid)
+                    .bind(tid)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|e| format!("ED-04b track lookup failed: {e}"))?;
+                    // El retorno temprano tiene que confirmar: si no, la
+                    // aparición se escribe y se revierte al soltar `tx`.
+                    tx.commit()
+                        .await
+                        .map_err(|e| format!("Failed to commit DB transaction: {}", e))?;
+                    return Ok(SyncTrackResult {
+                        track_id: tid,
+                        artist_id: artist_id.unwrap_or(0),
+                        album_id,
+                        is_new_global_track: false,
+                        is_new_source_for_service: false,
+                        is_new_library_entry_for_account: false,
+                        is_already_present: true,
+                        is_new_import: false,
+                        completeness: syncify_metadata_domain::EnrichmentCompleteness::Minimal,
+                        availability_status: "needs_review".to_string(),
+                    });
+                }
+            }
+        }
         let effective_audio_quality: Option<String>;
 
         let track_id = if let Some(tid) = existing_track_id {
@@ -2911,28 +3057,41 @@ impl EnrichmentEngine {
 
             if is_manual {
                 // Preserve manual fields; only fill missing relational/service keys
-                let _ = sqlx::query(
-                    r#"
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
+                    sqlx::query(
+                        r#"
                     UPDATE tracks SET
                         album_id = COALESCE(album_id, ?),
                         duration_ms = COALESCE(duration_ms, ?),
                         track_number = COALESCE(track_number, ?),
                         disc_number = COALESCE(disc_number, ?),
-                        isrc = COALESCE(isrc, ?),
+                        isrc = CASE
+                            WHEN isrc IS NOT NULL THEN isrc
+                            WHEN NOT EXISTS (
+                                SELECT 1 FROM tracks vecino
+                                WHERE vecino.isrc = ? COLLATE NOCASE AND vecino.id <> tracks.id
+                            ) THEN ?
+                            ELSE isrc
+                        END,
                         musicbrainz_id = COALESCE(musicbrainz_id, ?),
                         audio_quality = COALESCE(?, audio_quality)
                     WHERE id = ?
                     "#,
+                    )
+                    .bind(album_id_opt)
+                    .bind(input.duration_ms)
+                    .bind(parsed_track_num)
+                    .bind(parsed_disc_num)
+                    // el ISRC solo se rellena si ninguna otra fila lo tiene ya
+                    // (indice NOCASE de 0064:186); si lo tiene, se deja como esta
+                    .bind(enriched.isrc.value())
+                    .bind(enriched.isrc.value())
+                    .bind(enriched.musicbrainz_recording_id.value())
+                    .bind(effective_audio_quality.as_deref())
+                    .bind(tid)
+                    .execute(&mut *tx),
                 )
-                .bind(album_id_opt)
-                .bind(input.duration_ms)
-                .bind(parsed_track_num)
-                .bind(parsed_disc_num)
-                .bind(enriched.isrc.value())
-                .bind(enriched.musicbrainz_recording_id.value())
-                .bind(effective_audio_quality.as_deref())
-                .bind(tid)
-                .execute(&mut *tx)
                 .await;
             } else {
                 let existing_acoustic: Option<(Option<f64>, Option<String>, Option<f64>, Option<String>)> = sqlx::query_as(
@@ -2980,51 +3139,33 @@ impl EnrichmentEngine {
                 });
 
                 // Update with resolved metadata (StreamingService > MusicBrainz > Inferred)
-                let _ = sqlx::query(
-                    r#"
-                    UPDATE tracks SET
-                        title = COALESCE(?, title),
-                        album_id = COALESCE(album_id, ?),
-                        duration_ms = COALESCE(duration_ms, ?),
-                        track_number = COALESCE(track_number, ?),
-                        disc_number = COALESCE(disc_number, ?),
-                        isrc = COALESCE(isrc, ?),
-                        musicbrainz_id = COALESCE(musicbrainz_id, ?),
-                        explicit = COALESCE(explicit, ?),
-                        genre = COALESCE(genre, ?),
-                        subgenre = COALESCE(subgenre, ?),
-                        release_year = COALESCE(release_year, ?),
-                        record_label = COALESCE(record_label, ?),
-                        bpm = COALESCE(bpm, ?),
-                        musical_key = COALESCE(musical_key, ?),
-                        energy = COALESCE(energy, ?),
-                        acoustid_fingerprint = COALESCE(?, acoustid_fingerprint),
-                        audio_quality = COALESCE(?, audio_quality),
-                        enrichment_status = ?,
-                        enriched_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    "#,
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
+                    sqlx::query(UPDATE_PISTA_SQL)
+                        .bind(title_update_val)
+                        .bind(album_id_opt)
+                        .bind(input.duration_ms)
+                        .bind(parsed_track_num)
+                        .bind(parsed_disc_num)
+                        // el ISRC solo se rellena si ninguna otra fila lo tiene ya
+                        // (indice NOCASE de 0064:186); si lo tiene, se deja como esta
+                        .bind(enriched.isrc.value())
+                        .bind(enriched.isrc.value())
+                        .bind(enriched.musicbrainz_recording_id.value())
+                        .bind(parsed_explicit)
+                        .bind(clean_genre.as_deref())
+                        .bind(enriched.style.value())
+                        .bind(effective_year)
+                        .bind(enriched.label.value())
+                        .bind(parsed_bpm)
+                        .bind(enriched.initial_key.value())
+                        .bind(parsed_energy)
+                        .bind(enriched.acoustid_fingerprint.value())
+                        .bind(effective_audio_quality.as_deref())
+                        .bind(target_status)
+                        .bind(tid)
+                        .execute(&mut *tx),
                 )
-                .bind(title_update_val)
-                .bind(album_id_opt)
-                .bind(input.duration_ms)
-                .bind(parsed_track_num)
-                .bind(parsed_disc_num)
-                .bind(enriched.isrc.value())
-                .bind(enriched.musicbrainz_recording_id.value())
-                .bind(parsed_explicit)
-                .bind(clean_genre.as_deref())
-                .bind(enriched.style.value())
-                .bind(effective_year)
-                .bind(enriched.label.value())
-                .bind(parsed_bpm)
-                .bind(enriched.initial_key.value())
-                .bind(parsed_energy)
-                .bind(enriched.acoustid_fingerprint.value())
-                .bind(effective_audio_quality.as_deref())
-                .bind(target_status)
-                .bind(tid)
-                .execute(&mut *tx)
                 .await;
             }
 
@@ -3036,12 +3177,15 @@ impl EnrichmentEngine {
                         .execute(&mut *tx)
                         .await;
             } else if input.service_name == "spotify" {
-                let _ = sqlx::query(
-                    "UPDATE tracks SET spotify_id = COALESCE(spotify_id, ?) WHERE id = ?",
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
+                    sqlx::query(
+                        "UPDATE tracks SET spotify_id = COALESCE(spotify_id, ?) WHERE id = ?",
+                    )
+                    .bind(&input.service_track_id)
+                    .bind(tid)
+                    .execute(&mut *tx),
                 )
-                .bind(&input.service_track_id)
-                .bind(tid)
-                .execute(&mut *tx)
                 .await;
             }
 
@@ -3095,75 +3239,131 @@ impl EnrichmentEngine {
                 raw_insert_title
             };
 
-            let res = sqlx::query(
-                r#"
-                INSERT INTO tracks (
-                    title, album_id, duration_ms, track_number, disc_number,
-                    isrc, musicbrainz_id, explicit, genre, subgenre,
-                    release_year, record_label, bpm, musical_key, energy, acoustid_fingerprint, audio_quality,
-                    qobuz_id, spotify_id, enrichment_status, enriched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                RETURNING id
-                "#
-            )
-            .bind(effective_insert_title)
-            .bind(album_id_opt)
-            .bind(input.duration_ms)
-            .bind(parsed_track_num)
-            .bind(parsed_disc_num.unwrap_or(1))
-            .bind(enriched.isrc.value())
-            .bind(enriched.musicbrainz_recording_id.value())
-            .bind(parsed_explicit.unwrap_or(0))
-            .bind(clean_genre.as_deref())
-            .bind(enriched.style.value())
-            .bind(effective_year)
-            .bind(enriched.label.value())
-            .bind(parsed_bpm)
-            .bind(enriched.initial_key.value())
-            .bind(parsed_energy)
-            .bind(enriched.acoustid_fingerprint.value())
-            .bind(effective_audio_quality.as_deref())
-            .bind(qobuz_id_val)
-            .bind(spotify_id_val)
-            .bind(target_status)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to insert track '{}': {}", track_title, e))?;
+            let res = sqlx::query(INSERT_PISTA_SQL)
+                .bind(effective_insert_title)
+                .bind(album_id_opt)
+                .bind(input.duration_ms)
+                .bind(parsed_track_num)
+                .bind(parsed_disc_num.unwrap_or(1))
+                .bind(enriched.isrc.value())
+                .bind(enriched.musicbrainz_recording_id.value())
+                .bind(parsed_explicit.unwrap_or(0))
+                .bind(clean_genre.as_deref())
+                .bind(enriched.style.value())
+                .bind(effective_year)
+                .bind(enriched.label.value())
+                .bind(parsed_bpm)
+                .bind(enriched.initial_key.value())
+                .bind(parsed_energy)
+                .bind(enriched.acoustid_fingerprint.value())
+                .bind(effective_audio_quality.as_deref())
+                .bind(qobuz_id_val)
+                .bind(spotify_id_val)
+                .bind(target_status)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to insert track '{}': {}", track_title, e))?;
 
             use sqlx::Row;
-            res.get::<i64, _>(0)
+            match res {
+                Some(row) => row.get::<i64, _>(0),
+                None => {
+                    // `ON CONFLICT DO NOTHING` cubre los dos índices únicos sobre
+                    // `tracks.isrc`: el BINARY de la columna (0002:91) y el NOCASE
+                    // parcial de 0064:186. El choque puede venir del ISRC
+                    // enriquecido, que no es el que se usó para buscar arriba, así
+                    // que resolvemos por NOCASE y completamos lo que falte sin
+                    // mover la pista de álbum.
+                    let isrc_insertado =
+                        enriched.isrc.value().unwrap_or_default().trim().to_string();
+                    let existente: i64 = sqlx::query_scalar::<_, i64>(
+                        "SELECT id FROM tracks WHERE isrc = ? COLLATE NOCASE",
+                    )
+                    .bind(&isrc_insertado)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|e| format!("Failed to resolve track by ISRC: {e}"))?
+                    .ok_or_else(|| {
+                        format!(
+                            "Failed to insert track '{track_title}': no insertó y ningún ISRC coincide"
+                        )
+                    })?;
+                    let _ = crate::db::write_or_log(
+                        "enrich_and_persist_sync_track",
+                        sqlx::query(
+                            "UPDATE tracks SET musicbrainz_id = COALESCE(musicbrainz_id, ?), enriched_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        )
+                        .bind(enriched.musicbrainz_recording_id.value())
+                        .bind(existente)
+                        .execute(&mut *tx),
+                    )
+                    .await;
+                    existente
+                }
+            }
         };
 
         // 5b. Update tracks.is_favorite if favorite
         if input.is_favorite {
-            let _ = sqlx::query(
+            let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                 "UPDATE tracks SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?"
             )
             .bind(track_id)
+            .execute(&mut *tx)).await;
+
+            // Route 2 (2026-10-18): remember the provider item behind the
+            // favorite (with its own release title) so the library can show one
+            // row per favorited release. Idempotent per (account, item); real
+            // metadata replaces the push-flow placeholder when available.
+            let favorite_title = input
+                .origin_meta
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(track_title.as_str());
+            sqlx::query(
+                r#"
+                INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, isrc, favorited_at)
+                VALUES (?, ?, 'track', ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(account_id, item_type, service_item_id) DO UPDATE SET
+                    service_id = excluded.service_id,
+                    title = excluded.title,
+                    artist_name = COALESCE(excluded.artist_name, favorites.artist_name),
+                    album_name = COALESCE(excluded.album_name, favorites.album_name),
+                    isrc = COALESCE(excluded.isrc, favorites.isrc)
+                "#,
+            )
+            .bind(input.account_id)
+            .bind(input.service_id)
+            .bind(&input.service_track_id)
+            .bind(favorite_title)
+            .bind(input.origin_meta.artist.as_deref())
+            .bind(input.origin_meta.album.as_deref())
+            .bind(input.origin_meta.isrc.as_deref())
             .execute(&mut *tx)
-            .await;
+            .await
+            .map_err(|e| format!("favorite item persistence failed: {e}"))?;
         }
 
         // 6. Link Track-Artist
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
             "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
         )
         .bind(track_id)
         .bind(artist_id)
-        .execute(&mut *tx)
-        .await;
+        .execute(&mut *tx)).await;
 
         // TASK-68: If incoming primary artist had a technical role (e.g. "Guitar - Juan Perez"),
         // register the technical role in track_credits as well
         if syncify_core_domain::metadata::is_technical_role(&art_role) {
-            let _ = sqlx::query(
+            let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
                 "INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)",
             )
             .bind(track_id)
             .bind(artist_id)
             .bind(&art_role)
-            .execute(&mut *tx)
-            .await;
+            .execute(&mut *tx)).await;
         }
 
         let effective_title_for_feat = enriched.title.value().unwrap_or(&track_title);
@@ -3206,8 +3406,8 @@ impl EnrichmentEngine {
                 }
             };
             if final_feat_id > 0 && final_feat_id != artist_id {
-                let _ = sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
-                    .bind(track_id).bind(final_feat_id).execute(&mut *tx).await;
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query("INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'featured')")
+                    .bind(track_id).bind(final_feat_id).execute(&mut *tx)).await;
             }
         }
 
@@ -3241,8 +3441,8 @@ impl EnrichmentEngine {
                             }
                         }
                     };
-                    let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
-                        .bind(track_id).bind(c_art_id).bind(&c_role_final).execute(&mut *tx).await;
+                    let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
+                        .bind(track_id).bind(c_art_id).bind(&c_role_final).execute(&mut *tx)).await;
                 }
             }
         }
@@ -3276,8 +3476,8 @@ impl EnrichmentEngine {
                             }
                         }
                     };
-                    let _ = sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
-                        .bind(track_id).bind(p_art_id).bind(&p_role_final).execute(&mut *tx).await;
+                    let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query("INSERT OR IGNORE INTO track_credits (track_id, artist_id, role) VALUES (?, ?, ?)")
+                        .bind(track_id).bind(p_art_id).bind(&p_role_final).execute(&mut *tx)).await;
                 }
             }
         }
@@ -3291,19 +3491,28 @@ impl EnrichmentEngine {
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| format!("ED-02 source slot lookup failed: {e}"))?;
-        if existing_source
+        // Route 2 (2026-10-18): the legacy slot keeps its original representative
+        // item and is NEVER overwritten. A second provider item with the same ISRC
+        // is the same recording on another release: it is linked through the
+        // edition ledger below (and its favorite/library entry still lands) instead
+        // of failing closed, so duplicate editions are imported, not skipped.
+        let slot_occupied_by_other_edition = existing_source
             .as_ref()
-            .is_some_and(|(_, item)| item != &input.service_track_id)
-        {
-            return Err(
-                "needs_review: another edition occupies the legacy source slot".to_string(),
+            .is_some_and(|(_, item)| item != &input.service_track_id);
+        if slot_occupied_by_other_edition {
+            tracing::debug!(
+                service = %input.service_name,
+                track_id,
+                item = %input.service_track_id,
+                "[ED-02] linking edition item to canonical track without occupying the legacy slot",
             );
         }
         let source_already_existed = existing_source.is_some();
         let is_new_source_for_service = !source_already_existed;
 
-        sqlx::query(
-            r#"
+        if !slot_occupied_by_other_edition {
+            sqlx::query(
+                r#"
             INSERT INTO track_sources (
                 track_id, service_id, service_track_id, format, bit_depth,
                 sample_rate, quality_score, available, availability_status, last_checked
@@ -3318,17 +3527,18 @@ impl EnrichmentEngine {
                 availability_status = 'available',
                 last_checked = CURRENT_TIMESTAMP
             "#,
-        )
-        .bind(track_id)
-        .bind(input.service_id)
-        .bind(&input.service_track_id)
-        .bind(input.format.as_deref())
-        .bind(input.bit_depth)
-        .bind(input.sample_rate)
-        .bind(input.quality_score)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("ED-02 source persistence failed: {e}"))?;
+            )
+            .bind(track_id)
+            .bind(input.service_id)
+            .bind(&input.service_track_id)
+            .bind(input.format.as_deref())
+            .bind(input.bit_depth)
+            .bind(input.sample_rate)
+            .bind(input.quality_score)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("ED-02 source persistence failed: {e}"))?;
+        }
 
         // The ED-01 ledger is written in the SAME transaction as canonical
         // track_sources; failures roll back both sides rather than half-activate.
@@ -3381,8 +3591,10 @@ impl EnrichmentEngine {
         // Promote tracks.audio_quality if newly inserted/updated source offers a higher tier,
         // unless track has already been downloaded (in which case physical download metrics are authoritative).
         if let Some(ref eff_q) = effective_audio_quality {
-            let _ = sqlx::query(
-                r#"UPDATE tracks SET audio_quality = ?
+            let _ = crate::db::write_or_log(
+                "enrich_and_persist_sync_track",
+                sqlx::query(
+                    r#"UPDATE tracks SET audio_quality = ?
                    WHERE id = ? AND (
                        audio_quality IS NULL
                        OR (
@@ -3393,12 +3605,13 @@ impl EnrichmentEngine {
                            )
                        )
                    )"#,
+                )
+                .bind(eff_q)
+                .bind(track_id)
+                .bind(eff_q)
+                .bind(eff_q)
+                .execute(&mut *tx),
             )
-            .bind(eff_q)
-            .bind(track_id)
-            .bind(eff_q)
-            .bind(eff_q)
-            .execute(&mut *tx)
             .await;
         }
 
@@ -3419,7 +3632,7 @@ impl EnrichmentEngine {
             input.origin_meta.added_at.as_deref(),
         );
 
-        let _ = sqlx::query(
+        sqlx::query(
             r#"
             INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
             VALUES (?, ?, ?, ?, ?)
@@ -3438,7 +3651,8 @@ impl EnrichmentEngine {
         .bind(input.is_purchased as i32)
         .bind(&safe_added_at)
         .execute(&mut *tx)
-        .await;
+        .await
+        .map_err(|e| format!("library entry persistence failed: {e}"))?;
 
         let is_already_present =
             !is_new_global_track && !is_new_source_for_service && !is_new_library_entry_for_account;
@@ -3520,8 +3734,8 @@ pub fn evaluate_enrichment_status(
 }
 
 /// Input payload for sync-time pre-enrichment and persistence
-#[derive(Debug, Clone, Default)]
 // Cubierto por `tests/sync_pre_enrichment_test.rs` y `tests/tidal_sync_persistence_test.rs`.
+#[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct SyncTrackInput {
     pub origin_meta: OriginTrackMetadata,
@@ -3895,11 +4109,10 @@ pub async fn backfill_social_metadata(
 
     for (aid, yr) in isrc_map {
         let formatted = format!("{:04}-01-01", yr);
-        let _ = sqlx::query("UPDATE albums SET release_date = ? WHERE id = ? AND (release_date IS NULL OR release_date = '')")
+        let _ = crate::db::write_or_log("backfill_social_metadata", sqlx::query("UPDATE albums SET release_date = ? WHERE id = ? AND (release_date IS NULL OR release_date = '')")
             .bind(&formatted)
             .bind(aid)
-            .execute(db)
-            .await;
+            .execute(db)).await;
         report.albums_dates_inferred += 1;
     }
 
@@ -4025,10 +4238,982 @@ pub async fn backfill_social_metadata(
     Ok(report)
 }
 
+/// Sufijos que marcan una edición del mismo álbum, no un álbum distinto.
+const MARCADORES_DE_EDICION: &[&str] = &[
+    "deluxe",
+    "remaster",
+    "remastered",
+    "remasterizado",
+    "remasterizada",
+    "anniversary",
+    "aniversario",
+    "expanded",
+    "complete edition",
+    "special edition",
+    "bonus",
+    "reissue",
+    "collector",
+    "legacy edition",
+    "definitive edition",
+    "edición especial",
+    "edicion especial",
+    "edición deluxe",
+    "edicion deluxe",
+    "edición aniversario",
+    "edicion aniversario",
+    // Marcas de formato que no cambian de álbum: la prueba manual del
+    // 2026-10-21 las vio ir a revisión («Happier Than Ever (Explicit)»,
+    // «Beauty Behind The Madness (Explicit Version)»).
+    "explicit",
+    "explícito",
+    "explicito",
+    "clean",
+    "edited",
+    "rerecorded",
+    "version",
+    "edición",
+    "edicion",
+    // Empaquetado y formato vistos en la pasada del 2026-10-22.
+    "dmd",
+    "int'l only",
+    "intl only",
+    "altered iliner",
+    "archive collection",
+    "hi-res",
+    "hires",
+];
+
+/// `«X»` y `«X (Deluxe Edition)»` son la misma familia de álbum; `«X»` y `«Y»`
+/// no. Normaliza solo lo que no cambia de álbum, según los pares que la prueba
+/// manual del 2026-10-21 dejó en revisión:
+///
+/// - marcas de formato entre paréntesis o corchetes: `(Deluxe)`, `[Remastered]`,
+///   `(Explicit)`, `(Explicit Version)`, `(2016 Rerecorded Version)`;
+/// - sufijos sueltos, con o sin número delante: `Absolution XX Anniversary`,
+///   `Sol-Fa Rerecorded Version`;
+/// - corchetes como paréntesis y puntuación que no distingue títulos
+///   (`Songs For Swingin' Lovers!` frente a `Songs For Swingin' Lovers !`).
+///
+/// Lo que sí distingue lanzamientos se queda: `The Best Of 1990-2000 & B-Sides`
+/// sigue siendo otro álbum, y un paréntesis con contenido propio
+/// (`BLUE LIPS ([lady wood phase II])`) no se recorta.
+fn familia_de_album(titulo: &str) -> String {
+    let mut base = titulo
+        .replace('[', "(")
+        .replace(']', ")")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    // «(((((ultraSOUND)))))» y «(((((ultraSOUND)))))+» son el mismo título; los
+    // paréntesis repetidos salen del corchete convertido.
+    while base.contains("((") {
+        base = base.replace("((", "(");
+    }
+    while base.contains("))") {
+        base = base.replace("))", ")");
+    }
+    // «Appetite For Destruction (Super Deluxe) - 192 kHz»: la frecuencia es
+    // formato, no otra edición.
+    if let Some(pos) = base.rfind(" - ") {
+        let cola = base[pos + 3..].trim().to_string();
+        let es_frecuencia = cola
+            .split(|c: char| c == '/' || c.is_whitespace())
+            .all(|p| {
+                p.chars().all(|c| c.is_ascii_digit()) || matches!(p, "khz" | "bit" | "bits" | "hz")
+            });
+        if es_frecuencia && !cola.is_empty() {
+            base = base[..pos].trim_end().to_string();
+        }
+    }
+
+    let es_marcador = |s: &str| MARCADORES_DE_EDICION.iter().any(|m| s.contains(m));
+    let es_numero = |s: &str| {
+        !s.is_empty()
+            && (s.chars().all(|c| c.is_ascii_digit()) || s.chars().all(|c| "ivxlcdm".contains(c)))
+    };
+
+    loop {
+        let recortado = base.trim_end().to_string();
+        let mut nuevo = recortado.clone();
+        let mut quitado = false;
+
+        if let Some(pos) = nuevo.rfind('(') {
+            if nuevo.ends_with(')') && es_marcador(&nuevo[pos..]) {
+                nuevo = nuevo[..pos].trim_end().to_string();
+                quitado = true;
+            }
+        }
+        if !quitado {
+            if let Some(pos) = nuevo.rfind(" - ") {
+                if es_marcador(&nuevo[pos..]) {
+                    nuevo = nuevo[..pos].trim_end().to_string();
+                    quitado = true;
+                }
+            }
+        }
+        if !quitado {
+            let palabras: Vec<&str> = nuevo.split(' ').collect();
+            for n in 1..=3.min(palabras.len()) {
+                let cola = palabras[palabras.len() - n..].join(" ");
+                if MARCADORES_DE_EDICION.iter().any(|m| cola.ends_with(m)) {
+                    let mut fin = palabras.len() - n;
+                    // «XX Anniversary»: se va también el número romano o el año.
+                    while fin > 0 && es_numero(palabras[fin - 1]) {
+                        fin -= 1;
+                    }
+                    nuevo = palabras[..fin].join(" ").trim_end().to_string();
+                    quitado = true;
+                    break;
+                }
+            }
+        }
+
+        base = nuevo;
+        if !quitado {
+            break;
+        }
+    }
+
+    let familia = base
+        .chars()
+        .filter(|c| !matches!(c, ',' | ';' | ':' | '\'' | '’' | '.' | '!' | '?' | '+'))
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if familia.is_empty() {
+        // «(...)» o «...»: sin texto no hay familia que comparar. Se usa el
+        // título tal cual para que dos iguales no se traten como distintos.
+        return titulo
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+    }
+    familia
+}
+
+/// ¿Los dos títulos describen la misma familia de álbum, ignorando la edición?
+fn misma_familia_de_album(actual: &str, entrante: &str) -> bool {
+    let a = familia_de_album(actual);
+    let b = familia_de_album(entrante);
+    !a.is_empty() && !b.is_empty() && a == b
+}
+
+/// Clase de un rechazo ED-04. Sirve para decidir con datos si el álbum de
+/// llegada es el mismo con otro texto (se puede unir) o un lanzamiento distinto
+/// (debe seguir en revisión).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaseRechazoEd04 {
+    /// Sólo cambia el texto (mayúsculas, espacios, puntuación).
+    MismoTexto,
+    /// El de llegada añade un subtítulo entre paréntesis: «RUSH! (ARE U COMING?)».
+    Subtitulo,
+    /// El de llegada añade un conjunto al título: «… & B-Sides», «… - Bonus».
+    Conjunto,
+    /// El de llegada nombra un empaquetado: recopilatorio, banda sonora, directo.
+    Empaquetado,
+    /// Títulos que no comparten base: otra edición o un error del proveedor.
+    Distinto,
+}
+
+static RECHAZOS_ED04: [AtomicU64; 5] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+/// Devuelve y reinicia el histograma de rechazos ED-04 de la pasada.
+pub fn rechazos_ed04_tomar() -> [u64; 5] {
+    let mut salida = [0u64; 5];
+    for (indice, celda) in RECHAZOS_ED04.iter().enumerate() {
+        salida[indice] = celda.swap(0, Ordering::Relaxed);
+    }
+    salida
+}
+
+/// Clasifica un rechazo ED-04 sin adivinar: compara las dos familias ya
+/// normalizadas y mira qué añade el álbum de llegada.
+fn clase_de_rechazo_ed04(actual: &str, entrante: &str) -> ClaseRechazoEd04 {
+    let a = familia_de_album(actual);
+    let b = familia_de_album(entrante);
+    if a == b {
+        return ClaseRechazoEd04::MismoTexto;
+    }
+    let (corto, largo) = if a.len() <= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    if largo.starts_with(corto.as_str()) {
+        let cola = largo[corto.len()..].trim_start();
+        if cola.starts_with('(') {
+            return ClaseRechazoEd04::Subtitulo;
+        }
+        if cola.starts_with('&') || cola.starts_with(" - ") || cola.starts_with("- ") {
+            return ClaseRechazoEd04::Conjunto;
+        }
+    }
+    const EMPAQUETADO: [&str; 9] = [
+        "best of",
+        "greatest",
+        "hits",
+        "anthology",
+        "soundtrack",
+        "banda sonora",
+        "collection",
+        "live",
+        "directo",
+    ];
+    if EMPAQUETADO
+        .iter()
+        .any(|marca| a.contains(marca) || b.contains(marca))
+    {
+        return ClaseRechazoEd04::Empaquetado;
+    }
+    ClaseRechazoEd04::Distinto
+}
+
+/// Nombres que el esquema rechaza (trigger de la migración 0079). Se comprueban
+/// antes de insertar para dar un motivo accionable en vez de un aborto de SQL.
+pub(crate) fn es_artista_no_utilizable(nombre: &str) -> bool {
+    let limpio = nombre.trim().to_lowercase();
+    limpio.is_empty()
+        || matches!(limpio.as_str(), "unknown" | "unknown artist")
+        || limpio == "\\p"
+        || limpio == "\\\\p"
+}
+
+/// ED-04b: la grabación ya vive en otro álbum de estudio. En vez de rechazar el
+/// ítem, se registra la llegada como aparición: el Track no se mueve, no se
+/// escribe evidencia nueva y la decisión queda para una persona.
+///
+/// Idempotente: la clave `(service_id, service_track_id)` y el enlace
+/// `(item_id, track_id)` hacen que repetir la pasada no duplique nada.
+async fn registrar_aparicion_de_edicion(
+    conn: &mut sqlx::SqliteConnection,
+    service_id: i64,
+    service_track_id: &str,
+    track_id: i64,
+    album_entrante: &str,
+    service_name: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO edition_provider_items(service_id, service_track_id, release_id, evidence_status, provenance) VALUES (?, ?, NULL, 'unknown', ?) ON CONFLICT(service_id, service_track_id) DO NOTHING",
+    )
+    .bind(service_id)
+    .bind(service_track_id)
+    .bind(format!("{service_name}: album={album_entrante}"))
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| format!("ED-04b appearance insert failed: {e}"))?;
+
+    let item_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM edition_provider_items WHERE service_id = ? AND service_track_id = ?",
+    )
+    .bind(service_id)
+    .bind(service_track_id)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(|e| format!("ED-04b appearance lookup failed: {e}"))?;
+
+    sqlx::query(
+        "INSERT INTO edition_item_tracks(item_id, track_id, validation_status, provenance) VALUES (?, ?, 'needs_review', 'ed04:album-family') ON CONFLICT(item_id, track_id) DO NOTHING",
+    )
+    .bind(item_id)
+    .bind(track_id)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| format!("ED-04b appearance link failed: {e}"))?;
+    Ok(())
+}
+
+/// Registra la clase del rechazo que se está a punto de devolver.
+fn anotar_rechazo_ed04(actual: &str, entrante: &str) {
+    let indice = match clase_de_rechazo_ed04(actual, entrante) {
+        ClaseRechazoEd04::MismoTexto => 0,
+        ClaseRechazoEd04::Subtitulo => 1,
+        ClaseRechazoEd04::Conjunto => 2,
+        ClaseRechazoEd04::Empaquetado => 3,
+        ClaseRechazoEd04::Distinto => 4,
+    };
+    RECHAZOS_ED04[indice].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Resultado de resolver la identidad de un ítem del proveedor antes de tocarlo.
+#[derive(Debug, PartialEq, Eq)]
+enum IdentidadDeItem {
+    /// Sin evidencia ni ledger: el ítem es nuevo.
+    Nuevo,
+    /// La evidencia ya lo liga a un Track.
+    Existente(i64),
+    /// No hay evidencia todavía, pero el ledger dice a qué Track pertenece: se
+    /// adopta ese Track y la evidencia se escribe a continuación.
+    AdoptarDelLedger(i64),
+    /// El mismo ítem aparece ligado a más de un Track: no se decide solo.
+    EvidenciaMultiple,
+    /// La evidencia existe y no coincide con el ledger: no se decide solo.
+    Contradiccion,
+}
+
+/// Adopciones del ledger en la pasada actual. Contador de diagnóstico: el
+/// resumen del sync lo drena con `adoptados_del_ledger_tomar`.
+/// Adopciones de la pasada. Cuenta **items únicos**, no intentos: el mismo
+/// ítem aparece en favoritos, álbum y playlist, y cada aparición volvería a
+/// adoptarse.
+#[derive(Default)]
+struct ContadorDeAdopciones {
+    vistos: std::collections::HashSet<(i64, String)>,
+}
+
+impl ContadorDeAdopciones {
+    fn anotar(&mut self, service_id: i64, service_track_id: &str) {
+        self.vistos
+            .insert((service_id, service_track_id.to_string()));
+    }
+
+    fn tomar(&mut self) -> u64 {
+        let total = self.vistos.len() as u64;
+        self.vistos.clear();
+        total
+    }
+}
+
+static ADOPTADOS_DEL_LEDGER: std::sync::LazyLock<std::sync::Mutex<ContadorDeAdopciones>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(ContadorDeAdopciones::default()));
+
+fn anotar_adopcion(service_id: i64, service_track_id: &str) {
+    if let Ok(mut contador) = ADOPTADOS_DEL_LEDGER.lock() {
+        contador.anotar(service_id, service_track_id);
+    }
+}
+
+/// Devuelve y reinicia el contador de adopciones del ledger.
+pub fn adoptados_del_ledger_tomar() -> u64 {
+    ADOPTADOS_DEL_LEDGER
+        .lock()
+        .map(|mut contador| contador.tomar())
+        .unwrap_or(0)
+}
+
+/// ED-02: decide la identidad de un ítem con las dos pruebas que existen.
+///
+/// La evidencia (`track_sources`) manda: si ya liga el ítem a un Track, ese
+/// Track es el bueno, y el ledger solo puede confirmarlo. Si la evidencia aún
+/// no existe, el ledger es lo único que hay y se adopta su Track: la prueba
+/// manual del 2026-10-21 mostró 2 051 ítems bloqueados para siempre porque el
+/// guard trataba «sin evidencia» como «desacuerdo», y el ítem nunca llegaba a
+/// escribir la evidencia que lo habría desbloqueado.
+async fn resolver_identidad_de_item(
+    conn: &mut sqlx::SqliteConnection,
+    service_id: i64,
+    service_track_id: &str,
+) -> Result<IdentidadDeItem, String> {
+    let fuentes: Vec<(i64,)> = sqlx::query_as(
+        "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?",
+    )
+    .bind(service_id)
+    .bind(service_track_id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| format!("ED-02 source lookup failed: {e}"))?;
+    if fuentes.len() > 1 {
+        return Ok(IdentidadDeItem::EvidenciaMultiple);
+    }
+
+    let mut del_ledger: Vec<(i64,)> = sqlx::query_as(
+        "SELECT link.track_id FROM edition_provider_items item JOIN edition_item_tracks link ON link.item_id = item.id WHERE item.service_id = ? AND item.service_track_id = ?",
+    )
+    .bind(service_id)
+    .bind(service_track_id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| format!("ED-02 item lookup failed: {e}"))?;
+    del_ledger.sort_unstable();
+    del_ledger.dedup();
+
+    let fuente = fuentes.first().map(|row| row.0);
+    match (fuente, del_ledger.len()) {
+        (Some(track), 0) => Ok(IdentidadDeItem::Existente(track)),
+        (Some(track), 1) if del_ledger[0].0 == track => Ok(IdentidadDeItem::Existente(track)),
+        (Some(_), _) => Ok(IdentidadDeItem::Contradiccion),
+        (None, 0) => Ok(IdentidadDeItem::Nuevo),
+        (None, 1) => {
+            anotar_adopcion(service_id, service_track_id);
+            Ok(IdentidadDeItem::AdoptarDelLedger(del_ledger[0].0))
+        }
+        (None, _) => Ok(IdentidadDeItem::Contradiccion),
+    }
+}
+
+/// El alta de pista del sync. `tracks.isrc` es UNIQUE (0002:91): dos altas
+/// del mismo ISRC chocaban y la segunda se perdía en silencio (51 avisos
+/// `UNIQUE constraint failed: tracks.isrc` en la prueba manual del 2026-10-19).
+const INSERT_PISTA_SQL: &str = r#"
+                INSERT INTO tracks (
+                    title, album_id, duration_ms, track_number, disc_number,
+                    isrc, musicbrainz_id, explicit, genre, subgenre,
+                    release_year, record_label, bpm, musical_key, energy, acoustid_fingerprint, audio_quality,
+                    qobuz_id, spotify_id, enrichment_status, enriched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT DO NOTHING
+                RETURNING id
+                "#;
+
+/// Relleno de metadatos de una pista ya existente. El ISRC solo se asigna
+/// si ninguna otra fila lo tiene ya (indice NOCASE de 0064:186); con
+/// `COALESCE(isrc, ?)` a secas el sync perdia la pista con 2067.
+const UPDATE_PISTA_SQL: &str = r#"
+                    UPDATE tracks SET
+                        title = COALESCE(?, title),
+                        album_id = COALESCE(album_id, ?),
+                        duration_ms = COALESCE(duration_ms, ?),
+                        track_number = COALESCE(track_number, ?),
+                        disc_number = COALESCE(disc_number, ?),
+                        isrc = CASE
+                            WHEN isrc IS NOT NULL THEN isrc
+                            WHEN NOT EXISTS (
+                                SELECT 1 FROM tracks vecino
+                                WHERE vecino.isrc = ? COLLATE NOCASE AND vecino.id <> tracks.id
+                            ) THEN ?
+                            ELSE isrc
+                        END,
+                        musicbrainz_id = COALESCE(musicbrainz_id, ?),
+                        explicit = COALESCE(explicit, ?),
+                        genre = COALESCE(genre, ?),
+                        subgenre = COALESCE(subgenre, ?),
+                        release_year = COALESCE(release_year, ?),
+                        record_label = COALESCE(record_label, ?),
+                        bpm = COALESCE(bpm, ?),
+                        musical_key = COALESCE(musical_key, ?),
+                        energy = COALESCE(energy, ?),
+                        acoustid_fingerprint = COALESCE(?, acoustid_fingerprint),
+                        audio_quality = COALESCE(?, audio_quality),
+                        enrichment_status = ?,
+                        enriched_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    "#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use syncify_metadata_domain::fixtures::*;
+
+    /// ED-04c: rellenar el ISRC que falta en una pista no puede chocar con otra
+    /// que ya lo tiene (índice NOCASE de 0064:186). Es el 2067 que la prueba
+    /// manual del 2026-10-20 repitió 65 veces sobre 736 descargas: el `UPDATE`
+    /// usaba `COALESCE(isrc, ?)` a secas.
+    /// Las migraciones siembran `services`; se usa uno sembrado.
+    async fn servicio_de_prueba(pool: &sqlx::SqlitePool, nombre: &str) -> i64 {
+        let id: Option<i64> = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
+            .bind(nombre)
+            .fetch_optional(pool)
+            .await
+            .unwrap();
+        id.unwrap_or_else(|| panic!("servicio sembrado '{nombre}' no encontrado"))
+    }
+
+    async fn track_de_prueba(pool: &sqlx::SqlitePool, titulo: &str) -> i64 {
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES (?) RETURNING id")
+            .bind(titulo)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Un ítem del proveedor en el ledger, ligado a `track`, sin evidencia.
+    async fn ledger_de_prueba(
+        pool: &sqlx::SqlitePool,
+        servicio: i64,
+        item: &str,
+        track: i64,
+    ) -> i64 {
+        let release: i64 = sqlx::query_scalar(
+            "INSERT INTO edition_releases (service_id, provider_release_id, evidence_status, provenance) VALUES (?, ?, 'observed', 'test') RETURNING id",
+        )
+        .bind(servicio)
+        .bind(format!("release-{item}"))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let item_id: i64 = sqlx::query_scalar(
+            "INSERT INTO edition_provider_items (service_id, service_track_id, release_id, evidence_status, provenance) VALUES (?, ?, ?, 'unknown', 'test') RETURNING id",
+        )
+        .bind(servicio)
+        .bind(item)
+        .bind(release)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO edition_item_tracks (item_id, track_id, validation_status, provenance) VALUES (?, ?, 'unknown', 'test')",
+        )
+        .bind(item_id)
+        .bind(track)
+        .execute(pool)
+        .await
+        .unwrap();
+        item_id
+    }
+
+    async fn evidencia_de_prueba(pool: &sqlx::SqlitePool, servicio: i64, item: &str, track: i64) {
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, ?, ?)",
+        )
+        .bind(track)
+        .bind(servicio)
+        .bind(item)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// ED-04: un título sin texto útil no puede rechazarse contra sí mismo.
+    #[test]
+    fn ed04_un_titulo_sin_texto_util_no_es_otra_familia() {
+        assert!(super::misma_familia_de_album("...", "..."));
+        assert!(super::misma_familia_de_album("(Untitled)", "(untitled)"));
+    }
+
+    /// ED-02a: el contador mide items, no apariciones del mismo item.
+    #[test]
+    fn el_contador_de_adopciones_cuenta_items_no_intentos() {
+        let mut contador = super::ContadorDeAdopciones::default();
+        contador.anotar(1, "item-1");
+        contador.anotar(1, "item-1");
+        contador.anotar(1, "item-2");
+        contador.anotar(2, "item-1");
+        assert_eq!(contador.tomar(), 3, "tres items distintos");
+        assert_eq!(contador.tomar(), 0, "tomar reinicia la pasada");
+    }
+
+    /// El nombre que el esquema rechaza se detecta antes de tocar la base.
+    #[test]
+    fn el_artista_no_utilizable_se_reconoce_igual_que_el_esquema() {
+        use super::es_artista_no_utilizable;
+        for nombre in ["", "   ", "Unknown", "unknown artist", "UNKNOWN ARTIST"] {
+            assert!(
+                es_artista_no_utilizable(nombre),
+                "«{nombre}» no es utilizable"
+            );
+        }
+        for nombre in ["Gorillaz", "Unknown Mortal Orchestra", "The Unknown"] {
+            assert!(!es_artista_no_utilizable(nombre), "«{nombre}» sí lo es");
+        }
+    }
+
+    /// ED-04b: una llegada de otro álbum se registra como aparición, una sola
+    /// vez, sin mover el Track y con el álbum de llegada en la procedencia.
+    #[tokio::test]
+    async fn ed04b_la_llegada_de_otro_album_se_registra_como_aparicion() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let servicio = servicio_de_prueba(&pool, "qobuz").await;
+        let track = track_de_prueba(&pool, "Lucky").await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        for _ in 0..2 {
+            super::registrar_aparicion_de_edicion(
+                &mut conn,
+                servicio,
+                "item-9",
+                track,
+                "Lucky (Apple Original Series Soundtrack)",
+                "qobuz",
+            )
+            .await
+            .unwrap();
+        }
+
+        let items: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM edition_provider_items WHERE service_track_id = 'item-9'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(items, 1, "la segunda pasada no duplica el item");
+
+        let (estado, procedencia, ligados): (String, String, i64) = sqlx::query_as(
+            "SELECT t.validation_status, t.provenance,
+                    (SELECT COUNT(*) FROM edition_item_tracks x WHERE x.item_id = t.item_id)
+             FROM edition_item_tracks t
+             JOIN edition_provider_items i ON i.id = t.item_id
+             WHERE i.service_track_id = 'item-9'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(estado, "needs_review");
+        assert_eq!(ligados, 1);
+        let album: String = sqlx::query_scalar(
+            "SELECT provenance FROM edition_provider_items WHERE service_track_id = 'item-9'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            album.contains("Lucky (Apple Original Series Soundtrack)"),
+            "la procedencia guarda el album de llegada: {album} ({procedencia})"
+        );
+
+        let evidencia: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM track_sources WHERE service_track_id = 'item-9'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(evidencia, 0, "la aparicion no escribe evidencia del Track");
+    }
+
+    /// ED-04: el rechazo se clasifica para decidir con datos, no a ojo.
+    #[test]
+    fn ed04_el_rechazo_se_clasifica_por_lo_que_anade_el_album_de_llegada() {
+        use super::ClaseRechazoEd04::*;
+        assert_eq!(
+            super::clase_de_rechazo_ed04("Californication", "californication"),
+            MismoTexto
+        );
+        assert_eq!(
+            super::clase_de_rechazo_ed04("RUSH!", "RUSH! (ARE U COMING?)"),
+            Subtitulo
+        );
+        assert_eq!(
+            super::clase_de_rechazo_ed04(
+                "The Best Of 1990-2000",
+                "The Best Of 1990-2000 & B-Sides"
+            ),
+            Conjunto
+        );
+        assert_eq!(
+            super::clase_de_rechazo_ed04("Album", "The Best Of Album"),
+            Empaquetado
+        );
+        assert_eq!(
+            super::clase_de_rechazo_ed04("Euphoria Morning", "Euphoria Mourning"),
+            Distinto
+        );
+    }
+
+    /// ED-02a: sin evidencia, el ledger decide y la adopción se cuenta.
+    #[tokio::test]
+    async fn ed02_sin_evidencia_adopta_el_track_del_ledger() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let servicio = servicio_de_prueba(&pool, "tidal").await;
+        let track = track_de_prueba(&pool, "In Dreams").await;
+        ledger_de_prueba(&pool, servicio, "item-1", track).await;
+        let _ = super::adoptados_del_ledger_tomar();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let resuelto = super::resolver_identidad_de_item(&mut conn, servicio, "item-1")
+            .await
+            .unwrap();
+        assert_eq!(resuelto, super::IdentidadDeItem::AdoptarDelLedger(track));
+        assert_eq!(super::adoptados_del_ledger_tomar(), 1);
+    }
+
+    /// ED-02b: la evidencia y el ledger de acuerdo no son una adopción.
+    #[tokio::test]
+    async fn ed02_evidencia_y_ledger_de_acuerdo_es_existente() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let servicio = servicio_de_prueba(&pool, "spotify").await;
+        let track = track_de_prueba(&pool, "Overcome").await;
+        ledger_de_prueba(&pool, servicio, "item-2", track).await;
+        evidencia_de_prueba(&pool, servicio, "item-2", track).await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        let resuelto = super::resolver_identidad_de_item(&mut conn, servicio, "item-2")
+            .await
+            .unwrap();
+        assert_eq!(resuelto, super::IdentidadDeItem::Existente(track));
+    }
+
+    /// ED-02c: si la evidencia contradice al ledger, no se decide solo.
+    #[tokio::test]
+    async fn ed02_evidencia_que_contradice_al_ledger_es_conflicto() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let servicio = servicio_de_prueba(&pool, "qobuz").await;
+        let del_ledger = track_de_prueba(&pool, "Lucky").await;
+        let de_la_evidencia = track_de_prueba(&pool, "Lucky (otra pista)").await;
+        ledger_de_prueba(&pool, servicio, "item-3", del_ledger).await;
+        evidencia_de_prueba(&pool, servicio, "item-3", de_la_evidencia).await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        let resuelto = super::resolver_identidad_de_item(&mut conn, servicio, "item-3")
+            .await
+            .unwrap();
+        assert_eq!(resuelto, super::IdentidadDeItem::Contradiccion);
+    }
+
+    /// ED-02d: un ítem que no está en ninguna de las dos pruebas es nuevo.
+    #[tokio::test]
+    async fn ed02_item_desconocido_es_nuevo() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let servicio = servicio_de_prueba(&pool, "deezer").await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        let resuelto = super::resolver_identidad_de_item(&mut conn, servicio, "item-4")
+            .await
+            .unwrap();
+        assert_eq!(resuelto, super::IdentidadDeItem::Nuevo);
+    }
+
+    #[tokio::test]
+    async fn el_relleno_de_isrc_no_pisa_el_de_otra_pista() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let duena: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc) VALUES ('Dueña', 'ESABC2600003') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let vacia: i64 =
+            sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Sin isrc') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        async fn rellenar(pool: &sqlx::SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+            sqlx::query(super::UPDATE_PISTA_SQL)
+                .bind(Some("Sin isrc"))
+                .bind(None::<i64>)
+                .bind(Some(180_000i64))
+                .bind(None::<i64>)
+                .bind(None::<i64>)
+                .bind("esabc2600003")
+                .bind("esabc2600003")
+                .bind(None::<String>)
+                .bind(None::<i64>)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind(None::<i64>)
+                .bind(None::<String>)
+                .bind(None::<f64>)
+                .bind(None::<String>)
+                .bind(None::<f64>)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind("pending")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            Ok(())
+        }
+
+        rellenar(&pool, vacia)
+            .await
+            .expect("el relleno no debe chocar con el ISRC de otra pista");
+
+        let suyo: Option<String> = sqlx::query_scalar("SELECT isrc FROM tracks WHERE id = ?")
+            .bind(vacia)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(suyo, None, "no debe robar el ISRC de otra pista");
+        let de_la_duena: Option<String> =
+            sqlx::query_scalar("SELECT isrc FROM tracks WHERE id = ?")
+                .bind(duena)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(de_la_duena.as_deref(), Some("ESABC2600003"));
+    }
+
+    /// Los pares que la prueba manual del 2026-10-21 dejó en revisión y que solo
+    /// se diferencian en formato: marca entre paréntesis, número ante el
+    /// aniversario, puntuación. Deben unificarse en las dos direcciones.
+    #[test]
+    fn ed04_las_marcas_de_formato_no_son_otro_album() {
+        for (actual, entrante) in [
+            ("Happier Than Ever", "Happier Than Ever (Explicit)"),
+            (
+                "Beauty Behind The Madness",
+                "Beauty Behind The Madness (Explicit Version)",
+            ),
+            ("Absolution", "Absolution XX Anniversary"),
+            ("Sol-fa", "Sol-Fa (2016 Rerecorded Version)"),
+            (
+                "Songs For Swingin' Lovers !",
+                "Songs For Swingin' Lovers! (Remastered)",
+            ),
+            // Pasada del 2026-10-22: empaquetado, frecuencia y paréntesis dobles.
+            (
+                "BLUE LIPS ([lady wood phase II])",
+                "BLUE LIPS (lady wood phase II)",
+            ),
+            ("(((((ultraSOUND)))))", "(((((ultraSOUND)))))+"),
+            ("Californication", "Californication (DMD Album)"),
+            (
+                "Appetite For Destruction",
+                "Appetite For Destruction (Super Deluxe) - 192 kHz",
+            ),
+            ("Band On The Run", "Band On The Run (Archive Collection)"),
+            (
+                "Hybrid Theory (Bonus Edition)",
+                "Hybrid Theory (Int'l Only DMD w/ Altered iLiner)",
+            ),
+        ] {
+            assert!(
+                super::misma_familia_de_album(actual, entrante),
+                "«{actual}» y «{entrante}» son la misma familia"
+            );
+            assert!(super::misma_familia_de_album(entrante, actual));
+        }
+    }
+
+    /// Lo que sí distingue lanzamientos sigue yendo a revisión.
+    #[test]
+    fn ed04_lo_que_distingue_lanzamientos_no_se_unifica() {
+        for (actual, entrante) in [
+            ("The Best Of 1990-2000", "The Best Of 1990-2000 & B-Sides"),
+            ("BLUE LIPS", "BLUE LIPS ([lady wood phase II])"),
+            // Un subtítulo sin marca de edición no es formato.
+            ("RUSH!", "RUSH! (ARE U COMING?)"),
+            // Títulos distintos por una letra siguen siendo decisión humana.
+            ("Euphoria Morning", "Euphoria Mourning"),
+        ] {
+            assert!(
+                !super::misma_familia_de_album(actual, entrante),
+                "«{actual}» y «{entrante}» no son la misma familia"
+            );
+        }
+    }
+
+    /// ED-04b: el alta de pista no puede perder la pista en silencio cuando su
+    /// ISRC ya está en la biblioteca. La prueba manual del 2026-10-19 dejó 51
+    /// avisos `UNIQUE constraint failed: tracks.isrc` durante el sync de Tidal y
+    /// 65 más en la del 2026-10-20, siempre con el índice NOCASE de 0064:186:
+    /// la fila previa tenía `ESABC…` y el alta entrante `esabc…`.
+    #[tokio::test]
+    async fn el_alta_de_pista_tolera_un_isrc_ya_presente() {
+        use sqlx::Row;
+
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let previa: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, isrc) VALUES ('Previa', 'ESABC2600002') RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        async fn alta(pool: &sqlx::SqlitePool) -> Result<i64, sqlx::Error> {
+            let row = sqlx::query(super::INSERT_PISTA_SQL)
+                .bind("Entrante")
+                .bind(None::<i64>)
+                .bind(Some(180_000i64))
+                .bind(None::<i64>)
+                .bind(1i64)
+                .bind("esabc2600002")
+                .bind(None::<String>)
+                .bind(0i64)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind(None::<i64>)
+                .bind(None::<String>)
+                .bind(None::<i64>)
+                .bind(None::<String>)
+                .bind(None::<f64>)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind(None::<String>)
+                .bind("pending")
+                .fetch_optional(pool)
+                .await?;
+            match row {
+                Some(row) => Ok(row.get::<i64, _>(0)),
+                // Mismo fallback que producción: resolver por NOCASE cuando el
+                // `ON CONFLICT DO NOTHING` no insertó (índice NOCASE de 0064:186).
+                None => {
+                    sqlx::query_scalar::<_, i64>(
+                        "SELECT id FROM tracks WHERE isrc = ? COLLATE NOCASE",
+                    )
+                    .bind("esabc2600002")
+                    .fetch_one(pool)
+                    .await
+                }
+            }
+        }
+
+        let id = alta(&pool)
+            .await
+            .expect("el alta no debe chocar con tracks.isrc");
+        assert_eq!(id, previa, "debe reutilizar la fila existente");
+        let album: Option<i64> = sqlx::query_scalar("SELECT album_id FROM tracks WHERE id = ?")
+            .bind(previa)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(album, None, "no debe mover de álbum la pista existente");
+    }
+
+    /// Pares reales del log de la prueba manual del 2026-10-19 (sync de Tidal,
+    /// Qobuz y Spotify): todos son la misma grabación en dos ediciones del
+    /// mismo álbum y el guardián ED-04 los estaba rechazando.
+    #[test]
+    fn ed04_una_edicion_no_es_un_album_distinto() {
+        let pares = [
+            ("Nothing But Thieves", "Nothing But Thieves (Deluxe)"),
+            ("Moral Panic", "Moral Panic (The Complete Edition)"),
+            ("1", "1 (Remastered 2015)"),
+            ("The Beatles", "The Beatles (Remastered 2009)"),
+            (
+                "Hybrid Theory (DMD Album + 3 Bonus Tracks)",
+                "Hybrid Theory (Bonus Edition)",
+            ),
+            ("Back To Black", "Back To Black (Deluxe Edition)"),
+            ("Brothers", "Brothers (Deluxe Edition)"),
+            ("Album", "Album [Deluxe]"),
+            ("Album", "Album - Remastered 2011"),
+            (
+                "The Velvet Underground (45th Anniversary / Deluxe Edition)",
+                "The Velvet Underground",
+            ),
+        ];
+        for (a, b) in pares {
+            assert!(
+                super::misma_familia_de_album(a, b),
+                "«{a}» y «{b}» deberían ser la misma familia"
+            );
+            assert!(
+                super::misma_familia_de_album(b, a),
+                "la comprobación debe ser simétrica: «{b}» y «{a}»"
+            );
+        }
+    }
+
+    /// Lo que sí debe seguir yendo a revisión: lanzamientos distintos, no
+    /// ediciones. Si el guardián se relaja de más, estos pares lo delatan.
+    #[test]
+    fn ed04_un_lanzamiento_distinto_sigue_siendo_otro_album() {
+        let pares = [
+            ("Jazz Dance", "60s Stars"),
+            (".getawayfortheweekend.", "-!-"),
+            (
+                "The Essentials: Tommy James & The Shondells",
+                "60s Essential Hits",
+            ),
+            ("Album (feat. Alguien)", "Album"),
+            ("", "Album"),
+        ];
+        for (a, b) in pares {
+            assert!(
+                !super::misma_familia_de_album(a, b),
+                "«{a}» y «{b}» no pueden tratarse como la misma familia"
+            );
+        }
+    }
 
     #[test]
     fn test_enrichment_precedence_streaming_over_musicbrainz() {

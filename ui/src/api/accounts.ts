@@ -84,6 +84,48 @@ export async function removeAccount(id: number): Promise<void> {
     return invokeCommand<void>('remove_account', { accountId: id });
 }
 
+/** Summary returned by `reset_account_sync_data`. */
+export interface AccountSyncResetSummary {
+    account_id: number;
+    service: string;
+    library_entries: number;
+    playlists: number;
+    favorites: number;
+}
+
+/**
+ * Delete one account's imported data (library entries, favorites, playlists
+ * and import counters) so the next sync re-imports it from scratch. The
+ * account, its credentials, downloads and every other account are preserved.
+ */
+export async function resetAccountSyncData(id: number): Promise<AccountSyncResetSummary> {
+    return invokeCommand<AccountSyncResetSummary>('reset_account_sync_data', { accountId: id });
+}
+
+/** Counts returned by `refresh_account_identities`; never identities themselves. */
+export interface IdentityRefreshSummary {
+    checked: number;
+    updated: number;
+    unresolved: number;
+}
+
+/**
+ * Ask the backend to refresh the identity (email/username) of accounts that
+ * are still indistinguishable from their siblings. Best effort: failures are
+ * silent and retried on the next accounts view open.
+ */
+export async function refreshAccountIdentities(): Promise<IdentityRefreshSummary> {
+    return invokeCommand<IdentityRefreshSummary>('refresh_account_identities');
+}
+
+/**
+ * Give one account a user-chosen name. The backend marks it as custom so
+ * logins and the automatic refresh never overwrite it.
+ */
+export async function setAccountDisplayName(id: number, name: string): Promise<void> {
+    return invokeCommand<void>('set_account_display_name', { accountId: id, name });
+}
+
 /**
  * Toggle account active status
  */
@@ -434,6 +476,9 @@ export const accountsApi = {
     getAccounts,
     addAccount,
     removeAccount,
+    resetAccountSyncData,
+    refreshAccountIdentities,
+    setAccountDisplayName,
     toggleAccountActive,
     setActiveAccount,
     updateAccountSyncTime,

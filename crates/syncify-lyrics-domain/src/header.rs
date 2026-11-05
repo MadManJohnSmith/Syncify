@@ -67,7 +67,7 @@
 //! first verse followed by a blank line looks exactly the same — so it has to be the
 //! user's call. With the default options such a line is reported as `ambiguous`
 //! instead of being deleted, which is what the pending decision in
-//! `docs/PLAN-Correccion-168.md` §5 needs to see.
+//! `docs/historico/PLAN-Correccion-168.md` §5 needs to see.
 
 use serde::{Deserialize, Serialize};
 

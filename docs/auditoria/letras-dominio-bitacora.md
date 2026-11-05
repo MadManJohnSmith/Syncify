@@ -78,7 +78,7 @@ Dos garantías estructurales, no accidentales:
 ### 2.2 `crates/syncify-lyrics-domain/src/lib.rs` (+13 líneas, solo al final)
 
 `pub mod header;` y los `pub use` se añaden **al final del archivo** (`:872-884`) para no
-desplazar ni un número de línea de los citados en `docs/PLAN-Correccion-168.md`,
+desplazar ni un número de línea de los citados en `docs/historico/PLAN-Correccion-168.md`,
 `docs/auditoria/` y en los comentarios de los tests del propio crate. Verificado después
 del cambio: `lib.rs:294`, `:295`, `:303`, `:413` y `:449` siguen siendo exactamente las
 mismas líneas que antes (`git diff --stat` → `13 insertions(+)`).

@@ -164,7 +164,7 @@ describe('Ola 1 — cascarón', () => {
     // "expandir" es la accion disponible.
     const toggle = wrapper.find('[data-testid="nav-drawer-toggle"]')
     expect(toggle.attributes('aria-expanded')).toBe('false')
-    expect(toggle.attributes('aria-label')).toBe('Expandir menú')
+    expect(toggle.attributes('aria-label')).toBe('Expand menu')
     wrapper.unmount()
   })
 
@@ -197,7 +197,7 @@ describe('Ola 1 — cascarón', () => {
     wrapper.unmount()
   })
 
-  it('shows progress only for background tasks and never renders the pill, Help or FAB', async () => {
+  it('shows progress only for user-activated background tasks and never renders the pill, Help or FAB', async () => {
     const { addTask } = useGlobalTasks()
     addTask({ id: 'download-1', type: 'download', name: 'Downloading album', status: 'running', progress: 40, total: 100 })
     const wrapper = mountApp()
@@ -207,7 +207,13 @@ describe('Ola 1 — cascarón', () => {
     expect(wrapper.find('[data-testid="global-progress-summary"]').exists()).toBe(false)
     expect(wrapper.find('.quick-actions-fab').exists()).toBe(false)
     expect(wrapper.find('header .tasks-dropdown').exists()).toBe(false)
-    addTask({ id: 'metadata-1', type: 'metadata', name: 'MusicBrainz', status: 'running', progress: 25, total: 100 })
+    // BP-05: the automatic background enrichment worker does NOT paint the bar.
+    addTask({ id: 'metadata-1', type: 'metadata', name: 'MusicBrainz', status: 'running', progress: 25, total: 100, origin: 'auto' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="global-progress-bar"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="global-progress-indeterminate"]').exists()).toBe(false)
+    // A user-initiated sync still does.
+    addTask({ id: 'sync-1', type: 'sync', name: 'Syncing Spotify', status: 'running', progress: 25, total: 100 })
     await flushPromises()
     expect(wrapper.find('[data-testid="global-progress-bar"]').attributes('style')).toContain('width: 25%')
     expect(wrapper.find('header').text()).not.toContain('MusicBrainz')

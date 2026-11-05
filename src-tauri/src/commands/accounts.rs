@@ -438,6 +438,535 @@ pub async fn remove_account(
     Ok(())
 }
 
+/// Summary of a per-account sync reset, safe to send over IPC.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountSyncResetSummary {
+    pub account_id: i64,
+    pub service: String,
+    pub library_entries: i64,
+    pub playlists: i64,
+    pub favorites: i64,
+}
+
+/// DB half of [`reset_account_sync_data`]: remove everything a sync imported
+/// for ONE account while keeping the account row (and its credentials), so the
+/// next sync can re-import from scratch without a re-authentication.
+///
+/// Account-scoped rows (library entries, playlists, favorites and the import
+/// counters) are deleted. Downloads, the queue, the shared tracks/albums/
+/// artists and every other account are left untouched.
+pub async fn perform_reset_account_sync_data(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+) -> Result<AccountSyncResetSummary, String> {
+    let service_name: Option<String> = sqlx::query_scalar(
+        "SELECT s.name FROM accounts a JOIN services s ON s.id = a.service_id WHERE a.id = ?",
+    )
+    .bind(account_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(service_name) = service_name else {
+        return Err("Account not found".to_string());
+    };
+
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let library_entries = sqlx::query("DELETE FROM library_entries WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected() as i64;
+
+    // Cross-service playlist links are account-scoped; delete them explicitly
+    // before the playlists they may point at.
+    sqlx::query("DELETE FROM playlist_sources WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // playlist_tracks and the remaining playlist_sources rows cascade with
+    // their playlist (ON DELETE CASCADE).
+    let playlists = sqlx::query("DELETE FROM playlists WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected() as i64;
+
+    let favorites = sqlx::query("DELETE FROM favorites WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected() as i64;
+
+    sqlx::query("DELETE FROM account_import_counts WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // The favorites cache is service-scoped, not account-scoped: clearing it
+    // only forces the next favorites read to refresh. It never deletes rows of
+    // sibling accounts.
+    sqlx::query("DELETE FROM favorites_cache WHERE service_name = ?")
+        .bind(service_name.to_lowercase())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    sqlx::query("UPDATE accounts SET last_synced = NULL WHERE id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tx.commit().await.map_err(|e| e.to_string())?;
+
+    tracing::info!(
+        account_id,
+        service = %service_name,
+        library_entries,
+        playlists,
+        favorites,
+        "Account sync data reset (account and credentials preserved)"
+    );
+
+    Ok(AccountSyncResetSummary {
+        account_id,
+        service: service_name,
+        library_entries,
+        playlists,
+        favorites,
+    })
+}
+
+/// Remove one account's imported data so the next sync re-imports from zero.
+/// Keeps the account, its credentials, downloads and every other account.
+#[tauri::command]
+pub async fn reset_account_sync_data(
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<AccountSyncResetSummary, String> {
+    perform_reset_account_sync_data(&state.db, account_id).await
+}
+
+// ==============================================
+// ACCOUNT IDENTITY (email / username per account)
+// ==============================================
+
+/// Identity a provider is willing to reveal for a stored session.
+///
+/// Both fields are optional and always validated before reaching the database:
+/// identity is shown next to the account, so a bridge artifact or an opaque id
+/// here would make two accounts indistinguishable (the exact problem this
+/// module exists to fix).
+#[derive(Debug, Clone, Default)]
+pub struct ProviderIdentity {
+    pub display_name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// Syntactically plausible email for display as account identity.
+///
+/// Deliberately conservative: the goal is rejecting bridge artifacts and
+/// opaque ids, not implementing RFC 5322. Shared by every service so a wrong
+/// value can never collide with — or split — an account.
+pub fn plausible_identity_email(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > 254 || trimmed.chars().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    let (local, domain) = trimmed.split_once('@')?;
+    if local.is_empty() || domain.is_empty() || !domain.contains('.') {
+        return None;
+    }
+    if domain.starts_with('.') || domain.ends_with('.') || domain.contains("..") {
+        return None;
+    }
+    // Lowercased for consistency with `upsert_service_account`: `UNIQUE
+    // (service_id, email)` is case-sensitive, so the same account must never
+    // land twice by casing.
+    Some(trimmed.to_lowercase())
+}
+
+/// A row needs an identity refresh when it is still indistinguishable from its
+/// siblings: no email and the generic fallback name ("Qobuz User") or nothing.
+///
+/// A real name already tells accounts apart, and a custom name is the user's
+/// decision — both are left alone.
+pub fn identity_needs_refresh(
+    service: &str,
+    display_name: Option<&str>,
+    email: Option<&str>,
+    custom: bool,
+) -> bool {
+    if custom {
+        return false;
+    }
+    let has_email = email.map(str::trim).is_some_and(|value| !value.is_empty());
+    let name = display_name.unwrap_or("").trim();
+    let generic = format!("{} User", service);
+    let name_is_generic = name.is_empty() || name.eq_ignore_ascii_case(&generic);
+    name_is_generic && !has_email
+}
+
+/// Resolve the identity a provider reports for stored credentials.
+///
+/// Best effort by design: every arm may fail (provider down, token without a
+/// profile scope) and the caller treats an Err as "still unknown", never as an
+/// account problem. Resolved values are never logged.
+pub async fn resolve_provider_identity(
+    service_name: &str,
+    credentials: &serde_json::Value,
+) -> Result<ProviderIdentity, String> {
+    match service_name.to_ascii_lowercase().as_str() {
+        "soundcloud" => {
+            let token = credentials
+                .get("oauth_token")
+                .or_else(|| credentials.get("access_token"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .ok_or("missing SoundCloud OAuth token")?;
+            let client = crate::services::SoundCloudClient::new(token.to_string());
+            let user = client.get_current_user().await?;
+            let name = user.display_name().trim();
+            Ok(ProviderIdentity {
+                display_name: (!name.is_empty()).then(|| name.to_string()),
+                email: None,
+            })
+        }
+        "tidal" => {
+            let access_token = credentials
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .ok_or("missing Tidal access token")?;
+            let user_id = credentials
+                .get("user_id")
+                .and_then(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .or_else(|| v.as_i64().map(|n| n.to_string()))
+                })
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .ok_or("missing Tidal user id")?;
+            let country = credentials
+                .get("country_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("US");
+            let client = crate::services::TidalClient::new(access_token.to_string())
+                .with_user(user_id, country.to_string());
+            let profile = client.get_user_profile().await?;
+            Ok(ProviderIdentity {
+                display_name: profile.best_display_name(),
+                email: profile.email.as_deref().and_then(plausible_identity_email),
+            })
+        }
+        "deezer" => {
+            let arl = credentials
+                .get("arl")
+                .or_else(|| credentials.get("access_token"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .ok_or("missing Deezer ARL")?;
+            let mut client = crate::services::DeezerClient::new(arl.to_string());
+            client.init().await.map_err(|e| e.to_string())?;
+            Ok(ProviderIdentity {
+                display_name: client.user_display_name().map(str::to_string),
+                email: client.user_email().and_then(plausible_identity_email),
+            })
+        }
+        "qobuz" => {
+            // 1) The bridge already captured the login-form username and, when
+            //    it could, the real email from `user/get`. No network needed.
+            let mut email = credentials
+                .get("email")
+                .and_then(|v| v.as_str())
+                .and_then(plausible_identity_email);
+            let mut display_name = credentials
+                .get("display_name")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && !s.eq_ignore_ascii_case("browser_session")
+                        && plausible_identity_email(s).is_none()
+                })
+                .map(str::to_string);
+            // 2) Best effort: ask the API with the stored token.
+            let token = ["user_auth_token", "auth_token", "access_token"]
+                .iter()
+                .find_map(|key| credentials.get(key).and_then(|v| v.as_str()))
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
+            if let Some(token) = token {
+                let client = crate::services::qobuz::QobuzClient::new_with_token(
+                    crate::services::qobuz::get_qobuz_app_id(),
+                    crate::services::qobuz::get_qobuz_app_secret(),
+                    token.to_string(),
+                );
+                if let Ok(profile) = client.get_user_profile().await {
+                    if email.is_none() {
+                        email = profile
+                            .email
+                            .as_deref()
+                            .and_then(plausible_identity_email)
+                            .or_else(|| {
+                                profile.login.as_deref().and_then(plausible_identity_email)
+                            });
+                    }
+                    if display_name.is_none() {
+                        display_name = profile
+                            .display_name
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| {
+                                profile
+                                    .login
+                                    .filter(|l| plausible_identity_email(l).is_none())
+                            });
+                    }
+                }
+            }
+            Ok(ProviderIdentity {
+                display_name,
+                email,
+            })
+        }
+        // Spotify's native PKCE login already stores email + display_name, and
+        // Apple Music exposes no profile at all (the bridge captures the Apple
+        // ID email during sign-in when it can).
+        _ => Ok(ProviderIdentity::default()),
+    }
+}
+
+/// Persist a resolved identity on one account, honouring two product rules:
+/// a custom name is never overwritten, a real name is never replaced, and the
+/// email only fills an empty slot. Returns true when the row changed.
+pub async fn apply_provider_identity(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+    identity: &ProviderIdentity,
+) -> Result<bool, String> {
+    let row: Option<(String, Option<String>, Option<String>, i64)> = sqlx::query_as(
+        r#"SELECT s.name, a.display_name, a.email, IFNULL(a.display_name_custom, 0)
+           FROM accounts a
+           JOIN services s ON s.id = a.service_id
+           WHERE a.id = ?"#,
+    )
+    .bind(account_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((service, display_name, email, custom)) = row else {
+        return Err("Account not found".to_string());
+    };
+
+    let generic_name = format!("{} User", service);
+    let current_name = display_name.unwrap_or_default();
+    let name_is_generic =
+        current_name.trim().is_empty() || current_name.trim().eq_ignore_ascii_case(&generic_name);
+
+    let new_name: Option<String> = if custom != 0 || !name_is_generic {
+        None
+    } else {
+        identity
+            .display_name
+            .as_deref()
+            .map(|candidate| {
+                crate::commands::sanitize_visible_display_name(Some(candidate), None, || {
+                    generic_name.clone()
+                })
+            })
+            .filter(|resolved| !resolved.eq_ignore_ascii_case(&generic_name))
+    };
+
+    let has_email = email
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    let new_email: Option<String> = if has_email {
+        None
+    } else {
+        identity.email.as_deref().and_then(plausible_identity_email)
+    };
+
+    if new_name.is_none() && new_email.is_none() {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        r#"UPDATE accounts
+           SET display_name = COALESCE(?, display_name),
+               email = COALESCE(?, email)
+           WHERE id = ?"#,
+    )
+    .bind(new_name.as_deref())
+    .bind(new_email.as_deref())
+    .bind(account_id)
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    tracing::info!(
+        account_id,
+        "Account identity refreshed from provider (values not logged)"
+    );
+    Ok(true)
+}
+
+/// Result of one automatic identity pass, safe to send over IPC.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IdentityRefreshSummary {
+    pub checked: i64,
+    pub updated: i64,
+    pub unresolved: i64,
+}
+
+/// Refresh the identity of every account that is still indistinguishable from
+/// its siblings. Runs at most once per app session from the accounts view.
+///
+/// Only rows with viable credentials are probed; a provider that says nothing
+/// leaves the account untouched and is retried on the next pass.
+pub async fn perform_refresh_account_identities(
+    db: &sqlx::SqlitePool,
+) -> Result<IdentityRefreshSummary, String> {
+    let rows: Vec<(
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+    )> = sqlx::query_as(
+        r#"SELECT a.id, s.name, a.display_name, a.email, a.credentials_json,
+                      IFNULL(a.display_name_custom, 0)
+               FROM accounts a
+               JOIN services s ON s.id = a.service_id
+               WHERE a.credentials_json IS NOT NULL
+                 AND TRIM(a.credentials_json) != ''
+                 AND IFNULL(a.credentials_invalid, 0) = 0
+               ORDER BY s.name, a.id"#,
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut summary = IdentityRefreshSummary {
+        checked: 0,
+        updated: 0,
+        unresolved: 0,
+    };
+
+    for (account_id, service, display_name, email, credentials_json, custom) in rows {
+        if !identity_needs_refresh(
+            &service,
+            display_name.as_deref(),
+            email.as_deref(),
+            custom != 0,
+        ) {
+            continue;
+        }
+        summary.checked += 1;
+
+        let credentials = credentials_json
+            .as_deref()
+            .and_then(|enc| crypto::decrypt(enc).ok())
+            .and_then(|dec| serde_json::from_str::<serde_json::Value>(&dec).ok());
+        let Some(credentials) = credentials else {
+            summary.unresolved += 1;
+            continue;
+        };
+
+        match resolve_provider_identity(&service, &credentials).await {
+            Ok(identity) => match apply_provider_identity(db, account_id, &identity).await {
+                Ok(true) => summary.updated += 1,
+                Ok(false) => summary.unresolved += 1,
+                Err(err) => {
+                    tracing::debug!(account_id, "identity refresh write failed: {err}");
+                    summary.unresolved += 1;
+                }
+            },
+            Err(err) => {
+                tracing::debug!(
+                    account_id,
+                    service = %service,
+                    "identity refresh unresolved: {err}"
+                );
+                summary.unresolved += 1;
+            }
+        }
+    }
+
+    tracing::info!(
+        checked = summary.checked,
+        updated = summary.updated,
+        unresolved = summary.unresolved,
+        "Account identity refresh finished"
+    );
+    Ok(summary)
+}
+
+/// Refresh account identities from the providers (accounts view, once per
+/// session). Returns counts only; the UI refetches when `updated > 0`.
+#[tauri::command]
+pub async fn refresh_account_identities(
+    state: State<'_, AppState>,
+) -> Result<IdentityRefreshSummary, String> {
+    perform_refresh_account_identities(&state.db).await
+}
+
+/// DB half of [`set_account_display_name`].
+pub async fn perform_set_account_display_name(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+    name: &str,
+) -> Result<(), String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Account name cannot be empty".to_string());
+    }
+    if trimmed.chars().count() > 128 {
+        return Err("Account name is too long (max 128 characters)".to_string());
+    }
+
+    let affected =
+        sqlx::query("UPDATE accounts SET display_name = ?, display_name_custom = 1 WHERE id = ?")
+            .bind(trimmed)
+            .bind(account_id)
+            .execute(db)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected();
+
+    if affected == 0 {
+        return Err("Account not found".to_string());
+    }
+    Ok(())
+}
+
+/// Mark one account with a user-chosen name. The custom flag makes the choice
+/// survive logins and the automatic identity refresh.
+#[tauri::command]
+pub async fn set_account_display_name(
+    state: State<'_, AppState>,
+    account_id: i64,
+    name: String,
+) -> Result<(), String> {
+    perform_set_account_display_name(&state.db, account_id, &name).await
+}
+
 /// Get decrypted credentials for an account (internal Rust backend use only; not exposed via IPC)
 #[allow(dead_code)] // Cubierta por `tests/account_credentials_ipc_hygiene_test.rs` (el IPC no la expone).
 pub async fn get_internal_account_credentials(

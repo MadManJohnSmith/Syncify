@@ -11,7 +11,7 @@
  * account-status data model: it is the only place identity is resolved, so
  * AccountsView and SettingsServices cannot diverge on what an account is
  * labelled as. Identity rules: validated email first, validated human
- * display_name second, otherwise "Identidad no proporcionada" — never an id,
+ * display_name second, otherwise "Identity not provided" — never an id,
  * a cookie-like string, or a token.
  */
 
@@ -130,7 +130,7 @@ export interface ResolvedIdentity {
 }
 
 /** Shown whenever the backend provided no usable identity. */
-export const NO_IDENTITY_LABEL = 'Identidad no proporcionada'
+export const NO_IDENTITY_LABEL = 'Identity not provided'
 
 /** Syntactically valid email (email is identity data, not a credential). */
 export function isValidEmail(value: string): boolean {
@@ -148,8 +148,8 @@ export function isOpaqueIdentityString(value?: string | null): boolean {
   if (!value) return false
   const trimmed = value.trim()
   if (!trimmed) return false
-  // Identificadores de proveedor, placeholders internos y sesiones/cookies
-  // nunca son una identidad pública legible.
+  // Provider identifiers, internal placeholders, and session/cookie values
+  // are never a readable, public-facing identity.
   return /^\d{5,}$/.test(trimmed)
     || /^[0-9a-fA-F-]{20,}$/.test(trimmed)
     || /^usr_[0-9a-zA-Z]{12,}$/.test(trimmed)
@@ -167,6 +167,23 @@ export function safeEmail(account: AccountIdentityInput | null | undefined): str
 }
 
 /**
+ * Service fallback names the backend writes when it found no real identity:
+ * `{service} User` built from the raw service key ("qobuz", "apple_music").
+ *
+ * They are placeholders, not a person: every account of the same service
+ * renders the same "Qobuz User", which is exactly the ambiguity the identity
+ * work removes. A real email, username or custom name always wins over them,
+ * and when nothing else exists the row shows the explicit placeholder instead
+ * of pretending a provider default is an identity.
+ */
+export function isGenericServiceName(value?: string | null): boolean {
+  if (!value) return false
+  const trimmed = value.trim().toLowerCase()
+  if (!trimmed) return false
+  return /^(qobuz|tidal|deezer|soundcloud|spotify|apple[ _]?music)\s+user$/.test(trimmed)
+}
+
+/**
  * The account display name, but only when it is a human-readable name.
  *
  * A display_name that simply repeats the real email is dropped (the email slot
@@ -178,6 +195,9 @@ export function safeDisplayName(account: AccountIdentityInput | null | undefined
   if (!name) return null
   const trimmed = name.trim()
   if (!trimmed || isOpaqueIdentityString(trimmed)) return null
+  // The generic service fallback is not identity: with an email or a username
+  // on file it must never be shown as the principal label.
+  if (isGenericServiceName(trimmed)) return null
   const realEmail = safeEmail(account)
   if (trimmed.includes('@')) {
     return realEmail === null && isValidEmail(trimmed) ? trimmed : null
@@ -257,6 +277,28 @@ export function accountRowEmail(account: AccountIdentityInput | null | undefined
   // (`source === 'email'`) or as the "Name (email)" form.
   if (identity.label.includes(identity.email)) return null
   return identity.email
+}
+
+/**
+ * One automatic identity refresh per app session.
+ *
+ * Opening the accounts view fires a best-effort provider pass that fills the
+ * email/username of accounts still carrying the generic name. Repeated mounts
+ * (navigation) must not repeat the network calls, so the claim is module
+ * scoped: the flag lives exactly as long as the app session.
+ */
+let identityRefreshAttempted = false
+
+/** Returns true only for the first call of the session. */
+export function claimIdentityRefreshRun(): boolean {
+  if (identityRefreshAttempted) return false
+  identityRefreshAttempted = true
+  return true
+}
+
+/** Test seam: lets a spec exercise the first-run behavior of the view. */
+export function resetIdentityRefreshRunFlag(): void {
+  identityRefreshAttempted = false
 }
 
 // ==============================================
@@ -365,31 +407,39 @@ export function useAccountsStatus(customToast?: ReturnType<typeof useToast>) {
       const reported = librarySnapshots.every(snapshot => snapshot.reported_total != null)
         && librarySnapshots.length > 0
         ? librarySnapshots.reduce((sum, snapshot) => sum + (snapshot.reported_total ?? 0), 0).toLocaleString()
-        : 'No disponible'
+        : 'Not available'
       const accountCounts: AccountCountDisplay[] = orderedAccounts(serviceAccounts).map(account => {
         const snapshot = librarySnapshots.find(item => item.account_id === account.id)
         return {
           accountId: account.id,
           label: formatAccountLabel(account),
-          reported: snapshot?.reported_total == null ? 'No disponible' : snapshot.reported_total.toLocaleString(),
-          imported: snapshot ? snapshot.imported_total.toLocaleString() : 'No disponible',
-          completeness: snapshot?.completeness ?? 'sin datos',
+          reported: snapshot?.reported_total == null ? 'Not available' : snapshot.reported_total.toLocaleString(),
+          imported: snapshot ? snapshot.imported_total.toLocaleString() : 'Not available',
+          completeness: snapshot?.completeness ?? 'no data',
           stale: !snapshot || snapshot.completeness !== 'complete',
           scannedAt: snapshot?.scanned_at ?? null,
         }
       })
 
+      // Card totals (AccountsView.vue). Fixed semantics — if this changes, update the labels too:
+      // - importedTracks → "Total Imported": REAL total of the service's ACTIVE account
+      //   (favorites + albums + playlists; each track counts once per account: UNIQUE(account_id, track_id)).
+      //   Tracks duplicated in other accounts or services are NOT subtracted or split:
+      //   each account shows its full real number.
+      // - playlists → "Playlists": real playlist count of the active account.
+      // - favoriteTracks → "Favorites": real favorited-track count of the active account (is_liked = 1).
+      // Active account = accounts.is_active=1 ORDER BY id DESC LIMIT 1 (same rule as get_service_statuses).
       return {
         id: status.name.toLowerCase(),
         name: status.name.charAt(0).toUpperCase() + status.name.slice(1),
         icon: getServiceIcon(status.name),
         bgClass: getServiceBgClass(status.name),
         status: cardStatus,
-        importedTracks: (status.library_count ?? 0).toLocaleString(),
+        importedTracks: (status.library_count ?? 0).toLocaleString(), // real total, active account
         reportedTracks: reported,
         accountCounts,
-        favoriteTracks: (status.favorites_count ?? 0).toLocaleString(),
-        playlists: (status.playlists_count ?? 0).toLocaleString(),
+        favoriteTracks: (status.favorites_count ?? 0).toLocaleString(), // real total, active account
+        playlists: (status.playlists_count ?? 0).toLocaleString(), // real total, active account
         lastSync: status.last_synced ? formatTimeAgo(status.last_synced) : 'Never',
         email: status.account_email || '',
         accounts: serviceAccounts,
@@ -442,10 +492,10 @@ export function useAccountsStatus(customToast?: ReturnType<typeof useToast>) {
     } catch (e: unknown) {
       const errorMessage = e instanceof Error 
         ? e.message 
-        : (typeof e === 'string' ? e : 'Error al cargar el estado de las cuentas')
+        : (typeof e === 'string' ? e : 'Error loading account status')
       error.value = errorMessage
       console.error('Failed to fetch accounts data:', e)
-      toast.error('Error al cargar cuentas', errorMessage)
+      toast.error('Error loading accounts', errorMessage)
     } finally {
       isLoading.value = false
     }

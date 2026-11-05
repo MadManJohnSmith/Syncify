@@ -561,6 +561,57 @@ pub fn is_sqlite_locked_error(err: &str) -> bool {
         || err.contains("(code: 5)")
 }
 
+/// Ejecuta una escritura y registra el fallo sin propagarlo.
+///
+/// Esta es la frontera para los sitios que descartan el error con `let _ =`:
+/// la política (qué se registra, con qué contexto y a qué nivel) vive aquí y
+/// no se repite en cada llamada. El valor devuelto es `Some` si la escritura
+/// se aplicó y `None` si falló, de modo que quien necesite saberlo pueda
+/// consultarlo sin cambiar el flujo.
+///
+/// Cuando una escritura deba abortar la operación en vez de registrarse,
+/// añade aquí la variante que propague: hoy no hay ningún llamador que la
+/// necesite, así que no existe (YAGNI).
+pub async fn write_or_log<T, E>(
+    context: &'static str,
+    result: impl std::future::Future<Output = Result<T, E>>,
+) -> Option<T>
+where
+    E: std::fmt::Display,
+{
+    match result.await {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::warn!(
+                context,
+                error = %error,
+                "escritura SQLx fallida (error no propagado)"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod write_boundary_tests {
+    use super::write_or_log;
+
+    #[tokio::test]
+    async fn write_or_log_returns_the_value_when_the_write_applies() {
+        let applied = write_or_log("test::ok", async { Ok::<i64, String>(7) }).await;
+        assert_eq!(applied, Some(7));
+    }
+
+    #[tokio::test]
+    async fn write_or_log_swallows_the_error_and_keeps_the_flow_alive() {
+        let applied = write_or_log("test::fails", async {
+            Err::<i64, String>("disco lleno".into())
+        })
+        .await;
+        assert_eq!(applied, None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

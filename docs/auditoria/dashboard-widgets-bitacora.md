@@ -13,7 +13,7 @@
 
 ## 1. Verificación previa y análisis de evidencias
 
-Antes de aplicar cualquier modificación, se inspeccionó el código fuente y las referencias cruzadas del plan v2 (`docs/PLAN-Correccion-168.md`) y la auditoría (`docs/Errores-Pruebas-2026-10-08.md`):
+Antes de aplicar cualquier modificación, se inspeccionó el código fuente y las referencias cruzadas del plan v2 (`docs/historico/PLAN-Correccion-168.md`) y la auditoría (`docs/historico/Errores-Pruebas-2026-10-08.md`):
 
 1. **D-01 (System Diagnostics):** `DashboardView.vue:241-264` montaba un widget que comprobaba binarios locales (`FFmpeg` y `Chromaprint`) mediante `toolsApi.checkFfmpeg()` y `toolsApi.checkFingerprint()` (`DashboardView.vue:579-594`). Dado que el instalador empaqueta ambos binarios, esta información es redundante e irrelevante para el usuario final.
 2. **D-02 (Library Growth):** Se verificó que los datos **sí existen** en la base de datos: la tabla `library_snapshots` (`src-tauri/migrations/0015_historical_snapshots.sql:4`) y el comando `create_library_snapshot` (`src-tauri/src/commands/dashboard.rs:36-127`) persisten registros reales. Si no hay histórico acumulado, `DashboardView.vue:665-669` deriva un punto `'Current'` con las descargas y el total de la biblioteca. El motivo por el cual el widget no mostraba nada era un **fallo de maquetación CSS Flexbox**: el contenedor de barras (`DashboardView.vue:87-95`) utilizaba `items-end` sin altura definida (`height: auto`). En la especificación CSS, un elemento con `h-full` cuyo padre no tiene altura explícita ni estiramiento evalúa a `0px`. Las barras hijas con porcentaje (`:style="{ height: entry.total + '%' }"`) se calculaban sobre 0px, colapsando su altura a 0 píxeles visibles.

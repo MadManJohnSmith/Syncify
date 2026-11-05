@@ -1,10 +1,10 @@
 # Plan: Unificación del pipeline de importación entre servicios
 
-> Estado: EN EJECUCIÓN — F0, F1, F2, F3 y F4 ejecutadas en código; lo que queda de F3 es
+> **Estado:** EN EJECUCIÓN — F0, F1, F2, F3 y F4 ejecutadas en código; lo que queda de F3 es
 > la verificación contra las APIs reales, condicionada por las credenciales del propietario
-> Origen: comparativa manual de los métodos de importación de todos los servicios
-> Fecha: 2025-08-25
-> Última revisión de estado: ítem 9.1 del plan post-auditoría (2026-10-02), que cierra DO-1
+> **Origen:** comparativa manual de los métodos de importación de todos los servicios
+> **Fecha del plan:** 2025-08-25
+> **Última revisión:** ítem 9.1 del plan post-auditoría (2026-10-02), que cierra DO-1
 > en el papel: la Fase 3 ya no está bloqueada, está implementada. Antes: `b9559da`
 > (SYNC-AUD-069). El detalle commit a commit de lo ya ejecutado está en
 > `docs/MATRIZ_PARIDAD_IMPORTACION.md`; la condición que queda, en
@@ -40,8 +40,8 @@ Asimetrías **intencionales que se conservan**: compras (solo Qobuz lo expone), 
 
 ## Fase 0 — Infraestructura compartida (base, ~2-3 días)
 
-1. **Helper de paginación común** (`services/import_pagination.rs`): `paginate_offset()` y `paginate_cursor()` con la semántica S187 generalizada (página corta ≠ fin si hay total; avanzar por longitud real; warn-and-continue con registro del hueco). Tidal ya lo tiene inline → se refactoriza para usarlo.
-2. **Taxonomía de errores compartida**: extraer `is_transient_page_error` de `tidal.rs:163` y fusionarla con `http_retry.rs` en un solo criterio transitorio/terminal/auth usado por los 6 clientes.
+1. **Helper de paginación común** (`services/import_pagination.rs`): `next_offset()` / `next_cursor()` / `is_short_page()` con la semántica S187 generalizada (los nombres `paginate_offset`/`paginate_cursor` del plan original nunca aterrizaron) (página corta ≠ fin si hay total; avanzar por longitud real; warn-and-continue con registro del hueco). Tidal ya lo tiene inline → se refactoriza para usarlo.
+2. **Taxonomía de errores compartida**: extraer el criterio transitorio (hoy `is_transient_status` / `is_transient_error_message` en `services/http_retry.rs`; el nombre `is_transient_page_error` del plan nunca existió) y fusionarla con `http_retry.rs` en un solo criterio transitorio/terminal/auth usado por los 6 clientes.
 3. **Throttle real para los rezagados**: invocar `GLOBAL_RATE_LIMITER.acquire()` + `penalize_service()` en 429 dentro de Deezer, SoundCloud y Apple Music (la configuración ya existe en `rate_limiter.rs:53`, nadie la llama).
 4. **Contrato único de resultado**: `ServiceSyncResult` como única respuesta; definir `skipped = ya presente` formalmente; los comandos heredados se convierten en wrappers.
 
@@ -129,7 +129,7 @@ El orden de abajo es el que fija el plan; el estado real de cada fase está en
 | F1 | ejecutada | `413da34` / `c27fc0c` / `ba5ba37` (Deezer) |
 | F2 | ejecutada | `2d43e5e` (F2-3), `2043672` (F2-5), `6ee9ce4` (F2-4) + punto 4 cerrado en la fase 8 (`sync_favorites` a 6 servicios) |
 | F3 | **ejecutada en código**; la verificación contra la API real queda **condicionada** | brazos `soundcloud`/`apple_music` en el motor, storefront y `next` de Apple Music, destino de migración activo y auth verificada — fase 8 del plan post-auditoría (DO-1, ítems 4.2 y 8.3); la condición, en `docs/Deuda_Tecnica_y_UX.md` D-01 |
-| F4 | ejecutada | `aa806b8` (F4-1), `docs/DECISION_IDENTIDAD_TRACKS.md` (F4-2) |
+| F4 | ejecutada | `aa806b8` (F4-1), `docs/adr/0001-identidad-de-tracks.md` (F4-2) |
 
 ## Observaciones que motivaron el plan
 

@@ -120,6 +120,11 @@ pub struct TidalSingleTrackRequest {
     pub hint_artist: Option<String>,
     pub hint_album: Option<String>,
     pub hint_isrc: Option<String>,
+    /// Canonical duration (ms) of the requested track. Second identity axis
+    /// used to reject a locked numeric id whose provider metadata proves it
+    /// belongs to a different recording (see `download::identity`).
+    #[serde(default)]
+    pub hint_duration_ms: Option<i64>,
     pub hint_track_number: Option<i32>,
     pub hint_disc_number: Option<i32>,
     pub hint_release_date: Option<String>,
@@ -487,6 +492,64 @@ pub fn compute_safe_track_filename(
     Ok(filename)
 }
 
+/// Resolve and persist the real playback session id (`GET /v1/sessions`) when
+/// the stored credentials do not carry one yet. Best-effort: on failure the
+/// downloader keeps using bearer-only requests instead of sending a bogus
+/// `X-Tidal-SessionId` (which caused the recurring `401 PlaybackUnauthorized`).
+async fn ensure_tidal_session_id(
+    db: &DbPool,
+    http_client: &reqwest::Client,
+    account_id: Option<i64>,
+    creds: &mut TidalGuiCredentials,
+) {
+    if syncify_tidal_downloader::tidal_session_header_value(creds).is_some() {
+        return;
+    }
+    match syncify_tidal_downloader::fetch_tidal_session_id(http_client, creds).await {
+        Some(session_id) => {
+            creds.session_id = Some(session_id);
+            if let Some(id) = account_id {
+                persist_tidal_credentials_json(db, id, creds).await;
+            }
+            info!(
+                account_id = account_id,
+                endpoint = "api.tidal.com/v1/sessions",
+                "[Tidal Auth Diagnostics] Playback session id resolved and persisted"
+            );
+        }
+        None => {
+            warn!(
+                account_id = account_id,
+                endpoint = "api.tidal.com/v1/sessions",
+                "[Tidal Auth Diagnostics] Could not resolve a playback session id; requests will send the bearer token only"
+            );
+        }
+    }
+}
+
+/// Best-effort persistence of a Tidal credentials payload (session id fetch or
+/// refresh result). It deliberately does not touch
+/// `credentials_invalid`/`last_auth_error`: resolving a session id is not proof
+/// that a genuine credential rejection has cleared.
+async fn persist_tidal_credentials_json(db: &DbPool, account_id: i64, creds: &TidalGuiCredentials) {
+    if let Ok(serialized) = serde_json::to_string(creds) {
+        if let Ok(encrypted) = crypto::encrypt(&serialized) {
+            if let Err(e) = sqlx::query("UPDATE accounts SET credentials_json = ? WHERE id = ?")
+                .bind(&encrypted)
+                .bind(account_id)
+                .execute(db)
+                .await
+            {
+                warn!(
+                    account_id = account_id,
+                    error = %e,
+                    "[Tidal Auth Diagnostics] Failed to persist playback session id into credentials_json"
+                );
+            }
+        }
+    }
+}
+
 /// Resolve and automatically refresh Tidal active credentials from SQLite.
 pub async fn resolve_and_refresh_gui_credentials(
     db: &DbPool,
@@ -568,7 +631,7 @@ pub async fn resolve_and_refresh_gui_credentials_for_account(
         }
     };
 
-    let creds: TidalGuiCredentials = match serde_json::from_str(&decrypted) {
+    let mut creds: TidalGuiCredentials = match serde_json::from_str(&decrypted) {
         Ok(c) => c,
         Err(e) => {
             warn!(
@@ -614,6 +677,10 @@ pub async fn resolve_and_refresh_gui_credentials_for_account(
     );
 
     if !is_expired {
+        // The playback endpoints require the real Tidal session id (NOT the
+        // token) in `X-Tidal-SessionId`. Resolve it lazily from
+        // `GET /v1/sessions` and persist it so every later download reuses it.
+        ensure_tidal_session_id(db, http_client, Some(account_id), &mut creds).await;
         return (Some(creds), username);
     }
 
@@ -628,7 +695,12 @@ pub async fn resolve_and_refresh_gui_credentials_for_account(
             "[Tidal Auth Diagnostics] Tidal access token is expired; executing OAuth token refresh via auth.tidal.com"
         );
         match syncify_tidal_downloader::refresh_gui_token(http_client, &creds).await {
-            Ok((_new_token, updated_creds)) => {
+            Ok((_new_token, mut updated_creds)) => {
+                // A rotated token may still lack the playback session id
+                // (legacy payload, or the session was never resolved): fetch it
+                // now so both fields are persisted together below.
+                ensure_tidal_session_id(db, http_client, Some(account_id), &mut updated_creds)
+                    .await;
                 // Re-encrypt and persist ONLY on success
                 if let Ok(serialized) = serde_json::to_string(&updated_creds) {
                     if let Ok(encrypted_new) = crypto::encrypt(&serialized) {
@@ -795,6 +867,136 @@ pub fn validate_tidal_codec(
     Ok(())
 }
 
+/// Identity candidate of a provider-fetched Tidal entity.
+fn tidal_identity_candidate(track: &TidalTrack) -> crate::download::identity::IdentityCandidate {
+    crate::download::identity::IdentityCandidate::new(
+        track.title.clone(),
+        track.artist_name().unwrap_or_default(),
+        (track.duration as i64).saturating_mul(1000),
+    )
+}
+
+/// Identity guard for a locked numeric Tidal track id (S197 / import lock).
+///
+/// Provider catalogues are not always trustworthy: a locked id can resolve to
+/// a live-but-wrong recording when the provider labels one ISRC on several
+/// tracks. A fetched entity whose metadata contradicts BOTH the requested
+/// title and duration is never accepted: the exact-ISRC search, the broad ISRC
+/// query and the strict metadata search run in order, and only a candidate
+/// that no longer contradicts the request is returned. Otherwise the attempt
+/// fails with `IdentityConflict` so the caller re-resolves the identity
+/// instead of streaming foreign audio.
+async fn verify_or_recover_numeric_track(
+    downloader: &TidalDownloader,
+    request: &TidalSingleTrackRequest,
+    fetched: TidalTrack,
+) -> Result<TidalTrack, String> {
+    let expected_title = request.hint_title.as_deref().unwrap_or("");
+    let expected_duration_ms = request.hint_duration_ms.unwrap_or(0);
+
+    if !crate::download::identity::identity_conflicts(
+        expected_title,
+        expected_duration_ms,
+        &tidal_identity_candidate(&fetched),
+    ) {
+        return Ok(fetched);
+    }
+
+    warn!(
+        "[Tidal] Locked track {} ('{}', {}s) contradicts requested '{}' ({} ms); re-resolving identity",
+        fetched.id, fetched.title, fetched.duration, expected_title, expected_duration_ms
+    );
+
+    let expected_duration_sec = (expected_duration_ms / 1000) as i32;
+
+    let isrc = request
+        .hint_isrc
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(isrc) = isrc {
+        if let Ok(track) = downloader
+            .search_by_isrc_verified(
+                isrc,
+                expected_title,
+                request.hint_artist.as_deref().unwrap_or(""),
+                expected_duration_sec,
+            )
+            .await
+        {
+            if !crate::download::identity::identity_conflicts(
+                expected_title,
+                expected_duration_ms,
+                &tidal_identity_candidate(&track),
+            ) {
+                info!(
+                    "[Tidal] ✓ Re-resolved locked source to ISRC match '{}' (ID: {})",
+                    track.title, track.id
+                );
+                return Ok(track);
+            }
+        }
+        if let (Some(track_name), Some(artist_name)) = (
+            request.hint_title.as_deref(),
+            request.hint_artist.as_deref(),
+        ) {
+            if let Ok(track) = downloader
+                .search_by_isrc_broad(isrc, track_name, artist_name, expected_duration_sec)
+                .await
+            {
+                if !crate::download::identity::identity_conflicts(
+                    expected_title,
+                    expected_duration_ms,
+                    &tidal_identity_candidate(&track),
+                ) {
+                    info!(
+                        "[Tidal] ✓ Re-resolved locked source to broad ISRC match '{}' (ID: {})",
+                        track.title, track.id
+                    );
+                    return Ok(track);
+                }
+            }
+        }
+    }
+
+    if let (Some(track_name), Some(artist_name)) = (
+        request.hint_title.as_deref(),
+        request.hint_artist.as_deref(),
+    ) {
+        if let Ok(track) = downloader
+            .search_by_metadata_with_studio_option(
+                track_name,
+                artist_name,
+                expected_duration_sec,
+                true,
+            )
+            .await
+        {
+            if !crate::download::identity::identity_conflicts(
+                expected_title,
+                expected_duration_ms,
+                &tidal_identity_candidate(&track),
+            ) {
+                info!(
+                    "[Tidal] ✓ Re-resolved locked source to metadata match '{}' (ID: {})",
+                    track.title, track.id
+                );
+                return Ok(track);
+            }
+        }
+    }
+
+    Err(format!(
+        "IdentityConflict: locked Tidal track {} resolves to '{}' ({}s) but the request is '{}' by '{}' ({} ms) and no verified replacement was found",
+        fetched.id,
+        fetched.title,
+        fetched.duration,
+        expected_title,
+        request.hint_artist.as_deref().unwrap_or(""),
+        expected_duration_ms
+    ))
+}
+
 /// Pipeline body. `journal` is `Some` whenever a recovery-journal entry is open
 /// for this download; every milestone is reported through it.
 async fn execute_tidal_single_track_download_inner<F>(
@@ -900,7 +1102,9 @@ where
                 )),
         );
 
-        let downloader = TidalDownloader::new().with_user_token(user_token);
+        let downloader = TidalDownloader::new()
+            .with_user_token(user_token)
+            .with_country_code(active_account_region.clone());
 
         // 2. Searching & Candidate Resolution
         phase_tracker.start_phase(DownloadPhase::ResolveStream);
@@ -922,7 +1126,7 @@ where
                 .get_track_with_country(numeric_id, &country_code)
                 .await
             {
-                Ok(t) => Ok(t),
+                Ok(t) => verify_or_recover_numeric_track(&downloader, &request, t).await,
                 Err(api_err) => {
                     warn!(track_id = numeric_id, error = %api_err, "Tidal API get_track failed; checking local database and request hints");
                     // 2. Try DB lookup by service_track_id exclusively
@@ -1094,7 +1298,12 @@ where
 
             if target.len() == 12 && target.chars().all(|c| c.is_ascii_alphanumeric()) {
                 downloader
-                    .search_by_isrc(target, 0)
+                    .search_by_isrc_verified(
+                        target,
+                        request.hint_title.as_deref().unwrap_or(""),
+                        request.hint_artist.as_deref().unwrap_or(""),
+                        0,
+                    )
                     .await
                     .map_err(|e| e.to_string())
             } else {
@@ -1120,10 +1329,18 @@ where
             }
             Err(e) => {
                 error!(target = %target, error = %e, account_id = cand_account_id, "Failed to resolve track on Tidal with this account");
-                last_error_msg = Some(format!(
-                    "MetadataResolutionFailed: Failed to resolve candidate track on Tidal: {}",
+                // An identity conflict is a verdict about the EDITION and stays
+                // terminal: keep its prefix intact so worker/resolver classify
+                // it as such instead of wrapping it as a generic resolution
+                // hiccup to retry against the same wrong identity.
+                last_error_msg = Some(if e.contains("IdentityConflict") {
                     e
-                ));
+                } else {
+                    format!(
+                        "MetadataResolutionFailed: Failed to resolve candidate track on Tidal: {}",
+                        e
+                    )
+                });
                 continue;
             }
         };
@@ -1238,8 +1455,14 @@ where
                 }
 
                 let auth_msg = if is_auth_error {
+                    // NOTE: this message deliberately does NOT read as a hard
+                    // credential verdict ("stream entitlement" / "authentication
+                    // failed"), otherwise the orchestrator aborts the
+                    // cross-service fallback instead of trying Qobuz. It stays
+                    // actionable: the failure is recorded on the account as
+                    // last_auth_error above.
                     format!(
-                    "Download failed (Tidal stream entitlement/endpoint for account {}): Tidal playback authentication or entitlement failed (HTTP 401/403). Error: {}",
+                    "Download failed (Tidal playback endpoint rejected for account {}): no endpoint delivered a usable stream (HTTP 401/403). Error: {}",
                     active_account_name.as_deref().unwrap_or("unknown"),
                     err_str
                 )
@@ -4078,7 +4301,8 @@ pub async fn reenrich_download_file_with_baseline(
     let http_client = crate::download::http_client::create_http_client();
     let (resolved_creds, _) = resolve_and_refresh_gui_credentials(db, &http_client).await;
     let downloader = TidalDownloader::new()
-        .with_user_token(resolved_creds.as_ref().map(|c| c.access_token.clone()));
+        .with_user_token(resolved_creds.as_ref().map(|c| c.access_token.clone()))
+        .with_country_code(resolved_creds.as_ref().and_then(|c| c.country_code.clone()));
     let country_code = resolved_creds
         .as_ref()
         .and_then(|c| c.country_code.as_deref())
@@ -4775,6 +4999,7 @@ mod expiry_buffer_tests {
             country_code: Some("ES".into()),
             client_id: None,
             client_secret: None,
+            session_id: None,
         }
     }
 

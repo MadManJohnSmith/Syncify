@@ -1,11 +1,14 @@
 # Plan de mejora post-beta — registro de funcionalidades diferidas
 
+**Estado:** lista de espera post-beta; ningún ítem se empieza antes de cerrar el beta.
+**Última revisión:** no registrada en el fichero.
+
 **Propósito:** que ninguna funcionalidad estudiada y decidida como diferida se pierda.
-La decisión de alcance vive en `docs/DECISION_ALCANCE_BETA.md`; los ítems que esa
+La decisión de alcance vive en `docs/adr/0002-alcance-beta.md`; los ítems que esa
 decisión excluye del beta están enumerados, con evidencia, en este fichero.
 
 **Cómo se usa este fichero.** Es una lista de espera, no una cola de trabajo: **ninguno
-de estos ítems se empieza mientras el beta no esté cerrado** (ver `DECISION_ALCANCE_BETA.md`
+de estos ítems se empieza mientras el beta no esté cerrado** (ver `adr/0002-alcance-beta.md`
 §4 para la condición exacta). Cuando el beta se cierre, este fichero se consume por
 prioridad, no por orden de aparición.
 
@@ -13,9 +16,14 @@ prioridad, no por orden de aparición.
 solo cuando alguien abre trabajo real sobre él.
 
 **Nota sobre las evidencias:** todas las citas de código se verificaron el 2026-10-12
-contra el árbol de trabajo. Un ítem con evidencia "no usado" significa que el código o
+contra el árbol de trabajo, y se re-verificaron el 2026-10-25: los ítems marcados
+`registrado` siguen sin implementar. Un ítem con evidencia "no usado" significa que el código o
 los datos existen pero nadie los consume —esos son los más baratos de todo el fichero,
 y están marcados con `◆`.
+
+**Nota sobre los IDs:** los `C-01…C-06` y `D-01/D-02` de este fichero son **su propio
+espacio de nombres** y no coinciden con los `C-xx` cerrados ni los `D-xx` abiertos de
+`docs/Deuda_Tecnica_y_UX.md`. Cita siempre el fichero junto al ID.
 
 ---
 
@@ -201,23 +209,24 @@ móvil.
 _E-01 · `registrado` · **Verificación real que el README declara pendiente.** El README
 excluye expresamente de su evidencia de release el login en vivo, el enriquecimiento, las
 descargas, la resolución de letras y la comprobación real de GUI/audio/tray/MPRIS
-(`README.es.md:246-263`). Nada de lo anterior debe darse por bueno sin estalista
+(§"Verification and limitations" de `README.md`/`README.es.md`). Nada de lo anterior debe darse por bueno sin estalista
 reducida. Relacionado: el handoff advierte de no fiarse de los "verificado" de las
-bitácoras de carril donde el carril no pudo ejecutar (`docs/HANDOFF-2026-10-11.md:295-297`).
+bitácoras de carril donde el carril no pudo ejecutar (`docs/historico/HANDOFF-2026-10-11.md:295-297`).
 
 _E-02 · `registrado` · **Windows: target de compilación y D-Bus/MPRIS en máquina real.**
-Hoy bloqueado en esta máquina (`docs/HANDOFF-2026-10-11.md:6`). Es prerrequisito de B-02
+Hoy bloqueado en esta máquina (`docs/historico/HANDOFF-2026-10-11.md:6`). Es prerrequisito de B-02
 y de cualquier promesa de release multiplataforma.
 
-_E-03 · `registrado` · **Commitear el árbol de trabajo.** 21 entradas sin commitear
+_E-03 · `resuelto` · **Commitear el árbol de trabajo.** 21 entradas sin commitear
 (16 modificadas, 5 nuevas), incluyendo el importador de dumps de MusicBrainz
 (`src-tauri/src/services/mb_dump_import.rs`, 374 líneas) que está registrado en
 `services/mod.rs:21` pero sin flujo web/UI conectado. El handoff lo marcaba como el paso
 más urgente por riesgo de pérdida el 2026-10-11 y sigue siéndolo el 2026-10-12. **Nota:
 esto está en el beta, no aquí; aparece en este grupo solo para que no se pierda la
-referencia.**
+referencia.** *(Resuelto: el árbol se commiteó; el commit del handoff quedó registrado
+en el cierre de 2026-10-11. La entrada sobrevive solo como referencia.)*
 
-_E-04 · `registrado` · **Vaciar la cola de triaje de pruebas manuales del 2026-10-11**
-(`docs/Errores-Pruebas-2026-10-11.md`). Solo Q-01 está cerrado. El caso general de
+_E-04 · `parcialmente consumido` · **Vaciar la cola de triaje de pruebas manuales del 2026-10-11**
+(`docs/historico/Errores-Pruebas-2026-10-11.md`). *(Actualizado 2026-10-25: Q-04/Q-06/Q-07/Q-09/Q-12/Q-15/Q-16 HECHO con pruebas, Q-02/Q-03 resueltos después; siguen abiertos Q-13, Q-14 y Q-17.)* El caso general de
 overlays flotantes frente a la `.status-bar` no se ha comprobado visualmente. Al igual
 que E-03, es alcance beta y se lista aquí únicamente como referencia viva.

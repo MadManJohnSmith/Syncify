@@ -1,8 +1,8 @@
 # Cola técnica: rendimiento de la interfaz al navegar y hacer scroll
 
-**Estado:** registrado, sin cambio de código. Todas las evidencias se verificaron el 2026-10-13 contra el árbol de trabajo y sobre una copia de solo lectura de la base real (~390 MB, 30.527 pistas).
-**Fecha:** 2026-10-13. **Motivo:** el usuario observa retardos superiores a un segundo al cambiar de pantalla o pestaña, y scroll que tarda y da tirones, en toda la aplicación.
-**Frontera de trabajo:** este fichero es propio y no toca `docs/Errores-Pruebas-2026-10-11.md`, `docs/Errores-Pruebas-2026-10-13.md` ni `docs/auditoria/matriz-ajustes.md`, reservados por el flujo de descargas concurrente. Integrar los ítems en la cola canónica cuando se libere, igual que se acordó con `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md`.
+**Estado:** actualizado el 2026-10-25: **FE-PERF-02 aplicado en código** (parcial: la clonación está corregida; ver su sección), el resto `registrado`, sin cambio de código. Las evidencias originales se verificaron el 2026-10-13 contra el árbol de trabajo y sobre una copia de solo lectura de la base real (~390 MB, 30.527 pistas); el estado canónico por ítem está en `docs/auditoria/matriz-ajustes.md`.
+**Fecha de origen:** 2026-10-13. **Última revisión:** 2026-10-25 (FE-PERF-02 aplicado). **Motivo:** el usuario observa retardos superiores a un segundo al cambiar de pantalla o pestaña, y scroll que tarda y da tirones, en toda la aplicación.
+**Frontera de trabajo:** este fichero es propio y no toca `docs/historico/Errores-Pruebas-2026-10-11.md`, `docs/historico/Errores-Pruebas-2026-10-13.md` ni `docs/auditoria/matriz-ajustes.md`, reservados por el flujo de descargas concurrente. Integrar los ítems en la cola canónica cuando se libere, igual que se acordó con `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md`.
 
 ## Qué se descartó con medición (para no invertir esfuerzo donde no está el problema)
 
@@ -23,18 +23,24 @@ Medido sobre `/tmp/perf-hard/db-copy.db` (copia de solo lectura de la base real)
 
 ## FE-PERF-01 · `registrado` · Sin `<KeepAlive>`, cada cambio de pantalla destruye y reconstruye la vista.
 
+**Issue**: [#49](https://github.com/MadManJohnSmith/Syncify/issues/49) (spec [#34](https://github.com/MadManJohnSmith/Syncify/issues/34)).
+
 `ui/src/App.vue:370-373` envuelve el `<router-view>` en `<transition name="fade" mode="out-in">` y **no existe ningún `<KeepAlive>` en `ui/src/App.vue` ni en `ui/src/main.ts`** (verificado por búsqueda de la cadena). Consecuencia concreta: al entrar y salir de una vista se vuelve a montar el componente completo y a ejecutar su `onMounted`. El `Dashboard` lanza en `onMounted` una llamada a `createLibrarySnapshot()` más 11 llamadas de API en `Promise.all` (`ui/src/views/DashboardView.vue:830-831` y `:628-636`), de modo que entrar y salir de Dashboard repite las 12.
 **Por qué importa:** `mode="out-in"` obliga además a que la vista saliente termine su animación antes de empezar a montar la entrante, así que el retraso percibido se suma.
 **Diseño obligatorio del arreglo:** `<KeepAlive>` con `include`/`exclude` acotado, no global, para no retener todas las vistas en memoria (el caso contrario también degrada). Decidir explícitamente si `mode="out-in"` debe mantenerse en las vistas que se cachean. Nombres de componente consistentes: `include` filtra por el `name` del componente, y conviene confirmar que las vistas lo declaran.
 **Qué no se ha demostrado:** que esto sea la causa única del retraso; se verificó el mecanismo y el coste repetido, no la latencia de navegación medida en la ventana real.
 
-## FE-PERF-02 · `registrado` · `loadMore` clona el array entero y `filteredTracks` reordena todo en cada invalidación.
+## FE-PERF-02 · `aplicado en código (2026-10-25, parcial)` · `loadMore` clona el array entero y `filteredTracks` reordena todo en cada invalidación.
+
+**Actualización 2026-10-25:** la clonación está corregida en `ui/src/views/LibraryView.vue` — `loadMore` acumula con `tracks.value.push(...newTracks)` y `filteredTracks` ya no recopia/reordena el conjunto entero en cada invalidación; `docs/auditoria/matriz-ajustes.md` la registra como «parcial (clonación corregida)». El análisis original que motivó el arreglo queda abajo como contexto.
 
 `ui/src/views/LibraryView.vue:1613` hace `tracks.value = [...tracks.value, ...newTracks]` al acumular una página, y `:2358` hace `trackList = [...trackList].sort(...)` dentro del `computed` `filteredTracks` (`:2326`). Con `PAGE_SIZE = 100` (`:1572`) y 30.527 pistas, recorrer la biblioteca son ~306 páginas, y **cada** una invalida el computado que recopia y reordena todo el conjunto. La medida de referencia es **31,16 ms** por reordenada de 30.527 elementos.
 **Diseño obligatorio del arreglo:** acumular sin clonar (mutación controlada del array o `concat` sobre referencia no reactiva), y que el computado dependa de las claves que realmente cambian (filtros y `sortBy`) para no reordenar cuando solo crece la lista. No debe cambiar el resultado observable: mismas filas, mismo orden.
 **Nota:** `handleScroll` actualiza `libraryScrollTop.value` en **cada** evento de scroll sin throttle (`:1685`); el throttle de 120 ms (`:1678`) solo cubre las mediciones de layout (`:1709-1720`). Actualizar el índice de la ventana virtual por evento es el comportamiento deseado para que el scroll no vaya a saltos, así que **no** conviene limitarlo sin medir el coste del `slice` (~0,067 ms con 100 filas).
 
 ## FE-PERF-03 · `registrado` · Coste de parseo repetido por cambio de pantalla.
+
+**Issue**: [#50](https://github.com/MadManJohnSmith/Syncify/issues/50) (spec [#34](https://github.com/MadManJohnSmith/Syncify/issues/34)).
 
 Medido sobre el build real (`ui/dist`): `index-*.js` = 429 kB raw / 133 kB gz, `index-*.css` = 177 kB / 21 kB gz, y por vistas `SettingsView` 224 kB / 54 kB gz, `MetadataView` 121 kB / 29 kB, `LyricsView` 98 kB / 24 kB, `MigrationView` 94 kB / 21 kB, `AccountsView` 85 kB / 21 kB, `LibraryView` 80 kB / 20 kB, `DownloadsView` 75 kB / 18 kB, `PlaylistView` 45 kB / 12 kB. Total JS ≈ **1,32 MB raw / 347 kB comprimido**.
 `ui/src/main.ts:12-13` importa estáticamente `DashboardView`, `AlbumDetailView` y `ArtistDetailView`; el resto son lazy (`:14`, `:20`, `:22`, `:23`, `:24`).
@@ -43,17 +49,19 @@ Medido sobre el build real (`ui/dist`): `index-*.js` = 429 kB raw / 133 kB gz, `
 
 ## FE-PERF-04 · `registrado` · Repetición de agregados equivalentes en el Dashboard.
 
+**Issue**: [#51](https://github.com/MadManJohnSmith/Syncify/issues/51) (spec [#34](https://github.com/MadManJohnSmith/Syncify/issues/34)).
+
 `src-tauri/src/commands/dashboard.rs:43-95` (`create_library_snapshot`) ejecuta **6 sentencias de recuento separadas** sobre `tracks`, `albums`, `artists`, `downloads`, `SUM(file_size_bytes)` sobre `downloads`, y `COUNT(DISTINCT track_id)` sobre `lyrics`. La vista `library_stats` hace otras 8 cuentas. `fetchData()` vuelve a pedir `getLibraryStats`, `getMetadataStats`, `getLyricsStats` y `getLibrarySnapshots` (`ui/src/views/DashboardView.vue:630-641`), que ya cubren lo mismo.
 **Medido:** cada recuento suelto son 3-7 ms, y la vista 2,32 ms; no es un cuello de botella por hoy. Conviene unificar cuando se unifique el snapshot, y **mientras tanto no merece optimizarse por velocidad**.
 **Qué no se ha demostrado:** que estos recuentos aporten algo perceptible. Este ítem se registra para no duplicar trabajo cuando se toque el Dashboard por otros motivos.
 
 ## Orden recomendado y verificación
 
-1. **FE-PERF-02** (sin clonar, sin reordenar en falso): ataca directamente los tirones de scroll y es acotado a `LibraryView.vue`.
+1. ~~**FE-PERF-02** (sin clonar, sin reordenar en falso)~~ **aplicado (parcial)**: atacaba directamente los tirones de scroll y era acotado a `LibraryView.vue`.
 2. **FE-PERF-01** (`KeepAlive` acotado): ataca el retraso al cambiar de pantalla y evita repetir las 12 llamadas del Dashboard.
 3. **FE-PERF-03** (división del bundle) solo con medición de arranque.
 4. **FE-PERF-04** al tocar el Dashboard por otra razón.
 
 **Verificación obligatoria antes y después:** medir en la app real el tiempo desde el clic hasta el primer frame con contenido, scroll sostenido con cuenta de fotogramas perdidos, y llamadas a `get_library` por minuto durante el uso normal. Tests automatizados puros para `loadMore` (mismas filas, mismo orden, sin clonar) y para el listado con `sortBy`. Mantener la ruta compatible de WebKit intacta: nada de este fichero toca `src-tauri/src/main.rs` ni las variables de composición.
 
-**Relacionado:** `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md` (composición y compatibilidad Intel Iris Xe) y `docs/perf-run-2026-10-12.md` (revisión de backend).
+**Relacionado:** `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md` (composición y compatibilidad Intel Iris Xe) y `docs/historico/perf-run-2026-10-12.md` (revisión de backend).

@@ -21,12 +21,12 @@ class MissingTidalCredentialsError(RuntimeError):
     """Raised when a required Tidal OAuth credential is not configured."""
 
 
-# Credenciales PÚBLICAS del cliente oficial de escritorio de Tidal, las mismas
-# que usan los clientes open-source (device flow y PKCE). NO son credenciales
-# personales de nadie y NO deben volver a sustituirse por placeholders creyendo
-# que son secretos privados. Las credenciales PERSONALES del usuario (tokens)
-# van por keychain o por la configuración de la cuenta; las variables de
-# entorno y las credenciales almacenadas tienen prioridad sobre estos valores.
+# PUBLIC credentials of Tidal's official desktop client, the same ones
+# open-source clients use (device flow and PKCE). They are NOT anyone's
+# personal credentials and must NOT be replaced again with placeholders under
+# the assumption that they are private secrets. The user's PERSONAL credentials
+# (tokens) go through the keychain or the account configuration; environment
+# variables and stored credentials take priority over these values.
 PUBLIC_TIDAL_CLIENT_ID = "fX2JxdmntZWK0ixT"
 PUBLIC_TIDAL_CLIENT_SECRET = "xeuPmY7nbpZ9IIbLAcQ93shka1VNheUAqN6IcszjTG8="
 PUBLIC_TIDAL_CLIENT_ID_PKCE = "6BDSRdpK9hqEBTgU"
@@ -255,6 +255,10 @@ class TidalAuth:
             "access_token": resp["access_token"],
             "refresh_token": resp["refresh_token"],
             "token_expiry": resp["expires_in"] + time.time(),
+            # Identity hint: the token response user object may carry the
+            # username/email such a session would otherwise need a second API
+            # call for. Rust validates it before showing anything.
+            "user": resp.get("user", {}),
         }
         return 0, ret
     
@@ -285,13 +289,13 @@ class TidalAuth:
             self._log(f"Got device code. URL: {verification_url}")
             
             # Step 2: Open browser IMMEDIATELY so user can log in while we poll.
-            # La URL se anuncia en stderr antes de intentarlo: stdout queda
-            # reservado al JSON de auth_bridge.py y Rust registra stderr, así
-            # que es lo único que sobrevive si el proceso muere o se traga el
-            # error. `open_in_system_browser` devuelve False sin excepción cuando
-            # el escritorio no tiene gestor de URLs, y eso antes pasaba por
-            # "conectado": el usuario se quedaba esperando sin ver nada.
-            print(f"[Tidal Auth] Abre esta URL para continuar: {verification_url}", file=sys.stderr, flush=True)
+            # The URL is announced on stderr before trying: stdout stays
+            # reserved for auth_bridge.py's JSON and Rust logs stderr, so
+            # that is the only thing that survives if the process dies or swallows
+            # the error. `open_in_system_browser` returns False without raising when
+            # the desktop has no URL handler, and that used to pass for
+            # "connected": the user was left waiting without seeing anything.
+            print(f"[Tidal Auth] Open this URL to continue: {verification_url}", file=sys.stderr, flush=True)
             opened = False
             try:
                 opened = open_in_system_browser(verification_url)
@@ -300,8 +304,8 @@ class TidalAuth:
 
             if not opened:
                 message = (
-                    "No se pudo abrir el navegador automáticamente. "
-                    f"Abre esta URL para conectar Tidal: {verification_url}"
+                    "Could not open the browser automatically. "
+                    f"Open this URL to connect Tidal: {verification_url}"
                 )
                 print(f"[Tidal Auth] {message}", file=sys.stderr, flush=True)
                 await self.session.close()

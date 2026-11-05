@@ -65,10 +65,10 @@ interface TrayNotificationPayload {
 
 /**
  * NT-03 taxonomy. A notification is classified into one of five categories,
- * and each category gets the actions the doc's ACCIÓN rule allows:
- * (a) Ir a — a `router.push` to the view where the problem is visible,
- * (b) Reintentar — the command that undoes the failure,
- * (d) Resolver — open the dialog that settles the matter.
+ * and each category gets the actions the doc's ACTION rule allows:
+ * (a) Go to — a `router.push` to the view where the problem is visible,
+ * (b) Retry — the command that undoes the failure,
+ * (d) Resolve — open the dialog that settles the matter.
  *
  * The classification lives here, in the frontend, because the backend payloads
  * (`AppNotification.category`, `ServiceNotificationPayload.operation/kind`)
@@ -79,9 +79,9 @@ export type NoticeCategory = PopupCategory;
 export interface NoticeActionSpec {
     label: string;
     primary?: boolean;
-    /** Router destination for (a) Ir a. */
+    /** Router destination for (a) Go to. */
     route?: string;
-    /** Payload for (b) Reintentar. */
+    /** Payload for (b) Retry. */
     meta?: Record<string, unknown>;
     kind?: 'navigate' | 'retry' | 'resolve';
 }
@@ -141,8 +141,8 @@ export function planDownloadNotification(
 
     if (kind === 'warning') {
         // B3 "manifest.json could not be written": a disk problem with a
-        // concrete folder to look at, so (a) Ir a to the file system and
-        // (a) Ir a to logs. It is counted with the download batch.
+        // concrete folder to look at, so (a) Go to the file system and
+        // (a) Go to logs. It is counted with the download batch.
         return {
             category: 'download',
             critical: true,
@@ -186,7 +186,7 @@ export function planServiceNotification(
     if (operation === 'download') {
         switch (kind) {
             case 'auth':
-                // (a) Ir a to the account that must be re-authenticated — the
+                // (a) Go to the account that must be re-authenticated — the
                 // single highest-value action in the whole taxonomy.
                 return {
                     category: 'download',
@@ -195,7 +195,7 @@ export function planServiceNotification(
                     actions: [{ label: `Reconnect ${svc}`, route: '/accounts', kind: 'navigate' }]
                 };
             case 'expansion':
-                // (d) Resolver: open DownloadsView with the review dialog, which
+                // (d) Resolve: open DownloadsView with the review dialog, which
                 // is what settles the ambiguous track.
                 return {
                     category: 'download',
@@ -331,7 +331,7 @@ export function useNotificationListener() {
             kind: spec.kind,
             handler: async () => {
                 if (spec.kind === 'retry') {
-                    // (b) Reintentar — the command that undoes the failure. The
+                    // (b) Retry — the command that undoes the failure. The
                     // retry outcome re-enters through the same listener, so no
                     // result toast is emitted here.
                     const queueId = typeof spec.meta?.queue_id === 'number' ? spec.meta.queue_id : undefined;
@@ -343,7 +343,7 @@ export function useNotificationListener() {
                     return;
                 }
                 if (spec.route) {
-                    // (a) Ir a / (d) Resolver — both are plain navigation; the
+                    // (a) Go to / (d) Resolve — both are plain navigation; the
                     // destination decides what happens next.
                     emitNavigate(spec.route);
                 }

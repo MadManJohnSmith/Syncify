@@ -1,12 +1,12 @@
 //! Import preferences per service (R2 / C-08).
 //!
-//! **R2 (docs/HANDOFF-2026-10-11.md:29-30)** — el comportamiento cambió a
+//! **R2 (docs/historico/HANDOFF-2026-10-11.md:29-30)** — el comportamiento cambió a
 //! propósito con la migración `src-tauri/migrations/0092_import_preferences_defaults.sql`:
 //! las aserciones de `test_import_preferences_persistence_and_defaults` que exigían
 //! `!favorite_albums` y `!favorite_artists` describían los defaults **previos** a C-08.
 //! Se actualizan al contrato de C-08 (activos: favoritos, álbumes, artistas,
 //! playlists; desactivados: compras, historial, apariciones — ver
-//! `docs/Errores-Pruebas-2026-10-08.md:171-172`).
+//! `docs/historico/Errores-Pruebas-2026-10-08.md:171-172`).
 //!
 //! El caso explícito de fila **anterior** a 0092, y de fila nueva, lo cubre
 //! `test_0092_defaults_apply_to_new_rows_and_preserve_existing_user_rows` de este

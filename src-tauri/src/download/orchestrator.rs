@@ -387,6 +387,39 @@ impl DownloadOrchestrator {
             "Qobuz"
         };
 
+        // Qobuz's search endpoint requires the account's user token: without it
+        // the API answers 401 and both the exact-ISRC (step 1B) and strict
+        // metadata (step 4.5) searches would silently degrade to "no match" for
+        // every track. Resolve it once from the same SQLite source the download
+        // path uses; missing/expired credentials surface as normal no-matches
+        // instead of aborting the fallback.
+        let qobuz_token: Option<String> = if target_service == "qobuz" {
+            let token = self.qobuz.resolve_token(self.db.as_ref()).await.ok();
+            if token.is_none() {
+                debug!(
+                    "[Orchestrator] Fallback: no usable Qobuz user token available; live Qobuz searches will be skipped"
+                );
+            }
+            token
+        } else {
+            if let Some(ref db) = self.db {
+                let (creds, _) =
+                    crate::services::tidal_pipeline::resolve_and_refresh_gui_credentials(
+                        db,
+                        self.tidal.client(),
+                    )
+                    .await;
+                if let Some(c) = creds {
+                    self.tidal.set_user_token(Some(c.access_token));
+                    // La búsqueda debe consultar el catálogo del país de la
+                    // cuenta: con `US` fijo no veía lo que esa cuenta puede
+                    // reproducir.
+                    self.tidal.set_country_code(c.country_code);
+                }
+            }
+            None
+        };
+
         // 1. Exact ISRC matching
         if let Some(ref isrc) = request.isrc {
             let isrc_trimmed = isrc.trim();
@@ -443,7 +476,16 @@ impl DownloadOrchestrator {
 
                 // 1B. Query provider API
                 if target_service == "tidal" {
-                    match self.tidal.search_by_isrc(isrc_trimmed, duration_sec).await {
+                    match self
+                        .tidal
+                        .search_by_isrc_verified(
+                            isrc_trimmed,
+                            &request.track_name,
+                            &request.artist_name,
+                            duration_sec,
+                        )
+                        .await
+                    {
                         Ok(track) => {
                             info!(
                                 "[Orchestrator] ✓ Fallback matched via exact ISRC: Tidal ID {}",
@@ -464,12 +506,40 @@ impl DownloadOrchestrator {
                             {
                                 return Err(format!("AmbiguousSource: Multiple competing Tidal tracks found for ISRC {}", isrc_trimmed));
                             }
+                            if let Ok(track) = self
+                                .tidal
+                                .search_by_isrc_broad(
+                                    isrc_trimmed,
+                                    &request.track_name,
+                                    &request.artist_name,
+                                    duration_sec,
+                                )
+                                .await
+                            {
+                                info!(
+                                    "[Orchestrator] ✓ Fallback matched via exact ISRC (broad query): Tidal ID {}",
+                                    track.id
+                                );
+                                return Ok(FallbackMatch {
+                                    target_track_id: track.id,
+                                    target_service: "tidal".to_string(),
+                                    match_method: "exact_isrc".to_string(),
+                                    match_confidence: 1.0,
+                                    candidate_audio_quality: track.audio_quality,
+                                });
+                            }
                         }
                     }
                 } else if target_service == "qobuz" {
                     match self
                         .qobuz
-                        .search_by_isrc(isrc_trimmed, duration_sec, None)
+                        .search_by_isrc_verified(
+                            isrc_trimmed,
+                            &request.track_name,
+                            &request.artist_name,
+                            duration_sec,
+                            qobuz_token.as_deref(),
+                        )
                         .await
                     {
                         Ok(track) => {
@@ -502,6 +572,43 @@ impl DownloadOrchestrator {
                             {
                                 return Err(format!("AmbiguousSource: Multiple competing Qobuz tracks found for ISRC {}", isrc_trimmed));
                             }
+                            // The bare-ISRC index does not resolve every ISRC
+                            // (observed live on streamable tracks). Retry with
+                            // the artist+title query and keep only an exact
+                            // `isrc` field match: identity stays exact.
+                            if let Ok(track) = self
+                                .qobuz
+                                .search_by_isrc_broad(
+                                    isrc_trimmed,
+                                    &request.track_name,
+                                    &request.artist_name,
+                                    duration_sec,
+                                    qobuz_token.as_deref(),
+                                )
+                                .await
+                            {
+                                info!(
+                                    "[Orchestrator] ✓ Fallback matched via exact ISRC (broad query): Qobuz ID {}",
+                                    track.id
+                                );
+                                let cand_q = track
+                                    .max_bit_depth
+                                    .map(|bd| {
+                                        if bd > 16 {
+                                            "HI_RES".to_string()
+                                        } else {
+                                            "LOSSLESS".to_string()
+                                        }
+                                    })
+                                    .or_else(|| Some("LOSSLESS".to_string()));
+                                return Ok(FallbackMatch {
+                                    target_track_id: track.id,
+                                    target_service: "qobuz".to_string(),
+                                    match_method: "exact_isrc".to_string(),
+                                    match_confidence: 1.0,
+                                    candidate_audio_quality: cand_q,
+                                });
+                            }
                         }
                     }
                 }
@@ -509,6 +616,7 @@ impl DownloadOrchestrator {
         }
 
         // 2. Exact MusicBrainz Recording ID
+        let mut mb_canonical_duration_sec: Option<i32> = None;
         if let Some(ref mb_rid) = request.musicbrainz_recording_id {
             let mb_rid_trimmed = mb_rid.trim();
             if !mb_rid_trimmed.is_empty() {
@@ -546,6 +654,113 @@ impl DownloadOrchestrator {
                         }
                     } else if mb_candidates.len() > 1 {
                         return Err(format!("AmbiguousSource: Multiple competing {} tracks for MusicBrainz Recording ID {}", target_service_display, mb_rid_trimmed));
+                    }
+                }
+
+                // 2B. Query MusicBrainz recording details for sibling ISRCs of
+                // the same recording and its canonical recording length.
+                let mb_client = crate::services::musicbrainz::MusicBrainzClient::new();
+                if let Ok(detail) = mb_client.get_recording_details(mb_rid_trimmed).await {
+                    let rec_dur_sec = detail
+                        .length
+                        .map(|ms| (ms / 1000) as i32)
+                        .filter(|&d| d > 0);
+                    mb_canonical_duration_sec = rec_dur_sec;
+                    let eff_dur = rec_dur_sec.unwrap_or(duration_sec);
+                    let primary_isrc = request.isrc.as_deref().map(str::trim);
+
+                    if let Some(sibling_isrcs) = detail.isrcs {
+                        for sib in sibling_isrcs {
+                            let sib_trimmed = sib.trim();
+                            if sib_trimmed.is_empty() || Some(sib_trimmed) == primary_isrc {
+                                continue;
+                            }
+                            if target_service == "tidal" {
+                                let found = match self
+                                    .tidal
+                                    .search_by_isrc_verified(
+                                        sib_trimmed,
+                                        &request.track_name,
+                                        &request.artist_name,
+                                        eff_dur,
+                                    )
+                                    .await
+                                {
+                                    Ok(t) => Some(t),
+                                    Err(_) => self
+                                        .tidal
+                                        .search_by_isrc_broad(
+                                            sib_trimmed,
+                                            &request.track_name,
+                                            &request.artist_name,
+                                            eff_dur,
+                                        )
+                                        .await
+                                        .ok(),
+                                };
+                                if let Some(track) = found {
+                                    info!(
+                                        "[Orchestrator] ✓ Fallback matched via MusicBrainz recording sibling ISRC {}: Tidal ID {}",
+                                        sib_trimmed, track.id
+                                    );
+                                    return Ok(FallbackMatch {
+                                        target_track_id: track.id,
+                                        target_service: "tidal".to_string(),
+                                        match_method: "musicbrainz_recording_id".to_string(),
+                                        match_confidence: 0.95,
+                                        candidate_audio_quality: track.audio_quality,
+                                    });
+                                }
+                            } else if target_service == "qobuz" {
+                                let found = match self
+                                    .qobuz
+                                    .search_by_isrc_verified(
+                                        sib_trimmed,
+                                        &request.track_name,
+                                        &request.artist_name,
+                                        eff_dur,
+                                        qobuz_token.as_deref(),
+                                    )
+                                    .await
+                                {
+                                    Ok(t) => Some(t),
+                                    Err(_) => self
+                                        .qobuz
+                                        .search_by_isrc_broad(
+                                            sib_trimmed,
+                                            &request.track_name,
+                                            &request.artist_name,
+                                            eff_dur,
+                                            qobuz_token.as_deref(),
+                                        )
+                                        .await
+                                        .ok(),
+                                };
+                                if let Some(track) = found {
+                                    info!(
+                                        "[Orchestrator] ✓ Fallback matched via MusicBrainz recording sibling ISRC {}: Qobuz ID {}",
+                                        sib_trimmed, track.id
+                                    );
+                                    let cand_q = track
+                                        .max_bit_depth
+                                        .map(|bd| {
+                                            if bd > 16 {
+                                                "HI_RES".to_string()
+                                            } else {
+                                                "LOSSLESS".to_string()
+                                            }
+                                        })
+                                        .or_else(|| Some("LOSSLESS".to_string()));
+                                    return Ok(FallbackMatch {
+                                        target_track_id: track.id,
+                                        target_service: "qobuz".to_string(),
+                                        match_method: "musicbrainz_recording_id".to_string(),
+                                        match_confidence: 0.95,
+                                        candidate_audio_quality: cand_q,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -655,6 +870,147 @@ impl DownloadOrchestrator {
             }
         }
 
+        // 4.5. Strict title + artist + duration (±3s, unique) matching.
+        //
+        // Authorized only after every identity rule (ISRC / MBID / AcoustID)
+        // failed. Unlike rule 5 this MAY auto-download: the candidate must be
+        // the only catalog entry whose title, artist and real duration all
+        // match within tolerance, so a genuine 30s track like "(Archive 76)"
+        // is compared against the catalog duration, never a preview threshold.
+        debug!(
+            "[Orchestrator] Fallback Step 4.5: Strict metadata search on {} for '{}' - '{}' ({}s)",
+            target_service_display, request.track_name, request.artist_name, duration_sec
+        );
+        let mut strict_match: Option<(i64, Option<String>)> = if duration_sec <= 0 {
+            // No duration = no strict comparison possible. The authorized
+            // automatic download requires title + artist AND duration; without
+            // the duration this degrades to rule 5 (no automatic download).
+            debug!(
+                "[Orchestrator] Fallback Step 4.5 skipped: unknown duration for '{}'",
+                request.track_name
+            );
+            None
+        } else if target_service == "tidal" {
+            match self
+                .tidal
+                .search_by_metadata_strict(&request.track_name, &request.artist_name, duration_sec)
+                .await
+            {
+                Ok(track) => Some((track.id, track.audio_quality)),
+                Err(e) => {
+                    let strict_err = e.to_string();
+                    if strict_err.contains("AmbiguousSource") {
+                        return Err(format!(
+                            "AmbiguousSource: Multiple strict metadata matches on Tidal for '{}'",
+                            request.track_name
+                        ));
+                    }
+                    None
+                }
+            }
+        } else {
+            match self
+                .qobuz
+                .search_by_metadata_strict(
+                    &request.track_name,
+                    &request.artist_name,
+                    duration_sec,
+                    qobuz_token.as_deref(),
+                )
+                .await
+            {
+                Ok(track) => {
+                    let quality = track
+                        .max_bit_depth
+                        .map(|bd| {
+                            if bd > 16 {
+                                "HI_RES".to_string()
+                            } else {
+                                "LOSSLESS".to_string()
+                            }
+                        })
+                        .or_else(|| Some("LOSSLESS".to_string()));
+                    Some((track.id, quality))
+                }
+                Err(e) => {
+                    let strict_err = e.to_string();
+                    if strict_err.contains("AmbiguousSource") {
+                        return Err(format!(
+                            "AmbiguousSource: Multiple strict metadata matches on Qobuz for '{}'",
+                            request.track_name
+                        ));
+                    }
+                    None
+                }
+            }
+        };
+
+        // If the retired release's duration differed from the canonical
+        // MusicBrainz recording length (e.g. a compilation with trailing
+        // silence), retry strict matching against the canonical MB duration.
+        if strict_match.is_none() {
+            if let Some(mb_dur) = mb_canonical_duration_sec.filter(|&d| d > 0 && d != duration_sec)
+            {
+                if target_service == "tidal" {
+                    if let Ok(track) = self
+                        .tidal
+                        .search_by_metadata_strict(
+                            &request.track_name,
+                            &request.artist_name,
+                            mb_dur,
+                        )
+                        .await
+                    {
+                        strict_match = Some((track.id, track.audio_quality));
+                    }
+                } else if let Ok(track) = self
+                    .qobuz
+                    .search_by_metadata_strict(
+                        &request.track_name,
+                        &request.artist_name,
+                        mb_dur,
+                        qobuz_token.as_deref(),
+                    )
+                    .await
+                {
+                    let quality = track
+                        .max_bit_depth
+                        .map(|bd| {
+                            if bd > 16 {
+                                "HI_RES".to_string()
+                            } else {
+                                "LOSSLESS".to_string()
+                            }
+                        })
+                        .or_else(|| Some("LOSSLESS".to_string()));
+                    strict_match = Some((track.id, quality));
+                }
+            }
+        }
+
+        if let Some((target_track_id, quality)) = strict_match {
+            info!(
+                "[Orchestrator] ✓ Fallback matched via strict metadata: {} ID {}",
+                target_service_display, target_track_id
+            );
+            if let Some(canonical_id) = request.canonical_track_id {
+                self.persist_fallback_track_source(
+                    canonical_id,
+                    target_service,
+                    target_track_id,
+                    quality.as_deref(),
+                )
+                .await;
+            }
+            return Ok(FallbackMatch {
+                target_track_id,
+                target_service: target_service.to_string(),
+                match_method: "strict_metadata".to_string(),
+                match_confidence: 0.70,
+                candidate_audio_quality: quality,
+            });
+        }
+
         // 5. Title + Artist loose metadata matching check (Rule 5: NEVER automatic download)
         let has_local_metadata_match = if let Some(ref db) = self.db {
             let count: i64 = sqlx::query_scalar(
@@ -701,6 +1057,358 @@ impl DownloadOrchestrator {
             "SourceIdentityMissing: No equivalent {} source found for track '{}'",
             target_service_display, request.track_name
         ))
+    }
+
+    /// Persist a strict-metadata fallback hit into `track_sources` so later
+    /// runs resolve it from the DB instead of re-searching (and the resolver
+    /// can rank it). Best-effort: persistence failures never abort a download.
+    async fn persist_fallback_track_source(
+        &self,
+        canonical_track_id: i64,
+        service_name: &str,
+        service_track_id: i64,
+        audio_quality: Option<&str>,
+    ) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+
+        let service_id: Option<i64> =
+            match sqlx::query_scalar("SELECT id FROM services WHERE name = ? LIMIT 1")
+                .bind(service_name)
+                .fetch_optional(db)
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    debug!(
+                        "[Orchestrator] Strict-metadata source not persisted (service lookup: {})",
+                        e
+                    );
+                    return;
+                }
+            };
+        let Some(service_id) = service_id else {
+            return;
+        };
+
+        let quality = audio_quality.map(|q| q.to_ascii_uppercase());
+        let (bit_depth, sample_rate_khz): (Option<i32>, Option<f64>) = match quality.as_deref() {
+            Some("HI_RES") | Some("HIRES") | Some("HI_RES_LOSSLESS") => (Some(24), Some(96.0)),
+            Some("LOSSLESS") => (Some(16), Some(44.1)),
+            _ => (None, None),
+        };
+
+        Self::persist_live_isrc_refresh_row(
+            db,
+            canonical_track_id,
+            service_id,
+            &service_track_id.to_string(),
+            bit_depth,
+            sample_rate_khz,
+        )
+        .await;
+    }
+
+    /// RSQ-03: un refresh solo existe si el hit en vivo nombra una edición
+    /// DISTINTA de la muerta (puro para poder probarlo sin red).
+    fn refreshed_edition_is_new(attempted_track_id: &str, refreshed_track_id: &str) -> bool {
+        !refreshed_track_id.trim().is_empty() && refreshed_track_id != attempted_track_id
+    }
+
+    /// RSQ-03: persistencia best-effort de la edición refrescada.
+    ///
+    /// Upsert dirigido a `(track_id, service_id)`: a diferencia de
+    /// `INSERT OR REPLACE`, no puede borrar la fila de OTRO track a través del
+    /// índice único `(service_id, service_track_id)` (migración 0064); si el ID
+    /// refrescado ya pertenece a otra fila, el error se registra en debug y la
+    /// descarga ya completada no se toca.
+    async fn persist_live_isrc_refresh_row(
+        db: &sqlx::SqlitePool,
+        canonical_track_id: i64,
+        service_id: i64,
+        refreshed_track_id: &str,
+        bit_depth: Option<i32>,
+        sample_rate_khz: Option<f64>,
+    ) {
+        let sample_rate_hz = sample_rate_khz.map(|khz| (khz * 1000.0) as i64);
+        let quality_score = 1000
+            + bit_depth.map(|bd| (bd as i64) * 10).unwrap_or(0)
+            + sample_rate_khz
+                .map(|khz| (khz as i64).min(200))
+                .unwrap_or(0);
+        if let Err(e) = sqlx::query(
+            r#"
+            INSERT INTO track_sources
+                (track_id, service_id, service_track_id, format, bit_depth, sample_rate, quality_score, available, last_checked)
+            VALUES (?, ?, ?, 'FLAC', ?, ?, ?, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(track_id, service_id) DO UPDATE SET
+                service_track_id = excluded.service_track_id,
+                format = excluded.format,
+                bit_depth = excluded.bit_depth,
+                sample_rate = excluded.sample_rate,
+                quality_score = excluded.quality_score,
+                available = 1,
+                last_checked = CURRENT_TIMESTAMP
+            "#,
+        )
+        .bind(canonical_track_id)
+        .bind(service_id)
+        .bind(refreshed_track_id)
+        .bind(bit_depth)
+        .bind(sample_rate_hz)
+        .bind(quality_score)
+        .execute(db)
+        .await
+        {
+            debug!(
+                "[Orchestrator] RSQ-03 refreshed source not persisted ({} on service {}): {}",
+                refreshed_track_id, service_id, e
+            );
+        }
+    }
+
+    /// Refresh a dead Qobuz `service_track_id` for the same edition.
+    ///
+    /// A `track/get` 404 is a verdict about the stored id, not about the
+    /// edition: Qobuz re-issues ids when a release is re-delivered, which
+    /// leaves perfectly streamable editions unreachable behind stale rows.
+    /// Re-resolve on Qobuz itself — exact ISRC first, then the authorized
+    /// strict title+artist+duration (±3s, unique) rule — so the download stays
+    /// on the same service, edition and quality instead of crossing services
+    /// or degrading. Never returns the dead id itself.
+    async fn refresh_stale_qobuz_source(
+        &self,
+        request: &DownloadRequest,
+    ) -> Option<(i64, Option<String>)> {
+        let duration_sec = (request.duration_ms / 1000) as i32;
+        let token = match self.qobuz.resolve_token(self.db.as_ref()).await {
+            Ok(token) => token,
+            Err(_) => {
+                debug!("[Orchestrator] Stale Qobuz source refresh skipped: no usable user token");
+                return None;
+            }
+        };
+
+        let stale_id = request.service_track_id.as_deref().map(str::trim);
+        let quality_of = |max_bit_depth: Option<i32>| -> Option<String> {
+            max_bit_depth
+                .map(|bd| {
+                    if bd > 16 {
+                        "HI_RES".to_string()
+                    } else {
+                        "LOSSLESS".to_string()
+                    }
+                })
+                .or_else(|| Some("LOSSLESS".to_string()))
+        };
+
+        if let Some(isrc) = request
+            .isrc
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            match self
+                .qobuz
+                .search_by_isrc_verified(
+                    isrc,
+                    &request.track_name,
+                    &request.artist_name,
+                    duration_sec,
+                    Some(&token),
+                )
+                .await
+            {
+                Ok(track) => {
+                    let found = track.id.to_string();
+                    if stale_id
+                        .map(|old| !Self::refreshed_edition_is_new(old, &found))
+                        .unwrap_or(false)
+                    {
+                        debug!(
+                            "[Orchestrator] Stale Qobuz source refresh: ISRC search returned the same (dead) id {}",
+                            found
+                        );
+                    } else {
+                        info!(
+                            "[Orchestrator] ✓ Stale Qobuz source refreshed via exact ISRC {}: id {} -> {}",
+                            isrc,
+                            stale_id.unwrap_or("?"),
+                            found
+                        );
+                        return Some((track.id, quality_of(track.max_bit_depth)));
+                    }
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("AmbiguousSource") {
+                        warn!("[Orchestrator] Stale Qobuz source refresh: {}", msg);
+                    } else {
+                        debug!(
+                            "[Orchestrator] Stale Qobuz source refresh by ISRC failed: {}",
+                            msg
+                        );
+                    }
+                    // Same index quirk as the cross-service path: some ISRCs
+                    // only resolve through an artist+title query. An exact
+                    // `isrc` field match keeps the identity exact.
+                    if let Ok(track) = self
+                        .qobuz
+                        .search_by_isrc_broad(
+                            isrc,
+                            &request.track_name,
+                            &request.artist_name,
+                            duration_sec,
+                            Some(&token),
+                        )
+                        .await
+                    {
+                        let found = track.id.to_string();
+                        if Some(found.as_str()) != stale_id {
+                            info!(
+                                "[Orchestrator] ✓ Stale Qobuz source refreshed via exact ISRC (broad query) {}: id {} -> {}",
+                                isrc,
+                                stale_id.unwrap_or("?"),
+                                found
+                            );
+                            return Some((track.id, quality_of(track.max_bit_depth)));
+                        }
+                    }
+                }
+            }
+        }
+
+        if duration_sec > 0 {
+            match self
+                .qobuz
+                .search_by_metadata_strict(
+                    &request.track_name,
+                    &request.artist_name,
+                    duration_sec,
+                    Some(&token),
+                )
+                .await
+            {
+                Ok(track) => {
+                    let found = track.id.to_string();
+                    if Some(found.as_str()) != stale_id {
+                        info!(
+                            "[Orchestrator] ✓ Stale Qobuz source refreshed via strict metadata: id {} -> {}",
+                            stale_id.unwrap_or("?"),
+                            found
+                        );
+                        return Some((track.id, quality_of(track.max_bit_depth)));
+                    }
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("AmbiguousSource") {
+                        warn!("[Orchestrator] Stale Qobuz source refresh: {}", msg);
+                    } else {
+                        debug!(
+                            "[Orchestrator] Stale Qobuz source refresh by strict metadata failed: {}",
+                            msg
+                        );
+                    }
+                }
+            }
+        }
+
+        // 3. MusicBrainz recording identity: a retired Qobuz compilation often
+        // has a dead ISRC or a padded duration while its MusicBrainz recording
+        // lists live sibling ISRCs (e.g. GBAJE6800198 -> GBAJE6800413 for
+        // "Israelites") and the canonical studio duration (e.g. 175s vs 191s
+        // for "(Your Love Keeps Lifting Me) Higher and Higher").
+        if let Some(mb_rid) = request
+            .musicbrainz_recording_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let mb_client = crate::services::musicbrainz::MusicBrainzClient::new();
+            if let Ok(detail) = mb_client.get_recording_details(mb_rid).await {
+                let mb_dur_sec = detail
+                    .length
+                    .map(|ms| (ms / 1000) as i32)
+                    .filter(|&d| d > 0)
+                    .unwrap_or(duration_sec);
+                let primary_isrc = request.isrc.as_deref().map(str::trim);
+
+                if let Some(sibling_isrcs) = detail.isrcs {
+                    for sib in sibling_isrcs {
+                        let sib_trimmed = sib.trim();
+                        if sib_trimmed.is_empty() || Some(sib_trimmed) == primary_isrc {
+                            continue;
+                        }
+                        let candidate = match self
+                            .qobuz
+                            .search_by_isrc_verified(
+                                sib_trimmed,
+                                &request.track_name,
+                                &request.artist_name,
+                                mb_dur_sec,
+                                Some(&token),
+                            )
+                            .await
+                        {
+                            Ok(t) => Some(t),
+                            Err(_) => self
+                                .qobuz
+                                .search_by_isrc_broad(
+                                    sib_trimmed,
+                                    &request.track_name,
+                                    &request.artist_name,
+                                    mb_dur_sec,
+                                    Some(&token),
+                                )
+                                .await
+                                .ok(),
+                        };
+                        if let Some(track) = candidate {
+                            let found = track.id.to_string();
+                            if Some(found.as_str()) != stale_id {
+                                info!(
+                                    "[Orchestrator] ✓ Stale Qobuz source refreshed via MusicBrainz recording {} sibling ISRC {}: id {} -> {}",
+                                    mb_rid,
+                                    sib_trimmed,
+                                    stale_id.unwrap_or("?"),
+                                    found
+                                );
+                                return Some((track.id, quality_of(track.max_bit_depth)));
+                            }
+                        }
+                    }
+                }
+
+                if mb_dur_sec > 0 && mb_dur_sec != duration_sec {
+                    if let Ok(track) = self
+                        .qobuz
+                        .search_by_metadata_strict(
+                            &request.track_name,
+                            &request.artist_name,
+                            mb_dur_sec,
+                            Some(&token),
+                        )
+                        .await
+                    {
+                        let found = track.id.to_string();
+                        if Some(found.as_str()) != stale_id {
+                            info!(
+                                "[Orchestrator] ✓ Stale Qobuz source refreshed via MusicBrainz recording {} canonical duration ({}s): id {} -> {}",
+                                mb_rid,
+                                mb_dur_sec,
+                                stale_id.unwrap_or("?"),
+                                found
+                            );
+                            return Some((track.id, quality_of(track.max_bit_depth)));
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Download a track with cooperative cancellation and controlled fallback support
@@ -1103,6 +1811,68 @@ impl DownloadOrchestrator {
                 return Err(err);
             }
 
+            // 2.5 Stale primary source: before any diagnosis that ends the
+            // attempt (allow_fallback=false) or crosses services, try to
+            // refresh the SAME Qobuz edition under a new id. A 404 is a verdict
+            // about the stored id, not about the edition or the account; Qobuz
+            // re-issues ids, which leaves streamable editions unreachable
+            // behind stale rows. Same service, same edition, same quality: this
+            // is not a fallback.
+            if is_stale {
+                if let Some((fresh_id, fresh_quality)) =
+                    self.refresh_stale_qobuz_source(request).await
+                {
+                    let mut refresh_req = request.clone();
+                    refresh_req.service_name = Some("qobuz".to_string());
+                    refresh_req.service_track_id = Some(fresh_id.to_string());
+                    // ED-04: the fresh id was never authenticated by the plan;
+                    // re-resolve instead of tripping plan validation.
+                    refresh_req.resolution_plan = None;
+                    if is_lossless_or_hires {
+                        refresh_req.allow_fallback = false;
+                    }
+                    match Box::pin(self.qobuz.download_track(&refresh_req, self.db.as_ref())).await
+                    {
+                        Ok(mut res) => {
+                            res.origin_service = Some("qobuz".to_string());
+                            res.origin_service_track_id = request.service_track_id.clone();
+                            res.effective_service = Some("qobuz".to_string());
+                            res.effective_service_track_id = Some(fresh_id.to_string());
+                            res.fallback_reason = Some(
+                                "Qobuz source id was stale; refreshed on the same service"
+                                    .to_string(),
+                            );
+                            res.match_method = Some("stale_source_refresh".to_string());
+                            res.match_confidence = Some(1.0);
+                            if let Some(canonical_id) = request.canonical_track_id {
+                                self.persist_fallback_track_source(
+                                    canonical_id,
+                                    "qobuz",
+                                    fresh_id,
+                                    fresh_quality.as_deref(),
+                                )
+                                .await;
+                            }
+                            Self::reconcile_physical_audio_quality(&mut res, request);
+                            info!(
+                                "[Orchestrator] Download complete via refreshed Qobuz source: {} (id {} -> {})",
+                                res.file_path,
+                                request.service_track_id.as_deref().unwrap_or("?"),
+                                fresh_id
+                            );
+                            PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+                            return Ok(res);
+                        }
+                        Err(refresh_err) => {
+                            warn!(
+                                "[Orchestrator] Refreshed Qobuz source {} failed as well: {}",
+                                fresh_id, refresh_err
+                            );
+                        }
+                    }
+                }
+            }
+
             if (is_stale || is_rejected_q) && !request.allow_fallback {
                 let fail_msg = if is_rejected_q {
                     "RejectedQuality: Requested quality not available on Qobuz"
@@ -1193,6 +1963,11 @@ impl DownloadOrchestrator {
                             if is_lossless_or_hires {
                                 tidal_req.allow_fallback = false;
                             }
+                            // ED-04: the plan authenticated a Qobuz edition; a
+                            // cross-service request must re-resolve, never
+                            // carry the old execution lock (it produced
+                            // "Tidal request differs from resolved plan").
+                            tidal_req.resolution_plan = None;
                             match Box::pin(self.tidal.download_track(&tidal_req, self.db.as_ref()))
                                 .await
                             {
@@ -1265,6 +2040,9 @@ impl DownloadOrchestrator {
                             let mut qobuz_320_req = request.clone();
                             qobuz_320_req.quality = "HIGH".to_string();
                             qobuz_320_req.allow_fallback = true;
+                            // ED-04: quality differs from the authenticated
+                            // plan; re-resolve instead of failing validation.
+                            qobuz_320_req.resolution_plan = None;
                             if let Ok(mut qobuz_res) = self
                                 .qobuz
                                 .download_track(&qobuz_320_req, self.db.as_ref())
@@ -1308,6 +2086,9 @@ impl DownloadOrchestrator {
                             Some(fallback_match.target_track_id.to_string());
                         tidal_320_req.quality = "HIGH".to_string();
                         tidal_320_req.allow_fallback = true;
+                        // ED-04: plan was resolved for Qobuz/lossless; the
+                        // 320 cross-service request must re-resolve.
+                        tidal_320_req.resolution_plan = None;
                         let mut tidal_res = match Box::pin(
                             self.tidal.download_track(&tidal_320_req, self.db.as_ref()),
                         )
@@ -1360,6 +2141,9 @@ impl DownloadOrchestrator {
                             let mut qobuz_320_req = request.clone();
                             qobuz_320_req.quality = "HIGH".to_string();
                             qobuz_320_req.allow_fallback = true;
+                            // ED-04: quality differs from the authenticated
+                            // plan; re-resolve instead of failing validation.
+                            qobuz_320_req.resolution_plan = None;
                             if let Ok(mut qobuz_res) = self
                                 .qobuz
                                 .download_track(&qobuz_320_req, self.db.as_ref())
@@ -1381,8 +2165,14 @@ impl DownloadOrchestrator {
                                 return Ok(qobuz_res);
                             }
                         }
-                        PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &fallback_err));
-                        Err(anyhow!("{}", fallback_err))
+                        // Keep BOTH diagnoses: the primary failure that forced
+                        // the service switch and the fallback resolution error.
+                        let combined = format!(
+                            "{}; cross-service fallback failed: {}",
+                            err_msg, fallback_err
+                        );
+                        PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &combined));
+                        Err(anyhow!("{}", combined))
                     }
                 }
             } else {
@@ -1746,6 +2536,10 @@ impl DownloadOrchestrator {
                         if is_lossless_or_hires {
                             qobuz_req.allow_fallback = false;
                         }
+                        // ED-04: the plan authenticated a Tidal edition; a
+                        // cross-service request must re-resolve, never carry
+                        // the old execution lock.
+                        qobuz_req.resolution_plan = None;
                         if let Ok(mut qobuz_res) = self
                             .qobuz
                             .download_track(&qobuz_req, self.db.as_ref())
@@ -1780,6 +2574,9 @@ impl DownloadOrchestrator {
                     let mut tidal_320_req = request.clone();
                     tidal_320_req.quality = "HIGH".to_string();
                     tidal_320_req.allow_fallback = true;
+                    // ED-04: quality differs from the authenticated plan; the
+                    // 320 request must re-resolve instead of failing validation.
+                    tidal_320_req.resolution_plan = None;
                     if let Ok(mut tidal_res) =
                         Box::pin(self.tidal.download_track(&tidal_320_req, self.db.as_ref())).await
                     {
@@ -1799,6 +2596,9 @@ impl DownloadOrchestrator {
                         Some(fallback_match.target_track_id.to_string());
                     qobuz_320_req.quality = "HIGH".to_string();
                     qobuz_320_req.allow_fallback = true;
+                    // ED-04: plan was resolved for Tidal/lossless; the 320
+                    // cross-service request must re-resolve.
+                    qobuz_320_req.resolution_plan = None;
                     let mut qobuz_res = self
                         .qobuz
                         .download_track(&qobuz_320_req, self.db.as_ref())
@@ -1822,21 +2622,40 @@ impl DownloadOrchestrator {
                         let mut tidal_320_req = request.clone();
                         tidal_320_req.quality = "HIGH".to_string();
                         tidal_320_req.allow_fallback = true;
-                        if let Ok(mut tidal_res) =
-                            Box::pin(self.tidal.download_track(&tidal_320_req, self.db.as_ref()))
-                                .await
+                        // ED-04: the plan was resolved for lossless; a 320
+                        // request that still carries it is rejected by the
+                        // adapter before any network call, so it must
+                        // re-resolve like every other 320 rung.
+                        tidal_320_req.resolution_plan = None;
+                        match Box::pin(self.tidal.download_track(&tidal_320_req, self.db.as_ref()))
+                            .await
                         {
-                            tidal_res.origin_service = Some("tidal".to_string());
-                            tidal_res.effective_service = Some("tidal".to_string());
-                            tidal_res.fallback_reason =
-                                Some("Degraded to 320 kbps on Tidal".to_string());
-                            Self::reconcile_physical_audio_quality(&mut tidal_res, request);
-                            PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
-                            return Ok(tidal_res);
+                            Ok(mut tidal_res) => {
+                                tidal_res.origin_service = Some("tidal".to_string());
+                                tidal_res.effective_service = Some("tidal".to_string());
+                                tidal_res.fallback_reason =
+                                    Some("Degraded to 320 kbps on Tidal".to_string());
+                                Self::reconcile_physical_audio_quality(&mut tidal_res, request);
+                                PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
+                                return Ok(tidal_res);
+                            }
+                            // Keep the diagnosis visible: an adapter-level
+                            // rejection used to vanish here and the row only
+                            // showed the combined cross-service error.
+                            Err(tidal_err) => warn!(
+                                "[Orchestrator] Tidal 320 kbps fallback failed: {}",
+                                tidal_err
+                            ),
                         }
                     }
-                    PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &fallback_err));
-                    Err(anyhow!("{}", fallback_err))
+                    // Keep BOTH diagnoses: the Tidal failure that forced the
+                    // cross-service attempt and the Qobuz resolution error.
+                    let combined = format!(
+                        "{}; cross-service fallback failed: {}",
+                        err_msg, fallback_err
+                    );
+                    PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &combined));
+                    Err(anyhow!("{}", combined))
                 }
             }
         })
@@ -2224,6 +3043,130 @@ lazy_static::lazy_static! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RSQ-03: a refresh only exists when the live hit names a different
+    /// edition than the dead identifier (pure, no network).
+    #[test]
+    fn rsq03_refreshed_edition_requires_a_different_identifier() {
+        assert!(DownloadOrchestrator::refreshed_edition_is_new("100", "200"));
+        assert!(!DownloadOrchestrator::refreshed_edition_is_new(
+            "100", "100"
+        ));
+        assert!(!DownloadOrchestrator::refreshed_edition_is_new(
+            "100", "   "
+        ));
+    }
+
+    /// RSQ-03: the targeted upsert updates the dead row in place and never
+    /// steals/deletes another track's row when the refreshed ID collides with
+    /// the `(service_id, service_track_id)` unique index (migration 0064).
+    #[tokio::test]
+    async fn rsq03_refresh_upsert_updates_in_place_and_survives_collisions() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query(
+            "INSERT OR IGNORE INTO services (id, name, supports_download, max_quality) VALUES (2, 'qobuz', 1, 'hires')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let track: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title) VALUES ('RSQ dead edition') RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let other: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title) VALUES ('RSQ other track') RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) VALUES (?, 2, 'dead-id', 'FLAC', 1)",
+        )
+        .bind(track)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        DownloadOrchestrator::persist_live_isrc_refresh_row(
+            &db,
+            track,
+            2,
+            "fresh-id",
+            Some(24),
+            Some(96.0),
+        )
+        .await;
+
+        let (stid, bd, sr, q): (String, Option<i64>, Option<i64>, Option<i64>) =
+            sqlx::query_as(
+                "SELECT service_track_id, bit_depth, sample_rate, quality_score FROM track_sources WHERE track_id = ? AND service_id = 2",
+            )
+            .bind(track)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(stid, "fresh-id");
+        assert_eq!(bd, Some(24));
+        assert_eq!(sr, Some(96000));
+        assert_eq!(q, Some(1336)); // 1000 + 24*10 + min(96_000/1000, 200)
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_sources WHERE track_id = ?")
+            .bind(track)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1, "refresh must update the row, never duplicate it");
+
+        // Collision: the refreshed ID already belongs to ANOTHER track.
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id, format, available) VALUES (?, 2, 'other-fresh', 'FLAC', 1)",
+        )
+        .bind(other)
+        .execute(&db)
+        .await
+        .unwrap();
+        DownloadOrchestrator::persist_live_isrc_refresh_row(
+            &db,
+            track,
+            2,
+            "other-fresh",
+            Some(16),
+            Some(44.1),
+        )
+        .await;
+
+        let (track_stid,): (String,) = sqlx::query_as(
+            "SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = 2",
+        )
+        .bind(track)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            track_stid, "fresh-id",
+            "a colliding refresh must not touch the row it could not claim"
+        );
+        let (other_stid,): (String,) = sqlx::query_as(
+            "SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = 2",
+        )
+        .bind(other)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            other_stid, "other-fresh",
+            "another track's row must never be stolen or deleted"
+        );
+    }
 
     // Synthetic catalogue only: no downloader, keyring, profile, or network.
     #[tokio::test]

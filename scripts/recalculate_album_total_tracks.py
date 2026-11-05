@@ -126,9 +126,9 @@ def install_recurrence_triggers(
     cur: sqlite3.Cursor, has_declared: bool = False, has_local: bool = False
 ) -> None:
     print("[TASK-138] Installing recurrence-prevention SQLite triggers...")
-    # Con las columnas de BD-5 el trigger replica la migracion 0088: el
-    # recuento va a `local_track_count` y `total_tracks` respeta el total
-    # declarado. Sin ellas se instala la variante legacy.
+    # With the BD-5 columns the trigger replicates migration 0088: the count
+    # goes to `local_track_count` and `total_tracks` respects the declared
+    # total. Without them the legacy variant is installed.
     local_clause = (
         "SET local_track_count = (SELECT COUNT(*) FROM tracks WHERE tracks.album_id = {ref}),\n"
         "                total_tracks = CASE WHEN declared_total_tracks > 0\n"
@@ -222,8 +222,9 @@ def run_recalculation(
     # 3. Schema analysis
     has_is_stub = column_exists(cur, "albums", "is_stub")
     stub_filter = "(is_stub != 1 OR is_stub IS NULL)" if has_is_stub else "1=1"
-    # BD-5 (migration 0088): un album con total declarado tiene autoridad sobre
-    # `total_tracks`; divergir de COUNT(*) es lo esperado, no un fallo que Repair.
+    # BD-5 (migration 0088): an album with a declared total is authoritative
+    # over `total_tracks`; diverging from COUNT(*) is expected, not a failure
+    # that Repair must fix.
     has_declared = column_exists(cur, "albums", "declared_total_tracks")
     has_local = column_exists(cur, "albums", "local_track_count")
     declared_filter = "COALESCE(declared_total_tracks, 0) <= 0" if has_declared else "1=1"

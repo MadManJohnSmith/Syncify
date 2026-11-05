@@ -14,7 +14,7 @@
 
 ## 1. Verificación previa y análisis de falsos positivos
 
-Siguiendo el plan v2 (`docs/PLAN-Correccion-168.md`), la auditoría de incidencias (`docs/Errores-Pruebas-2026-10-08.md`) y las reglas transversales R1–R5, se inspeccionó el código antes de actuar:
+Siguiendo el plan v2 (`docs/historico/PLAN-Correccion-168.md`), la auditoría de incidencias (`docs/historico/Errores-Pruebas-2026-10-08.md`) y las reglas transversales R1–R5, se inspeccionó el código antes de actuar:
 
 1. **G-02 — Tema por defecto pasa a ser Tinta:**
    - *Evidencia en código:* En `ui/index.html:13` el script anti-FOUC tenía `"camaleon"` como fallback ante valores nulos o desconocidos: `document.documentElement.dataset.theme = validos.indexOf(t) >= 0 ? t : "camaleon"`. En `ui/src/composables/useTheme.ts:24`, `readInitial()` retornaba `"camaleon"`.

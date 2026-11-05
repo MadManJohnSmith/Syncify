@@ -17,7 +17,8 @@ import {
     getFavoritesTracks,
     syncFavorites,
     normalizeQualityPreference,
-    syncLocalLibrary
+    syncLocalLibrary,
+    getTrackMetadata
 } from '@/api/library';
 import { resetMocks, mockInvoke } from '../setup';
 
@@ -466,6 +467,60 @@ describe('libraryApi', () => {
             expect(res.success).toBe(false);
             expect(res.total_scanned).toBe(0);
             expect(res.errors).toContain('Directory not found');
+        });
+    });
+
+    describe('getTrackMetadata', () => {
+        it('maps the camelCase wire format of TrackMetadata', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'get_track_metadata') {
+                    return {
+                        trackId: 5266,
+                        title: '#icanteven',
+                        artistName: 'Unknown Artist',
+                        artistId: 12,
+                        albumName: 'Some Album',
+                        albumId: 34,
+                        durationMs: 229773,
+                        trackNumber: 1,
+                        discNumber: 1,
+                        isrc: 'USUM71700001',
+                        explicit: false,
+                        genre: 'Pop',
+                        bpm: 120,
+                        musicalKey: 'C#',
+                        releaseYear: 2017,
+                        musicbrainzId: 'mbid',
+                        coverArtUrl: 'https://example.test/cover.jpg',
+                        filePath: '/music/track.flac',
+                        sources: [{ service: 'qobuz', available: true }],
+                    };
+                }
+                return null;
+            });
+
+            const meta = await getTrackMetadata(5266);
+
+            expect(meta.track_id).toBe(5266);
+            expect(meta.artist_name).toBe('Unknown Artist');
+            expect(meta.album_name).toBe('Some Album');
+            expect(meta.duration_ms).toBe(229773);
+            expect(meta.cover_art_url).toBe('https://example.test/cover.jpg');
+            expect(meta.file_path).toBe('/music/track.flac');
+            expect(meta.musical_key).toBe('C#');
+            expect(meta.release_year).toBe(2017);
+            expect(meta.explicit).toBe(false);
+            expect(meta.sources).toHaveLength(1);
+        });
+
+        it('still accepts snake_case payloads', async () => {
+            mockInvoke(() => ({ track_id: 7, title: 'T', file_path: '/x.flac' }));
+
+            const meta = await getTrackMetadata(7);
+
+            expect(meta.track_id).toBe(7);
+            expect(meta.title).toBe('T');
+            expect(meta.file_path).toBe('/x.flac');
         });
     });
 });

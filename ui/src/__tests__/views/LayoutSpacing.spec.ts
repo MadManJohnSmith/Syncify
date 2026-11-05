@@ -59,7 +59,7 @@ describe('TASK-18: Footer Layout Collision and Dynamic Spacing', () => {
       await flushPromises()
 
       const sidebar = wrapper.find('[data-testid="nav-drawer"]')
-      const nav = sidebar.find('nav[aria-label="Vistas"]')
+      const nav = sidebar.find('nav[aria-label="Views"]')
       const openPlayer = sidebar.find('[data-testid="nav-fullscreen-player"]')
       expect(openPlayer.exists()).toBe(true)
       expect(nav.exists()).toBe(true)

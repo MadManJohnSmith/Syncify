@@ -33,6 +33,11 @@
         </button>
       </div>
 
+      <!-- Ediciones (ED-04b): apariciones registradas, solo lectura -->
+      <div v-if="track?.id" class="px-6 pt-4">
+        <EdicionesDePista :track-id="track.id" />
+      </div>
+
       <!-- Form Content -->
       <form @submit.prevent="saveMetadata" class="flex-1 overflow-y-auto p-6 space-y-4">
         
@@ -154,6 +159,7 @@
 </template>
 
 <script setup lang="ts">
+import EdicionesDePista from './EdicionesDePista.vue'
 import { ref, watch } from 'vue';
 import { metadataApi } from '@/api/metadata';
 import type { LibraryTrack } from '@/api/types';

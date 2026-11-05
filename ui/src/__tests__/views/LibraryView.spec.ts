@@ -668,7 +668,7 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
             if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
-            if (cmd === 'resolve_playback_source') return { track_id: 301, file_path: '/lib/301.flac', format: 'FLAC' };
+            if (cmd === 'player_load_track') return { seq: 1, duration_sec: 180, stream: null };
             if (cmd === 'add_to_queue') return 1;
             return null;
         });
@@ -699,7 +699,7 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
             if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
-            if (cmd === 'resolve_playback_source') return { track_id: 401, file_path: '/lib/401.flac', format: 'FLAC' };
+            if (cmd === 'player_load_track') return { seq: 1, duration_sec: 180, stream: null };
             return null;
         });
 
@@ -717,9 +717,9 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         await playBtn!.trigger('click');
         await flushPromises();
 
-        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        const call = invokeCalls.find(c => c.cmd === 'player_load_track');
         expect(call).toBeDefined();
-        expect(call?.args).toEqual({ trackId: 401 });
+        expect(call?.args).toEqual({ trackId: 401, autoplay: true, volume: 1 });
     });
 
     it('context menu "Play Now" starts real playback of the track', async () => {
@@ -728,9 +728,9 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         menuButton(menu, 'Play Now').dispatchEvent(new MouseEvent('click', { bubbles: true }));
         await flushPromises();
 
-        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        const call = invokeCalls.find(c => c.cmd === 'player_load_track');
         expect(call).toBeDefined();
-        expect(call?.args).toEqual({ trackId: 301 });
+        expect(call?.args).toEqual({ trackId: 301, autoplay: true, volume: 1 });
     });
 
     it('context menu "Play Next" queues the track in the player', async () => {
@@ -740,9 +740,9 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         await flushPromises();
 
         // Idle player: the queue action starts the track right away.
-        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        const call = invokeCalls.find(c => c.cmd === 'player_load_track');
         expect(call).toBeDefined();
-        expect(call?.args).toEqual({ trackId: 301 });
+        expect(call?.args).toEqual({ trackId: 301, autoplay: true, volume: 1 });
     });
 
     it('context menu "Add to Downloads" enqueues the track for download (fase 1 desambigua la etiqueta)', async () => {
@@ -763,9 +763,9 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         await flushPromises();
 
         // Player parado: la acción de cola de reproducción arranca la pista.
-        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        const call = invokeCalls.find(c => c.cmd === 'player_load_track');
         expect(call).toBeDefined();
-        expect(call?.args).toEqual({ trackId: 301 });
+        expect(call?.args).toEqual({ trackId: 301, autoplay: true, volume: 1 });
     });
 
     it('Space with the context menu open and an idle player starts that track', async () => {
@@ -776,23 +776,27 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         window.dispatchEvent(evt);
         await flushPromises();
 
-        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        const call = invokeCalls.find(c => c.cmd === 'player_load_track');
         expect(call).toBeDefined();
-        expect(call?.args).toEqual({ trackId: 301 });
+        expect(call?.args).toEqual({ trackId: 301, autoplay: true, volume: 1 });
         expect(preventSpy).toHaveBeenCalled();
     });
 
     it('Space toggles playback of the loaded track without resolving a new source', async () => {
         const { invokeCalls } = await mountWithTrack();
 
-        const playSpy = window.HTMLMediaElement.prototype.play as unknown as ReturnType<typeof vi.fn>;
-        const firstPlayCalls = playSpy.mock.calls.length;
+        // Primer Space: reproductor ocioso con menú abierto → arranca la pista.
         window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', cancelable: true }));
         await flushPromises();
 
-        // Same source resolved again? No — toggle only touches the audio element.
-        expect(invokeCalls.filter(c => c.cmd === 'resolve_playback_source').length).toBe(1);
-        expect(playSpy.mock.calls.length).toBeGreaterThan(firstPlayCalls);
+        expect(invokeCalls.filter(c => c.cmd === 'player_load_track').length).toBe(1);
+
+        // Segundo Space: pausa del motor, sin resolver la fuente otra vez.
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', cancelable: true }));
+        await flushPromises();
+
+        expect(invokeCalls.filter(c => c.cmd === 'player_load_track').length).toBe(1);
+        expect(invokeCalls.some(c => c.cmd === 'player_pause')).toBe(true);
     });
 
     it('Q adds the context-menu track to the download queue', async () => {
@@ -812,9 +816,9 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
         await flushPromises();
 
-        const call = invokeCalls.find(c => c.cmd === 'resolve_playback_source');
+        const call = invokeCalls.find(c => c.cmd === 'player_load_track');
         expect(call).toBeDefined();
-        expect(call?.args).toEqual({ trackId: 301 });
+        expect(call?.args).toEqual({ trackId: 301, autoplay: true, volume: 1 });
     });
 });
 
@@ -1213,7 +1217,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
             if (cmd === 'get_library') return { tracks: [], total: 0, offset: 0, limit: 100, has_more: false };
             if (cmd === 'get_queue_stats') return { total: 10, queued: 4, downloading: 2, completed: 3, failed: 1, paused: 0 };
             if (cmd === 'get_worker_status') return { running: true, paused: false, active_downloads: 2, max_concurrent: 4 };
-            if (cmd === 'set_max_concurrency') return null;
+            if (cmd === 'set_max_concurrent_downloads') return 6;
             return null;
         });
 
@@ -1242,9 +1246,10 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         await btn6!.trigger('click');
         await flushPromises();
 
-        const setConcurrencyCall = invokeCalls.find(c => c.cmd === 'set_max_concurrency');
+        // El contrato real del backend: set_max_concurrent_downloads(max: usize)
+        const setConcurrencyCall = invokeCalls.find(c => c.cmd === 'set_max_concurrent_downloads');
         expect(setConcurrencyCall).toBeDefined();
-        expect(setConcurrencyCall?.args).toEqual({ maxConcurrent: 6 });
+        expect(setConcurrencyCall?.args).toEqual({ max: 6 });
 
         // 3. Queue reconciliation strip toggling
         const toggleBtn = header.find('button[title*="Toggle queue reconciliation"]');
@@ -1255,7 +1260,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         const strip = wrapper.find('.reconciliation-strip');
         expect(strip.exists()).toBe(true);
         expect(strip.text()).toContain('Queue Reconciliation');
-        expect(strip.text()).toContain('Elegibles:');
-        expect(strip.text()).toContain('Pendientes:');
+        expect(strip.text()).toContain('Eligible:');
+        expect(strip.text()).toContain('Pending:');
     });
 });

@@ -25,11 +25,12 @@
 
 <script setup lang="ts">
 /**
- * Portada reutilizable de pista/álbum (R14).
+ * Reusable track/album cover art (R14).
  *
- * Un solo sitio decide cómo se ve una carátula: si hay URL se pinta, y si no
- * —o si la URL existe pero el fichero ya no está en disco— cae al gradiente
- * determinista de la pista. Las vistas solo pasan `src`, `alt` y el tamaño.
+ * A single place decides how a cover looks: if there is a URL it is rendered,
+ * and if not —or if the URL exists but the file is no longer on disk— it falls
+ * back to the track's deterministic gradient. Views only pass `src`, `alt` and
+ * the size.
  */
 import { computed, ref, watch } from 'vue'
 import { getArtGradient } from '@/utils/artGradient'
@@ -37,15 +38,15 @@ import { getArtGradient } from '@/utils/artGradient'
 const props = withDefaults(defineProps<{
     src?: string | null
     alt?: string
-    /** Id del elemento: fija el gradiente de reserva. */
+    /** Element id: fixes the fallback gradient. */
     itemId?: number | null
-    /** Tamaño del hueco en px (ancho y alto). */
+    /** Slot size in px (width and height). */
     size?: number
-    /** Clases de Tailwind que fijan el tamaño; ganan sobre `size`. */
+    /** Tailwind classes that set the size; they win over `size`. */
     sizeClass?: string
-    /** Redondeo; por defecto `rounded-md` como el resto de la lista. */
+    /** Rounding; `rounded-md` by default like the rest of the list. */
     rounded?: string
-    /** Icono Material mostrado mientras no hay imagen. */
+    /** Material icon shown while there is no image. */
     icon?: string
 }>(), {
     src: null,
@@ -59,8 +60,8 @@ const props = withDefaults(defineProps<{
 
 const brokenSrc = ref(false)
 
-// Una URL nueva merece un intento nuevo: sin esto, reutilizar la fila tras
-// corregir la carátula dejaría el gradiente pegado para siempre.
+// A new URL deserves a fresh attempt: without this, reusing the row after
+// fixing the cover art would leave the gradient stuck forever.
 watch(() => props.src, () => { brokenSrc.value = false })
 
 const showImage = computed(() => Boolean(props.src) && !brokenSrc.value)

@@ -81,9 +81,9 @@
                 @change="handleQualityChange(pref.service_name, getEventValue($event), pref.preferred_format)"
                 class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary outline-none transition-all"
               >
-                <!-- AQ-05: las opciones vienen de services.max_quality vía
-                     get_available_qualities_for_service, no de una lista fija:
-                     así no se puede pedir a un servicio más de lo que ofrece. -->
+                <!-- AQ-05: options come from services.max_quality via
+                     get_available_qualities_for_service, not from a fixed list:
+                     this way a service can never be asked for more than it offers. -->
                 <option
                   v-for="q in availableQualities[pref.service_name] ?? [{ value: pref.max_quality, label: QUALITY_LABELS[pref.max_quality] ?? pref.max_quality }]"
                   :key="q.value"
@@ -127,7 +127,7 @@ const downloadSettings = useDownloadSettings()
 // Global download quality ceiling (AQ-01, FS-02)
 const globalCeiling = ref<GlobalMaxQuality>('any')
 
-// AQ-05: calidades que cada servicio declara en services.max_quality.
+// AQ-05: qualities each service declares in services.max_quality.
 const availableQualities = ref<Record<string, { value: string; label: string }[]>>({})
 
 const QUALITY_LABELS: Record<string, string> = {
@@ -152,7 +152,7 @@ async function loadAvailableQualities(serviceNames: string[]) {
           }))
         }
       } catch {
-        // Sin dato del backend: se queda con la lista completa.
+        // No backend data: falls back to the full list.
       }
     })
   )
@@ -165,7 +165,7 @@ onMounted(async () => {
     await downloadSettings.loadSettings()
   }
   globalCeiling.value = await getGlobalMaxQuality().catch(() => 'any' as GlobalMaxQuality)
-  // AQ-05: limitar cada selector a lo que el servicio realmente ofrece.
+  // AQ-05: limit each selector to what the service actually offers.
   await loadAvailableQualities(
     downloadSettings.qualityPreferences.value.map(p => p.service_name)
   )
