@@ -139,8 +139,9 @@ qué sigue abierto solo en ese fichero:
   DSC-, DL-SVC-, MF-…).
 - `perf-probe-2026-10-12.md` y `perf-run-2026-10-12.md`: mediciones de
   rendimiento backend (el índice de expresión sobre ISRC sigue sin hacerse).
-- `RELEASE_NOTES_v0.6.0.md` y `RELEASE_NOTES_v0.6.1.md`: notas de las releases
-  etiquetadas `v0.6.0` y `v0.6.1`.
+- `RELEASE_NOTES_v0.6.0.md`, `RELEASE_NOTES_v0.6.1.md` y
+  `RELEASE_NOTES_v0.6.2.md`: notas de las releases etiquetadas `v0.6.0`,
+  `v0.6.1` y `v0.6.2`.
 
 ## Espacios de identificadores
 
