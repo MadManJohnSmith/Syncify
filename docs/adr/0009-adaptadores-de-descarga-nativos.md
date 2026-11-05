@@ -4,7 +4,7 @@
 **Origen:** ronda de grilling del flujo de descargas. Amplía el alcance del ADR-0005:
 «todos los servicios» significa todos los que declaran descarga, con adaptador nativo
 en Rust.
-**Spec:** pendiente · **Tickets:** pendientes.
+**Spec:** #111 · **Tickets:** #112–#128.
 
 ## Contexto
 
@@ -25,6 +25,13 @@ La beta necesita descargar cualquier pista de la biblioteca, no solo las que tie
 fuente Qobuz o Tidal. El propietario decidió ampliar los destinos y portar los puentes
 Python a Rust, sin dejar dos implementaciones vivas.
 
+El orquestador, sin embargo, trata Deezer y SoundCloud como *catalog-only*
+(`orchestrator.rs:2824-2833`) mientras la cola filtra por `supports_download = 1`
+(`queue.rs:1292-1300`): la capacidad declarada y la real noo coinciden. El puerto Python
+tampoco es una base fiable: la ruta SoundCloud de `download_bridge` no llama
+`authenticate()` y falla con `session=None`; Deezer no tiene tests de descarga. Ambos se
+usan como especificación, no como comportamiento correcto que copiar.
+
 ## Decisión
 
 - Los destinos de descarga de beta son **Qobuz, Tidal, Deezer, SoundCloud y Amazon**,
@@ -40,6 +47,13 @@ Python a Rust, sin dejar dos implementaciones vivas.
   (formato, bit depth, sample rate, duración) manda sobre lo anunciado.
 - La preferencia de destino del job ordena; no encierra. Si el destino preferido no
   puede, se pasa al siguiente según evidencia (ADR-0005).
+- El piso de bitrate es por proveedor: SoundCloud 128, Deezer 320 (128 en cuentas free)
+  y la matriz de cada destino. El piso global de 320 no se aplica en duro y la caída se
+  declara; nunca se etiqueta lossless un MP3 de 1288.
+- MP3 se etiqueta con un escritor ID3v2 + portada compartido; FLAC sigue con
+  `syncify-flac-writer`. Sin escritor MP3 no se cumple la promesa de ficheros exportables.
+- `services.supports_download` refleja el adaptador real: Deezer y SoundCloud pasan a 1
+  cuando su adaptador aterriza; hasta entonces, la cola no los ofrece como descargables.
 
 ## Consecuencias
 
@@ -49,8 +63,12 @@ Python a Rust, sin dejar dos implementaciones vivas.
 - Amazon deja de ser un camino opaco: su calidad se valida o no se acepta.
 - El resolver necesita la capacidad por servicio (formatos y calidad) además del
   derecho por cuenta.
-- Cada adaptador debe cubrir en tests:  payload inválido, downgrade de calidad, auth
+- Cada adaptador debe cubbrir en tests:  payload inválido, downgrade de calidad, auth
   caducada y rate limit.
+- Dependencias nuevas: `blowfish` y parser HLS (`m3u8` o equivalente), más un escritor
+  ID3; el workspace hoy solo tiene `aes-gcm`, `md5` y escritor FLAC.
+- Deezer es el camino crítico por `license_token`, `TRACK_TOKEN` y Blowfish-CBC;
+  SoundCloud lo es por HLS y la normalización de OAuth.
 
 ## Preguntas abiertas
 
