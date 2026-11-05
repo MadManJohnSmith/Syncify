@@ -121,6 +121,8 @@ class DocumentationReferenceTests(unittest.TestCase):
 
     def _documents(self):
         docs = sorted((REPO_ROOT / "docs" / "features").glob("*.md"))
+        docs += sorted((REPO_ROOT / "docs" / "adr").glob("*.md"))
+        docs += sorted((REPO_ROOT / "docs" / "agents").glob("*.md"))
         docs += sorted(p for p in (REPO_ROOT / "docs").glob("*.md"))
         # AGENTS.md es el mapa que un agente lee primero: sus referencias
         # envejecen igual que las de docs/ y deben resolverse igual.
@@ -152,6 +154,18 @@ class DocumentationReferenceTests(unittest.TestCase):
             {},
             "documentation cites paths that are not in the tree",
         )
+
+    def test_every_adr_declares_its_status(self):
+        """An ADR without a state is a note, not a decision record."""
+        adrs = sorted((REPO_ROOT / "docs" / "adr").glob("[0-9][0-9][0-9][0-9]-*.md"))
+        self.assertTrue(adrs, "no ADRs found; the convention is not established")
+        for adr in adrs:
+            text = adr.read_text(encoding="utf-8")
+            self.assertIn(
+                "**Estado:**",
+                text,
+                f"{adr.name} does not declare **Estado:**; see docs/agents/domain.md",
+            )
 
     def test_allowlisted_absences_are_still_absent(self):
         """An allowlist entry that becomes real is stale and must be removed."""

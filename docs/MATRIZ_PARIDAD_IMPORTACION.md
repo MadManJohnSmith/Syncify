@@ -1,7 +1,8 @@
 # Matriz viva de paridad de importación
 
-> **Documento vivo** (Fase 4-3 del plan). Actualizar en cada sprint que toque
-> un brazo del motor. Última actualización: 2026-10-02 (ítem 9.1 del plan
+> **Estado:** documento vivo (Fase 4-3 del plan); actualizar en cada sprint que
+> toque un brazo del motor.
+> **Última revisión:** 2026-10-02 (ítem 9.1 del plan
 > post-auditoría: `sync_favorites` a 6 servicios con la fase 8, migración entre
 > servicios activa con la fase 4, y estado real del brazo de Apple Music). Antes:
 > 2026-09-29 (SYNC-AUD-068: los gates se remedieron en vez de publicarse como
@@ -67,7 +68,7 @@
 
 ## Identidad
 
-Ver `docs/DECISION_IDENTIDAD_TRACKS.md`: clave maestra
+Ver `docs/adr/0001-identidad-de-tracks.md`: clave maestra
 `track_sources(service_id, service_track_id)`; sin columnas nuevas por proveedor.
 
 ## Deuda conocida de paridad (orden del plan)

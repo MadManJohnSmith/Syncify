@@ -18,7 +18,8 @@ relaxed, and the landmines. Start there.
 | Layer | Where | What it is |
 |---|---|---|
 | Entry map | `AGENTS.md`, `GLOSSARY.md` (repo root) | Where to start and domain vocabulary |
-| Durable specs | `features/`, ADRs, `APP_FLOW.en.md`, `design-system.md` | What the system is today |
+| Durable specs | `features/`, `adr/`, `APP_FLOW.en.md`, `design-system.md` | What the system is today |
+| Agent configuration | `agents/` | Tracker, triage labels and consumption rules for this documentation |
 | Living registers | this folder: the debt register, `COLA_*.md` queues, plans | Where the work and the debt stand |
 | Historical | `historico/` | Dated snapshots: evidence, **not** current state |
 | Audit trail | `auditoria/` | Per-track logs and the `matriz-ajustes.md` ledger |
@@ -30,7 +31,7 @@ relaxed, and the landmines. Start there.
 | `README.en.md` (this file) | English |
 | `APP_FLOW.en.md` | English |
 | `features/` design specs (7 files) | Spanish only |
-| `DECISION_IDENTIDAD_TRACKS.md` | Spanish only |
+| `adr/0001-identidad-de-tracks.md` | Spanish only |
 | `PLAN_UNIFICACION_IMPORTACION.md` | Spanish only |
 | `MATRIZ_PARIDAD_IMPORTACION.md` | Spanish only |
 | `Deuda_Tecnica_y_UX.md` | Spanish only |
@@ -65,12 +66,23 @@ against the code.
 
 ## Architecture decisions and flow
 
-- `DECISION_IDENTIDAD_TRACKS.md`: ADR for the canonical key
-  `track_sources(service_id, service_track_id)` and the identity columns.
-- `DECISION_SELECCION_EDICION.md`: the beta decision against wrong-edition
-  downloads; identity contracts ED-01…ED-04 and acceptance tests (Spanish).
-- `DECISION_ALCANCE_BETA.md`: what stays out of the beta and under which
-  condition it returns; the playback-lane amendment (Spanish).
+- `adr/`: architecture and scope decisions, numbered by date and written in
+  Spanish. They are the only decision record; the old `DECISION_*.md` files are
+  three-line pointers kept so dated citations still resolve.
+  - `0001-identidad-de-tracks.md`: the canonical key
+    `track_sources(service_id, service_track_id)` and the identity columns.
+  - `0002-alcance-beta.md`: what stays out of the beta and under which condition
+    it returns; the playback-lane amendment.
+  - `0003-seleccion-de-edicion.md`: the beta decision against wrong-edition
+    downloads; identity contracts ED-01…ED-04 and acceptance tests.
+  - `0004-encolado-no-bloqueante.md`: the download queue must not block the UI and must scale to tens of thousands of tracks (proposed).
+  - `0005-enrutado-de-descargas-por-cuenta.md`: a download is routed to an entitled account, reusing evidence from earlier deliveries (proposed).
+  - `0006-contrato-de-sincronizacion.md`: the sync contract — configurable mode
+  - `0007-cuentas-multiples-y-sesiones.md`: multiple accounts per service with no
+  - `0008-modelo-de-biblioteca.md`: scope, tabs, detail panel and bulk selection over
+    the aggregated library (proposed).
+    active account, aggregated library, per-account webview profile and lifecycle (proposed).
+    defaulting to import-only, quarantine, triggers, traversal and coverage (proposed).
 - `APP_FLOW.en.md`: an end-to-end walkthrough of the current flow, from
   connecting an account through library import to a verified download on disk.
 - `design-system.md`: the 10 themes (4 standard + 6 service), CSS tokens and
@@ -92,6 +104,7 @@ against the code.
   (FE-PERF-01…04; FE-PERF-02 applied in code).
 - `COLA_WEBKIT_COMPOSICION_ACELERADA.md`: open WebKitGTK composition
   hypothesis with its compatibility invariants.
+- `HANDOFF.md`: live handoff dated 2026-11-05; per-flow state and next step (downloads).
 - `PLAN_MEJORA_POST_BETA.md`: the post-beta waiting list (not a work queue).
   Note: its IDs `C-01…C-06` and `D-01/D-02` are **its own** namespace and do
   not match the debt register's.
@@ -161,7 +174,7 @@ IDs repeat across documents with different meanings. Always cite the ID
 | `FE-PERF-` | `COLA_RENDIMIENTO_FRONTEND_2026-10-13.md` | — |
 | `DL-SVC-`, `DL-DISK-`, `DL-UX-`, `TRAY-OPEN-`, `PLAY-TRACE-` | `historico/Errores-Pruebas-2026-10-13.md` | `D-16/D-17/D-18` collide with the debt register |
 | `MF-*` | `historico/Errores-Pruebas-2026-10-13-flujo-limpio.md` | — |
-| `ED-01…ED-04` | `DECISION_SELECCION_EDICION.md` | — |
+| `ED-01…ED-04` | `adr/0003-seleccion-de-edicion.md` | — |
 | `A1…A5`, `B1…B5` | `auditoria/CONSOLIDATED_PLAN.md` (historical) | Visually similar to the register's `A-01` |
 | `SYNC-AUD-0xx` | header of `scripts/tests/test_docs_consistency.py` | No separate report enumerates them |
 

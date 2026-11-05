@@ -1,5 +1,8 @@
 # Deuda técnica y de UX
 
+**Estado:** registro vivo de la deuda conocida (abierta, aceptada y cerrada).
+**Última revisión:** 2026-10-25 (nota de trazabilidad de esta cabecera).
+
 Registro vivo de la deuda conocida del proyecto. Es el documento al que apuntan
 `docs/PLAN_UNIFICACION_IMPORTACION.md` (Fase 4, entregable 3) y el núcleo
 `sync_soundcloud_likes_with_engine` de `src-tauri/src/commands/service.rs`.
@@ -67,6 +70,8 @@ Rust, no solo el `app_id`. Antes de eso: ítem 9.1 del plan post-auditoría
 
 ### D-01 — Fase 3 implementada; falta verificarla contra las APIs reales
 
+- **Ejecución**: [#56](https://github.com/MadManJohnSmith/Syncify/issues/56) y [#57](https://github.com/MadManJohnSmith/Syncify/issues/57) (spec [#36](https://github.com/MadManJohnSmith/Syncify/issues/36)).
+
 - **Observado**: la Fase 3 del plan de unificación ya no está bloqueada en código.
   El brazo `"soundcloud"` de `perform_sync_service_with_emitter` pasa cada like por
   `sync_soundcloud_likes_with_engine` → `EnrichmentEngine`, con identidad canónica,
@@ -83,6 +88,8 @@ Rust, no solo el `app_id`. Antes de eso: ítem 9.1 del plan post-auditoría
   developer token de Apple Music—. Es una comprobación, no una implementación.
 
 ### D-04 — 4 de los 6 documentos de `docs/features/` siguen re-derivados solo por rutas
+
+- **Ejecución**: [#58](https://github.com/MadManJohnSmith/Syncify/issues/58), [#59](https://github.com/MadManJohnSmith/Syncify/issues/59), [#60](https://github.com/MadManJohnSmith/Syncify/issues/60) y [#61](https://github.com/MadManJohnSmith/Syncify/issues/61) (spec [#36](https://github.com/MadManJohnSmith/Syncify/issues/36)).
 
 - **Observado**: esta revisión re-derivó del código la narrativa de
   `docs/features/metadata-enrichment.md` y `docs/features/playlist-system.md`, que
@@ -125,6 +132,8 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 
 ### D-06 — Escrituras SQLx silenciosas
 
+- **Ejecución**: [#37](https://github.com/MadManJohnSmith/Syncify/issues/37), [#38](https://github.com/MadManJohnSmith/Syncify/issues/38) y [#39](https://github.com/MadManJohnSmith/Syncify/issues/39) (spec [#32](https://github.com/MadManJohnSmith/Syncify/issues/32)).
+
 - **Observado**: 243 `let _ = sqlx::query(...)` en producción (125 UPDATE, 82 INSERT,
   11 DELETE). Una escritura puede fallar y la transacción confirmar sin rastro. Reparto:
   `src-tauri/src/services/enrichment.rs` 45, `src-tauri/src/commands/service.rs` 28,
@@ -150,6 +159,8 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   tidal 17), un fichero por commit con su suite verde, y seguir bajando el baseline.
 
 ### D-08 — Dos funciones monstruo
+
+- **Ejecución**: [#40](https://github.com/MadManJohnSmith/Syncify/issues/40) y [#41](https://github.com/MadManJohnSmith/Syncify/issues/41) (spec [#32](https://github.com/MadManJohnSmith/Syncify/issues/32)).
 
 - **Observado**: `perform_sync_service_with_emitter_inner`
   (`src-tauri/src/commands/service.rs:3285`) mide 4 556 líneas y

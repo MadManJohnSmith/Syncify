@@ -1,7 +1,8 @@
 # Cola técnica: composición WebKitGTK sin perder compatibilidad Intel Iris Xe
 
 **Estado:** pendiente de diseño, reproducción y benchmark; sin cambio de código.
-**Fecha:** 2026-10-13. *(Nota 2026-10-25: el motivo original para separar este fichero —ficheros «reservados» por el workflow de descargas concurrente— ya no aplica; la cola sigue viva por sí misma y su estado canónico está en `docs/auditoria/matriz-ajustes.md`. El incidente del pánico de bandeja de su sección «Incidente» quedó resuelto por C-22 (`0e53dad`, ver `docs/Deuda_Tecnica_y_UX.md`).)*
+**Fecha de origen:** 2026-10-13. **Última revisión:** 2026-10-25 (nota de estado). *(Nota 2026-10-25: el motivo original para separar este fichero —ficheros «reservados» por el workflow de descargas concurrente— ya no aplica; la cola sigue viva por sí misma y su estado canónico está en `docs/auditoria/matriz-ajustes.md`. El incidente del pánico de bandeja de su sección «Incidente» quedó resuelto por C-22 (`0e53dad`, ver `docs/Deuda_Tecnica_y_UX.md`).)*
+**Ejecución**: [#52](https://github.com/MadManJohnSmith/Syncify/issues/52), [#53](https://github.com/MadManJohnSmith/Syncify/issues/53), [#54](https://github.com/MadManJohnSmith/Syncify/issues/54) y [#55](https://github.com/MadManJohnSmith/Syncify/issues/55) (spec [#35](https://github.com/MadManJohnSmith/Syncify/issues/35)).
 
 ## Incidencia y evidencia
 

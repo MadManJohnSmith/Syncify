@@ -6,6 +6,8 @@
 
 **Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): corregidos el refresh de Spotify (un único camino PKCE, sin discriminación por `token_type`; `refresh_from_sp_dc` no existe en el árbol), el fallback Qobuz (lee la BD cifrada canónica, no el JSON del puente), el upsert de cuentas (reconciliación de identidades en `upsert_service_account`), la siembra de `services` (migration 0002, no 0001) y el fallback a Chrome del sistema (compartido por 5 puentes de auth). Sustituidos los números de línea muertos por símbolos y rellenados vacíos: columnas de multi-cuenta (`external_user_id`, `invalid_reason`, `streaming_entitled`, `display_name_custom`) e inyección de expiración de token Tidal. Sigue sin verificar en escritorio real el flujo completo contra proveedores vivos: los tests que necesitan red están `#[ignore]`.
 
+**Migración declarada:** [#62](https://github.com/MadManJohnSmith/Syncify/issues/62) — inicio de sesión dentro del webview de la app; la sonda de Deezer es [#63](https://github.com/MadManJohnSmith/Syncify/issues/63).
+
 **Último cambio:** 2026-10-25 — re-revisión de comportamiento; archivos: `src-tauri/src/commands/auth.rs`, `src-tauri/src/commands/service.rs`, `src-tauri/src/services/spotify.rs`
 **Leer antes de modificar:** `src-tauri/src/crypto.rs`, `migrations/0031_add_credentials_invalid.sql`
 **Archivos core:**

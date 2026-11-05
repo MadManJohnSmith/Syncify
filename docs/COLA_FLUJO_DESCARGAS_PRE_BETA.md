@@ -1,7 +1,7 @@
 # Cola técnica pre-beta: orden y solapamiento de etapas dentro de la descarga de una pista
 
 **Estado:** DLX-01…06 y DFL-01 ya prerregistrados en la matriz; sin baseline comparable ni aceptación de implementación. DLX-02 y DLX-06 están condicionados, no aplicados. No acelerar antes de medir cronología, p95, throughput y fallos (`docs/auditoria/matriz-ajustes.md:580-590`). Los diez gates exit 0 aportados en el encargo antecedieron a la ampliación final de la prueba Qobuz comunicada por el carril residual: no cubren el candidato final ni cierran seis gates rojos heredados. GUI/cuentas/Symfonium NOT_EXERCISED.
-**Fecha:** 2026-10-14. **Origen:** petición expresa del propietario sobre cómo se construye una descarga
+**Fecha de origen:** 2026-10-14. **Última revisión:** no registrada en el fichero. **Origen:** petición expresa del propietario sobre cómo se construye una descarga
 individual (orden de metadatos y audio, incrustado de etiquetas, y qué se ejecuta en paralelo o en
 serie), no sobre el volumen del lote ni sobre subir conexiones.
 
@@ -99,6 +99,8 @@ pasa a ser **no gastar tiempo de más por pista**.
 
 ### DLX-01 — Cronología de etapas por pista (prerrequisito de todo lo demás)
 
+**Issue**: [#42](https://github.com/MadManJohnSmith/Syncify/issues/42) (spec [#33](https://github.com/MadManJohnSmith/Syncify/issues/33)).
+
 Instrumentar, por pista, el instante de inicio y fin de cada etapa: resolución, transferencia,
 validación, portada, letras, enriquecimiento, etiquetado, promoción y persistencia; más tiempo
 descargando bytes de audio y tiempo total. Guardar la cronología sin credenciales, URLs firmadas ni
@@ -112,6 +114,8 @@ se compara con la **unión de intervalos**, no con su suma (que contaría dos ve
 paralelo). El informe compara dos corridas.
 
 ### DLX-02 — Iniciar portada y letras durante la transferencia (solapamiento acotado)
+
+**Issue**: [#43](https://github.com/MadManJohnSmith/Syncify/issues/43) (spec [#33](https://github.com/MadManJohnSmith/Syncify/issues/33)).
 
 Solo si DLX-01 demuestra espera significativa: permitir que las etapas que **no dependen de los bytes
 del audio** se inicien cuando sus entradas ya estén resueltas, sin esperar a que termine la descarga
@@ -137,6 +141,8 @@ deja fichero promovido.
 
 ### DLX-03 — Etiquetado y verificación sin trabajo repetido
 
+**Issue**: [#44](https://github.com/MadManJohnSmith/Syncify/issues/44) (spec [#33](https://github.com/MadManJohnSmith/Syncify/issues/33)).
+
 Medir el coste real de las relecturas del temporal (validación tras descarga, verificación tras
 etiquetado, lectura post-promoción para métricas) y decidir, con datos, qué lecturas se pueden
 combinar o eliminar sin perder la garantía de que el fichero final es válido. **No se elimina ninguna
@@ -146,6 +152,8 @@ verificación que proteja calidad o integridad**; solo se evita leer dos veces l
 coinciden; medir antes/después por etapa.
 
 ### DLX-04 — Tidal: segmentos DASH secuenciales y payload leído completo
+
+**Issue**: [#45](https://github.com/MadManJohnSmith/Syncify/issues/45) (spec [#33](https://github.com/MadManJohnSmith/Syncify/issues/33)).
 
 Medir y decidir dos cosas por separado: el bucle de segmentos uno a uno
 (`crates/syncify-tidal-downloader/src/lib.rs:1892`) y la lectura completa del temporal
@@ -160,6 +168,8 @@ y sin degradar la validez del FLAC; si se paraleliza, probar cancelación a mita
 
 ### DLX-05 — Recurso repetido por pista: deduplicar lo que realmente se repite
 
+**Issue**: [#46](https://github.com/MadManJohnSmith/Syncify/issues/46) (spec [#33](https://github.com/MadManJohnSmith/Syncify/issues/33)).
+
 Conservar la caché acotada por URL (con *single-flight*) para la portada, evitando que cada pista de un
 álbum pida la misma imagen, con clave que incluya URL y contexto de acceso cuando aplique, y sin
 compartir staging mutable ni mezclar ediciones distintas. No es la palanca principal, pero sí un ahorro
@@ -171,12 +181,16 @@ el resto.
 
 ### DLX-06 — Concurrencia y carga: palanca secundaria y condicionada
 
+**Issue**: [#47](https://github.com/MadManJohnSmith/Syncify/issues/47) (spec [#33](https://github.com/MadManJohnSmith/Syncify/issues/33)).
+
 El techo sigue siendo el ajuste del usuario (`dl_concurrent_downloads`). Cualquier control adaptativo
 solo se evalúa **después** de DLX-01…05, y con el criterio de que bajar ante 429/5xx persistentes y
 subir tras ventanas de éxito nunca debe confundir autorización, identidad o DRM con congestión. Ninguna
 descarga por rangos paralelos ni subir a 10 por defecto.
 
 ### DFL-01 — Puerta transversal
+
+**Issue**: [#48](https://github.com/MadManJohnSmith/Syncify/issues/48) (spec [#33](https://github.com/MadManJohnSmith/Syncify/issues/33)).
 
 Nada de esta cola altera el estado de ED-01…04 ni DL-SVC-01…03. Orden: (1) DLX-01; (2) DLX-02
 condicionado; (3) DLX-03/04 medidos; (4) DLX-05; (5) DLX-06 solo si sigue habiendo cuello; (6) prueba
@@ -188,7 +202,7 @@ la puerta de beta: un build verde no es rendimiento demostrado.
 
 ## 4. Integración con las listas existentes
 
-- `docs/DECISION_ALCANCE_BETA.md` (punto 7): requisito de cierre; no amplía proveedores ni rangos.
+- `docs/adr/0002-alcance-beta.md` (punto 7): requisito de cierre; no amplía proveedores ni rangos.
 - `docs/auditoria/matriz-ajustes.md`: filas R1 DLX-01…06 y DFL-01 **antes** de código; el workflow
   activo coordina un único escritor.
 - `docs/historico/Errores-Pruebas-2026-10-13.md`: DL-SVC-01…03 siguen como defectos separados; esta cola no los

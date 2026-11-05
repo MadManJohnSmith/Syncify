@@ -1,11 +1,14 @@
 # Plan de mejora post-beta — registro de funcionalidades diferidas
 
+**Estado:** lista de espera post-beta; ningún ítem se empieza antes de cerrar el beta.
+**Última revisión:** no registrada en el fichero.
+
 **Propósito:** que ninguna funcionalidad estudiada y decidida como diferida se pierda.
-La decisión de alcance vive en `docs/DECISION_ALCANCE_BETA.md`; los ítems que esa
+La decisión de alcance vive en `docs/adr/0002-alcance-beta.md`; los ítems que esa
 decisión excluye del beta están enumerados, con evidencia, en este fichero.
 
 **Cómo se usa este fichero.** Es una lista de espera, no una cola de trabajo: **ninguno
-de estos ítems se empieza mientras el beta no esté cerrado** (ver `DECISION_ALCANCE_BETA.md`
+de estos ítems se empieza mientras el beta no esté cerrado** (ver `adr/0002-alcance-beta.md`
 §4 para la condición exacta). Cuando el beta se cierre, este fichero se consume por
 prioridad, no por orden de aparición.
 

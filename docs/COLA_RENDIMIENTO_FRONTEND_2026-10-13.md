@@ -1,7 +1,7 @@
 # Cola técnica: rendimiento de la interfaz al navegar y hacer scroll
 
 **Estado:** actualizado el 2026-10-25: **FE-PERF-02 aplicado en código** (parcial: la clonación está corregida; ver su sección), el resto `registrado`, sin cambio de código. Las evidencias originales se verificaron el 2026-10-13 contra el árbol de trabajo y sobre una copia de solo lectura de la base real (~390 MB, 30.527 pistas); el estado canónico por ítem está en `docs/auditoria/matriz-ajustes.md`.
-**Fecha:** 2026-10-13. **Motivo:** el usuario observa retardos superiores a un segundo al cambiar de pantalla o pestaña, y scroll que tarda y da tirones, en toda la aplicación.
+**Fecha de origen:** 2026-10-13. **Última revisión:** 2026-10-25 (FE-PERF-02 aplicado). **Motivo:** el usuario observa retardos superiores a un segundo al cambiar de pantalla o pestaña, y scroll que tarda y da tirones, en toda la aplicación.
 **Frontera de trabajo:** este fichero es propio y no toca `docs/historico/Errores-Pruebas-2026-10-11.md`, `docs/historico/Errores-Pruebas-2026-10-13.md` ni `docs/auditoria/matriz-ajustes.md`, reservados por el flujo de descargas concurrente. Integrar los ítems en la cola canónica cuando se libere, igual que se acordó con `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md`.
 
 ## Qué se descartó con medición (para no invertir esfuerzo donde no está el problema)
@@ -23,6 +23,8 @@ Medido sobre `/tmp/perf-hard/db-copy.db` (copia de solo lectura de la base real)
 
 ## FE-PERF-01 · `registrado` · Sin `<KeepAlive>`, cada cambio de pantalla destruye y reconstruye la vista.
 
+**Issue**: [#49](https://github.com/MadManJohnSmith/Syncify/issues/49) (spec [#34](https://github.com/MadManJohnSmith/Syncify/issues/34)).
+
 `ui/src/App.vue:370-373` envuelve el `<router-view>` en `<transition name="fade" mode="out-in">` y **no existe ningún `<KeepAlive>` en `ui/src/App.vue` ni en `ui/src/main.ts`** (verificado por búsqueda de la cadena). Consecuencia concreta: al entrar y salir de una vista se vuelve a montar el componente completo y a ejecutar su `onMounted`. El `Dashboard` lanza en `onMounted` una llamada a `createLibrarySnapshot()` más 11 llamadas de API en `Promise.all` (`ui/src/views/DashboardView.vue:830-831` y `:628-636`), de modo que entrar y salir de Dashboard repite las 12.
 **Por qué importa:** `mode="out-in"` obliga además a que la vista saliente termine su animación antes de empezar a montar la entrante, así que el retraso percibido se suma.
 **Diseño obligatorio del arreglo:** `<KeepAlive>` con `include`/`exclude` acotado, no global, para no retener todas las vistas en memoria (el caso contrario también degrada). Decidir explícitamente si `mode="out-in"` debe mantenerse en las vistas que se cachean. Nombres de componente consistentes: `include` filtra por el `name` del componente, y conviene confirmar que las vistas lo declaran.
@@ -38,12 +40,16 @@ Medido sobre `/tmp/perf-hard/db-copy.db` (copia de solo lectura de la base real)
 
 ## FE-PERF-03 · `registrado` · Coste de parseo repetido por cambio de pantalla.
 
+**Issue**: [#50](https://github.com/MadManJohnSmith/Syncify/issues/50) (spec [#34](https://github.com/MadManJohnSmith/Syncify/issues/34)).
+
 Medido sobre el build real (`ui/dist`): `index-*.js` = 429 kB raw / 133 kB gz, `index-*.css` = 177 kB / 21 kB gz, y por vistas `SettingsView` 224 kB / 54 kB gz, `MetadataView` 121 kB / 29 kB, `LyricsView` 98 kB / 24 kB, `MigrationView` 94 kB / 21 kB, `AccountsView` 85 kB / 21 kB, `LibraryView` 80 kB / 20 kB, `DownloadsView` 75 kB / 18 kB, `PlaylistView` 45 kB / 12 kB. Total JS ≈ **1,32 MB raw / 347 kB comprimido**.
 `ui/src/main.ts:12-13` importa estáticamente `DashboardView`, `AlbumDetailView` y `ArtistDetailView`; el resto son lazy (`:14`, `:20`, `:22`, `:23`, `:24`).
 **Qué significa:** las vistas lazy se descargan del disco local y se parsean en cada visita mientras no haya `KeepAlive`. Para `LibraryView` (20 kB comprimidos) ese coste es pequeño; el caso caro es el arranque inicial y las vistas grandes. **No se midió** el tiempo de parseo real dentro del webview (los intentos con Chromium headless y `performance.getEntries` no dieron medida fiable del chunk), así que este ítem queda como **sospecha de coste, no causa comprobada**.
 **Diseño obligatorio del arreglo:** dividir el chunk principal de 429 kB y confirmar el `manualChunks` de Vite, con medición antes/después del arranque. No aplicar por el tamaño en sí.
 
 ## FE-PERF-04 · `registrado` · Repetición de agregados equivalentes en el Dashboard.
+
+**Issue**: [#51](https://github.com/MadManJohnSmith/Syncify/issues/51) (spec [#34](https://github.com/MadManJohnSmith/Syncify/issues/34)).
 
 `src-tauri/src/commands/dashboard.rs:43-95` (`create_library_snapshot`) ejecuta **6 sentencias de recuento separadas** sobre `tracks`, `albums`, `artists`, `downloads`, `SUM(file_size_bytes)` sobre `downloads`, y `COUNT(DISTINCT track_id)` sobre `lyrics`. La vista `library_stats` hace otras 8 cuentas. `fetchData()` vuelve a pedir `getLibraryStats`, `getMetadataStats`, `getLyricsStats` y `getLibrarySnapshots` (`ui/src/views/DashboardView.vue:630-641`), que ya cubren lo mismo.
 **Medido:** cada recuento suelto son 3-7 ms, y la vista 2,32 ms; no es un cuello de botella por hoy. Conviene unificar cuando se unifique el snapshot, y **mientras tanto no merece optimizarse por velocidad**.

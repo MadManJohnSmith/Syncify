@@ -2956,7 +2956,7 @@ impl EnrichmentEngine {
         // grabación a otra edición. Si el track ya existe con álbum conocido y
         // llega un álbum distinto sin evidencia de release que lo corrobore, la
         // decisión es de una persona (`needs_review`), no una reasignación
-        // silenciosa. Ver `docs/DECISION_SELECCION_EDICION.md` y D-07.
+        // silenciosa. Ver `docs/adr/0003-seleccion-de-edicion.md` y D-07.
         if let Some(tid) = existing_track_id {
             let current_album_title: Option<String> = sqlx::query_scalar(
                 "SELECT a.title FROM tracks t JOIN albums a ON a.id = t.album_id WHERE t.id = ?",

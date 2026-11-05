@@ -16,7 +16,8 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
 | Capa | Dónde | Qué es |
 |---|---|---|
 | Mapa de entrada | `AGENTS.md`, `GLOSSARY.md` (raíz) | Por dónde empezar y vocabulario de dominio |
-| Specs duraderas | `features/`, ADRs, `APP_FLOW.en.md`, `design-system.md` | Lo que el sistema es hoy |
+| Specs duraderas | `features/`, `adr/`, `APP_FLOW.en.md`, `design-system.md` | Lo que el sistema es hoy |
+| Configuración de agentes | `agents/` | Tracker, etiquetas de triage y reglas de consumo de esta documentación |
 | Registros vivos | esta carpeta: Deuda, colas `COLA_*.md`, planes | Dónde está el trabajo y la deuda |
 | Histórico | `historico/` | Instantáneas fechadas: evidencia, **no** estado |
 | Rastro de auditoría | `auditoria/` | Bitácoras por carril y el ledger `matriz-ajustes.md` |
@@ -41,13 +42,29 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
     nativo (`crates/syncify-player`) y el servicio MPRIS nativo
     (`src-tauri/src/services/mpris.rs`). La comprobación D-Bus de extremo a
     extremo en sesión gráfica real **no** se ha ejecutado nunca en este repo.
-- **`DECISION_IDENTIDAD_TRACKS.md`**: ADR sobre la clave canónica
-  `track_sources(service_id, service_track_id)` y las columnas de identidad.
-- **`DECISION_SELECCION_EDICION.md`**: decisión beta contra la descarga de una
-  edición incorrecta; contratos de identidad ED-01…ED-04 y pruebas de
-  aceptación.
-- **`DECISION_ALCANCE_BETA.md`**: qué queda fuera del beta y con qué condición
-  vuelve; enmienda del carril de reproducción.
+- **`adr/`**: decisiones de arquitectura y alcance, numeradas por fecha. Son el
+  único registro de decisiones; los antiguos `DECISION_*.md` son punteros de tres
+  líneas que se conservan para que resuelvan las citas fechadas.
+  - `0001-identidad-de-tracks.md`: la clave canónica
+    `track_sources(service_id, service_track_id)` y las columnas de identidad.
+  - `0002-alcance-beta.md`: qué queda fuera del beta y con qué condición vuelve;
+    enmienda del carril de reproducción.
+  - `0003-seleccion-de-edicion.md`: decisión beta contra la descarga de una
+    edición incorrecta; contratos de identidad ED-01…ED-04 y pruebas de
+    aceptación.
+  - `0004-encolado-no-bloqueante.md`: la cola de descargas no bloquea la interfaz y
+    escala a decenas de miles de pistas (propuesto).
+  - `0005-enrutado-de-descargas-por-cuenta.md`: una descarga se enruta a una cuenta con
+    derecho, reutilizando la evidencia de entregas anteriores (propuesto).
+  - `0006-contrato-de-sincronizacion.md`: el contrato de sync — modo configurable con
+    «solo importar» por defecto, cuarentena, disparo, recorrido y cobertura (propuesto).
+  - `0007-cuentas-multiples-y-sesiones.md`: varias cuentas por servicio sin cuenta
+    activa, biblioteca agregada, perfil de webview por cuenta y ciclo de vida (propuesto).
+  - `0008-modelo-de-biblioteca.md`: alcance, pestañas, panel de detalle y selección
+    masiva sobre la biblioteca agregada (propuesto).
+  - `0009-adaptadores-de-descarga-nativos.md`: destinos de descarga en beta; Qobuz,
+    Tidal, Deezer, SoundCloud y Amazon con adaptador nativo en Rust; Spotify y Apple
+    Music quedan como catálogo (propuesto).
 - **`APP_FLOW.en.md`**: recorrido de extremo a extremo del flujo actual (en
   inglés): de conectar una cuenta a una descarga verificada en disco.
 - **`design-system.md`**: los 10 temas (4 estándar + 6 de servicio), tokens
@@ -70,6 +87,7 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
   interfaz (FE-PERF-01…04; FE-PERF-02 aplicado en código).
 - **`COLA_WEBKIT_COMPOSICION_ACELERADA.md`**: hipótesis abierta de
   composición WebKitGTK con sus invariantes de compatibilidad.
+- **HANDOFF.md**: relevo vivo del 2026-11-05; estado por flujo y siguiente paso (descargas).
 - **`PLAN_MEJORA_POST_BETA.md`**: lista de espera del post-beta (no cola de
   trabajo). Ojo: sus IDs `C-01…C-06` y `D-01/D-02` son **propios** y no
   coinciden con los de la Deuda.
@@ -139,7 +157,7 @@ ID **y fichero**:
 | `FE-PERF-` | `COLA_RENDIMIENTO_FRONTEND_2026-10-13.md` | — |
 | `DL-SVC-`, `DL-DISK-`, `DL-UX-`, `TRAY-OPEN-`, `PLAY-TRACE-` | `historico/Errores-Pruebas-2026-10-13.md` | `D-16/D-17/D-18` colisionan con la Deuda |
 | `MF-*` | `historico/Errores-Pruebas-2026-10-13-flujo-limpio.md` | — |
-| `ED-01…ED-04` | `DECISION_SELECCION_EDICION.md` | — |
+| `ED-01…ED-04` | `adr/0003-seleccion-de-edicion.md` | — |
 | `A1…A5`, `B1…B5` | `auditoria/CONSOLIDATED_PLAN.md` (histórico) | Visualmente parecido a `A-01` de la Deuda |
 | `SYNC-AUD-0xx` | cabecera de `scripts/tests/test_docs_consistency.py` | No existe informe aparte que los enumere |
 

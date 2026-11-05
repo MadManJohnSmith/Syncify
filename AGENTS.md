@@ -32,6 +32,16 @@ python3 -m unittest discover -s scripts/tests                             # 310 
 Todo corre sin red salvo los 13 tests `#[ignore]`, que necesitan servicios reales.
 No los des-ignores en CI ni añadas `--skip`.
 
+### Verificación manual
+
+`tools/prueba-limpia.sh` arranca la app con `npm run dev` (`tauri dev`), fija
+`RUST_LOG=info` y `RUST_BACKTRACE=1`, y duplica la salida a
+`~/.local/state/syncify-manual-test/`: el log de terminal y, vía
+`SYNCIFY_LOG_DIR`, los logs nativos de la app. Cerrar la app termina la captura.
+
+No versiones ni compartas esos logs: pueden contener cuentas y biblioteca.
+`SYNCIFY_REPO` apunta el script a otro clon.
+
 ## Puertas que no se relajan
 
 El repo se vigila a sí mismo; si una falla, el fallo es el mensaje:
@@ -86,7 +96,7 @@ que pase.
   con qué fichero es la referencia vigente de qué.
 - `GLOSSARY.md`: vocabulario de dominio (track vs. track source vs. edición,
   y los dos sentidos de «migración»).
-- `docs/DECISION_*.md`: decisiones de alcance y arquitectura.
+- `docs/adr/*.md`: decisiones de alcance y arquitectura.
 - `docs/Deuda_Tecnica_y_UX.md`: deuda conocida y su prioridad.
 - `docs/features/`: comportamiento por área (reproductor, biblioteca, descargas).
 - Registros vivos en `docs/`: la Deuda, las colas `docs/COLA_*.md` y
@@ -96,3 +106,21 @@ que pase.
   estado actual.
 - `README.md` §"Building from source" y §"Verification and limitations": lo que
   **no** está verificado en escritorio real (GUI, audio, bandeja, MPRIS/D-Bus, red viva).
+
+## Agent skills
+
+### Issue tracker
+
+Los issues viven en GitHub Issues de `MadManJohnSmith/Syncify`, vía la CLI
+`gh`. Ver `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Cinco roles canónicos con la etiqueta igual a su nombre (`needs-triage`,
+`needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). Ver
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+**single-context**: un `GLOSSARY.md` en la raíz y las decisiones en
+`docs/adr/*.md`. Ver `docs/agents/domain.md`.

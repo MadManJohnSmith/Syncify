@@ -1,10 +1,10 @@
 # Plan: Unificación del pipeline de importación entre servicios
 
-> Estado: EN EJECUCIÓN — F0, F1, F2, F3 y F4 ejecutadas en código; lo que queda de F3 es
+> **Estado:** EN EJECUCIÓN — F0, F1, F2, F3 y F4 ejecutadas en código; lo que queda de F3 es
 > la verificación contra las APIs reales, condicionada por las credenciales del propietario
-> Origen: comparativa manual de los métodos de importación de todos los servicios
-> Fecha: 2025-08-25
-> Última revisión de estado: ítem 9.1 del plan post-auditoría (2026-10-02), que cierra DO-1
+> **Origen:** comparativa manual de los métodos de importación de todos los servicios
+> **Fecha del plan:** 2025-08-25
+> **Última revisión:** ítem 9.1 del plan post-auditoría (2026-10-02), que cierra DO-1
 > en el papel: la Fase 3 ya no está bloqueada, está implementada. Antes: `b9559da`
 > (SYNC-AUD-069). El detalle commit a commit de lo ya ejecutado está en
 > `docs/MATRIZ_PARIDAD_IMPORTACION.md`; la condición que queda, en
@@ -129,7 +129,7 @@ El orden de abajo es el que fija el plan; el estado real de cada fase está en
 | F1 | ejecutada | `413da34` / `c27fc0c` / `ba5ba37` (Deezer) |
 | F2 | ejecutada | `2d43e5e` (F2-3), `2043672` (F2-5), `6ee9ce4` (F2-4) + punto 4 cerrado en la fase 8 (`sync_favorites` a 6 servicios) |
 | F3 | **ejecutada en código**; la verificación contra la API real queda **condicionada** | brazos `soundcloud`/`apple_music` en el motor, storefront y `next` de Apple Music, destino de migración activo y auth verificada — fase 8 del plan post-auditoría (DO-1, ítems 4.2 y 8.3); la condición, en `docs/Deuda_Tecnica_y_UX.md` D-01 |
-| F4 | ejecutada | `aa806b8` (F4-1), `docs/DECISION_IDENTIDAD_TRACKS.md` (F4-2) |
+| F4 | ejecutada | `aa806b8` (F4-1), `docs/adr/0001-identidad-de-tracks.md` (F4-2) |
 
 ## Observaciones que motivaron el plan
 
