@@ -205,7 +205,7 @@ jobs:
           Write-Host ">>> Verificando integridad SHA-256 de get-pip.py..."
           $pipHash = (Get-FileHash -Path "python/get-pip.py" -Algorithm SHA256).Hash.ToLower()
           $knownPipHashes = @(
-            "fb24e693bab954209a063d90953621412ccad4a500905a726286e038f508ddf6"
+            "356e0d0de21cdc348c3394084d90939b85e4246c4d14c76aee6ca4f46646ea98"
           )
           if ($knownPipHashes -notcontains $pipHash) {
             Remove-Item -Force "python/get-pip.py"
