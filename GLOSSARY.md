@@ -69,6 +69,12 @@ servicio/calidad.
 Proveedor de música (Qobuz, Tidal, Spotify, SoundCloud, Apple Music). Tabla
 `services`, sembrada por `src-tauri/migrations/0002_normalize_schema.sql`.
 
+**Servidor personal**:
+Biblioteca de música propiedad del usuario servida por Plex, Jellyfin, Emby,
+Subsonic o Kodi. Es una fuente de reproducción, no un proveedor comercial: no
+tiene catálogo ni derechos de descarga, y sus ítems se tratan como Provider items.
+_Evitar_: 'Service' para referirse a un servidor personal; 'proveedor' a secas.
+
 **Account**:
 Cuenta conectada de un servicio. Puede haber varias por servicio y no hay cuenta
 activa: la biblioteca se agrega con filtros. Estados: habilitada, desactivada,
@@ -95,18 +101,50 @@ _Evitar_: llamar «biblioteca» a una sola cuenta o a la suma de entradas sin de
 Lista del usuario y su pertenencia ordenada (`playlists`, `playlist_tracks`,
 `playlist_sources` para el vínculo con el origen).
 
+**Playlist local**:
+Playlist sin cuenta, con UUID estable; no depende de ninguna cuenta y puede publicarse
+en un proveedor. Su identidad no cambia al renombrarla.
+_Evitar_: 'playlist del sistema' o 'playlist de la cuenta 1'.
+
+**Fuente de playlist**:
+Vínculo entre una playlist local y su copia remota (`playlist_sources`). Una playlist
+puede tener varias fuentes; el modo de escritura se decide por fuente.
+_Evitar_: 'playlist remota' para referirse a la entidad local.
+
+**Playlist huérfana**:
+Playlist cuya fuente remota desapareció. Se conserva localmente, se avisa y no se
+empuja; no se borra sola.
+_Evitar_: 'playlist borrada'.
+
+**Publicar playlist**:
+Crear la playlist en un proveedor y enlazarla como fuente, conservando la identidad
+local. No es Sync.
+_Evitar_: 'sincronizar' para una publicación puntual.
+
+**Push de playlist**:
+Escritura de los cambios locales de una playlist en su fuente remota. Es opt-in por
+fuente, ocurre al guardar y no forma parte de Sync.
+_Evitar_: 'sync bidireccional' para este push.
+
+**Smart playlist**:
+Playlist dinámica definida por reglas; no almacena pertenencia en `playlist_tracks`.
+Su contenido se evalúa al abrirla y su portada es un mosaico del resultado.
+_Evitar_: 'playlist automática' si se refiere a una lista importada.
+
 ## Trabajo y recuperación
 
 **Sync**:
 Importación unidireccional de las colecciones de un servicio —favoritos, playlists,
 álbumes y artistas— a la biblioteca local (`sync_log`, `service_favorites`). Un «sync»
-no descarga audio ni escribe en el proveedor.
+no descarga audio ni escribe en el proveedor; el push de playlists es una operación
+aparte.
 _Evitar_: «actualizar la biblioteca» para referirse solo a importar.
 
 **Modo de sincronización**:
 Contrato elegido para una cuenta o servicio: solo importar (default), espejo con
-cuarentena, espejo estricto o bidireccional. Cada modo está limitado por las
-capacidades declaradas del proveedor.
+cuarentena, espejo estricto o bidireccional (modelado y deshabilitado en ADR-0006;
+el push de playlists no lo activa). Cada modo está limitado por las capacidades
+declaradas del proveedor.
 _Evitar_: confundirlo con la cadencia (manual, intervalo) o con el alcance por entidad.
 
 **Cobertura**:
@@ -148,10 +186,36 @@ _Evitar_: usar «servicio» sin decir si es fuente o destino.
 **MigrationJob**:
 Migración de **biblioteca** de un servicio a otro (`migration_jobs`, con
 `source_service` y `destination_service`;
-`src-tauri/migrations/0017_migration_history.sql`).
+`src-tauri/migrations/0017_migration_history.sql`). Un job puede llevar favoritos de
+pista, álbumes favoritos, artistas seguidos y playlists; cada ítem declara su tipo.
 _Evitar_: confundirlo con **migración SQL**; las de esquema viven en
 `src-tauri/migrations/` y son otra cosa. El doble uso es deliberado en el vocabulario
 del producto, pero nunca en el mismo contexto.
+
+**Colección migrable**:
+Cada una de las colecciones que un job puede transferir: favoritos de pista, álbumes
+favoritos, artistas seguidos y playlists. No todas existen en todos los destinos.
+_Evitar_: «biblioteca completa» cuando solo se migra una colección.
+
+**Capacidad de destino**:
+Lo que un proveedor declara que puede escribir por colección (guardar pista, guardar
+álbum, seguir artista, crear playlist). Lo no declarado no se ofrece.
+_Evitar_: inferirla de un intento fallido.
+
+**Journal de migración**:
+Registro de cada ítem que un job creó en destino, con su id y cuenta, para poder
+deshacer sin tocar lo que ya existía.
+_Evitar_: confundirlo con el journal de operaciones de descarga.
+
+**Undo de migración**:
+Retirada best-effort de lo que un job creó en destino. No borra lo preexistente y
+puede dejar restos si el proveedor no permite eliminar.
+_Evitar_: «rollback» para prometer una reversión completa.
+
+**Preflight de migración**:
+Comprobación previa de esquema, credenciales, capacidades y cuentas antes de escribir.
+Si falla, el job no empieza.
+_Evitar_: llamar «dry-run» a un preview que no comprueba credenciales.
 
 **OperationJournal / OperationRecovery**:
 Diario de operaciones y su recuperación tras un fallo (`operation_journal`,
@@ -167,11 +231,74 @@ Enriquecer no cambia la identidad; si la pondría en duda, el resultado es
 Una escucha contable (`playback_listens`), idempotente por `listen_session_id`:
 registrar dos veces la misma sesión no suma dos escuchas.
 
+## Reproducción
+
+**Cola de reproducción**:
+La lista ordenada de lo que va a sonar. La posee el backend y se persiste en SQLite
+junto con la pista actual, la posición y los modos; la UI, MPRIS y la bandeja leen
+el mismo estado.
+_Evitar_: 'playlist', que es una lista de catálogo o de usuario.
+
+**Entrada efímera**:
+Una entrada de la cola que apunta a un Provider item que no está en la biblioteca.
+No crea `Track` ni `TrackSource` mientras no se promocione.
+_Evitar_: 'track temporal' o 'pista fantasma'.
+
+**Promoción**:
+El paso de una entrada efímera a track de biblioteca tras 30 s reales de escucha:
+se resuelve su identidad, se crea o enlaza el `Track` con su `TrackSource` y se
+acredita la escucha. Es idempotente.
+_Evitar_: 'importación automática' para previsualizaciones que aún no sonaron.
+
+**Ganancia de reproducción**:
+El modo con el que el motor aplica ReplayGain al sonar (`off`, `track`, `album`),
+separado del modo de etiquetado de descarga. La ganancia sale de las columnas de
+`tracks`.
+_Evitar_: 'replay_gain_mode' para ambos sentidos sin decir cuál.
+
+**AGC**:
+Nivelación dinámica del volumen en reproducción. Es un modo alternativo a
+ReplayGain, no un complemento.
+_Evitar_: 'normalización' a secas, que también nombra el etiquetado de descarga.
+
+**Calidad de fuente**:
+Codec, profundidad de bits y frecuencia de muestreo que entrega el proveedor o el
+archivo local, tal como los reporta el resolver. No implica que el dispositivo los
+reproduzca sin remuestreo.
+_Evitar_: 'calidad' a secas; 'QualityTier', que es la calidad anunciada frente a
+la entregada en descargas.
+
+**Calidad de salida**:
+Formato que el dispositivo de audio entrega realmente (frecuencia, profundidad,
+canales) y si hubo remuestreo. Puede diferir de la calidad de fuente; la UI debe
+mostrar ambas cuando difieran.
+_Evitar_: 'calidad de reproducción' para la de fuente.
+
+**Preflight de cola**:
+Comprobación previa al encolado o la reproducción de que la cuenta y el proveedor
+pueden servir la entrada (entitlement, credenciales, estado del proveedor). Si
+falla, la entrada se marca para reconectar en vez de fallar a mitad.
+_Evitar_: 'validación' genérica.
+
+**Estado de proveedor**:
+Situación de una cuenta o servicio para reproducir: `connected`, `expired`,
+`preview-only` o `unavailable`. Se muestra en la búsqueda y la cola; no es lo
+mismo que el estado de una descarga.
+_Evitar_: 'conectado' sin decir si es cuenta, proveedor o descarga.
+
+**Renderer**:
+Dispositivo de salida de terceros (UPnP/DLNA o Chromecast) que recibe el audio
+por red y lo reproduce. Syncify lo controla; no es el dispositivo de audio local
+ni el motor nativo.
+_Evitar_: 'reproductor' para el renderer; 'salida' a secas.
+
 ## Calidad y entrega
 
 **QualityTier**:
 Calidad anunciada por el servicio frente a la realmente entregada
 (`quality_preferences`, `track_availability`). Anunciada ≠ bytes reales.
+_Evitar_: confundirla con la calidad de fuente o de salida de reproducción (ver
+Reproducción).
 
 **Evidencia de entrega**:
 Registro de que una combinación servicio + cuenta sirvió una pista concreta, con la
@@ -182,3 +309,113 @@ permanente: caduca y un fallo la invalida.
 Concesión en memoria del protocolo `syncify-media://`, sustituido por el motor
 nativo. El subsistema se borró (C-19 en `docs/Deuda_Tecnica_y_UX.md`): hoy no queda
 ni el comando ni el protocolo.
+
+## Letras
+
+**Fuente de letras**:
+Uno de los orígenes independientes de los que Syncify resuelve una letra (LRCLIB,
+Apple Music TTML, Kugou, …). No es un proveedor de música: sirve letras para
+cualquier pista, venga o no de su biblioteca.
+_Evitar_: 'proveedor' a secas, reservado a los servicios de música.
+
+**Nivel de sincronía**:
+Granularidad temporal que garantiza una letra: por sílaba, por palabra, por línea o
+sin marcas (plain). Ordena la calidad entre versiones: más fino, mejor.
+_Evitar_: 'calidad' a secas; 'tipo de letra' para el nivel.
+
+**Enhanced LRC (ELRC)**:
+LRC con marcas de tiempo por palabra o sílaba dentro de la línea. Es el formato de
+preservación de la sincronía fina; degradarlo a LRC de línea es pérdida.
+_Evitar_: 'LRC mejorado', 'karaoke LRC'.
+
+**Sidecar**:
+Fichero `.lrc` hermano del audio que entrega la letra a reproductores externos. Es
+una proyección de la letra guardada, no su origen.
+_Evitar_: 'fichero de letra' para el almacenamiento canónico.
+
+**Versión de letra**:
+Una letra concreta que una **Fuente de letras** produjo para un idioma y formato
+dados. Varias versiones pueden convivir para la misma pista; el formato es una
+propiedad del contenido, no su identidad.
+_Evitar_: 'formato' para la versión.
+
+**Versión activa**:
+La versión de letra que la reproducción y la UI muestran de una pista. La fija un
+**Pin de versión** del usuario o, en su ausencia, la regla de selección (nivel de
+sincronía, idioma preferido, prioridad de fuente).
+_Evitar_: 'letra actual' sin más; el badge de UI no persiste la elección.
+
+**Pin de versión**:
+Elección explícita del usuario que fija la **Versión activa**. La resolución
+automática, los reintentos y el re-fetch karaoke no la degradan: solo la acción del
+usuario la cambia.
+_Evitar_: 'favorito', 'seleccionada' como estado efímero.
+
+**Marca de borrado**:
+Intención persistente del usuario de que una pista no tenga letra, por formato o
+completa. La resolución automática la respeta; solo guardar o restaurar
+explícitamente ese formato la anula.
+_Evitar_: tratarla como caché de la resolución: es voluntad del usuario, no un
+resultado.
+
+**Cosecha**:
+Barrido del disco local que incorpora letras ya presentes en ficheros (tags
+embebidos o sidecars) a la biblioteca. No resuelve en red.
+_Evitar_: 'escaneo' genérico; 'descarga', que no toca.
+
+**Letra instrumental**:
+Resultado válido de resolución que declara que la pista no tiene letra cantada. No
+es un fallo ni ausencia: se muestra como tal.
+_Evitar_: 'sin letra', que sugiere que falta resolverla.
+
+**Sonda**:
+Comprobación puntual de que una fuente responde con su endpoint, sin resolver una
+pista concreta. Distingue falta de credencial de fuente caída.
+_Evitar_: 'test de proveedor'; 'ping'.
+
+## Ajustes y backup
+
+**Ajuste**:
+Una preferencia del usuario con nombre, valor y superficie de persistencia (tabla
+tipada o KV genérica). Persistido no significa consumido: un ajuste sin lector no
+es una preferencia, es una promesa falsa.
+_Evitar_: 'opción' para el ajuste sin lector; 'config' a secas.
+
+**Ajuste huérfano**:
+Ajuste visible o persistido que ningún código lee para decidir comportamiento. No
+es deuda menor: miente en la UI. Su destino es cablearse u ocultarse, nunca
+quedarse.
+_Evitar_: 'ajuste decorativo'; 'dead setting'.
+
+**Superficie de ajustes**:
+El almacén atómico de un grupo de ajustes: una tabla tipada (singleton o por fila)
+o la KV genérica. Cada valor vive en una sola superficie; la duplicación entre
+superficies es un defecto, no un patrón.
+_Evitar_: 'tabla de ajustes' para la KV genérica.
+
+**Consumidor**:
+El código que lee un ajuste para decidir comportamiento. Es lo que acredita que el
+ajuste existe de verdad: escribirlo no basta.
+_Evitar_: 'persistido' como sinónimo de consumido.
+
+**Defaults**:
+Valores de fábrica de una superficie. Viven en un solo sitio y de ahí comen
+arranque, reset y seed; las copias de defaults en la UI están prohibidas.
+_Evitar_: 'seed' para el valor leído en runtime.
+
+**Reset**:
+Restaurar una o todas las superficies a sus defaults. Es una operación del backend
+sobre los almacenes, no una compensación que la UI hace en cliente.
+_Evitar_: confundirlo con el borrado de biblioteca; 'factory reset' si solo toca
+ajustes.
+
+**Manifest de backup**:
+El JSON de exportación con checksum y versionado de esquema que lleva biblioteca y
+ajustes, nunca secretos. Restaurarlo en otra máquina reproduce biblioteca y
+ajustes; las cuentas piden reautenticar.
+_Evitar_: llamar 'backup' a la copia pre-mutación interna.
+
+**Copia pre-mutación**:
+Snapshot interno de la BD que una operación peligrosa deja antes de escribir. No es
+un backup de usuario: no sale del equipo, no se programa y no se lista en la UI.
+_Evitar_: 'backup automático'.

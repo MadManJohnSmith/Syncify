@@ -156,8 +156,9 @@ open only in that file:
   DL-SVC-, MF-…).
 - `perf-probe-2026-10-12.md` and `perf-run-2026-10-12.md`: backend performance
   measurements (the ISRC expression index is still not built).
-- `RELEASE_NOTES_v0.6.0.md` and `RELEASE_NOTES_v0.6.1.md`: notes for the
-  tagged releases `v0.6.0` and `v0.6.1`.
+- `RELEASE_NOTES_v0.6.0.md`, `RELEASE_NOTES_v0.6.1.md` and
+  `RELEASE_NOTES_v0.6.2.md`: notes for the tagged releases `v0.6.0`, `v0.6.1`
+  and `v0.6.2`.
 
 ## Identifier namespaces
 
