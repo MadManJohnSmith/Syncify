@@ -146,7 +146,8 @@ describe('LibraryView — canal enrichment-progress compartido (auditoría 60)',
     }
 
     const musicBrainzEvent = {
-        status: 'progress',
+        kind: 'musicbrainz',
+        status: 'processing',
         total: 120,
         current: 40,
         enriched: 38,
@@ -163,13 +164,12 @@ describe('LibraryView — canal enrichment-progress compartido (auditoría 60)',
         expect(counterText(wrapper)).toContain('40/120');
     });
 
-    it('ignora el payload de Last.fm, que no describe el trabajo de MusicBrainz', async () => {
+    it('ignora un evento sin `kind` (productor desconocido)', async () => {
         const wrapper = await startEnriching();
         emitProgress(musicBrainzEvent);
         await flushPromises();
 
-        // Last.fm emite { type, status, current, total, message } por el mismo
-        // canal: `current` cuenta aciertos y no llega `currentTrack`.
+        // Cualquier evento que no declare `kind: "musicbrainz"` se ignora.
         emitProgress({
             type: 'lastfm_genre',
             status: 'progress',
@@ -183,12 +183,12 @@ describe('LibraryView — canal enrichment-progress compartido (auditoría 60)',
         expect(counterText(wrapper)).not.toContain('0/412');
     });
 
-    it('ignora el resumen camelCase del enriquecimiento incremental', async () => {
+    it('ignora un resumen sin `kind` (evento retirado)', async () => {
         const wrapper = await startEnriching();
         emitProgress(musicBrainzEvent);
         await flushPromises();
 
-        // EnrichmentJobSummary llega en camelCase (totalTracks, processedTracks).
+        // El resumen incremental ya no se emite por este canal.
         emitProgress({
             jobId: 'job-1',
             status: 'running',
