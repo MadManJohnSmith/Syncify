@@ -321,6 +321,10 @@ jobs:
           # compatible con las copias 1.20.
           rm -f "$WORK/squashfs-root"/usr/lib/libwayland-*.so*
 
+          # appimagetool (continuous) rechaza directorios con modo 0700; los
+          # recursos que Tauri empaqueta conservan permisos restrictivos.
+          chmod -R a+rX "$WORK/squashfs-root"
+
           # Reempaquetar con appimagetool (conserva el AppRun y los hooks).
           curl -sL -o "$WORK/appimagetool" \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
@@ -357,6 +361,7 @@ jobs:
 
           # Reempaquetar conservando AppRun y hooks (misma técnica del paso
           # de GStreamer).
+          chmod -R a+rX "$ROOT"
           curl -sL -o "$WORK/appimagetool" \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
           chmod +x "$WORK/appimagetool"
