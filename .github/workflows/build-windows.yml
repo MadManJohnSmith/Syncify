@@ -236,6 +236,29 @@ jobs:
       - name: Guardia del keyring de Windows (store persistente)
         run: cargo test --locked -p syncify-tauri --lib crypto::tests::windows_build_uses_a_persistent_credential_store -- --nocapture
 
+      # Diagnóstico del loader cuando la guardia muere al ARRANCAR el binario de
+      # test (STATUS_ENTRYPOINT_NOT_FOUND): distingue un fallo del runner entero
+      # (una crate mínima también muere) de uno del exe de la app, y lista los
+      # dependientes del exe para ver qué DLL resuelve el loader y desde dónde.
+      - name: Diagnóstico del loader si la guardia falla
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          Write-Host ">>> 1. ¿Carga un binario de test mínimo?"
+          cargo test --locked -p syncify-fmp4-flac --lib
+
+          Write-Host ">>> 2. Dependientes del exe de la app"
+          $exe = Get-ChildItem "target/debug/deps/syncify_tauri_lib-*.exe" |
+                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          Write-Host "exe: $($exe.FullName)"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -property installationPath
+          $dumpbin = Get-ChildItem -Path (Join-Path $vsRoot "VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe") |
+                     Select-Object -First 1
+          Write-Host "dumpbin: $($dumpbin.FullName)"
+          & $dumpbin.FullName /DEPENDENTS $exe.FullName
+
       - name: Compilar con Tauri v2 (Instalador NSIS y Binarios)
         run: npx --prefix ui tauri build
 
