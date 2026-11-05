@@ -99,7 +99,7 @@ jobs:
     needs: gate
     name: Compilar Syncify para Windows
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
 
     steps:
       - name: Checkout del repositorio
