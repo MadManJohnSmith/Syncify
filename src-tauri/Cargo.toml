@@ -49,9 +49,14 @@ rand = "0.8"
 # solo sync-secret-service Windows compilaba ese mock: escribía con Ok y al
 # siguiente arranque la clave no existía. crypto.rs verifica la persistencia
 # declarada y usa el archivo de fallback en ese caso, pero el backend real de
-# Windows es el Credential Manager. windows-sys solo se compila en targets
-# Windows (dependencia target-gated de keyring), no afecta a Linux/macOS.
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "windows-native"] }
+# Windows es el Credential Manager.
+#
+# Las features van POR TARGET (tablas al final del fichero): declararlas juntas
+# aquí compilaba sync-secret-service también en Windows, y ese backend arrastra
+# dbus-secret-service -> libdbus (DLL dinámica que el ejecutable no puede
+# cargar): el binario de test no arrancaba en el runner de Windows
+# (STATUS_ENTRYPOINT_NOT_FOUND; la guardia del keyring en build-windows.yml lo
+# cazó). El split deja cada backend solo en su target.
 dirs = "5"
 libc = "0.2"
 hostname = "0.4"
@@ -77,6 +82,13 @@ syncify-player = { path = "../crates/syncify-player" }
 [target.'cfg(target_os = "linux")'.dependencies]
 # Fase 1 del player: MPRIS nativo (el WebKit MediaSession antiguo ya no existe).
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+# Keyring por target: el backend de cada SO solo en su target (ver el comentario
+# de la dependencia arriba). Juntar las features compila libdbus en Windows y el
+# ejecutable no arranca.
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["crypto-rust", "windows-native"] }
 
 
 
