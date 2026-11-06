@@ -11,33 +11,56 @@
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
 
-use sqlx::SqlitePool;
 use tokio_util::sync::CancellationToken;
 
 use syncify_core_domain::errors::ErrorTaxonomy;
 use syncify_core_domain::operation_recovery::OperationType;
 use syncify_core_domain::quality::QualityDecision;
 
-use crate::download::amazon::AmazonDownloader;
 use crate::download::audio_inspector::inspect_physical_audio_file;
 use crate::download::progress::{DownloadRequest, DownloadResult};
-use crate::download::qobuz::QobuzDownloader;
-use crate::download::tidal::{TidalDownloader, TidalOrchestratorExt};
 use crate::services::operation_recovery::classify_operation_error;
+
+pub use crate::download::providers::{AmazonProvider, QobuzProvider, TidalProvider};
+
+/// Enrutado del que procede la petición. Es metadato informativo para el
+/// veredicto de provenance: el adaptador lo copia al [`DownloadResult`] y no
+/// lo usa para elegir cuenta ni para autorizar la descarga.
+#[derive(Debug, Clone, Default)]
+pub struct ProviderRouting {
+    pub origin_service: Option<String>,
+    pub origin_service_track_id: Option<String>,
+    pub effective_service_track_id: Option<String>,
+    pub match_method: Option<String>,
+    pub match_confidence: Option<f64>,
+    pub fallback_reason: Option<String>,
+}
+
+/// Capacidades estáticas declaradas por un proveedor. El enrutado puede
+/// consultarlas antes de intentar una petición que el motor no sabe servir.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    pub supports_lossless: bool,
+}
 
 /// Petición normalizada hacia un proveedor: la [`DownloadRequest`] del
 /// orquestador (metadatos, identidad, calidad y políticas) más la cuenta
-/// resuelta que D00 persiste en la cola (`resolved_account_id`).
+/// resuelta que D00 persiste en la cola (`resolved_account_id`) y el enrutado
+/// del que procede.
 ///
-// Consumida por tests/provider_gateway_test.rs y por el falso; D02 conectará
-// el enrutado que la construye en producción.
+/// `account_id` es metadato informativo: el adaptador lo copia a la entrega,
+/// pero los motores de descarga vuelven a resolver la cuenta internamente.
+///
+// Consumida por tests/provider_gateway_test.rs, tests/provider_adapters_test.rs
+// y el registro del orquestador; D02 conectará el enrutado que la construye en
+// producción.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProviderRequest {
     pub request: DownloadRequest,
     pub account_id: Option<i64>,
+    pub routing: ProviderRouting,
 }
 
 #[allow(dead_code)]
@@ -46,11 +69,17 @@ impl ProviderRequest {
         Self {
             request,
             account_id: None,
+            routing: ProviderRouting::default(),
         }
     }
 
     pub fn with_account(mut self, account_id: Option<i64>) -> Self {
         self.account_id = account_id;
+        self
+    }
+
+    pub fn with_routing(mut self, routing: ProviderRouting) -> Self {
+        self.routing = routing;
         self
     }
 }
@@ -71,21 +100,31 @@ pub struct ProviderDelivery {
 }
 
 impl ProviderDelivery {
-    /// Proyecta un [`DownloadResult`] y lee del fichero producido el formato y
-    /// la duración que el resultado no lleva. Solo inspección local: no toca
-    /// el pipeline ni la lógica del descargador. Es el constructor canónico
-    /// para cualquier implementador de [`DownloadProvider`].
+    /// Proyecta un [`DownloadResult`] y lee del fichero producido el formato,
+    /// la duración y los parámetros físicos que el resultado no lleva. Solo
+    /// inspección local: no toca el pipeline ni la lógica del descargador. Es
+    /// el constructor canónico para cualquier implementador de
+    /// [`DownloadProvider`].
+    ///
+    /// Cuando la inspección física funciona, sus valores de bit depth y sample
+    /// rate mandan sobre los declarados por el motor: el fichero es la fuente
+    /// de verdad, no la respuesta del proveedor.
     pub fn from_result(result: DownloadResult, account_id: Option<i64>) -> Self {
         let physical = inspect_physical_audio_file(Path::new(&result.file_path));
-        let (format, duration_secs) = match &physical {
-            Some(physical) => (Some(physical.format.clone()), physical.duration_secs),
-            None => (None, None),
+        let (format, duration_secs, bit_depth, sample_rate) = match &physical {
+            Some(physical) => (
+                Some(physical.format.clone()),
+                physical.duration_secs,
+                physical.bit_depth,
+                physical.sample_rate,
+            ),
+            None => (None, None, result.bit_depth, result.sample_rate),
         };
         Self {
             file_path: result.file_path.clone(),
             format,
-            bit_depth: result.bit_depth,
-            sample_rate: result.sample_rate,
+            bit_depth,
+            sample_rate,
             duration_secs,
             account_id,
             quality_decision: result.quality_decision.clone(),
@@ -110,6 +149,7 @@ impl ProviderError {
         let operation_type = match provider.to_ascii_lowercase().as_str() {
             "qobuz" => OperationType::DownloadQobuz,
             "tidal" => OperationType::DownloadTidal,
+            "amazon" => OperationType::DownloadAmazon,
             _ => OperationType::CrossProviderFallback,
         };
         Self {
@@ -142,6 +182,10 @@ impl std::error::Error for ProviderError {}
 pub trait DownloadProvider: Send + Sync {
     fn service_name(&self) -> &'static str;
 
+    /// Capacidades estáticas del motor; el adaptador las declara sin tocar su
+    /// lógica interna.
+    fn capabilities(&self) -> ProviderCapabilities;
+
     fn download<'a>(
         &'a self,
         request: &'a ProviderRequest,
@@ -151,113 +195,39 @@ pub trait DownloadProvider: Send + Sync {
 
 /// Comprueba el token antes de entrar al descargador envuelto: la cancelación
 /// del usuario nunca llega a abrir red.
-fn ensure_not_cancelled(cancel_token: Option<&CancellationToken>) -> Result<(), ProviderError> {
+pub(crate) fn ensure_not_cancelled(
+    cancel_token: Option<&CancellationToken>,
+) -> Result<(), ProviderError> {
     match cancel_token {
         Some(token) if token.is_cancelled() => Err(ProviderError::cancelled()),
         _ => Ok(()),
     }
 }
 
-/// Adaptador de [`QobuzDownloader`]: reenvía la petición tal cual (la cuenta
-/// la resuelve el descargador con su plan interno) y clasifica el error.
-pub struct QobuzProvider {
-    downloader: Arc<QobuzDownloader>,
-    db: Option<SqlitePool>,
-}
-
-impl QobuzProvider {
-    pub fn new(downloader: Arc<QobuzDownloader>, db: Option<SqlitePool>) -> Self {
-        Self { downloader, db }
-    }
-}
-
-impl DownloadProvider for QobuzProvider {
-    fn service_name(&self) -> &'static str {
-        "qobuz"
-    }
-
-    fn download<'a>(
-        &'a self,
-        request: &'a ProviderRequest,
-        cancel_token: Option<&'a CancellationToken>,
-    ) -> Pin<Box<dyn Future<Output = Result<ProviderDelivery, ProviderError>> + Send + 'a>> {
-        Box::pin(async move {
-            ensure_not_cancelled(cancel_token)?;
-            let result = self
-                .downloader
-                .download_track(&request.request, self.db.as_ref(), cancel_token)
-                .await
-                .map_err(|err| ProviderError::classify("qobuz", &format!("{err:#}")))?;
-            Ok(ProviderDelivery::from_result(result, request.account_id))
-        })
-    }
-}
-
-/// Adaptador de [`TidalDownloader`] (extensión [`TidalOrchestratorExt`]).
-pub struct TidalProvider {
-    downloader: Arc<TidalDownloader>,
-    db: Option<SqlitePool>,
-}
-
-impl TidalProvider {
-    pub fn new(downloader: Arc<TidalDownloader>, db: Option<SqlitePool>) -> Self {
-        Self { downloader, db }
-    }
-}
-
-impl DownloadProvider for TidalProvider {
-    fn service_name(&self) -> &'static str {
-        "tidal"
-    }
-
-    fn download<'a>(
-        &'a self,
-        request: &'a ProviderRequest,
-        cancel_token: Option<&'a CancellationToken>,
-    ) -> Pin<Box<dyn Future<Output = Result<ProviderDelivery, ProviderError>> + Send + 'a>> {
-        Box::pin(async move {
-            ensure_not_cancelled(cancel_token)?;
-            let result = self
-                .downloader
-                .download_track(&request.request, self.db.as_ref(), cancel_token)
-                .await
-                .map_err(|err| ProviderError::classify("tidal", &format!("{err:#}")))?;
-            Ok(ProviderDelivery::from_result(result, request.account_id))
-        })
-    }
-}
-
-/// Adaptador de [`AmazonDownloader`]: la URL del relay llega en
-/// `service_track_id`, igual que en la rama directa del orquestador.
-pub struct AmazonProvider {
-    downloader: Arc<AmazonDownloader>,
-}
-
-impl AmazonProvider {
-    pub fn new(downloader: Arc<AmazonDownloader>) -> Self {
-        Self { downloader }
-    }
-}
-
-impl DownloadProvider for AmazonProvider {
-    fn service_name(&self) -> &'static str {
-        "amazon"
-    }
-
-    fn download<'a>(
-        &'a self,
-        request: &'a ProviderRequest,
-        cancel_token: Option<&'a CancellationToken>,
-    ) -> Pin<Box<dyn Future<Output = Result<ProviderDelivery, ProviderError>> + Send + 'a>> {
-        Box::pin(async move {
-            ensure_not_cancelled(cancel_token)?;
-            let amazon_url = request.request.service_track_id.clone().unwrap_or_default();
-            let result = self
-                .downloader
-                .download_track(&request.request, &amazon_url, cancel_token)
-                .await
-                .map_err(|err| ProviderError::classify("amazon", &format!("{err:#}")))?;
-            Ok(ProviderDelivery::from_result(result, request.account_id))
-        })
-    }
+/// Copia el enrutado de la petición al resultado de descarga con los defaults
+/// del gateway (`exact_locked_source` / confianza 1.0) cuando el enrutado no
+/// los aporta. Los adaptadores llaman a esto antes de la reconciliación de
+/// calidad para que la política vea el servicio de origen real.
+pub(crate) fn apply_routing(result: &mut DownloadResult, request: &ProviderRequest, service: &str) {
+    let routing = &request.routing;
+    result.origin_service = routing
+        .origin_service
+        .clone()
+        .or_else(|| request.request.service_name.clone())
+        .or_else(|| Some(service.to_string()));
+    result.origin_service_track_id = routing
+        .origin_service_track_id
+        .clone()
+        .or_else(|| request.request.service_track_id.clone());
+    result.effective_service = Some(service.to_string());
+    result.effective_service_track_id = routing
+        .effective_service_track_id
+        .clone()
+        .or_else(|| request.request.service_track_id.clone());
+    result.fallback_reason = routing.fallback_reason.clone();
+    result.match_method = routing
+        .match_method
+        .clone()
+        .or_else(|| Some("exact_locked_source".to_string()));
+    result.match_confidence = routing.match_confidence.or(Some(1.0));
 }

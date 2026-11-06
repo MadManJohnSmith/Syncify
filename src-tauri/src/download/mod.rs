@@ -10,6 +10,7 @@ pub mod jobs;
 pub mod lyrics;
 pub mod orchestrator;
 pub mod progress;
+pub mod providers;
 pub mod quality_reconcile;
 // Provider gateway (D01): staged API until D02 wires evidence-based routing
 // through it; the binary compiles this tree separately and does not consume it
@@ -41,8 +42,8 @@ pub use orchestrator::{DownloadOrchestrator, SongLinkEngineTarget};
 pub use progress::*;
 #[allow(unused_imports)]
 pub use provider_gateway::{
-    AmazonProvider, DownloadProvider, ProviderDelivery, ProviderError, ProviderRequest,
-    QobuzProvider, TidalProvider,
+    AmazonProvider, DownloadProvider, ProviderCapabilities, ProviderDelivery, ProviderError,
+    ProviderRequest, ProviderRouting, QobuzProvider, TidalProvider,
 };
 pub use resolver::{
     classify_attempt_failure, exclusions_for_failure, expand_attempt_sequence,

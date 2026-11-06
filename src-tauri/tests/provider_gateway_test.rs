@@ -14,7 +14,8 @@ use syncify_tauri_lib::download::audio_inspector::inspect_physical_audio_file;
 use syncify_tauri_lib::download::orchestrator::DownloadOrchestrator;
 use syncify_tauri_lib::download::progress::{DownloadRequest, DownloadResult};
 use syncify_tauri_lib::download::provider_gateway::{
-    DownloadProvider, ProviderDelivery, ProviderError, ProviderRequest,
+    DownloadProvider, ProviderCapabilities, ProviderDelivery, ProviderError, ProviderRequest,
+    ProviderRouting,
 };
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -84,6 +85,12 @@ impl DownloadProvider for FakeProvider {
         self.name
     }
 
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_lossless: true,
+        }
+    }
+
     fn download<'a>(
         &'a self,
         request: &'a ProviderRequest,
@@ -142,6 +149,28 @@ async fn orchestrator_resolves_provider_by_name_from_registry() {
             .unwrap_or_else(|| panic!("falta el proveedor {service}"));
         assert_eq!(provider.service_name(), service);
     }
+    assert!(
+        orchestrator
+            .resolve_provider("qobuz")
+            .unwrap()
+            .capabilities()
+            .supports_lossless
+    );
+    assert!(
+        orchestrator
+            .resolve_provider("tidal")
+            .unwrap()
+            .capabilities()
+            .supports_lossless
+    );
+    assert!(
+        !orchestrator
+            .resolve_provider("amazon")
+            .unwrap()
+            .capabilities()
+            .supports_lossless,
+        "Amazon solo sirve lossy"
+    );
     assert!(
         orchestrator.resolve_provider("deezer").is_none(),
         "catalog-only no es proveedor de descarga"
@@ -259,4 +288,38 @@ async fn real_adapters_resolve_from_the_same_registry() {
 
     let err = ProviderError::classify("amazon", "HTTP (403 Forbidden) for this item");
     assert!(err.taxonomy.requires_user_action());
+}
+
+#[test]
+fn provider_request_routing_defaults_and_override() {
+    let dir = TempDir::new().unwrap();
+
+    let default = test_request(dir.path());
+    assert!(default.routing.origin_service.is_none());
+    assert!(default.routing.origin_service_track_id.is_none());
+    assert!(default.routing.effective_service_track_id.is_none());
+    assert!(default.routing.match_method.is_none());
+    assert!(default.routing.match_confidence.is_none());
+    assert!(default.routing.fallback_reason.is_none());
+
+    let routed = test_request(dir.path()).with_routing(ProviderRouting {
+        origin_service: Some("deezer".to_string()),
+        origin_service_track_id: Some("dz-1".to_string()),
+        effective_service_track_id: Some("qobuz-1".to_string()),
+        match_method: Some("isrc_match".to_string()),
+        match_confidence: Some(0.87),
+        fallback_reason: Some("quality".to_string()),
+    });
+    assert_eq!(routed.routing.origin_service.as_deref(), Some("deezer"));
+    assert_eq!(
+        routed.routing.origin_service_track_id.as_deref(),
+        Some("dz-1")
+    );
+    assert_eq!(
+        routed.routing.effective_service_track_id.as_deref(),
+        Some("qobuz-1")
+    );
+    assert_eq!(routed.routing.match_method.as_deref(), Some("isrc_match"));
+    assert_eq!(routed.routing.match_confidence, Some(0.87));
+    assert_eq!(routed.routing.fallback_reason.as_deref(), Some("quality"));
 }

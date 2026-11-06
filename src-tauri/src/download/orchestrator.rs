@@ -174,7 +174,7 @@ impl DownloadOrchestrator {
         let tidal = Arc::new(TidalDownloader::new());
         let amazon = Arc::new(AmazonDownloader::new());
         Self {
-            providers: Self::default_providers(&qobuz, &tidal, &amazon, None),
+            providers: Self::default_providers(None),
             qobuz,
             tidal,
             amazon,
@@ -191,27 +191,27 @@ impl DownloadOrchestrator {
     }
 
     /// Registro por defecto: un adaptador por descargador real, sin alterar su
-    /// lógica. Se reconstruye en `with_db` porque los adaptadores capturan el
-    /// pool para la resolución de tokens por cuenta.
+    /// lógica. El registro construye sus propios motores; `with_db` los
+    /// reconstruye con el pool para la resolución de tokens por cuenta.
     fn default_providers(
-        qobuz: &Arc<QobuzDownloader>,
-        tidal: &Arc<TidalDownloader>,
-        amazon: &Arc<AmazonDownloader>,
         db: Option<sqlx::SqlitePool>,
     ) -> std::collections::BTreeMap<String, Arc<dyn DownloadProvider>> {
         let mut providers: std::collections::BTreeMap<String, Arc<dyn DownloadProvider>> =
             std::collections::BTreeMap::new();
         providers.insert(
             "qobuz".to_string(),
-            Arc::new(QobuzProvider::new(qobuz.clone(), db.clone())),
+            Arc::new(QobuzProvider::new(
+                Arc::new(QobuzDownloader::new()),
+                db.clone(),
+            )),
         );
         providers.insert(
             "tidal".to_string(),
-            Arc::new(TidalProvider::new(tidal.clone(), db)),
+            Arc::new(TidalProvider::new(Arc::new(TidalDownloader::new()), db)),
         );
         providers.insert(
             "amazon".to_string(),
-            Arc::new(AmazonProvider::new(amazon.clone())),
+            Arc::new(AmazonProvider::new(Arc::new(AmazonDownloader::new()))),
         );
         providers
     }
@@ -242,8 +242,7 @@ impl DownloadOrchestrator {
 
     pub fn with_db(mut self, db: sqlx::SqlitePool) -> Self {
         self.enrichment = Arc::new(EnrichmentEngine::with_db(db.clone()));
-        self.providers =
-            Self::default_providers(&self.qobuz, &self.tidal, &self.amazon, Some(db.clone()));
+        self.providers = Self::default_providers(Some(db.clone()));
         self.db = Some(db);
         self
     }
