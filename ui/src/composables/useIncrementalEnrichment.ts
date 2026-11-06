@@ -7,6 +7,7 @@ import {
   cancelLibraryEnrichment,
   getLibraryEnrichmentStatus,
 } from '@/api/enrichment'
+import { parseEnrichmentEvent } from '@/api/enrichmentEvents'
 import type {
   EnrichmentMode,
   EnrichmentPreview,
@@ -81,9 +82,11 @@ export function useIncrementalEnrichment() {
 
   onMounted(async () => {
     try {
-      unlistenProgress = await listen<EnrichmentJobSummary>(TauriEvents.ENRICHMENT_PROGRESS_ALT, (event) => {
-        jobSummary.value = event.payload
-        isRunning.value = event.payload.status === 'running' || event.payload.status === 'queued'
+      unlistenProgress = await listen<unknown>(TauriEvents.ENRICHMENT_PROGRESS, (event) => {
+        const parsed = parseEnrichmentEvent(event.payload)
+        if (parsed?.kind !== 'incrementalSummary') return
+        jobSummary.value = parsed
+        isRunning.value = parsed.status === 'running' || parsed.status === 'queued'
       })
       await fetchPreview()
       await fetchStatus()

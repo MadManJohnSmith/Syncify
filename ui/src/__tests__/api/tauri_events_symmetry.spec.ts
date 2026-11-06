@@ -9,6 +9,7 @@ function scanRustEmittedEvents(): Set<string> {
     const srcTauriPath = path.resolve(__dirname, '../../../../src-tauri/src')
     const emittedEvents = new Set<string>()
     const emitRegex = /\.emit\(\s*"([^"]+)"/g
+    let emitsCentralizedEnrichment = false
     if (!fs.existsSync(srcTauriPath)) {
         // If running in isolated sandbox where parent paths are relative to ui
         return emittedEvents
@@ -23,6 +24,11 @@ function scanRustEmittedEvents(): Set<string> {
                 scanDir(fullPath)
             } else if (file.endsWith('.rs')) {
                 const content = fs.readFileSync(fullPath, 'utf8')
+                if (content.includes('emit_enrichment(')) {
+                    // El emisor centralizado usa ENRICHMENT_PROGRESS_EVENT; el
+                    // escáner de literales `emit("...")` no puede verlo.
+                    emitsCentralizedEnrichment = true
+                }
                 let match: RegExpExecArray | null
                 while ((match = emitRegex.exec(content)) !== null) {
                     emittedEvents.add(match[1])
@@ -32,6 +38,9 @@ function scanRustEmittedEvents(): Set<string> {
     }
 
     scanDir(srcTauriPath)
+    if (emitsCentralizedEnrichment) {
+        emittedEvents.add('enrichment-progress')
+    }
     return emittedEvents
 }
 
@@ -43,11 +52,9 @@ describe('TASK-118: IPC Event Name Symmetry between Frontend and Rust Backend', 
     })
 
     it('defines canonical constants for the diagnosed misaligned pairs', () => {
-        // 1. enrichment-progress es el único canal: el alias sin guion
-        //    (enrichment_progress) no tenía ningún listener en la UI y solo
-        //    duplicaba el tráfico IPC por evento.
+        // 1. enrichment-progress es el único canal canónico; el antiguo alias
+        //     sin guion no tenía listener y duplicaba el tráfico IPC.
         expect(TauriEvents.ENRICHMENT_PROGRESS).toBe('enrichment-progress')
-        expect(TauriEvents.ENRICHMENT_PROGRESS_ALT).toBe('enrichment-progress')
 
         // 2. background-enrichment-status vs syncify:enrichment_event
         expect(TauriEvents.BACKGROUND_ENRICHMENT_STATUS).toBe('background-enrichment-status')
