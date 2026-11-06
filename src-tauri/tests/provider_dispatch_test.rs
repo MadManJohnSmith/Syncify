@@ -42,6 +42,7 @@ enum Behavior {
     AuthRejected,
     RejectLosslessThenDeliver,
     Unavailable,
+    EntityLookup401,
 }
 
 struct RecordingProvider {
@@ -129,6 +130,10 @@ impl DownloadProvider for RecordingProvider {
                 Behavior::Unavailable => Err(ProviderError::classify(
                     self.name,
                     "StaleSource: track/get failed: HTTP 404 not found",
+                )),
+                Behavior::EntityLookup401 => Err(ProviderError::classify(
+                    self.name,
+                    "Qobuz track/get failed for ID 123: HTTP 401 Unauthorized",
                 )),
             }
         })
@@ -323,6 +328,30 @@ async fn unavailable_source_keeps_the_stale_diagnosis_without_fallback() {
     assert!(
         error.to_string().contains("StaleSource"),
         "unexpected error: {error}"
+    );
+    assert_eq!(fake.calls(), 1);
+}
+
+#[tokio::test]
+async fn entity_lookup_401_is_not_treated_as_an_account_auth_abort() {
+    let dir = TempDir::new().unwrap();
+    let fake = RecordingProvider::new("qobuz", Behavior::EntityLookup401);
+    let orchestrator = DownloadOrchestrator::new().with_provider_override("qobuz", fake.clone());
+    let req = request(dir.path(), "qobuz", "entity-1");
+
+    let error = orchestrator
+        .download_track_cancellable(&req, None)
+        .await
+        .expect_err("an entity lookup rejection is still a failure");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("ProviderEntityFailure"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        !message.contains("authentication required"),
+        "the account must not be blamed: {message}"
     );
     assert_eq!(fake.calls(), 1);
 }
