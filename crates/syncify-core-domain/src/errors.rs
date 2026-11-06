@@ -246,6 +246,35 @@ impl ErrorTaxonomy {
         }
     }
 
+    /// Categoría estable para persistir en `download_queue.failure_class`.
+    ///
+    /// Es el mismo `snake_case` que usa el `serde` de la taxonomía, no un
+    /// vocabulario nuevo: el verificador de reintento sigue leyendo la
+    /// variante completa de `ErrorTaxonomy`.
+    pub fn failure_class(&self) -> &'static str {
+        match self {
+            ErrorTaxonomy::AuthInvalid { .. } => "auth_invalid",
+            ErrorTaxonomy::AuthRefreshable { .. } => "auth_refreshable",
+            ErrorTaxonomy::EntitlementDenied { .. } => "entitlement_denied",
+            ErrorTaxonomy::RejectedQuality { .. } => "rejected_quality",
+            ErrorTaxonomy::RegionRestricted { .. } => "region_restricted",
+            ErrorTaxonomy::UnavailableFromProvider { .. } => "unavailable_from_provider",
+            ErrorTaxonomy::RateLimited { .. } => "rate_limited",
+            ErrorTaxonomy::TemporaryNetworkFailure { .. } => "temporary_network_failure",
+            ErrorTaxonomy::Timeout { .. } => "timeout",
+            ErrorTaxonomy::MalformedProviderPayload { .. } => "malformed_provider_payload",
+            ErrorTaxonomy::QobuzPreviewPayload { .. } => "qobuz_preview_payload",
+            ErrorTaxonomy::IdentityConflict { .. } => "identity_conflict",
+            ErrorTaxonomy::MetadataResolutionFailed { .. } => "metadata_resolution_failed",
+            ErrorTaxonomy::AudioValidationFailed { .. } => "audio_validation_failed",
+            ErrorTaxonomy::TaggingFailed { .. } => "tagging_failed",
+            ErrorTaxonomy::FilesystemFailed { .. } => "filesystem_failed",
+            ErrorTaxonomy::DatabaseFailed { .. } => "database_failed",
+            ErrorTaxonomy::RepairInputChanged { .. } => "repair_input_changed",
+            ErrorTaxonomy::Cancelled { .. } => "cancelled",
+        }
+    }
+
     pub fn requires_user_action(&self) -> bool {
         matches!(
             self,
@@ -473,6 +502,45 @@ mod tests {
             net_err,
             PipelineError::RequiresAuth(_) | PipelineError::PlaybackUnauthorized { .. }
         ));
+    }
+
+    #[test]
+    fn failure_class_is_the_serde_category() {
+        let cases = [
+            (
+                ErrorTaxonomy::AuthInvalid {
+                    message: "revoked".to_string(),
+                },
+                "auth_invalid",
+            ),
+            (
+                ErrorTaxonomy::RateLimited {
+                    provider: "qobuz".to_string(),
+                    retry_after_sec: Some(30),
+                },
+                "rate_limited",
+            ),
+            (
+                ErrorTaxonomy::RejectedQuality {
+                    requested: "hires".to_string(),
+                    obtained: "lossless".to_string(),
+                    reason: "shortfall".to_string(),
+                },
+                "rejected_quality",
+            ),
+            (
+                ErrorTaxonomy::Timeout {
+                    endpoint: "api.tidal.com".to_string(),
+                    elapsed_ms: 5_000,
+                },
+                "timeout",
+            ),
+        ];
+        for (taxonomy, expected) in cases {
+            assert_eq!(taxonomy.failure_class(), expected);
+            let json = serde_json::to_value(&taxonomy).unwrap();
+            assert_eq!(json["category"], expected);
+        }
     }
 
     #[test]

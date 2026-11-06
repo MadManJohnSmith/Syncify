@@ -2486,11 +2486,28 @@ pub async fn cancel_download(queue_id: i64, state: State<'_, AppState>) -> Resul
 /// Cancel a queued or downloading item
 #[tauri::command]
 pub async fn cancel_queue_item(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    sqlx::query("UPDATE download_queue SET status = 'cancelled' WHERE id = ? AND status IN ('queued', 'downloading')")
-        .bind(queue_id)
-        .execute(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
+    let job_id: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT job_id FROM download_queue WHERE id = ?")
+            .bind(queue_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    let result = sqlx::query(
+        "UPDATE download_queue SET status = 'cancelled' WHERE id = ? AND status IN ('queued', 'downloading')",
+    )
+    .bind(queue_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if result.rows_affected() > 0 {
+        if let Some(Some(job_id)) = job_id {
+            crate::download::jobs::refresh_job_state(&state.db, job_id)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
 
     Ok(())
 }
@@ -2530,13 +2547,27 @@ pub async fn perform_retry_queue_item(db: &crate::DbPool, queue_id: i64) -> Resu
         }
     }
 
-    sqlx::query(
-        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL WHERE id = ? AND retry_count < 99"
+    let result = sqlx::query(
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, next_attempt_at = NULL, failure_class = NULL WHERE id = ? AND retry_count < 99"
     )
     .bind(queue_id)
     .execute(db)
     .await
     .map_err(|e| e.to_string())?;
+
+    if result.rows_affected() > 0 {
+        let job_id: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT job_id FROM download_queue WHERE id = ?")
+                .bind(queue_id)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| e.to_string())?;
+        if let Some(Some(job_id)) = job_id {
+            crate::download::jobs::refresh_job_state(db, job_id)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
 
     Ok(())
 }
@@ -2562,15 +2593,15 @@ pub async fn retry_failed(
 /// The exclusion list is the same taxonomy verdict `perform_retry_queue_item`
 /// applies to a single row; a SQL `NOT LIKE` chain could not stay in sync with it.
 pub async fn perform_retry_all_failed(db: &crate::DbPool) -> Result<i64, String> {
-    let candidates: Vec<(i64, Option<String>, Option<String>, i64)> = sqlx::query_as(
-        "SELECT id, error_message, service_name, retry_count FROM download_queue WHERE status = 'failed' AND retry_count < 5",
+    let candidates: Vec<(i64, Option<String>, Option<String>, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT id, error_message, service_name, retry_count, job_id FROM download_queue WHERE status = 'failed' AND retry_count < 5",
     )
     .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
 
     let mut retried = 0i64;
-    for (id, err_opt, service, _retry_count) in candidates {
+    for (id, err_opt, service, _retry_count, job_id) in candidates {
         let taxonomy = classify_operation_error(
             crate::worker::download_operation_type(service.as_deref()),
             service.as_deref().unwrap_or("unknown"),
@@ -2580,13 +2611,20 @@ pub async fn perform_retry_all_failed(db: &crate::DbPool) -> Result<i64, String>
             continue;
         }
         let updated = sqlx::query(
-            "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1 WHERE id = ?",
+            "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1, next_attempt_at = NULL, failure_class = NULL WHERE id = ?",
         )
         .bind(id)
         .execute(db)
         .await
         .map_err(|e| e.to_string())?;
         retried += updated.rows_affected() as i64;
+        if updated.rows_affected() > 0 {
+            if let Some(job_id) = job_id {
+                crate::download::jobs::refresh_job_state(db, job_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
     }
 
     Ok(retried)

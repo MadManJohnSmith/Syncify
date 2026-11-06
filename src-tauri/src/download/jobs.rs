@@ -734,6 +734,62 @@ pub async fn mark_job_failed(db: &SqlitePool, job_id: i64, error: &str) -> Resul
     Ok(())
 }
 
+/// Recalcula contadores y estado terminal de un job a partir de sus filas.
+///
+/// El job no es un segundo planificador: su estado se deriva de
+/// `download_queue.job_id`. La sentencia es un único UPDATE con subconsultas,
+/// así que dos transiciones concurrentes no pueden dejar contadores mezclados.
+///
+/// Reglas:
+/// - con filas `queued`/`downloading` el job sigue `running` (y `completed_at`
+///   se limpia si un reintento manual lo devolvió a la cola);
+/// - sin pendientes, los fallos mandan: `partial` si además hubo completadas u
+///   omitidas, `failed` si no;
+/// - después, las canceladas: `partial` si hubo completadas/omitidas,
+///   `cancelled` si no;
+/// - si todo terminó bien, `completed`.
+///
+/// `skipped_count` se conserva: lo escribe el encolado (duplicados y filas ya
+/// activas) y no se puede reconstruir desde `download_queue`.
+pub async fn refresh_job_state(db: &SqlitePool, job_id: i64) -> Result<(), JobError> {
+    sqlx::query(
+        "UPDATE download_jobs SET \
+           completed_count = (SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status = 'complete'), \
+           failed_count = (SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status = 'failed'), \
+           status = CASE \
+             WHEN (SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status IN ('queued', 'downloading')) > 0 THEN 'running' \
+             WHEN (SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status = 'failed') > 0 \
+               AND ((SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status = 'complete') > 0 OR skipped_count > 0) THEN 'partial' \
+             WHEN (SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status = 'failed') > 0 THEN 'failed' \
+             WHEN (SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status = 'cancelled') > 0 \
+               AND ((SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status = 'complete') > 0 OR skipped_count > 0) THEN 'partial' \
+             WHEN (SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status = 'cancelled') > 0 THEN 'cancelled' \
+             ELSE 'completed' \
+           END, \
+           completed_at = CASE \
+             WHEN (SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status IN ('queued', 'downloading')) > 0 THEN NULL \
+             ELSE COALESCE(completed_at, CURRENT_TIMESTAMP) \
+           END, \
+           updated_at = CURRENT_TIMESTAMP \
+         WHERE id = ?",
+    )
+    .bind(job_id)
+    .bind(job_id)
+    .bind(job_id)
+    .bind(job_id)
+    .bind(job_id)
+    .bind(job_id)
+    .bind(job_id)
+    .bind(job_id)
+    .bind(job_id)
+    .bind(job_id)
+    .bind(job_id)
+    .bind(job_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 const JOB_COLUMNS: &str = "id, kind, label, status, source_service, destination_service, \
      preferred_account_id, quality_preference, allow_fallback, filter_json, \
      requested_count, estimated_count, estimated_size_mb, completed_count, \

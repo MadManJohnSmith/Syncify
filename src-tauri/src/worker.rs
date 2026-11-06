@@ -601,6 +601,7 @@ impl DownloadWorker {
             FROM download_queue dq
             LEFT JOIN tracks t ON t.id = dq.track_id
             WHERE dq.status = 'queued'
+              AND (dq.next_attempt_at IS NULL OR datetime(dq.next_attempt_at) <= datetime('now'))
             ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
             LIMIT 1
             "#,
@@ -611,7 +612,7 @@ impl DownloadWorker {
 
         if let Some((qid, tid, title, artist)) = item {
             let res = sqlx::query(
-                "UPDATE download_queue SET status = 'downloading', started_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'queued'"
+                "UPDATE download_queue SET status = 'downloading', started_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'queued' AND (next_attempt_at IS NULL OR datetime(next_attempt_at) <= datetime('now'))"
             )
             .bind(qid)
             .execute(&self.db)
@@ -631,21 +632,48 @@ impl DownloadWorker {
         None
     }
 
-    /// Mark item as downloading
-    pub async fn mark_downloading(&self, queue_id: i64) {
-        if let Err(e) = sqlx::query(
-            "UPDATE download_queue SET status = 'downloading', started_at = CURRENT_TIMESTAMP WHERE id = ?"
+    /// Confirma que la fila sigue siendo nuestra antes de descargar.
+    ///
+    /// `claim_next_item` ya movió la fila a `downloading` de forma atómica: esa
+    /// transición es la reserva contra dobles claims. Aquí solo se comprueba
+    /// que sigue en `downloading`; una cancelación entre ambos pasos la deja en
+    /// `cancelled` y devuelve `false`, sin revivirla.
+    pub async fn mark_downloading(&self, queue_id: i64) -> bool {
+        match sqlx::query(
+            "UPDATE download_queue SET started_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'downloading'"
         )
         .bind(queue_id)
         .execute(&self.db)
         .await
         {
-            tracing::error!("Failed to mark queue item {} as downloading: {}", queue_id, e);
+            Ok(result) if result.rows_affected() > 0 => true,
+            Ok(_) => {
+                tracing::debug!(
+                    queue_id,
+                    "[Worker] Claim abandoned: queue row is no longer downloading"
+                  );
+                false
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to confirm queue item {} as downloading: {}",
+                    queue_id,
+                    e
+                );
+                false
+            }
         }
     }
 
-    /// Mark item as complete
-    pub async fn mark_complete(&self, queue_id: i64, res: &crate::download::DownloadResult) {
+    /// Marca la fila como `complete` y escribe el ledger.
+    ///
+    /// Devuelve `true` solo si la fila seguía `downloading` y el ledger se escribió.
+    /// El llamador lo usa para no emitir `complete` de una fila cancelada en vuelo.
+    pub async fn mark_complete(
+        &self,
+        queue_id: i64,
+        res: &crate::download::DownloadResult,
+    ) -> bool {
         // Inspect physical audio file on disk to get ground-truth audio metrics
         let path = std::path::Path::new(&res.file_path);
         let phys_info = crate::download::audio_inspector::inspect_physical_audio_file(path);
@@ -732,14 +760,14 @@ impl DownloadWorker {
                     status = other,
                     "[Worker] Dropping completion: queue row is no longer downloading"
                 );
-                return;
+                return false;
             }
             None => {
                 tracing::error!(
                     queue_id,
                     "[Worker] Dropping completion: queue row disappeared"
                 );
-                return;
+                return false;
             }
         }
 
@@ -861,7 +889,7 @@ impl DownloadWorker {
                     queue_id,
                     "[Worker] Completion lost the state race; queue row no longer downloading"
                 );
-                return;
+                return false;
             }
             Err(e) => {
                 tracing::error!(
@@ -869,7 +897,7 @@ impl DownloadWorker {
                     queue_id,
                     e
                 );
-                return;
+                return false;
             }
         };
 
@@ -878,7 +906,7 @@ impl DownloadWorker {
             .map(|m| m.len() as i64)
             .ok();
         let effective_srv = res.effective_service.as_deref().unwrap_or(&res.service);
-        if let Err(e) = sqlx::query(
+        let ledger_written = match sqlx::query(
             r#"
             INSERT INTO downloads (
                 track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at,
@@ -938,12 +966,16 @@ impl DownloadWorker {
         .execute(&self.db)
         .await
         {
-            tracing::error!(
-                "Failed to record download in downloads ledger for queue_id {}: {}",
-                queue_id,
-                e
-            );
-        }
+            Ok(_) => true,
+            Err(e) => {
+                tracing::error!(
+                    "Failed to record download in downloads ledger for queue_id {}: {}",
+                    queue_id,
+                    e
+                );
+                false
+            }
+        };
 
         // Synchronize tracks.audio_quality based on actual physical audio on disk
         let track_id_opt: Option<i64> =
@@ -1050,21 +1082,131 @@ impl DownloadWorker {
                 .await;
             }
         }
+        self.refresh_job_for_queue_row(queue_id).await;
+        ledger_written
     }
 
-    /// Mark item as failed (transient, retryable)
-    async fn mark_failed(&self, queue_id: i64, error: &str) {
-        if let Err(e) = sqlx::query(
-            "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, decision_reason = COALESCE(?, decision_reason), retry_count = retry_count + 1 WHERE id = ?"
+    /// Refresca el estado del job al que pertenece una fila de la cola.
+    ///
+    /// Las filas legacy y las que no nacieron de un job tienen `job_id` NULL;
+    /// en ese caso no hay nada que recalcular.
+    async fn refresh_job_for_queue_row(&self, queue_id: i64) {
+        let job_id: Option<Option<i64>> =
+            match sqlx::query_scalar("SELECT job_id FROM download_queue WHERE id = ?")
+                .bind(queue_id)
+                .fetch_optional(&self.db)
+                .await
+            {
+                Ok(row) => row,
+                Err(e) => {
+                    tracing::error!("Failed to read job_id for queue item {}: {}", queue_id, e);
+                    return;
+                }
+            };
+
+        if let Some(Some(job_id)) = job_id {
+            if let Err(e) = crate::download::jobs::refresh_job_state(&self.db, job_id).await {
+                tracing::error!(
+                    "Failed to refresh download job {} after queue item {} transition: {}",
+                    job_id,
+                    queue_id,
+                    e
+                );
+            }
+        }
+    }
+
+    /// Persiste un fallo de descarga y decide si se reintenta solo.
+    ///
+    /// Clasifica con la taxonomía compartida: un timeout, un fallo de red o un
+    /// 429 vuelven a `queued` con la ventana de `retry_delay_sec` y respetan
+    /// `max_attempts`; un 401/403, una calidad rechazada o cualquier error
+    /// terminal pasan a `failed` con `retry_count=99`, sin bucle contra la
+    /// misma cuenta. El UPDATE está guardado por `status='downloading'`: una
+    /// cancelación en vuelo gana y no se revive.
+    pub async fn mark_failed(&self, queue_id: i64, error: &str) -> bool {
+        let row: Option<(i64, Option<String>)> = match sqlx::query_as(
+            "SELECT retry_count, service_name FROM download_queue WHERE id = ? AND status = 'downloading'",
         )
-        .bind(error)
-        .bind(error)
-        .bind(error)
         .bind(queue_id)
-        .execute(&self.db)
+        .fetch_optional(&self.db)
         .await
         {
-            tracing::error!("Failed to mark queue item {} as failed: {}", queue_id, e);
+            Ok(row) => row,
+            Err(e) => {
+                tracing::error!("Failed to read retry state for queue item {}: {}", queue_id, e);
+                return true;
+            }
+        };
+
+        let Some((retry_count_prev, service_name)) = row else {
+            tracing::debug!(
+                queue_id,
+                "[Worker] Failure not persisted: queue row is no longer downloading"
+            );
+            return true;
+        };
+
+        let taxonomy = classify_operation_error(
+            download_operation_type(service_name.as_deref()),
+            service_name.as_deref().unwrap_or("unknown"),
+            error,
+        );
+        let attempts = u32::try_from(retry_count_prev.max(0)).unwrap_or(u32::MAX);
+        let retry = taxonomy.is_retryable() && attempts + 1 < taxonomy.max_attempts();
+        let failure_class = taxonomy.failure_class();
+
+        let result = if retry {
+            let next_attempt = format!("+{} seconds", taxonomy.retry_delay_sec());
+            sqlx::query(
+                "UPDATE download_queue SET status = 'queued', error_message = ?, last_error = ?, \
+                 decision_reason = COALESCE(?, decision_reason), retry_count = retry_count + 1, \
+                 failure_class = ?, next_attempt_at = datetime('now', ?), started_at = NULL, \
+                 progress_percent = 0 WHERE id = ? AND status = 'downloading'",
+            )
+            .bind(error)
+            .bind(error)
+            .bind(error)
+            .bind(failure_class)
+            .bind(next_attempt)
+            .bind(queue_id)
+            .execute(&self.db)
+            .await
+        } else {
+            sqlx::query(
+                "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, \
+                 decision_reason = COALESCE(?, decision_reason), retry_count = 99, \
+                 failure_class = ?, next_attempt_at = NULL WHERE id = ? AND status = 'downloading'",
+            )
+            .bind(error)
+            .bind(error)
+            .bind(error)
+            .bind(failure_class)
+            .bind(queue_id)
+            .execute(&self.db)
+            .await
+        };
+
+        match result {
+            Ok(r) if r.rows_affected() > 0 => {
+                self.refresh_job_for_queue_row(queue_id).await;
+                !retry
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    queue_id,
+                    "[Worker] Failure lost the state race; queue row is no longer downloading"
+                );
+                true
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to persist failure for queue item {}: {}",
+                    queue_id,
+                    e
+                );
+                true
+            }
         }
     }
 
@@ -1091,25 +1233,43 @@ impl DownloadWorker {
             None
         };
         let dec_reason = Some(error);
+        let taxonomy = classify_operation_error(download_operation_type(None), "unknown", error);
 
-        if let Err(e) = sqlx::query(
-            "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = 99, quality_decision = COALESCE(?, quality_decision), decision_reason = COALESCE(?, decision_reason) WHERE id = ?"
+        let result = sqlx::query(
+            "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, \
+             retry_count = 99, failure_class = ?, next_attempt_at = NULL, \
+             quality_decision = COALESCE(?, quality_decision), \
+             decision_reason = COALESCE(?, decision_reason) \
+             WHERE id = ? AND status = 'downloading'",
         )
         .bind(status)
         .bind(error)
         .bind(error)
+        .bind(taxonomy.failure_class())
         .bind(q_decision)
         .bind(dec_reason)
         .bind(queue_id)
         .execute(&self.db)
-        .await
-        {
-            tracing::error!(
-                "Failed to mark queue item {} as permanent failure (status: {}): {}",
-                queue_id,
-                status,
-                e
-            );
+        .await;
+
+        match result {
+            Ok(r) if r.rows_affected() > 0 => {
+                self.refresh_job_for_queue_row(queue_id).await;
+            }
+            Ok(_) => {
+                tracing::debug!(
+                    queue_id,
+                    "[Worker] Permanent failure not persisted: queue row is no longer downloading"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to mark queue item {} as permanent failure (status: {}): {}",
+                    queue_id,
+                    status,
+                    e
+                );
+            }
         }
     }
 
@@ -1429,6 +1589,14 @@ impl DownloadWorker {
             }
         };
 
+        if !self.mark_downloading(queue_id).await {
+            tracing::warn!(
+                queue_id,
+                "[Worker] Abandoning claimed download: queue row is no longer downloading"
+            );
+            return;
+        }
+
         // Emit started event
         self.emit_progress(DownloadProgressEvent {
             queue_id,
@@ -1453,8 +1621,6 @@ impl DownloadWorker {
             terminal: false,
             phase_timings: None,
         });
-
-        self.mark_downloading(queue_id).await;
 
         let is_allowed_fallback = allow_fb.unwrap_or(0) != 0;
         let is_smart_studio = smart_studio.unwrap_or(0) != 0;
@@ -1909,7 +2075,19 @@ impl DownloadWorker {
                     return;
                 }
 
-                self.mark_complete(queue_id, &download_result).await;
+                if !self.mark_complete(queue_id, &download_result).await {
+                    tracing::warn!(
+                        queue_id,
+                        "[Worker] Completion discarded: queue row is no longer downloading"
+                    );
+                    if let Some(ref j) = journal {
+                        j.commit(Some(
+                            "download discarded: queue row cancelled during transfer",
+                        ))
+                        .await;
+                    }
+                    return;
+                }
                 self.schedule_bpm_postprocess(queue_id, track_id).await;
 
                 // BD-9: cerrar la entrada del journal. Sin esto la operación
@@ -2102,12 +2280,13 @@ impl DownloadWorker {
                     "Download failed"
                 );
 
-                if is_permanent {
+                let permanent = if is_permanent {
                     self.mark_permanent_failure(queue_id, "failed", &error)
                         .await;
+                    true
                 } else {
-                    self.mark_failed(queue_id, &error).await;
-                }
+                    self.mark_failed(queue_id, &error).await
+                };
 
                 // BD-9: close the journal entry with the same retry/terminal verdict
                 // that was applied to the queue row, so startup reconciliation makes
@@ -2203,13 +2382,17 @@ impl DownloadWorker {
                     }
                 }
 
-                // Queue status mirrors the taxonomy variant, so the UI shows the same
-                // classification the retry decision was made from.
-                let status_str = match &taxonomy {
-                    ErrorTaxonomy::AuthInvalid { .. } => "requires_auth",
-                    ErrorTaxonomy::RejectedQuality { .. } => "rejected_quality",
-                    ErrorTaxonomy::UnavailableFromProvider { .. } => "not_found",
-                    _ => "failed",
+                // Queue status mirrors the taxonomy variant when the failure is
+                // terminal; un reintento programado se anuncia como `queued`.
+                let status_str = if permanent {
+                    match &taxonomy {
+                        ErrorTaxonomy::AuthInvalid { .. } => "requires_auth",
+                        ErrorTaxonomy::RejectedQuality { .. } => "rejected_quality",
+                        ErrorTaxonomy::UnavailableFromProvider { .. } => "not_found",
+                        _ => "failed",
+                    }
+                } else {
+                    "queued"
                 };
 
                 // User-facing wording comes from the taxonomy (`ui_message`), which
@@ -2230,11 +2413,13 @@ impl DownloadWorker {
                     instant_kbps: 0.0,
                     average_kbps: 0.0,
                     phase: status_str.to_string(),
-                    terminal: true,
+                    terminal: permanent,
                     phase_timings: None,
                 });
                 if let Some(handle) = &self.app_handle {
-                    if crate::tray::notification_category_enabled(&self.db, "download", true).await
+                    if permanent
+                        && crate::tray::notification_category_enabled(&self.db, "download", true)
+                            .await
                     {
                         let notif = crate::commands::AppNotification::new(
                             crate::commands::NotificationKind::Error,
@@ -3005,7 +3190,7 @@ mod embed_preferences_tests {
     #[tokio::test]
     async fn catalog_only_terminal_queue_does_not_rearm_on_restart() {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::query("CREATE TABLE download_queue (id INTEGER PRIMARY KEY, status TEXT, error_message TEXT, last_error TEXT, retry_count INTEGER NOT NULL DEFAULT 0, quality_decision TEXT, decision_reason TEXT, started_at TEXT)")
+        sqlx::query("CREATE TABLE download_queue (id INTEGER PRIMARY KEY, status TEXT, error_message TEXT, last_error TEXT, retry_count INTEGER NOT NULL DEFAULT 0, quality_decision TEXT, decision_reason TEXT, started_at TEXT, service_name TEXT, job_id INTEGER, failure_class TEXT, next_attempt_at TEXT)")
             .execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO download_queue (id, status) VALUES (7, 'downloading')")
             .execute(&pool)
