@@ -185,7 +185,7 @@ impl DownloadProvider for QobuzProvider {
             ensure_not_cancelled(cancel_token)?;
             let result = self
                 .downloader
-                .download_track(&request.request, self.db.as_ref())
+                .download_track(&request.request, self.db.as_ref(), cancel_token)
                 .await
                 .map_err(|err| ProviderError::classify("qobuz", &format!("{err:#}")))?;
             Ok(ProviderDelivery::from_result(result, request.account_id))
@@ -219,7 +219,7 @@ impl DownloadProvider for TidalProvider {
             ensure_not_cancelled(cancel_token)?;
             let result = self
                 .downloader
-                .download_track(&request.request, self.db.as_ref())
+                .download_track(&request.request, self.db.as_ref(), cancel_token)
                 .await
                 .map_err(|err| ProviderError::classify("tidal", &format!("{err:#}")))?;
             Ok(ProviderDelivery::from_result(result, request.account_id))
@@ -254,7 +254,7 @@ impl DownloadProvider for AmazonProvider {
             let amazon_url = request.request.service_track_id.clone().unwrap_or_default();
             let result = self
                 .downloader
-                .download_track(&request.request, &amazon_url)
+                .download_track(&request.request, &amazon_url, cancel_token)
                 .await
                 .map_err(|err| ProviderError::classify("amazon", &format!("{err:#}")))?;
             Ok(ProviderDelivery::from_result(result, request.account_id))

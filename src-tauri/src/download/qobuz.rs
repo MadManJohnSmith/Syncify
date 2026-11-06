@@ -31,6 +31,7 @@ use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutCo
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 /// Qobuz Authentication Status
@@ -1516,7 +1517,7 @@ impl QobuzDownloader {
         staging_path: &Path,
         item_id: &str,
     ) -> Result<u64> {
-        self.download_to_staging_internal(download_url, staging_path, item_id, None)
+        self.download_to_staging_internal(download_url, staging_path, item_id, None, None)
             .await
     }
 
@@ -1527,6 +1528,7 @@ impl QobuzDownloader {
         staging_path: &Path,
         item_id: &str,
         stream_url_provider: Option<(&Self, i64, &str, Option<&str>, bool)>,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<u64> {
         debug!("[Qobuz] Downloading to staging: {:?}", staging_path);
 
@@ -1543,6 +1545,13 @@ impl QobuzDownloader {
         let max_backoff = Duration::from_secs(10);
 
         loop {
+            if let Some(token) = cancel_token {
+                if token.is_cancelled() {
+                    let _ = tokio::fs::remove_file(staging_path).await;
+                    PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
+                    return Err(anyhow!("Download cancelled by user"));
+                }
+            }
             // Clean up partial staging file before each attempt
             if staging_path.exists() {
                 let _ = tokio::fs::remove_file(staging_path).await;
@@ -1686,6 +1695,13 @@ impl QobuzDownloader {
             let mut stream_failed: Option<String> = None;
 
             while let Some(chunk_res) = stream.next().await {
+                if let Some(token) = cancel_token {
+                    if token.is_cancelled() {
+                        let _ = tokio::fs::remove_file(staging_path).await;
+                        PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
+                        return Err(anyhow!("Download cancelled by user"));
+                    }
+                }
                 match chunk_res {
                     Ok(chunk) => {
                         if let Err(e) = file.write_all(&chunk).await {
@@ -1797,6 +1813,7 @@ impl QobuzDownloader {
         token_ref: Option<&'a str>,
         staging_path: &'a Path,
         phase_tracker: &'a mut DownloadPhaseTracker,
+        cancel_token: Option<&'a CancellationToken>,
     ) -> Result<u64> {
         if let Some(parent) = staging_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -1815,6 +1832,7 @@ impl QobuzDownloader {
                 token_ref,
                 request.allow_fallback,
             )),
+            cancel_token,
         ))
         .await
         {
@@ -1853,6 +1871,7 @@ impl QobuzDownloader {
         &'a self,
         request: &'a DownloadRequest,
         db_opt: Option<&'a sqlx::SqlitePool>,
+        cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let mut phase_tracker = DownloadPhaseTracker::new();
@@ -2097,6 +2116,7 @@ impl QobuzDownloader {
                             token_ref,
                             &staging_path,
                             &mut phase_tracker,
+                            cancel_token,
                         )
                         .await
                     {
@@ -2210,6 +2230,7 @@ impl QobuzDownloader {
                         token_ref,
                         &staging_path,
                         &mut phase_tracker,
+                        cancel_token,
                     )
                     .await?;
 
@@ -3932,7 +3953,7 @@ mod tests {
             allow_fallback: false,
             ..Default::default()
         };
-        let res = downloader.download_track(&req, None).await;
+        let res = downloader.download_track(&req, None, None).await;
         assert!(res.is_err());
         let err_str = res.unwrap_err().to_string();
         assert!(err_str.contains("RequiresAuth"));

@@ -1984,9 +1984,13 @@ function handleProgressEvent(event: DownloadProgressEventPayload | null | undefi
       if (item.target_album && item.target_album.includes('Edition')) {
         artifactCounters.value.booklets += 1
       }
-    } else if (status === 'failed' || status === 'cancelled' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
+    } else if (status === 'cancelled') {
+      // ADR-0022: cancelar no es fallar; el estado llega tal cual desde el backend.
+      item.status = 'cancelled'
+      item.error_message = event.message || (typeof event.error === 'string' ? event.error : null) || 'Download cancelled by user'
+    } else if (status === 'failed' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
       item.status = 'failed'
-      item.error_message = event.message || (typeof event.error === 'string' ? event.error : null) || (status === 'cancelled' ? 'Download cancelled by user' : 'Download failed')
+      item.error_message = event.message || (typeof event.error === 'string' ? event.error : null) || 'Download failed'
     } else if (status === 'started' || status === 'downloading') {
       item.status = 'downloading'
     }
