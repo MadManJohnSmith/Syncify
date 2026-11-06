@@ -1215,22 +1215,10 @@ async fn reconcile_startup_operations_locked(
     // TASK-84: Sanitize downloads stuck in 'downloading' for more than 1 hour to failed and purge staging files
     let _ = sanitize_timed_out_downloads(db, None).await;
 
-    // 2. Reconcile any orphan download_queue rows stuck in 'downloading' without journal entries
-    let orphan_queue: Vec<(i64, Option<i64>)> =
-        sqlx::query_as("SELECT id, track_id FROM download_queue WHERE status = 'downloading'")
-            .fetch_all(db)
-            .await
-            .unwrap_or_default();
-
-    for (qid, _tid) in orphan_queue {
-        let _ = sqlx::query(
-            "UPDATE download_queue SET status = 'queued', started_at = NULL WHERE id = ?",
-        )
-        .bind(qid)
-        .execute(db)
-        .await;
-        summary.interrupted_retryable_count += 1;
-    }
+    // 2. Reconcile any orphan download_queue rows stuck in 'downloading' without journal entries.
+    //    Una unica transicion RecoverySweep (ADR-0022); no toca failed/cancelled.
+    summary.interrupted_retryable_count +=
+        crate::download::recover_interrupted_jobs(db).await as usize;
 
     info!(
         recovered = summary.recovered_count,

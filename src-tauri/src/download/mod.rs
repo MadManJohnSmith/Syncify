@@ -5,6 +5,7 @@ pub mod amazon;
 pub mod audio_inspector;
 pub mod http_client;
 pub mod identity;
+pub mod job;
 pub mod lyrics;
 pub mod orchestrator;
 pub mod progress;
@@ -24,6 +25,8 @@ pub use audio_inspector::{
     PhysicalAudioMetadata,
 };
 
+#[allow(unused_imports)]
+pub use job::{recover_interrupted_jobs, CancellationGuard, CancellationRegistry};
 #[allow(unused_imports)]
 pub use lyrics::LyricsClient;
 #[allow(unused_imports)]

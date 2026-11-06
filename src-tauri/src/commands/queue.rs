@@ -1,8 +1,6 @@
 #[allow(unused_imports)]
 use super::*;
 
-use crate::services::operation_recovery::classify_operation_error;
-
 // Queue Commands - submodule of crate::commands
 //
 // Persistent download queue, worker control
@@ -2389,11 +2387,18 @@ pub async fn cancel_download(queue_id: i64, state: State<'_, AppState>) -> Resul
 /// Cancel a queued or downloading item
 #[tauri::command]
 pub async fn cancel_queue_item(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    sqlx::query("UPDATE download_queue SET status = 'cancelled' WHERE id = ? AND status IN ('queued', 'downloading')")
+    let result = sqlx::query("UPDATE download_queue SET status = 'cancelled' WHERE id = ? AND status IN ('queued', 'downloading')")
         .bind(queue_id)
         .execute(&state.db)
         .await
         .map_err(|e| e.to_string())?;
+
+    // ADR-0022: si la fila estaba en vuelo, abortar la transferencia real.
+    // `cancel` devuelve false cuando el job aún no estaba registrado; la
+    // comprobación de estado del worker evita iniciarlo entonces.
+    if result.rows_affected() > 0 {
+        state.worker_state.cancellations().cancel(queue_id);
+    }
 
     Ok(())
 }
@@ -2401,98 +2406,55 @@ pub async fn cancel_queue_item(queue_id: i64, state: State<'_, AppState>) -> Res
 /// Retry a failed download
 #[tauri::command]
 pub async fn retry_queue_item(queue_id: i64, state: State<'_, AppState>) -> Result<(), String> {
-    perform_retry_queue_item(&state.db, queue_id).await
+    perform_retry_queue_item(&state.db, queue_id)
+        .await
+        .map(|_| ())
 }
 
-/// S168: prevent re-enqueuing terminal non-retryable items.
+/// ManualRetry: devuelve a la cola una fila `failed` sin tope de intentos.
 ///
-/// The verdict comes from the shared error taxonomy, the same one the download
-/// worker applied when it marked the row failed.
-pub async fn perform_retry_queue_item(db: &crate::DbPool, queue_id: i64) -> Result<(), String> {
-    let item_meta: Option<(Option<String>, Option<String>, i64)> = sqlx::query_as(
-        "SELECT error_message, service_name, retry_count FROM download_queue WHERE id = ?",
-    )
-    .bind(queue_id)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    if let Some((err_opt, service, rc)) = item_meta {
-        let err_str = err_opt.unwrap_or_default();
-        let taxonomy = classify_operation_error(
-            crate::worker::download_operation_type(service.as_deref()),
-            service.as_deref().unwrap_or("unknown"),
-            &err_str,
-        );
-
-        if rc >= 99 || taxonomy.is_terminal() || taxonomy.requires_user_action() {
-            return Err(format!(
-                "Cannot auto-retry terminal failure: {}",
-                taxonomy.ui_message()
-            ));
-        }
-    }
-
-    sqlx::query(
-        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL WHERE id = ? AND retry_count < 99"
+/// La máquina de estados permite el reintento manual desde `failed` siempre,
+/// incluidas las clases terminales (el usuario puede haber arreglado la cuenta
+/// o la conexión). Limpia el error, el contador y la ventana de reintento para
+/// que el job vuelva a empezar de cero; nunca toca una fila ya reencolada.
+pub async fn perform_retry_queue_item(db: &crate::DbPool, queue_id: i64) -> Result<i64, String> {
+    let updated = sqlx::query(
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, decision_reason = NULL, progress_percent = 0, started_at = NULL, retry_count = 0, next_attempt_at = NULL WHERE id = ? AND status = 'failed'",
     )
     .bind(queue_id)
     .execute(db)
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(())
+    Ok(updated.rows_affected() as i64)
 }
 
 /// Retry failed downloads (canonical command, single or all).
 ///
-/// `queue_id: None` is the "retry all transient failures" path: it delegates to
-/// [`perform_retry_all_failed`], which skips the terminal taxonomy verdicts
-/// (requires_auth / rejected_quality / ambiguous_source). There is deliberately
-/// no separate "retry all failed" command — it duplicated this exact call.
+/// `queue_id: None` reencola todas las filas `failed`. Es el mismo ManualRetry
+/// que el individual: no hay filtro por clase ni por número de intentos.
 #[tauri::command]
 pub async fn retry_failed(
     queue_id: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<i64, String> {
     if let Some(id) = queue_id {
-        perform_retry_queue_item(&state.db, id).await.map(|_| 1)
+        perform_retry_queue_item(&state.db, id).await
     } else {
         perform_retry_all_failed(&state.db).await
     }
 }
 
-/// The exclusion list is the same taxonomy verdict `perform_retry_queue_item`
-/// applies to a single row; a SQL `NOT LIKE` chain could not stay in sync with it.
+/// ManualRetry masivo: una sola transición para todas las filas `failed`.
 pub async fn perform_retry_all_failed(db: &crate::DbPool) -> Result<i64, String> {
-    let candidates: Vec<(i64, Option<String>, Option<String>, i64)> = sqlx::query_as(
-        "SELECT id, error_message, service_name, retry_count FROM download_queue WHERE status = 'failed' AND retry_count < 5",
+    let updated = sqlx::query(
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, decision_reason = NULL, progress_percent = 0, started_at = NULL, retry_count = 0, next_attempt_at = NULL WHERE status = 'failed'",
     )
-    .fetch_all(db)
+    .execute(db)
     .await
     .map_err(|e| e.to_string())?;
 
-    let mut retried = 0i64;
-    for (id, err_opt, service, _retry_count) in candidates {
-        let taxonomy = classify_operation_error(
-            crate::worker::download_operation_type(service.as_deref()),
-            service.as_deref().unwrap_or("unknown"),
-            err_opt.as_deref().unwrap_or_default(),
-        );
-        if taxonomy.is_terminal() || taxonomy.requires_user_action() {
-            continue;
-        }
-        let updated = sqlx::query(
-            "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, progress_percent = 0, started_at = NULL, retry_count = retry_count + 1 WHERE id = ?",
-        )
-        .bind(id)
-        .execute(db)
-        .await
-        .map_err(|e| e.to_string())?;
-        retried += updated.rows_affected() as i64;
-    }
-
-    Ok(retried)
+    Ok(updated.rows_affected() as i64)
 }
 
 /// Clear completed/cancelled downloads (canonical command)
@@ -2542,16 +2504,9 @@ pub async fn remove_from_queue(queue_id: i64, state: State<'_, AppState>) -> Res
 /// Restore interrupted downloads on startup (mark 'downloading' as 'queued')
 #[tauri::command]
 pub async fn restore_interrupted_downloads(state: State<'_, AppState>) -> Result<i64, String> {
-    let result = sqlx::query(
-        "UPDATE download_queue SET status = 'queued', started_at = NULL WHERE status = 'downloading'"
-    )
-    .execute(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    tracing::info!("Restored {} interrupted downloads", result.rows_affected());
-
-    Ok(result.rows_affected() as i64)
+    let restored = crate::download::recover_interrupted_jobs(&state.db).await as i64;
+    tracing::info!("Restored {} interrupted downloads", restored);
+    Ok(restored)
 }
 
 // ==============================================

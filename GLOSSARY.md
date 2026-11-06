@@ -145,6 +145,38 @@ Proveedor con adaptador que entrega el audio de una descarga. Se elige por prefe
 explícita y, si no, por evidencia; puede ser distinto de la fuente.
 _Evitar_: usar «servicio» sin decir si es fuente o destino.
 
+**Estado de descarga (JobState)**:
+Uno de los cinco valores de `download_queue.status` —`queued`, `downloading`,
+`complete`, `failed`, `cancelled`— con transiciones legales declaradas en la máquina
+de estados (`crates/syncify-core-domain`). El string es contrato con la UI y con las
+filas existentes; el tipo es la fuente de verdad de qué transiciones existen
+(`docs/adr/0022-maquina-de-estados-de-descargas.md`).
+_Evitar_: escribir un estado a mano o comparar strings sueltos en consultas nuevas.
+
+**RetryVerdict**:
+Respuesta de un job fallido a «¿se reintenta?»: `Permanent` o `RetryAt(instante)` con
+backoff 1m/5m/15m/1h (tope 4h). Una clase de fallo terminal fuerza `Permanent`. El
+instante se persiste en `next_attempt_at` y el claim lo respeta.
+_Evitar_: inventar un segundo presupuesto de reintentos por call site.
+
+**Clase de fallo (FailureClass)**:
+Categoría tipada de un fallo de descarga —reintentable, terminal, requiere acción del
+usuario— definida en la taxonomía de errores del dominio y persistida en
+`failure_class` con la transición a `failed`.
+_Evitar_: clasificar reintentos parseando mensajes de error.
+
+**Recuperación de la cola**:
+Transición explícita `downloading → queued` que se aplica una sola vez al arrancar
+para los jobs interrumpidos (`RecoverySweep`). No revive `failed` ni `cancelled`.
+_Evitar_: barridos SQL sueltos que reseteen estados.
+
+**Cancelación**:
+Transición legal a `cancelled` (desde `queued` o `downloading`) seguida del
+`CancellationToken` del job en vuelo, que hace abortar la transferencia; el staging
+parcial se conserva (`resumable`) para reanudar. Un job cancelado no se reintenta ni
+se recupera.
+_Evitar_: «eliminar» para referirse a cancelar.
+
 **MigrationJob**:
 Migración de **biblioteca** de un servicio a otro (`migration_jobs`, con
 `source_service` y `destination_service`;

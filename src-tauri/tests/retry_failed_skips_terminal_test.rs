@@ -86,53 +86,58 @@ fn status_digits_inside_item_ids_are_not_auth_rejections() {
 }
 
 #[test]
-fn retrying_everything_would_be_the_bug_we_fixed() {
-    // El UPDATE sin clasificar reencolaba estas mismas descargas. El test
-    // documenta que el comportamiento viejo era incorrecto, para que nadie
-    // lo reintroduzca creyendo que era equivalente.
-    let antes_del_arreglo_reintentaba_todo = |error: &str| -> bool { !error.is_empty() };
-
-    assert!(
-        antes_del_arreglo_reintentaba_todo("invalid_grant"),
-        "este es exactamente el fallo que se corrigio"
-    );
-    assert!(
-        !retryable("spotify", "invalid_grant"),
-        "con la taxonomia, el mismo error ya no se reencola"
-    );
+fn terminal_classes_still_block_automatic_retry() {
+    // ADR-0022: la clase terminal gobierna el reintento AUTOMÁTICO, no el
+    // botón del usuario. La taxonomía sigue siendo la fuente del primer
+    // veredicto; el reintento manual se permite siempre.
+    for (service, error) in [
+        ("spotify", "invalid_grant"),
+        ("tidal", "RejectedQuality: downgrade rejected"),
+        ("qobuz", "AmbiguousSource: multiple editions"),
+    ] {
+        assert!(
+            !retryable(service, error),
+            "'{error}' no debe reencolarse automáticamente"
+        );
+    }
 }
 
 #[test]
-fn the_retry_budget_is_bounded() {
-    // perform_retry_all_failed filtra por `retry_count < 5`. Se comprueba que
-    // ese limite existe en el SQL del camino seguro, porque un reencolado sin
-    // tope es un bucle infinito disfrazado de reintento.
-    let sql = include_str!("../src/commands/queue.rs");
+fn manual_retry_is_always_allowed_and_has_no_attempt_cap() {
+    use syncify_core_domain::job_state::{JobEvent, JobState};
 
-    assert!(
-        sql.contains("retry_count < 5"),
-        "el camino seguro debe seguir limitando los intentos, \
-         si no se reencola indefinidamente"
+    // La máquina permite ManualRetry desde failed sin mirar la clase.
+    assert_eq!(
+        JobState::Failed.transition(JobEvent::ManualRetry).unwrap(),
+        JobState::Queued
     );
 
-    // Y el comando que usa la UI debe delegar en ese camino, no hacer su propio
-    // UPDATE. Se busca solo el UPDATE de reencolado, ignorando los comentarios
-    // (// y ///), que describen el SQL viejo como referencia. El fichero tiene
-    // además un DELETE legitimo para "borrar fallidos", que es otra cosa.
+    // Y las dos transiciones que persisten la cola no llevan tope de intentos.
+    let sql = include_str!("../src/commands/queue.rs");
+    assert!(
+        !sql.contains("retry_count < 5") && !sql.contains("retry_count < 99"),
+        "el reintento manual no puede tener tope de intentos (ADR-0022)"
+    );
+    for transicion in [
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, decision_reason = NULL, progress_percent = 0, started_at = NULL, retry_count = 0, next_attempt_at = NULL WHERE id = ? AND status = 'failed'",
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, decision_reason = NULL, progress_percent = 0, started_at = NULL, retry_count = 0, next_attempt_at = NULL WHERE status = 'failed'",
+    ] {
+        assert!(
+            sql.contains(transicion),
+            "falta la transición ManualRetry: {transicion}"
+        );
+    }
+
+    // La UI sigue delegando en el mismo camino y no hace su propio UPDATE.
     let comando_ui = include_str!("../src/commands/download.rs");
+    assert!(comando_ui.contains("perform_retry_all_failed"));
     let reencola_sin_clasificar = comando_ui
         .lines()
         .map(str::trim_start)
         .filter(|l| !l.starts_with("//"))
         .any(|l| l.contains("UPDATE download_queue SET status = 'queued'"));
-
     assert!(
         !reencola_sin_clasificar,
-        "retry_failed_downloads no debe reencolar sin clasificar: \
-         debe pasar por perform_retry_all_failed"
-    );
-    assert!(
-        comando_ui.contains("perform_retry_all_failed"),
-        "retry_failed_downloads debe delegar en el camino que clasifica"
+        "retry_failed_downloads no debe reencolar por su cuenta"
     );
 }
