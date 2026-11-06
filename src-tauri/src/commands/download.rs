@@ -138,17 +138,12 @@ pub async fn get_failed_downloads(state: State<'_, AppState>) -> Result<Vec<Down
     Ok(downloads)
 }
 
-/// Reintenta las descargas fallidas que se pueden reintentar solas.
+/// Reintenta manualmente todas las descargas en `failed`.
 ///
-/// Este comando ya no reencola por su cuenta: delega en
-/// [`super::queue::perform_retry_all_failed`], que clasifica cada fallo con la
-/// taxonomía de errores, se salta los terminales y los que requieren acción
-/// del usuario, y para en el quinto intento.
-///
-/// Antes hacia un UPDATE sin clasificar (`WHERE status = 'failed'`), que
-/// devolvía a la cola descargas con un token caducado o una credencial
-/// revocada y las reintentaba sin límite. La UI llamaba a este comando, así
-/// que el fallo era alcanzable con un clic.
+/// Delega en [`super::queue::perform_retry_all_failed`], la transición
+/// ManualRetry de ADR-0022: reencola todas las filas fallidas, incluidas las
+/// clases terminales, porque el usuario pudo arreglar la cuenta o la conexión.
+/// No hay tope de intentos; el contador vuelve a cero.
 ///
 /// Existe para que la UI no tenga que conocer dos comandos que hacen lo mismo:
 /// `queue::retry_failed` acepta `queue_id: None` y llama al mismo sitio.
@@ -162,7 +157,7 @@ pub async fn retry_failed_downloads(state: State<'_, AppState>) -> Result<String
 
     tracing::info!(
         requeued = count,
-        "Requeued retryable failed downloads (terminal ones skipped)"
+        "Requeued failed downloads for manual retry"
     );
 
     Ok(format!("Requeued {count} failed downloads"))

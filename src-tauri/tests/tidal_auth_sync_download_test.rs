@@ -193,7 +193,7 @@ async fn test_tidal_downloader_orchestrator_ext_requires_auth_on_unauthenticated
         ..Default::default()
     };
 
-    let result = downloader.download_track(&request, Some(&pool)).await;
+    let result = downloader.download_track(&request, Some(&pool), None).await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(

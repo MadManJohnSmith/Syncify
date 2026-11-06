@@ -201,15 +201,8 @@ pub async fn perform_repair_integrity_issues(
     let mut purged = 0i64;
     let mut cleaned_db = 0i64;
 
-    // Reset stuck queue items to queued
-    let res =
-        sqlx::query("UPDATE download_queue SET status = 'queued' WHERE status = 'downloading'")
-            .execute(db)
-            .await;
-
-    if let Ok(r) = res {
-        cleaned_db += r.rows_affected() as i64;
-    }
+    // Reset stuck queue items to queued (unica transicion de recuperacion, ADR-0022)
+    cleaned_db += crate::download::recover_interrupted_jobs(db).await as i64;
 
     // Clean staging files if requested, strictly confined to the legitimate staging directory
     if let Some(files) = staging_files_to_purge {

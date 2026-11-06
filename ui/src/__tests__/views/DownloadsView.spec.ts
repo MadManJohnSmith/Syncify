@@ -623,6 +623,36 @@ describe('DownloadsView.vue', () => {
     expect(text).toContain('50%')
   })
 
+  it('keeps a user cancellation as cancelled instead of failed', async () => {
+    const cancelledCandidate = { ...mockQueueItems[0], id: 99, status: 'downloading' }
+    mockInvoke((command) => {
+      if (command === 'get_queue') return [cancelledCandidate]
+      if (command === 'get_queue_stats') return mockStats
+      if (command === 'get_worker_status') return mockWorkerStatus
+    })
+
+    const wrapper = mount(DownloadsView)
+    await flushPromises()
+
+    emitMockEvent('syncify:download_progress', {
+      queue_id: 99,
+      track_id: 101,
+      status: 'cancelled',
+      message: 'Download cancelled by user',
+      phase: 'cancelled',
+      terminal: true,
+    })
+    await flushPromises()
+
+    // ADR-0022: una cancelación no se contabiliza como fallo. Se busca la
+    // pestaña (icono error + etiqueta Failed + contador), no la píldora de stats.
+    const failedTab = wrapper
+      .findAll('button')
+      .find((button) => button.text().startsWith('errorFailed'))
+    expect(failedTab).toBeDefined()
+    expect(failedTab?.text()).toMatch(/Failed\s*0$/)
+  })
+
   it('renders indeterminate pulse bar and bytes when Content-Length is missing', async () => {
     mockInvoke((command) => {
       if (command === 'get_queue') return mockQueueItems
