@@ -183,6 +183,14 @@ Proveedor con adaptador que entrega el audio de una descarga. Se elige por prefe
 explícita y, si no, por evidencia; puede ser distinto de la fuente.
 _Evitar_: usar «servicio» sin decir si es fuente o destino.
 
+**Puerto de proveedores (DownloadProvider)**:
+Contrato por el que toda descarga de proveedor se despacha: el orquestador resuelve el
+proveedor por nombre y el adaptador (`download/providers/*.rs`) posee la llamada al
+motor, la normalización, la provenance (`ProviderRouting`) y la reconciliación de
+calidad. La política de fallback, auth, progreso y SongLink sigue en el orquestador
+(`docs/adr/0023-puerto-de-proveedores-de-descarga.md`).
+_Evitar_: llamar a un descargador concreto desde el orquestador o despachar por string.
+
 **Estado de descarga (JobState)**:
 Uno de los cinco valores de `download_queue.status` —`queued`, `downloading`,
 `complete`, `failed`, `cancelled`— con transiciones legales declaradas en la máquina

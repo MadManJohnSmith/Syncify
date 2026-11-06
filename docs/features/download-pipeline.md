@@ -6,14 +6,17 @@
 
 **Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): corregida la cadena de encolado (`queue_downloads` vive en `commands/download.rs` y delega en `commands/queue.rs::add_to_queue`), el bucle del worker ya es event-driven (`slot_available_notify`, sin sondeo de 3 s), el claim es atómico vía `claim_next_item`, `process_download` hoy son `process_download_claimed` + `process_download_internal`, añadido el estado `cancelled`, payload de `syncify:download_progress` completado y citas de línea sustituidas por símbolos. Sigue sin verificar en escritorio real la ejecución de descargas de punta a punta (GUI, red viva): véase README §"Verification and limitations".
 
-**Último cambio:** 2026-10-25 — re-revisión de comportamiento contra el árbol — archivos: `worker.rs`, `commands/download.rs`, `commands/queue.rs`, `main.rs`, `migrations/0004_production.sql`, `migrations/0046_download_queue_resume.sql`, `migrations/0050_download_queue_source_identity.sql`, `migrations/0060_quality_policy_and_decision_tracking.sql`. Previo: 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/`. Previo a ese: S40 — 2026-03-30.
+**Último cambio:** 2026-11-06 — P5: el despacho de proveedores pasa por el puerto `download/provider_gateway.rs` (ADR-0023) — archivos: `download/orchestrator.rs`, `download/provider_gateway.rs`, `download/providers/*`, `download/quality_reconcile.rs`, `worker.rs`. Previo: 2026-10-25 — re-revisión de comportamiento contra el árbol — archivos: `worker.rs`, `commands/download.rs`, `commands/queue.rs`, `main.rs`, `migrations/0004_production.sql`, `migrations/0046_download_queue_resume.sql`, `migrations/0050_download_queue_source_identity.sql`, `migrations/0060_quality_policy_and_decision_tracking.sql`. Previo: 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/`. Previo a ese: S40 — 2026-03-30.
 **Leer antes de modificar:** `worker.rs`, `commands/queue.rs`, `commands/download.rs`
 **Archivos core:**
 - `src-tauri/src/worker.rs` (3.184 líneas — bucle del worker, claim atómico, eventos de progreso, supervisor auxiliar)
 - `src-tauri/src/download/mod.rs` (module index)
 - `src-tauri/src/download/orchestrator.rs` (DownloadOrchestrator)
+- `src-tauri/src/download/provider_gateway.rs` (puerto `DownloadProvider`, registro, `ProviderRequest`/`ProviderDelivery`/`ProviderError`)
 - `src-tauri/src/download/qobuz.rs` (credential-free Qobuz download)
 - `src-tauri/src/download/tidal.rs` (credential-free Tidal download)
+- `src-tauri/src/download/providers/` (adaptadores por proveedor: llamada al motor, normalización, provenance y reconciliación de calidad)
+- `src-tauri/src/download/quality_reconcile.rs` (reconciliación de calidad física compartida)
 - `src-tauri/src/download/amazon.rs` (Amazon Music download)
 - `src-tauri/src/download/http_client.rs` (shared HTTP client)
 - `src-tauri/src/download/progress.rs` (DownloadRequest, progress types)
@@ -114,6 +117,14 @@ Methods: `pause()`, `resume()`, `stop()`, `wait_if_paused()`, `notify_available(
 | Qobuz | `download/qobuz.rs` (`QobuzDownloader`) | API oficial de Qobuz con firma de requests (`build_request_signature`), resolución de token y proxy fallback — HTTP nativo, sin subprocess ni binarios externos |
 | Tidal | `download/tidal.rs` (re-export del crate externo `syncify-tidal-downloader`) | Cliente HTTP nativo con progreso |
 | Amazon | `download/amazon.rs` (`AmazonDownloader`) | Vía servicio DoubleDouble |
+
+El despacho de descarga pasa por el puerto de proveedores
+(`download/provider_gateway.rs`, ADR-0023): el orquestador resuelve
+Qobuz/Tidal/Amazon por nombre y cada adaptador (`download/providers/*.rs`)
+encapsula la llamada al motor, la normalización de provenance y la
+reconciliación de calidad física. La política de fallback, auth, progreso y
+SongLink sigue en el orquestador; SongLink sigue siendo un resolvedor, no un
+proveedor.
 
 El worker instancia `crate::download::DownloadOrchestrator` dentro de
 `process_download_internal` (`worker.rs`). El directorio de salida lo resuelve

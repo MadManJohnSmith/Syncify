@@ -658,6 +658,7 @@ pub fn classify_operation_error(
         match operation_type {
             OperationType::DownloadQobuz => "qobuz".to_string(),
             OperationType::DownloadTidal => "tidal".to_string(),
+            OperationType::DownloadAmazon => "amazon".to_string(),
             OperationType::CrossProviderFallback => "multi".to_string(),
             _ => "unknown".to_string(),
         }
@@ -867,6 +868,7 @@ async fn reconcile_startup_operations_locked(
 
         match op_type {
             OperationType::DownloadQobuz
+            | OperationType::DownloadAmazon
             | OperationType::DownloadTidal
             | OperationType::CrossProviderFallback
             | OperationType::Promotion => {
