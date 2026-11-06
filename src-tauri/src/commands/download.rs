@@ -5,17 +5,30 @@ use super::*;
 //
 // Download queue management
 
-/// Queue tracks for download
+/// Queue tracks for download as a single selection job
 #[tauri::command]
 pub async fn queue_downloads(
     state: State<'_, AppState>,
     track_ids: Vec<i64>,
-) -> Result<String, String> {
+) -> Result<i64, String> {
     tracing::info!("queue_downloads called with {} tracks", track_ids.len());
 
-    let mut queued = 0;
+    let job_request = crate::download::jobs::DownloadJobRequest {
+        kind: "selection".to_string(),
+        filter: crate::download::jobs::DownloadJobFilter {
+            track_ids: Some(track_ids.clone()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let job_id = crate::download::jobs::create_job(&state.db, &job_request)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut queued: i64 = 0;
     for track_id in &track_ids {
-        let res = add_to_queue(
+        let res = perform_add_to_queue(
+            &state.db,
             *track_id,
             Some(50),
             None,
@@ -32,7 +45,7 @@ pub async fn queue_downloads(
             Some(true),
             Some(false),
             None,
-            state.clone(),
+            Some(job_id),
         )
         .await;
 
@@ -41,7 +54,26 @@ pub async fn queue_downloads(
         }
     }
 
-    Ok(format!("Queued {} tracks for download", queued))
+    let requested = track_ids.len() as i64;
+    sqlx::query(
+        "UPDATE download_jobs SET requested_count = ?, estimated_count = ?, skipped_count = ?, \
+         updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )
+    .bind(requested)
+    .bind(0_i64)
+    .bind(requested - queued)
+    .bind(job_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    tracing::info!(
+        "queue_downloads created job {} (queued {}/{})",
+        job_id,
+        queued,
+        requested
+    );
+    Ok(job_id)
 }
 
 /// Get current download queue

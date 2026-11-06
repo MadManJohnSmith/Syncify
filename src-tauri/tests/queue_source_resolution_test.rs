@@ -88,6 +88,7 @@ async fn test_1_track_with_exact_qobuz_source() {
         None,
         None,
         None,
+        None,
     )
     .await
     .expect("Should successfully resolve and enqueue exact Qobuz source");
@@ -159,6 +160,7 @@ async fn test_2_track_with_exact_tidal_source() {
         None,
         None,
         None,
+        None,
     )
     .await
     .expect("Should successfully resolve and enqueue exact Tidal source");
@@ -197,6 +199,7 @@ async fn test_3_track_without_track_sources_returns_source_identity_missing() {
         None,
         None,
         Some("hires".to_string()),
+        None,
         None,
         None,
         None,
@@ -256,6 +259,7 @@ async fn test_4_source_with_empty_service_track_id_returns_source_identity_missi
         None,
         None,
         None,
+        None,
     )
     .await;
 
@@ -292,7 +296,7 @@ async fn test_5_multiple_sources_single_active_account_resolves_cleanly() {
 
     let queue_id = perform_add_to_queue(
         &db, track_id, None, None, None, None, None, None, None, None, None, None, None, None,
-        None, None, None,
+        None, None, None, None,
     )
     .await
     .expect("Should resolve cleanly to Tidal because only Tidal has an active account");
@@ -333,7 +337,7 @@ async fn test_6_multiple_sources_dual_provider_resolves_via_preferences() {
 
     let result = perform_add_to_queue(
         &db, track_id, None, None, None, None, None, None, None, None, None, None, None, None,
-        None, None, None,
+        None, None, None, None,
     )
     .await;
 
@@ -396,6 +400,7 @@ async fn test_7_source_locked_does_not_perform_unresolved_metadata_insertion() {
         None,
         None,
         Some(false),
+        None,
         None,
     )
     .await
@@ -503,6 +508,7 @@ async fn test_9_ui_blocker_case_resolves_correctly_with_persisted_source() {
         None,
         None,
         None,
+        None,
     )
     .await
     .expect("UI call must resolve the persisted track_sources and enqueue properly");
@@ -560,7 +566,7 @@ async fn test_10_perform_add_to_queue_defaults_allow_fallback_to_true() {
     let queue_id = perform_add_to_queue(
         &db, track_id, None, None, None, None, None, None, None, None, None, None, None, None,
         None, // allow_fallback = None
-        None, None,
+        None, None, None,
     )
     .await
     .expect("Enqueue must succeed");

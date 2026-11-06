@@ -366,6 +366,7 @@ pub async fn perform_add_to_queue(
     smart_studio_origin: Option<bool>,
     allow_fallback: Option<bool>,
     _output_dir: Option<String>,
+    job_id: Option<i64>,
 ) -> Result<i64, String> {
     let eff_quality = normalize_quality_preference(quality_preference.or(quality).as_deref());
     let eff_service = service_name.or(service).and_then(|s| {
@@ -778,10 +779,10 @@ pub async fn perform_add_to_queue(
             track_id, priority, quality_preference, status, progress_percent, retry_count, position, resumable,
             service_id, service_name, service_track_id, service_album_id,
             target_title, target_artist, target_album, target_isrc,
-            smart_studio_origin, allow_fallback,
+            smart_studio_origin, allow_fallback, job_id,
             created_at
            )
-           VALUES (?, ?, ?, 'queued', 0.0, 0, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id"#
+           VALUES (?, ?, ?, 'queued', 0.0, 0, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id"#
     )
     .bind(track_id)
     .bind(priority.unwrap_or(50))
@@ -797,6 +798,7 @@ pub async fn perform_add_to_queue(
     .bind(t_isrc)
     .bind(smart_studio_origin.unwrap_or(false) as i64)
     .bind(allow_fallback.unwrap_or(true) as i64)
+    .bind(job_id)
     .fetch_one(db)
     .await
     .map_err(|e| e.to_string())?;
@@ -825,7 +827,21 @@ pub async fn add_to_queue(
     output_dir: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<i64, String> {
-    perform_add_to_queue(
+    let job_request = crate::download::jobs::DownloadJobRequest {
+        kind: "single".to_string(),
+        quality_preference: quality_preference.clone(),
+        allow_fallback,
+        filter: crate::download::jobs::DownloadJobFilter {
+            track_id: Some(track_id),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let job_id = crate::download::jobs::create_job(&state.db, &job_request)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let insert_result = perform_add_to_queue(
         &state.db,
         track_id,
         priority,
@@ -843,8 +859,36 @@ pub async fn add_to_queue(
         smart_studio_origin,
         allow_fallback,
         output_dir,
+        Some(job_id),
     )
+    .await;
+
+    if let Err(error) = insert_result {
+        if let Err(warn) = crate::download::jobs::mark_job_failed(&state.db, job_id, &error).await {
+            tracing::warn!(
+                "[add_to_queue] could not mark job {} failed: {}",
+                job_id,
+                warn
+            );
+        }
+        return Err(error);
+    }
+
+    let attached: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE job_id = ?")
+        .bind(job_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| format!("Failed to count rows attached to job {job_id}: {e}"))?;
+    sqlx::query(
+        "UPDATE download_jobs SET requested_count = 1, estimated_count = 1, skipped_count = ?, \
+         updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )
+    .bind(i64::from(attached == 0))
+    .bind(job_id)
+    .execute(&state.db)
     .await
+    .map_err(|e| format!("Failed to update download job {job_id} counters: {e}"))?;
+    Ok(job_id)
 }
 
 // ==============================================
@@ -2048,9 +2092,29 @@ pub async fn enqueue_eligible_batch(
     strict_quality: Option<bool>,
     allow_fallback: Option<bool>,
     smart_studio_origin: Option<bool>,
+    job_kind: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<BatchEnqueueResult, String> {
-    let preflight = preflight_download_batch(
+    let resolved_kind = job_kind
+        .map(|kind| kind.to_lowercase())
+        .filter(|kind| matches!(kind.as_str(), "album" | "artist" | "playlist" | "selection"))
+        .unwrap_or_else(|| "selection".to_string());
+    let job_request = crate::download::jobs::DownloadJobRequest {
+        kind: resolved_kind,
+        source_service: service_name.clone(),
+        quality_preference: quality_preference.clone(),
+        allow_fallback,
+        filter: crate::download::jobs::DownloadJobFilter {
+            track_ids: Some(track_ids.clone()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let job_id = crate::download::jobs::create_job(&state.db, &job_request)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let preflight = match preflight_download_batch(
         track_ids.clone(),
         service_name.clone(),
         quality_preference.clone(),
@@ -2058,7 +2122,22 @@ pub async fn enqueue_eligible_batch(
         allow_fallback,
         state.clone(),
     )
-    .await?;
+    .await
+    {
+        Ok(preflight) => preflight,
+        Err(error) => {
+            if let Err(warn) =
+                crate::download::jobs::mark_job_failed(&state.db, job_id, &error).await
+            {
+                tracing::warn!(
+                    "[enqueue_eligible_batch] could not mark job {} failed: {}",
+                    job_id,
+                    warn
+                );
+            }
+            return Err(error);
+        }
+    };
 
     let mut added = 0i64;
     let mut deduplicated = 0i64;
@@ -2098,6 +2177,7 @@ pub async fn enqueue_eligible_batch(
             smart_studio_origin,
             allow_fallback,
             None,
+            Some(job_id),
         )
         .await;
 
@@ -2114,6 +2194,19 @@ pub async fn enqueue_eligible_batch(
         }
     }
 
+    let requested = track_ids.len() as i64;
+    sqlx::query(
+        "UPDATE download_jobs SET requested_count = ?, estimated_count = ?, skipped_count = ?, \
+         updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )
+    .bind(requested)
+    .bind(0_i64)
+    .bind(skipped + deduplicated)
+    .bind(job_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
     if added > 0 {
         state.worker_state.notify_available();
     }
@@ -2126,6 +2219,7 @@ pub async fn enqueue_eligible_batch(
         skipped,
         summary: preflight.summary,
         tracks: preflight.tracks,
+        job_id,
     })
 }
 
@@ -2138,6 +2232,7 @@ pub async fn add_batch_to_queue(
     service_name: Option<String>,
     smart_studio_origin: Option<bool>,
     allow_fallback: Option<bool>,
+    job_kind: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let result = enqueue_eligible_batch(
@@ -2148,6 +2243,7 @@ pub async fn add_batch_to_queue(
         None, // strict_quality defaults to false in legacy add_batch_to_queue
         allow_fallback,
         smart_studio_origin,
+        job_kind,
         state,
     )
     .await?;
@@ -2159,6 +2255,7 @@ pub async fn add_batch_to_queue(
         "deduplicated": result.deduplicated,
         "skipped": result.skipped,
         "summary": result.summary,
+        "job_id": result.job_id,
     }))
 }
 
@@ -2638,7 +2735,19 @@ pub async fn perform_force_redownload_tracks(
     track_ids: Vec<i64>,
     priority: Option<i64>,
     quality_preference: Option<String>,
-) -> Result<usize, String> {
+) -> Result<i64, String> {
+    let job_request = crate::download::jobs::DownloadJobRequest {
+        kind: "selection".to_string(),
+        quality_preference: quality_preference.clone(),
+        filter: crate::download::jobs::DownloadJobFilter {
+            track_ids: Some(track_ids.clone()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let job_id = crate::download::jobs::create_job(&state.db, &job_request)
+        .await
+        .map_err(|e| e.to_string())?;
     tracing::info!(
         "force_redownload_tracks called for {} tracks",
         track_ids.len()
@@ -2708,7 +2817,7 @@ pub async fn perform_force_redownload_tracks(
             .execute(&state.db)
             .await;
 
-        perform_add_to_queue(
+        let add_result = perform_add_to_queue(
             &state.db,
             *tid,
             priority.or(Some(60)),
@@ -2726,13 +2835,40 @@ pub async fn perform_force_redownload_tracks(
             Some(false),
             Some(false),
             None,
+            Some(job_id),
         )
-        .await?;
-
-        re_queued += 1;
+        .await;
+        match add_result {
+            Ok(_) => re_queued += 1,
+            Err(error) => {
+                if let Err(warn) =
+                    crate::download::jobs::mark_job_failed(&state.db, job_id, &error).await
+                {
+                    tracing::warn!(
+                        "[force_redownload_tracks] could not mark job {} failed: {}",
+                        job_id,
+                        warn
+                    );
+                }
+                return Err(error);
+            }
+        }
     }
 
-    Ok(re_queued)
+    let requested = track_ids.len() as i64;
+    sqlx::query(
+        "UPDATE download_jobs SET requested_count = ?, estimated_count = ?, skipped_count = ?, \
+         updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )
+    .bind(requested)
+    .bind(0_i64)
+    .bind(requested - re_queued)
+    .bind(job_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(job_id)
 }
 
 /// Force re-download of tracks (clears from downloads and finished queue, then re-queues)
@@ -2742,7 +2878,7 @@ pub async fn force_redownload_tracks(
     track_ids: Vec<i64>,
     priority: Option<i64>,
     quality_preference: Option<String>,
-) -> Result<usize, String> {
+) -> Result<i64, String> {
     perform_force_redownload_tracks(&state, track_ids, priority, quality_preference).await
 }
 

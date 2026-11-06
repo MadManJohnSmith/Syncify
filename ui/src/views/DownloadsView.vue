@@ -1125,7 +1125,7 @@ import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
-import { auditDownloadQueue, type DownloadFavoritesResult, type QueueAuditReport } from '@/api/library'
+import { auditDownloadQueue, type QueueAuditReport } from '@/api/library'
 import { formatServiceName } from '@/composables/useGlobalTasks'
 
 export interface DownloadTimelineEntry {
@@ -1351,7 +1351,7 @@ const toast = useToast()
 const showDownloadFavoritesModal = ref(false)
 const auditReport = ref<QueueAuditReport | null>(null)
 
-async function handleFavoritesEnqueued(res: DownloadFavoritesResult) {
+async function handleFavoritesEnqueued(res: { message: string }) {
   toast.success('Favorites Enqueued', res.message)
   await fetchData()
 }

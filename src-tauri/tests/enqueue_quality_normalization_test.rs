@@ -172,6 +172,7 @@ async fn test_quality_preference_normalization_canonical_values() {
             Some(false),
             Some(true),
             None,
+            None,
         )
         .await
         .expect("perform_add_to_queue must succeed without CHECK constraint failure");
@@ -390,6 +391,7 @@ async fn test_enqueue_lossy_candidates_without_explicit_quality_inserts_high() {
             Some(false),
             Some(true),
             None,
+            None,
         )
         .await
         .expect("Enqueuing lossy candidate must succeed without CHECK constraint failure");
@@ -472,6 +474,7 @@ async fn test_enqueue_explicit_quality_variations_satisfy_check_constraint() {
             None,
             Some(false),
             Some(true),
+            None,
             None,
         )
         .await
