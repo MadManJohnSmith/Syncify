@@ -12,10 +12,8 @@ pub mod orchestrator;
 pub mod progress;
 pub mod providers;
 pub mod quality_reconcile;
-// Provider gateway (D01): staged API until D02 wires evidence-based routing
-// through it; the binary compiles this tree separately and does not consume it
-// yet. Keep it compiled (and tested) without treating it as production use.
-#[allow(dead_code)]
+// Provider gateway (D01/D02): el orquestador despacha por este registro toda
+// descarga de proveedor; la provenance del sitio viaja en `ProviderRouting`.
 pub mod provider_gateway;
 pub mod qobuz;
 // ED discovery/selection is an offline-tested policy API not yet wired into
