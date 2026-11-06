@@ -22,6 +22,8 @@ import sqlite3
 import sys
 import time
 
+from services.bridge_protocol import BridgeFailure, run_cli  # noqa: E402
+
 
 DEFAULT_DB_CANDIDATES = [
     os.path.expanduser("~/.local/share/com.syncify.app/syncify.db"),
@@ -50,8 +52,7 @@ def purge_orphan_empty_albums(
     dry_run: bool = False,
 ) -> bool:
     if not os.path.exists(db_path):
-        print(f"[TASK-70] Error: Database file not found at {db_path}", file=sys.stderr)
-        return False
+        raise BridgeFailure(f"[TASK-70] Error: Database file not found at {db_path}")
 
     print(f"[TASK-70] Target database: {db_path}")
 
@@ -184,24 +185,25 @@ def purge_orphan_empty_albums(
             print(f"[TASK-70] Successfully purged {deleted_albums} orphan albums and {deleted_album_artists} album_artists references.")
         except Exception as e:
             conn.rollback()
-            print(f"[TASK-70] Error during purge transaction, rolled back: {e}", file=sys.stderr)
             conn.close()
-            return False
+            raise BridgeFailure(
+                f"[TASK-70] Error during purge transaction, rolled back: {e}"
+            )
 
     # 3. Validation gates
     print("[TASK-70] Running validation checks...")
     fk_violations = cur.execute("PRAGMA foreign_key_check;").fetchall()
     if fk_violations:
-        print(f"[TASK-70] CRITICAL: foreign_key_check returned {len(fk_violations)} violations: {fk_violations}", file=sys.stderr)
         conn.close()
-        return False
+        raise BridgeFailure(
+            f"[TASK-70] CRITICAL: foreign_key_check returned {len(fk_violations)} violations: {fk_violations}"
+        )
     print("[TASK-70] PRAGMA foreign_key_check: OK (0 violations)")
 
     integrity_result = cur.execute("PRAGMA integrity_check;").fetchone()[0]
     if integrity_result != "ok":
-        print(f"[TASK-70] CRITICAL: integrity_check failed: {integrity_result}", file=sys.stderr)
         conn.close()
-        return False
+        raise BridgeFailure(f"[TASK-70] CRITICAL: integrity_check failed: {integrity_result}")
     print(f"[TASK-70] PRAGMA integrity_check: {integrity_result}")
 
     # Post-purge audit
@@ -221,16 +223,17 @@ def purge_orphan_empty_albums(
     print("[TASK-70] ═══════════════════════════════════════════════════════════\n")
 
     if not dry_run and remaining_empty_albums != remaining_stubs:
-        print(f"[TASK-70] WARNING: Empty albums ({remaining_empty_albums}) != Stubs ({remaining_stubs})", file=sys.stderr)
         conn.close()
-        return False
+        raise BridgeFailure(
+            f"[TASK-70] WARNING: Empty albums ({remaining_empty_albums}) != Stubs ({remaining_stubs})"
+        )
 
     conn.close()
     print("[TASK-70] Purge operation completed successfully.")
     return True
 
 
-def main():
+def _build_parser():
     parser = argparse.ArgumentParser(
         description="Syncify TASK-70: Purge Orphan Empty Albums & Clean Album Artists"
     )
@@ -249,15 +252,20 @@ def main():
         action="store_true",
         help="Simulate purge without writing changes",
     )
+    return parser
 
-    args = parser.parse_args()
-    success = purge_orphan_empty_albums(
+
+def _run(args):
+    purge_orphan_empty_albums(
         db_path=args.db_path,
         backup_dir=args.backup_dir,
         dry_run=args.dry_run,
     )
-    sys.exit(0 if success else 1)
+
+
+def main():
+    return run_cli(_run, parse=_build_parser().parse_args)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

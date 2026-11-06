@@ -66,13 +66,8 @@ impl Drop for AuthGuard {
 // PYTHON AUTH BRIDGE COMMANDS
 // ==============================================
 
-/// Auth result from Python subprocess
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthResult {
-    pub success: bool,
-    pub data: Option<serde_json::Value>,
-    pub error: Option<String>,
-}
+/// Resultado del puente de autenticación: el envelope común de los puentes.
+pub type AuthResult = crate::bridges::BridgeEnvelope<serde_json::Value>;
 
 /// Redact sensitive tokens and credentials from output strings before logging or surfacing in errors
 pub fn redact_auth_payload(raw: &str) -> String {
@@ -111,89 +106,59 @@ pub async fn run_auth_bridge_subprocess(
         action
     );
 
-    let project_root = get_project_root();
-    let python_cmd = get_python_executable();
-    let script_path = crate::cmd_utils::find_scripts_dir(&project_root).join("auth_bridge.py");
-
-    tracing::debug!(
-        "Auth bridge: python={}, script={:?}, cwd={:?}, has_stdin={}",
-        python_cmd,
-        script_path,
-        project_root,
-        stdin_payload.is_some()
-    );
-
-    let mut cmd = crate::cmd_utils::create_tokio_command(&python_cmd);
-    cmd.kill_on_drop(true);
-    cmd.arg(&script_path)
-        .arg(service)
-        .arg(action)
-        .current_dir(&project_root)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    if stdin_payload.is_some() {
-        cmd.stdin(std::process::Stdio::piped());
-    } else {
-        cmd.stdin(std::process::Stdio::null());
-    }
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn Python auth_bridge subprocess: {}", e))?;
-
-    if let Some(payload) = stdin_payload {
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                stdin.write_all(payload.as_bytes()),
-            )
-            .await
-            .map_err(|_| "Timed out writing credentials to auth_bridge stdin".to_string())?
-            .map_err(|e| {
-                format!(
-                    "Failed to write credentials payload to auth_bridge stdin: {}",
-                    e
-                )
-            })?;
-            let _ = stdin.flush().await;
-            drop(stdin); // Close child stdin to send EOF
-        }
-    }
-
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(AUTH_BRIDGE_TIMEOUT_SECS),
-        child.wait_with_output(),
+    let raw = crate::bridges::BridgeClient::capture(
+        "auth_bridge.py",
+        &[service, action],
+        crate::bridges::CallOptions {
+            timeout: std::time::Duration::from_secs(AUTH_BRIDGE_TIMEOUT_SECS),
+            stdin: stdin_payload.map(str::as_bytes),
+        },
     )
     .await
-    .map_err(|_| {
-        format!(
-            "Authentication bridge timed out after {} seconds",
-            AUTH_BRIDGE_TIMEOUT_SECS
-        )
-    })?
-    .map_err(|e| format!("Failed to wait for auth_bridge: {}", e))?;
+    .map_err(map_auth_launch_error)?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    let redacted_stdout = redact_auth_payload(&stdout);
+    // La salida puede llevar credenciales: se registra solo redactada.
     tracing::info!(
         "Auth subprocess execution finished (output redacted): {}",
-        redacted_stdout
+        redact_auth_payload(&raw.stdout)
     );
-    if !stderr.is_empty() {
-        tracing::warn!("Auth stderr (redacted): {}", redact_auth_payload(&stderr));
+    if !raw.stderr.is_empty() {
+        tracing::warn!(
+            "Auth stderr (redacted): {}",
+            redact_auth_payload(&raw.stderr)
+        );
     }
 
     parse_auth_bridge_output(
         service,
-        &stdout,
-        &stderr,
-        output.status.success(),
-        output.status.code(),
+        &raw.stdout,
+        &raw.stderr,
+        raw.exit_ok(),
+        raw.exit_code(),
     )
+}
+
+/// Traduce el error de lanzamiento del cliente a los mensajes históricos de auth.
+fn map_auth_launch_error(error: crate::bridges::BridgeError) -> String {
+    use crate::bridges::BridgeError;
+    match error {
+        BridgeError::Timeout { timeout, .. } => format!(
+            "Authentication bridge timed out after {} seconds",
+            timeout.as_secs()
+        ),
+        BridgeError::Spawn { source, .. } => {
+            format!("Failed to spawn Python auth_bridge subprocess: {}", source)
+        }
+        BridgeError::StdinTimeout { .. } => {
+            "Timed out writing credentials to auth_bridge stdin".to_string()
+        }
+        BridgeError::StdinWrite { source, .. } => format!(
+            "Failed to write credentials payload to auth_bridge stdin: {}",
+            source
+        ),
+        BridgeError::Wait { source, .. } => format!("Failed to wait for auth_bridge: {}", source),
+        other => other.to_string(),
+    }
 }
 
 /// Convierte la salida de `auth_bridge.py` en `AuthResult`.

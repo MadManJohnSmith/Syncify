@@ -44,15 +44,7 @@ if os.getenv("SYNCIFY_ENV", "").strip().lower() in ("development", "dev"):
         pass
 
 
-def json_response(success: bool, data=None, error=None):
-    """Output JSON response and exit."""
-    result = {"success": success}
-    if data:
-        result["data"] = data
-    if error:
-        result["error"] = error
-    print(json.dumps(result, ensure_ascii=False))
-    sys.exit(0 if success else 1)
+from services.bridge_protocol import BridgeFailure, run  # noqa: E402
 
 
 def check_availability():
@@ -62,10 +54,10 @@ def check_availability():
     matcher = AcoustIDMatcher(verbose=True)
     available = matcher.is_available()
     
-    json_response(True, {
+    return {
         "available": available,
         "fpcalc_path": str(matcher.fpcalc_path) if matcher.fpcalc_path else None,
-    })
+    }
 
 
 def get_fingerprint(audio_path: str):
@@ -74,15 +66,13 @@ def get_fingerprint(audio_path: str):
     
     path = Path(audio_path)
     if not path.exists():
-        json_response(False, error=f"File not found: {audio_path}")
-        return
+        raise BridgeFailure(f"File not found: {audio_path}")
     
     api_key = os.getenv("ACOUSTID_API_KEY")
     matcher = AcoustIDMatcher(api_key=api_key, verbose=True)
     
     if not matcher.is_available():
-        json_response(False, error="fpcalc not found. Install Chromaprint.")
-        return
+        raise BridgeFailure("fpcalc not found. Install Chromaprint.")
     
     try:
         result = matcher.get_fingerprint(path)
@@ -92,7 +82,7 @@ def get_fingerprint(audio_path: str):
             import hashlib
             h = hashlib.md5(fingerprint.encode("utf-8")).hexdigest()
             derived_id = f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
-            json_response(True, {
+            return {
                 "duration": duration,
                 "fingerprint": fingerprint,
                 # TASK-75 contract keys: stable AcoustID (UUID-shaped MD5 of the
@@ -100,12 +90,12 @@ def get_fingerprint(audio_path: str):
                 "acoustid_id": derived_id,
                 "acoustid_fingerprint": fingerprint,
                 "file": str(path.absolute()),
-            })
+            }
         else:
-            json_response(False, error="Failed to generate fingerprint")
+            raise BridgeFailure("Failed to generate fingerprint")
             
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
 
 
 def identify_track(audio_path: str):
@@ -114,15 +104,13 @@ def identify_track(audio_path: str):
     
     path = Path(audio_path)
     if not path.exists():
-        json_response(False, error=f"File not found: {audio_path}")
-        return
+        raise BridgeFailure(f"File not found: {audio_path}")
     
     api_key = os.getenv("ACOUSTID_API_KEY")
     matcher = AcoustIDMatcher(api_key=api_key, verbose=True)
     
     if not matcher.is_available():
-        json_response(False, error="fpcalc not found. Install Chromaprint.")
-        return
+        raise BridgeFailure("fpcalc not found. Install Chromaprint.")
     
     try:
         # Fingerprint first, then look the fingerprint up: identify_with_fingerprint()
@@ -130,8 +118,7 @@ def identify_track(audio_path: str):
         fingerprint = matcher.get_fingerprint(path)
 
         if fingerprint is None:
-            json_response(False, error="Failed to generate fingerprint")
-            return
+            raise BridgeFailure("Failed to generate fingerprint")
 
         duration, fingerprint_data = fingerprint
         results = matcher.identify_with_fingerprint(duration, fingerprint_data)
@@ -153,16 +140,16 @@ def identify_track(audio_path: str):
                     "duration": r.duration,
                 })
 
-            json_response(True, {
+            return {
                 "matches": matches,
                 "file": str(path.absolute()),
                 "duration": duration,
-            })
+            }
         else:
-            json_response(False, error="No matches found")
+            raise BridgeFailure("No matches found")
             
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
 
 
 def find_duplicates(paths: List[str]):
@@ -183,15 +170,13 @@ def find_duplicates(paths: List[str]):
                 audio_files.extend(path.rglob(f"*{ext}"))
     
     if not audio_files:
-        json_response(False, error="No audio files found")
-        return
+        raise BridgeFailure("No audio files found")
     
     api_key = os.getenv("ACOUSTID_API_KEY")
     matcher = AcoustIDMatcher(api_key=api_key, verbose=True)
     
     if not matcher.is_available():
-        json_response(False, error="fpcalc not found. Install Chromaprint.")
-        return
+        raise BridgeFailure("fpcalc not found. Install Chromaprint.")
     
     try:
         duplicates = matcher.find_duplicates(audio_files)
@@ -203,14 +188,14 @@ def find_duplicates(paths: List[str]):
             if len(files) > 1
         }
         
-        json_response(True, {
+        return {
             "total_files_scanned": len(audio_files),
             "duplicate_groups": len(dup_groups),
             "duplicates": dup_groups,
-        })
+        }
         
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
 
 
 def main():

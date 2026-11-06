@@ -967,28 +967,26 @@ pub async fn test_lyrics_provider(provider_id: String) -> Result<bool, String> {
             "Provider connectivity test is unavailable for this Rust lyrics source".to_string(),
         );
     }
-    let python_cmd = crate::commands::get_python_executable();
-    let project_root = crate::commands::get_project_root();
-    let script_path = crate::cmd_utils::find_scripts_dir(&project_root).join("lyrics_bridge.py");
-
-    let output = tokio::task::spawn_blocking(move || {
-        crate::cmd_utils::create_std_command(&python_cmd)
-            .arg(&script_path)
-            .args(["test", "--provider", &provider_id])
-            .current_dir(&project_root)
-            .output()
-    })
+    let raw = crate::bridges::BridgeClient::capture(
+        "lyrics_bridge.py",
+        &["test", "--provider", &provider_id],
+        crate::bridges::CallOptions::with_timeout(std::time::Duration::from_secs(45)),
+    )
     .await
-    .map_err(|_| "Lyrics bridge task failed".to_string())?
-    .map_err(|_| "Failed to run lyrics bridge".to_string())?;
+    .map_err(|error| match error {
+        crate::bridges::BridgeError::Spawn { source, .. } => {
+            format!("Failed to run lyrics bridge: {}", source)
+        }
+        other => other.to_string(),
+    })?;
 
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout)
+    let result: serde_json::Value = serde_json::from_str(raw.stdout.trim())
         .map_err(|_| "Lyrics bridge returned invalid JSON".to_string())?;
     let success = result
         .get("success")
         .and_then(serde_json::Value::as_bool)
         .ok_or_else(|| "Lyrics bridge returned no success flag".to_string())?;
-    if !output.status.success() && success {
+    if !raw.exit_ok() && success {
         return Err("Lyrics bridge exited unsuccessfully".to_string());
     }
     Ok(success)
