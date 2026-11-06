@@ -1,8 +1,10 @@
 //! Integration Test: AmbiguousSource Deduplication and Permanent Failure Classification
 //!
 //! Validates:
-//! 1. AmbiguousSource, SourceIdentityMissing, and IdentityConflict are marked as permanent (retry_count=99).
-//! 2. retry_all_failed query strictly skips AmbiguousSource, SourceIdentityMissing, and IdentityConflict.
+//! 1. AmbiguousSource, SourceIdentityMissing, and IdentityConflict stay classified as terminal
+//!    for the automatic worker verdict.
+//! 2. ManualRetry (ADR-0022) reencola TODAS las filas failed, incluidas las ambiguas: el
+//!    usuario puede haber resuelto la ambiguedad a mano.
 //! 3. Accounts are not marked invalid upon ambiguity errors.
 //! 4. UI contract classification correctly identifies ambiguity failures as requiring user action, not re-auth.
 
@@ -104,15 +106,14 @@ async fn test_ambiguous_source_permanent_classification_and_retry_exclusion() {
     .await
     .unwrap();
 
-    // Execute the production retry-all logic (S168: skip terminal failures)
+    // Execute the production retry-all logic: ManualRetry, no class filter.
     let retried = syncify_tauri_lib::commands::queue::perform_retry_all_failed(&db)
         .await
         .unwrap();
 
-    // Assert only transient item was retried
     assert_eq!(
-        retried, 1,
-        "Only transient network error item should be retried"
+        retried, 3,
+        "manual retry must requeue every failed row, including ambiguous ones"
     );
 
     let s1: (String, i64) =
@@ -121,8 +122,8 @@ async fn test_ambiguous_source_permanent_classification_and_retry_exclusion() {
             .fetch_one(&db)
             .await
             .unwrap();
-    assert_eq!(s1.0, "failed");
-    assert_eq!(s1.1, 99);
+    assert_eq!(s1.0, "queued");
+    assert_eq!(s1.1, 0);
 
     let s2: (String, i64) =
         sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = ?")
@@ -131,7 +132,7 @@ async fn test_ambiguous_source_permanent_classification_and_retry_exclusion() {
             .await
             .unwrap();
     assert_eq!(s2.0, "queued");
-    assert_eq!(s2.1, 2);
+    assert_eq!(s2.1, 0);
 
     let s3: (String, i64) =
         sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = ?")
@@ -139,8 +140,8 @@ async fn test_ambiguous_source_permanent_classification_and_retry_exclusion() {
             .fetch_one(&db)
             .await
             .unwrap();
-    assert_eq!(s3.0, "failed");
-    assert_eq!(s3.1, 99);
+    assert_eq!(s3.0, "queued");
+    assert_eq!(s3.1, 0);
 
     // Verify account credentials were NOT invalidated
     let acc_invalid: i64 =

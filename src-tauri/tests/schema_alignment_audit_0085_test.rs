@@ -168,6 +168,8 @@ async fn test_migration_0085_recorded_and_schema_aligned() {
         "quality_fallback_used",
         "decision_reason",
         "skip_reason",
+        // 0103 (D00): cuenta que entregó el fichero; NULL en filas legacy.
+        "account_id",
     ] {
         assert!(
             download_cols.contains(&kept.to_string()),
@@ -177,8 +179,8 @@ async fn test_migration_0085_recorded_and_schema_aligned() {
     }
     assert_eq!(
         download_cols.len(),
-        30,
-        "downloads must have exactly 30 columns after dropping 2 of 32"
+        31,
+        "downloads must have exactly 31 columns after 0103 added account_id to the 30 of 0085"
     );
 
     // Indexes of the rebuilt table are back in place.

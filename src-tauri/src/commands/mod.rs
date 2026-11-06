@@ -23,6 +23,9 @@ pub use dashboard::*;
 pub mod download;
 pub use download::*;
 
+pub mod download_jobs;
+pub use download_jobs::*;
+
 pub mod enrichment;
 pub use enrichment::*;
 

@@ -65,6 +65,21 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
   - `0009-adaptadores-de-descarga-nativos.md`: destinos de descarga en beta; Qobuz,
     Tidal, Deezer, SoundCloud y Amazon con adaptador nativo en Rust; Spotify y Apple
     Music quedan como catálogo (propuesto).
+  - `0010-reproductor-cola-backend.md`: cola y estado de reproducción en el backend,
+    entradas efímeras y búsqueda de catálogo en proveedores (aceptado).
+  - `0011-motor-de-audio-dsp.md`: gapless, crossfade, ReplayGain, AGC y EQ
+    paramétrico en el motor nativo (aceptado).
+  - `0012-playlists-entidad-y-escritura.md`: playlist local sin cuenta, fuentes
+    remotas, duplicados, tombstones y push bidireccional opt-in (propuesto).
+  - `0013-playlists-escala-y-smart.md`: paginación sin tope de 500, smart playlists
+    v2 con AND/OR, orden y límite, y portadas por mosaico (propuesto).
+  - `0014-adopcion-hallazgos-symfonium-audirvana.md`: adopción selectiva de los
+    hallazgos de Symfonium y Audirvāna; contrato de tags, cola, streaming y
+    límites de alcance (aceptado).
+  - `0015-migracion-colecciones-y-destinos.md`: favoritos, álbumes, artistas y
+    playlists; capacidad declarada por destino y revisión de dudosos (propuesto).
+  - `0016-migracion-ejecucion-y-undo.md`: idempotencia, reanudación, lotes con
+    rate limit, journal y undo best-effort (propuesto).
 - **`APP_FLOW.en.md`**: recorrido de extremo a extremo del flujo actual (en
   inglés): de conectar una cuenta a una descarga verificada en disco.
 - **`design-system.md`**: los 10 temas (4 estándar + 6 de servicio), tokens
@@ -139,8 +154,9 @@ qué sigue abierto solo en ese fichero:
   DSC-, DL-SVC-, MF-…).
 - `perf-probe-2026-10-12.md` y `perf-run-2026-10-12.md`: mediciones de
   rendimiento backend (el índice de expresión sobre ISRC sigue sin hacerse).
-- `RELEASE_NOTES_v0.6.0.md` y `RELEASE_NOTES_v0.6.1.md`: notas de las releases
-  etiquetadas `v0.6.0` y `v0.6.1`.
+- `RELEASE_NOTES_v0.6.0.md`, `RELEASE_NOTES_v0.6.1.md` y
+  `RELEASE_NOTES_v0.6.2.md`: notas de las releases etiquetadas `v0.6.0`,
+  `v0.6.1` y `v0.6.2`.
 
 ## Espacios de identificadores
 

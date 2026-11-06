@@ -5627,6 +5627,20 @@ pub async fn perform_enqueue_tracks(
     smart_studio_origin: Option<bool>,
     skip_already_downloaded: Option<bool>,
 ) -> Result<EnqueueTracksResponse, String> {
+    let job_request = crate::download::jobs::DownloadJobRequest {
+        kind: "selection".to_string(),
+        source_service: service_name.clone(),
+        quality_preference: quality_preference.clone(),
+        allow_fallback,
+        filter: crate::download::jobs::DownloadJobFilter {
+            track_ids: Some(track_ids.clone()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let job_id = crate::download::jobs::create_job(db, &job_request)
+        .await
+        .map_err(|e| e.to_string())?;
     let total_selected = track_ids.len() as i64;
     let strict = strict_quality.unwrap_or(false);
     let fallback = allow_fallback.unwrap_or(true);
@@ -5646,7 +5660,7 @@ pub async fn perform_enqueue_tracks(
     let norm_quality = normalize_quality_preference(quality_preference.as_deref());
 
     for track_id in track_ids {
-        let pf = evaluate_track_preflight(
+        let pf = match evaluate_track_preflight(
             db,
             track_id,
             service_name.as_deref(),
@@ -5654,7 +5668,21 @@ pub async fn perform_enqueue_tracks(
             strict,
             fallback,
         )
-        .await?;
+        .await
+        {
+            Ok(pf) => pf,
+            Err(error) => {
+                if let Err(warn) = crate::download::jobs::mark_job_failed(db, job_id, &error).await
+                {
+                    tracing::warn!(
+                        "[enqueue_tracks] could not mark job {} failed: {}",
+                        job_id,
+                        warn
+                    );
+                }
+                return Err(error);
+            }
+        };
 
         match pf.status {
             DownloadPreflightStatus::ReadyExactSource => {
@@ -5707,6 +5735,7 @@ pub async fn perform_enqueue_tracks(
                 smart_studio_origin,
                 Some(fallback),
                 None,
+                Some(job_id),
             )
             .await;
 
@@ -5768,6 +5797,18 @@ pub async fn perform_enqueue_tracks(
         tracks_result.push(pf);
     }
 
+    sqlx::query(
+        "UPDATE download_jobs SET requested_count = ?, estimated_count = ?, skipped_count = ?, \
+         updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )
+    .bind(total_selected)
+    .bind(0_i64)
+    .bind(skipped_count + deduplicated_count)
+    .bind(job_id)
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
     summary.enqueued = enqueued_count;
     summary.deduplicated = deduplicated_count;
     summary.skipped = skipped_count;
@@ -5782,6 +5823,7 @@ pub async fn perform_enqueue_tracks(
         eligible: eligible_count,
         enqueued: enqueued_count,
         skipped: skipped_count,
+        job_id,
         deduplicated: deduplicated_count,
         excluded_preflight,
         skip_reasons,

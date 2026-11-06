@@ -5,6 +5,9 @@ use crate::download::lyrics::LyricsClient;
 use crate::download::progress::{
     DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
+use crate::download::provider_gateway::{
+    AmazonProvider, DownloadProvider, QobuzProvider, TidalProvider,
+};
 use crate::download::qobuz::QobuzDownloader;
 use crate::download::songlink::SongLinkClient;
 use crate::download::tidal::{TidalDownloader, TidalOrchestratorExt};
@@ -128,6 +131,11 @@ pub struct DownloadOrchestrator {
     service_priority: Vec<String>,
     /// Database pool for active account token resolution
     db: Option<sqlx::SqlitePool>,
+    /// Gateway de proveedores (D01): adaptadores `DownloadProvider` resolubles
+    /// por nombre de servicio en minúsculas. Los flujos primarios no cambian;
+    /// D02 enrutará por aquí y los tests sustituyen entradas con
+    /// `with_provider_override`.
+    providers: std::collections::BTreeMap<String, Arc<dyn DownloadProvider>>,
 }
 
 impl DownloadOrchestrator {
@@ -162,10 +170,14 @@ impl DownloadOrchestrator {
         Ok(enriched)
     }
     pub fn new() -> Self {
+        let qobuz = Arc::new(QobuzDownloader::new());
+        let tidal = Arc::new(TidalDownloader::new());
+        let amazon = Arc::new(AmazonDownloader::new());
         Self {
-            qobuz: Arc::new(QobuzDownloader::new()),
-            tidal: Arc::new(TidalDownloader::new()),
-            amazon: Arc::new(AmazonDownloader::new()),
+            providers: Self::default_providers(&qobuz, &tidal, &amazon, None),
+            qobuz,
+            tidal,
+            amazon,
             songlink: Arc::new(SongLinkClient::new()),
             lyrics: Arc::new(LyricsClient::new()),
             enrichment: Arc::new(EnrichmentEngine::new()),
@@ -178,8 +190,60 @@ impl DownloadOrchestrator {
         }
     }
 
+    /// Registro por defecto: un adaptador por descargador real, sin alterar su
+    /// lógica. Se reconstruye en `with_db` porque los adaptadores capturan el
+    /// pool para la resolución de tokens por cuenta.
+    fn default_providers(
+        qobuz: &Arc<QobuzDownloader>,
+        tidal: &Arc<TidalDownloader>,
+        amazon: &Arc<AmazonDownloader>,
+        db: Option<sqlx::SqlitePool>,
+    ) -> std::collections::BTreeMap<String, Arc<dyn DownloadProvider>> {
+        let mut providers: std::collections::BTreeMap<String, Arc<dyn DownloadProvider>> =
+            std::collections::BTreeMap::new();
+        providers.insert(
+            "qobuz".to_string(),
+            Arc::new(QobuzProvider::new(qobuz.clone(), db.clone())),
+        );
+        providers.insert(
+            "tidal".to_string(),
+            Arc::new(TidalProvider::new(tidal.clone(), db)),
+        );
+        providers.insert(
+            "amazon".to_string(),
+            Arc::new(AmazonProvider::new(amazon.clone())),
+        );
+        providers
+    }
+
+    /// Resuelve el proveedor por nombre de servicio (insensible a mayúsculas).
+    /// Devuelve `None` para los catalog-only (Deezer, SoundCloud, Spotify,
+    /// Apple Music): no son destinos de descarga.
+    // Consumido por tests/provider_gateway_test.rs; D02 conectará el enrutado
+    // por evidencia que lo llama en producción.
+    #[allow(dead_code)]
+    pub fn resolve_provider(&self, service: &str) -> Option<Arc<dyn DownloadProvider>> {
+        self.providers.get(&service.to_ascii_lowercase()).cloned()
+    }
+
+    /// Sustituye o añade un proveedor en el registro. Seam de pruebas: los
+    /// tests inyectan el proveedor falso para probar job, enrutado y
+    /// verificación sin red.
+    #[allow(dead_code)]
+    pub fn with_provider_override(
+        mut self,
+        service: &str,
+        provider: Arc<dyn DownloadProvider>,
+    ) -> Self {
+        self.providers
+            .insert(service.to_ascii_lowercase(), provider);
+        self
+    }
+
     pub fn with_db(mut self, db: sqlx::SqlitePool) -> Self {
         self.enrichment = Arc::new(EnrichmentEngine::with_db(db.clone()));
+        self.providers =
+            Self::default_providers(&self.qobuz, &self.tidal, &self.amazon, Some(db.clone()));
         self.db = Some(db);
         self
     }
@@ -257,6 +321,7 @@ impl DownloadOrchestrator {
     }
 
     /// Download a track, trying services in priority order (backwards-compatible)
+    #[allow(dead_code)] // API pública consumida por tests de integración; el worker usa la variante cancelable.
     pub async fn download_track(&self, request: &DownloadRequest) -> Result<DownloadResult> {
         Box::pin(self.download_track_cancellable(request, None)).await
     }
@@ -1422,7 +1487,7 @@ impl DownloadOrchestrator {
 
         if let Some(token) = cancel_token {
             if token.is_cancelled() {
-                PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, "Download cancelled"));
+                PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
                 return Err(anyhow!("Download cancelled by user"));
             }
         }
@@ -1436,10 +1501,10 @@ impl DownloadOrchestrator {
         let is_lossless_or_hires = QualityPolicy::is_lossless_or_hires(&request.quality);
 
         if primary_service == "qobuz" {
-            self.download_primary_qobuz(request, is_lossless_or_hires)
+            self.download_primary_qobuz(request, is_lossless_or_hires, cancel_token)
                 .await
         } else if primary_service == "tidal" {
-            self.download_primary_tidal(request, is_lossless_or_hires)
+            self.download_primary_tidal(request, is_lossless_or_hires, cancel_token)
                 .await
         } else {
             self.download_songlink_routing(
@@ -1456,6 +1521,7 @@ impl DownloadOrchestrator {
         &'a self,
         request: &'a DownloadRequest,
         is_lossless_or_hires: bool,
+        cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
@@ -1472,7 +1538,7 @@ impl DownloadOrchestrator {
             }
             let qobuz_result = self
                 .qobuz
-                .download_track(&qobuz_req, self.db.as_ref())
+                .download_track(&qobuz_req, self.db.as_ref(), cancel_token)
                 .await;
 
             match qobuz_result {
@@ -1493,7 +1559,7 @@ impl DownloadOrchestrator {
                     Ok(res)
                 }
                 Err(err) => {
-                    self.handle_qobuz_fallback(request, err, is_lossless_or_hires)
+                    self.handle_qobuz_fallback(request, err, is_lossless_or_hires, cancel_token)
                         .await
                 }
             }
@@ -1725,6 +1791,7 @@ impl DownloadOrchestrator {
         request: &'a DownloadRequest,
         err: anyhow::Error,
         is_lossless_or_hires: bool,
+        cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
@@ -1749,6 +1816,7 @@ impl DownloadOrchestrator {
                     &attempted_track_id,
                     attempted_account,
                     is_lossless_or_hires,
+                    cancel_token,
                 ))
                 .await;
 
@@ -1831,7 +1899,12 @@ impl DownloadOrchestrator {
                     if is_lossless_or_hires {
                         refresh_req.allow_fallback = false;
                     }
-                    match Box::pin(self.qobuz.download_track(&refresh_req, self.db.as_ref())).await
+                    match Box::pin(self.qobuz.download_track(
+                        &refresh_req,
+                        self.db.as_ref(),
+                        cancel_token,
+                    ))
+                    .await
                     {
                         Ok(mut res) => {
                             res.origin_service = Some("qobuz".to_string());
@@ -1921,6 +1994,7 @@ impl DownloadOrchestrator {
                         &attempted_track_id,
                         attempted_account,
                         is_lossless_or_hires,
+                        cancel_token,
                     ))
                     .await;
 
@@ -1968,8 +2042,12 @@ impl DownloadOrchestrator {
                             // carry the old execution lock (it produced
                             // "Tidal request differs from resolved plan").
                             tidal_req.resolution_plan = None;
-                            match Box::pin(self.tidal.download_track(&tidal_req, self.db.as_ref()))
-                                .await
+                            match Box::pin(self.tidal.download_track(
+                                &tidal_req,
+                                self.db.as_ref(),
+                                cancel_token,
+                            ))
+                            .await
                             {
                                 Ok(mut tidal_res) => {
                                     tidal_res.origin_service =
@@ -2045,7 +2123,7 @@ impl DownloadOrchestrator {
                             qobuz_320_req.resolution_plan = None;
                             if let Ok(mut qobuz_res) = self
                                 .qobuz
-                                .download_track(&qobuz_320_req, self.db.as_ref())
+                                .download_track(&qobuz_320_req, self.db.as_ref(), cancel_token)
                                 .await
                             {
                                 qobuz_res.origin_service = Some("qobuz".to_string());
@@ -2089,9 +2167,11 @@ impl DownloadOrchestrator {
                         // ED-04: plan was resolved for Qobuz/lossless; the
                         // 320 cross-service request must re-resolve.
                         tidal_320_req.resolution_plan = None;
-                        let mut tidal_res = match Box::pin(
-                            self.tidal.download_track(&tidal_320_req, self.db.as_ref()),
-                        )
+                        let mut tidal_res = match Box::pin(self.tidal.download_track(
+                            &tidal_320_req,
+                            self.db.as_ref(),
+                            cancel_token,
+                        ))
                         .await
                         {
                             Ok(res) => res,
@@ -2146,7 +2226,7 @@ impl DownloadOrchestrator {
                             qobuz_320_req.resolution_plan = None;
                             if let Ok(mut qobuz_res) = self
                                 .qobuz
-                                .download_track(&qobuz_320_req, self.db.as_ref())
+                                .download_track(&qobuz_320_req, self.db.as_ref(), cancel_token)
                                 .await
                             {
                                 qobuz_res.origin_service = Some("qobuz".to_string());
@@ -2248,6 +2328,7 @@ impl DownloadOrchestrator {
         attempted_track_id: &str,
         attempted_account: Option<i64>,
         is_lossless_or_hires: bool,
+        cancel_token: Option<&CancellationToken>,
     ) -> std::result::Result<DownloadResult, AuthRetryFailure> {
         let canonical_track_id = request.canonical_track_id.unwrap_or_default();
         let exclusions = crate::download::exclusions_for_failure(
@@ -2353,9 +2434,17 @@ impl DownloadOrchestrator {
             );
 
             let outcome = if candidate.service_name.eq_ignore_ascii_case("qobuz") {
-                Box::pin(self.qobuz.download_track(&candidate_req, Some(db))).await
+                Box::pin(
+                    self.qobuz
+                        .download_track(&candidate_req, Some(db), cancel_token),
+                )
+                .await
             } else {
-                Box::pin(self.tidal.download_track(&candidate_req, Some(db))).await
+                Box::pin(
+                    self.tidal
+                        .download_track(&candidate_req, Some(db), cancel_token),
+                )
+                .await
             };
 
             match outcome {
@@ -2423,6 +2512,7 @@ impl DownloadOrchestrator {
         &'a self,
         request: &'a DownloadRequest,
         is_lossless_or_hires: bool,
+        cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
@@ -2430,8 +2520,12 @@ impl DownloadOrchestrator {
             if is_lossless_or_hires {
                 tidal_req.allow_fallback = false;
             }
-            let tidal_result =
-                Box::pin(self.tidal.download_track(&tidal_req, self.db.as_ref())).await;
+            let tidal_result = Box::pin(self.tidal.download_track(
+                &tidal_req,
+                self.db.as_ref(),
+                cancel_token,
+            ))
+            .await;
 
             match tidal_result {
                 Ok(mut res) => {
@@ -2447,7 +2541,7 @@ impl DownloadOrchestrator {
                     Ok(res)
                 }
                 Err(err) => {
-                    self.handle_tidal_fallback(request, err, is_lossless_or_hires)
+                    self.handle_tidal_fallback(request, err, is_lossless_or_hires, cancel_token)
                         .await
                 }
             }
@@ -2459,6 +2553,7 @@ impl DownloadOrchestrator {
         request: &'a DownloadRequest,
         err: anyhow::Error,
         is_lossless_or_hires: bool,
+        cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
@@ -2479,6 +2574,7 @@ impl DownloadOrchestrator {
                     &attempted_track_id,
                     attempted_account,
                     is_lossless_or_hires,
+                    cancel_token,
                 ))
                 .await;
 
@@ -2542,7 +2638,7 @@ impl DownloadOrchestrator {
                         qobuz_req.resolution_plan = None;
                         if let Ok(mut qobuz_res) = self
                             .qobuz
-                            .download_track(&qobuz_req, self.db.as_ref())
+                            .download_track(&qobuz_req, self.db.as_ref(), cancel_token)
                             .await
                         {
                             qobuz_res.origin_service =
@@ -2577,8 +2673,12 @@ impl DownloadOrchestrator {
                     // ED-04: quality differs from the authenticated plan; the
                     // 320 request must re-resolve instead of failing validation.
                     tidal_320_req.resolution_plan = None;
-                    if let Ok(mut tidal_res) =
-                        Box::pin(self.tidal.download_track(&tidal_320_req, self.db.as_ref())).await
+                    if let Ok(mut tidal_res) = Box::pin(self.tidal.download_track(
+                        &tidal_320_req,
+                        self.db.as_ref(),
+                        cancel_token,
+                    ))
+                    .await
                     {
                         tidal_res.origin_service = Some("tidal".to_string());
                         tidal_res.effective_service = Some("tidal".to_string());
@@ -2601,7 +2701,7 @@ impl DownloadOrchestrator {
                     qobuz_320_req.resolution_plan = None;
                     let mut qobuz_res = self
                         .qobuz
-                        .download_track(&qobuz_320_req, self.db.as_ref())
+                        .download_track(&qobuz_320_req, self.db.as_ref(), cancel_token)
                         .await?;
                     qobuz_res.origin_service =
                         request.service_name.clone().or(Some("tidal".to_string()));
@@ -2627,8 +2727,12 @@ impl DownloadOrchestrator {
                         // adapter before any network call, so it must
                         // re-resolve like every other 320 rung.
                         tidal_320_req.resolution_plan = None;
-                        match Box::pin(self.tidal.download_track(&tidal_320_req, self.db.as_ref()))
-                            .await
+                        match Box::pin(self.tidal.download_track(
+                            &tidal_320_req,
+                            self.db.as_ref(),
+                            cancel_token,
+                        ))
+                        .await
                         {
                             Ok(mut tidal_res) => {
                                 tidal_res.origin_service = Some("tidal".to_string());
@@ -2687,10 +2791,7 @@ impl DownloadOrchestrator {
                     for candidate in &candidates {
                         if let Some(token) = cancel_token {
                             if token.is_cancelled() {
-                                PROGRESS_TRACKER.update(DownloadProgress::failed(
-                                    item_id,
-                                    "Download cancelled",
-                                ));
+                                PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
                                 return Err(anyhow!("Download cancelled by user"));
                             }
                         }
@@ -2703,7 +2804,12 @@ impl DownloadOrchestrator {
                         match candidate {
                             SongLinkEngineTarget::Tidal(tidal_id) => {
                                 info!("[Orchestrator] Delegating SongLink match to native Tidal engine (Tidal ID: {})", tidal_id);
-                                match Box::pin(self.download_tidal_track(&cand_req, tidal_id)).await
+                                match Box::pin(self.download_tidal_track(
+                                    &cand_req,
+                                    tidal_id,
+                                    cancel_token,
+                                ))
+                                .await
                                 {
                                     Ok(res) => return Ok(res),
                                     Err(e) => {
@@ -2714,7 +2820,12 @@ impl DownloadOrchestrator {
                             }
                             SongLinkEngineTarget::Qobuz(qobuz_id) => {
                                 info!("[Orchestrator] Delegating SongLink match to native Qobuz engine (Qobuz ID: {})", qobuz_id);
-                                match Box::pin(self.download_qobuz_track(&cand_req, qobuz_id)).await
+                                match Box::pin(self.download_qobuz_track(
+                                    &cand_req,
+                                    qobuz_id,
+                                    cancel_token,
+                                ))
+                                .await
                                 {
                                     Ok(res) => return Ok(res),
                                     Err(e) => {
@@ -2726,8 +2837,12 @@ impl DownloadOrchestrator {
                             SongLinkEngineTarget::Amazon(amazon_url) => {
                                 if !is_lossless_or_hires {
                                     info!("[Orchestrator] Delegating SongLink match to Amazon fallback engine");
-                                    match Box::pin(self.amazon.download_track(request, amazon_url))
-                                        .await
+                                    match Box::pin(self.amazon.download_track(
+                                        request,
+                                        amazon_url,
+                                        cancel_token,
+                                    ))
+                                    .await
                                     {
                                         Ok(mut res) => {
                                             Self::reconcile_physical_audio_quality(
@@ -2758,25 +2873,34 @@ impl DownloadOrchestrator {
 
                             match candidate {
                                 SongLinkEngineTarget::Tidal(tidal_id) => {
-                                    if let Ok(res) =
-                                        Box::pin(self.download_tidal_track(&lossy_req, tidal_id))
-                                            .await
+                                    if let Ok(res) = Box::pin(self.download_tidal_track(
+                                        &lossy_req,
+                                        tidal_id,
+                                        cancel_token,
+                                    ))
+                                    .await
                                     {
                                         return Ok(res);
                                     }
                                 }
                                 SongLinkEngineTarget::Qobuz(qobuz_id) => {
-                                    if let Ok(res) =
-                                        Box::pin(self.download_qobuz_track(&lossy_req, qobuz_id))
-                                            .await
+                                    if let Ok(res) = Box::pin(self.download_qobuz_track(
+                                        &lossy_req,
+                                        qobuz_id,
+                                        cancel_token,
+                                    ))
+                                    .await
                                     {
                                         return Ok(res);
                                     }
                                 }
                                 SongLinkEngineTarget::Amazon(amazon_url) => {
-                                    if let Ok(mut res) =
-                                        Box::pin(self.amazon.download_track(&lossy_req, amazon_url))
-                                            .await
+                                    if let Ok(mut res) = Box::pin(self.amazon.download_track(
+                                        &lossy_req,
+                                        amazon_url,
+                                        cancel_token,
+                                    ))
+                                    .await
                                     {
                                         Self::reconcile_physical_audio_quality(&mut res, request);
                                         PROGRESS_TRACKER
@@ -2810,8 +2934,10 @@ impl DownloadOrchestrator {
                         if let Some(ref track_url) = request.service_track_id {
                             if track_url.starts_with("http://") || track_url.starts_with("https://")
                             {
-                                let mut res =
-                                    self.amazon.download_track(request, track_url).await?;
+                                let mut res = self
+                                    .amazon
+                                    .download_track(request, track_url, cancel_token)
+                                    .await?;
                                 Self::reconcile_physical_audio_quality(&mut res, request);
                                 PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
                                 return Ok(res);
@@ -2965,6 +3091,7 @@ impl DownloadOrchestrator {
         &self,
         request: &DownloadRequest,
         tidal_id: &str,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<DownloadResult> {
         let item_id = &request.item_id;
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "tidal"));
@@ -2973,8 +3100,12 @@ impl DownloadOrchestrator {
         tidal_req.service_name = Some("tidal".to_string());
         tidal_req.service_track_id = Some(tidal_id.to_string());
 
-        let mut tidal_res =
-            Box::pin(self.tidal.download_track(&tidal_req, self.db.as_ref())).await?;
+        let mut tidal_res = Box::pin(self.tidal.download_track(
+            &tidal_req,
+            self.db.as_ref(),
+            cancel_token,
+        ))
+        .await?;
         tidal_res.origin_service = request
             .service_name
             .clone()
@@ -2998,6 +3129,7 @@ impl DownloadOrchestrator {
         &self,
         request: &DownloadRequest,
         qobuz_id: &str,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<DownloadResult> {
         let item_id = &request.item_id;
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "qobuz"));
@@ -3008,7 +3140,7 @@ impl DownloadOrchestrator {
 
         let mut qobuz_res = self
             .qobuz
-            .download_track(&qobuz_req, self.db.as_ref())
+            .download_track(&qobuz_req, self.db.as_ref(), cancel_token)
             .await?;
         qobuz_res.origin_service = request
             .service_name
@@ -3707,6 +3839,7 @@ mod tests {
                 &request,
                 anyhow!("QobuzPreviewPayload: Qobuz delivered MP3 instead of FLAC format_id=6"),
                 true,
+                None,
             )
             .await
             .unwrap_err()
@@ -3731,6 +3864,7 @@ mod tests {
                 &request,
                 anyhow!("QobuzPreviewPayload: Qobuz delivered MP3 instead of FLAC format_id=6"),
                 true,
+                None,
             )
             .await
             .unwrap_err()

@@ -177,8 +177,8 @@ export async function createPlaylist(
 /**
  * Queue tracks for download
  */
-export async function queueDownloads(trackIds: number[]): Promise<string> {
-    return invokeCommand<string>('queue_downloads', { trackIds });
+export async function queueDownloads(trackIds: number[]): Promise<number> {
+    return invokeCommand<number>('queue_downloads', { trackIds });
 }
 
 // ==============================================
@@ -557,69 +557,6 @@ export async function getEnrichmentStatus(): Promise<EnrichmentStatus> {
         pending_count: pickNumber(raw, ['pending_count', 'pendingCount']),
         completed_count: pickNumber(raw, ['completed_count', 'completedCount']),
         failed_count: pickNumber(raw, ['failed_count', 'failedCount']),
-    };
-}
-
-export interface DownloadFavoritesResult {
-    total_candidates: number;
-    enqueued: number;
-    already_downloaded: number;
-    already_queued: number;
-    unresolved_sources?: number;
-    stale_sources?: number;
-    ambiguous_sources?: number;
-    ready_exact?: number;
-    ready_fallback?: number;
-    no_download_provider?: number;
-    is_preflight?: boolean;
-    estimated_size_mb?: number;
-    message: string;
-}
-
-/**
- * Download favorites matching service and item type filters with optional batch limit and dry_run preflight
- */
-export async function downloadFavorites(
-    service?: string,
-    itemType?: string,
-    qualityPreference?: string,
-    priority?: number,
-    limit?: number,
-    dryRun?: boolean,
-): Promise<DownloadFavoritesResult> {
-    console.debug('[library.ts] invoke download_favorites payload:', {
-        service,
-        itemType,
-        qualityPreference,
-        priority,
-        limit,
-        dryRun,
-    });
-    return invokeCommand<DownloadFavoritesResult>('download_favorites', {
-        service,
-        itemType,
-        qualityPreference,
-        priority,
-        limit,
-        dryRun,
-    }).then(normalizeDownloadFavoritesResult);
-}
-
-function normalizeDownloadFavoritesResult(raw: unknown): DownloadFavoritesResult {
-    return {
-        total_candidates: pickNumber(raw, ['total_candidates', 'totalCandidates']),
-        enqueued: pickNumber(raw, ['enqueued']),
-        already_downloaded: pickNumber(raw, ['already_downloaded', 'alreadyDownloaded']),
-        already_queued: pickNumber(raw, ['already_queued', 'alreadyQueued']),
-        unresolved_sources: optionalNumber(pick(raw, ['unresolved_sources', 'unresolvedSources'])),
-        stale_sources: optionalNumber(pick(raw, ['stale_sources', 'staleSources'])),
-        ambiguous_sources: optionalNumber(pick(raw, ['ambiguous_sources', 'ambiguousSources'])),
-        ready_exact: optionalNumber(pick(raw, ['ready_exact', 'readyExact'])),
-        ready_fallback: optionalNumber(pick(raw, ['ready_fallback', 'readyFallback'])),
-        no_download_provider: optionalNumber(pick(raw, ['no_download_provider', 'noDownloadProvider'])),
-        is_preflight: pick(raw, ['is_preflight', 'isPreflight']) === true ? true : undefined,
-        estimated_size_mb: optionalNumber(pick(raw, ['estimated_size_mb', 'estimatedSizeMb'])),
-        message: asString(pick(raw, ['message'])),
     };
 }
 
@@ -1421,7 +1358,6 @@ export const libraryApi = {
     getFavoritesArtists,
     syncFavorites,
     pushFavoriteToService,
-    downloadFavorites,
     runIntegrityAudit,
     repairIntegrityIssues,
     reconcileLibraryPhysicalState,

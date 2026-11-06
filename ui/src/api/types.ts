@@ -142,7 +142,7 @@ export interface DownloadItem {
     id: number;
     title: string;
     artist_name: string;
-    status: 'queued' | 'downloading' | 'completed' | 'failed' | 'paused';
+    status: 'queued' | 'downloading' | 'completed' | 'failed' | 'cancelled' | 'paused';
     progress_percent: number;
 }
 

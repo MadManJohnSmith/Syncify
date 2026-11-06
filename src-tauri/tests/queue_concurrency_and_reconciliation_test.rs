@@ -124,6 +124,7 @@ async fn test_queue_reconciliation_20_submitted_10_queued_11_physical() {
             Some(false),
             Some(true),
             None,
+            None,
         )
         .await
         .expect("perform_add_to_queue must succeed");
@@ -239,6 +240,7 @@ async fn test_worker_concurrency_execution_and_atomic_claim() {
             Some(format!("USRC129C{:04}", i)),
             Some(false),
             Some(true),
+            None,
             None,
         )
         .await

@@ -7,6 +7,7 @@ use crate::download::qobuz::derive_acoustid_id;
 use anyhow::{anyhow, Result};
 use std::path::Path;
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
+use tokio_util::sync::CancellationToken;
 
 pub use syncify_tidal_downloader::*;
 
@@ -40,6 +41,7 @@ pub trait TidalOrchestratorExt {
         &self,
         request: &DownloadRequest,
         db_opt: Option<&sqlx::SqlitePool>,
+        cancel_token: Option<&CancellationToken>,
     ) -> impl std::future::Future<Output = Result<DownloadResult>> + Send;
 }
 
@@ -48,6 +50,7 @@ impl TidalOrchestratorExt for TidalDownloader {
         &self,
         request: &DownloadRequest,
         db_opt: Option<&sqlx::SqlitePool>,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<DownloadResult> {
         let item_id = &request.item_id;
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "tidal"));
@@ -117,31 +120,45 @@ impl TidalOrchestratorExt for TidalDownloader {
             };
 
             let item_id_clone = item_id.clone();
-            let res = crate::services::tidal_pipeline::execute_tidal_single_track_download(
-                db,
-                req,
-                move |event| match event.status {
-                    syncify_core_domain::events::PipelineStepStatus::Downloading => {
-                        let speed_kbps = event
-                            .speed_bytes_per_sec
-                            .map(|s| s as f64 / 1024.0)
-                            .unwrap_or(0.0);
-                        PROGRESS_TRACKER.update(DownloadProgress::downloading_bytes(
-                            &item_id_clone,
-                            "tidal",
-                            event.bytes_downloaded,
-                            event.total_bytes,
-                            speed_kbps,
-                            speed_kbps,
-                        ));
+            let download_future =
+                crate::services::tidal_pipeline::execute_tidal_single_track_download(
+                    db,
+                    req,
+                    move |event| match event.status {
+                        syncify_core_domain::events::PipelineStepStatus::Downloading => {
+                            let speed_kbps = event
+                                .speed_bytes_per_sec
+                                .map(|s| s as f64 / 1024.0)
+                                .unwrap_or(0.0);
+                            PROGRESS_TRACKER.update(DownloadProgress::downloading_bytes(
+                                &item_id_clone,
+                                "tidal",
+                                event.bytes_downloaded,
+                                event.total_bytes,
+                                speed_kbps,
+                                speed_kbps,
+                            ));
+                        }
+                        syncify_core_domain::events::PipelineStepStatus::Tagging => {
+                            PROGRESS_TRACKER.update(DownloadProgress::finalizing(&item_id_clone));
+                        }
+                        _ => {}
+                    },
+                );
+
+            // La descarga real ocurre dentro del pipeline (crate aparte). Al
+            // abortar el futuro en el siguiente punto de await, el stream deja
+            // de escribirse; el diario de recuperación reconcilia el staging.
+            let res = match cancel_token {
+                Some(token) => tokio::select! {
+                    _ = token.cancelled() => {
+                        PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
+                        return Err(anyhow!("Download cancelled by user"));
                     }
-                    syncify_core_domain::events::PipelineStepStatus::Tagging => {
-                        PROGRESS_TRACKER.update(DownloadProgress::finalizing(&item_id_clone));
-                    }
-                    _ => {}
+                    res = download_future => res,
                 },
-            )
-            .await
+                None => download_future.await,
+            }
             .map_err(|e| anyhow!("Tidal pipeline failed: {}", e))?;
 
             return Ok(DownloadResult {
@@ -279,8 +296,18 @@ impl TidalOrchestratorExt for TidalDownloader {
         let output_path = output_dir.join(&filename);
 
         PROGRESS_TRACKER.update(DownloadProgress::downloading(item_id, "tidal", 0, 0));
-        self.download_audio_payload(&stream_res.url, &output_path)
-            .await?;
+        let download_future = self.download_audio_payload(&stream_res.url, &output_path);
+        match cancel_token {
+            Some(token) => tokio::select! {
+                _ = token.cancelled() => {
+                    let _ = tokio::fs::remove_file(&output_path).await;
+                    PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
+                    return Err(anyhow!("Download cancelled by user"));
+                }
+                res = download_future => res,
+            },
+            None => download_future.await,
+        }?;
 
         let header_bytes = tokio::fs::read(&output_path).await.unwrap_or_default();
         if stream_res.codec == "FLAC"

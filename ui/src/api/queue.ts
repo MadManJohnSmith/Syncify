@@ -52,7 +52,8 @@ function normalizeQuality(q?: string | null): string | undefined {
 }
 
 /**
- * Add a track to the download queue with source identity locking
+ * Add a track to the download queue with source identity locking;
+ * returns the id of the download job that encloses the enqueue.
  */
 export async function addToQueue(params: {
     trackId: number;
@@ -246,10 +247,12 @@ export async function addBatchToQueue(params: {
     priority?: number;
     smartStudioOrigin?: boolean;
     allowFallback?: boolean;
+    /** Semántica del job que agrupa el lote (álbum, artista, playlist o selección). */
+    jobKind?: 'selection' | 'album' | 'artist' | 'playlist';
     // Legacy compatibility fields
     service?: string;
     quality?: string;
-}): Promise<{ added: number; skipped: number; summary?: PreflightSummaryCounts; submitted?: number; enqueued?: number; deduplicated?: number }> {
+}): Promise<{ added: number; skipped: number; summary?: PreflightSummaryCounts; submitted?: number; enqueued?: number; deduplicated?: number; jobId?: number }> {
     const raw = await invokeCommand<unknown>('add_batch_to_queue', {
         trackIds: params.trackIds,
         priority: params.priority,
@@ -257,6 +260,7 @@ export async function addBatchToQueue(params: {
         serviceName: params.serviceName || params.service || undefined,
         smartStudioOrigin: params.smartStudioOrigin,
         allowFallback: params.allowFallback ?? true,
+        jobKind: params.jobKind,
     });
     const summary = pick(raw, ['summary']);
     return {
@@ -267,6 +271,7 @@ export async function addBatchToQueue(params: {
         submitted: optionalNumber(pick(raw, ['submitted'])),
         enqueued: optionalNumber(pick(raw, ['enqueued'])),
         deduplicated: optionalNumber(pick(raw, ['deduplicated'])),
+        jobId: optionalNumber(pick(raw, ['job_id', 'jobId'])),
     };
 }
 

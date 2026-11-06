@@ -104,6 +104,7 @@ describe('Queue API IPC audit', () => {
             serviceName: undefined,
             smartStudioOrigin: undefined,
             allowFallback: true,
+            jobKind: undefined,
         });
     });
 
