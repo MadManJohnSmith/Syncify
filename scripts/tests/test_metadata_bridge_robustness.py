@@ -40,7 +40,7 @@ try:
 except ModuleNotFoundError:
     sys.modules["aiohttp"] = MagicMock()
 
-from metadata_bridge import extract_enriched_metadata, enrich_track, json_response
+from metadata_bridge import extract_enriched_metadata, enrich_track
 from services.metadata_enrichment import (
     EnrichedMetadata,
     enrich_metadata,
@@ -155,7 +155,7 @@ class TestMetadataBridgeRobustness(unittest.TestCase):
         data = extract_enriched_metadata(ComplexPayload())
         data["path_object"] = ComplexPayload.path
 
-        # Simulate json_response serialization logic
+        # Same serialization the protocol applies to every envelope.
         serialized = json.dumps({"success": True, "data": data}, ensure_ascii=False, default=str)
         deserialized = json.loads(serialized)
 
@@ -168,17 +168,11 @@ class TestMetadataBridgeRobustness(unittest.TestCase):
         meta = EnrichedMetadata(language="jpn", country="JP", bpm=135.0)
 
         with patch("services.metadata_enrichment.enrich_metadata", new=AsyncMock(return_value=meta)):
-            with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
-                with self.assertRaises(SystemExit) as cm:
-                    enrich_track("Test Song", "Test Artist", isrc="JP1234567890")
+            data = enrich_track("Test Song", "Test Artist", isrc="JP1234567890")
 
-                self.assertEqual(cm.exception.code, 0)
-                output = mock_stdout.getvalue()
-                parsed = json.loads(output)
-                self.assertTrue(parsed["success"])
-                self.assertEqual(parsed["data"]["language"], "jpn")
-                self.assertEqual(parsed["data"]["country"], "JP")
-                self.assertEqual(parsed["data"]["bpm"], 135.0)
+        self.assertEqual(data["language"], "jpn")
+        self.assertEqual(data["country"], "JP")
+        self.assertEqual(data["bpm"], 135.0)
 
 
 class TestAlbumContextEnrichment(unittest.TestCase):
@@ -189,11 +183,8 @@ class TestAlbumContextEnrichment(unittest.TestCase):
         meta = EnrichedMetadata(language="eng", country="GB")
 
         with patch("services.metadata_enrichment.enrich_metadata", new=AsyncMock(return_value=meta)) as mock_enrich:
-            with patch("sys.stdout", new_callable=io.StringIO):
-                with self.assertRaises(SystemExit) as cm:
-                    enrich_track("Song", "Artist", isrc="GBAYE0000123", album="Parachutes")
+            enrich_track("Song", "Artist", isrc="GBAYE0000123", album="Parachutes")
 
-        self.assertEqual(cm.exception.code, 0)
         self.assertEqual(mock_enrich.await_args.kwargs["album"], "Parachutes")
         self.assertEqual(mock_enrich.await_args.kwargs["isrc"], "GBAYE0000123")
 

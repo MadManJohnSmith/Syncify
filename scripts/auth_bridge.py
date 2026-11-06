@@ -47,15 +47,7 @@ def suppress_stdout():
         sys.stdout = old_stdout
 
 
-def json_response(success: bool, data=None, error=None):
-    """Output JSON response and exit."""
-    result = {"success": success}
-    if data:
-        result["data"] = data
-    if error:
-        result["error"] = error
-    print(json.dumps(result))
-    sys.exit(0 if success else 1)
+from services.bridge_protocol import BridgeFailure, FailureEnvelope, run  # noqa: E402
 
 
 def is_viable_qobuz_token(token) -> bool:
@@ -194,27 +186,21 @@ def handle_spotify(args=None, *extra_args, sp_dc: str = None, **kwargs) -> dict:
     if action == "refresh":
         # SEC-022: Enforce that sp_dc is never passed via sys.argv
         if len(sys.argv) > 3 or any("--sp" in arg or "sp_dc=" in arg for arg in sys.argv):
-            json_response(
-                False,
-                error="Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.",
-            )
+            raise BridgeFailure("Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.")
 
         cookie_val = sp_dc or kwargs.get("sp_dc") or extract_sp_dc()
         if not cookie_val:
-            json_response(
-                False,
-                error="No sp_dc session cookie provided. Provide via stdin (JSON or raw text) or SYNCIFY_SP_DC environment variable.",
-            )
+            raise BridgeFailure("No sp_dc session cookie provided. Provide via stdin (JSON or raw text) or SYNCIFY_SP_DC environment variable.")
 
         token_data = exchange_sp_dc_for_token(cookie_val)
         if token_data and "accessToken" in token_data:
-            json_response(True, {
+            return {
                 "accessToken": token_data["accessToken"],
                 "accessTokenExpirationTimestampMs": token_data.get("accessTokenExpirationTimestampMs", 0),
                 "isAnonymous": token_data.get("isAnonymous", False),
-            })
+            }
         else:
-            json_response(False, error="sp_dc token refresh failed — cookie may be expired or invalid")
+            raise BridgeFailure("sp_dc token refresh failed — cookie may be expired or invalid")
 
     return {
         "success": False,
@@ -250,7 +236,7 @@ def handle_tidal(action: str):
                     or user_obj.get("userName")
                     or user_obj.get("displayName")
                 )
-                json_response(True, {
+                return {
                     "message": result.get("message", "Connected to Tidal"),
                     "access_token": tokens.get("access_token"),
                     "refresh_token": tokens.get("refresh_token"),
@@ -260,26 +246,26 @@ def handle_tidal(action: str):
                     "email": user_obj.get("email"),
                     "display_name": tidal_name,
                     "verification_url": verification_url,
-                })
+                }
             else:
-                json_response(True, {
+                return {
                     "message": result.get("message", "Connected to Tidal"),
                     "verification_url": verification_url,
-                })
+                }
         else:
-            json_response(
-                False,
-                {"verification_url": verification_url},
-                error=result.get("message", "Tidal login failed"),
-            )
+            return FailureEnvelope({
+                "success": False,
+                 "data": {"verification_url": verification_url},
+                "error": result.get("message", "Tidal login failed"),
+            })
             
     elif action == "status":
         result = tidal_status()
-        json_response(True, result)
+        return result
         
     elif action == "logout":
         result = tidal_logout()
-        json_response(True, result)
+        return result
         
     elif action == "refresh":
         result = tidal_refresh()
@@ -288,14 +274,14 @@ def handle_tidal(action: str):
             auth = TidalAuth(verbose=False)
             tokens = auth.get_stored_tokens()
             if tokens:
-                json_response(True, {
+                return {
                     "message": result.get("message", "Token refreshed"),
                     "access_token": tokens.get("access_token"),
-                })
+                }
             else:
-                json_response(True, {"message": result.get("message", "Token refreshed")})
+                return {"message": result.get("message", "Token refreshed")}
         else:
-            json_response(False, error=result.get("message", "Token refresh failed"))
+            raise BridgeFailure(result.get("message", "Token refresh failed"))
 
 
 def handle_qobuz(action: str):
@@ -332,13 +318,8 @@ def handle_qobuz(action: str):
             username = (qobuz_creds.get("username") or "").strip() or None
             password = (qobuz_creds.get("password") or "").strip() or None
             if not auth_token and not (username and password):
-                json_response(
-                    False,
-                    error=(
-                        "Qobuz login finished in browser but no API token or fallback credentials were captured. "
-                        "Please log out from Qobuz in the browser first, then reconnect and enter email/password manually."
-                    ),
-                )
+                raise BridgeFailure("Qobuz login finished in browser but no API token or fallback credentials were captured. "
+                        "Please log out from Qobuz in the browser first, then reconnect and enter email/password manually.")
 
             # VISIBLE identity, never the provider's numeric id or a session
             # marker: `display_name` is shown in the UI and stored in
@@ -350,7 +331,7 @@ def handle_qobuz(action: str):
             # plausible email (decided by Rust, not this bridge).
             session_name = (session.get("display_name") if session else None) or None
             session_email = (session.get("email") if session else None) or None
-            json_response(True, {
+            return {
                 "user_id": result,
                 "user_auth_token": auth_token,  # Key expected by Rust
                 "auth_token": auth_token,
@@ -358,18 +339,18 @@ def handle_qobuz(action: str):
                 "email": session_email,
                 "username": username,
                 "password": password,
-            })
+            }
 
         else:
-            json_response(False, error=result)
+            raise BridgeFailure(result)
             
     elif action == "status":
         status = auth.get_status()
-        json_response(True, status)
+        return status
         
     elif action == "logout":
         auth.clear_session()
-        json_response(True, {"message": "Logged out"})
+        return {"message": "Logged out"}
 
 
 def handle_deezer(action: str):
@@ -385,21 +366,21 @@ def handle_deezer(action: str):
             if not arl:
                 auth = DeezerAuth(verbose=False)
                 arl = auth.get_stored_arl()
-            json_response(True, {
+            return {
                 "message": result.get("message", "Connected to Deezer"),
                 "arl": arl,
                 "access_token": arl,  # Use ARL as access_token for compatibility
-            })
+            }
         else:
-            json_response(False, error=result.get("message", "Deezer login failed"))
+            raise BridgeFailure(result.get("message", "Deezer login failed"))
             
     elif action == "status":
         result = deezer_status()
-        json_response(True, result)
+        return result
         
     elif action == "logout":
         result = deezer_logout()
-        json_response(True, result)
+        return result
 
 
 def handle_soundcloud(action: str):
@@ -427,40 +408,40 @@ def handle_soundcloud(action: str):
                 resp = requests.get("https://api-v2.soundcloud.com/me", headers=headers)
                 if resp.status_code == 200:
                     user_data = resp.json()
-                    json_response(True, {
+                    return {
                         "oauth_token": oauth_token,
                         "access_token": oauth_token.replace("OAuth ", ""),
                         "user_id": user_data.get("id"),
                         "username": user_data.get("username"),
                         "display_name": user_data.get("username"),
                         "avatar_url": user_data.get("avatar_url")
-                    })
+                    }
                 else:
                      # Fallback if API fails - log full response
                      error_msg = f"Failed to fetch user info: {resp.status_code} {resp.text[:100]}"
-                     json_response(True, {
+                     return {
                         "oauth_token": oauth_token, 
                         "access_token": oauth_token.replace("OAuth ", ""),
                         "user_id": 0, # Placeholder
                         "display_name": "SoundCloud User",
                         "error": error_msg
-                     })
+                     }
             except Exception as e:
-                json_response(True, {
+                return {
                     "oauth_token": oauth_token, 
                     "access_token": oauth_token.replace("OAuth ", ""),
                     "error": str(e)
-                })
+                }
         else:
-            json_response(False, error=result)
+            raise BridgeFailure(result)
             
     elif action == "status":
         status = auth.get_status()
-        json_response(True, status)
+        return status
         
     elif action == "logout":
         auth.clear_token()
-        json_response(True, {"message": "Logged out"})
+        return {"message": "Logged out"}
 
 
 def handle_apple_music(action: str):
@@ -484,7 +465,7 @@ def handle_apple_music(action: str):
             if not dev_token:
                 dev_token = auth._fetch_access_token()
                 
-            json_response(True, {
+            return {
                 "message": "Connected to Apple Music",
                 "music_user_token": music_user_token,
                 "developer_token": dev_token,
@@ -494,17 +475,17 @@ def handle_apple_music(action: str):
                 # Apple ID typed at sign-in when the form was readable; Apple's
                 # APIs expose no profile, so this is the only identity available.
                 "email": getattr(auth, "_captured_apple_id", None),
-            })
+            }
         else:
-            json_response(False, error=str(result))
+            raise BridgeFailure(str(result))
             
     elif action == "status":
         result = apple_music_status()
-        json_response(True, result)
+        return result
         
     elif action == "logout":
         result = apple_music_logout()
-        json_response(True, result)
+        return result
 
 
 HANDLERS = {
@@ -523,77 +504,65 @@ HANDLERS = {
 REFRESH_CAPABLE_SERVICES = ("spotify", "tidal")
 
 
-def main():
+def _parse(argv):
     service = None
     action = None
 
-    # Support flag-based options: --service <svc> [--action <act>]
-    # as well as positional: <svc> <act>
-    if "--service" in sys.argv or "-s" in sys.argv:
+    # Flag-based: --service <svc> [--action <act>]; también posicional: <svc> <act>
+    if "--service" in argv or "-s" in argv:
         import argparse
         parser = argparse.ArgumentParser(description="Syncify Auth Bridge CLI")
         parser.add_argument("--service", "-s", required=True, help="Service name")
         parser.add_argument("--action", "-a", default="status", help="Action name")
-        args, extra = parser.parse_known_args()
+        args, extra = parser.parse_known_args(argv)
         service = args.service.lower()
         action = args.action.lower()
-        # SEC-022: Prohibit passing sensitive tokens in CLI extra arguments
+        # SEC-022: prohibit sensitive tokens in extra CLI arguments
         if service == "spotify" and action == "refresh" and extra:
-            json_response(
-                False,
-                error="Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.",
-            )
-    elif len(sys.argv) >= 2 and not sys.argv[1].startswith("-"):
-        service = sys.argv[1].lower()
-        action = sys.argv[2].lower() if len(sys.argv) >= 3 else "status"
-        # SEC-022: Prohibit passing sensitive tokens in positional CLI arguments (e.g. sys.argv[3])
-        if service == "spotify" and action == "refresh" and len(sys.argv) > 3:
-            json_response(
-                False,
-                error="Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.",
-            )
+            raise BridgeFailure("Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.")
+    elif argv and not argv[0].startswith("-"):
+        service = argv[0].lower()
+        action = argv[1].lower() if len(argv) >= 2 else "status"
+        # SEC-022: prohibit sensitive tokens in positional CLI arguments
+        if service == "spotify" and action == "refresh" and len(argv) > 2:
+            raise BridgeFailure("Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.")
     else:
-        json_response(False, error="Usage: auth_bridge.py <service> <action> or --service <service> [--action <action>]")
+        raise BridgeFailure("Usage: auth_bridge.py <service> <action> or --service <service> [--action <action>]")
 
-    # SEC-022: Prohibit passing sensitive flags or tokens in any sys.argv
-    for arg in sys.argv:
+    # SEC-022: prohibit sensitive flags or tokens anywhere in argv
+    for arg in argv:
         lower_arg = arg.lower()
         if lower_arg.startswith("--sp-dc") or lower_arg.startswith("--sp_dc") or "sp_dc=" in lower_arg:
-            json_response(
-                False,
-                error="Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.",
-            )
+            raise BridgeFailure("Passing sensitive credentials (sp_dc) via CLI arguments is strictly prohibited. Provide sp_dc via stdin or SYNCIFY_SP_DC environment variable.")
 
     if service not in HANDLERS:
-        json_response(False, error=f"Unknown service: {service}. Valid: {list(HANDLERS.keys())}")
+        raise BridgeFailure(f"Unknown service: {service}. Valid: {list(HANDLERS.keys())}")
 
     if action not in ("login", "status", "logout", "refresh"):
-        json_response(False, error=f"Unknown action: {action}. Valid: login, status, logout, refresh")
+        raise BridgeFailure(f"Unknown action: {action}. Valid: login, status, logout, refresh")
 
     if action == "refresh" and service not in REFRESH_CAPABLE_SERVICES:
-        json_response(
-            False,
-            error=(
-                f"Token refresh is not supported for '{service}': the provider does not issue "
+        raise BridgeFailure(f"Token refresh is not supported for '{service}': the provider does not issue "
                 f"renewable tokens for this integration. Supported: {', '.join(REFRESH_CAPABLE_SERVICES)}. "
-                f"Reconnect the service with '{service} login' instead."
-            ),
-        )
+                f"Reconnect the service with '{service} login' instead.")
 
+    return (service, action)
+
+
+def _handle(pair):
+    service, action = pair
     try:
         res = HANDLERS[service](action)
-        if isinstance(res, dict):
-            print(json.dumps(res))
-            sys.exit(0)
-        # A handler that produced no payload must still answer: silence with exit 0
-        # is indistinguishable from success for every caller of this bridge.
-        json_response(
-            False,
-            error=f"No result produced by the '{service}' handler for action '{action}'",
-        )
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
+    if isinstance(res, dict):
+        return res  # envelope explícito histórico de auth (verbatim)
+    raise BridgeFailure(f"No result produced by the '{service}' handler for action '{action}'")
+
+
+def main():
+    return run(_handle, parse=_parse)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

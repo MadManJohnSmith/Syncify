@@ -27,7 +27,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-import auth_bridge  # noqa: E402
+import auth_bridge
+from services.bridge_protocol import BridgeFailure  # noqa: E402
 
 NUMERIC_ID = "123456789"
 SESSION_MARKER = "browser_session"
@@ -102,25 +103,16 @@ class QobuzLoginPayloadTest(unittest.TestCase):
     """El payload de login conserva identidad y visibilidad."""
 
     def _run_login(self, result, session):
-        """Invoca `handle_qobuz('login')` con el navegador y json_response sustituidos."""
-        captured = {}
-
-        def fake_json_response(success, data=None, error=None):
-            captured["success"] = success
-            captured["data"] = data
-            captured["error"] = error
-            raise SystemExit(0)
-
+        """Invoca `handle_qobuz('login')` y devuelve su payload."""
         with patch("services.qobuz_auth.QobuzAuth",
                    return_value=_FakeQobuzAuth(session)), \
-             patch("asyncio.new_event_loop", return_value=_FakeLoop), \
-             patch.object(auth_bridge, "json_response", fake_json_response):
+             patch("asyncio.new_event_loop", return_value=_FakeLoop):
             _FakeLoop.result = (True, result)
             try:
-                auth_bridge.handle_qobuz("login")
-            except SystemExit:
-                pass
-        return captured
+                payload = auth_bridge.handle_qobuz("login")
+            except BridgeFailure as exc:
+                return {"success": False, "error": str(exc)}
+        return {"success": True, "data": payload, "error": None}
 
     def test_display_name_is_not_the_numeric_id_even_without_email(self):
         captured = self._run_login(NUMERIC_ID, self._token_only_session())
@@ -179,24 +171,15 @@ class QobuzBrowserEntitlementLimitTest(unittest.TestCase):
     """
 
     def _run_login(self, session):
-        captured = {}
-
-        def fake_json_response(success, data=None, error=None):
-            captured["success"] = success
-            captured["data"] = data
-            captured["error"] = error
-            raise SystemExit(0)
-
         with patch("services.qobuz_auth.QobuzAuth",
                    return_value=_FakeQobuzAuth(session)), \
-             patch("asyncio.new_event_loop", return_value=_FakeLoop), \
-             patch.object(auth_bridge, "json_response", fake_json_response):
+             patch("asyncio.new_event_loop", return_value=_FakeLoop):
             _FakeLoop.result = (True, NUMERIC_ID)
             try:
-                auth_bridge.handle_qobuz("login")
-            except SystemExit:
-                pass
-        return captured
+                payload = auth_bridge.handle_qobuz("login")
+            except BridgeFailure as exc:
+                return {"success": False, "error": str(exc)}
+        return {"success": True, "data": payload, "error": None}
 
     def test_browser_payload_never_asserts_streaming_entitlement(self):
         session = {

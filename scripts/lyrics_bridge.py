@@ -39,16 +39,7 @@ if os.getenv("SYNCIFY_ENV", "").strip().lower() in ("development", "dev"):
         pass
 
 
-def json_response(success: bool, data=None, error=None, **extra):
-    """Output JSON response and exit."""
-    result = {"success": success}
-    if data is not None:
-        result["data"] = data
-    if error is not None:
-        result["error"] = error
-    result.update(extra)
-    print(json.dumps(result, ensure_ascii=False))
-    sys.exit(0 if success else 1)
+from services.bridge_protocol import BridgeFailure, FailureEnvelope, run  # noqa: E402
 
 
 def fetch_lyrics(track: str, artist: str, album: Optional[str] = None):
@@ -75,18 +66,18 @@ def fetch_lyrics(track: str, artist: str, album: Optional[str] = None):
         result = asyncio.run(_fetch())
         
         if result.has_lyrics:
-            json_response(True, {
+            return {
                 "synced_lyrics": result.synced_lyrics,
                 "plain_lyrics": result.plain_lyrics,
                 "word_synced": result.word_synced,
                 "instrumental": result.instrumental,
                 "source": result.source,
-            })
+            }
         else:
-            json_response(False, error="No lyrics found")
+            raise BridgeFailure("No lyrics found")
             
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
     finally:
         service.close()
 
@@ -100,8 +91,7 @@ def batch_fetch(json_file: str):
         with open(json_file, 'r', encoding='utf-8') as f:
             tracks = json.load(f)
     except Exception as e:
-        json_response(False, error=f"Failed to read JSON file: {e}")
-        return
+        raise BridgeFailure(f"Failed to read JSON file: {e}")
     
     apple_token = os.getenv("APPLE_MUSIC_MEDIA_USER_TOKEN")
     service = LyricsService(apple_music_token=apple_token, verbose=False)
@@ -143,7 +133,7 @@ def batch_fetch(json_file: str):
     
     try:
         results = asyncio.run(_fetch_all())
-        json_response(True, {"results": results, "total": len(results)})
+        return {"results": results, "total": len(results)}
     finally:
         service.close()
 
@@ -181,91 +171,108 @@ def test_provider(provider: str):
             apple_token = os.getenv("APPLE_MUSIC_MEDIA_USER_TOKEN")
             status_code = check_url("https://music.apple.com/us/browse")
             if status_code in (200, 301, 302):
-                json_response(
-                    True,
-                    provider=provider_clean,
-                    status="available",
-                    has_user_token=bool(apple_token),
-                )
-            else:
-                json_response(
-                    False,
-                    error=f"Apple Music returned HTTP {status_code}",
-                    provider=provider_clean,
-                    status="unavailable",
-                )
+                return {
+                    "success": True,
+                    "provider": provider_clean,
+                    "status": "available",
+                    "has_user_token": bool(apple_token),
+                }
+            return FailureEnvelope({
+                "success": False,
+                "error": f"Apple Music returned HTTP {status_code}",
+                "provider": provider_clean,
+                "status": "unavailable",
+            })
 
         elif provider_lower in ("lrclib", "lrc"):
             status_code = check_url("https://lrclib.net/api/get?track_name=test&artist_name=test")
             if status_code in (200, 404):
-                json_response(True, provider=provider_clean, status="available")
-            else:
-                json_response(
-                    False,
-                    error=f"LRCLIB returned HTTP {status_code}",
-                    provider=provider_clean,
-                    status="unavailable",
-                )
+                return {
+                    "success": True,
+                    "provider": provider_clean,
+                    "status": "available",
+                }
+            return FailureEnvelope({
+                "success": False,
+                "error": f"LRCLIB returned HTTP {status_code}",
+                "provider": provider_clean,
+                "status": "unavailable",
+            })
 
         elif provider_lower == "genius":
             status_code = check_url("https://genius.com/api/search/multi?q=test")
             if status_code in (200, 403, 404):
-                json_response(True, provider=provider_clean, status="available")
-            else:
-                json_response(
-                    False,
-                    error=f"Genius returned HTTP {status_code}",
-                    provider=provider_clean,
-                    status="unavailable",
-                )
+                return {
+                    "success": True,
+                    "provider": provider_clean,
+                    "status": "available",
+                }
+            return FailureEnvelope({
+                "success": False,
+                "error": f"Genius returned HTTP {status_code}",
+                "provider": provider_clean,
+                "status": "unavailable",
+            })
 
         elif provider_lower in ("netease", "163"):
             status_code = check_url("https://music.163.com")
             if status_code in (200, 301, 302):
-                json_response(True, provider=provider_clean, status="available")
-            else:
-                json_response(
-                    False,
-                    error=f"NetEase returned HTTP {status_code}",
-                    provider=provider_clean,
-                    status="unavailable",
-                )
+                return {
+                    "success": True,
+                    "provider": provider_clean,
+                    "status": "available",
+                }
+            return FailureEnvelope({
+                "success": False,
+                "error": f"NetEase returned HTTP {status_code}",
+                "provider": provider_clean,
+                "status": "unavailable",
+            })
 
         elif provider_lower == "musixmatch":
             status_code = check_url("https://www.musixmatch.com")
             if status_code in (200, 403):
-                json_response(True, provider=provider_clean, status="available")
-            else:
-                json_response(
-                    False,
-                    error=f"Musixmatch returned HTTP {status_code}",
-                    provider=provider_clean,
-                    status="unavailable",
-                )
+                return {
+                    "success": True,
+                    "provider": provider_clean,
+                    "status": "available",
+                }
+            return FailureEnvelope({
+                "success": False,
+                "error": f"Musixmatch returned HTTP {status_code}",
+                "provider": provider_clean,
+                "status": "unavailable",
+            })
 
         elif provider_lower == "deezer":
             status_code = check_url("https://api.deezer.com")
             if status_code in (200, 404):
-                json_response(True, provider=provider_clean, status="available")
-            else:
-                json_response(
-                    False,
-                    error=f"Deezer returned HTTP {status_code}",
-                    provider=provider_clean,
-                    status="unavailable",
-                )
+                return {
+                    "success": True,
+                    "provider": provider_clean,
+                    "status": "available",
+                }
+            return FailureEnvelope({
+                "success": False,
+                "error": f"Deezer returned HTTP {status_code}",
+                "provider": provider_clean,
+                "status": "unavailable",
+            })
 
         elif provider_lower == "megalobiz":
             status_code = check_url("https://www.megalobiz.com")
             if status_code in (200, 403):
-                json_response(True, provider=provider_clean, status="available")
-            else:
-                json_response(
-                    False,
-                    error=f"Megalobiz returned HTTP {status_code}",
-                    provider=provider_clean,
-                    status="unavailable",
-                )
+                return {
+                    "success": True,
+                    "provider": provider_clean,
+                    "status": "available",
+                }
+            return FailureEnvelope({
+                "success": False,
+                "error": f"Megalobiz returned HTTP {status_code}",
+                "provider": provider_clean,
+                "status": "unavailable",
+            })
 
         else:
             # Check syncedlyrics dynamic providers
@@ -273,29 +280,20 @@ def test_provider(provider: str):
                 import syncedlyrics
                 providers = getattr(syncedlyrics, "providers", None)
                 if providers and hasattr(providers, provider_lower.capitalize()):
-                    json_response(True, provider=provider_clean, status="available")
+                    return {
+                        "success": True,
+                        "provider": provider_clean,
+                        "status": "available",
+                    }
                 else:
-                    json_response(
-                        False,
-                        error=f"Unknown lyrics provider: {provider_clean}",
-                        provider=provider_clean,
-                        status="unknown",
-                    )
+                    raise BridgeFailure(f"Unknown lyrics provider: {provider_clean}")
             except Exception:
-                json_response(
-                    False,
-                    error=f"Unknown lyrics provider: {provider_clean}",
-                    provider=provider_clean,
-                    status="unknown",
-                )
+                raise BridgeFailure(f"Unknown lyrics provider: {provider_clean}")
 
+    except BridgeFailure:
+        raise
     except Exception as e:
-        json_response(
-            False,
-            error=f"Provider test error for {provider_clean}: {e}",
-            provider=provider_clean,
-            status="unavailable",
-        )
+        raise BridgeFailure(f"Provider test error for {provider_clean}: {e}")
 
 
 def main():
@@ -316,20 +314,23 @@ def main():
     parser_test = subparsers.add_parser("test", help="Test lyrics provider availability")
     parser_test.add_argument("--provider", required=True, help="Lyrics provider ID to test (e.g. lrclib, musixmatch, genius, apple_music, netease)")
 
-    if len(sys.argv) < 2:
-        json_response(False, error="Usage: lyrics_bridge.py <action> [args...]. Valid actions: fetch, batch, test")
+    def _parse(raw):
+        if not raw:
+            raise BridgeFailure("Usage: lyrics_bridge.py <action> [args...]. Valid actions: fetch, batch, test")
+        return parser.parse_args(raw)
 
-    args = parser.parse_args()
+    return run(_handle, parse=_parse)
 
+
+def _handle(args):
     if args.action == "fetch":
-        fetch_lyrics(args.track, args.artist, args.album)
-    elif args.action == "batch":
-        batch_fetch(args.json_file)
-    elif args.action == "test":
-        test_provider(args.provider)
-    else:
-        json_response(False, error=f"Unknown action: {args.action}. Valid actions: fetch, batch, test")
+        return fetch_lyrics(args.track, args.artist, args.album)
+    if args.action == "batch":
+        return batch_fetch(args.json_file)
+    if args.action == "test":
+        return test_provider(args.provider)
+    raise BridgeFailure(f"Unknown action: {args.action}. Valid actions: fetch, batch, test")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

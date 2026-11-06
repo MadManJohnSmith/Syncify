@@ -34,7 +34,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-import auth_bridge  # noqa: E402
+import auth_bridge
+from services.bridge_protocol import FailureEnvelope  # noqa: E402
 from services import browser_launcher  # noqa: E402
 from services.tidal_auth import TidalAuth  # noqa: E402
 
@@ -163,14 +164,13 @@ class TidalBridgeReportsVerificationUrlTests(unittest.TestCase):
     """auth_bridge.py debe devolver la URL aunque el login no se complete."""
 
     def _capture_response(self, tidal_login_result):
-        stdout = io.StringIO()
         with patch(
             "services.tidal_auth.tidal_login", return_value=tidal_login_result
         ), patch("services.tidal_auth.TidalAuth.get_stored_tokens", return_value=None):
-            with redirect_stdout(stdout):
-                with self.assertRaises(SystemExit) as ctx:
-                    auth_bridge.handle_tidal("login")
-        return json.loads(stdout.getvalue()), ctx.exception.code
+            result = auth_bridge.handle_tidal("login")
+        if isinstance(result, FailureEnvelope):
+            return dict(result), 1
+        return {"success": True, "data": result}, 0
 
     def test_failed_login_still_returns_verification_url(self):
         result = {

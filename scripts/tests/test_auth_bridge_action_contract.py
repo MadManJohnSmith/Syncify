@@ -46,10 +46,9 @@ class AuthActionContractTests(unittest.TestCase):
                 argv = ["auth_bridge.py", service, "refresh"]
                 buffer = io.StringIO()
                 with patch.object(sys, "argv", argv), redirect_stdout(buffer):
-                    with self.assertRaises(SystemExit) as ctx:
-                        auth_bridge.main()
+                    code = auth_bridge.main()
 
-                self.assertEqual(ctx.exception.code, 1)
+                self.assertEqual(code, 1)
                 payload = json.loads(buffer.getvalue())
                 self.assertFalse(payload["success"])
                 self.assertIn("refresh is not supported", payload["error"])
@@ -62,10 +61,9 @@ class AuthActionContractTests(unittest.TestCase):
         with patch.object(sys, "argv", argv), \
              patch.dict(auth_bridge.HANDLERS, {"qobuz": lambda action: None}), \
              redirect_stdout(buffer):
-            with self.assertRaises(SystemExit) as ctx:
-                auth_bridge.main()
+            code = auth_bridge.main()
 
-        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(code, 1)
         payload = json.loads(buffer.getvalue())
         self.assertFalse(payload["success"])
         self.assertIn("No result produced", payload["error"])
