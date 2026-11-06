@@ -10,6 +10,7 @@ pub mod jobs;
 pub mod lyrics;
 pub mod orchestrator;
 pub mod progress;
+pub mod quality_reconcile;
 // Provider gateway (D01): staged API until D02 wires evidence-based routing
 // through it; the binary compiles this tree separately and does not consume it
 // yet. Keep it compiled (and tested) without treating it as production use.
