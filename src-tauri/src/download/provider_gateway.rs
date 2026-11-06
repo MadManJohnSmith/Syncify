@@ -142,9 +142,7 @@ impl ProviderDelivery {
 /// decidan con las mismas clases que el worker.
 #[derive(Debug, Clone)]
 pub struct ProviderError {
-    // La consume la decisión de fallback; el despacho de Commit A solo
-    // transporta el error hasta la frontera anyhow.
-    #[allow(dead_code)]
+    /// La consume la decisión de fallback (auth, stale, calidad, preview).
     pub taxonomy: ErrorTaxonomy,
     pub message: String,
 }

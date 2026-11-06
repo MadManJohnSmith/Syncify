@@ -1530,12 +1530,11 @@ impl DownloadOrchestrator {
                     },
                     cancel_token,
                 )
-                .await
-                .map(|delivery| delivery.result)
-                .map_err(anyhow::Error::new);
+                .await;
 
             match qobuz_result {
-                Ok(mut res) => {
+                Ok(delivery) => {
+                    let mut res = delivery.result;
                     res.origin_service = request.service_name.clone().or(Some("qobuz".to_string()));
                     res.origin_service_track_id = request.service_track_id.clone();
                     res.effective_service = Some("qobuz".to_string());
@@ -1592,6 +1591,9 @@ impl DownloadOrchestrator {
     /// (nunca reintentable), fallo transitorio ya clasificado, texto ajeno a
     /// la autenticación, o petición de otro proveedor (una hermana de cuenta
     /// nunca cruza de servicio). Los tests de este módulo fijan cada caso.
+    // Se conserva para los tests unitarios de clasificación por string; el
+    // despacho en producción clasifica con la taxonomía compartida.
+    #[allow(dead_code)]
     fn planned_auth_retry<'a>(
         request: &'a DownloadRequest,
         error: &str,
@@ -1700,16 +1702,88 @@ impl DownloadOrchestrator {
     /// Devuelve `None` cuando NO debe reintentarse (ver `planned_auth_retry`).
     fn planned_auth_attempt(
         request: &DownloadRequest,
-        error: &str,
+        error: &ProviderError,
         provider_service: &str,
     ) -> Option<(i64, String, Option<i64>)> {
-        let plan = Self::planned_auth_retry(request, error, provider_service)?;
+        let plan = request.resolution_plan.as_ref()?;
+        if !request
+            .service_name
+            .as_deref()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case(provider_service)
+        {
+            return None;
+        }
+        // Sin cuenta previa no hay nada que excluir: reintentar sería reapuntar
+        // a la misma combinación.
         let primary = plan.primary()?;
+        primary.account.as_ref()?;
+        if !Self::is_provider_auth_error(error)
+            || !primary.service_name.eq_ignore_ascii_case(provider_service)
+            || request.service_track_id.as_deref() != Some(primary.service_track_id.as_str())
+        {
+            return None;
+        }
         Some((
             primary.service_id,
             primary.service_track_id.clone(),
             primary.account.as_ref().map(|a| a.account_id),
         ))
+    }
+
+    /// Veredicto de autenticación desde la taxonomía compartida, conservando
+    /// la exclusión de entity lookup del sitio: un 401/403 de `track/get` es un
+    /// veredicto sobre la consulta, no sobre la cuenta. Un fallo de transporte
+    /// o una cancelación ya llegan clasificados como otra clase y nunca son
+    /// autenticación.
+    fn is_provider_auth_error(error: &ProviderError) -> bool {
+        let lowered = error.message.to_ascii_lowercase();
+        if lowered.contains("track/get")
+            || lowered.contains("album/get")
+            || lowered.contains("entity lookup")
+        {
+            return false;
+        }
+        if matches!(
+            error.taxonomy,
+            ErrorTaxonomy::Cancelled { .. }
+                | ErrorTaxonomy::TemporaryNetworkFailure { .. }
+                | ErrorTaxonomy::Timeout { .. }
+                | ErrorTaxonomy::RateLimited { .. }
+        ) {
+            return false;
+        }
+        // La taxonomía no reconoce estos marcadores de credencial del sitio;
+        // se conservan como checks de string para no degradar el abort de auth.
+        matches!(
+            error.taxonomy,
+            ErrorTaxonomy::AuthInvalid { .. }
+                | ErrorTaxonomy::AuthRefreshable { .. }
+                | ErrorTaxonomy::EntitlementDenied { .. }
+        ) || lowered.contains("credential")
+            || lowered.contains("token expired")
+            || lowered.contains("token invalid")
+            || lowered.contains("stream entitlement")
+    }
+
+    /// Fuente no disponible según la taxonomía. Un 401/403 de entity lookup se
+    /// excluye como en el resto del sitio (el status no habla de la edición), y
+    /// se conservan dos checks de string que el clasificador compartido no
+    /// desambigua: "unavailable" genérico y "CountryNotAvailable".
+    fn is_stale_provider_error(error: &ProviderError) -> bool {
+        let lowered = error.message.to_ascii_lowercase();
+        let entity_http_status = (lowered.contains("track/get failed")
+            || lowered.contains("album/get failed")
+            || lowered.contains("entity lookup"))
+            && (lowered.contains("401") || lowered.contains("403"));
+        if entity_http_status {
+            return false;
+        }
+        matches!(
+            error.taxonomy,
+            ErrorTaxonomy::UnavailableFromProvider { .. }
+        ) || error.message.contains("unavailable")
+            || error.message.contains("CountryNotAvailable")
     }
 
     /// Raw provider errors may contain account or transport secrets. Only a
@@ -1782,13 +1856,13 @@ impl DownloadOrchestrator {
     fn handle_qobuz_fallback<'a>(
         &'a self,
         request: &'a DownloadRequest,
-        err: anyhow::Error,
+        err: ProviderError,
         is_lossless_or_hires: bool,
         cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
-            let err_msg = err.to_string();
+            let err_msg = err.message.clone();
             warn!("[Orchestrator] Qobuz download failed: {}", err_msg);
 
             // 1a. WF-RES-01: antes de abortar, comprobar si el rechazo puede
@@ -1800,7 +1874,7 @@ impl DownloadOrchestrator {
             // resuelve con `requested_service` = qobuz, así que solo ve hermanas
             // Qobuz, y `allow_fallback=false` sigue prohibiendo Tidal.
             if let Some((service_id, attempted_track_id, attempted_account)) =
-                Self::planned_auth_attempt(request, &err_msg, "qobuz")
+                Self::planned_auth_attempt(request, &err, "qobuz")
             {
                 let re_resolution = Box::pin(self.reresolve_after_classified_failure(
                     request,
@@ -1831,7 +1905,7 @@ impl DownloadOrchestrator {
 
             // 1. Auth failure -> abort without cross-service fallback.
             // A bare "401" in edition metadata is not an auth verdict.
-            if Self::is_account_auth_rejection(&err_msg) {
+            if Self::is_provider_auth_error(&err) {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
                 let abort_reason = if err_msg.contains("401") || err_msg.contains("403") {
                     "RequiresAuth: Qobuz authentication required (HTTP 401/403). Automatic fallback aborted.".to_string()
@@ -1842,7 +1916,11 @@ impl DownloadOrchestrator {
                 return Err(anyhow!("{}", abort_reason));
             }
 
-            // 2. Network Exhausted (stream / connection failures that exhausted retries) -> abort without fallback
+            // 2. Network Exhausted (stream / connection failures that exhausted
+            // retries) -> abort without fallback. La taxonomía lo clasifica como
+            // `TemporaryNetworkFailure`, pero el sitio solo aborta ante el marcador
+            // de agotamiento, no ante cualquier fallo de red: se conserva el check
+            // de string.
             if err_msg.contains("NetworkExhausted") {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
                 return Err(anyhow!(
@@ -1852,24 +1930,16 @@ impl DownloadOrchestrator {
             }
 
             // 3. Check for stale source or quality rejection
-            let is_stale = err_msg.contains("404")
-                || err_msg.contains("NotFound")
-                || err_msg.contains("StaleSource")
-                || err_msg.contains("not found")
-                || (err_msg.contains("track/get failed")
-                    && !err_msg.contains("401")
-                    && !err_msg.contains("403"))
-                || err_msg.contains("unavailable")
-                || err_msg.contains("CountryNotAvailable");
-            let is_rejected_q = err_msg.contains("RejectedQuality");
-            let is_preview = err_msg.starts_with("QobuzPreviewPayload:");
+            let is_stale = Self::is_stale_provider_error(&err);
+            let is_rejected_q = matches!(err.taxonomy, ErrorTaxonomy::RejectedQuality { .. });
+            let is_preview = matches!(err.taxonomy, ErrorTaxonomy::QobuzPreviewPayload { .. });
 
             // A preview is neither a credential rejection nor a usable 320
             // stream. Do not turn it into StaleSource/RejectedQuality when
             // cross-service fallback is disabled; preserve the diagnosis.
             if is_preview && !request.allow_fallback {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
-                return Err(err);
+                return Err(err.into());
             }
 
             // 2.5 Stale primary source: before any diagnosis that ends the
@@ -1965,6 +2035,8 @@ impl DownloadOrchestrator {
 
             // A track/entity lookup 401/403 does not prove an invalid account or
             // a missing edition. Do not relabel it as a 404 or retry a sibling.
+            // La taxonomía lo clasificaría como AuthInvalid, pero la clase no
+            // distingue el origen del status; se conserva el check de string.
             if (err_msg.contains("track/get failed")
                 || err_msg.contains("album/get failed")
                 || err_msg.contains("entity lookup"))
@@ -2632,12 +2704,11 @@ impl DownloadOrchestrator {
                     },
                     cancel_token,
                 )
-                .await
-                .map(|delivery| delivery.result)
-                .map_err(anyhow::Error::new);
+                .await;
 
             match tidal_result {
-                Ok(mut res) => {
+                Ok(delivery) => {
+                    let mut res = delivery.result;
                     res.origin_service = request.service_name.clone().or(Some("tidal".to_string()));
                     res.origin_service_track_id = request.service_track_id.clone();
                     res.effective_service = Some("tidal".to_string());
@@ -2660,13 +2731,13 @@ impl DownloadOrchestrator {
     fn handle_tidal_fallback<'a>(
         &'a self,
         request: &'a DownloadRequest,
-        err: anyhow::Error,
+        err: ProviderError,
         is_lossless_or_hires: bool,
         cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
-            let err_msg = err.to_string();
+            let err_msg = err.message.clone();
             warn!("[Orchestrator] Tidal download failed: {}", err_msg);
 
             // 1a. WF-RES-01: antes de abortar, comprobar si el rechazo puede
@@ -2674,7 +2745,7 @@ impl DownloadOrchestrator {
             // en Qobuz: nunca se cruza de servicio, y sin plan se conserva el
             // abort de abajo.
             if let Some((service_id, attempted_track_id, attempted_account)) =
-                Self::planned_auth_attempt(request, &err_msg, "tidal")
+                Self::planned_auth_attempt(request, &err, "tidal")
             {
                 let re_resolution = Box::pin(self.reresolve_after_classified_failure(
                     request,
@@ -2704,7 +2775,7 @@ impl DownloadOrchestrator {
 
             // 1. Auth failure -> abort without cross-service fallback.
             // A bare "401" in edition metadata is not an auth verdict.
-            if Self::is_account_auth_rejection(&err_msg) {
+            if Self::is_provider_auth_error(&err) {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
                 let abort_reason =
                     "RequiresAuth: Tidal account authentication required. Automatic fallback aborted.";
@@ -2713,7 +2784,7 @@ impl DownloadOrchestrator {
 
             if !request.allow_fallback {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
-                return Err(err);
+                return Err(err.into());
             }
 
             // Attempt fallback to Qobuz
@@ -3880,6 +3951,67 @@ mod tests {
         }
     }
 
+    #[test]
+    fn provider_auth_predicate_uses_taxonomy_and_keeps_the_site_guards() {
+        for auth in [
+            "RequiresAuth: Qobuz token expired (HTTP 401)",
+            "Qobuz rejected the credentials (HTTP 401)",
+            "Failed to decrypt Qobuz credentials: private-provider-detail",
+            "stream entitlement denied for this account",
+            "EntitlementDenied: provider refused stream entitlement",
+        ] {
+            let error = ProviderError::classify("qobuz", auth);
+            assert!(
+                DownloadOrchestrator::is_provider_auth_error(&error),
+                "account auth: {auth}"
+            );
+        }
+        for unrelated in [
+            "Qobuz track/get failed for ID 123: HTTP 401 Unauthorized",
+            "Qobuz album/get failed for ID 123: HTTP 403 Forbidden",
+            "Qobuz entity lookup: HTTP 401",
+            "StaleSource: track/get failed: HTTP 404 not found",
+            "Download cancelled by user: token expired",
+            "NetworkExhausted: token expired while connection reset",
+            "error sending request: HTTP 401 token expired",
+            "RejectedQuality: requested lossless but received aac",
+        ] {
+            let error = ProviderError::classify("qobuz", unrelated);
+            assert!(
+                !DownloadOrchestrator::is_provider_auth_error(&error),
+                "not account auth: {unrelated}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_stale_predicate_covers_unavailable_and_keeps_entity_401_out() {
+        for stale in [
+            "StaleSource: Qobuz track/get failed: HTTP 404 not found",
+            "TrackUnresolved: not found on provider",
+            "Qobuz track unavailable in catalog",
+            "CountryNotAvailable: track is not licensed here",
+        ] {
+            let error = ProviderError::classify("qobuz", stale);
+            assert!(
+                DownloadOrchestrator::is_stale_provider_error(&error),
+                "stale: {stale}"
+            );
+        }
+        for unrelated in [
+            "Qobuz track/get failed for ID 123: HTTP 401 Unauthorized",
+            "RequiresAuth: Qobuz token expired (HTTP 401)",
+            "RejectedQuality: requested lossless but received aac",
+            "Download cancelled by user",
+        ] {
+            let error = ProviderError::classify("qobuz", unrelated);
+            assert!(
+                !DownloadOrchestrator::is_stale_provider_error(&error),
+                "not stale: {unrelated}"
+            );
+        }
+    }
+
     /// A retry must never be treated as account auth when it is only an entity
     /// lookup 401: the sibling loop then has no third attempt to exclude.
     #[test]
@@ -4115,7 +4247,10 @@ mod tests {
         let err = orchestrator
             .handle_qobuz_fallback(
                 &request,
-                anyhow!("QobuzPreviewPayload: Qobuz delivered MP3 instead of FLAC format_id=6"),
+                ProviderError::classify(
+                    "qobuz",
+                    "QobuzPreviewPayload: Qobuz delivered MP3 instead of FLAC format_id=6",
+                ),
                 true,
                 None,
             )
@@ -4140,7 +4275,10 @@ mod tests {
         let err = orchestrator
             .handle_qobuz_fallback(
                 &request,
-                anyhow!("QobuzPreviewPayload: Qobuz delivered MP3 instead of FLAC format_id=6"),
+                ProviderError::classify(
+                    "qobuz",
+                    "QobuzPreviewPayload: Qobuz delivered MP3 instead of FLAC format_id=6",
+                ),
                 true,
                 None,
             )

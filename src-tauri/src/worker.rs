@@ -220,6 +220,7 @@ pub fn download_operation_type(service: Option<&str>) -> syncify_core_domain::Op
     match service.map(|s| s.trim().to_lowercase()).as_deref() {
         Some("qobuz") => syncify_core_domain::OperationType::DownloadQobuz,
         Some("tidal") => syncify_core_domain::OperationType::DownloadTidal,
+        Some("amazon") => syncify_core_domain::OperationType::DownloadAmazon,
         _ => syncify_core_domain::OperationType::CrossProviderFallback,
     }
 }
