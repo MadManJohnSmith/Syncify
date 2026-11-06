@@ -5,6 +5,9 @@ use crate::download::lyrics::LyricsClient;
 use crate::download::progress::{
     DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
+use crate::download::provider_gateway::{
+    AmazonProvider, DownloadProvider, QobuzProvider, TidalProvider,
+};
 use crate::download::qobuz::QobuzDownloader;
 use crate::download::songlink::SongLinkClient;
 use crate::download::tidal::{TidalDownloader, TidalOrchestratorExt};
@@ -128,6 +131,11 @@ pub struct DownloadOrchestrator {
     service_priority: Vec<String>,
     /// Database pool for active account token resolution
     db: Option<sqlx::SqlitePool>,
+    /// Gateway de proveedores (D01): adaptadores `DownloadProvider` resolubles
+    /// por nombre de servicio en minúsculas. Los flujos primarios no cambian;
+    /// D02 enrutará por aquí y los tests sustituyen entradas con
+    /// `with_provider_override`.
+    providers: std::collections::BTreeMap<String, Arc<dyn DownloadProvider>>,
 }
 
 impl DownloadOrchestrator {
@@ -162,10 +170,14 @@ impl DownloadOrchestrator {
         Ok(enriched)
     }
     pub fn new() -> Self {
+        let qobuz = Arc::new(QobuzDownloader::new());
+        let tidal = Arc::new(TidalDownloader::new());
+        let amazon = Arc::new(AmazonDownloader::new());
         Self {
-            qobuz: Arc::new(QobuzDownloader::new()),
-            tidal: Arc::new(TidalDownloader::new()),
-            amazon: Arc::new(AmazonDownloader::new()),
+            providers: Self::default_providers(&qobuz, &tidal, &amazon, None),
+            qobuz,
+            tidal,
+            amazon,
             songlink: Arc::new(SongLinkClient::new()),
             lyrics: Arc::new(LyricsClient::new()),
             enrichment: Arc::new(EnrichmentEngine::new()),
@@ -178,8 +190,60 @@ impl DownloadOrchestrator {
         }
     }
 
+    /// Registro por defecto: un adaptador por descargador real, sin alterar su
+    /// lógica. Se reconstruye en `with_db` porque los adaptadores capturan el
+    /// pool para la resolución de tokens por cuenta.
+    fn default_providers(
+        qobuz: &Arc<QobuzDownloader>,
+        tidal: &Arc<TidalDownloader>,
+        amazon: &Arc<AmazonDownloader>,
+        db: Option<sqlx::SqlitePool>,
+    ) -> std::collections::BTreeMap<String, Arc<dyn DownloadProvider>> {
+        let mut providers: std::collections::BTreeMap<String, Arc<dyn DownloadProvider>> =
+            std::collections::BTreeMap::new();
+        providers.insert(
+            "qobuz".to_string(),
+            Arc::new(QobuzProvider::new(qobuz.clone(), db.clone())),
+        );
+        providers.insert(
+            "tidal".to_string(),
+            Arc::new(TidalProvider::new(tidal.clone(), db)),
+        );
+        providers.insert(
+            "amazon".to_string(),
+            Arc::new(AmazonProvider::new(amazon.clone())),
+        );
+        providers
+    }
+
+    /// Resuelve el proveedor por nombre de servicio (insensible a mayúsculas).
+    /// Devuelve `None` para los catalog-only (Deezer, SoundCloud, Spotify,
+    /// Apple Music): no son destinos de descarga.
+    // Consumido por tests/provider_gateway_test.rs; D02 conectará el enrutado
+    // por evidencia que lo llama en producción.
+    #[allow(dead_code)]
+    pub fn resolve_provider(&self, service: &str) -> Option<Arc<dyn DownloadProvider>> {
+        self.providers.get(&service.to_ascii_lowercase()).cloned()
+    }
+
+    /// Sustituye o añade un proveedor en el registro. Seam de pruebas: los
+    /// tests inyectan el proveedor falso para probar job, enrutado y
+    /// verificación sin red.
+    #[allow(dead_code)]
+    pub fn with_provider_override(
+        mut self,
+        service: &str,
+        provider: Arc<dyn DownloadProvider>,
+    ) -> Self {
+        self.providers
+            .insert(service.to_ascii_lowercase(), provider);
+        self
+    }
+
     pub fn with_db(mut self, db: sqlx::SqlitePool) -> Self {
         self.enrichment = Arc::new(EnrichmentEngine::with_db(db.clone()));
+        self.providers =
+            Self::default_providers(&self.qobuz, &self.tidal, &self.amazon, Some(db.clone()));
         self.db = Some(db);
         self
     }

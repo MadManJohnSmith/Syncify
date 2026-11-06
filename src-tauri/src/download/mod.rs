@@ -8,6 +8,11 @@ pub mod identity;
 pub mod lyrics;
 pub mod orchestrator;
 pub mod progress;
+// Provider gateway (D01): staged API until D02 wires evidence-based routing
+// through it; the binary compiles this tree separately and does not consume it
+// yet. Keep it compiled (and tested) without treating it as production use.
+#[allow(dead_code)]
+pub mod provider_gateway;
 pub mod qobuz;
 // ED discovery/selection is an offline-tested policy API not yet wired into
 // the desktop binary; the binary compiles these modules separately from lib.rs.
@@ -29,6 +34,11 @@ pub use lyrics::LyricsClient;
 #[allow(unused_imports)]
 pub use orchestrator::{DownloadOrchestrator, SongLinkEngineTarget};
 pub use progress::*;
+#[allow(unused_imports)]
+pub use provider_gateway::{
+    AmazonProvider, DownloadProvider, ProviderDelivery, ProviderError, ProviderRequest,
+    QobuzProvider, TidalProvider,
+};
 pub use resolver::{
     classify_attempt_failure, exclusions_for_failure, expand_attempt_sequence,
     resolve_download_plan, resolve_locked_track_source_id, DownloadIntent, DownloadPlan,
