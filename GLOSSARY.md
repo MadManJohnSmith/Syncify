@@ -326,6 +326,25 @@ Situación de una cuenta o servicio para reproducir: `connected`, `expired`,
 mismo que el estado de una descarga.
 _Evitar_: 'conectado' sin decir si es cuenta, proveedor o descarga.
 
+**Sesión de reproducción**:
+La carga lógica de una pista: una puerta que resuelve la fuente (fichero descargado,
+caché de stream o streaming), prepara el audio y gobierna su transporte hasta que
+termina o la sustituye otra. Una sesión a la vez; la cola, el avance automático y el
+crédito de escucha no viven en ella.
+_Evitar_: llamar «sesión» a la cola de reproducción o al estado global.
+
+**Generación (de reproducción)**:
+Número que identifica una sesión frente a la anterior: toda entrada y todo evento
+llevan la generación vigente, y los de una generación superada se descartan. Solo la
+sesión la emite.
+_Evitar_: contadores paralelos en la interfaz.
+
+**Frontera (de un stream)**:
+Posición hasta la que el audio está garantizado en caché durante una descarga
+progresiva; se calcula con el audio realmente demuxeado cuando existe. Un seek más
+allá queda pendiente hasta que la frontera lo alcance.
+_Evitar_: usar «buffering» como sinónimo; buffering es el estado, no la medida.
+
 **Renderer**:
 Dispositivo de salida de terceros (UPnP/DLNA o Chromecast) que recibe el audio
 por red y lo reproduce. Syncify lo controla; no es el dispositivo de audio local
