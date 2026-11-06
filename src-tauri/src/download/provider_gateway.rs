@@ -4,9 +4,10 @@
 //! descargadores concretos (Qobuz, Tidal, Amazon) quedan envueltos en
 //! adaptadores que implementan [`DownloadProvider`] **sin cambiar su lógica**;
 //! los flujos primarios del orquestador (FS-05, provenance, reconciliación
-//! física, fallback) siguen mandando. D02 conectará el enrutado por evidencia
-//! a este registro; hoy el registro se resuelve por nombre y acepta
-//! sustituciones para probar job, enrutado y verificación sin red.
+//! física, fallback) siguen mandando. D02 enruta toda descarga de proveedor por
+//! este registro: el orquestador resuelve el adaptador por nombre, le pasa la
+//! provenance del sitio en [`ProviderRouting`] y los tests sustituyen entradas
+//! con `with_provider_override` para probar job, enrutado y verificación sin red.
 
 use std::future::Future;
 use std::path::Path;
@@ -52,10 +53,8 @@ pub struct ProviderCapabilities {
 /// `account_id` es metadato informativo: el adaptador lo copia a la entrega,
 /// pero los motores de descarga vuelven a resolver la cuenta internamente.
 ///
-// Consumida por tests/provider_gateway_test.rs, tests/provider_adapters_test.rs
-// y el registro del orquestador; D02 conectará el enrutado que la construye en
-// producción.
-#[allow(dead_code)]
+/// La construye el orquestador en producción (`download_via_provider`) y la
+/// consumen también los tests del gateway y de los adaptadores.
 #[derive(Debug, Clone)]
 pub struct ProviderRequest {
     pub request: DownloadRequest,
@@ -63,6 +62,8 @@ pub struct ProviderRequest {
     pub routing: ProviderRouting,
 }
 
+// Constructores de los tests del gateway y de los adaptadores; producción
+// construye el literal con el enrutado del sitio.
 #[allow(dead_code)]
 impl ProviderRequest {
     pub fn new(request: DownloadRequest) -> Self {
@@ -88,6 +89,9 @@ impl ProviderRequest {
 /// evidencia (D02+) necesita para persistir el veredicto, más el
 /// [`DownloadResult`] completo intacto para los flujos existentes.
 #[derive(Debug, Clone)]
+// El despachador actual consume `result`; los campos normalizados son el
+// contrato de entrega para el veredicto de provenance y la persistencia.
+#[allow(dead_code)]
 pub struct ProviderDelivery {
     pub file_path: String,
     pub format: Option<String>,
@@ -138,6 +142,9 @@ impl ProviderDelivery {
 /// decidan con las mismas clases que el worker.
 #[derive(Debug, Clone)]
 pub struct ProviderError {
+    // La consume la decisión de fallback; el despacho de Commit A solo
+    // transporta el error hasta la frontera anyhow.
+    #[allow(dead_code)]
     pub taxonomy: ErrorTaxonomy,
     pub message: String,
 }
