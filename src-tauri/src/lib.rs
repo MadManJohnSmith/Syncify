@@ -21,6 +21,7 @@ pub mod crypto;
 pub mod db;
 pub mod download;
 pub mod enrichment_worker;
+pub mod events;
 pub mod import_cache;
 pub mod logs_history;
 pub mod models;

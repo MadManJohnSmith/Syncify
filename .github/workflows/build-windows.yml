@@ -234,7 +234,66 @@ jobs:
       # dejando TODAS las cuentas marcadas como irrecuperables. Linux no puede
       # cazar ese fallo porque el test es `#[cfg(target_os = "windows")]`.
       - name: Guardia del keyring de Windows (store persistente)
-        run: cargo test --locked -p syncify-tauri --lib crypto::tests::windows_build_uses_a_persistent_credential_store -- --nocapture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # El exe de test no lleva el manifiesto que tauri-build embebe en el
+          # binario de la app, así que el loader resuelve comctl32 v5 y muere al
+          # cargar (STATUS_ENTRYPOINT_NOT_FOUND) por imports que solo existen
+          # en v6 (SetWindowSubclass y compañía, vía tao/wry). Se embebe el
+          # manifiesto v6 en el exe de test con mt.exe antes de correrlo.
+          cargo test --locked -p syncify-tauri --lib --no-run
+
+          $exe = Get-ChildItem "target/debug/deps/syncify_tauri_lib-*.exe" |
+                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $mt = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\mt.exe" |
+                  Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $mt) { throw "mt.exe no encontrado en Windows Kits" }
+          Write-Host "mt: $($mt.FullName)"
+          Write-Host "exe: $($exe.FullName)"
+
+          $manifest = Join-Path $env:RUNNER_TEMP "comctl32-v6.manifest"
+          $manifestLines = @(
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">'
+            '  <dependency>'
+            '    <dependentAssembly>'
+            '      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>'
+            '    </dependentAssembly>'
+            '  </dependency>'
+            '</assembly>'
+          )
+          $manifestLines | Set-Content -Encoding UTF8 $manifest
+          & $mt.FullName -manifest $manifest -outputresource:"$($exe.FullName);#1"
+          if ($LASTEXITCODE -ne 0) { throw "mt.exe falló al embeber el manifiesto" }
+
+          cargo test --locked -p syncify-tauri --lib crypto::tests::windows_build_uses_a_persistent_credential_store -- --nocapture
+
+      # Diagnóstico del loader cuando la guardia muere al ARRANCAR el binario de
+      # test (STATUS_ENTRYPOINT_NOT_FOUND): distingue un fallo del runner entero
+      # (una crate mínima también muere) de uno del exe de la app, y lista los
+      # dependientes del exe para ver qué DLL resuelve el loader y desde dónde.
+      - name: Diagnóstico del loader si la guardia falla
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          Write-Host ">>> 1. ¿Carga un binario de test mínimo?"
+          cargo test --locked -p syncify-fmp4-flac --lib
+
+          Write-Host ">>> 2. Dependientes del exe de la app"
+          $exe = Get-ChildItem "target/debug/deps/syncify_tauri_lib-*.exe" |
+                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          Write-Host "exe: $($exe.FullName)"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -property installationPath
+          $dumpbin = Get-ChildItem -Path (Join-Path $vsRoot "VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe") |
+                     Select-Object -First 1
+          Write-Host "dumpbin: $($dumpbin.FullName)"
+          & $dumpbin.FullName /DEPENDENTS $exe.FullName
+          Write-Host ">>> 3. Imports de comctl32 (v5 no exporta lo que importa tao/wry)"
+          & $dumpbin.FullName /IMPORTS:comctl32.dll $exe.FullName
 
       - name: Compilar con Tauri v2 (Instalador NSIS y Binarios)
         run: npx --prefix ui tauri build

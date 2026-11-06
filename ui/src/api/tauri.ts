@@ -239,11 +239,8 @@ export const TauriEvents = {
     AUTH_SESSION_EXPIRED: 'auth-session-expired',
     SYNC_SETTINGS_UPDATED: 'sync-settings-updated',
 
-    // Enrichment events. ENRICHMENT_PROGRESS_ALT points to the same
-    // canonical channel: nobody listened to the old alias without a hyphen and it only
-    // duplicated IPC traffic per event.
+    // Enrichment events.
     ENRICHMENT_PROGRESS: 'enrichment-progress',
-    ENRICHMENT_PROGRESS_ALT: 'enrichment-progress',
     ENRICHMENT_STATUS: 'background-enrichment-status',
     BACKGROUND_ENRICHMENT_STATUS: 'background-enrichment-status',
     ENRICHMENT_EVENT: 'syncify:enrichment_event',
