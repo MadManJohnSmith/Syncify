@@ -32,6 +32,7 @@ for sp in REPO_ROOT.glob(".venv/lib/python*/site-packages"):
         sys.path.insert(0, str(sp))
 
 import fingerprint_bridge
+from services.bridge_protocol import BridgeFailure
 from services.acoustid_matcher import AcoustIDMatcher, AcoustIDResult
 
 # Shape returned by https://api.acoustid.org/v2/lookup?meta=recordings
@@ -201,12 +202,11 @@ class TestFingerprintBridgeIdentifyContract(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _run_identify(self, path=None):
-        buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
-            with self.assertRaises(SystemExit) as exit_ctx:
-                fingerprint_bridge.identify_track(str(path or self.audio))
-        payload = json.loads(buffer.getvalue().strip())
-        return payload, exit_ctx.exception.code
+        try:
+            data = fingerprint_bridge.identify_track(str(path or self.audio))
+        except BridgeFailure as exc:
+            return {"success": False, "error": str(exc)}, 1
+        return {"success": True, "data": data}, 0
 
     def test_identify_emits_matches_with_contract_keys(self):
         payload, code = self._run_identify()

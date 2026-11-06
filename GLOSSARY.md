@@ -182,3 +182,25 @@ permanente: caduca y un fallo la invalida.
 Concesión en memoria del protocolo `syncify-media://`, sustituido por el motor
 nativo. El subsistema se borró (C-19 en `docs/Deuda_Tecnica_y_UX.md`): hoy no queda
 ni el comando ni el protocolo.
+
+## Puentes Python
+
+**Puente**:
+Proceso Python que la app lanza para hablar con un proveedor o una herramienta
+externa (`scripts/*.py`). Todos comparten el mismo contrato de envelope JSON por
+stdout, el mismo intérprete resuelto y el mismo presupuesto de timeout declarado en
+cada llamada (`docs/adr/0021-contrato-unico-de-puentes-python.md`).
+_Evitar_: «script» para referirse a un puente cuando se habla de su contrato.
+
+**Envelope de puente**:
+Sobre JSON `{success, data, error}` que todo puente escribe por stdout. `success` es
+obligatorio; `data` y `error` llegan según el desenlace. Un fallo de dominio viaja
+como envelope con `success: false` y exit 1; un bug del puente es traceback en stderr
+sin envelope.
+_Evitar_: llamar «resultado» al envelope cuando se habla del shape del contrato.
+
+**BridgeClient**:
+Única vía Rust para lanzar un puente e interpretar su envelope
+(`src-tauri/src/bridges/`). `capture` devuelve la salida cruda; `call<T>` deserializa
+el envelope tipado.
+_Evitar_: construir `Command` para un puente fuera de este módulo.
