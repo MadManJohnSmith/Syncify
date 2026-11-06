@@ -32,6 +32,8 @@ import subprocess
 import sys
 import time
 
+from services.bridge_protocol import BridgeFailure, run_cli  # noqa: E402
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_BIN = os.path.join(REPO, "target", "debug", "syncify-tauri")
 DEFAULT_OUT = os.path.join(REPO, "docs", "screenshots")
@@ -95,7 +97,7 @@ class X:
             from Xlib import display as xdisplay, X
             from Xlib.ext import xtest
         except ImportError:
-            sys.exit(
+            raise BridgeFailure(
                 "python-xlib is required: "
                 "pip install --user --break-system-packages python-xlib"
             )
@@ -147,7 +149,7 @@ class X:
         }.get(name.lower(), name)
         code = self.d.keysym_to_keycode(XK.string_to_keysym(name))
         if not code:
-            sys.exit(f"unknown keysym: {name}")
+            raise BridgeFailure(f"unknown keysym: {name}")
         return code
 
     def _press(self, code: int):
@@ -211,10 +213,10 @@ def run_steps(x: X, steps, tmpdir: str, label: str):
             x.capture(out)
             print(f"  [{label}] captured {step[1]}")
         else:
-            sys.exit(f"unknown step: {step}")
+            raise BridgeFailure(f"unknown step: {step}")
 
 
-def main():
+def _build_parser():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--only", nargs="*", choices=sorted(list(RECIPES) + list(ONBOARDING_SHOTS)),
                     help="capture only these shots")
@@ -225,19 +227,21 @@ def main():
     ap.add_argument("--out-dir", default=DEFAULT_OUT)
     ap.add_argument("--display", default=os.environ.get("DISPLAY", ":0"))
     ap.add_argument("--keep-open", action="store_true", help="leave the app running")
-    args = ap.parse_args()
+    return ap
 
+
+def _run(args):
     if shutil.which("magick") is None:
-        sys.exit("ImageMagick 7 (magick) is required")
+        raise BridgeFailure("ImageMagick 7 (magick) is required")
     if not os.path.exists(APP_BIN):
-        sys.exit(f"missing {APP_BIN} — run: cargo build -p syncify-tauri")
+        raise BridgeFailure(f"missing {APP_BIN} — run: cargo build -p syncify-tauri")
 
     wanted = args.only if args.only else list(RECIPES)
     if args.onboarding:
         wanted = wanted + [s for s in ONBOARDING_SHOTS if s not in wanted]
     unknown = [w for w in wanted if w not in RECIPES and w not in ONBOARDING_SHOTS]
     if unknown:
-        sys.exit(f"unknown shots: {unknown}")
+        raise BridgeFailure(f"unknown shots: {unknown}")
 
     x = X(args.display)
     launched = None
@@ -256,7 +260,7 @@ def main():
                 break
         if win is None:
             launched.terminate()
-            sys.exit("Syncify window not found after 30s")
+            raise BridgeFailure("Syncify window not found after 30s")
     else:
         print("Reusing a running Syncify instance")
 
@@ -319,5 +323,9 @@ def main():
     )
 
 
+def main():
+    return run_cli(_run, parse=_build_parser().parse_args)
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

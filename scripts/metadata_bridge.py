@@ -11,7 +11,6 @@ Returns JSON:
     {"success": true/false, "data": {...}, "error": "..."}
 """
 
-import json
 import sys
 import os
 import argparse
@@ -40,15 +39,7 @@ if os.getenv("SYNCIFY_ENV", "").strip().lower() in ("development", "dev"):
         pass
 
 
-def json_response(success: bool, data=None, error=None):
-    """Output JSON response and exit."""
-    result = {"success": success}
-    if data is not None:
-        result["data"] = data
-    if error is not None:
-        result["error"] = error
-    print(json.dumps(result, ensure_ascii=False, default=str))
-    sys.exit(0 if success else 1)
+from services.bridge_protocol import BridgeFailure, run  # noqa: E402
 
 
 def extract_enriched_metadata(result: Any) -> Dict[str, Any]:
@@ -145,9 +136,9 @@ def enrich_track(track: str, artist: str, isrc: Optional[str] = None, album: Opt
     try:
         result = asyncio.run(_enrich())
         data = extract_enriched_metadata(result)
-        json_response(True, data)
+        return data
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e)) from e
 
 
 def match_track(track: str, artist: str, isrc: Optional[str] = None):
@@ -178,12 +169,12 @@ def match_track(track: str, artist: str, isrc: Optional[str] = None):
                 "score": getattr(result, "score", None),
             }
             data = {k: v for k, v in data.items() if v is not None}
-            json_response(True, data)
+            return data
         else:
-            json_response(False, error="No match found")
+            raise BridgeFailure("No match found")
             
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e)) from e
 
 
 def get_spotify_features(isrc: str):
@@ -194,8 +185,7 @@ def get_spotify_features(isrc: str):
     client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
     
     if not client_id or not client_secret:
-        json_response(False, error="SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET required")
-        return
+        raise BridgeFailure("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET required")
     
     async def _get_features():
         async with SpotifyEnricher(client_id, client_secret) as enricher:
@@ -218,12 +208,12 @@ def get_spotify_features(isrc: str):
         result = asyncio.run(_get_features())
         
         if result:
-            json_response(True, result)
+            return result
         else:
-            json_response(False, error="Track not found on Spotify")
+            raise BridgeFailure("Track not found on Spotify")
             
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e)) from e
 
 
 def main():
@@ -247,15 +237,18 @@ def main():
     features_parser = subparsers.add_parser("features", help="Get Spotify audio features")
     features_parser.add_argument("isrc", help="ISRC code")
     
-    args = parser.parse_args()
-    
+    return run(_handle, parse=parser.parse_args)
+
+
+def _handle(args):
     if args.command == "enrich":
-        enrich_track(args.track, args.artist, args.isrc, args.album)
-    elif args.command == "match":
-        match_track(args.track, args.artist, args.isrc)
-    elif args.command == "features":
-        get_spotify_features(args.isrc)
+        return enrich_track(args.track, args.artist, args.isrc, args.album)
+    if args.command == "match":
+        return match_track(args.track, args.artist, args.isrc)
+    if args.command == "features":
+        return get_spotify_features(args.isrc)
+    raise BridgeFailure("Unknown command: %s" % args.command)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

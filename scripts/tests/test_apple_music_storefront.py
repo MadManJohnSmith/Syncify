@@ -89,25 +89,12 @@ class AppleMusicStorefrontTests(unittest.TestCase):
             def storefront(self):
                 return "de"
 
-        captured = {}
-
-        def fake_json_response(success, payload=None, error=None):
-            captured["success"] = success
-            captured["payload"] = payload
-            raise SystemExit(0 if success else 1)
-
-        with patch.object(
-            auth_bridge, "json_response", fake_json_response
-        ), patch(
+        with patch(
             "services.apple_music_auth.AppleMusicAuth", _StubAuth
         ):
-            try:
-                auth_bridge.handle_apple_music("login")
-            except SystemExit:
-                pass
+            payload = auth_bridge.handle_apple_music("login") or {}
 
-        self.assertTrue(captured.get("success"), captured)
-        payload = captured.get("payload") or {}
+        self.assertTrue(payload, "el handler debe devolver el payload")
         self.assertEqual(payload.get("music_user_token"), "user-token")
         self.assertEqual(payload.get("developer_token"), "dev-token")
         self.assertEqual(

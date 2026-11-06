@@ -42,15 +42,7 @@ except ImportError:
 AUDIO_EXTENSIONS = {'.mp3', '.flac', '.m4a', '.wav', '.ogg', '.aac', '.wma', '.opus'}
 
 
-def json_response(success: bool, data=None, error=None):
-    """Output JSON response and exit."""
-    result = {"success": success}
-    if data:
-        result["data"] = data
-    if error:
-        result["error"] = error
-    print(json.dumps(result, ensure_ascii=False, default=str))
-    sys.exit(0 if success else 1)
+from services.bridge_protocol import BridgeFailure, run  # noqa: E402
 
 
 @dataclass
@@ -348,12 +340,10 @@ def scan_directory(directory: str, recursive: bool = True, limit: Optional[int] 
     """Scan a directory for audio files."""
     dir_path = Path(directory)
     if not dir_path.exists():
-        json_response(False, error=f"Directory not found: {directory}")
-        return
+        raise BridgeFailure(f"Directory not found: {directory}")
 
     if not dir_path.is_dir():
-        json_response(False, error=f"Not a directory: {directory}")
-        return
+        raise BridgeFailure(f"Not a directory: {directory}")
 
     # Find audio files
     if recursive:
@@ -395,31 +385,29 @@ def scan_directory(directory: str, recursive: bool = True, limit: Optional[int] 
         except Exception as e:
             errors.append({"file": str(file), "error": str(e)})
 
-    json_response(True, {
+    return {
         "directory": str(dir_path.absolute()),
         "total_files": len(audio_files),
         "skipped_small_files": skipped_small_files,
         "tracks": tracks,
         "errors": errors if errors else None,
-    })
+    }
 
 
 def get_file_metadata(audio_path: str):
     """Get metadata for a single audio file."""
     path = Path(audio_path)
     if not path.exists():
-        json_response(False, error=f"File not found: {audio_path}")
-        return
+        raise BridgeFailure(f"File not found: {audio_path}")
     
     if path.suffix.lower() not in AUDIO_EXTENSIONS:
-        json_response(False, error=f"Not an audio file: {audio_path}")
-        return
+        raise BridgeFailure(f"Not an audio file: {audio_path}")
     
     info = extract_metadata(path)
     if info:
-        json_response(True, asdict(info))
+        return asdict(info)
     else:
-        json_response(False, error="Failed to extract metadata")
+        raise BridgeFailure("Failed to extract metadata")
 
 
 def main():
@@ -444,13 +432,16 @@ def main():
     meta_parser = subparsers.add_parser("metadata", help="Get file metadata")
     meta_parser.add_argument("audio_file", help="Path to audio file")
 
-    args = parser.parse_args()
+    return run(_handle, parse=parser.parse_args)
 
+
+def _handle(args):
     if args.command == "scan":
-        scan_directory(args.directory, args.recursive, args.limit, args.min_size_bytes)
+        return scan_directory(args.directory, args.recursive, args.limit, args.min_size_bytes)
     elif args.command == "metadata":
-        get_file_metadata(args.audio_file)
+        return get_file_metadata(args.audio_file)
+    raise BridgeFailure("Unknown command: %s" % args.command)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

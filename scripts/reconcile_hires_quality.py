@@ -15,6 +15,8 @@ import sqlite3
 import subprocess
 import sys
 
+from services.bridge_protocol import BridgeFailure, run_cli  # noqa: E402
+
 
 def inspect_flac_streaminfo(file_path):
     """
@@ -88,7 +90,7 @@ def find_default_db():
     return candidates[0]
 
 
-def main():
+def _build_parser():
     parser = argparse.ArgumentParser(
         description="TASK-109: Reconcile False Hi-Res Audio Quality in syncify.db"
     )
@@ -112,13 +114,13 @@ def main():
         action="store_true",
         help="Inspect physical audio files on disk if present to extract verified STREAMINFO",
     )
+    return parser
 
-    args = parser.parse_args()
 
+def _run(args):
     db_path = args.db_path or find_default_db()
     if not os.path.isfile(db_path):
-        print(f"[ERROR] Database file not found at: {db_path}", file=sys.stderr)
-        sys.exit(1)
+        raise BridgeFailure(f"[ERROR] Database file not found at: {db_path}")
 
     print(f"[TASK-109] Connecting to database: {db_path}")
     if args.dry_run:
@@ -145,9 +147,8 @@ def main():
             cursor.execute(f"VACUUM INTO '{backup_path}'")
             print(f"[TASK-109] ✓ Preventive snapshot created: {backup_path}")
         except Exception as e:
-            print(f"[ERROR] Failed to create VACUUM INTO snapshot: {e}", file=sys.stderr)
             conn.close()
-            sys.exit(1)
+            raise BridgeFailure(f"[ERROR] Failed to create VACUUM INTO snapshot: {e}")
 
     # Step 2: Query candidate tracks with 'hires' audio_quality
     query = """
@@ -267,5 +268,9 @@ def main():
     print("=" * 55)
 
 
+def main():
+    return run_cli(_run, parse=_build_parser().parse_args)
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
