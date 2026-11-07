@@ -14,11 +14,14 @@
 //! (eso vive en la capa Tauri/UI). Aquí solo hay: cargar → reproducir → pausar →
 //! reanudar → buscar → parar, con estado y posición legibles en cualquier momento.
 
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rodio::stream::{DeviceSinkBuilder, MixerDeviceSink};
 use rodio::{Decoder, Player};
+
+pub mod sim;
 
 /// Errores del motor. Texto legible en inglés (la UI los sanea antes de mostrarlos).
 #[derive(Debug, thiserror::Error)]
@@ -61,12 +64,102 @@ pub enum EngineState {
     Paused,
 }
 
-/// Motor de reproducción. Mantiene un único stream de salida abierto durante
-/// toda la sesión (abrirlo por pista produce chasquidos y desperdicia el buffer).
-pub struct PlayerEngine {
+/// Contrato de la salida de audio que el motor gobierna.
+///
+/// Producción: `RodioBackend` (rodio + cpal sobre el dispositivo por defecto).
+/// Las pruebas y la tooling pueden inyectar un backend simulado con
+/// [`PlayerEngine::with_backend`] (véase [`sim::SimulatedBackend`]) para
+/// caracterizar el motor sin dispositivo de audio ni red.
+///
+/// Todas las operaciones son `&self` con mutación interior, igual que el
+/// `Player` de rodio que envuelve la implementación de producción.
+pub trait PlaybackBackend: Send {
+    /// Encola una fuente ya decodificada, sustituyendo a la anterior.
+    fn append(&self, source: EngineDecoder);
+    fn play(&self);
+    fn pause(&self);
+    fn is_paused(&self) -> bool;
+    /// Vacía la cola; la pista deja de estar cargada para el motor.
+    fn stop(&self);
+    fn set_volume(&self, volume: f32);
+    fn set_speed(&self, rate: f32);
+    /// Busca una posición absoluta. Acotar por el final de la pista es
+    /// responsabilidad del motor; rodio además satura por su cuenta.
+    fn try_seek(&self, pos: Duration) -> Result<(), rodio::source::SeekError>;
+    fn get_pos(&self) -> Duration;
+    /// `true` cuando no queda ninguna fuente en cola (parada o fin natural).
+    fn empty(&self) -> bool;
+}
+
+/// Fuente decodificada que el motor entrega al backend (symphonia vía rodio).
+pub type EngineDecoder = Decoder<BufReader<std::fs::File>>;
+
+/// Salida de producción: rodio + cpal sobre el sink por defecto.
+struct RodioBackend {
     /// Se conserva para mantener vivo el stream de salida (`cpal`).
     _sink: MixerDeviceSink,
     player: Player,
+}
+
+impl RodioBackend {
+    /// Abre el dispositivo de salida por defecto una sola vez.
+    fn new() -> Result<Self, EngineError> {
+        let sink = DeviceSinkBuilder::open_default_sink()
+            .map_err(|e| EngineError::OutputUnavailable(e.to_string()))?;
+        let player = Player::connect_new(sink.mixer());
+        Ok(Self {
+            _sink: sink,
+            player,
+        })
+    }
+}
+
+impl PlaybackBackend for RodioBackend {
+    fn append(&self, source: EngineDecoder) {
+        self.player.append(source);
+    }
+
+    fn play(&self) {
+        self.player.play();
+    }
+
+    fn pause(&self) {
+        self.player.pause();
+    }
+
+    fn is_paused(&self) -> bool {
+        self.player.is_paused()
+    }
+
+    fn stop(&self) {
+        self.player.stop();
+    }
+
+    fn set_volume(&self, volume: f32) {
+        self.player.set_volume(volume);
+    }
+
+    fn set_speed(&self, rate: f32) {
+        self.player.set_speed(rate);
+    }
+
+    fn try_seek(&self, pos: Duration) -> Result<(), rodio::source::SeekError> {
+        self.player.try_seek(pos)
+    }
+
+    fn get_pos(&self) -> Duration {
+        self.player.get_pos()
+    }
+
+    fn empty(&self) -> bool {
+        self.player.empty()
+    }
+}
+
+/// Motor de reproducción. Mantiene un único stream de salida abierto durante
+/// toda la sesión (abrirlo por pista produce chasquidos y desperdicia el buffer).
+pub struct PlayerEngine {
+    backend: Box<dyn PlaybackBackend>,
     loaded: Option<LoadedTrack>,
     volume: f32,
     rate: f32,
@@ -75,16 +168,18 @@ pub struct PlayerEngine {
 impl PlayerEngine {
     /// Abre el dispositivo de salida por defecto una sola vez.
     pub fn new() -> Result<Self, EngineError> {
-        let sink = DeviceSinkBuilder::open_default_sink()
-            .map_err(|e| EngineError::OutputUnavailable(e.to_string()))?;
-        let player = Player::connect_new(sink.mixer());
-        Ok(Self {
-            _sink: sink,
-            player,
+        Ok(Self::with_backend(Box::new(RodioBackend::new()?)))
+    }
+
+    /// Motor sobre un backend inyectado: pruebas y tooling sin dispositivo de
+    /// audio. La producción usa [`PlayerEngine::new`].
+    pub fn with_backend(backend: Box<dyn PlaybackBackend>) -> Self {
+        Self {
+            backend,
             loaded: None,
             volume: 1.0,
             rate: 1.0,
-        })
+        }
     }
 
     /// Carga un archivo local sustituyendo cualquier pista anterior (cola
@@ -110,21 +205,21 @@ impl PlayerEngine {
         // La pausa se fija ANTES del `append` para que la fuente nazca en pausa;
         // el volumen y el ritmo se reaplican porque `append` envuelve cada
         // fuente con sus propios factores.
-        self.player.stop();
+        self.backend.stop();
         if !autoplay {
-            self.player.pause();
+            self.backend.pause();
         }
-        self.player.append(decoder);
-        self.player.set_volume(self.volume);
-        self.player.set_speed(self.rate);
+        self.backend.append(decoder);
+        self.backend.set_volume(self.volume);
+        self.backend.set_speed(self.rate);
         // La posición latcheada por rodio (cada ~5 ms) puede devolver todavía el
         // valor de la pista anterior tras el swap, porque la fuente nueva aún no
         // ha corrido su reloj. Un seek a 0 la fija de forma determinista antes de
         // devolver (bloquea hasta el feedback del hilo de audio). El error de una
         // fuente sin soporte de seek se ignora: es un no-op.
-        let _ = self.player.try_seek(Duration::ZERO);
+        let _ = self.backend.try_seek(Duration::ZERO);
         if autoplay {
-            self.player.play();
+            self.backend.play();
         }
 
         let info = LoadedTrack {
@@ -148,8 +243,8 @@ impl PlayerEngine {
 
     /// Pausa si está reproduciendo (no-op en cualquier otro estado).
     pub fn pause(&self) {
-        if !self.player.is_paused() {
-            self.player.pause();
+        if !self.backend.is_paused() {
+            self.backend.pause();
         }
     }
 
@@ -158,8 +253,8 @@ impl PlayerEngine {
         if self.loaded.is_none() {
             return Err(EngineError::NothingLoaded);
         }
-        if self.player.is_paused() {
-            self.player.play();
+        if self.backend.is_paused() {
+            self.backend.play();
         }
         Ok(())
     }
@@ -169,16 +264,16 @@ impl PlayerEngine {
         if self.loaded.is_none() {
             return;
         }
-        if self.player.is_paused() {
-            self.player.play();
+        if self.backend.is_paused() {
+            self.backend.play();
         } else {
-            self.player.pause();
+            self.backend.pause();
         }
     }
 
     /// Detiene y descarga la pista actual. El stream de salida sigue abierto.
     pub fn stop(&mut self) {
-        self.player.stop();
+        self.backend.stop();
         self.loaded = None;
     }
 
@@ -192,7 +287,7 @@ impl PlayerEngine {
             Some(total) => position.min(total),
             None => position,
         };
-        self.player.try_seek(clamped).map_err(|e| match e {
+        self.backend.try_seek(clamped).map_err(|e| match e {
             rodio::source::SeekError::NotSupported { .. } => EngineError::SeekNotSupported,
             other => EngineError::Decode(other.to_string()),
         })
@@ -201,7 +296,7 @@ impl PlayerEngine {
     /// Volumen lineal `[0.0, 1.0+]` aplicado por el reproductor.
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = volume.max(0.0);
-        self.player.set_volume(self.volume);
+        self.backend.set_volume(self.volume);
     }
 
     /// Volumen actual.
@@ -217,7 +312,7 @@ impl PlayerEngine {
         } else {
             1.0
         };
-        self.player.set_speed(self.rate);
+        self.backend.set_speed(self.rate);
     }
 
     /// Ritmo actual.
@@ -228,9 +323,9 @@ impl PlayerEngine {
     /// Estado observable. Una pista que llegó al final (cola vacía) se reporta
     /// como `Stopped` aunque `loaded` siga presente hasta el siguiente `stop()`.
     pub fn state(&self) -> EngineState {
-        if self.loaded.is_none() || self.player.empty() {
+        if self.loaded.is_none() || self.backend.empty() {
             EngineState::Stopped
-        } else if self.player.is_paused() {
+        } else if self.backend.is_paused() {
             EngineState::Paused
         } else {
             EngineState::Playing
@@ -239,7 +334,7 @@ impl PlayerEngine {
 
     /// Posición actual de reproducción (se congela al llegar al final).
     pub fn position(&self) -> Duration {
-        self.player.get_pos()
+        self.backend.get_pos()
     }
 
     /// Duración de la pista cargada, si el contenedor la declara.
@@ -255,7 +350,7 @@ impl PlayerEngine {
     /// `true` cuando la pista terminó de reproducirse (la cola quedó vacía por
     /// final natural, no por `stop()`; `stop()` además limpia `loaded`).
     pub fn track_ended(&self) -> bool {
-        self.loaded.is_some() && self.player.empty()
+        self.loaded.is_some() && self.backend.empty()
     }
 }
 
