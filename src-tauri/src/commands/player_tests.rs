@@ -1913,6 +1913,67 @@ async fn progressive_partial_with_invalid_header_is_discarded_and_redownloaded()
 }
 
 #[tokio::test]
+async fn server_without_range_support_discards_the_partial_and_redownloads() {
+    let clock = VirtualClock::new();
+    let (body, prefix, _audio_millis) = flac_body_and_prefix(2);
+    let total = body.len() as u64;
+    // Conexión 1: 200 sin soporte de Range ante el GET con Range. Conexión 2:
+    // el re-GET sin Range descarga el cuerpo completo desde cero.
+    let server = spawn_fake_stream_server_inner(
+        Some(total),
+        body.clone(),
+        vec![
+            vec![],
+            vec![ServerStep::Send(total as usize), ServerStep::Finish],
+        ],
+        false,
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+    let cache_root = tempfile::tempdir().unwrap();
+    set_cache_override(&app, cache_root.path());
+    let cache_path = cache_root.path().join("track-1-qobuz-24bit-192000hz.flac");
+    std::fs::write(&cache_path, &prefix).expect("parcial previo al crash");
+
+    let result = load_track(&app, 1, false, 1.0)
+        .await
+        .expect("carga con el parcial descartado por falta de Range");
+    assert!(result.stream.is_some());
+    assert_eq!(
+        resolve_calls.load(Ordering::SeqCst),
+        1,
+        "un 200 no es fallo de catálogo: sin re-resolución"
+    );
+    assert_eq!(
+        server.request_count(),
+        2,
+        "GET con Range + re-GET sin Range"
+    );
+    assert!(
+        server.headers_of(0).to_ascii_lowercase().contains("range:"),
+        "el primer intento parte del byte recibido: {}",
+        server.headers_of(0)
+    );
+    assert!(
+        !server.headers_of(1).to_ascii_lowercase().contains("range:"),
+        "tras el 200 el parcial se descarta y el re-GET no lleva Range: {}",
+        server.headers_of(1)
+    );
+    wait_until(
+        || marker_path_of(&cache_path).exists(),
+        "caché completada tras el descarte del parcial",
+    )
+    .await;
+    assert_eq!(
+        std::fs::read(&cache_path).expect("caché final"),
+        body,
+        "el reemplazo desde cero no hereda ni duplica bytes del parcial"
+    );
+    assert!(stream_cache::read_complete_cache(&cache_path).is_some());
+}
+
+#[tokio::test]
 async fn dash_partial_resumes_from_the_next_complete_segment() {
     let clock = VirtualClock::new();
     let (init, segments) = fmp4_fixture();
