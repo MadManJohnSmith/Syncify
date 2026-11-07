@@ -320,6 +320,28 @@ jobs:
           # compatible con las copias 1.20.
           rm -f "$WORK/squashfs-root"/usr/lib/libwayland-*.so*
 
+          # #212: linuxdeploy arrastra su propio usr/bin/xdg-open (xdg-utils
+          # 1.1.3, base Ubuntu 22.04) y el AppRun antepone el bin/ del AppDir
+          # al PATH, de modo que ese xdg-open viejo ensombrece al del
+          # anfitrion para cualquier hijo de la app. En Plasma 6
+          # (KDE_SESSION_VERSION=6) el open_kde() de 1.1.x no tiene rama y
+          # sale 0 sin abrir nada: el login Tidal cree que abrio la pestana y
+          # sondea 300 s, reveal/open y los enlaces externos se rompen igual.
+          # Sin copia empaquetada, el PATH resuelve el xdg-open (y gio,
+          # kde-open) del sistema, que si conoce el escritorio del usuario.
+          # Misma medicina que las libwayland de arriba: la copia vieja del
+          # paquete no mejora al anfitrion, lo envenena.
+          rm -f "$WORK/squashfs-root/usr/bin/xdg-open"
+
+          # En la linea de la asercion de sinks de arriba: si el fichero
+          # sigue en el AppDir que se va a empaquetar, el AppImage saldria
+          # con el bug de #212 dentro y nadie lo veria. La build falla, no
+          # se publica.
+          if [ -f "$WORK/squashfs-root/usr/bin/xdg-open" ]; then
+            echo "::error::el xdg-open empaquetado sigue en el AppDir; ensombreceria al del anfitrion (#212)"
+            exit 1
+          fi
+
           # Reempaquetar con appimagetool (conserva el AppRun y los hooks).
           curl -sL -o "$WORK/appimagetool" \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
