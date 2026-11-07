@@ -6,9 +6,9 @@
  * `usePlayer.ts`; aquí solo está el transporte de UNA pista (cargar, pausar,
  * reanudar, parar, buscar, volumen, ritmo) y la suscripción a sus eventos.
  *
- * El backend mantiene un `seq` por carga: cada `player_load` lo incrementa y
- * los eventos lo llevan. El frontend descarta todo evento cuyo `seq` no sea el
- * de la pista que cree cargada.
+ * El backend mantiene un `seq` por carga: cada `player_load_track` lo
+ * incrementa y los eventos lo llevan. El frontend descarta todo evento cuyo
+ * `seq` no sea el de la pista que cree cargada.
  */
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invokeCommand, TauriEvents } from './tauri'
@@ -23,7 +23,7 @@ export interface PlayerTick {
     durationSec: number | null;
 }
 
-/** Resultado de `player_load`. */
+/** Generación y duración que devuelve cada carga (`player_load_track`). */
 export interface PlayerLoadResult {
     seq: number;
     durationSec: number | null;
@@ -88,11 +88,6 @@ interface RawLoadResult {
     seq: number;
     duration_sec: number | null;
     stream?: PlayerStreamInfo | null;
-}
-
-export function playerLoad(path: string, autoplay: boolean, volume: number): Promise<PlayerLoadResult> {
-    return invokeCommand<RawLoadResult>('player_load', { path, autoplay, volume })
-        .then(r => ({ seq: r.seq, durationSec: r.duration_sec }));
 }
 
 /**

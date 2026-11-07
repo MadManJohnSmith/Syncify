@@ -226,8 +226,27 @@ const pendingListens = ref<PendingListen[]>([]);
 
 /** Pre-shuffle base order of the pending entries (entryIds). Not reactive: the mutations keep it in sync. */
 let baseOrder: string[] = [];
-/** Transition generation: every async continuation checks that its gen is still alive. */
-let transitionGen = 0;
+
+/**
+ * Transición de reproducción en curso: cada acción que cambia de pista la
+ * invalida (y `stop` aborta la activa). NO es una generación: la generación es
+ * la `seq` que publica el backend — viaja en el resultado de la carga
+ * (`engineSeq`) y en los eventos, que se descartan por ella; este token sólo
+ * cancela trabajo asíncrono cuya respuesta ya no interesa.
+ */
+interface Transition {
+    aborted: boolean;
+}
+
+let activeTransition: Transition | null = null;
+
+/** Abre una transición y deja sin efecto la anterior (si la hay). */
+function beginTransition(): Transition {
+    const transition: Transition = { aborted: false };
+    if (activeTransition) activeTransition.aborted = true;
+    activeTransition = transition;
+    return transition;
+}
 
 /** Effective engine volume: mute is sent as 0, like `audio.muted` did. */
 function effectiveEngineVolume(): number {
@@ -756,21 +775,21 @@ async function ensureProjection(entry: PlaybackQueueEntry): Promise<ProjectionRe
 /**
  * Resolves the source (always fresh: grants and URLs are never reused), loads
  * it into the native engine and starts playback. A same-file reload is safe:
- * `player_load` always restarts the engine from zero (never inherits an
+ * `player_load_track` always restarts the engine from zero (never inherits an
  * element's latent 'ended' loop). Returns:
  * - 'played'  → the engine is playing; the caller commits the state.
  * - 'failed'  → resolve/load failure; `error` carries the message, state untouched.
  * - 'aborted' → the continuation became stale (stop()/new transition); it
  *               touches no state, reports no error.
  */
-async function resolveAndPlay(track: PlayerTrack, gen: number): Promise<'played' | 'failed' | 'aborted'> {
+async function resolveAndPlay(track: PlayerTrack, transition: Transition): Promise<'played' | 'failed' | 'aborted'> {
     isLoadingSource.value = true;
     streamQuality.value = null;
     streamError.value = null;
     isBuffering.value = false;
     try {
         const result = await playerLoadTrack(track.id, true, effectiveEngineVolume());
-        if (gen !== transitionGen) return 'aborted';
+        if (transition.aborted) return 'aborted';
         engineSeq = result.seq;
         loadedPath = result.stream ? `stream:${track.id}` : `track:${track.id}`;
         streamQuality.value = result.stream
@@ -797,11 +816,11 @@ async function resolveAndPlay(track: PlayerTrack, gen: number): Promise<'played'
         syncMprisState(track);
         return 'played';
     } catch (err) {
-        if (gen !== transitionGen) return 'aborted';
+        if (transition.aborted) return 'aborted';
         reportEngineFailure(err);
         return 'failed';
     } finally {
-        if (gen === transitionGen) isLoadingSource.value = false;
+        if (!transition.aborted) isLoadingSource.value = false;
     }
 }
 
@@ -812,11 +831,11 @@ type AdvanceResult = 'played' | 'stopped' | 'empty';
  * resolution and startup succeed; IDs that disappeared are discarded on the
  * fly and an unclassifiable failure keeps the head and stops advancing.
  */
-async function advanceFromHead(gen: number): Promise<AdvanceResult> {
+async function advanceFromHead(transition: Transition): Promise<AdvanceResult> {
     while (queue.value.length > 0) {
         const entry = queue.value[0];
         const proj = await ensureProjection(entry);
-        if (gen !== transitionGen) return 'stopped';
+        if (transition.aborted) return 'stopped';
         if (proj === 'dead') {
             removePending(entry.entryId);
             continue;
@@ -826,8 +845,8 @@ async function advanceFromHead(gen: number): Promise<AdvanceResult> {
             return 'stopped';
         }
         error.value = null;
-        const outcome = await resolveAndPlay(proj, gen);
-        if (gen !== transitionGen) return 'stopped';
+        const outcome = await resolveAndPlay(proj, transition);
+        if (transition.aborted) return 'stopped';
         if (outcome !== 'played') return 'stopped';
         removePending(entry.entryId);
         if (currentEntry.value) pushHistory(currentEntry.value);
@@ -842,11 +861,11 @@ async function advanceFromHead(gen: number): Promise<AdvanceResult> {
  * What happens when the queue runs out (the only role of `repeat`): the queue always
  * advances on `ended` while there are pending entries, in any mode.
  */
-async function handleExhausted(auto: boolean, gen: number): Promise<void> {
+async function handleExhausted(auto: boolean, transition: Transition): Promise<void> {
     if (auto && repeat.value === 'one' && currentEntry.value && current.value) {
         // Repeat-one loop: new listen token and currentTime = 0; it does not
         // duplicate the history (it is the same track continuing).
-        await resolveAndPlay(current.value, gen);
+        await resolveAndPlay(current.value, transition);
         return;
     }
     if (repeat.value === 'all') {
@@ -866,27 +885,27 @@ async function handleExhausted(auto: boolean, gen: number): Promise<void> {
         queue.value = pend.map(e => ({ ...e }));
         baseOrder = pend.map(e => e.entryId);
         history.value = [];
-        await advanceFromHead(gen);
+        await advanceFromHead(transition);
     }
     // repeat off (or manual next() with no pending entries): no-op.
 }
 
 async function advanceTrack(auto: boolean): Promise<void> {
-    const gen = ++transitionGen;
+    const transition = beginTransition();
     bindEngineEvents();
-    const result = await advanceFromHead(gen);
-    if (gen !== transitionGen) return;
+    const result = await advanceFromHead(transition);
+    if (transition.aborted) return;
     if (result !== 'empty') return;
-    await handleExhausted(auto, gen);
+    await handleExhausted(auto, transition);
 }
 
 /** Immediate playback of a specific track (the previous one moves to the history). */
 async function playTrack(track: PlayerTrack): Promise<void> {
-    const gen = ++transitionGen;
+    const transition = beginTransition();
     bindEngineEvents();
     error.value = null;
-    const outcome = await resolveAndPlay(track, gen);
-    if (gen !== transitionGen) return;
+    const outcome = await resolveAndPlay(track, transition);
+    if (transition.aborted) return;
     if (outcome === 'failed') {
         throw new Error(error.value ?? 'Could not play the track');
     }
@@ -930,8 +949,8 @@ async function playIdle(): Promise<void> {
         // Stopped with a loaded track: it reached the end; play restarts it
         // (the HTML5 element did the same: play() after 'ended' seeks to 0).
         if (current.value) {
-            const gen = ++transitionGen;
-            await resolveAndPlay(current.value, gen);
+            const transition = beginTransition();
+            await resolveAndPlay(current.value, transition);
         }
         return;
     }
@@ -988,11 +1007,11 @@ async function enqueue(track: PlayerTrack): Promise<QueueOutcome> {
  */
 async function replaceQueueAndPlay(tracks: PlayerTrack[]): Promise<void> {
     if (!Array.isArray(tracks) || tracks.length === 0) return;
-    const gen = ++transitionGen;
+    const transition = beginTransition();
     bindEngineEvents();
     error.value = null;
-    const outcome = await resolveAndPlay(tracks[0], gen);
-    if (gen !== transitionGen) return;
+    const outcome = await resolveAndPlay(tracks[0], transition);
+    if (transition.aborted) return;
     if (outcome === 'failed') {
         throw new Error(error.value ?? 'Could not play the track');
     }
@@ -1043,20 +1062,20 @@ async function previous(): Promise<void> {
         seek(0);
         return;
     }
-    const gen = ++transitionGen;
+    const transition = beginTransition();
     while (history.value.length > 0) {
         const entry = history.value[history.value.length - 1];
         history.value = history.value.slice(0, -1);
         const proj = await ensureProjection(entry);
-        if (gen !== transitionGen) return;
+        if (transition.aborted) return;
         if (proj === 'dead') continue;
         if (proj === 'error') {
             error.value = `Could not validate track ${entry.trackId} in the history`;
             return;
         }
         error.value = null;
-        const outcome = await resolveAndPlay(proj, gen);
-        if (gen !== transitionGen) return;
+        const outcome = await resolveAndPlay(proj, transition);
+        if (transition.aborted) return;
         if (outcome !== 'played') return;
         // The track left behind returns to the front of the pending entries.
         if (currentEntry.value) {
@@ -1099,7 +1118,10 @@ function pausePlayback(): void {
 }
 
 function stop(): void {
-    transitionGen++;
+    // Aborta la transición en curso (las cargas que lleguen tarde no tocan el
+    // estado); la siguiente acción abre una transición nueva.
+    if (activeTransition) activeTransition.aborted = true;
+    activeTransition = null;
     void playerStop().catch(() => {
         // Without a loaded track it is a no-op; IPC failure is unrecoverable anyway.
     });
@@ -1230,14 +1252,14 @@ async function restoreFromPersistence(): Promise<void> {
 
     // Lazy N×1 validation: only the current track is resolved on restore;
     // pending entries are validated just before playing.
-    const gen = ++transitionGen;
+    const transition = beginTransition();
     isLoadingSource.value = true;
     try {
         const meta = await getTrackMetadata(saved.currentTrackId);
-        if (gen !== transitionGen) return;
+        if (transition.aborted) return;
         const track = projectMetadata(meta);
         const result = await playerLoadTrack(saved.currentTrackId, false, effectiveEngineVolume());
-        if (gen !== transitionGen) return;
+        if (transition.aborted) return;
         engineSeq = result.seq;
         loadedPath = result.stream ? `stream:${track.id}` : `track:${track.id}`;
         streamQuality.value = result.stream
@@ -1255,18 +1277,18 @@ async function restoreFromPersistence(): Promise<void> {
         const pos = Math.min(saved.positionSec, maxPos);
         if (pos > 0) {
             await playerSeek(pos);
-            if (gen !== transitionGen) return;
+            if (transition.aborted) return;
         }
         positionSec.value = pos;
         durationSec.value = result.durationSec ?? 0;
         currentEntry.value = { entryId: uuidV4(), trackId: track.id, track };
     } catch {
-        if (gen !== transitionGen) return;
+        if (transition.aborted) return;
         // Track gone or without a local file: start with no current; the
         // restored queue is kept for the first play().
         currentEntry.value = null;
     } finally {
-        if (gen === transitionGen) isLoadingSource.value = false;
+        if (!transition.aborted) isLoadingSource.value = false;
         persistState();
         syncMprisState();
     }

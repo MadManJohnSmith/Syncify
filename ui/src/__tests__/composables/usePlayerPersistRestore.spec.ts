@@ -17,7 +17,6 @@ vi.mock('../../api/tauri', () => ({
 }));
 
 vi.mock('../../api/player', () => ({
-    playerLoad: vi.fn(),
     playerLoadTrack: vi.fn(),
     playerPause: vi.fn(),
     playerResume: vi.fn(),

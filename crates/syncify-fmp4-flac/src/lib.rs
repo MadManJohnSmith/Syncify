@@ -57,6 +57,8 @@ impl FlacStreamInfo {
 pub enum Fmp4FlacError {
     #[error("el init no declara una pista FLAC (sample entry fLaC)")]
     NotFlacTrack,
+    #[error("el fichero no empieza por una cabecera FLAC nativa válida ({0})")]
+    NotFlacStream(String),
     #[error("el manifiesto está encriptado ({0})")]
     Encrypted(String),
     #[error("no se encontró el bloque dfLa/STREAMINFO en el init")]
@@ -169,6 +171,40 @@ pub fn write_flac_header(out: &mut impl Write, info: &FlacStreamInfo) -> Result<
     out.write_all(&[0x80, 0x00, 0x00, STREAMINFO_LEN as u8])?;
     out.write_all(&info.bytes)?;
     Ok(())
+}
+
+/// Lee y valida la cabecera de un FLAC nativo: exactamente la que escribe
+/// `write_flac_header` (`fLaC` + STREAMINFO como último bloque de metadatos).
+/// Es la validación previa a dar un parcial de caché por bueno y reanudarlo:
+/// un fichero que no empiece por el magic o cuyo STREAMINFO no se pueda
+/// interpretar se rechaza en vez de primar el motor con audio mentiroso.
+pub fn read_flac_header(reader: &mut impl Read) -> Result<FlacStreamInfo, Fmp4FlacError> {
+    let mut magic = [0u8; 4];
+    reader
+        .read_exact(&mut magic)
+        .map_err(|e| Fmp4FlacError::NotFlacStream(format!("cabecera ilegible ({e})")))?;
+    if &magic != b"fLaC" {
+        return Err(Fmp4FlacError::NotFlacStream(
+            "magic distinto de fLaC".to_string(),
+        ));
+    }
+    let mut block = [0u8; 4];
+    reader
+        .read_exact(&mut block)
+        .map_err(|e| Fmp4FlacError::NotFlacStream(format!("bloque ilegible ({e})")))?;
+    let is_last = block[0] & 0x80 != 0;
+    let block_type = block[0] & 0x7f;
+    let len = ((block[1] as usize) << 16) | ((block[2] as usize) << 8) | block[3] as usize;
+    if block_type != 0 || len != STREAMINFO_LEN || !is_last {
+        return Err(Fmp4FlacError::NotFlacStream(format!(
+            "primer bloque de metadatos no es STREAMINFO (tipo {block_type}, len {len})"
+        )));
+    }
+    let mut bytes = [0u8; STREAMINFO_LEN];
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|e| Fmp4FlacError::NotFlacStream(format!("STREAMINFO ilegible ({e})")))?;
+    parse_stream_info(bytes)
 }
 
 /// Demuxea un segmento (`moof`+`mdat`) usando el init como contexto y entrega
@@ -462,6 +498,36 @@ mod tests {
         assert_eq!(&out[0..4], b"fLaC");
         assert_eq!(&out[4..8], &[0x80, 0x00, 0x00, 34]);
         assert_eq!(&out[8..42], &info.bytes[..]);
+    }
+
+    #[test]
+    fn read_flac_header_accepts_what_write_flac_header_writes() {
+        let info = read_init(&init_with(b"fLaC", true)).unwrap();
+        let mut out = Vec::new();
+        write_flac_header(&mut out, &info).unwrap();
+        let mut cursor = Cursor::new(out);
+        let reread = read_flac_header(&mut cursor).expect("cabecera válida");
+        assert_eq!(reread, info);
+    }
+
+    #[test]
+    fn read_flac_header_rejects_garbage_and_truncated_headers() {
+        let mut garbage = Cursor::new(b"<html>error</html>".to_vec());
+        assert!(matches!(
+            read_flac_header(&mut garbage),
+            Err(Fmp4FlacError::NotFlacStream(_))
+        ));
+        let mut magic_only = Cursor::new(b"fLaC".to_vec());
+        assert!(matches!(
+            read_flac_header(&mut magic_only),
+            Err(Fmp4FlacError::NotFlacStream(_))
+        ));
+        // Magic correcto pero el primer bloque no es STREAMINFO.
+        let mut wrong_block = Cursor::new(b"fLaC\x40\x00\x00\x22xxxx".to_vec());
+        assert!(matches!(
+            read_flac_header(&mut wrong_block),
+            Err(Fmp4FlacError::NotFlacStream(_))
+        ));
     }
 
     #[test]

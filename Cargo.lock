@@ -5637,6 +5637,7 @@ name = "syncify-player"
 version = "0.1.0"
 dependencies = [
  "rodio",
+ "tempfile",
  "thiserror 2.0.17",
  "tracing",
 ]
