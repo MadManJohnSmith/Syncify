@@ -28,12 +28,13 @@ use tauri::test::MockRuntime;
 use tauri::{Listener, Manager};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use super::{player_load_track, player_seek};
+use super::{player_load_track, player_resume, player_seek};
 use crate::services::playback_session::{
     guard_stream_frontier, load_path_into_core, load_stream_into_engine, lock_core,
-    spawn_stream_download, PlayerCore, PlayerLoadResult, PlayerState, FRONTIER_PAUSE_MARGIN_SECS,
-    FRONTIER_RESUME_MARGIN_SECS, STREAM_FALLBACK_PRIME_BYTES, STREAM_MAX_PRIME_BYTES,
-    STREAM_MIN_PRIME_BYTES, STREAM_PRIME_TIMEOUT,
+    spawn_stall_refill, spawn_stream_download, FrontierOutcome, PlayerCore, PlayerLoadResult,
+    PlayerState, StreamFillError, FRONTIER_PAUSE_MARGIN_SECS, FRONTIER_RESUME_MARGIN_SECS,
+    STREAM_FALLBACK_PRIME_BYTES, STREAM_MAX_PRIME_BYTES, STREAM_MIN_PRIME_BYTES,
+    STREAM_PENDING_SEEK_TIMEOUT, STREAM_PRIME_TIMEOUT,
 };
 use crate::services::stream_cache::{self, StreamCacheState, StreamSession};
 use crate::services::streaming::StreamSourceInfo;
@@ -164,8 +165,21 @@ async fn insert_qobuz_source(db: &sqlx::SqlitePool, track_id: i64) {
 /// App de prueba con `PlayerState` (motor simulado ya inyectado),
 /// `StreamCacheState` y `AppState` (BD migrada en memoria).
 fn mock_player_app(db: sqlx::SqlitePool, clock: &VirtualClock) -> tauri::App<MockRuntime> {
+    mock_player_app_with_resolver(db, clock, None)
+}
+
+/// Con `resolver` se instala un doble de resolución de streaming (Fase C:
+/// relleno y re-resolución sin red, contra servidores locales).
+fn mock_player_app_with_resolver(
+    db: sqlx::SqlitePool,
+    clock: &VirtualClock,
+    resolver: Option<crate::services::playback_session::StreamResolver>,
+) -> tauri::App<MockRuntime> {
     let app = tauri::test::mock_app();
-    let state = PlayerState::default();
+    let state = match resolver {
+        Some(resolver) => PlayerState::with_resolver(resolver),
+        None => PlayerState::default(),
+    };
     {
         let mut core = lock_core(&state).expect("player core");
         core.engine = Some(sim_engine(clock));
@@ -179,6 +193,30 @@ fn mock_player_app(db: sqlx::SqlitePool, clock: &VirtualClock) -> tauri::App<Moc
         concurrency_manager: Arc::new(crate::services::ConcurrencyManager::new()),
     });
     app
+}
+
+/// Resolver falso que siempre devuelve la misma URL (con contador de llamadas).
+fn fake_resolver(
+    url: String,
+) -> (
+    crate::services::playback_session::StreamResolver,
+    Arc<AtomicUsize>,
+) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let resolver: crate::services::playback_session::StreamResolver =
+        Arc::new(move |_db, _http, _track_id| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let url = url.clone();
+            Box::pin(async move {
+                Ok(crate::services::streaming::ResolvedStream {
+                    url,
+                    dash: None,
+                    info: sample_info(),
+                })
+            })
+        });
+    (resolver, calls)
 }
 
 fn core_mut<R>(app: &tauri::App<MockRuntime>, f: impl FnOnce(&mut PlayerCore) -> R) -> R {
@@ -261,28 +299,79 @@ enum ServerStep {
     Finish,
 }
 
-/// Sirve un cuerpo en 127.0.0.1 y devuelve (url, peticiones recibidas).
+/// Servidor HTTP falso: cada conexión consume la siguiente entrada del
+/// guion; sin más guion, la conexión queda abierta sin enviar nada
+/// (descarga estancada), como un servidor que deja de responder.
+struct FakeStreamServer {
+    url: String,
+    requests: Arc<AtomicUsize>,
+    /// Cabeceras crudas de cada petición recibida (para asertar Range).
+    headers: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl FakeStreamServer {
+    fn request_count(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
+    }
+
+    fn headers_of(&self, index: usize) -> String {
+        self.headers.lock().unwrap()[index].clone()
+    }
+}
+
 async fn spawn_fake_stream_server(
     content_length: Option<u64>,
     body: Vec<u8>,
-    steps: Vec<ServerStep>,
-) -> (String, Arc<AtomicUsize>) {
+    script: Vec<Vec<ServerStep>>,
+) -> FakeStreamServer {
+    spawn_fake_stream_server_inner(content_length, body, script, true).await
+}
+
+async fn spawn_fake_stream_server_inner(
+    content_length: Option<u64>,
+    body: Vec<u8>,
+    script: Vec<Vec<ServerStep>>,
+    serve_range: bool,
+) -> FakeStreamServer {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let requests = Arc::new(AtomicUsize::new(0));
     let counted = requests.clone();
+    let headers = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let headers_sink = headers.clone();
+    let body = Arc::new(body);
+    // Cada conexión se atiende en su propia tarea: una conexión estancada
+    // (Wait sin soltar) no puede impedir atender la siguiente (el relevo por
+    // Range llega mientras la primera sigue abierta).
     tokio::spawn(async move {
-        let mut pending_steps = Some(steps);
+        let mut script = script.into_iter();
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
+            let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
             counted.fetch_add(1, Ordering::SeqCst);
-            let steps = pending_steps.take().unwrap_or_default();
-            serve_one(&mut stream, content_length, &body, steps).await;
+            let steps = script.next().unwrap_or_default();
+            let body = body.clone();
+            let headers = headers_sink.clone();
+            tokio::spawn(async move {
+                let mut stream = stream;
+                serve_one(
+                    &mut stream,
+                    content_length,
+                    &body,
+                    steps,
+                    serve_range,
+                    &headers,
+                )
+                .await;
+            });
         }
     });
-    (format!("http://{addr}/stream"), requests)
+    FakeStreamServer {
+        url: format!("http://{addr}/stream"),
+        requests,
+        headers,
+    }
 }
 
 async fn serve_one(
@@ -290,6 +379,8 @@ async fn serve_one(
     content_length: Option<u64>,
     body: &[u8],
     steps: Vec<ServerStep>,
+    serve_range: bool,
+    headers_log: &std::sync::Mutex<Vec<String>>,
 ) {
     // Leer la petición hasta el final de las cabeceras.
     let mut buf = [0u8; 4096];
@@ -304,6 +395,69 @@ async fn serve_one(
             break;
         }
     }
+    let request_head = String::from_utf8_lossy(&buf[..seen]).to_string();
+    headers_log.lock().unwrap().push(request_head.clone());
+
+    // Reanudación por Range (Fase C): `Range: bytes=N-` sobre el mismo cuerpo.
+    let range_from: Option<u64> = if serve_range {
+        request_head
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+            .and_then(|line| line.split("bytes=").nth(1))
+            .and_then(|spec| spec.trim_end_matches('-').trim().parse().ok())
+    } else {
+        None
+    };
+    if let Some(from) = range_from {
+        let from = (from as usize).min(body.len());
+        let head = format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\n\
+             Content-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\n\r\n",
+            from,
+            body.len() - 1,
+            body.len(),
+            body.len() - from
+        );
+        if stream.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+        if steps.is_empty() {
+            // Sin guion: servir el resto completo y cerrar (reanudación feliz).
+            let _ = stream.write_all(&body[from..]).await;
+            return;
+        }
+        // Con guion: los pasos operan desde el offset pedido, para poder
+        // estancar la reanudación a mitad del relleno.
+        let mut offset = from;
+        for step in steps {
+            match step {
+                ServerStep::Send(n) => {
+                    let end = (offset + n).min(body.len());
+                    if stream.write_all(&body[offset..end]).await.is_err() {
+                        return;
+                    }
+                    offset = end;
+                }
+                ServerStep::Wait(rx) => {
+                    let _ = rx.await;
+                }
+                _ => return,
+            }
+        }
+        std::future::pending::<()>().await;
+        return;
+    }
+
+    serve_plain(stream, content_length, body, steps).await;
+}
+
+/// Flujo no-Range: cabecera 200/chunked según `content_length` y pasos.
+async fn serve_plain(
+    stream: &mut tokio::net::TcpStream,
+    content_length: Option<u64>,
+    body: &[u8],
+    steps: Vec<ServerStep>,
+) {
     let mut head = String::from("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n");
     match content_length {
         Some(len) => head.push_str(&format!("Content-Length: {len}\r\n")),
@@ -356,41 +510,59 @@ async fn serve_one(
 struct RunningDownload {
     session: Arc<StreamSession>,
     ready: tokio::sync::oneshot::Receiver<Result<Option<f64>, String>>,
-    requests: Arc<AtomicUsize>,
+    server: FakeStreamServer,
     cache_path: std::path::PathBuf,
     /// Mantiene vivo el directorio temporal hasta el final del test.
     _dir: tempfile::TempDir,
 }
 
 /// Instala la sesión (seq 1 = generación vigente) y lanza
-/// `spawn_stream_download` contra el servidor falso, como hace el comando.
+/// `spawn_stream_download` contra el servidor falso, como hace el comando:
+/// el canal `ready` y la tarea viven en la sesión.
 async fn spawn_download(
     app: &tauri::App<MockRuntime>,
     content_length: Option<u64>,
     body: Vec<u8>,
-    steps: Vec<ServerStep>,
+    script: Vec<Vec<ServerStep>>,
+) -> RunningDownload {
+    let server = spawn_fake_stream_server(content_length, body, script).await;
+    spawn_download_on(app, server).await
+}
+
+/// Igual que `spawn_download`, pero sobre un servidor ya construido (los
+/// tests de re-resolución necesitan la URL ANTES de montar la app con su
+/// resolver falso).
+async fn spawn_download_on(
+    app: &tauri::App<MockRuntime>,
+    server: FakeStreamServer,
 ) -> RunningDownload {
     core_mut(app, |core| core.seq = 1);
     let dir = tempfile::tempdir().unwrap();
     let cache_path = dir.path().join("track-1-qobuz-24bit-192000hz.flac");
     let session = StreamSession::new(1, 1, sample_info(), cache_path.clone());
+    session.set_transport_intent(false, 1.0);
     app.state::<StreamCacheState>().install(session.clone());
-    let (url, requests) = spawn_fake_stream_server(content_length, body, steps).await;
-    let http = reqwest::Client::new();
-    let response = http.get(&url).send().await.expect("GET al servidor falso");
     let (ready_tx, ready) = tokio::sync::oneshot::channel();
-    spawn_stream_download(
+    session.install_ready(ready_tx);
+    let http = reqwest::Client::new();
+    let response = http
+        .get(&server.url)
+        .send()
+        .await
+        .expect("GET al servidor falso");
+    let handle = spawn_stream_download(
         app.handle().clone(),
         session.clone(),
         response,
         false,
         1.0,
-        ready_tx,
+        None,
     );
+    session.set_task(handle);
     RunningDownload {
         session,
         ready,
-        requests,
+        server,
         cache_path,
         _dir: dir,
     }
@@ -854,24 +1026,451 @@ async fn guard_is_inert_for_complete_or_canceled_sessions() {
 }
 
 // ---------------------------------------------------------------------------
+// 2b. Espera acotada del seek pendiente y relleno (Fase C, Q4)
+// ---------------------------------------------------------------------------
+
+/// Un paso del guard sobre la sesión de la generación vigente, devolviendo lo
+/// que pide al ticker (estado de stream o lanzamiento del relleno).
+fn frontier_step(app: &tauri::App<MockRuntime>) -> FrontierOutcome {
+    let seq = core_mut(app, |core| core.seq);
+    let session = app
+        .state::<StreamCacheState>()
+        .for_seq(seq)
+        .expect("sesión vigente");
+    let mut dirty = false;
+    let state = app.state::<PlayerState>();
+    let mut core = lock_core(&state).unwrap();
+    let engine = core.engine.as_mut().unwrap();
+    guard_stream_frontier(engine, &session, &mut dirty)
+}
+
+/// Descarga con el prime ya respondido: motor cargado con la caché parcial.
+/// El guion (conexión 1 incluida) vive en el servidor que se pasa aquí.
+async fn primed_download_on(
+    app: &tauri::App<MockRuntime>,
+    server: FakeStreamServer,
+) -> RunningDownload {
+    let mut download = spawn_download_on(app, server).await;
+    let duration = tokio::time::timeout(Duration::from_secs(5), &mut download.ready)
+        .await
+        .expect("prime en 5 s")
+        .expect("oneshot vivo")
+        .expect("carga ok");
+    assert!(duration.is_some());
+    assert!(download.session.started.load(Ordering::SeqCst));
+    download
+}
+
+#[tokio::test]
+async fn stalled_pending_seek_refills_once_over_range_and_completes() {
+    let clock = VirtualClock::new();
+    let db = test_db().await;
+    let total = 1024 * 1024;
+    let body = wav_prefix(WAV_SAMPLE_RATE, total, total);
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = spawn_fake_stream_server(
+        Some(total),
+        body.clone(),
+        vec![
+            // Conexión 1: 320 KiB (prime en el piso de 256 KiB) y estancamiento.
+            vec![ServerStep::Send(320 * 1024), ServerStep::Wait(gate_rx)],
+            // Conexión 2: la petición Range del relevo sirve el resto entero.
+            vec![],
+        ],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(db, &clock, Some(resolver));
+
+    let download = primed_download_on(&app, server).await;
+    let session = download.session.clone();
+
+    // El usuario buscaba sonando: el seek se aparca tras la frontera.
+    player_resume(app.state::<PlayerState>()).expect("resume");
+    player_seek(
+        app.handle().clone(),
+        app.state::<PlayerState>(),
+        app.state::<StreamCacheState>(),
+        40.0,
+    )
+    .expect("seek aparcado");
+    assert!(session.paused_for_buffer.load(Ordering::SeqCst));
+    assert!(session.take_resume_after_seek(), "buscaba sonando");
+    session.set_resume_after_seek(true);
+
+    // Ventana completa sin progreso: el guard pide el relleno.
+    session.age_stall_watch(STREAM_PENDING_SEEK_TIMEOUT + Duration::from_millis(100));
+    assert!(matches!(frontier_step(&app), FrontierOutcome::StallRefill));
+    assert!(session.refill_attempted_for_test());
+
+    spawn_stall_refill(app.handle().clone(), session.clone())
+        .await
+        .expect("relleno termina");
+    // El relleno devuelto es el spawn del relevo: esperar a que complete.
+    wait_until(
+        || marker_path_of(&download.cache_path).exists(),
+        "caché completada por el relevo",
+    )
+    .await;
+
+    assert_eq!(download.server.request_count(), 2, "GET inicial + Range");
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 1);
+    let range_header = download.server.headers_of(1);
+    assert!(
+        range_header
+            .to_ascii_lowercase()
+            .contains("range: bytes=327680-"),
+        "el relevo parte del byte escrito: {range_header}"
+    );
+    assert_eq!(
+        std::fs::read(&download.cache_path).expect("caché final"),
+        body,
+        "sin duplicación de bytes: el fichero final es exactamente el cuerpo"
+    );
+    assert!(stream_cache::read_complete_cache(&download.cache_path).is_some());
+
+    // Con la caché completa, el seek aparcado se sirve y se reanuda.
+    assert!(matches!(frontier_step(&app), FrontierOutcome::State(_)));
+    assert_eq!(engine_position(&app), Duration::from_secs_f64(40.0));
+    assert_eq!(engine_state(&app), EngineState::Playing);
+    assert!(!session.paused_for_buffer.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn stalled_pending_seek_after_refill_ends_in_typed_error() {
+    let clock = VirtualClock::new();
+    let db = test_db().await;
+    let total = 1024 * 1024;
+    let body = wav_prefix(WAV_SAMPLE_RATE, total, total);
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate2_tx, gate2_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = spawn_fake_stream_server(
+        Some(total),
+        body,
+        vec![
+            vec![ServerStep::Send(320 * 1024), ServerStep::Wait(gate_rx)],
+            // El relleno por Range entrega 4 KiB y vuelve a estancarse.
+            vec![ServerStep::Send(4 * 1024), ServerStep::Wait(gate2_rx)],
+        ],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(db, &clock, Some(resolver));
+
+    let download = primed_download_on(&app, server).await;
+    let session = download.session.clone();
+    player_resume(app.state::<PlayerState>()).expect("resume");
+    player_seek(
+        app.handle().clone(),
+        app.state::<PlayerState>(),
+        app.state::<StreamCacheState>(),
+        40.0,
+    )
+    .expect("seek aparcado");
+
+    // Primera ventana sin progreso -> relleno; el relleno mueve 4 KiB.
+    session.age_stall_watch(STREAM_PENDING_SEEK_TIMEOUT + Duration::from_millis(100));
+    assert!(matches!(frontier_step(&app), FrontierOutcome::StallRefill));
+    spawn_stall_refill(app.handle().clone(), session.clone())
+        .await
+        .expect("relleno termina");
+    wait_until(
+        || session.downloaded_bytes.load(Ordering::SeqCst) == 320 * 1024 + 4 * 1024,
+        "el relleno entregó sus 4 KiB",
+    )
+    .await;
+
+    // El guard observa ese progreso y reinicia la ventana acotada.
+    assert!(matches!(frontier_step(&app), FrontierOutcome::Quiet));
+
+    // Segunda ventana sin progreso: error tipado y estado de error.
+    session.age_stall_watch(STREAM_PENDING_SEEK_TIMEOUT + Duration::from_millis(100));
+    let outcome = frontier_step(&app);
+    match outcome {
+        FrontierOutcome::State(payload) => {
+            assert_eq!(payload.error, Some(StreamFillError::StillStalled.message()));
+            assert_eq!(payload.pending_seek_sec, None);
+            assert!(!payload.buffering);
+        }
+        other => panic!("se esperaba el estado de error tipado, fue {other:?}"),
+    }
+    assert!(session.is_canceled());
+    assert!(session.take_pending_seek().is_none());
+    assert_eq!(download.server.request_count(), 2);
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn download_progress_resets_the_pending_seek_window() {
+    let clock = VirtualClock::new();
+    let db = test_db().await;
+    let total = 1024 * 1024;
+    let body = wav_prefix(WAV_SAMPLE_RATE, total, total);
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = spawn_fake_stream_server(
+        Some(total),
+        body,
+        vec![vec![
+            ServerStep::Send(320 * 1024),
+            ServerStep::Wait(gate_rx),
+            ServerStep::Send(64 * 1024),
+        ]],
+    )
+    .await;
+    let (resolver, _resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(db, &clock, Some(resolver));
+
+    let download = primed_download_on(&app, server).await;
+    let session = download.session.clone();
+    player_seek(
+        app.handle().clone(),
+        app.state::<PlayerState>(),
+        app.state::<StreamCacheState>(),
+        40.0,
+    )
+    .expect("seek aparcado");
+
+    // La ventana envejece pero la descarga avanza: no hay estancamiento.
+    session.age_stall_watch(STREAM_PENDING_SEEK_TIMEOUT + Duration::from_millis(100));
+    drop(_gate_tx);
+    wait_until(
+        || session.downloaded_bytes.load(Ordering::SeqCst) == 384 * 1024,
+        "la descarga avanzó dentro de la ventana",
+    )
+    .await;
+    assert!(matches!(frontier_step(&app), FrontierOutcome::Quiet));
+    assert!(
+        !session.refill_attempted_for_test(),
+        "con progreso no se consume la re-resolución"
+    );
+    assert_eq!(session.take_pending_seek(), Some(40.0));
+}
+
+#[tokio::test]
+async fn stall_refill_resolver_failure_ends_in_typed_error() {
+    let clock = VirtualClock::new();
+    let total = 1024 * 1024;
+    let body = wav_prefix(WAV_SAMPLE_RATE, total, total);
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = spawn_fake_stream_server(
+        Some(total),
+        body,
+        vec![vec![
+            ServerStep::Send(320 * 1024),
+            ServerStep::Wait(gate_rx),
+        ]],
+    )
+    .await;
+    // El relleno resolverá con este doble, que siempre falla. La descarga
+    // inicial no pasa por el resolver (se lanza directa sobre el servidor).
+    let failing: crate::services::playback_session::StreamResolver =
+        Arc::new(|_db, _http, _id| Box::pin(async { Err("sin red".to_string()) }));
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(failing));
+    let events = capture_stream_state(&app);
+
+    let mut download = spawn_download_on(&app, server).await;
+    tokio::time::timeout(Duration::from_secs(5), &mut download.ready)
+        .await
+        .expect("prime en 5 s")
+        .expect("oneshot vivo")
+        .expect("carga ok")
+        .expect("duración");
+    let session = download.session.clone();
+    player_seek(
+        app.handle().clone(),
+        app.state::<PlayerState>(),
+        app.state::<StreamCacheState>(),
+        40.0,
+    )
+    .expect("seek aparcado");
+
+    // Ventana sin progreso -> relleno; el resolver del relleno falla y el
+    // error tipado termina en el estado de stream.
+    session.age_stall_watch(STREAM_PENDING_SEEK_TIMEOUT + Duration::from_millis(100));
+    assert!(matches!(frontier_step(&app), FrontierOutcome::StallRefill));
+
+    spawn_stall_refill(app.handle().clone(), session.clone())
+        .await
+        .expect("relleno termina");
+
+    wait_until(
+        || {
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|payload| payload.contains("reintento de fuente falló"))
+        },
+        "estado de error del relleno emitido",
+    )
+    .await;
+    assert!(
+        session.is_canceled(),
+        "el fallo del relleno cancela la sesión"
+    );
+    assert!(session.take_pending_seek().is_none());
+    assert!(!session.paused_for_buffer.load(Ordering::SeqCst));
+    assert_eq!(download.server.request_count(), 1, "sin reintento de red");
+}
+
+#[tokio::test]
+async fn stall_refill_before_prime_restarts_download_and_answers_ready() {
+    let clock = VirtualClock::new();
+    let dir = tempfile::tempdir().unwrap();
+    let previous = dir.path().join("anterior.wav");
+    write_wav_file(&previous, WAV_SAMPLE_RATE, 20.0);
+    let total = 2 * 1024 * 1024;
+    let body = wav_prefix(WAV_SAMPLE_RATE, total, total);
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate2_tx, gate2_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = spawn_fake_stream_server(
+        Some(total),
+        body,
+        vec![
+            // Conexión 1: 128 KiB, por debajo del piso de prime (256 KiB).
+            vec![ServerStep::Send(128 * 1024), ServerStep::Wait(gate_rx)],
+            // Conexión 2 (reinicio): supera el piso y el prime responde.
+            vec![ServerStep::Send(512 * 1024), ServerStep::Wait(gate2_rx)],
+        ],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+
+    // El motor carga la pista ANTERIOR: la sesión aún no ha primado.
+    core_mut(&app, |core| {
+        load_path_into_core(core, &previous, false, 1.0).expect("carga previa");
+    });
+
+    // Sesión instalada con su canal ready, como la deja `open`.
+    core_mut(&app, |core| core.seq = 1);
+    let cache_dir2 = tempfile::tempdir().unwrap();
+    let cache_path = cache_dir2.path().join("track-1-qobuz-24bit-192000hz.flac");
+    let session = StreamSession::new(1, 1, sample_info(), cache_path.clone());
+    session.set_transport_intent(false, 0.5);
+    app.state::<StreamCacheState>().install(session.clone());
+    let (ready_tx, mut ready) = tokio::sync::oneshot::channel();
+    session.install_ready(ready_tx);
+    let http = reqwest::Client::new();
+    let response = http.get(&server.url).send().await.unwrap();
+    let handle = spawn_stream_download(
+        app.handle().clone(),
+        session.clone(),
+        response,
+        false,
+        1.0,
+        None,
+    );
+    session.set_task(handle);
+    wait_until(
+        || session.downloaded_bytes.load(Ordering::SeqCst) == 128 * 1024,
+        "descarga inicial estancada bajo el piso",
+    )
+    .await;
+
+    // Seek aparcado: la frontera sale de la duración de la pista anterior.
+    player_seek(
+        app.handle().clone(),
+        app.state::<PlayerState>(),
+        app.state::<StreamCacheState>(),
+        40.0,
+    )
+    .expect("seek aparcado");
+    session.age_stall_watch(STREAM_PENDING_SEEK_TIMEOUT + Duration::from_millis(100));
+    assert!(matches!(frontier_step(&app), FrontierOutcome::StallRefill));
+
+    // El relleno reinicia la descarga desde cero y el prime responde por el
+    // ready que la sesión lleva: la carga que espera no se entera del relevo.
+    spawn_stall_refill(app.handle().clone(), session.clone())
+        .await
+        .expect("relleno termina");
+    let outcome = tokio::time::timeout(Duration::from_secs(5), &mut ready)
+        .await
+        .expect("ready del prime del relleno")
+        .expect("oneshot vivo");
+    let duration = outcome.expect("el prime del relleno responde Ok");
+    let expected = (2.0 * 1024.0 * 1024.0 - 44.0) / 2.0 / WAV_SAMPLE_RATE as f64;
+    assert!((duration.expect("duración") - expected).abs() < 1e-6);
+
+    assert_eq!(engine_loaded_path(&app), Some(cache_path.clone()));
+    let volume = core_mut(&app, |core| core.engine.as_ref().unwrap().volume());
+    assert_eq!(volume, 0.5, "el prime reutiliza la intención de transporte");
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(server.request_count(), 2, "GET inicial + reinicio");
+    assert!(
+        !server.headers_of(1).to_ascii_lowercase().contains("range:"),
+        "el reinicio no usa Range: {}",
+        server.headers_of(1)
+    );
+}
+
+#[tokio::test]
+async fn pending_seek_is_served_when_the_session_completes_before_the_frontier_does() {
+    let bench = frontier_bench(true).await;
+    let app = &bench.app;
+    player_seek(
+        app.handle().clone(),
+        app.state::<PlayerState>(),
+        app.state::<StreamCacheState>(),
+        11.5,
+    )
+    .expect("seek aparcado");
+
+    // La descarga completa la sesión antes del siguiente paso del guard.
+    bench.session.complete.store(true, Ordering::SeqCst);
+    let outcome = frontier_step(app);
+    assert!(matches!(outcome, FrontierOutcome::State(_)));
+    assert_eq!(engine_position(app), Duration::from_secs_f64(11.5));
+    assert_eq!(engine_state(app), EngineState::Playing);
+    assert!(!bench.session.paused_for_buffer.load(Ordering::SeqCst));
+    assert_eq!(bench.session.take_pending_seek(), None);
+}
+
+#[tokio::test]
+async fn pending_seek_is_dropped_quietly_when_the_session_was_interrupted() {
+    let bench = frontier_bench(true).await;
+    let app = &bench.app;
+    player_seek(
+        app.handle().clone(),
+        app.state::<PlayerState>(),
+        app.state::<StreamCacheState>(),
+        11.5,
+    )
+    .expect("seek aparcado");
+
+    // La descarga murió (sesión cancelada por el error, no por cambio de pista).
+    bench.session.canceled.store(true, Ordering::SeqCst);
+    let outcome = frontier_step(app);
+    match outcome {
+        FrontierOutcome::State(payload) => {
+            assert!(payload.error.is_none(), "sin segundo error ruidoso");
+            assert!(!payload.buffering, "el buffering se limpia");
+            assert_eq!(payload.pending_seek_sec, None);
+        }
+        other => panic!("se esperaba estado de limpieza, fue {other:?}"),
+    }
+    assert_eq!(engine_position(app), Duration::ZERO);
+    assert_eq!(engine_state(app), EngineState::Paused);
+}
+// ---------------------------------------------------------------------------
 // 3. Descarga progresiva contra servidor falso local
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn prime_fires_at_the_256k_floor_not_before() {
     let app = mock_player_app(test_db().await, &VirtualClock::new());
-    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
     // Total declarado 2 MiB: total/10 = 204.8 KiB < 256 KiB, manda el piso.
     let body = wav_prefix(WAV_SAMPLE_RATE, 2 * 1024 * 1024, 320 * 1024);
     let mut download = spawn_download(
         &app,
         Some(2 * 1024 * 1024),
         body,
-        vec![
+        vec![vec![
             ServerStep::Send(128 * 1024),
             ServerStep::Wait(gate_rx),
             ServerStep::Send(192 * 1024),
-        ],
+        ]],
     )
     .await;
 
@@ -884,7 +1483,7 @@ async fn prime_fires_at_the_256k_floor_not_before() {
     assert!(!download.session.started.load(Ordering::SeqCst));
 
     // Al superar 256 KiB, el motor se abre y responde por `ready`.
-    drop(gate_tx);
+    drop(_gate_tx);
     let duration = tokio::time::timeout(Duration::from_secs(5), download.ready)
         .await
         .expect("prime en 5 s")
@@ -901,7 +1500,7 @@ async fn prime_fires_at_the_256k_floor_not_before() {
 #[tokio::test]
 async fn prime_caps_at_8mib_for_large_files() {
     let app = mock_player_app(test_db().await, &VirtualClock::new());
-    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
     // Total 100 MiB: total/10 = 10 MiB > techo, manda el techo de 8 MiB.
     let body = wav_prefix(
         WAV_SAMPLE_RATE,
@@ -912,11 +1511,11 @@ async fn prime_caps_at_8mib_for_large_files() {
         &app,
         Some(100 * 1024 * 1024),
         body,
-        vec![
+        vec![vec![
             ServerStep::Send(8 * 1024 * 1024 - 1),
             ServerStep::Wait(gate_rx),
             ServerStep::Send(64 * 1024),
-        ],
+        ]],
     )
     .await;
 
@@ -924,7 +1523,7 @@ async fn prime_caps_at_8mib_for_large_files() {
     let not_yet = tokio::time::timeout(Duration::from_millis(300), &mut download.ready).await;
     assert!(not_yet.is_err(), "el techo de 8 MiB debe respetarse");
 
-    drop(gate_tx);
+    drop(_gate_tx);
     let duration = tokio::time::timeout(Duration::from_secs(5), download.ready)
         .await
         .expect("prime en 5 s")
@@ -937,18 +1536,18 @@ async fn prime_caps_at_8mib_for_large_files() {
 #[tokio::test]
 async fn prime_falls_back_to_4mib_without_content_length() {
     let app = mock_player_app(test_db().await, &VirtualClock::new());
-    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
     let body = wav_prefix(WAV_SAMPLE_RATE, 10 * 1024 * 1024, 4 * 1024 * 1024);
     let download = spawn_download(
         &app,
         None,
         body,
-        vec![
+        vec![vec![
             ServerStep::Chunk(2 * 1024 * 1024),
             ServerStep::Wait(gate_rx),
             ServerStep::Chunk(2 * 1024 * 1024),
             ServerStep::Finish,
-        ],
+        ]],
     )
     .await;
 
@@ -961,7 +1560,7 @@ async fn prime_falls_back_to_4mib_without_content_length() {
 
     // Al llegar a 4 MiB se abre el motor; el cierre ordenado del cuerpo
     // completa la descarga y escribe el marcador.
-    drop(gate_tx);
+    drop(_gate_tx);
     // El marcador se escribe al cerrar el cuerpo: su presencia acota la carrera.
     wait_until(
         || marker_path_of(&download.cache_path).exists(),
@@ -989,7 +1588,7 @@ async fn completed_download_primes_at_eof_and_writes_reusable_marker() {
         &app,
         Some(100 * 1024),
         body,
-        vec![ServerStep::Send(100 * 1024), ServerStep::Finish],
+        vec![vec![ServerStep::Send(100 * 1024), ServerStep::Finish]],
     )
     .await;
 
@@ -1020,17 +1619,17 @@ async fn completed_download_primes_at_eof_and_writes_reusable_marker() {
 #[tokio::test]
 async fn cancel_after_prime_deletes_partial_and_marks_session() {
     let app = mock_player_app(test_db().await, &VirtualClock::new());
-    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
     let body = wav_prefix(WAV_SAMPLE_RATE, 2 * 1024 * 1024, 384 * 1024);
     let mut download = spawn_download(
         &app,
         Some(2 * 1024 * 1024),
         body,
-        vec![
+        vec![vec![
             ServerStep::Send(320 * 1024),
             ServerStep::Wait(gate_rx),
             ServerStep::Send(64 * 1024),
-        ],
+        ]],
     )
     .await;
     tokio::time::timeout(Duration::from_secs(5), &mut download.ready)
@@ -1041,7 +1640,7 @@ async fn cancel_after_prime_deletes_partial_and_marks_session() {
 
     // Reemplazo a mitad de descarga: la sesión se cancela y el parcial muere.
     app.state::<StreamCacheState>().cancel_current();
-    drop(gate_tx);
+    drop(_gate_tx);
     wait_until(
         || !download.cache_path.exists(),
         "parcial borrado tras cancelar",
@@ -1054,22 +1653,22 @@ async fn cancel_after_prime_deletes_partial_and_marks_session() {
 #[tokio::test]
 async fn cancel_before_prime_answers_replacement_error_and_cleans_partial() {
     let app = mock_player_app(test_db().await, &VirtualClock::new());
-    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
     let body = wav_prefix(WAV_SAMPLE_RATE, 2 * 1024 * 1024, 128 * 1024);
     let download = spawn_download(
         &app,
         Some(2 * 1024 * 1024),
         body,
-        vec![
+        vec![vec![
             ServerStep::Send(64 * 1024),
             ServerStep::Wait(gate_rx),
             ServerStep::Send(64 * 1024),
-        ],
+        ]],
     )
     .await;
 
     app.state::<StreamCacheState>().cancel_current();
-    drop(gate_tx);
+    drop(_gate_tx);
     let outcome = tokio::time::timeout(Duration::from_secs(5), download.ready)
         .await
         .expect("respuesta en 5 s")
@@ -1091,17 +1690,17 @@ async fn cancel_before_prime_answers_replacement_error_and_cleans_partial() {
 async fn network_error_midway_reports_error_state_without_retry() {
     let app = mock_player_app(test_db().await, &VirtualClock::new());
     let events = capture_stream_state(&app);
-    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
     let body = wav_prefix(WAV_SAMPLE_RATE, 2 * 1024 * 1024, 320 * 1024);
     let mut download = spawn_download(
         &app,
         Some(2 * 1024 * 1024),
         body,
-        vec![
+        vec![vec![
             ServerStep::Send(320 * 1024),
             ServerStep::Wait(gate_rx),
             ServerStep::Abort,
-        ],
+        ]],
     )
     .await;
 
@@ -1111,7 +1710,7 @@ async fn network_error_midway_reports_error_state_without_retry() {
         .expect("oneshot vivo")
         .expect("carga ok");
 
-    drop(gate_tx);
+    drop(_gate_tx);
     wait_until(
         || {
             events
@@ -1126,7 +1725,7 @@ async fn network_error_midway_reports_error_state_without_retry() {
 
     // Sin re-resolución: una sola petición HTTP, sin reintento, y el parcial
     // se conserva sin marcador (la re-resolución llega en la Fase C).
-    assert_eq!(download.requests.load(Ordering::SeqCst), 1);
+    assert_eq!(download.server.request_count(), 1);
     assert!(!download.session.complete.load(Ordering::SeqCst));
     assert!(download.cache_path.exists());
     assert!(!marker_path_of(&download.cache_path).exists());
@@ -1145,18 +1744,20 @@ async fn unwritable_cache_path_reports_error_before_reading_the_stream() {
         dir.path().join("no/existe/track-1.flac"),
     );
     app.state::<StreamCacheState>().install(session.clone());
-    let (url, _requests) = spawn_fake_stream_server(Some(1024), vec![0u8; 1024], Vec::new()).await;
+    let server = spawn_fake_stream_server(Some(1024), vec![0u8; 1024], Vec::new()).await;
     let http = reqwest::Client::new();
-    let response = http.get(&url).send().await.unwrap();
+    let response = http.get(&server.url).send().await.unwrap();
     let (ready_tx, ready) = tokio::sync::oneshot::channel();
-    spawn_stream_download(
+    session.install_ready(ready_tx);
+    let handle = spawn_stream_download(
         app.handle().clone(),
         session.clone(),
         response,
         false,
         1.0,
-        ready_tx,
+        None,
     );
+    session.set_task(handle);
 
     let outcome = tokio::time::timeout(Duration::from_secs(5), ready)
         .await

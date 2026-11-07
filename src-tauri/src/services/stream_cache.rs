@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
+use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
@@ -51,6 +52,26 @@ pub struct StreamStatePayload {
     pub error: Option<String>,
 }
 
+/// Reloj de estancamiento del seek pendiente (Fase C, Q4): los bytes vistos
+/// por última vez y el instante desde el que no hay progreso de descarga.
+#[derive(Debug, Clone)]
+pub(crate) struct StallWatch {
+    pub(crate) bytes: u64,
+    pub(crate) since: Instant,
+}
+
+/// Estado del reloj de estancamiento en un paso del guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StallCheck {
+    /// La descarga avanza (o no hay seek aparcado): seguir esperando.
+    Progressing,
+    /// Ventana completa sin progreso y relleno aún no intentado: toca la
+    /// re-resolución única.
+    Stalled,
+    /// Ventana completa sin progreso y relleno ya intentado: error tipado.
+    Exhausted,
+}
+
 /// Sesión de streaming activa (o cacheada) para UNA carga del motor.
 pub struct StreamSession {
     /// `seq` del motor al que pertenece esta sesión.
@@ -74,6 +95,21 @@ pub struct StreamSession {
     pub pending_seek_sec: Mutex<Option<f64>>,
     /// Tras completar un seek pendiente, reanudar (el usuario buscaba mientras sonaba).
     resume_after_seek: AtomicBool,
+    /// Con qué transporte debe abrirse el motor al primar (el relleno que
+    /// toma la descarga tras un estancamiento reutiliza la intención original).
+    autoplay_on_prime: AtomicBool,
+    volume_on_prime: Mutex<f64>,
+    /// Canal `ready` del `open` en curso: sobrevive a la sustitución de la
+    /// tarea de descarga (re-resolución tras estancamiento) para que el prime
+    /// tardío siga respondiendo a la carga que espera.
+    ready: Mutex<Option<tokio::sync::oneshot::Sender<Result<Option<f64>, String>>>>,
+    /// Tarea de descarga en curso (el relleno tras estancamiento la aborta
+    /// antes de tomar el relevo).
+    download_task: Mutex<Option<JoinHandle<()>>>,
+    /// Vigilancia del estancamiento del seek pendiente (Q4).
+    stall_watch: Mutex<Option<StallWatch>>,
+    /// La re-resolución única del relleno ya se intentó para esta sesión.
+    refill_attempted: AtomicBool,
 }
 
 impl StreamSession {
@@ -97,6 +133,12 @@ impl StreamSession {
             paused_for_buffer: AtomicBool::new(false),
             pending_seek_sec: Mutex::new(None),
             resume_after_seek: AtomicBool::new(false),
+            autoplay_on_prime: AtomicBool::new(false),
+            volume_on_prime: Mutex::new(1.0),
+            ready: Mutex::new(None),
+            download_task: Mutex::new(None),
+            stall_watch: Mutex::new(None),
+            refill_attempted: AtomicBool::new(false),
         })
     }
 
@@ -138,6 +180,111 @@ impl StreamSession {
 
     pub fn take_resume_after_seek(&self) -> bool {
         self.resume_after_seek.swap(false, Ordering::SeqCst)
+    }
+
+    /// Descarta el seek pendiente sin servirlo (sesión interrumpida o
+    /// estancada de verdad: el guard deja de reaparcarlo).
+    pub fn clear_pending_seek(&self) {
+        if let Ok(mut p) = self.pending_seek_sec.lock() {
+            *p = None;
+        }
+    }
+
+    /// Registra la intención de transporte con la que el prime debe abrir el
+    /// motor (la usa el relleno que toma la descarga tras un estancamiento).
+    pub fn set_transport_intent(&self, autoplay: bool, volume: f64) {
+        self.autoplay_on_prime.store(autoplay, Ordering::SeqCst);
+        if let Ok(mut v) = self.volume_on_prime.lock() {
+            *v = volume;
+        }
+    }
+
+    /// `(autoplay, volume)` con los que esta carga quería abrir el motor.
+    pub fn transport_intent(&self) -> (bool, f64) {
+        let volume = self.volume_on_prime.lock().map(|v| *v).unwrap_or(1.0);
+        (self.autoplay_on_prime.load(Ordering::SeqCst), volume)
+    }
+
+    /// Instala el canal `ready` que responde al `open` en curso.
+    pub fn install_ready(&self, tx: tokio::sync::oneshot::Sender<Result<Option<f64>, String>>) {
+        if let Ok(mut ready) = self.ready.lock() {
+            *ready = Some(tx);
+        }
+    }
+
+    /// Toma el canal `ready` (una sola vez): el prime responde con él.
+    pub fn take_ready(&self) -> Option<tokio::sync::oneshot::Sender<Result<Option<f64>, String>>> {
+        self.ready.lock().ok().and_then(|mut ready| ready.take())
+    }
+
+    /// Registra la tarea de descarga en curso.
+    pub fn set_task(&self, handle: JoinHandle<()>) {
+        if let Ok(mut task) = self.download_task.lock() {
+            *task = Some(handle);
+        }
+    }
+
+    /// Aborta la tarea de descarga en curso, si la hay.
+    pub fn abort_task(&self) {
+        if let Ok(mut task) = self.download_task.lock() {
+            if let Some(handle) = task.take() {
+                handle.abort();
+            }
+        }
+    }
+
+    /// Arranca la vigilancia del estancamiento para un seek recién aparcado.
+    pub fn begin_stall_watch(&self) {
+        if let Ok(mut watch) = self.stall_watch.lock() {
+            *watch = Some(StallWatch {
+                bytes: self.downloaded_bytes.load(Ordering::SeqCst),
+                since: Instant::now(),
+            });
+        }
+    }
+
+    /// Sólo pruebas: envejece el reloj de estancamiento sin tocar los bytes,
+    /// como si la ventana completa hubiera pasado sin progreso.
+    #[cfg(test)]
+    pub(crate) fn age_stall_watch(&self, by: Duration) {
+        if let Ok(mut watch) = self.stall_watch.lock() {
+            if let Some(w) = watch.as_mut() {
+                w.since -= by;
+            }
+        }
+    }
+
+    /// Sólo pruebas: si la re-resolución única ya se consumió.
+    #[cfg(test)]
+    pub(crate) fn refill_attempted_for_test(&self) -> bool {
+        self.refill_attempted.load(Ordering::SeqCst)
+    }
+
+    /// Paso del reloj de estancamiento (Q4): compara los bytes descargados con
+    /// la última observación; una ventana completa sin progreso declara la
+    /// descarga estancada y consume la re-resolución única.
+    pub(crate) fn stall_check(&self, window: Duration) -> StallCheck {
+        let downloaded = self.downloaded_bytes.load(Ordering::SeqCst);
+        let Ok(mut guard) = self.stall_watch.lock() else {
+            return StallCheck::Progressing;
+        };
+        let Some(watch) = guard.as_mut() else {
+            return StallCheck::Progressing;
+        };
+        if downloaded != watch.bytes {
+            watch.bytes = downloaded;
+            watch.since = Instant::now();
+            return StallCheck::Progressing;
+        }
+        if watch.since.elapsed() < window {
+            return StallCheck::Progressing;
+        }
+        watch.since = Instant::now();
+        if !self.refill_attempted.swap(true, Ordering::SeqCst) {
+            StallCheck::Stalled
+        } else {
+            StallCheck::Exhausted
+        }
     }
 }
 

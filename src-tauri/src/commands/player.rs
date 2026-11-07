@@ -133,6 +133,11 @@ pub fn spawn_player_ticker<R: tauri::Runtime>(app: &AppHandle<R>) {
             for payload in out.stream_states {
                 let _ = app.emit("player:stream-state", payload);
             }
+            // Seek pendiente estancado (Q4): la re-resolución única y el
+            // relleno de la misma caché corren fuera del paso del ticker.
+            if let Some(session) = out.stall_refill {
+                crate::services::playback_session::spawn_stall_refill(app.clone(), session);
+            }
             if let Some((status, position)) = out.mpris {
                 if let Some(mpris) = app.try_state::<MprisService>() {
                     mpris.update_playback(status, position);
