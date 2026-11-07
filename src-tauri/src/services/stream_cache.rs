@@ -4,15 +4,14 @@
 //! locales. Para streaming, la descarga progresiva escribe un fichero en la
 //! caché de la app y el motor lo reproduce mientras crece:
 //!
-//! 1. `commands::player::player_load_track` resuelve la URL
-//!    (`services::streaming`), hace el *prime* (buffer inicial) y carga el
-//!    motor.
+//! 1. `services::playback_session` resuelve la URL (`services::streaming`),
+//!    hace el *prime* (buffer inicial) y carga el motor.
 //! 2. El resto de la descarga continúa en segundo plano escribiendo el mismo
 //!    fichero.
-//! 3. El ticker de `commands::player` vigila la frontera descargada: si la
-//!    reproducción se acerca al final de lo descargado, pausa y espera
-//!    ("buffering"); los seeks fuera del rango descargado quedan pendientes
-//!    hasta que la descarga los alcanza.
+//! 3. El ticker de `commands::player` (vía `PlayerState::tick`) vigila la
+//!    frontera descargada: si la reproducción se acerca al final de lo
+//!    descargado, pausa y espera ("buffering"); los seeks fuera del rango
+//!    descargado quedan pendientes hasta que la descarga los alcanza.
 //!
 //! La URL y la sesión viven sólo en backend; al webview le llega una etiqueta
 //! honesta de calidad (`StreamSourceInfo`) y eventos de estado.
@@ -177,14 +176,11 @@ impl StreamCacheState {
     }
 }
 
-/// Emite `player:stream-state` para la sesión.
-pub fn emit_state<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session: &StreamSession,
-    error: Option<String>,
-) {
+/// Construye el payload de `player:stream-state` para la sesión (lo usan
+/// `emit_state` y la sesión de reproducción, que lo devuelve al ticker).
+pub fn state_payload(session: &StreamSession, error: Option<String>) -> StreamStatePayload {
     let total = session.total_bytes.load(Ordering::SeqCst);
-    let payload = StreamStatePayload {
+    StreamStatePayload {
         seq: session.seq,
         track_id: session.track_id,
         buffering: session.paused_for_buffer.load(Ordering::SeqCst),
@@ -197,7 +193,16 @@ pub fn emit_state<R: tauri::Runtime>(
         match_method: session.info.match_method.clone(),
         quality_tier: session.info.quality_tier.clone(),
         error,
-    };
+    }
+}
+
+/// Emite `player:stream-state` para la sesión.
+pub fn emit_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session: &StreamSession,
+    error: Option<String>,
+) {
+    let payload = state_payload(session, error);
     let _ = app.emit("player:stream-state", payload);
 }
 

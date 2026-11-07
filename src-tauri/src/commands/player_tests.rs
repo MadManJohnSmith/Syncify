@@ -18,15 +18,25 @@
 //! PCM sintéticos que symphonia decodifica de verdad.
 
 use std::path::Path;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use syncify_player::sim::{SimulatedBackend, VirtualClock};
+use syncify_player::{EngineState, PlayerEngine};
 use tauri::test::MockRuntime;
 use tauri::{Listener, Manager};
-use tokio::io::AsyncReadExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use super::*;
+use super::{player_load_track, player_seek};
+use crate::services::playback_session::{
+    guard_stream_frontier, load_path_into_core, load_stream_into_engine, lock_core,
+    spawn_stream_download, PlayerCore, PlayerLoadResult, PlayerState, FRONTIER_PAUSE_MARGIN_SECS,
+    FRONTIER_RESUME_MARGIN_SECS, STREAM_FALLBACK_PRIME_BYTES, STREAM_MAX_PRIME_BYTES,
+    STREAM_MIN_PRIME_BYTES, STREAM_PRIME_TIMEOUT,
+};
+use crate::services::stream_cache::{self, StreamCacheState, StreamSession};
+use crate::services::streaming::StreamSourceInfo;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -626,7 +636,7 @@ impl FrontierBench {
         let state = self.app.state::<PlayerState>();
         let mut core = lock_core(&state).unwrap();
         let engine = core.engine.as_mut().unwrap();
-        guard_stream_frontier(self.app.handle(), engine, &session, &mut dirty);
+        guard_stream_frontier(engine, &session, &mut dirty);
     }
 
     fn set_frontier(&self, downloaded: u64) {
@@ -836,7 +846,7 @@ async fn guard_is_inert_for_complete_or_canceled_sessions() {
             let state = app.state::<PlayerState>();
             let mut core = lock_core(&state).unwrap();
             let engine = core.engine.as_mut().unwrap();
-            guard_stream_frontier(app.handle(), engine, &session, &mut dirty);
+            guard_stream_frontier(engine, &session, &mut dirty);
         }
         assert_eq!(engine_state(&app), EngineState::Playing);
         assert!(!session.paused_for_buffer.load(Ordering::SeqCst));
