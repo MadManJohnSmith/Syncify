@@ -478,3 +478,25 @@ _Evitar_: llamar 'backup' a la copia pre-mutación interna.
 Snapshot interno de la BD que una operación peligrosa deja antes de escribir. No es
 un backup de usuario: no sale del equipo, no se programa y no se lista en la UI.
 _Evitar_: 'backup automático'.
+
+**Navegador de pistas**:
+La maquinaria común de las listas de pistas de la UI: una ventana virtual compartida
+y, para las listas basadas en biblioteca, un solo composable de mapeo, paginación y
+selección. Cada vista declara su fuente de filas; el comportamiento de lista no se
+copia entre vistas.
+_Evitar_: llamar 'navegador' al explorador de ficheros del sistema; decir 'vista'
+al composable.
+
+**Ventana virtual**:
+Técnica de render que solo pinta las filas visibles de una lista larga dentro de un
+spacer con la altura total. Una sola implementación sirve a todas las vistas; alturas
+y holgura son configuración por vista, no copias.
+_Evitar_: confundirla con la paginación (que es server-side, de datos; la ventana es
+de render).
+
+**Selección por ids**:
+La única convención de selección de pistas de la UI: los ids seleccionados viven
+fuera de las filas y las acciones masivas los consumen. Las filas no llevan estado
+de selección propio.
+_Evitar_: 'seleccionado' como flag dentro de la fila; contadores paralelos al array
+de ids.
