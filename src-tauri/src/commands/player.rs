@@ -208,8 +208,8 @@ pub fn player_stop(
 /// el motor se pausa ("buffering") y el ticker lo completa cuando la descarga
 /// alcanza la posición pedida.
 #[tauri::command]
-pub fn player_seek(
-    app: AppHandle,
+pub fn player_seek<R: tauri::Runtime>(
+    app: AppHandle<R>,
     state: State<'_, PlayerState>,
     cache: State<'_, StreamCacheState>,
     sec: f64,
@@ -300,8 +300,8 @@ pub fn player_set_rate(state: State<'_, PlayerState>, rate: f64) -> Result<(), S
 /// La URL firmada vive sólo en backend; el resultado expone la calidad
 /// realmente obtenida (`stream.qualityLabel`) para la etiqueta honesta.
 #[tauri::command]
-pub async fn player_load_track(
-    app: AppHandle,
+pub async fn player_load_track<R: tauri::Runtime>(
+    app: AppHandle<R>,
     state: State<'_, PlayerState>,
     cache: State<'_, StreamCacheState>,
     app_state: State<'_, crate::AppState>,
@@ -447,8 +447,8 @@ fn stream_http_client() -> reqwest::Client {
 
 /// Carga en el motor la caché en curso, validando que siga siendo la
 /// generación vigente.
-fn load_stream_into_engine(
-    app: &AppHandle,
+fn load_stream_into_engine<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     session: &StreamSession,
     autoplay: bool,
     volume: f64,
@@ -466,8 +466,8 @@ fn load_stream_into_engine(
 /// Descarga progresiva: escribe la caché mientras el motor la reproduce.
 /// El primer tramo (`prime_target`) abre el motor y responde por `ready`; el
 /// resto continúa en segundo plano.
-fn spawn_stream_download(
-    app: AppHandle,
+fn spawn_stream_download<R: tauri::Runtime + 'static>(
+    app: AppHandle<R>,
     session: Arc<StreamSession>,
     mut response: reqwest::Response,
     autoplay: bool,
@@ -588,8 +588,8 @@ fn spawn_stream_download(
 /// Descarga progresiva de un manifiesto DASH de Tidal: convierte cada segmento
 /// (FLAC-en-ISOBMFF) en frames de un FLAC nativo que crece, para que el motor
 /// pueda reproducirlo y buscar como con cualquier FLAC local.
-fn spawn_dash_stream_download(
-    app: AppHandle,
+fn spawn_dash_stream_download<R: tauri::Runtime + 'static>(
+    app: AppHandle<R>,
     session: Arc<StreamSession>,
     http: reqwest::Client,
     dash: DashManifest,
@@ -650,7 +650,7 @@ pub fn player_mpris_update(
 }
 
 /// Arranca el ticker de eventos del player (se llama una vez en `setup`).
-pub fn spawn_player_ticker(app: &AppHandle) {
+pub fn spawn_player_ticker<R: tauri::Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(TICK_INTERVAL);
@@ -671,7 +671,9 @@ pub fn spawn_player_ticker(app: &AppHandle) {
 /// Un paso del ticker: emite `player:tick` mientras suena (o si hay cambios
 /// pendientes) y `player:ended` la primera vez que la cola queda vacía con la
 /// pista aún cargada (final natural).
-fn collect_tick(app: &AppHandle) -> (Option<PlayerTickPayload>, Option<PlayerEndedPayload>) {
+fn collect_tick<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> (Option<PlayerTickPayload>, Option<PlayerEndedPayload>) {
     let Some(state) = app.try_state::<PlayerState>() else {
         return (None, None);
     };
@@ -738,8 +740,8 @@ fn collect_tick(app: &AppHandle) -> (Option<PlayerTickPayload>, Option<PlayerEnd
 /// - Reproducción en directo: si la posición entra en los últimos segundos
 ///   descargados, se pausa (`buffering`); se reanuda cuando lo descargado
 ///   supera la posición + 10 s.
-fn guard_stream_frontier(
-    app: &AppHandle,
+fn guard_stream_frontier<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     engine: &mut PlayerEngine,
     session: &StreamSession,
     dirty: &mut bool,
@@ -790,3 +792,7 @@ fn guard_stream_frontier(
         stream_cache::emit_state(app, session, None);
     }
 }
+
+#[cfg(test)]
+#[path = "player_tests.rs"]
+mod tests;

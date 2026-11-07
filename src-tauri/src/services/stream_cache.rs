@@ -178,7 +178,11 @@ impl StreamCacheState {
 }
 
 /// Emite `player:stream-state` para la sesión.
-pub fn emit_state(app: &AppHandle, session: &StreamSession, error: Option<String>) {
+pub fn emit_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session: &StreamSession,
+    error: Option<String>,
+) {
     let total = session.total_bytes.load(Ordering::SeqCst);
     let payload = StreamStatePayload {
         seq: session.seq,
@@ -202,7 +206,7 @@ pub fn emit_state(app: &AppHandle, session: &StreamSession, error: Option<String
 // ---------------------------------------------------------------------------
 
 /// Directorio de caché de streaming (`app_cache_dir/stream`).
-pub fn cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub fn cache_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_cache_dir()
@@ -215,8 +219,8 @@ pub fn cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// Nombre estable por pista+calidad: permite reutilizar una descarga completa
 /// aunque la URL firmada haya caducado.
-pub fn cache_file_path(
-    app: &AppHandle,
+pub fn cache_file_path<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     track_id: i64,
     info: &StreamSourceInfo,
 ) -> Result<PathBuf, String> {
@@ -431,7 +435,7 @@ async fn get_bytes_with_retries(http: &reqwest::Client, url: &str) -> Result<Vec
 
 /// Limpia parciales abandonados y recorta la caché al presupuesto (borra los
 /// más antiguos). Nunca toca el fichero de la sesión recién creada.
-pub fn cleanup_cache(app: &AppHandle, keep: Option<&Path>) {
+pub fn cleanup_cache<R: tauri::Runtime>(app: &AppHandle<R>, keep: Option<&Path>) {
     let Ok(dir) = cache_dir(app) else {
         return;
     };
