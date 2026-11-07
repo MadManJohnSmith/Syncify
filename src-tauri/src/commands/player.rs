@@ -21,40 +21,16 @@
 //! - `player:ended {seq}` — una única vez por carga cuando la pista llegó a su
 //!   final natural (no con `player_stop`).
 
-use std::path::Path;
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::services::mpris::{MprisMetadataInput, MprisService};
-use crate::services::playback_session::{
-    load_path_into_core, lock_core, PlayerLoadResult, PlayerState, TickOutput,
-};
+use crate::services::playback_session::{PlayerLoadResult, PlayerState, TickOutput};
 use crate::services::stream_cache::StreamCacheState;
 
 /// Intervalo del ticker de posición.
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
-
-/// Carga un archivo local y, opcionalmente, lo reproduce. Con
-/// `autoplay = false` queda cargado y pausado en la posición 0 (restauración).
-#[tauri::command]
-pub fn player_load(
-    state: State<'_, PlayerState>,
-    cache: State<'_, StreamCacheState>,
-    path: String,
-    autoplay: bool,
-    volume: f64,
-) -> Result<PlayerLoadResult, String> {
-    cache.cancel_current();
-    let mut core = lock_core(&state)?;
-    let duration = load_path_into_core(&mut core, Path::new(&path), autoplay, volume)?;
-    core.seq += 1;
-    Ok(PlayerLoadResult {
-        seq: core.seq,
-        duration_sec: duration.map(|d| d.as_secs_f64()),
-        stream: None,
-    })
-}
 
 /// Carga y reproduce una pista de la biblioteca: usa el archivo local
 /// descargado si existe y, si no, resuelve una fuente de streaming

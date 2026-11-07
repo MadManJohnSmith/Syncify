@@ -60,7 +60,8 @@ const STREAM_EVENT_INTERVAL: Duration = Duration::from_millis(750);
 #[derive(Debug, Clone, Serialize)]
 pub struct PlayerTickPayload {
     /// Generación de la carga actual (1, 2, ...). La UI compara con el `seq`
-    /// devuelto por `player_load` y descarta eventos de una pista ya sustituida.
+    /// devuelto por `player_load_track` y descarta eventos de una pista ya
+    /// sustituida.
     pub seq: u64,
     /// `"stopped" | "playing" | "paused"`.
     pub state: &'static str,
@@ -74,7 +75,7 @@ pub struct PlayerEndedPayload {
     pub seq: u64,
 }
 
-/// Resultado de `player_load`.
+/// Resultado de una carga (`player_load_track`).
 #[derive(Debug, Clone, Serialize)]
 pub struct PlayerLoadResult {
     pub seq: u64,
