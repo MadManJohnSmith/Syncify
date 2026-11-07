@@ -24,6 +24,7 @@ ajustes/backup); el plan post-beta quedó reconciliado. Queda implementación.
 - Migración: ADR-0015 y ADR-0016 propuestos; spec #164; tickets #165-#174.
 - Letras: ADR-0017 y ADR-0018 propuestos; spec #176; tickets #178-#194.
 - Ajustes/backup: ADR-0019 y ADR-0020 propuestos; spec #195; tickets #196-#202.
+- Implementación: D00 cerrado (#112, migraciones 0102/0103 + tests de migración con fixture legacy); D01 cerrado (#113, gateway de proveedores con adaptadores Qobuz/Tidal/Amazon y proveedor falso).
 
 ## Mapa de issues y dependencias
 - Sync: T01=#65 ... T18=#82 (T08 cuarentena #72, T09 identidad #73, T15 reauth #79, T16 metadatos #80).
@@ -88,7 +89,7 @@ ajustes/backup); el plan post-beta quedó reconciliado. Queda implementación.
 - ask-matt si hay duda de skill; domain-modeling para glosario/ADR.
 
 ## Siguiente paso concreto
-1. Implementar D00 (#112) y D01 (#113) en paralelo; después D02 (#114) y el resto del grafo. P00 (#131), PL00 (#153) y M00 (#165) pueden arrancar en paralelo.
+1. Implementar D02 (#114), ya desbloqueado (D00 y D01 cerraron); después el resto del grafo. P00 (#131), PL00 (#153) y M00 (#165) pueden arrancar en paralelo.
 2. Cerrar los spikes de D11 (#123) y D12 (#124) antes de escribir los adaptadores; sus incógnitas están en el ticket.
 3. REPRODUCTOR: P00 (#131), después P01 (#132) y el grafo de arriba.
 4. PLAYLISTS: PL00 (#153), después PL01 (#154) y el grafo de arriba.
