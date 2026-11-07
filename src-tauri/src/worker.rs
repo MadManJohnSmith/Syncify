@@ -962,7 +962,7 @@ impl DownloadWorker {
             .map(|m| m.len() as i64)
             .ok();
         let effective_srv = res.effective_service.as_deref().unwrap_or(&res.service);
-        if let Err(e) = sqlx::query(
+        let ledger_written = match sqlx::query(
             r#"
             INSERT INTO downloads (
                 track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at,
@@ -1022,12 +1022,16 @@ impl DownloadWorker {
         .execute(&self.db)
         .await
         {
-            tracing::error!(
-                "Failed to record download in downloads ledger for queue_id {}: {}",
-                queue_id,
-                e
-            );
-        }
+            Ok(_) => true,
+            Err(e) => {
+                tracing::error!(
+                    "Failed to record download in downloads ledger for queue_id {}: {}",
+                    queue_id,
+                    e
+                );
+                false
+            }
+        };
 
         // Synchronize tracks.audio_quality based on actual physical audio on disk
         let track_id_opt: Option<i64> =
@@ -1080,6 +1084,16 @@ impl DownloadWorker {
                     effective_srv,
                     e
                 );
+            }
+
+            // Fase C (ADR-0024): la descarga registrada en `downloads`
+            // invalida la caché de streaming de la pista. La siguiente
+            // reproducción usa el fichero local o re-streamea; una entrada de
+            // caché de otra calidad no debe sobrevivir a la descarga.
+            if ledger_written {
+                if let Some(handle) = &self.app_handle {
+                    crate::services::stream_cache::invalidate_track(handle, tid);
+                }
             }
         }
 

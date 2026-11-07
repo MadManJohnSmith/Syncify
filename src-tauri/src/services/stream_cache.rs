@@ -534,6 +534,48 @@ pub(crate) fn discard_partial(path: &Path) {
     let _ = std::fs::remove_file(partial_marker_path(path));
 }
 
+/// Descarga completada (Fase C): elimina toda entrada de caché de streaming de
+/// la pista —fichero, `.done` y `.partial`— para que la siguiente reproducción
+/// no sirva contenido viejo: o manda el fichero local recién descargado, o se
+/// vuelve a streamear. Fallo blando: la invalidación nunca debe fallar la
+/// descarga; una entrada que no se pudiera borrar queda avisada en el log y la
+/// recogerá después la limpieza por LRU. El `-` del prefijo evita colisiones
+/// (`track-1-` no casa con `track-11-`).
+pub fn invalidate_track<R: tauri::Runtime>(app: &AppHandle<R>, track_id: i64) {
+    let dir = match cache_dir(app) {
+        Ok(dir) => dir,
+        Err(e) => {
+            tracing::warn!(
+                track_id,
+                error = %e,
+                "streaming: no se pudo localizar la caché para invalidarla tras la descarga"
+            );
+            return;
+        }
+    };
+    let prefix = format!("track-{track_id}-");
+    let mut removed = 0u32;
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        tracing::info!(
+            track_id,
+            entries = removed,
+            "streaming: caché de la pista invalidada tras completar la descarga"
+        );
+    }
+}
+
 /// Parcial reanudable en `path` para esta fuente (Fase C): valida la cabecera
 /// ANTES de darlo por bueno y hacer prime.
 ///

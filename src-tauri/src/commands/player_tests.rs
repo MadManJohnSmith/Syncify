@@ -2080,6 +2080,52 @@ async fn dash_partial_without_a_valid_marker_is_discarded_and_redownloaded() {
 }
 
 // ---------------------------------------------------------------------------
+// 2e. Invalidación de caché al descargar (Fase C): la descarga registrada
+//     en `downloads` borra las entradas de streaming de la pista
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn invalidate_track_removes_only_that_tracks_cache_entries() {
+    let clock = VirtualClock::new();
+    let app = mock_player_app(test_db().await, &clock);
+    let cache_root = tempfile::tempdir().unwrap();
+    set_cache_override(&app, cache_root.path());
+    // Dos calidades cacheadas de la pista 1 con sus marcadores, la vecina
+    // pista 11 (colisión de prefijo) y una pista ajena.
+    let own_entries = [
+        "track-1-qobuz-24bit-192000hz.flac",
+        "track-1-qobuz-24bit-192000hz.flac.done",
+        "track-1-qobuz-24bit-192000hz.flac.partial",
+        "track-1-tidal-16bit-44100hz.flac",
+        "track-1-tidal-16bit-44100hz.flac.done",
+    ];
+    let untouched_entries = [
+        // El `-` del prefijo evita que `track-1` case con `track-11`.
+        "track-11-qobuz-16bit-44100hz.flac",
+        "track-11-qobuz-16bit-44100hz.flac.done",
+        "track-2-deezer-0bit-320000hz.mp3",
+    ];
+    for name in own_entries.iter().chain(untouched_entries.iter()) {
+        std::fs::write(cache_root.path().join(name), b"audio").unwrap();
+    }
+
+    stream_cache::invalidate_track(app.handle(), 1);
+
+    for name in own_entries {
+        assert!(
+            !cache_root.path().join(name).exists(),
+            "{name} debe desaparecer con la descarga de la pista 1"
+        );
+    }
+    for name in untouched_entries {
+        assert!(
+            cache_root.path().join(name).exists(),
+            "{name} no es de la pista 1: no se toca"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 3. Descarga progresiva contra servidor falso local
 // ---------------------------------------------------------------------------
 
