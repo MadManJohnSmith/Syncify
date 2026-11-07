@@ -32,9 +32,9 @@ use super::{player_load_track, player_resume, player_seek};
 use crate::services::playback_session::{
     guard_stream_frontier, load_path_into_core, load_stream_into_engine, lock_core,
     spawn_stall_refill, spawn_stream_download, FrontierOutcome, PlayerCore, PlayerLoadResult,
-    PlayerState, StreamFillError, FRONTIER_PAUSE_MARGIN_SECS, FRONTIER_RESUME_MARGIN_SECS,
-    STREAM_FALLBACK_PRIME_BYTES, STREAM_MAX_PRIME_BYTES, STREAM_MIN_PRIME_BYTES,
-    STREAM_PENDING_SEEK_TIMEOUT, STREAM_PRIME_TIMEOUT,
+    PlayerState, StreamDownloadMode, StreamFillError, FRONTIER_PAUSE_MARGIN_SECS,
+    FRONTIER_RESUME_MARGIN_SECS, STREAM_FALLBACK_PRIME_BYTES, STREAM_MAX_PRIME_BYTES,
+    STREAM_MIN_PRIME_BYTES, STREAM_PENDING_SEEK_TIMEOUT, STREAM_PRIME_TIMEOUT,
 };
 use crate::services::stream_cache::{self, StreamCacheState, StreamSession};
 use crate::services::streaming::{DashManifest, ResolvedStream, StreamSourceInfo};
@@ -592,7 +592,7 @@ async fn spawn_download_on(
         response,
         false,
         1.0,
-        None,
+        StreamDownloadMode::Fresh,
     );
     session.set_task(handle);
     RunningDownload {
@@ -1395,7 +1395,7 @@ async fn stall_refill_before_prime_restarts_download_and_answers_ready() {
         response,
         false,
         1.0,
-        None,
+        StreamDownloadMode::Fresh,
     );
     session.set_task(handle);
     wait_until(
@@ -1792,6 +1792,233 @@ async fn dash_second_catalog_failure_ends_in_error_as_today() {
 }
 
 // ---------------------------------------------------------------------------
+// 2d. Parciales reanudables (Fase C): validación de cabecera y reanudación
+// ---------------------------------------------------------------------------
+
+fn partial_marker_path_of(cache_path: &Path) -> std::path::PathBuf {
+    cache_path.with_file_name(format!(
+        "{}.partial",
+        cache_path.file_name().unwrap().to_string_lossy()
+    ))
+}
+
+/// FLAC nativo completo reconstruido del fixture fMP4 (cabecera + frames), y
+/// el mismo cuerpo truncado a la frontera de los primeros `n` segmentos.
+/// Devuelve (completo, prefijo, milisegundos de audio del prefijo).
+fn flac_body_and_prefix(n: usize) -> (Vec<u8>, Vec<u8>, u64) {
+    let (init, segments) = fmp4_fixture();
+    let info = syncify_fmp4_flac::read_init(&init).expect("init FLAC");
+    let demux_into = |out: &mut Vec<u8>, segment: &[u8]| -> u64 {
+        syncify_fmp4_flac::demux_segment(&init, segment, &mut |frame| {
+            out.extend_from_slice(frame);
+            Ok(())
+        })
+        .expect("demux")
+    };
+    let mut body = Vec::new();
+    syncify_fmp4_flac::write_flac_header(&mut body, &info).expect("cabecera");
+    for segment in &segments {
+        demux_into(&mut body, segment);
+    }
+    let mut prefix = Vec::new();
+    syncify_fmp4_flac::write_flac_header(&mut prefix, &info).expect("cabecera");
+    let mut samples = 0u64;
+    for segment in segments.iter().take(n) {
+        samples += demux_into(&mut prefix, segment);
+    }
+    let audio_millis = samples * 1000 / info.sample_rate as u64;
+    (body, prefix, audio_millis)
+}
+
+#[tokio::test]
+async fn progressive_partial_resumes_by_range_from_the_byte_received() {
+    let clock = VirtualClock::new();
+    let (body, prefix, _audio_millis) = flac_body_and_prefix(2);
+    let total = body.len() as u64;
+    let server = spawn_fake_stream_server(Some(total), body.clone(), vec![vec![]]).await;
+    let (resolver, resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+    let cache_root = tempfile::tempdir().unwrap();
+    set_cache_override(&app, cache_root.path());
+    let cache_path = cache_root.path().join("track-1-qobuz-24bit-192000hz.flac");
+    std::fs::write(&cache_path, &prefix).expect("parcial previo al crash");
+
+    let result = load_track(&app, 1, false, 1.0)
+        .await
+        .expect("carga reanudando el parcial");
+    assert!(result.stream.is_some());
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(server.request_count(), 1, "una sola petición, con Range");
+    assert!(
+        server
+            .headers_of(0)
+            .to_ascii_lowercase()
+            .contains(&format!("range: bytes={}-", prefix.len())),
+        "el GET parte del byte recibido: {}",
+        server.headers_of(0)
+    );
+
+    wait_until(
+        || marker_path_of(&cache_path).exists(),
+        "caché completada tras la reanudación",
+    )
+    .await;
+    assert_eq!(
+        std::fs::read(&cache_path).expect("caché final"),
+        body,
+        "sin duplicación de bytes: la reanudación continúa exactamente en el parcial"
+    );
+    assert!(stream_cache::read_complete_cache(&cache_path).is_some());
+}
+
+#[tokio::test]
+async fn progressive_partial_with_invalid_header_is_discarded_and_redownloaded() {
+    let clock = VirtualClock::new();
+    let total = 1024 * 1024;
+    let body = wav_prefix(WAV_SAMPLE_RATE, total, total);
+    let server = spawn_fake_stream_server(
+        Some(total),
+        body.clone(),
+        vec![vec![ServerStep::Send(total as usize), ServerStep::Finish]],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+    let cache_root = tempfile::tempdir().unwrap();
+    set_cache_override(&app, cache_root.path());
+    let cache_path = cache_root.path().join("track-1-qobuz-24bit-192000hz.flac");
+    // Un parcial que no es audio (una página de error guardada, por ejemplo).
+    std::fs::write(&cache_path, b"<html>503 Service Unavailable</html>").expect("parcial basura");
+
+    load_track(&app, 1, false, 1.0)
+        .await
+        .expect("carga descartando el parcial inválido");
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(server.request_count(), 1);
+    assert!(
+        !server.headers_of(0).to_ascii_lowercase().contains("range:"),
+        "el parcial inválido no se reanuda: {}",
+        server.headers_of(0)
+    );
+    wait_until(
+        || marker_path_of(&cache_path).exists(),
+        "caché completada desde cero",
+    )
+    .await;
+    assert_eq!(
+        std::fs::read(&cache_path).expect("caché final"),
+        body,
+        "la descarga desde cero no hereda la cola del parcial"
+    );
+}
+
+#[tokio::test]
+async fn dash_partial_resumes_from_the_next_complete_segment() {
+    let clock = VirtualClock::new();
+    let (init, segments) = fmp4_fixture();
+    let (body, prefix, audio_millis) = flac_body_and_prefix(2);
+    let server = spawn_fake_stream_server(
+        None,
+        Vec::new(),
+        vec![
+            vec![ServerStep::Respond(init.clone())],
+            // La reanudación continúa en el segmento 3: init + seg3 + seg4.
+            vec![ServerStep::Respond(segments[2].clone())],
+            vec![ServerStep::Respond(segments[3].clone())],
+        ],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_dash_resolver(server.url.clone(), 4);
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+    let cache_root = tempfile::tempdir().unwrap();
+    set_cache_override(&app, cache_root.path());
+    let cache_path = cache_root.path().join("track-1-tidal-16bit-44100hz.flac");
+    std::fs::write(&cache_path, &prefix).expect("parcial DASH previo al crash");
+    let marker = serde_json::json!({
+        "bytes": prefix.len(),
+        "segments_done": 2,
+        "audio_millis": audio_millis,
+    });
+    std::fs::write(partial_marker_path_of(&cache_path), marker.to_string())
+        .expect("marcador de parcial");
+
+    let result = load_track(&app, 1, false, 1.0)
+        .await
+        .expect("carga DASH reanudando el parcial");
+    assert!(result.stream.is_some());
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        server.request_count(),
+        3,
+        "init + seg3 + seg4: nada re-descargado"
+    );
+
+    wait_until(
+        || marker_path_of(&cache_path).exists(),
+        "DASH completado tras la reanudación",
+    )
+    .await;
+    let session = app.state::<StreamCacheState>().current().expect("sesión");
+    assert!(session.complete.load(Ordering::SeqCst));
+    assert_eq!(session.segments_done(), 4);
+    assert_eq!(
+        std::fs::read(&cache_path).expect("caché final"),
+        body,
+        "el FLAC reanudado por segmentos es idéntico al completo"
+    );
+    assert!(
+        !partial_marker_path_of(&cache_path).exists(),
+        "el marcador de parcial desaparece al completar"
+    );
+    assert!(stream_cache::read_complete_cache(&cache_path).is_some());
+}
+
+#[tokio::test]
+async fn dash_partial_without_a_valid_marker_is_discarded_and_redownloaded() {
+    let clock = VirtualClock::new();
+    let (init, segments) = fmp4_fixture();
+    let (_body, prefix, _audio_millis) = flac_body_and_prefix(2);
+    let server = spawn_fake_stream_server(
+        None,
+        Vec::new(),
+        vec![
+            vec![ServerStep::Respond(init.clone())],
+            vec![ServerStep::Respond(segments[0].clone())],
+            vec![ServerStep::Respond(segments[1].clone())],
+            vec![ServerStep::Respond(segments[2].clone())],
+            vec![ServerStep::Respond(segments[3].clone())],
+        ],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_dash_resolver(server.url.clone(), 4);
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+    let cache_root = tempfile::tempdir().unwrap();
+    set_cache_override(&app, cache_root.path());
+    let cache_path = cache_root.path().join("track-1-tidal-16bit-44100hz.flac");
+    // Cabecera FLAC válida pero sin marcador de frontera: sin él no hay
+    // reanudación fiable (no se sabe qué segmentos están completos).
+    std::fs::write(&cache_path, &prefix).expect("parcial sin marcador");
+
+    load_track(&app, 1, false, 1.0)
+        .await
+        .expect("carga descartando el parcial sin marcador");
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        server.request_count(),
+        5,
+        "descarga desde cero: init + 4 segmentos"
+    );
+    wait_until(
+        || marker_path_of(&cache_path).exists(),
+        "DASH completado desde cero",
+    )
+    .await;
+    let session = app.state::<StreamCacheState>().current().expect("sesión");
+    assert_eq!(session.segments_done(), 4);
+    assert!(stream_cache::read_complete_cache(&cache_path).is_some());
+}
+
+// ---------------------------------------------------------------------------
 // 3. Descarga progresiva contra servidor falso local
 // ---------------------------------------------------------------------------
 
@@ -2094,7 +2321,7 @@ async fn unwritable_cache_path_reports_error_before_reading_the_stream() {
         response,
         false,
         1.0,
-        None,
+        StreamDownloadMode::Fresh,
     );
     session.set_task(handle);
 

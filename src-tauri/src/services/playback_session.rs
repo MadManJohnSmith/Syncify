@@ -285,17 +285,53 @@ impl PlayerState {
         let http = stream_http_client();
         let mut resolved = (self.resolver)(db.clone(), http.clone(), track_id).await?;
 
+        // Parcial reanudable (Fase C): la ruta de caché no depende del GET,
+        // así que el parcial se valida ANTES de abrir el stream. Uno con
+        // cabecera válida reanuda (Range en el progresivo, segmento siguiente
+        // en DASH); uno inválido se descarta y se baja desde cero.
+        let mut cache_path = stream_cache::cache_file_path(app, track_id, &resolved.info)?;
+        stream_cache::cleanup_cache(app, Some(&cache_path));
+        let mut partial = stream_cache::read_resumable_partial(
+            &cache_path,
+            &resolved.info,
+            resolved.dash.is_some(),
+        );
+        if partial.is_none() {
+            // El parcial inválido se descarta, no se reanuda ni se hereda.
+            stream_cache::discard_partial(&cache_path);
+        }
+
         // GET inicial con UNA re-resolución ante fallo de catálogo
         // (401/403/410, ADR-0010.enm.4): la URL firmada pudo caducar. El
         // intento fallido termina aquí, sin publicar generación nueva ni
-        // cancelar la reproducción en curso. DASH no abre GET aquí: sus
-        // peticiones se reintentan dentro de la tarea de descarga.
+        // cancelar la reproducción en curso. Con parcial reanudable el GET
+        // pide Range desde el byte escrito; si el servidor no soporta Range
+        // (200 en vez de 206), el parcial se descarta y se pide desde cero.
+        // DASH no abre GET aquí: sus peticiones se reintentan dentro de la
+        // tarea de descarga.
         let mut response = None;
         if resolved.dash.is_none() {
             let mut retried = false;
             loop {
-                match http.get(&resolved.url).send().await {
+                let mut request = http.get(&resolved.url);
+                if let Some(resume) = partial {
+                    request =
+                        request.header(reqwest::header::RANGE, format!("bytes={}-", resume.bytes));
+                }
+                match request.send().await {
                     Ok(resp) if resp.status().is_success() => {
+                        if partial.is_some()
+                            && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT
+                        {
+                            tracing::warn!(
+                                track_id,
+                                status = resp.status().as_u16(),
+                                "streaming: servidor sin soporte de Range; parcial descartado"
+                            );
+                            stream_cache::discard_partial(&cache_path);
+                            partial = None;
+                            continue;
+                        }
                         response = Some(resp);
                         break;
                     }
@@ -311,6 +347,17 @@ impl PlayerState {
                             // La fuente re-resuelta es DASH: sin GET progresivo.
                             break;
                         }
+                        // La fuente re-resuelta puede ser otra calidad: otra
+                        // ruta de caché y otro parcial.
+                        cache_path = stream_cache::cache_file_path(app, track_id, &resolved.info)?;
+                        partial = stream_cache::read_resumable_partial(
+                            &cache_path,
+                            &resolved.info,
+                            false,
+                        );
+                        if partial.is_none() {
+                            stream_cache::discard_partial(&cache_path);
+                        }
                     }
                     Ok(resp) => {
                         return Err(format!(
@@ -322,9 +369,6 @@ impl PlayerState {
                 }
             }
         }
-
-        let cache_path = stream_cache::cache_file_path(app, track_id, &resolved.info)?;
-        stream_cache::cleanup_cache(app, Some(&cache_path));
 
         // Nueva generación: la sesión anterior se cancela antes de publicar el seq.
         cache.cancel_current();
@@ -360,9 +404,21 @@ impl PlayerState {
         // 2b) Descarga progresiva: prime (buffer inicial) + tarea de fondo.
         // El canal `ready` y la tarea viven en la sesión: si la descarga se
         // estanca y el relleno la sustituye (Q4), el prime tardío sigue
-        // respondiendo a esta carga.
+        // respondiendo a esta carga. Con parcial reanudado, la sesión arranca
+        // con la frontera del parcial (bytes y, en DASH, segmentos y audio).
         let session = StreamSession::new(seq, track_id, resolved.info.clone(), cache_path);
         session.set_transport_intent(autoplay, volume);
+        if let Some(resume) = partial {
+            session
+                .downloaded_bytes
+                .store(resume.bytes, Ordering::SeqCst);
+            if resolved.dash.is_some() {
+                session
+                    .audio_millis
+                    .store(resume.audio_millis, Ordering::SeqCst);
+                session.set_segments_done(resume.segments_done);
+            }
+        }
         cache.install(session.clone());
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<Option<f64>, String>>();
         session.install_ready(ready_tx);
@@ -379,17 +435,22 @@ impl PlayerState {
                 dash,
                 autoplay,
                 volume,
+                partial.is_some(),
             );
             session.set_task(handle);
         } else {
             let response = response.expect("GET inicial del stream progresivo");
+            let mode = match partial {
+                Some(resume) => StreamDownloadMode::ResumePrime { from: resume.bytes },
+                None => StreamDownloadMode::Fresh,
+            };
             let handle = spawn_stream_download(
                 app.clone(),
                 session.clone(),
                 response,
                 autoplay,
                 volume,
-                None,
+                mode,
             );
             session.set_task(handle);
         }
@@ -644,133 +705,211 @@ pub(crate) fn load_stream_into_engine<R: tauri::Runtime>(
     Ok(duration.map(|d| d.as_secs_f64()))
 }
 
+/// Modo de la descarga progresiva (ADR-0024, Fase C).
+pub(crate) enum StreamDownloadMode {
+    /// Descarga nueva: crea la caché desde cero y hace prime.
+    Fresh,
+    /// Reanuda un parcial validado desde `from` (bytes ya en disco) y hace
+    /// prime: la cabecera del parcial se validó antes de darlo por bueno.
+    ResumePrime { from: u64 },
+    /// Relevo tras estancamiento (Q4): el motor ya está cargado, así que se
+    /// añade por Range desde el byte escrito (la respuesta 206 empieza
+    /// exactamente ahí) sin volver a primar.
+    Takeover { from: u64 },
+}
+
 /// Descarga progresiva: escribe la caché mientras el motor la reproduce.
 /// El primer tramo (`prime_target`) abre el motor y responde por el canal
 /// `ready` que la sesión lleva; el resto continúa en segundo plano.
 ///
-/// `resume_from` es el modo relevo tras un estancamiento (Q4): el motor ya
-/// está cargado, así que se añade por Range desde el byte escrito (la respuesta
-/// 206 empieza exactamente ahí) sin volver a primar.
+/// `Fresh` y `ResumePrime` hacen prime; `Takeover` no (el motor ya está
+/// cargado con la caché en curso).
 pub(crate) fn spawn_stream_download<R: tauri::Runtime + 'static>(
     app: AppHandle<R>,
     session: Arc<StreamSession>,
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     autoplay: bool,
     volume: f64,
-    resume_from: Option<u64>,
+    mode: StreamDownloadMode,
 ) -> JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
-        if let Some(from) = resume_from {
-            run_stream_takeover(&app, &session, response, from).await;
-            return;
-        }
-        let total = response.content_length().unwrap_or(0);
-        session.total_bytes.store(total, Ordering::SeqCst);
-        let prime_target = if total > 0 {
-            (total / 10).clamp(STREAM_MIN_PRIME_BYTES, STREAM_MAX_PRIME_BYTES)
-        } else {
-            STREAM_FALLBACK_PRIME_BYTES
-        };
-
-        let mut file = match tokio::fs::File::create(&session.path).await {
-            Ok(file) => file,
-            Err(e) => {
-                let msg = format!("No se pudo crear la caché del stream: {}", e);
-                if let Some(tx) = session.take_ready() {
-                    let _ = tx.send(Err(msg.clone()));
-                }
-                stream_cache::emit_state(&app, &session, Some(msg));
-                return;
+        match mode {
+            StreamDownloadMode::Takeover { from } => {
+                run_stream_takeover(&app, &session, response, from).await;
             }
-        };
-
-        let mut primed = session.started.load(Ordering::SeqCst);
-        let mut last_emit = Instant::now();
-
-        loop {
-            if session.is_canceled() {
-                let _ = file.flush().await;
-                if !session.complete.load(Ordering::SeqCst) {
-                    let _ = tokio::fs::remove_file(&session.path).await;
-                }
-                if let Some(tx) = session.take_ready() {
-                    let _ = tx.send(Err("carga reemplazada".to_string()));
-                }
-                return;
+            StreamDownloadMode::Fresh => {
+                run_stream_download_with_prime(&app, &session, response, autoplay, volume, 0).await;
             }
-            match response.chunk().await {
-                Ok(Some(chunk)) => {
-                    if let Err(e) = file.write_all(&chunk).await {
-                        let msg = format!("Error escribiendo la caché del stream: {}", e);
-                        session.canceled.store(true, Ordering::SeqCst);
-                        if let Some(tx) = session.take_ready() {
-                            let _ = tx.send(Err(msg.clone()));
-                        }
-                        stream_cache::emit_state(&app, &session, Some(msg));
-                        return;
-                    }
-                    let downloaded = session
-                        .downloaded_bytes
-                        .fetch_add(chunk.len() as u64, Ordering::SeqCst)
-                        + chunk.len() as u64;
-                    if !primed && downloaded >= prime_target {
-                        primed = true;
-                        match load_stream_into_engine(&app, &session, autoplay, volume) {
-                            Ok(duration) => {
-                                if let Some(tx) = session.take_ready() {
-                                    let _ = tx.send(Ok(duration));
-                                }
-                            }
-                            Err(err) => {
-                                session.canceled.store(true, Ordering::SeqCst);
-                                if let Some(tx) = session.take_ready() {
-                                    let _ = tx.send(Err(err.clone()));
-                                }
-                                stream_cache::emit_state(&app, &session, Some(err));
-                                return;
-                            }
-                        }
-                    }
-                    if last_emit.elapsed() >= STREAM_EVENT_INTERVAL {
-                        last_emit = Instant::now();
-                        stream_cache::emit_state(&app, &session, None);
-                    }
-                }
-                Ok(None) => {
-                    let _ = file.flush().await;
-                    session.complete.store(true, Ordering::SeqCst);
-                    if !primed {
-                        match load_stream_into_engine(&app, &session, autoplay, volume) {
-                            Ok(duration) => {
-                                if let Some(tx) = session.take_ready() {
-                                    let _ = tx.send(Ok(duration));
-                                }
-                            }
-                            Err(err) => {
-                                session.canceled.store(true, Ordering::SeqCst);
-                                if let Some(tx) = session.take_ready() {
-                                    let _ = tx.send(Err(err.clone()));
-                                }
-                                stream_cache::emit_state(&app, &session, Some(err));
-                                return;
-                            }
-                        }
-                    }
-                    let _ = stream_cache::write_done_marker(&session);
-                    stream_cache::emit_state(&app, &session, None);
-                    return;
-                }
-                Err(e) => {
-                    let msg = format!("Se interrumpió la descarga del stream: {}", e);
-                    if let Some(tx) = session.take_ready() {
-                        let _ = tx.send(Err(msg.clone()));
-                    }
-                    stream_cache::emit_state(&app, &session, Some(msg));
-                    return;
-                }
+            StreamDownloadMode::ResumePrime { from } => {
+                run_stream_download_with_prime(&app, &session, response, autoplay, volume, from)
+                    .await;
             }
         }
     })
+}
+
+/// Cuerpo con prime de la descarga progresiva. Con `from == 0` crea la caché
+/// desde cero; con `from > 0` reanuda un parcial validado (Fase C): la respuesta
+/// 206 continúa exactamente en `from`, el fichero se abre sin truncar y el
+/// contador de bytes arranca en `from`, de modo que el prime y la frontera
+/// consideran lo ya descargado.
+async fn run_stream_download_with_prime<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session: &Arc<StreamSession>,
+    mut response: reqwest::Response,
+    autoplay: bool,
+    volume: f64,
+    from: u64,
+) {
+    // En un 206 el Content-Length cubre el tramo restante: el total de la pista
+    // es lo ya escrito más lo que queda. Sin length, la frontera queda
+    // desconocida (como en una descarga nueva sin Content-Length).
+    let total = response
+        .content_length()
+        .map(|rest| from + rest)
+        .unwrap_or(0);
+    session.total_bytes.store(total, Ordering::SeqCst);
+    let prime_target = if total > 0 {
+        (total / 10).clamp(STREAM_MIN_PRIME_BYTES, STREAM_MAX_PRIME_BYTES)
+    } else {
+        STREAM_FALLBACK_PRIME_BYTES
+    };
+
+    let mut file = if from > 0 {
+        // Parcial reanudado: los bytes ya están en disco y su cabecera fue
+        // validada al abrir; la respuesta continúa exactamente en `from`.
+        use std::io::SeekFrom;
+        use tokio::io::AsyncSeekExt;
+        let mut reopened = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&session.path)
+            .await
+        {
+            Ok(file) => file,
+            Err(e) => {
+                let msg = format!("No se pudo reabrir la caché del stream: {}", e);
+                session.canceled.store(true, Ordering::SeqCst);
+                if let Some(tx) = session.take_ready() {
+                    let _ = tx.send(Err(msg.clone()));
+                }
+                stream_cache::emit_state(app, session, Some(msg));
+                return;
+            }
+        };
+        if let Err(e) = reopened.seek(SeekFrom::Start(from)).await {
+            let msg = format!("No se pudo reabrir la caché del stream: {}", e);
+            session.canceled.store(true, Ordering::SeqCst);
+            if let Some(tx) = session.take_ready() {
+                let _ = tx.send(Err(msg.clone()));
+            }
+            stream_cache::emit_state(app, session, Some(msg));
+            return;
+        }
+        reopened
+    } else {
+        match tokio::fs::File::create(&session.path).await {
+            Ok(file) => file,
+            Err(e) => {
+                let msg = format!("No se pudo crear la caché del stream: {}", e);
+                session.canceled.store(true, Ordering::SeqCst);
+                if let Some(tx) = session.take_ready() {
+                    let _ = tx.send(Err(msg.clone()));
+                }
+                stream_cache::emit_state(app, session, Some(msg));
+                return;
+            }
+        }
+    };
+    if from > 0 {
+        session.downloaded_bytes.store(from, Ordering::SeqCst);
+    }
+
+    let mut primed = session.started.load(Ordering::SeqCst);
+    let mut last_emit = Instant::now();
+
+    loop {
+        if session.is_canceled() {
+            let _ = file.flush().await;
+            if !session.complete.load(Ordering::SeqCst) {
+                let _ = tokio::fs::remove_file(&session.path).await;
+            }
+            if let Some(tx) = session.take_ready() {
+                let _ = tx.send(Err("carga reemplazada".to_string()));
+            }
+            return;
+        }
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if let Err(e) = file.write_all(&chunk).await {
+                    let msg = format!("Error escribiendo la caché del stream: {}", e);
+                    session.canceled.store(true, Ordering::SeqCst);
+                    if let Some(tx) = session.take_ready() {
+                        let _ = tx.send(Err(msg.clone()));
+                    }
+                    stream_cache::emit_state(app, session, Some(msg));
+                    return;
+                }
+                let downloaded = session
+                    .downloaded_bytes
+                    .fetch_add(chunk.len() as u64, Ordering::SeqCst)
+                    + chunk.len() as u64;
+                if !primed && downloaded >= prime_target {
+                    primed = true;
+                    match load_stream_into_engine(app, session, autoplay, volume) {
+                        Ok(duration) => {
+                            if let Some(tx) = session.take_ready() {
+                                let _ = tx.send(Ok(duration));
+                            }
+                        }
+                        Err(err) => {
+                            session.canceled.store(true, Ordering::SeqCst);
+                            if let Some(tx) = session.take_ready() {
+                                let _ = tx.send(Err(err.clone()));
+                            }
+                            stream_cache::emit_state(app, session, Some(err));
+                            return;
+                        }
+                    }
+                }
+                if last_emit.elapsed() >= STREAM_EVENT_INTERVAL {
+                    last_emit = Instant::now();
+                    stream_cache::emit_state(app, session, None);
+                }
+            }
+            Ok(None) => {
+                let _ = file.flush().await;
+                session.complete.store(true, Ordering::SeqCst);
+                if !primed {
+                    match load_stream_into_engine(app, session, autoplay, volume) {
+                        Ok(duration) => {
+                            if let Some(tx) = session.take_ready() {
+                                let _ = tx.send(Ok(duration));
+                            }
+                        }
+                        Err(err) => {
+                            session.canceled.store(true, Ordering::SeqCst);
+                            if let Some(tx) = session.take_ready() {
+                                let _ = tx.send(Err(err.clone()));
+                            }
+                            stream_cache::emit_state(app, session, Some(err));
+                            return;
+                        }
+                    }
+                }
+                let _ = stream_cache::write_done_marker(session);
+                stream_cache::emit_state(app, session, None);
+                return;
+            }
+            Err(e) => {
+                let msg = format!("Se interrumpió la descarga del stream: {}", e);
+                if let Some(tx) = session.take_ready() {
+                    let _ = tx.send(Err(msg.clone()));
+                }
+                stream_cache::emit_state(app, session, Some(msg));
+                return;
+            }
+        }
+    }
 }
 
 /// Modo relevo del relleno tras un estancamiento (Q4): el motor ya está
@@ -880,6 +1019,9 @@ async fn run_stream_takeover<R: tauri::Runtime>(
 /// pueda reproducirlo y buscar como con cualquier FLAC local. El prime
 /// responde por el canal `ready` que la sesión lleva.
 ///
+/// Con `start_resume` la descarga arranca reanudando un parcial validado
+/// (Fase C): la sesión lleva la frontera del último segmento completo.
+///
 /// Un fallo de catálogo (401/403/410) en el init o en un segmento re-resuelve
 /// UNA vez por sesión (ADR-0010.enm.4) y continúa desde el último segmento
 /// completo escrito; un segundo fallo termina con error como hoy (parcial
@@ -893,6 +1035,7 @@ fn spawn_dash_stream_download<R: tauri::Runtime + 'static>(
     dash: DashManifest,
     autoplay: bool,
     volume: f64,
+    start_resume: bool,
 ) -> JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         let mut prime = || match load_stream_into_engine(&app, &session, autoplay, volume) {
@@ -911,7 +1054,7 @@ fn spawn_dash_stream_download<R: tauri::Runtime + 'static>(
         };
         let mut progress = || stream_cache::emit_state(&app, &session, None);
         let mut dash = dash;
-        let mut resume = false;
+        let mut resume = start_resume;
         let result = loop {
             let attempt = stream_cache::download_dash_to_cache(
                 &http,
@@ -979,7 +1122,7 @@ fn spawn_dash_stream_download<R: tauri::Runtime + 'static>(
                 // Error final, como hoy: el parcial se borra para no dejar una
                 // caché mentirosa (la cancelación ya limpia la tarea sola).
                 if !session.complete.load(Ordering::SeqCst) && !session.is_canceled() {
-                    let _ = tokio::fs::remove_file(&session.path).await;
+                    stream_cache::discard_partial(&session.path);
                 }
                 session.canceled.store(true, Ordering::SeqCst);
                 if let Some(tx) = session.take_ready() {
@@ -1074,7 +1217,7 @@ async fn run_stall_refill<R: tauri::Runtime>(app: &AppHandle<R>, session: Arc<St
             response,
             autoplay,
             volume,
-            Some(from),
+            StreamDownloadMode::Takeover { from },
         );
         session.set_task(handle);
     } else {
@@ -1104,6 +1247,7 @@ async fn run_stall_refill<R: tauri::Runtime>(app: &AppHandle<R>, session: Arc<St
                     dash,
                     autoplay,
                     volume,
+                    false,
                 );
                 session.set_task(handle);
             }
@@ -1119,7 +1263,7 @@ async fn run_stall_refill<R: tauri::Runtime>(app: &AppHandle<R>, session: Arc<St
                         response,
                         autoplay,
                         volume,
-                        None,
+                        StreamDownloadMode::Fresh,
                     );
                     session.set_task(handle);
                 }

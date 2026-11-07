@@ -440,11 +440,19 @@ pub fn cache_file_path<R: tauri::Runtime>(
 }
 
 fn marker_path(path: &Path) -> PathBuf {
+    with_suffix(path, ".done")
+}
+
+fn partial_marker_path(path: &Path) -> PathBuf {
+    with_suffix(path, ".partial")
+}
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "stream".to_string());
-    name.push_str(".done");
+    name.push_str(suffix);
     path.with_file_name(name)
 }
 
@@ -452,6 +460,18 @@ fn marker_path(path: &Path) -> PathBuf {
 struct CacheMarker {
     bytes: u64,
     info: StreamSourceInfo,
+}
+
+/// Frontera exacta de un parcial DASH (Fase C): el último segmento completo
+/// demuxeado y los bytes/milisegundos que había escritos en ese punto. La
+/// escritura va detrás de los frames de cada segmento, así que tras un crash
+/// puede estar un segmento por detrás del fichero: la reanudación trunca a
+/// esta frontera y recupera el segmento siguiente.
+#[derive(Serialize, Deserialize)]
+struct PartialMarker {
+    bytes: u64,
+    segments_done: u32,
+    audio_millis: u64,
 }
 
 /// Escribe el marcador `.done` al completar una descarga (con la info real de
@@ -476,6 +496,93 @@ pub fn read_complete_cache(path: &Path) -> Option<StreamSourceInfo> {
         Some(marker.info)
     } else {
         None
+    }
+}
+
+/// Lo que una reanudación de parcial necesita saber (Fase C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PartialResume {
+    /// Bytes ya escritos (frontera de reanudación: Range en el progresivo,
+    /// truncado a frontera de segmento en DASH).
+    pub bytes: u64,
+    /// Último segmento DASH completo demuxeado (0 en el progresivo).
+    pub segments_done: u32,
+    /// Milisegundos de audio escritos (0 en el progresivo).
+    pub audio_millis: u64,
+}
+
+/// Escribe el marcador de parcial DASH de la sesión: la frontera exacta para
+/// reanudar tras un crash (un segmento por detrás como mucho).
+pub(crate) fn write_partial_marker(session: &StreamSession) -> Result<(), String> {
+    let marker = PartialMarker {
+        bytes: session.downloaded_bytes.load(Ordering::SeqCst),
+        segments_done: session.segments_done.load(Ordering::SeqCst),
+        audio_millis: session.audio_millis.load(Ordering::SeqCst),
+    };
+    let json = serde_json::to_vec(&marker)
+        .map_err(|e| format!("No se pudo serializar el marcador de parcial: {}", e))?;
+    std::fs::write(partial_marker_path(&session.path), json)
+        .map_err(|e| format!("No se pudo escribir el marcador de parcial: {}", e))
+}
+
+/// Descarta un parcial y su marcador (el parcial inválido se descarta, no se
+/// reanuda ni se deja para el siguiente arranque). No-op sin fichero.
+pub(crate) fn discard_partial(path: &Path) {
+    if path.is_file() {
+        let _ = std::fs::remove_file(path);
+    }
+    let _ = std::fs::remove_file(partial_marker_path(path));
+}
+
+/// Parcial reanudable en `path` para esta fuente (Fase C): valida la cabecera
+/// ANTES de darlo por bueno y hacer prime.
+///
+/// - FLAC (extensión `flac`, y siempre en DASH, que cachea FLAC nativo): la
+///   cabecera debe ser `fLaC` + STREAMINFO válido (`read_flac_header`).
+/// - DASH exige además el marcador de segmentos, coherente con el fichero (el
+///   fichero puede tener una cola rasgada del crash; nunca menos bytes que la
+///   frontera del marcador).
+/// - El progresivo reanuda desde el tamaño en disco: es "el byte recibido".
+///   Otros formatos progresivos (mp3) no tienen validación fiable de cabecera:
+///   no se reanudan (descarga desde cero, como hoy).
+///
+/// `None` si no hay parcial o no es reanudable.
+pub(crate) fn read_resumable_partial(
+    path: &Path,
+    info: &StreamSourceInfo,
+    dash: bool,
+) -> Option<PartialResume> {
+    let len = std::fs::metadata(path).ok()?.len();
+    if len == 0 {
+        return None;
+    }
+    let is_flac = dash || info.extension.eq_ignore_ascii_case("flac");
+    if !is_flac {
+        // Sin validación fiable para otros formatos: no reanudar.
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    syncify_fmp4_flac::read_flac_header(&mut file).ok()?;
+    if dash {
+        let raw = std::fs::read(partial_marker_path(path)).ok()?;
+        let marker: PartialMarker = serde_json::from_slice(&raw).ok()?;
+        if marker.bytes == 0 || marker.segments_done == 0 || len < marker.bytes {
+            // Marcador ausente, recién reiniciado o incoherente con el fichero.
+            return None;
+        }
+        Some(PartialResume {
+            bytes: marker.bytes,
+            segments_done: marker.segments_done,
+            audio_millis: marker.audio_millis,
+        })
+    } else {
+        // Una cola rasgada (chunk a medias en el crash) queda dentro de estos
+        // bytes: es el riesgo declarado de reanudar por el byte recibido.
+        Some(PartialResume {
+            bytes: len,
+            segments_done: 0,
+            audio_millis: 0,
+        })
     }
 }
 
@@ -565,13 +672,11 @@ where
     if resume {
         // Reanudación por segmentos (Fase C): la sesión lleva el último
         // segmento completo demuxeado; el truncado limpio recorta cualquier
-        // cola rasgada de la interrupción.
+        // cola rasgada de la interrupción. Si la frontera ya cubre todos los
+        // segmentos (crash entre el último segmento y el marcador .done), el
+        // bucle no ejecuta iteraciones y la cola de la función completa la
+        // caché sin re-descargar nada.
         let segments_done = session.segments_done.load(Ordering::SeqCst);
-        if segments_done >= dash.total_segments {
-            return Err(DashFailure::from_message(
-                "la caché parcial ya cubre todos los segmentos del manifiesto",
-            ));
-        }
         written_bytes = session.downloaded_bytes.load(Ordering::SeqCst);
         let rate = info.sample_rate as u64;
         samples_total = if rate > 0 {
@@ -610,6 +715,8 @@ where
     } else {
         start_segment = 1;
         samples_total = 0;
+        // La descarga desde cero invalida cualquier marcador de parcial previo.
+        let _ = std::fs::remove_file(partial_marker_path(&session.path));
         file = tokio::fs::File::create(&session.path).await.map_err(|e| {
             DashFailure::from_message(format!("No se pudo crear la caché del stream: {}", e))
         })?;
@@ -636,6 +743,7 @@ where
             let _ = file.flush().await;
             if !session.complete.load(Ordering::SeqCst) {
                 let _ = tokio::fs::remove_file(&session.path).await;
+                let _ = std::fs::remove_file(partial_marker_path(&session.path));
             }
             return Ok(());
         }
@@ -680,6 +788,9 @@ where
                     .store(estimate.max(written_bytes), Ordering::SeqCst);
             }
         }
+        // Frontera durable del parcial (Fase C): el crash deja el marcador un
+        // segmento por detrás del fichero, nunca por delante.
+        let _ = write_partial_marker(session);
 
         let audio_secs = if info.sample_rate > 0 {
             samples_total as f64 / info.sample_rate as f64
@@ -702,6 +813,8 @@ where
         on_prime().map_err(DashFailure::from_message)?;
     }
     let _ = write_done_marker(session);
+    // El marcador de parcial ya no describe nada: la caché está completa.
+    let _ = std::fs::remove_file(partial_marker_path(&session.path));
     on_progress();
     Ok(())
 }
@@ -766,6 +879,7 @@ pub fn cleanup_cache<R: tauri::Runtime>(app: &AppHandle<R>, keep: Option<&Path>)
         {
             let _ = std::fs::remove_file(&path);
             let _ = std::fs::remove_file(marker_path(&path));
+            let _ = std::fs::remove_file(partial_marker_path(&path));
             continue;
         }
         files.push((path, meta.len(), modified));
@@ -782,6 +896,7 @@ pub fn cleanup_cache<R: tauri::Runtime>(app: &AppHandle<R>, keep: Option<&Path>)
         }
         if std::fs::remove_file(&path).is_ok() {
             let _ = std::fs::remove_file(marker_path(&path));
+            let _ = std::fs::remove_file(partial_marker_path(&path));
             total = total.saturating_sub(len);
         }
     }
@@ -843,6 +958,85 @@ mod tests {
         session.set_pending_seek(12.5);
         assert_eq!(session.take_pending_seek(), Some(12.5));
         assert_eq!(session.take_pending_seek(), None);
+    }
+
+    /// FLAC nativo sintético: cabecera real (la del fixture fMP4) + cola.
+    fn write_flac_partial(path: &Path, tail: &[u8]) {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../crates/syncify-fmp4-flac/tests/fixtures/tiny-fmp4-flac.m4a");
+        let data = std::fs::read(&fixture).expect("fixture fmp4");
+        let info = syncify_fmp4_flac::read_init(&data).expect("init");
+        let mut out = Vec::new();
+        syncify_fmp4_flac::write_flac_header(&mut out, &info).expect("cabecera");
+        out.extend_from_slice(tail);
+        std::fs::write(path, out).expect("parcial");
+    }
+
+    #[test]
+    fn resumable_partial_validates_the_flac_header_before_accepting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track-1-qobuz-24bit-192000hz.flac");
+        // Sin fichero no hay parcial.
+        assert!(read_resumable_partial(&path, &sample_info(), false).is_none());
+        // Cabecera FLAC válida: reanudable desde el byte en disco.
+        write_flac_partial(&path, &[0xFF, 0xF8, 1, 2, 3, 4]);
+        let resume = read_resumable_partial(&path, &sample_info(), false).expect("parcial válido");
+        assert_eq!(resume.bytes, std::fs::metadata(&path).unwrap().len());
+        assert_eq!(resume.segments_done, 0);
+        assert_eq!(resume.audio_millis, 0);
+        // Basura guardada con la extensión FLAC: descartada, no reanudada.
+        std::fs::write(&path, b"<html>404 Not Found</html>").unwrap();
+        assert!(read_resumable_partial(&path, &sample_info(), false).is_none());
+        // Fichero vacío (crash antes de la cabecera): nada que reanudar.
+        std::fs::write(&path, b"").unwrap();
+        assert!(read_resumable_partial(&path, &sample_info(), false).is_none());
+    }
+
+    #[test]
+    fn progressive_partials_without_reliable_validation_are_not_resumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track-1-deezer-0bit-320000hz.mp3");
+        std::fs::write(&path, b"ID3 audio bytes").unwrap();
+        let mut info = sample_info();
+        info.extension = "mp3".to_string();
+        assert!(read_resumable_partial(&path, &info, false).is_none());
+    }
+
+    #[test]
+    fn dash_partials_require_a_coherent_segment_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track-1-tidal-16bit-44100hz.flac");
+        write_flac_partial(&path, &[0u8; 64]);
+        let len = std::fs::metadata(&path).unwrap().len();
+        let marker_path = partial_marker_path(&path);
+        // Sin marcador no se sabe qué segmentos están completos: no reanudar.
+        assert!(read_resumable_partial(&path, &sample_info(), true).is_none());
+        // Marcador coherente con el fichero: reanudable en la frontera.
+        std::fs::write(
+            &marker_path,
+            serde_json::json!({"bytes": len, "segments_done": 2, "audio_millis": 4_200})
+                .to_string(),
+        )
+        .unwrap();
+        let resume = read_resumable_partial(&path, &sample_info(), true).expect("coherente");
+        assert_eq!(resume.bytes, len);
+        assert_eq!(resume.segments_done, 2);
+        assert_eq!(resume.audio_millis, 4_200);
+        // Marcador por delante del fichero (fichero recortado): incoherente.
+        std::fs::write(
+            &marker_path,
+            serde_json::json!({"bytes": len + 10, "segments_done": 2, "audio_millis": 4_200})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(read_resumable_partial(&path, &sample_info(), true).is_none());
+        // Frontera 0: marcador de una descarga recién reiniciada.
+        std::fs::write(
+            &marker_path,
+            serde_json::json!({"bytes": 0, "segments_done": 0, "audio_millis": 0}).to_string(),
+        )
+        .unwrap();
+        assert!(read_resumable_partial(&path, &sample_info(), true).is_none());
     }
 
     #[test]
