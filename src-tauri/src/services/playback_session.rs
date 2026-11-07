@@ -93,6 +93,15 @@ impl StreamFillError {
 }
 /// Cadencia máxima de eventos `player:stream-state` durante la descarga.
 const STREAM_EVENT_INTERVAL: Duration = Duration::from_millis(750);
+/// Estados HTTP que permiten la re-resolución única (ADR-0010.enm.4): fuente
+/// sin autorización (401), URL firmada caducada (403) o recurso retirado del
+/// catálogo (410). Otros fallos no re-resuelven.
+const CATALOG_RETRY_STATUSES: [u16; 3] = [401, 403, 410];
+
+/// `true` si el estado HTTP da derecho a la re-resolución única.
+pub(crate) fn is_catalog_status(status: u16) -> bool {
+    CATALOG_RETRY_STATUSES.contains(&status)
+}
 
 /// Payload de `player:tick`.
 #[derive(Debug, Clone, Serialize)]
@@ -274,7 +283,46 @@ impl PlayerState {
 
         // 2) Streaming: resolver la mejor fuente disponible.
         let http = stream_http_client();
-        let resolved = (self.resolver)(db.clone(), http.clone(), track_id).await?;
+        let mut resolved = (self.resolver)(db.clone(), http.clone(), track_id).await?;
+
+        // GET inicial con UNA re-resolución ante fallo de catálogo
+        // (401/403/410, ADR-0010.enm.4): la URL firmada pudo caducar. El
+        // intento fallido termina aquí, sin publicar generación nueva ni
+        // cancelar la reproducción en curso. DASH no abre GET aquí: sus
+        // peticiones se reintentan dentro de la tarea de descarga.
+        let mut response = None;
+        if resolved.dash.is_none() {
+            let mut retried = false;
+            loop {
+                match http.get(&resolved.url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        response = Some(resp);
+                        break;
+                    }
+                    Ok(resp) if is_catalog_status(resp.status().as_u16()) && !retried => {
+                        retried = true;
+                        tracing::warn!(
+                            track_id,
+                            status = resp.status().as_u16(),
+                            "streaming: re-resolución única tras fallo de catálogo en el GET inicial"
+                        );
+                        resolved = (self.resolver)(db.clone(), http.clone(), track_id).await?;
+                        if resolved.dash.is_some() {
+                            // La fuente re-resuelta es DASH: sin GET progresivo.
+                            break;
+                        }
+                    }
+                    Ok(resp) => {
+                        return Err(format!(
+                            "El proveedor rechazó el stream (HTTP {})",
+                            resp.status()
+                        ));
+                    }
+                    Err(e) => return Err(format!("No se pudo abrir el stream: {}", e)),
+                }
+            }
+        }
+
         let cache_path = stream_cache::cache_file_path(app, track_id, &resolved.info)?;
         stream_cache::cleanup_cache(app, Some(&cache_path));
 
@@ -326,26 +374,15 @@ impl PlayerState {
                 app.clone(),
                 session.clone(),
                 http.clone(),
+                self.resolver(),
+                db.clone(),
                 dash,
                 autoplay,
                 volume,
             );
             session.set_task(handle);
         } else {
-            let response = match http.get(&resolved.url).send().await {
-                Ok(response) => response,
-                Err(e) => {
-                    session.canceled.store(true, Ordering::SeqCst);
-                    return Err(format!("No se pudo abrir el stream: {}", e));
-                }
-            };
-            if !response.status().is_success() {
-                session.canceled.store(true, Ordering::SeqCst);
-                return Err(format!(
-                    "El proveedor rechazó el stream (HTTP {})",
-                    response.status()
-                ));
-            }
+            let response = response.expect("GET inicial del stream progresivo");
             let handle = spawn_stream_download(
                 app.clone(),
                 session.clone(),
@@ -842,10 +879,17 @@ async fn run_stream_takeover<R: tauri::Runtime>(
 /// (FLAC-en-ISOBMFF) en frames de un FLAC nativo que crece, para que el motor
 /// pueda reproducirlo y buscar como con cualquier FLAC local. El prime
 /// responde por el canal `ready` que la sesión lleva.
+///
+/// Un fallo de catálogo (401/403/410) en el init o en un segmento re-resuelve
+/// UNA vez por sesión (ADR-0010.enm.4) y continúa desde el último segmento
+/// completo escrito; un segundo fallo termina con error como hoy (parcial
+/// borrado). Fallos no-catalog no re-resuelven.
 fn spawn_dash_stream_download<R: tauri::Runtime + 'static>(
     app: AppHandle<R>,
     session: Arc<StreamSession>,
     http: reqwest::Client,
+    resolver: StreamResolver,
+    db: SqlitePool,
     dash: DashManifest,
     autoplay: bool,
     volume: f64,
@@ -866,9 +910,61 @@ fn spawn_dash_stream_download<R: tauri::Runtime + 'static>(
             }
         };
         let mut progress = || stream_cache::emit_state(&app, &session, None);
-        let result =
-            stream_cache::download_dash_to_cache(&http, &session, &dash, &mut prime, &mut progress)
-                .await;
+        let mut dash = dash;
+        let mut resume = false;
+        let result = loop {
+            let attempt = stream_cache::download_dash_to_cache(
+                &http,
+                &session,
+                &dash,
+                &mut prime,
+                &mut progress,
+                resume,
+            )
+            .await;
+            match attempt {
+                Ok(()) => break Ok(()),
+                Err(fail) => {
+                    let catalog_failure = fail.status.map(is_catalog_status).unwrap_or(false);
+                    let can_retry = !session.is_canceled()
+                        && !session.complete.load(Ordering::SeqCst)
+                        && catalog_failure
+                        && session.take_catalog_retry();
+                    if !can_retry {
+                        break Err(fail);
+                    }
+                    match resolver(db.clone(), http.clone(), session.track_id).await {
+                        Ok(new)
+                            if new.dash.is_some()
+                                && compatible_source(&session.info, &new.info) =>
+                        {
+                            tracing::warn!(
+                                track_id = session.track_id,
+                                status = fail.status,
+                                "streaming: re-resolución única DASH tras fallo de catálogo; continúa en el segmento siguiente"
+                            );
+                            dash = new.dash.expect("fuente DASH re-resuelta");
+                            resume = true;
+                        }
+                        Ok(_) => {
+                            break Err(stream_cache::DashFailure::from_message(format!(
+                                "{}; la fuente re-resuelta no permite continuar la descarga",
+                                fail.message
+                            )))
+                        }
+                        Err(e) => {
+                            break Err(stream_cache::DashFailure {
+                                message: format!(
+                                    "{}; el reintento de fuente falló: {}",
+                                    fail.message, e
+                                ),
+                                status: None,
+                            })
+                        }
+                    }
+                }
+            }
+        };
         match result {
             Ok(()) => {
                 if session.is_canceled() {
@@ -880,11 +976,16 @@ fn spawn_dash_stream_download<R: tauri::Runtime + 'static>(
                 }
             }
             Err(err) => {
+                // Error final, como hoy: el parcial se borra para no dejar una
+                // caché mentirosa (la cancelación ya limpia la tarea sola).
+                if !session.complete.load(Ordering::SeqCst) && !session.is_canceled() {
+                    let _ = tokio::fs::remove_file(&session.path).await;
+                }
                 session.canceled.store(true, Ordering::SeqCst);
                 if let Some(tx) = session.take_ready() {
-                    let _ = tx.send(Err(err.clone()));
+                    let _ = tx.send(Err(err.message.clone()));
                 }
-                stream_cache::emit_state(&app, &session, Some(err));
+                stream_cache::emit_state(&app, &session, Some(err.message));
             }
         }
     })
@@ -924,7 +1025,7 @@ async fn run_stall_refill<R: tauri::Runtime>(app: &AppHandle<R>, session: Arc<St
     let http = stream_http_client();
     let state = app.state::<PlayerState>();
     let resolver = state.resolver();
-    let resolved = match resolver(db, http.clone(), session.track_id).await {
+    let resolved = match resolver(db.clone(), http.clone(), session.track_id).await {
         Ok(resolved) => resolved,
         Err(e) => return finish_stall(app, &session, StreamFillError::ReResolve(e)),
     };
@@ -998,6 +1099,8 @@ async fn run_stall_refill<R: tauri::Runtime>(app: &AppHandle<R>, session: Arc<St
                     app.clone(),
                     session.clone(),
                     http.clone(),
+                    resolver.clone(),
+                    db.clone(),
                     dash,
                     autoplay,
                     volume,

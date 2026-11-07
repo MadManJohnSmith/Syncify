@@ -37,7 +37,7 @@ use crate::services::playback_session::{
     STREAM_PENDING_SEEK_TIMEOUT, STREAM_PRIME_TIMEOUT,
 };
 use crate::services::stream_cache::{self, StreamCacheState, StreamSession};
-use crate::services::streaming::StreamSourceInfo;
+use crate::services::streaming::{DashManifest, ResolvedStream, StreamSourceInfo};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -297,6 +297,11 @@ enum ServerStep {
     Abort,
     /// Terminar el cuerpo (chunk terminal si es chunked) y cerrar.
     Finish,
+    /// Responder un cuerpo completo con 200 y cerrar (una petición por
+    /// conexión: init y segmentos de un manifiesto DASH falso).
+    Respond(Vec<u8>),
+    /// Responder un estado HTTP y cerrar, sin cuerpo de audio.
+    Reject(u16),
 }
 
 /// Servidor HTTP falso: cada conexión consume la siguiente entrada del
@@ -441,7 +446,11 @@ async fn serve_one(
                 ServerStep::Wait(rx) => {
                     let _ = rx.await;
                 }
-                _ => return,
+                // Respuestas autónomas no se guionizan tras una 206.
+                ServerStep::Respond(_) | ServerStep::Reject(_) => return,
+                ServerStep::Abort => return,
+                ServerStep::Chunk(_) => return,
+                ServerStep::Finish => return,
             }
         }
         std::future::pending::<()>().await;
@@ -451,13 +460,37 @@ async fn serve_one(
     serve_plain(stream, content_length, body, steps).await;
 }
 
-/// Flujo no-Range: cabecera 200/chunked según `content_length` y pasos.
+/// Flujo no-Range: cabecera 200/chunked según `content_length` y pasos. Las
+/// respuestas autónomas (Respond/Reject) sustituyen a la cabecera por
+/// defecto: se atienden ANTES de escribirla.
 async fn serve_plain(
     stream: &mut tokio::net::TcpStream,
     content_length: Option<u64>,
     body: &[u8],
     steps: Vec<ServerStep>,
 ) {
+    match steps.first() {
+        Some(ServerStep::Respond(payload)) => {
+            let payload = payload.clone();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                 Content-Length: {}\r\n\r\n",
+                payload.len()
+            );
+            if stream.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = stream.write_all(&payload).await;
+            return;
+        }
+        Some(ServerStep::Reject(status)) => {
+            let status = *status;
+            let head = format!("HTTP/1.1 {status} Denied\r\nContent-Length: 0\r\n\r\n");
+            let _ = stream.write_all(head.as_bytes()).await;
+            return;
+        }
+        _ => {}
+    }
     let mut head = String::from("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n");
     match content_length {
         Some(len) => head.push_str(&format!("Content-Length: {len}\r\n")),
@@ -500,6 +533,9 @@ async fn serve_plain(
                 }
                 return;
             }
+            // Respuestas autónomas: sustituyeron a la cabecera por defecto y
+            // nunca llegan aquí.
+            ServerStep::Respond(_) | ServerStep::Reject(_) => return,
         }
     }
     // Sin más pasos: mantener la conexión abierta (descarga estancada), como
@@ -1452,6 +1488,309 @@ async fn pending_seek_is_dropped_quietly_when_the_session_was_interrupted() {
     assert_eq!(engine_position(app), Duration::ZERO);
     assert_eq!(engine_state(app), EngineState::Paused);
 }
+// ---------------------------------------------------------------------------
+// 2c. Re-resolución única ante fallo de catálogo (Fase C, 401/403/410)
+// ---------------------------------------------------------------------------
+
+fn set_cache_override(app: &tauri::App<MockRuntime>, dir: &Path) {
+    app.state::<StreamCacheState>()
+        .set_cache_dir_override(dir.to_path_buf());
+}
+
+/// Info honesta de un DASH falso (el fixture es FLAC 16 bits / 44.1 kHz).
+fn dash_info() -> StreamSourceInfo {
+    StreamSourceInfo {
+        service_name: "tidal".to_string(),
+        service_track_id: "1".to_string(),
+        format: "FLAC".to_string(),
+        codec: Some("flac".to_string()),
+        container: Some("ISOBMFF".to_string()),
+        extension: "flac".to_string(),
+        bit_depth: Some(16),
+        sample_rate: Some(44_100),
+        quality_label: "FLAC 16 bits / 44.1 kHz".to_string(),
+        quality_tier: "lossless".to_string(),
+        source_name: "Tidal API".to_string(),
+        match_method: "direct".to_string(),
+    }
+}
+
+/// Resolver falso que siempre devuelve el mismo manifiesto DASH falso (con
+/// contador de llamadas), servido por el servidor de guion.
+fn fake_dash_resolver(
+    base_url: String,
+    total_segments: u32,
+) -> (
+    crate::services::playback_session::StreamResolver,
+    Arc<AtomicUsize>,
+) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let resolver: crate::services::playback_session::StreamResolver =
+        Arc::new(move |_db, _http, _track_id| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let init_url = format!("{base_url}/init");
+            let media_template = format!("{base_url}/seg_$Number$");
+            Box::pin(async move {
+                Ok(ResolvedStream {
+                    url: init_url.clone(),
+                    dash: Some(DashManifest {
+                        init_url,
+                        media_template,
+                        total_segments,
+                    }),
+                    info: dash_info(),
+                })
+            })
+        });
+    (resolver, calls)
+}
+
+/// Divide el fixture fMP4 en (init, segmentos moof+mdat), como hace el test
+/// del propio conversor.
+fn fmp4_fixture() -> (Vec<u8>, Vec<Vec<u8>>) {
+    fn split(data: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+        let mut init: Vec<u8> = Vec::new();
+        let mut segments: Vec<Vec<u8>> = Vec::new();
+        let mut current: Option<Vec<u8>> = None;
+        let mut pos = 0usize;
+        while pos + 8 <= data.len() {
+            let size = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+            if size < 8 || pos + size > data.len() {
+                break;
+            }
+            let typ = &data[pos + 4..pos + 8];
+            let end = pos + size;
+            match typ {
+                b"moof" => current = Some(data[pos..end].to_vec()),
+                b"mdat" => {
+                    if let Some(mut seg) = current.take() {
+                        seg.extend_from_slice(&data[pos..end]);
+                        segments.push(seg);
+                    }
+                }
+                _ => {
+                    if segments.is_empty() && current.is_none() {
+                        init.extend_from_slice(&data[pos..end]);
+                    }
+                }
+            }
+            pos = end;
+        }
+        (init, segments)
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../crates/syncify-fmp4-flac/tests/fixtures/tiny-fmp4-flac.m4a");
+    let data = std::fs::read(&path).expect("fixture fmp4");
+    split(&data)
+}
+
+#[tokio::test]
+async fn catalog_401_at_open_re_resolves_once_and_succeeds() {
+    let clock = VirtualClock::new();
+    let total = 1024 * 1024;
+    let body = wav_prefix(WAV_SAMPLE_RATE, total, total);
+    let server = spawn_fake_stream_server(
+        Some(total),
+        body,
+        vec![
+            vec![ServerStep::Reject(401)],
+            vec![ServerStep::Send(total as usize), ServerStep::Finish],
+        ],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+    let cache_root = tempfile::tempdir().unwrap();
+    set_cache_override(&app, cache_root.path());
+
+    let result = load_track(&app, 1, true, 0.9)
+        .await
+        .expect("carga con re-resolución");
+    assert_eq!(result.seq, 1);
+    assert!(result.stream.is_some());
+    assert_eq!(
+        resolve_calls.load(Ordering::SeqCst),
+        2,
+        "una re-resolución tras el 401"
+    );
+    assert_eq!(server.request_count(), 2, "GET 401 + GET correcto");
+
+    let cache_path = cache_root.path().join("track-1-qobuz-24bit-192000hz.flac");
+    wait_until(
+        || marker_path_of(&cache_path).exists(),
+        "caché completada tras el reintento",
+    )
+    .await;
+    assert_eq!(engine_loaded_path(&app), Some(cache_path));
+    assert_eq!(engine_state(&app), EngineState::Playing);
+}
+
+#[tokio::test]
+async fn second_catalog_401_terminates_with_error_as_today() {
+    let clock = VirtualClock::new();
+    let server = spawn_fake_stream_server(
+        Some(1024),
+        vec![0u8; 1024],
+        vec![vec![ServerStep::Reject(401)], vec![ServerStep::Reject(401)]],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+
+    let err = load_track(&app, 1, true, 1.0)
+        .await
+        .expect_err("dos 401: error como hoy");
+    assert!(
+        err.starts_with("El proveedor rechazó el stream (HTTP 401"),
+        "mensaje congelado del fallo final: {err}"
+    );
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(server.request_count(), 2);
+    assert_eq!(
+        core_mut(&app, |core| core.seq),
+        0,
+        "el fallo del GET no publica generación"
+    );
+    assert!(app.state::<StreamCacheState>().current().is_none());
+}
+
+#[tokio::test]
+async fn non_catalog_error_at_open_does_not_re_resolve() {
+    let clock = VirtualClock::new();
+    let server = spawn_fake_stream_server(
+        Some(1024),
+        vec![0u8; 1024],
+        vec![vec![ServerStep::Reject(500)]],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+
+    let err = load_track(&app, 1, true, 1.0)
+        .await
+        .expect_err("500 no re-resuelve");
+    assert!(err.contains("HTTP 500"), "fallo final: {err}");
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(server.request_count(), 1);
+}
+
+#[tokio::test]
+async fn dash_catalog_401_mid_download_re_resolves_once_and_continues() {
+    let clock = VirtualClock::new();
+    let (init, segments) = fmp4_fixture();
+    assert_eq!(segments.len(), 4, "el fixture trae 4 segmentos");
+    let server = spawn_fake_stream_server(
+        None,
+        Vec::new(),
+        vec![
+            vec![ServerStep::Respond(init.clone())],
+            vec![ServerStep::Respond(segments[0].clone())],
+            // El segmento 2 falla tres veces (reintentos por petición)...
+            vec![ServerStep::Reject(401)],
+            vec![ServerStep::Reject(401)],
+            vec![ServerStep::Reject(401)],
+            // ...y tras la re-resolución continúa desde el segmento 2.
+            vec![ServerStep::Respond(init.clone())],
+            vec![ServerStep::Respond(segments[1].clone())],
+            vec![ServerStep::Respond(segments[2].clone())],
+            vec![ServerStep::Respond(segments[3].clone())],
+        ],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_dash_resolver(server.url.clone(), 4);
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+    let cache_root = tempfile::tempdir().unwrap();
+    set_cache_override(&app, cache_root.path());
+
+    let result = load_track(&app, 1, false, 1.0)
+        .await
+        .expect("carga DASH con re-resolución");
+    assert!(result.stream.is_some());
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(server.request_count(), 9, "init+seg1+3 fallos+init+seg2-4");
+
+    let cache_path = cache_root.path().join("track-1-tidal-16bit-44100hz.flac");
+    wait_until(
+        || marker_path_of(&cache_path).exists(),
+        "DASH completado tras el reintento",
+    )
+    .await;
+    let session = app.state::<StreamCacheState>().current().expect("sesión");
+    assert!(session.complete.load(Ordering::SeqCst));
+    assert_eq!(session.segments_done(), 4);
+
+    // El FLAC recompuesto (cabecera + frames de los 4 segmentos) es byte a
+    // byte el fichero de caché: la reanudación no duplicó ni perdió frames.
+    let info = syncify_fmp4_flac::read_init(&init).expect("init FLAC");
+    let mut expected: Vec<u8> = Vec::new();
+    syncify_fmp4_flac::write_flac_header(&mut expected, &info).expect("cabecera");
+    for segment in &segments {
+        syncify_fmp4_flac::demux_segment(&init, segment, &mut |frame| {
+            expected.extend_from_slice(frame);
+            Ok(())
+        })
+        .expect("demux");
+    }
+    assert_eq!(
+        std::fs::read(&cache_path).expect("caché final"),
+        expected,
+        "el FLAC recompuesto es idéntico al esperado"
+    );
+}
+
+#[tokio::test]
+async fn dash_second_catalog_failure_ends_in_error_as_today() {
+    let clock = VirtualClock::new();
+    let (init, segments) = fmp4_fixture();
+    let server = spawn_fake_stream_server(
+        None,
+        Vec::new(),
+        vec![
+            vec![ServerStep::Respond(init.clone())],
+            vec![ServerStep::Respond(segments[0].clone())],
+            vec![ServerStep::Reject(401)],
+            vec![ServerStep::Reject(401)],
+            vec![ServerStep::Reject(401)],
+            vec![ServerStep::Respond(init)],
+            // Tras la re-resolución, el segmento 2 vuelve a fallar: error.
+            vec![ServerStep::Reject(401)],
+            vec![ServerStep::Reject(401)],
+            vec![ServerStep::Reject(401)],
+        ],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_dash_resolver(server.url.clone(), 4);
+    let app = mock_player_app_with_resolver(test_db().await, &clock, Some(resolver));
+    let cache_root = tempfile::tempdir().unwrap();
+    set_cache_override(&app, cache_root.path());
+    let events = capture_stream_state(&app);
+    let cache_path = cache_root.path().join("track-1-tidal-16bit-44100hz.flac");
+
+    let err = load_track(&app, 1, false, 1.0)
+        .await
+        .expect_err("segundo fallo de catálogo: error como hoy");
+    assert!(err.contains("HTTP 401"), "fallo final: {err}");
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(server.request_count(), 9);
+    wait_until(
+        || !cache_path.exists(),
+        "parcial borrado como hoy tras el error final",
+    )
+    .await;
+    wait_until(
+        || {
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|payload| payload.contains("Se interrumpió la descarga"))
+        },
+        "estado de error emitido",
+    )
+    .await;
+}
+
 // ---------------------------------------------------------------------------
 // 3. Descarga progresiva contra servidor falso local
 // ---------------------------------------------------------------------------

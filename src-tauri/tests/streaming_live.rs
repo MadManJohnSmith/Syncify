@@ -454,6 +454,7 @@ async fn dash_download_to_cache_produces_a_playable_flac() {
         &dash,
         &mut prime,
         &mut progress,
+        false,
     )
     .await
     .expect("download DASH to cache");
