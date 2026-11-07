@@ -144,7 +144,6 @@ Registros fechados que se conservan como evidencia. Ninguno es estado actual;
 todos llevan un banner «Estado actual» que dice qué quedó resuelto después y
 qué sigue abierto solo en ese fichero:
 
-- `HANDOFF-2026-10-11.md`: relevo del 2026-10-11 (hecho/verificado vs abierto).
 - `PLAN-Correccion-168.md`: plan v2 de los 168, ya consumido; retractaciones
   de la v1 y trazabilidad ID→carril.
 - `PENDIENTES.md`: acta de cierre del backlog v0.4.1 (sin trabajo abierto).
