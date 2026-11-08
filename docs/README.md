@@ -25,12 +25,14 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
 ## Especificaciones de Módulos y Arquitectura Vigente
 
 - **`features/`**: especificaciones funcionales de los subsistemas principales
-  (7 ficheros). Cada una abre con un sello `**Estado de revisión:**` que dice
+  (8 ficheros). Cada una abre con un sello `**Estado de revisión:**` que dice
   cuándo se contrastó contra el árbol:
   - `auth-flow.md`: flujos de autenticación OAuth, PKCE y scraping de sesión,
     reconciliación multi-cuenta.
   - `download-pipeline.md`: arquitectura del orquestador, cola y los motores
     nativos por proveedor.
+  - `track-browser.md`: la maquinaria de listas de pistas — kernel de ventana
+    virtual y composable de biblioteca (ADR-0025).
   - `library-import.md`: algoritmos de importación, deduplicación e identidad
     canónica.
   - `metadata-enrichment.md`: enriquecimiento con MusicBrainz, Last.fm y
