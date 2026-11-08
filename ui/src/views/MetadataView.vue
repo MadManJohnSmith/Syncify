@@ -1310,6 +1310,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { listen as listenEvent, type UnlistenFn } from '@tauri-apps/api/event'
 import { useRoute } from 'vue-router'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
+import { useVirtualWindow } from '@/composables/useVirtualWindow'
 import { libraryApi } from '@/api/library'
 import { lyricsApi, type AnimatedCoverSweepResult } from '@/api/lyrics'
 import { metadataApi } from '@/api/metadata'
@@ -1408,12 +1409,10 @@ let bgRefreshTimer: ReturnType<typeof setTimeout> | undefined
 let hasPendingBatchRefresh = false
 const enrichProgress = ref<{ current: number; total: number; currentTrack: string } | null>(null)
 
-// Virtual Scrolling (MET-01 / DownloadsView:549-564 parity)
+// Virtual Scrolling: kernel compartido useVirtualWindow (ADR-0025).
+// Paridad congelada: filas de 64 px y overscan 5, sin footer ni throttle.
 const ROW_HEIGHT = 64 // px per track row
 const OVERSCAN = 5
-const trackContainerRef = ref<HTMLElement | null>(null)
-const trackScrollTop = ref(0)
-const trackViewportHeight = ref(800)
 
 // Background enrichment status
 interface BackgroundEnrichmentStatus {
@@ -1829,53 +1828,36 @@ const filteredTracks = computed(() => {
 })
 
 // ==============================================
-// VIRTUAL SCROLLING COMPUTEDS (DownloadsView:549-564 parity)
+// Ventana virtual: kernel compartido (useVirtualWindow, ADR-0025). Los
+// nombres históricos se conservan como alias; el template no cambia.
 // ==============================================
-const totalVirtualHeight = computed(() => {
-  return filteredTracks.value.length * ROW_HEIGHT
+const {
+  containerRef: trackContainerRef,
+  scrollTop: trackScrollTop,
+  viewportHeight: trackViewportHeight,
+  totalHeight: totalVirtualHeight,
+  startIndex: virtualStartIndex,
+  endIndex: virtualEndIndex,
+  offsetY: virtualOffsetY,
+  visibleItems: visibleTracks,
+  handleScroll: onTrackScroll,
+  reset: resetVirtualScroll,
+  scrollToOffset,
+} = useVirtualWindow(filteredTracks, {
+  rowHeight: ROW_HEIGHT,
+  overscan: OVERSCAN,
+  emptyViewportHeight: 800,
 })
-
-const virtualStartIndex = computed(() => {
-  return Math.max(0, Math.floor(trackScrollTop.value / ROW_HEIGHT) - OVERSCAN)
-})
-
-const virtualEndIndex = computed(() => {
-  return Math.min(
-    filteredTracks.value.length,
-    Math.ceil((trackScrollTop.value + trackViewportHeight.value) / ROW_HEIGHT) + OVERSCAN
-  )
-})
-
-const virtualOffsetY = computed(() => {
-  return virtualStartIndex.value * ROW_HEIGHT
-})
-
-const visibleTracks = computed(() => {
-  return filteredTracks.value.slice(virtualStartIndex.value, virtualEndIndex.value)
-})
-
-function onTrackScroll(e: Event) {
-  const target = e.target as HTMLElement
-  if (target) {
-    trackScrollTop.value = target.scrollTop
-    trackViewportHeight.value = target.clientHeight || 800
-  }
-}
 
 function scrollToTrack(trackId: number) {
   const index = filteredTracks.value.findIndex(t => t.id === trackId)
-  if (index !== -1 && trackContainerRef.value) {
-    const targetScrollTop = Math.max(0, (index - 1) * ROW_HEIGHT)
-    trackContainerRef.value.scrollTop = targetScrollTop
-    trackScrollTop.value = targetScrollTop
+  if (index !== -1) {
+    scrollToOffset(Math.max(0, (index - 1) * ROW_HEIGHT))
   }
 }
 
 watch([searchQuery, filterType, sortBy], () => {
-  trackScrollTop.value = 0
-  if (trackContainerRef.value) {
-    trackContainerRef.value.scrollTop = 0
-  }
+  resetVirtualScroll()
 })
 
 // Current track being edited

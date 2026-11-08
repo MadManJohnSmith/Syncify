@@ -1132,6 +1132,7 @@ import { useToast } from '@/composables/useToast'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { usePlayer } from '@/composables/usePlayer'
+import { useVirtualWindow } from '@/composables/useVirtualWindow'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
 import { getArtGradient } from '@/utils/artGradient'
@@ -1661,18 +1662,20 @@ async function loadMore() {
 
 // ==============================================
 // VIRTUAL SCROLLING LOGIC FOR LIBRARY (23,000+ ROWS)
-// Ported from DownloadsView.vue:549-564, 1768-1807 (PR-02)
+// La mecánica de ventana vive en el kernel compartido useVirtualWindow
+// (ADR-0025); aquí queda la config congelada de esta vista (filas de 56 px,
+// overscan 10, throttle de 120 ms, footer de fin de lista de 48 px).
 // ==============================================
 const ROW_HEIGHT = 56 // px per table row (40px cover + py-2 padding + 1px border)
 const OVERSCAN = 10   // extra rows above and below visible area
-
-const listContainerRef = ref<HTMLElement | null>(null)
-const libraryScrollTop = ref(0)
-const libraryViewportHeight = ref(800)
+const SCROLL_THROTTLE_MS = 120
+// Reserva vertical del indicador "Showing all N tracks" al acabar la lista.
+const END_OF_LIST_FOOTER_PX = 48
 
 // ==============================================
 // DOWNLOAD QUEUE STATS & CONCURRENCY (L-12)
-// Replicated from DownloadsView.vue:1420-1454, 1870-1903
+// Réplica del panel de la cola de DownloadsView; la ventana virtual de esa
+// vista ya no se duplica: vive en el kernel useVirtualWindow (ADR-0025).
 // ==============================================
 const queueStats = ref<QueueStats>({ total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 })
 const workerStatus = ref<WorkerStatus>({ running: true, paused: false, active_downloads: 0, max_concurrent: 3 })
@@ -1708,56 +1711,20 @@ async function fetchQueueStats() {
   }
 }
 
-// Infinite scroll fires a burst of scroll events per flick (B-4).
-//
-// PR-01 / PR-02: Reading layout properties (scrollHeight/scrollTop/clientHeight)
-// BEFORE the throttle cut forces synchronous reflow on every single event frame.
-// We update libraryScrollTop without layout reflow, and move layout reading
-// strictly inside the throttled dispatch.
-let lastScrollCheck = 0;
-const SCROLL_THROTTLE_MS = 120;
-let scrollThrottleTimer: ReturnType<typeof setTimeout> | null = null;
-function handleScroll(event: Event) {
-  const target = event.target as HTMLElement;
-  if (!target) return;
-
-  // Immediate reactive update for virtual window slicing (no reflow)
-  libraryScrollTop.value = target.scrollTop;
-  if (target.clientHeight && libraryViewportHeight.value !== target.clientHeight) {
-    libraryViewportHeight.value = target.clientHeight;
-  }
-
-  // Throttle heavy layout measurements (scrollHeight/scrollTop/clientHeight)
-  // PR-01 / PR-02: layout reading is STRICTLY inside the throttle cut
-  const checkAndDispatchLoadMore = (el: HTMLElement) => {
-    lastScrollCheck = Date.now();
-    const scrollBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (scrollBottom < 300) {
-      if (searchQuery.value.trim()) {
-        if (hasMoreSearch.value && !isSearching.value) {
-          loadMoreSearchResults();
-        }
-      } else {
-        if (hasMore.value && !isLoadingMore.value) {
-          loadMore();
-        }
+// Infinite scroll fires a burst of scroll events per flick (B-4). El kernel
+// mide la distancia al fondo DENTRO del corte de throttle (PR-01/PR-02);
+// aquí solo se decide si toca pedir la página siguiente.
+function maybeLoadMore(scrollBottom: number) {
+  if (scrollBottom < 300) {
+    if (searchQuery.value.trim()) {
+      if (hasMoreSearch.value && !isSearching.value) {
+        loadMoreSearchResults();
+      }
+    } else {
+      if (hasMore.value && !isLoadingMore.value) {
+        loadMore();
       }
     }
-  };
-
-  const elapsed = Date.now() - lastScrollCheck;
-  if (elapsed >= SCROLL_THROTTLE_MS) {
-    checkAndDispatchLoadMore(target);
-    return;
-  }
-  if (!scrollThrottleTimer) {
-    scrollThrottleTimer = setTimeout(() => {
-      scrollThrottleTimer = null;
-      const el = listContainerRef.value || target;
-      if (el) {
-        checkAndDispatchLoadMore(el);
-      }
-    }, SCROLL_THROTTLE_MS - elapsed);
   }
 }
 
@@ -2467,34 +2434,30 @@ const filteredTracks = computed(() => {
   return sortedPrefix
 })
 
-// Virtual scrolling computed window (PR-02)
-const totalVirtualHeight = computed(() => {
-  return filteredTracks.value.length * ROW_HEIGHT + (!hasMore.value && tracks.value.length > 0 ? 48 : 0)
-})
-
-const virtualStartIndex = computed(() => {
-  return Math.max(0, Math.floor(libraryScrollTop.value / ROW_HEIGHT) - OVERSCAN)
-})
-
-const virtualEndIndex = computed(() => {
-  return Math.min(
-    filteredTracks.value.length,
-    Math.ceil((libraryScrollTop.value + libraryViewportHeight.value) / ROW_HEIGHT) + OVERSCAN
-  )
-})
-
-const virtualOffsetY = computed(() => {
-  return virtualStartIndex.value * ROW_HEIGHT
-})
-
-const visibleTracks = computed(() => {
-  return filteredTracks.value.slice(virtualStartIndex.value, virtualEndIndex.value)
+// Ventana virtual: kernel compartido (useVirtualWindow, ADR-0025). Los
+// nombres históricos se conservan como alias; el template no cambia.
+const {
+  containerRef: listContainerRef,
+  scrollTop: libraryScrollTop,
+  viewportHeight: libraryViewportHeight,
+  totalHeight: totalVirtualHeight,
+  startIndex: virtualStartIndex,
+  endIndex: virtualEndIndex,
+  offsetY: virtualOffsetY,
+  visibleItems: visibleTracks,
+  handleScroll,
+  reset: resetVirtualScroll,
+} = useVirtualWindow(filteredTracks, {
+  rowHeight: ROW_HEIGHT,
+  overscan: OVERSCAN,
+  footerHeight: () => (!hasMore.value && tracks.value.length > 0 ? END_OF_LIST_FOOTER_PX : 0),
+  scrollThrottleMs: SCROLL_THROTTLE_MS,
+  onScrollMeasured: maybeLoadMore,
 })
 
 watch([() => filteredTracks.value.length, searchQuery, () => activeFilters.value], () => {
   if (listContainerRef.value && libraryScrollTop.value > totalVirtualHeight.value) {
-    listContainerRef.value.scrollTop = 0
-    libraryScrollTop.value = 0
+    resetVirtualScroll()
   }
 })
 
@@ -2891,10 +2854,6 @@ onUnmounted(() => {
   }
   if (reloadDebounceTimer) {
     clearTimeout(reloadDebounceTimer)
-  }
-  if (scrollThrottleTimer) {
-    clearTimeout(scrollThrottleTimer)
-    scrollThrottleTimer = null
   }
   if (highlightClearTimer) {
     clearTimeout(highlightClearTimer)

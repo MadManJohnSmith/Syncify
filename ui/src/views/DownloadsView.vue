@@ -1121,6 +1121,7 @@ import { formatDownloadPhase, formatDurationMs } from '@/utils/downloadPhase'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { settingsApi } from '@/api/settings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
+import { useVirtualWindow } from '@/composables/useVirtualWindow'
 import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
@@ -1718,54 +1719,42 @@ const activeBatchProgress = computed(() => {
 
 // ==============================================
 // VIRTUAL SCROLLING LOGIC FOR UP NEXT (10,000+ ROWS)
+// Kernel compartido useVirtualWindow (ADR-0025). Paridad congelada: filas de
+// 60 px, overscan 10, viewport 520, sin footer, sin throttle de scroll y sin
+// reset. PROGRESS_THROTTLE_MS es de los eventos de progreso, no de scroll.
 // ==============================================
-const queueContainerRef = ref<HTMLElement | null>(null)
-const queueScrollTop = ref(0)
-const queueViewportHeight = ref(520)
 const jumpPositionInput = ref<number | undefined>(undefined)
 
-const totalVirtualHeight = computed(() => {
-  return filteredQueueItems.value.length * ROW_HEIGHT
-})
-
-const virtualStartIndex = computed(() => {
-  return Math.max(0, Math.floor(queueScrollTop.value / ROW_HEIGHT) - OVERSCAN)
-})
-
-const virtualEndIndex = computed(() => {
-  return Math.min(
-    filteredQueueItems.value.length,
-    Math.ceil((queueScrollTop.value + queueViewportHeight.value) / ROW_HEIGHT) + OVERSCAN
-  )
-})
-
-const virtualOffsetY = computed(() => {
-  return virtualStartIndex.value * ROW_HEIGHT
+const {
+  containerRef: queueContainerRef,
+  scrollTop: queueScrollTop,
+  viewportHeight: queueViewportHeight,
+  totalHeight: totalVirtualHeight,
+  startIndex: virtualStartIndex,
+  endIndex: virtualEndIndex,
+  offsetY: virtualOffsetY,
+  visibleItems,
+  handleScroll: onQueueScroll,
+  scrollToOffset,
+} = useVirtualWindow(filteredQueueItems, {
+  rowHeight: ROW_HEIGHT,
+  overscan: OVERSCAN,
+  initialViewportHeight: 520,
+  emptyViewportHeight: 520,
 })
 
 const visibleQueueItems = computed(() => {
-  return filteredQueueItems.value
-    .slice(virtualStartIndex.value, virtualEndIndex.value)
+  return visibleItems.value
     .map((item, idx) => ({
       ...mapQueueItem(item),
       absoluteIndex: virtualStartIndex.value + idx,
     }))
 })
 
-function onQueueScroll(e: Event) {
-  const target = e.target as HTMLElement
-  if (target) {
-    queueScrollTop.value = target.scrollTop
-    queueViewportHeight.value = target.clientHeight || 520
-  }
-}
-
 function jumpToPosition() {
   if (!jumpPositionInput.value || !queueContainerRef.value) return
   const targetIdx = Math.max(1, Math.min(filteredQueueItems.value.length, jumpPositionInput.value))
-  const targetScrollTop = (targetIdx - 1) * ROW_HEIGHT
-  queueContainerRef.value.scrollTop = targetScrollTop
-  queueScrollTop.value = targetScrollTop
+  scrollToOffset((targetIdx - 1) * ROW_HEIGHT)
 }
 
 // Helper functions
