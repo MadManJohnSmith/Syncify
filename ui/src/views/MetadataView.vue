@@ -1311,6 +1311,8 @@ import { listen as listenEvent, type UnlistenFn } from '@tauri-apps/api/event'
 import { useRoute } from 'vue-router'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { useVirtualWindow } from '@/composables/useVirtualWindow'
+import { useTrackBrowser } from '@/composables/useTrackBrowser'
+import type { BrowserFixedPage } from '@/composables/useTrackBrowser'
 import { libraryApi } from '@/api/library'
 import { lyricsApi, type AnimatedCoverSweepResult } from '@/api/lyrics'
 import { metadataApi } from '@/api/metadata'
@@ -1397,8 +1399,24 @@ interface MetadataStats {
 let isMounted = true
 const activeToastTimers = new Set<ReturnType<typeof setTimeout>>()
 
-// Loading state (MET-01)
-const isLoading = ref(true)
+// Loading state (MET-01). `isLoading` vive en el composable del navegador
+// (ADR-0025); `isRefreshing` es política visual de esta vista: solo marca
+// refresco cuando ya hay filas que conservar.
+const METADATA_PAGE_SIZE = 500
+
+// Navegador de pistas (ADR-0025, decisiones 2 y 3): la vista declara la fuente
+// de página fija (se elige al cargar según `filterType`), el mapeo y el límite;
+// el composable posee la carga, el mapeo y la selección por ids.
+const browser = useTrackBrowser<LibraryTrack, MetadataTrack>({
+  source: { kind: 'fixed', load: fetchMetadataPage },
+  mapRow: mapToMetadataTrack,
+  pageSize: METADATA_PAGE_SIZE,
+  onLoadError: () => {
+    if (!isMounted) return
+    showToast('Failed to load tracks', 'error')
+  },
+})
+const isLoading = browser.isLoading
 const isRefreshing = ref(false)
 let isLoadingTracks = false
 const isSaving = ref(false)
@@ -1431,8 +1449,9 @@ const searchQuery = ref('')
 const filterType = ref('all')
 const sortBy = ref('score')
 
-// Selection
-const selectedTracks = ref<number[]>([])
+// Selection: los ids viven en el composable (ADR-0025, decisión 3); la vista
+// expone el mismo nombre para template y watches.
+const selectedTracks = browser.selection.selectedIds
 
 // UI State - Modals
 const showQualityReport = ref(false)
@@ -1455,9 +1474,9 @@ const contextMenu = reactive({
   track: null as MetadataTrack | null
 })
 
-// Tracks from library
-const tracks = ref<MetadataTrack[]>([])
-const totalTracks = ref(0)
+// Tracks from library (filas mapeadas por el composable; siguen siendo MetadataTrack)
+const tracks = browser.rows
+const totalTracks = browser.total
 
 // Metadata stats for quality report
 const metadataStats = ref<MetadataStats | null>(null)
@@ -1558,6 +1577,17 @@ function mapToMetadataTrack(item: LibraryTrack): MetadataTrack {
   }
 }
 
+// Fuente de página fija declarada por la vista (sin `has_more`): el endpoint
+// especializado para «missing», la biblioteca general para el resto.
+async function fetchMetadataPage(limit: number): Promise<BrowserFixedPage<LibraryTrack>> {
+  if (filterType.value === 'missing') {
+    const rawTracks = await metadataApi.getTracksNeedingMetadata(limit)
+    return { tracks: rawTracks, total: rawTracks.length } // Estimate
+  }
+  const page = await libraryApi.getLibrary(0, limit)
+  return { tracks: page.tracks, total: page.total }
+}
+
 // Load tracks from backend (MET-01: supports silent background refresh)
 async function loadTracks(isRefresh = false) {
   if (!isMounted) return
@@ -1571,33 +1601,14 @@ async function loadTracks(isRefresh = false) {
   }
 
   try {
-    let nextTracks: MetadataTrack[] = []
-    let nextTotal = 0
-
-    // If filtering by "missing", use specialized endpoint
-    if (filterType.value === 'missing') {
-      const rawTracks = await metadataApi.getTracksNeedingMetadata(500)
-      if (!isMounted) return
-      nextTracks = rawTracks.map(mapToMetadataTrack)
-      nextTotal = rawTracks.length // Estimate
-    } else {
-      // Otherwise load general library
-      const page = await libraryApi.getLibrary(0, 500)
-      if (!isMounted) return
-      nextTracks = page.tracks.map(mapToMetadataTrack)
-      nextTotal = page.total
-    }
-
-    tracks.value = nextTracks
-    totalTracks.value = nextTotal
-
-    // Preserve selections for tracks that still exist
-    const currentIdSet = new Set(nextTracks.map(t => t.id))
-    selectedTracks.value = selectedTracks.value.filter(id => currentIdSet.has(id))
-  } catch (error) {
+    await browser.load()
     if (!isMounted) return
-    console.error('Failed to load tracks:', error)
-    showToast('Failed to load tracks', 'error')
+
+    // Preserve selections for tracks that still exist (solo tras una carga
+    // con éxito: en fallo, el composable conserva las filas y su selección).
+    if (browser.loadError.value === null) {
+      browser.selection.preserve(tracks.value.map(t => t.id))
+    }
   } finally {
     isLoadingTracks = false
     if (isMounted) {
@@ -2439,29 +2450,22 @@ const batchFields = reactive({
 // ACTIONS
 // ==============================================
 
+// Selección por ids del composable (ADR-0025, decisión 3); los nombres
+// externos se conservan porque el template los consume.
 function selectTrack(track: MetadataTrack) {
-  if (selectedTracks.value.includes(track.id)) {
-    // Already selected, do nothing (or could toggle off)
-  } else {
-    selectedTracks.value = [track.id]
-  }
+  browser.selection.selectOnly(track.id)
 }
 
 function toggleTrackSelection(trackId: number) {
-  const index = selectedTracks.value.indexOf(trackId)
-  if (index === -1) {
-    selectedTracks.value.push(trackId)
-  } else {
-    selectedTracks.value.splice(index, 1)
-  }
+  browser.selection.toggle(trackId)
 }
 
 function clearSelection() {
-  selectedTracks.value = []
+  browser.selection.clear()
 }
 
 function selectAll() {
-  selectedTracks.value = filteredTracks.value.map(t => t.id)
+  browser.selection.selectAll(filteredTracks.value)
 }
 
 function openArtPicker() {
