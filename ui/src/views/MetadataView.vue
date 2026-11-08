@@ -1313,7 +1313,7 @@ import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
 import { lyricsApi, type AnimatedCoverSweepResult } from '@/api/lyrics'
 import { metadataApi } from '@/api/metadata'
-import type { CountryTagRepairReport } from '@/api/metadata'
+import type { CountryTagRepairReport, TagVerification, TrackTagsSnapshot } from '@/api/metadata'
 import { settingsApi } from '@/api/settings'
 import { toolsApi } from '@/api/tools'
 import { TauriEvents } from '@/api/tauri'
@@ -1890,28 +1890,6 @@ const currentTrack = computed(() => {
 // S191: File Tag Editor (FLAC roundtrip via syncify-flac-writer)
 // ==============================================
 
-interface TrackTagsSnapshot {
-  track_id: number
-  file_path: string
-  file_format: string
-  all_tags: Record<string, string[]>
-  has_cover: boolean
-  cover_mime?: string
-}
-
-interface TagVerification {
-  file_exists: boolean
-  flac_valid: boolean
-  tags_match: boolean
-  cover_present: boolean
-  cover_size_bytes?: number
-  cover_mime?: string
-  lyrics_present: boolean
-  synced_lyrics_present: boolean
-  unsynced_lyrics_present: boolean
-  bpm_present: boolean
-}
-
 const fileTagsSnapshot = ref<TrackTagsSnapshot | null>(null)
 const fileTagsError = ref<string | null>(null)
 const isReadingFileTags = ref(false)
@@ -1954,8 +1932,7 @@ async function readTrackFileTags() {
   fileTagsError.value = null
   tagVerification.value = null
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const snap = await invoke<TrackTagsSnapshot>('read_track_tags', { trackId: currentTrack.value.id })
+    const snap = await metadataApi.readTrackTags(currentTrack.value.id)
     fileTagsSnapshot.value = snap
     // Prefill editable fields from the raw facets (first value wins).
     const first = (k: string) => (snap.all_tags[k] && snap.all_tags[k][0]) ?? ''
@@ -1985,7 +1962,6 @@ async function writeTrackFileTags() {
   fileTagsError.value = null
   tagVerification.value = null
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
     const opt = (v: string | undefined): string | undefined => {
       const t = (v ?? '').trim()
       return t.length > 0 ? t : undefined
@@ -1994,32 +1970,29 @@ async function writeTrackFileTags() {
       const n = parseInt(v ?? '', 10)
       return Number.isFinite(n) && n > 0 ? n : undefined
     }
-    const verification = await invoke<TagVerification>('write_track_tags', {
-      trackId: currentTrack.value.id,
-      metadata: {
-        title: opt(editableFileTags['title']) ?? currentTrack.value.title,
-        artist: opt(editableFileTags['artist']) ?? currentTrack.value.artist,
-        album: opt(editableFileTags['album']) ?? currentTrack.value.album ?? '',
-        album_artist: opt(editableFileTags['album_artist']),
-        composer: opt(editableFileTags['composer']),
-        genre: opt(editableFileTags['genre']),
-        style: opt(editableFileTags['style']),
-        mood: opt(editableFileTags['mood']),
-        grouping: opt(editableFileTags['grouping']),
-        language: opt(editableFileTags['language']),
-        copyright: opt(editableFileTags['copyright']),
-        label: opt(editableFileTags['label']),
-        catalog_number: opt(editableFileTags['catalog_number']),
-        isrc: opt(editableFileTags['isrc']),
-        release_year: opt(editableFileTags['release_year']),
-        comment: opt(editableFileTags['comment']),
-        track_number: num(editableFileTags['track_number']),
-        track_total: undefined,
-        disc_number: undefined,
-        disc_total: undefined,
-        bpm: num(editableFileTags['bpm']),
-        initial_key: opt(editableFileTags['initial_key']),
-      }
+    const verification = await metadataApi.writeTrackTags(currentTrack.value.id, {
+      title: opt(editableFileTags['title']) ?? currentTrack.value.title,
+      artist: opt(editableFileTags['artist']) ?? currentTrack.value.artist,
+      album: opt(editableFileTags['album']) ?? currentTrack.value.album ?? '',
+      album_artist: opt(editableFileTags['album_artist']),
+      composer: opt(editableFileTags['composer']),
+      genre: opt(editableFileTags['genre']),
+      style: opt(editableFileTags['style']),
+      mood: opt(editableFileTags['mood']),
+      grouping: opt(editableFileTags['grouping']),
+      language: opt(editableFileTags['language']),
+      copyright: opt(editableFileTags['copyright']),
+      label: opt(editableFileTags['label']),
+      catalog_number: opt(editableFileTags['catalog_number']),
+      isrc: opt(editableFileTags['isrc']),
+      release_year: opt(editableFileTags['release_year']),
+      comment: opt(editableFileTags['comment']),
+      track_number: num(editableFileTags['track_number']),
+      track_total: undefined,
+      disc_number: undefined,
+      disc_total: undefined,
+      bpm: num(editableFileTags['bpm']),
+      initial_key: opt(editableFileTags['initial_key']),
     })
     tagVerification.value = verification
     // Re-read so the raw dump reflects what actually landed in the file.
@@ -2153,8 +2126,7 @@ async function runLastfmEnrichment() {
   if (isLastfmRunning.value) return
   isLastfmRunning.value = true
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const summary = await invoke<string>('enrich_genre_lastfm')
+    const summary = await metadataApi.enrichGenreLastfm()
     showToast(summary || 'Genre enrichment finished', 'info')
     await loadTracks()
   } catch (error) {
@@ -2626,7 +2598,6 @@ async function runMusicBrainzEnrichment() {
       }
     })
 
-    const { invoke } = await import('@tauri-apps/api/core')
     let result: { total: number; enriched: number; failed: number }
 
     if (selectedTracks.value.length > 0) {
@@ -2637,7 +2608,7 @@ async function runMusicBrainzEnrichment() {
       for (const trackId of ids) {
         done++
         try {
-          await invoke('enrich_metadata', { trackId })
+          await metadataApi.enrichMetadata(trackId)
           result.enriched++
           enrichProgress.value = { current: done, total: ids.length, currentTrack: `Track ${trackId}` }
         } catch (err) {
@@ -2647,12 +2618,7 @@ async function runMusicBrainzEnrichment() {
       }
     } else {
       // Global sweep: backend batches ISRC → MBID lookups with progress events.
-      const raw = await invoke<{ total?: number; enriched?: number; failed?: number }>('enrich_metadata_musicbrainz', {})
-      result = {
-        total: raw.total ?? raw.enriched ?? 0,
-        enriched: raw.enriched ?? 0,
-        failed: raw.failed ?? 0,
-      }
+      result = await metadataApi.enrichMetadataMusicBrainz()
     }
 
     console.log(`Enriched ${result.enriched}/${result.total} tracks (${result.failed} failed)`)
@@ -3100,8 +3066,7 @@ async function openComparison() {
   adoptedFromFileFields.value = new Set()
   isComparingSources.value = true
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    comparisonFileTags.value = await invoke<TrackTagsSnapshot>('read_track_tags', { trackId: currentTrack.value.id })
+    comparisonFileTags.value = await metadataApi.readTrackTags(currentTrack.value.id)
   } catch (err) {
     console.error('Failed to read file tags for comparison:', err)
     comparisonError.value = err instanceof Error ? err.message : String(err)

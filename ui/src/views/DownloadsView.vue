@@ -1118,14 +1118,13 @@ import { useToast } from '@/composables/useToast'
 import { confirm } from '@/composables/useToast'
 import { queueApi, classifyFailureReason, type FailureInfo, type FailureReason } from '@/api/queue'
 import { formatDownloadPhase, formatDurationMs } from '@/utils/downloadPhase'
-import { invokeCommand } from '@/api/tauri'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { settingsApi } from '@/api/settings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
-import { auditDownloadQueue, type QueueAuditReport } from '@/api/library'
+import { auditDownloadQueue, libraryApi, reorderQueue, type QueueAuditReport } from '@/api/library'
 import { formatServiceName } from '@/composables/useGlobalTasks'
 
 export interface DownloadTimelineEntry {
@@ -1813,7 +1812,7 @@ async function onDrop(targetAbsoluteIndex: number) {
   draggedIndex.value = null
 
   try {
-    await invokeCommand('reorder_queue', { queueIds: orderedIds })
+    await reorderQueue(orderedIds)
     await fetchData()
     toast.success('Queue order updated')
   } catch (e) {
@@ -2103,7 +2102,7 @@ async function removeQueueItem(id: number) {
 async function showInFolder(trackId: number) {
   if (!trackId) return
   try {
-    await invokeCommand('show_in_folder', { trackId })
+    await libraryApi.showInFolder(trackId)
   } catch (e) {
     toast.error('Could not open folder', String(e))
   }

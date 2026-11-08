@@ -413,6 +413,14 @@ export async function enrichMetadataMusicBrainz(limit?: number): Promise<{
     };
 }
 
+/**
+ * Run Last.fm genre enrichment over the library (backend fills empty genres only).
+ * Returns the backend's human-readable summary of the run.
+ */
+export async function enrichGenreLastfm(): Promise<string> {
+    return invokeCommand<string>('enrich_genre_lastfm');
+}
+
 // ==============================================
 // FINGERPRINTING
 // ==============================================
@@ -1038,6 +1046,7 @@ export const metadataApi = {
     applyMusicBrainzMatch,
     autoMatchMusicBrainz,
     enrichMetadataMusicBrainz,
+    enrichGenreLastfm,
     checkFingerprintAvailable,
     identifyAudio,
     findAudioDuplicates,

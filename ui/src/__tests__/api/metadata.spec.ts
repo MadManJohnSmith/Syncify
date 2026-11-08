@@ -11,6 +11,7 @@ import {
     batchEnrichMetadata,
     enrichAllNeeding,
     autoMatchMusicBrainz,
+    enrichGenreLastfm,
     findAudioDuplicates,
     identifyAudio,
 } from '@/api/metadata';
@@ -133,6 +134,24 @@ describe('metadata_handles_missing_fields_test', () => {
         expect(bridgeRes.enriched).toBe(3);
         expect(bridgeRes.failed).toBe(2);
         expect(bridgeRes.skipped).toBe(0);
+    });
+
+    it('enrichGenreLastfm invokes enrich_genre_lastfm without arguments and returns the summary', async () => {
+        const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+        mockInvoke((cmd, args) => {
+            calls.push({ cmd, args: args as Record<string, unknown> });
+            return cmd === 'enrich_genre_lastfm' ? 'Updated 3 tracks' : null;
+        });
+
+        const summary = await enrichGenreLastfm();
+
+        expect(summary).toBe('Updated 3 tracks');
+        expect(calls).toContainEqual({ cmd: 'enrich_genre_lastfm', args: undefined });
+
+        // An empty backend summary passes through untouched (the view decides
+        // whether to substitute a fallback message).
+        mockInvoke((cmd) => (cmd === 'enrich_genre_lastfm' ? '' : null));
+        expect(await enrichGenreLastfm()).toBe('');
     });
 });
 

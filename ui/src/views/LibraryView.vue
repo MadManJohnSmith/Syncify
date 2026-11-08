@@ -1125,6 +1125,7 @@ import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
 import { libraryApi, searchTracks, enqueueTracks, reconcileQueue }  from '@/api/library'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
+import { metadataApi } from '@/api/metadata'
 import { settingsApi } from '@/api/settings'
 import type { LibraryTrack, Playlist, LyricsType, QueueStats, WorkerStatus, EffectiveDownloadPreferences } from '@/api/types'
 import { useToast } from '@/composables/useToast'
@@ -1288,9 +1289,8 @@ async function enrichMetadata() {
   })
   
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const result = await invoke<{ total: number; enriched: number; failed: number }>('enrich_metadata_musicbrainz', {})
-    
+    const result = await metadataApi.enrichMetadataMusicBrainz()
+
     if (result.enriched > 0) {
       await loadLibrary()
     }
