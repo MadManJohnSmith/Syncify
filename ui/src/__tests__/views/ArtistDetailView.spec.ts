@@ -75,6 +75,7 @@ describe('ArtistDetailView', () => {
         expect(batchCall?.args).toEqual({
             trackIds: [101, 102],
             allowFallback: true,
+            jobKind: 'artist',
         });
     });
 

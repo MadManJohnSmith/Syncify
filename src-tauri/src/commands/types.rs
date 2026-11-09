@@ -751,6 +751,8 @@ pub struct ParsedUrl {
     #[serde(default)]
     pub queue_id: Option<i64>,
     #[serde(default)]
+    pub job_id: Option<i64>,
+    #[serde(default)]
     pub track_id: Option<i64>,
     #[serde(default)]
     pub title: Option<String>,
@@ -773,6 +775,7 @@ impl ParsedUrl {
             id: id.into(),
             url: url.into(),
             queue_id: None,
+            job_id: None,
             track_id: None,
             title: None,
             artist: None,
@@ -888,6 +891,7 @@ pub struct BatchEnqueueResult {
     pub enqueued: i64,
     pub deduplicated: i64,
     pub skipped: i64,
+    pub job_id: i64,
     pub summary: PreflightSummaryCounts,
     pub tracks: Vec<TrackPreflightResult>,
 }
@@ -929,6 +933,7 @@ pub struct EnqueueTracksResponse {
     pub enqueued: i64,
     pub skipped: i64,
     pub deduplicated: i64,
+    pub job_id: i64,
     pub excluded_preflight: Vec<PreflightExclusion>,
     pub skip_reasons: Vec<String>,
     pub tracks: Vec<TrackPreflightResult>,

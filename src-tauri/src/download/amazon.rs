@@ -11,6 +11,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 /// DoubleDouble submit response
@@ -95,11 +96,21 @@ impl AmazonDownloader {
     }
 
     /// Poll for download status
-    async fn poll_status(&self, job_id: &str, max_attempts: u32) -> Result<String> {
+    async fn poll_status(
+        &self,
+        job_id: &str,
+        max_attempts: u32,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<String> {
         let api_base = Self::get_api_base();
         let url = format!("{}/status/{}", api_base, job_id);
 
         for attempt in 0..max_attempts {
+            if let Some(token) = cancel_token {
+                if token.is_cancelled() {
+                    return Err(anyhow!("Download cancelled by user"));
+                }
+            }
             AMAZON_LIMITER.wait("amazon").await;
 
             debug!(
@@ -157,6 +168,7 @@ impl AmazonDownloader {
         download_url: &str,
         output_path: &Path,
         item_id: &str,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<()> {
         debug!("[Amazon] Downloading to {:?}", output_path);
 
@@ -186,6 +198,13 @@ impl AmazonDownloader {
         use futures_util::StreamExt;
 
         while let Some(chunk) = stream.next().await {
+            if let Some(token) = cancel_token {
+                if token.is_cancelled() {
+                    let _ = tokio::fs::remove_file(output_path).await;
+                    PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
+                    return Err(anyhow!("Download cancelled by user"));
+                }
+            }
             let chunk = chunk?;
             file.write_all(&chunk).await?;
             downloaded += chunk.len() as u64;
@@ -208,6 +227,7 @@ impl AmazonDownloader {
         amazon_url: &str,
         output_path: &Path,
         item_id: &str,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<()> {
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "Amazon Music"));
 
@@ -215,10 +235,10 @@ impl AmazonDownloader {
         let job_id = self.submit(amazon_url).await?;
 
         // Poll for completion
-        let download_url = self.poll_status(&job_id, 60).await?;
+        let download_url = self.poll_status(&job_id, 60, cancel_token).await?;
 
         // Download
-        self.download_file(&download_url, output_path, item_id)
+        self.download_file(&download_url, output_path, item_id, cancel_token)
             .await
     }
 
@@ -227,6 +247,7 @@ impl AmazonDownloader {
         &self,
         request: &DownloadRequest,
         amazon_url: &str,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<DownloadResult> {
         let item_id = &request.item_id;
 
@@ -237,7 +258,7 @@ impl AmazonDownloader {
         );
         let output_path = Path::new(&request.output_dir).join(&filename);
 
-        self.download_from_url(amazon_url, &output_path, item_id)
+        self.download_from_url(amazon_url, &output_path, item_id, cancel_token)
             .await?;
 
         // Amazon provides up to 24-bit/48kHz

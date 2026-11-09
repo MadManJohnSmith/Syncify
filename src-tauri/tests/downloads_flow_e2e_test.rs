@@ -103,6 +103,7 @@ async fn test_enqueue_single_track_lifecycle() {
         Some(false),
         Some(true),
         None,
+        None,
     )
     .await
     .expect("perform_add_to_queue should succeed");
@@ -213,6 +214,7 @@ async fn test_enqueue_album_batch_tracks() {
             Some(false),
             Some(true),
             None,
+            None,
         )
         .await
         .expect("perform_add_to_queue should succeed for album tracks");
@@ -322,6 +324,7 @@ async fn test_enqueue_artist_discography_deduplication() {
         None,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -336,6 +339,7 @@ async fn test_enqueue_artist_discography_deduplication() {
         None,
         Some(3),
         Some("tidal".into()),
+        None,
         None,
         None,
         None,
@@ -373,6 +377,7 @@ async fn test_enqueue_artist_discography_deduplication() {
         None,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -384,6 +389,7 @@ async fn test_enqueue_artist_discography_deduplication() {
         None,
         Some(3),
         Some("tidal".into()),
+        None,
         None,
         None,
         None,

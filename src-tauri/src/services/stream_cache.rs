@@ -4,25 +4,25 @@
 //! locales. Para streaming, la descarga progresiva escribe un fichero en la
 //! caché de la app y el motor lo reproduce mientras crece:
 //!
-//! 1. `commands::player::player_load_track` resuelve la URL
-//!    (`services::streaming`), hace el *prime* (buffer inicial) y carga el
-//!    motor.
+//! 1. `services::playback_session` resuelve la URL (`services::streaming`),
+//!    hace el *prime* (buffer inicial) y carga el motor.
 //! 2. El resto de la descarga continúa en segundo plano escribiendo el mismo
 //!    fichero.
-//! 3. El ticker de `commands::player` vigila la frontera descargada: si la
-//!    reproducción se acerca al final de lo descargado, pausa y espera
-//!    ("buffering"); los seeks fuera del rango descargado quedan pendientes
-//!    hasta que la descarga los alcanza.
+//! 3. El ticker de `commands::player` (vía `PlayerState::tick`) vigila la
+//!    frontera descargada: si la reproducción se acerca al final de lo
+//!    descargado, pausa y espera ("buffering"); los seeks fuera del rango
+//!    descargado quedan pendientes hasta que la descarga los alcanza.
 //!
 //! La URL y la sesión viven sólo en backend; al webview le llega una etiqueta
 //! honesta de calidad (`StreamSourceInfo`) y eventos de estado.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
+use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
@@ -52,6 +52,26 @@ pub struct StreamStatePayload {
     pub error: Option<String>,
 }
 
+/// Reloj de estancamiento del seek pendiente (Fase C, Q4): los bytes vistos
+/// por última vez y el instante desde el que no hay progreso de descarga.
+#[derive(Debug, Clone)]
+pub(crate) struct StallWatch {
+    pub(crate) bytes: u64,
+    pub(crate) since: Instant,
+}
+
+/// Estado del reloj de estancamiento en un paso del guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StallCheck {
+    /// La descarga avanza (o no hay seek aparcado): seguir esperando.
+    Progressing,
+    /// Ventana completa sin progreso y relleno aún no intentado: toca la
+    /// re-resolución única.
+    Stalled,
+    /// Ventana completa sin progreso y relleno ya intentado: error tipado.
+    Exhausted,
+}
+
 /// Sesión de streaming activa (o cacheada) para UNA carga del motor.
 pub struct StreamSession {
     /// `seq` del motor al que pertenece esta sesión.
@@ -75,6 +95,28 @@ pub struct StreamSession {
     pub pending_seek_sec: Mutex<Option<f64>>,
     /// Tras completar un seek pendiente, reanudar (el usuario buscaba mientras sonaba).
     resume_after_seek: AtomicBool,
+    /// Con qué transporte debe abrirse el motor al primar (el relleno que
+    /// toma la descarga tras un estancamiento reutiliza la intención original).
+    autoplay_on_prime: AtomicBool,
+    volume_on_prime: Mutex<f64>,
+    /// Canal `ready` del `open` en curso: sobrevive a la sustitución de la
+    /// tarea de descarga (re-resolución tras estancamiento) para que el prime
+    /// tardío siga respondiendo a la carga que espera.
+    ready: Mutex<Option<tokio::sync::oneshot::Sender<Result<Option<f64>, String>>>>,
+    /// Tarea de descarga en curso (el relleno tras estancamiento la aborta
+    /// antes de tomar el relevo).
+    download_task: Mutex<Option<JoinHandle<()>>>,
+    /// Vigilancia del estancamiento del seek pendiente (Q4).
+    stall_watch: Mutex<Option<StallWatch>>,
+    /// La re-resolución única del relleno ya se intentó para esta sesión.
+    refill_attempted: AtomicBool,
+    /// Segmentos DASH completos ya demuxeados y escritos (0 = progresivo o
+    /// sin segmentos terminados): la frontera exacta para reanudar por
+    /// segmentos.
+    segments_done: AtomicU32,
+    /// La re-resolución única por fallo de catálogo (401/403/410,
+    /// ADR-0010.enm.4) ya se consumió en esta sesión.
+    catalog_retried: AtomicBool,
 }
 
 impl StreamSession {
@@ -98,6 +140,14 @@ impl StreamSession {
             paused_for_buffer: AtomicBool::new(false),
             pending_seek_sec: Mutex::new(None),
             resume_after_seek: AtomicBool::new(false),
+            autoplay_on_prime: AtomicBool::new(false),
+            volume_on_prime: Mutex::new(1.0),
+            ready: Mutex::new(None),
+            download_task: Mutex::new(None),
+            stall_watch: Mutex::new(None),
+            refill_attempted: AtomicBool::new(false),
+            segments_done: AtomicU32::new(0),
+            catalog_retried: AtomicBool::new(false),
         })
     }
 
@@ -140,15 +190,155 @@ impl StreamSession {
     pub fn take_resume_after_seek(&self) -> bool {
         self.resume_after_seek.swap(false, Ordering::SeqCst)
     }
+
+    /// Descarta el seek pendiente sin servirlo (sesión interrumpida o
+    /// estancada de verdad: el guard deja de reaparcarlo).
+    pub fn clear_pending_seek(&self) {
+        if let Ok(mut p) = self.pending_seek_sec.lock() {
+            *p = None;
+        }
+    }
+
+    /// Registra la intención de transporte con la que el prime debe abrir el
+    /// motor (la usa el relleno que toma la descarga tras un estancamiento).
+    pub fn set_transport_intent(&self, autoplay: bool, volume: f64) {
+        self.autoplay_on_prime.store(autoplay, Ordering::SeqCst);
+        if let Ok(mut v) = self.volume_on_prime.lock() {
+            *v = volume;
+        }
+    }
+
+    /// `(autoplay, volume)` con los que esta carga quería abrir el motor.
+    pub fn transport_intent(&self) -> (bool, f64) {
+        let volume = self.volume_on_prime.lock().map(|v| *v).unwrap_or(1.0);
+        (self.autoplay_on_prime.load(Ordering::SeqCst), volume)
+    }
+
+    /// Instala el canal `ready` que responde al `open` en curso.
+    pub fn install_ready(&self, tx: tokio::sync::oneshot::Sender<Result<Option<f64>, String>>) {
+        if let Ok(mut ready) = self.ready.lock() {
+            *ready = Some(tx);
+        }
+    }
+
+    /// Toma el canal `ready` (una sola vez): el prime responde con él.
+    pub fn take_ready(&self) -> Option<tokio::sync::oneshot::Sender<Result<Option<f64>, String>>> {
+        self.ready.lock().ok().and_then(|mut ready| ready.take())
+    }
+
+    /// Registra la tarea de descarga en curso.
+    pub fn set_task(&self, handle: JoinHandle<()>) {
+        if let Ok(mut task) = self.download_task.lock() {
+            *task = Some(handle);
+        }
+    }
+
+    /// Aborta la tarea de descarga en curso, si la hay.
+    pub fn abort_task(&self) {
+        if let Ok(mut task) = self.download_task.lock() {
+            if let Some(handle) = task.take() {
+                handle.abort();
+            }
+        }
+    }
+
+    /// Segmentos DASH completos ya escritos.
+    #[cfg(test)]
+    pub(crate) fn segments_done(&self) -> u32 {
+        self.segments_done.load(Ordering::SeqCst)
+    }
+
+    /// Registra el último segmento DASH completo demuxeado y escrito.
+    pub fn set_segments_done(&self, segments: u32) {
+        self.segments_done.store(segments, Ordering::SeqCst);
+    }
+
+    /// Consume la re-resolución única por fallo de catálogo: `true` si este
+    /// paso es quien la toma (toca re-resolver), `false` si ya se usó.
+    pub fn take_catalog_retry(&self) -> bool {
+        !self.catalog_retried.swap(true, Ordering::SeqCst)
+    }
+
+    /// Arranca la vigilancia del estancamiento para un seek recién aparcado.
+    pub fn begin_stall_watch(&self) {
+        if let Ok(mut watch) = self.stall_watch.lock() {
+            *watch = Some(StallWatch {
+                bytes: self.downloaded_bytes.load(Ordering::SeqCst),
+                since: Instant::now(),
+            });
+        }
+    }
+
+    /// Sólo pruebas: envejece el reloj de estancamiento sin tocar los bytes,
+    /// como si la ventana completa hubiera pasado sin progreso.
+    #[cfg(test)]
+    pub(crate) fn age_stall_watch(&self, by: Duration) {
+        if let Ok(mut watch) = self.stall_watch.lock() {
+            if let Some(w) = watch.as_mut() {
+                w.since -= by;
+            }
+        }
+    }
+
+    /// Sólo pruebas: si la re-resolución única ya se consumió.
+    #[cfg(test)]
+    pub(crate) fn refill_attempted_for_test(&self) -> bool {
+        self.refill_attempted.load(Ordering::SeqCst)
+    }
+
+    /// Paso del reloj de estancamiento (Q4): compara los bytes descargados con
+    /// la última observación; una ventana completa sin progreso declara la
+    /// descarga estancada y consume la re-resolución única.
+    pub(crate) fn stall_check(&self, window: Duration) -> StallCheck {
+        let downloaded = self.downloaded_bytes.load(Ordering::SeqCst);
+        let Ok(mut guard) = self.stall_watch.lock() else {
+            return StallCheck::Progressing;
+        };
+        let Some(watch) = guard.as_mut() else {
+            return StallCheck::Progressing;
+        };
+        if downloaded != watch.bytes {
+            watch.bytes = downloaded;
+            watch.since = Instant::now();
+            return StallCheck::Progressing;
+        }
+        if watch.since.elapsed() < window {
+            return StallCheck::Progressing;
+        }
+        watch.since = Instant::now();
+        if !self.refill_attempted.swap(true, Ordering::SeqCst) {
+            StallCheck::Stalled
+        } else {
+            StallCheck::Exhausted
+        }
+    }
 }
 
 /// Estado gestionado (`app.manage`) con la sesión de streaming actual.
 #[derive(Default)]
 pub struct StreamCacheState {
     current: Mutex<Option<Arc<StreamSession>>>,
+    /// Raíz alternativa de la caché (sólo pruebas: el runtime simulado no
+    /// tiene directorio de caché propio y no debe escribir en `~/.cache`).
+    dir_override: Mutex<Option<PathBuf>>,
 }
 
 impl StreamCacheState {
+    /// Sólo pruebas: fija la raíz de la caché para este estado gestionado.
+    #[cfg(test)]
+    pub(crate) fn set_cache_dir_override(&self, dir: PathBuf) {
+        if let Ok(mut guard) = self.dir_override.lock() {
+            *guard = Some(dir);
+        }
+    }
+
+    fn cache_root(&self) -> Option<PathBuf> {
+        self.dir_override
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
     pub fn install(&self, session: Arc<StreamSession>) {
         if let Ok(mut guard) = self.current.lock() {
             *guard = Some(session);
@@ -177,10 +367,11 @@ impl StreamCacheState {
     }
 }
 
-/// Emite `player:stream-state` para la sesión.
-pub fn emit_state(app: &AppHandle, session: &StreamSession, error: Option<String>) {
+/// Construye el payload de `player:stream-state` para la sesión (lo usan
+/// `emit_state` y la sesión de reproducción, que lo devuelve al ticker).
+pub fn state_payload(session: &StreamSession, error: Option<String>) -> StreamStatePayload {
     let total = session.total_bytes.load(Ordering::SeqCst);
-    let payload = StreamStatePayload {
+    StreamStatePayload {
         seq: session.seq,
         track_id: session.track_id,
         buffering: session.paused_for_buffer.load(Ordering::SeqCst),
@@ -193,7 +384,16 @@ pub fn emit_state(app: &AppHandle, session: &StreamSession, error: Option<String
         match_method: session.info.match_method.clone(),
         quality_tier: session.info.quality_tier.clone(),
         error,
-    };
+    }
+}
+
+/// Emite `player:stream-state` para la sesión.
+pub fn emit_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session: &StreamSession,
+    error: Option<String>,
+) {
+    let payload = state_payload(session, error);
     let _ = app.emit("player:stream-state", payload);
 }
 
@@ -201,13 +401,21 @@ pub fn emit_state(app: &AppHandle, session: &StreamSession, error: Option<String
 // Caché en disco
 // ---------------------------------------------------------------------------
 
-/// Directorio de caché de streaming (`app_cache_dir/stream`).
-pub fn cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| format!("No se pudo obtener la caché de la app: {}", e))?
-        .join("stream");
+/// Directorio de caché de streaming (`app_cache_dir/stream`). Las pruebas
+/// pueden fijar una raíz alternativa en `StreamCacheState` (el runtime
+/// simulado no tiene directorio de caché propio).
+pub fn cache_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let dir = match app
+        .try_state::<StreamCacheState>()
+        .and_then(|state| state.cache_root())
+    {
+        Some(root) => root,
+        None => app
+            .path()
+            .app_cache_dir()
+            .map_err(|e| format!("No se pudo obtener la caché de la app: {}", e))?
+            .join("stream"),
+    };
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("No se pudo crear la caché de streaming: {}", e))?;
     Ok(dir)
@@ -215,8 +423,8 @@ pub fn cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// Nombre estable por pista+calidad: permite reutilizar una descarga completa
 /// aunque la URL firmada haya caducado.
-pub fn cache_file_path(
-    app: &AppHandle,
+pub fn cache_file_path<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     track_id: i64,
     info: &StreamSourceInfo,
 ) -> Result<PathBuf, String> {
@@ -232,11 +440,19 @@ pub fn cache_file_path(
 }
 
 fn marker_path(path: &Path) -> PathBuf {
+    with_suffix(path, ".done")
+}
+
+fn partial_marker_path(path: &Path) -> PathBuf {
+    with_suffix(path, ".partial")
+}
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "stream".to_string());
-    name.push_str(".done");
+    name.push_str(suffix);
     path.with_file_name(name)
 }
 
@@ -244,6 +460,18 @@ fn marker_path(path: &Path) -> PathBuf {
 struct CacheMarker {
     bytes: u64,
     info: StreamSourceInfo,
+}
+
+/// Frontera exacta de un parcial DASH (Fase C): el último segmento completo
+/// demuxeado y los bytes/milisegundos que había escritos en ese punto. La
+/// escritura va detrás de los frames de cada segmento, así que tras un crash
+/// puede estar un segmento por detrás del fichero: la reanudación trunca a
+/// esta frontera y recupera el segmento siguiente.
+#[derive(Serialize, Deserialize)]
+struct PartialMarker {
+    bytes: u64,
+    segments_done: u32,
+    audio_millis: u64,
 }
 
 /// Escribe el marcador `.done` al completar una descarga (con la info real de
@@ -271,10 +499,157 @@ pub fn read_complete_cache(path: &Path) -> Option<StreamSourceInfo> {
     }
 }
 
+/// Lo que una reanudación de parcial necesita saber (Fase C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PartialResume {
+    /// Bytes ya escritos (frontera de reanudación: Range en el progresivo,
+    /// truncado a frontera de segmento en DASH).
+    pub bytes: u64,
+    /// Último segmento DASH completo demuxeado (0 en el progresivo).
+    pub segments_done: u32,
+    /// Milisegundos de audio escritos (0 en el progresivo).
+    pub audio_millis: u64,
+}
+
+/// Escribe el marcador de parcial DASH de la sesión: la frontera exacta para
+/// reanudar tras un crash (un segmento por detrás como mucho).
+pub(crate) fn write_partial_marker(session: &StreamSession) -> Result<(), String> {
+    let marker = PartialMarker {
+        bytes: session.downloaded_bytes.load(Ordering::SeqCst),
+        segments_done: session.segments_done.load(Ordering::SeqCst),
+        audio_millis: session.audio_millis.load(Ordering::SeqCst),
+    };
+    let json = serde_json::to_vec(&marker)
+        .map_err(|e| format!("No se pudo serializar el marcador de parcial: {}", e))?;
+    std::fs::write(partial_marker_path(&session.path), json)
+        .map_err(|e| format!("No se pudo escribir el marcador de parcial: {}", e))
+}
+
+/// Descarta un parcial y su marcador (el parcial inválido se descarta, no se
+/// reanuda ni se deja para el siguiente arranque). No-op sin fichero.
+pub(crate) fn discard_partial(path: &Path) {
+    if path.is_file() {
+        let _ = std::fs::remove_file(path);
+    }
+    let _ = std::fs::remove_file(partial_marker_path(path));
+}
+
+/// Descarga completada (Fase C): elimina toda entrada de caché de streaming de
+/// la pista —fichero, `.done` y `.partial`— para que la siguiente reproducción
+/// no sirva contenido viejo: o manda el fichero local recién descargado, o se
+/// vuelve a streamear. Fallo blando: la invalidación nunca debe fallar la
+/// descarga; una entrada que no se pudiera borrar queda avisada en el log y la
+/// recogerá después la limpieza por LRU. El `-` del prefijo evita colisiones
+/// (`track-1-` no casa con `track-11-`).
+pub fn invalidate_track<R: tauri::Runtime>(app: &AppHandle<R>, track_id: i64) {
+    let dir = match cache_dir(app) {
+        Ok(dir) => dir,
+        Err(e) => {
+            tracing::warn!(
+                track_id,
+                error = %e,
+                "streaming: no se pudo localizar la caché para invalidarla tras la descarga"
+            );
+            return;
+        }
+    };
+    let prefix = format!("track-{track_id}-");
+    let mut removed = 0u32;
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        tracing::info!(
+            track_id,
+            entries = removed,
+            "streaming: caché de la pista invalidada tras completar la descarga"
+        );
+    }
+}
+
+/// Parcial reanudable en `path` para esta fuente (Fase C): valida la cabecera
+/// ANTES de darlo por bueno y hacer prime.
+///
+/// - FLAC (extensión `flac`, y siempre en DASH, que cachea FLAC nativo): la
+///   cabecera debe ser `fLaC` + STREAMINFO válido (`read_flac_header`).
+/// - DASH exige además el marcador de segmentos, coherente con el fichero (el
+///   fichero puede tener una cola rasgada del crash; nunca menos bytes que la
+///   frontera del marcador).
+/// - El progresivo reanuda desde el tamaño en disco: es "el byte recibido".
+///   Otros formatos progresivos (mp3) no tienen validación fiable de cabecera:
+///   no se reanudan (descarga desde cero, como hoy).
+///
+/// `None` si no hay parcial o no es reanudable.
+pub(crate) fn read_resumable_partial(
+    path: &Path,
+    info: &StreamSourceInfo,
+    dash: bool,
+) -> Option<PartialResume> {
+    let len = std::fs::metadata(path).ok()?.len();
+    if len == 0 {
+        return None;
+    }
+    let is_flac = dash || info.extension.eq_ignore_ascii_case("flac");
+    if !is_flac {
+        // Sin validación fiable para otros formatos: no reanudar.
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    syncify_fmp4_flac::read_flac_header(&mut file).ok()?;
+    if dash {
+        let raw = std::fs::read(partial_marker_path(path)).ok()?;
+        let marker: PartialMarker = serde_json::from_slice(&raw).ok()?;
+        if marker.bytes == 0 || marker.segments_done == 0 || len < marker.bytes {
+            // Marcador ausente, recién reiniciado o incoherente con el fichero.
+            return None;
+        }
+        Some(PartialResume {
+            bytes: marker.bytes,
+            segments_done: marker.segments_done,
+            audio_millis: marker.audio_millis,
+        })
+    } else {
+        // Una cola rasgada (chunk a medias en el crash) queda dentro de estos
+        // bytes: es el riesgo declarado de reanudar por el byte recibido.
+        Some(PartialResume {
+            bytes: len,
+            segments_done: 0,
+            audio_millis: 0,
+        })
+    }
+}
+
 /// Intervalo máximo entre eventos de progreso durante la descarga DASH.
 const DASH_EVENT_INTERVAL: Duration = Duration::from_millis(750);
 /// Reintentos por petición (init y cada segmento).
 const DASH_FETCH_ATTEMPTS: u32 = 3;
+
+/// Fallo de una descarga DASH: mensaje final y, si la petición recibió un
+/// estado HTTP, el código (la re-resolución única ante 401/403/410 de
+/// ADR-0010.enm.4 decide con él).
+#[derive(Debug, Clone)]
+pub struct DashFailure {
+    pub(crate) message: String,
+    pub(crate) status: Option<u16>,
+}
+
+impl DashFailure {
+    pub(crate) fn from_message(message: impl Into<String>) -> DashFailure {
+        DashFailure {
+            message: message.into(),
+            status: None,
+        }
+    }
+}
 
 /// Descarga un manifiesto DASH (FLAC-en-ISOBMFF segmentado, lo que Tidal
 /// entrega para lossless/hi-res) a la caché como un **FLAC nativo que crece**:
@@ -282,24 +657,27 @@ const DASH_FETCH_ATTEMPTS: u32 = 3;
 ///
 /// `on_prime` se llama una vez, cuando hay suficiente audio para abrir el
 /// motor (devolver `Err` aborta); `on_progress` se llama como mucho cada
-/// `DASH_EVENT_INTERVAL` para emitir estado. Si algo falla o se cancela, el
-/// parcial se borra para no dejar una caché mentirosa.
+/// `DASH_EVENT_INTERVAL` para emitir estado. El parcial NO se borra aquí ante
+/// un fallo: lo decide el lanzador, que conoce la re-resolución única (un
+/// fallo de catálogo continúa desde el último segmento completo; el error
+/// final borra, como hoy). Sí se borra al detectar cancelación.
+///
+/// Con `resume` continúa una descarga interrumpida: trunca al último
+/// segmento completo demuxeado (lo lleva `segments_done` en la sesión) y
+/// sigue desde el segmento siguiente sin reescribir la cabecera.
 pub async fn download_dash_to_cache<F, G>(
     http: &reqwest::Client,
     session: &StreamSession,
     dash: &DashManifest,
     on_prime: &mut F,
     on_progress: &mut G,
-) -> Result<(), String>
+    resume: bool,
+) -> Result<(), DashFailure>
 where
     F: FnMut() -> Result<(), String>,
     G: FnMut(),
 {
-    let result = download_dash_inner(http, session, dash, on_prime, on_progress).await;
-    if result.is_err() && !session.complete.load(Ordering::SeqCst) {
-        let _ = tokio::fs::remove_file(&session.path).await;
-    }
-    result
+    download_dash_inner(http, session, dash, on_prime, on_progress, resume).await
 }
 
 async fn download_dash_inner<F, G>(
@@ -308,51 +686,119 @@ async fn download_dash_inner<F, G>(
     dash: &DashManifest,
     on_prime: &mut F,
     on_progress: &mut G,
-) -> Result<(), String>
+    resume: bool,
+) -> Result<(), DashFailure>
 where
     F: FnMut() -> Result<(), String>,
     G: FnMut(),
 {
+    use std::io::SeekFrom;
+    use tokio::io::AsyncSeekExt;
+
     // El init trae el STREAMINFO real: de ahí salen la duración y la etiqueta
     // (Tidal declara 96 kHz en el MPD donde el FLAC real trae 192 kHz).
     let init = get_bytes_with_retries(http, &dash.init_url)
         .await
-        .map_err(|e| format!("No se pudo descargar el init del stream: {}", e))?;
+        .map_err(|fail| DashFailure {
+            message: format!("No se pudo descargar el init del stream: {}", fail.message),
+            status: fail.status,
+        })?;
     let info = syncify_fmp4_flac::read_init(&init)
-        .map_err(|e| format!("El init del stream no es FLAC: {}", e))?;
+        .map_err(|e| DashFailure::from_message(format!("El init del stream no es FLAC: {}", e)))?;
 
-    let mut file = tokio::fs::File::create(&session.path)
-        .await
-        .map_err(|e| format!("No se pudo crear la caché del stream: {}", e))?;
-    let mut header: Vec<u8> = Vec::with_capacity(4 + 4 + 34);
-    syncify_fmp4_flac::write_flac_header(&mut header, &info)
-        .map_err(|e| format!("No se pudo escribir la cabecera FLAC: {}", e))?;
-    file.write_all(&header)
-        .await
-        .map_err(|e| format!("Error escribiendo la caché del stream: {}", e))?;
+    let mut file;
+    let mut samples_total: u64;
+    let mut written_bytes: u64;
+    let start_segment;
+
+    if resume {
+        // Reanudación por segmentos (Fase C): la sesión lleva el último
+        // segmento completo demuxeado; el truncado limpio recorta cualquier
+        // cola rasgada de la interrupción. Si la frontera ya cubre todos los
+        // segmentos (crash entre el último segmento y el marcador .done), el
+        // bucle no ejecuta iteraciones y la cola de la función completa la
+        // caché sin re-descargar nada.
+        let segments_done = session.segments_done.load(Ordering::SeqCst);
+        written_bytes = session.downloaded_bytes.load(Ordering::SeqCst);
+        let rate = info.sample_rate as u64;
+        samples_total = if rate > 0 {
+            session
+                .audio_millis
+                .load(Ordering::SeqCst)
+                .saturating_mul(rate)
+                / 1000
+        } else {
+            0
+        };
+        start_segment = segments_done + 1;
+        let mut reopened = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&session.path)
+            .await
+            .map_err(|e| {
+                DashFailure::from_message(format!("No se pudo reabrir la caché del stream: {}", e))
+            })?;
+        reopened.set_len(written_bytes).await.map_err(|e| {
+            DashFailure::from_message(format!("No se pudo reabrir la caché del stream: {}", e))
+        })?;
+        reopened
+            .seek(SeekFrom::Start(written_bytes))
+            .await
+            .map_err(|e| {
+                DashFailure::from_message(format!("No se pudo reabrir la caché del stream: {}", e))
+            })?;
+        file = reopened;
+        tracing::info!(
+            track_id = session.track_id,
+            from_segment = start_segment,
+            bytes = written_bytes,
+            "streaming: reanudación DASH desde el último segmento completo"
+        );
+    } else {
+        start_segment = 1;
+        samples_total = 0;
+        // La descarga desde cero invalida cualquier marcador de parcial previo.
+        let _ = std::fs::remove_file(partial_marker_path(&session.path));
+        file = tokio::fs::File::create(&session.path).await.map_err(|e| {
+            DashFailure::from_message(format!("No se pudo crear la caché del stream: {}", e))
+        })?;
+        let mut header: Vec<u8> = Vec::with_capacity(4 + 4 + 34);
+        syncify_fmp4_flac::write_flac_header(&mut header, &info).map_err(|e| {
+            DashFailure::from_message(format!("No se pudo escribir la cabecera FLAC: {}", e))
+        })?;
+        file.write_all(&header).await.map_err(|e| {
+            DashFailure::from_message(format!("Error escribiendo la caché del stream: {}", e))
+        })?;
+        written_bytes = header.len() as u64;
+        session
+            .downloaded_bytes
+            .store(written_bytes, Ordering::SeqCst);
+    }
 
     let total_secs = info.duration_secs();
     let prime_secs = (total_secs / 10.0).clamp(8.0, 30.0);
     let mut primed = session.started.load(Ordering::SeqCst);
-    let mut samples_total: u64 = 0;
-    let mut written_bytes: u64 = header.len() as u64;
     let mut last_emit = Instant::now();
-    session
-        .downloaded_bytes
-        .store(written_bytes, Ordering::SeqCst);
 
-    for seg in 1..=dash.total_segments {
+    for seg in start_segment..=dash.total_segments {
         if session.is_canceled() {
             let _ = file.flush().await;
             if !session.complete.load(Ordering::SeqCst) {
                 let _ = tokio::fs::remove_file(&session.path).await;
+                let _ = std::fs::remove_file(partial_marker_path(&session.path));
             }
             return Ok(());
         }
 
         let segment = get_bytes_with_retries(http, &dash.segment_url(seg))
             .await
-            .map_err(|e| format!("Se interrumpió la descarga (segmento {}): {}", seg, e))?;
+            .map_err(|fail| DashFailure {
+                message: format!(
+                    "Se interrumpió la descarga (segmento {}): {}",
+                    seg, fail.message
+                ),
+                status: fail.status,
+            })?;
 
         // Los frames de cada segmento se escriben de una vez para no partir una
         // escritura en mitad de un frame.
@@ -361,16 +807,17 @@ where
             frames.extend_from_slice(frame);
             Ok(())
         })
-        .map_err(|e| format!("Segmento {} ilegible: {}", seg, e))?;
+        .map_err(|e| DashFailure::from_message(format!("Segmento {} ilegible: {}", seg, e)))?;
 
-        file.write_all(&frames)
-            .await
-            .map_err(|e| format!("Error escribiendo la caché del stream: {}", e))?;
+        file.write_all(&frames).await.map_err(|e| {
+            DashFailure::from_message(format!("Error escribiendo la caché del stream: {}", e))
+        })?;
         samples_total += samples;
         written_bytes += frames.len() as u64;
         session
             .downloaded_bytes
             .store(written_bytes, Ordering::SeqCst);
+        session.set_segments_done(seg);
         if info.sample_rate > 0 {
             let audio_ms = samples_total.saturating_mul(1000) / info.sample_rate as u64;
             session.audio_millis.store(audio_ms, Ordering::SeqCst);
@@ -383,6 +830,9 @@ where
                     .store(estimate.max(written_bytes), Ordering::SeqCst);
             }
         }
+        // Frontera durable del parcial (Fase C): el crash deja el marcador un
+        // segmento por detrás del fichero, nunca por delante.
+        let _ = write_partial_marker(session);
 
         let audio_secs = if info.sample_rate > 0 {
             samples_total as f64 / info.sample_rate as f64
@@ -391,7 +841,7 @@ where
         };
         if !primed && audio_secs >= prime_secs {
             primed = true;
-            on_prime()?;
+            on_prime().map_err(DashFailure::from_message)?;
         }
         if last_emit.elapsed() >= DASH_EVENT_INTERVAL {
             last_emit = Instant::now();
@@ -402,36 +852,46 @@ where
     let _ = file.flush().await;
     session.complete.store(true, Ordering::SeqCst);
     if !primed {
-        on_prime()?;
+        on_prime().map_err(DashFailure::from_message)?;
     }
     let _ = write_done_marker(session);
+    // El marcador de parcial ya no describe nada: la caché está completa.
+    let _ = std::fs::remove_file(partial_marker_path(&session.path));
     on_progress();
     Ok(())
 }
 
 /// GET con reintentos acotados: son muchos payloads pequeños y un fallo
-/// puntual no debe matar la reproducción.
-async fn get_bytes_with_retries(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+/// puntual no debe matar la reproducción. El error conserva el último estado
+/// HTTP recibido, si lo hubo.
+async fn get_bytes_with_retries(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, DashFailure> {
     let mut last_err = String::new();
+    let mut last_status: Option<u16> = None;
     for attempt in 1..=DASH_FETCH_ATTEMPTS {
         match http.get(url).send().await {
             Ok(response) if response.status().is_success() => match response.bytes().await {
                 Ok(bytes) => return Ok(bytes.to_vec()),
                 Err(e) => last_err = e.to_string(),
             },
-            Ok(response) => last_err = format!("HTTP {}", response.status()),
+            Ok(response) => {
+                last_status = Some(response.status().as_u16());
+                last_err = format!("HTTP {}", response.status());
+            }
             Err(e) => last_err = e.to_string(),
         }
         if attempt < DASH_FETCH_ATTEMPTS {
             tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
         }
     }
-    Err(last_err)
+    Err(DashFailure {
+        message: last_err,
+        status: last_status,
+    })
 }
 
 /// Limpia parciales abandonados y recorta la caché al presupuesto (borra los
 /// más antiguos). Nunca toca el fichero de la sesión recién creada.
-pub fn cleanup_cache(app: &AppHandle, keep: Option<&Path>) {
+pub fn cleanup_cache<R: tauri::Runtime>(app: &AppHandle<R>, keep: Option<&Path>) {
     let Ok(dir) = cache_dir(app) else {
         return;
     };
@@ -461,6 +921,7 @@ pub fn cleanup_cache(app: &AppHandle, keep: Option<&Path>) {
         {
             let _ = std::fs::remove_file(&path);
             let _ = std::fs::remove_file(marker_path(&path));
+            let _ = std::fs::remove_file(partial_marker_path(&path));
             continue;
         }
         files.push((path, meta.len(), modified));
@@ -477,6 +938,7 @@ pub fn cleanup_cache(app: &AppHandle, keep: Option<&Path>) {
         }
         if std::fs::remove_file(&path).is_ok() {
             let _ = std::fs::remove_file(marker_path(&path));
+            let _ = std::fs::remove_file(partial_marker_path(&path));
             total = total.saturating_sub(len);
         }
     }
@@ -538,6 +1000,85 @@ mod tests {
         session.set_pending_seek(12.5);
         assert_eq!(session.take_pending_seek(), Some(12.5));
         assert_eq!(session.take_pending_seek(), None);
+    }
+
+    /// FLAC nativo sintético: cabecera real (la del fixture fMP4) + cola.
+    fn write_flac_partial(path: &Path, tail: &[u8]) {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../crates/syncify-fmp4-flac/tests/fixtures/tiny-fmp4-flac.m4a");
+        let data = std::fs::read(&fixture).expect("fixture fmp4");
+        let info = syncify_fmp4_flac::read_init(&data).expect("init");
+        let mut out = Vec::new();
+        syncify_fmp4_flac::write_flac_header(&mut out, &info).expect("cabecera");
+        out.extend_from_slice(tail);
+        std::fs::write(path, out).expect("parcial");
+    }
+
+    #[test]
+    fn resumable_partial_validates_the_flac_header_before_accepting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track-1-qobuz-24bit-192000hz.flac");
+        // Sin fichero no hay parcial.
+        assert!(read_resumable_partial(&path, &sample_info(), false).is_none());
+        // Cabecera FLAC válida: reanudable desde el byte en disco.
+        write_flac_partial(&path, &[0xFF, 0xF8, 1, 2, 3, 4]);
+        let resume = read_resumable_partial(&path, &sample_info(), false).expect("parcial válido");
+        assert_eq!(resume.bytes, std::fs::metadata(&path).unwrap().len());
+        assert_eq!(resume.segments_done, 0);
+        assert_eq!(resume.audio_millis, 0);
+        // Basura guardada con la extensión FLAC: descartada, no reanudada.
+        std::fs::write(&path, b"<html>404 Not Found</html>").unwrap();
+        assert!(read_resumable_partial(&path, &sample_info(), false).is_none());
+        // Fichero vacío (crash antes de la cabecera): nada que reanudar.
+        std::fs::write(&path, b"").unwrap();
+        assert!(read_resumable_partial(&path, &sample_info(), false).is_none());
+    }
+
+    #[test]
+    fn progressive_partials_without_reliable_validation_are_not_resumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track-1-deezer-0bit-320000hz.mp3");
+        std::fs::write(&path, b"ID3 audio bytes").unwrap();
+        let mut info = sample_info();
+        info.extension = "mp3".to_string();
+        assert!(read_resumable_partial(&path, &info, false).is_none());
+    }
+
+    #[test]
+    fn dash_partials_require_a_coherent_segment_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track-1-tidal-16bit-44100hz.flac");
+        write_flac_partial(&path, &[0u8; 64]);
+        let len = std::fs::metadata(&path).unwrap().len();
+        let marker_path = partial_marker_path(&path);
+        // Sin marcador no se sabe qué segmentos están completos: no reanudar.
+        assert!(read_resumable_partial(&path, &sample_info(), true).is_none());
+        // Marcador coherente con el fichero: reanudable en la frontera.
+        std::fs::write(
+            &marker_path,
+            serde_json::json!({"bytes": len, "segments_done": 2, "audio_millis": 4_200})
+                .to_string(),
+        )
+        .unwrap();
+        let resume = read_resumable_partial(&path, &sample_info(), true).expect("coherente");
+        assert_eq!(resume.bytes, len);
+        assert_eq!(resume.segments_done, 2);
+        assert_eq!(resume.audio_millis, 4_200);
+        // Marcador por delante del fichero (fichero recortado): incoherente.
+        std::fs::write(
+            &marker_path,
+            serde_json::json!({"bytes": len + 10, "segments_done": 2, "audio_millis": 4_200})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(read_resumable_partial(&path, &sample_info(), true).is_none());
+        // Frontera 0: marcador de una descarga recién reiniciada.
+        std::fs::write(
+            &marker_path,
+            serde_json::json!({"bytes": 0, "segments_done": 0, "audio_millis": 0}).to_string(),
+        )
+        .unwrap();
+        assert!(read_resumable_partial(&path, &sample_info(), true).is_none());
     }
 
     #[test]

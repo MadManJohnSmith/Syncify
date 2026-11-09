@@ -90,6 +90,7 @@ describe('PlaylistView', () => {
             priority: 50,
             qualityPreference: 'hires',
             allowFallback: true,
+            jobKind: 'playlist',
         });
 
         // Banner shows the engine summary as-is

@@ -104,7 +104,7 @@ y verificado solo a medias. Concreto:
    de `../README.md`/`README.es.md`). Un
    beta honesto necesita esa lista reducida, no ampliada.
 6. **Tests y CI en verde en Windows**, que hoy está bloqueado en esta máquina
-   (`HANDOFF-2026-10-11.md:6`).
+   (relevo del 2026-10-11, retirado del repo el 2026-11-07; el relevo vive fuera del workspace).
 7. **Flujo de descargas más eficiente, sin perder corrección.** Por petición expresa
    del propietario (2026-10-13/14), ejecutar la cola
    [`../COLA_FLUJO_DESCARGAS_PRE_BETA.md`](../COLA_FLUJO_DESCARGAS_PRE_BETA.md):

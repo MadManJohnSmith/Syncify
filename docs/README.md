@@ -65,6 +65,21 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
   - `0009-adaptadores-de-descarga-nativos.md`: destinos de descarga en beta; Qobuz,
     Tidal, Deezer, SoundCloud y Amazon con adaptador nativo en Rust; Spotify y Apple
     Music quedan como catálogo (propuesto).
+  - `0010-reproductor-cola-backend.md`: cola y estado de reproducción en el backend,
+    entradas efímeras y búsqueda de catálogo en proveedores (aceptado).
+  - `0011-motor-de-audio-dsp.md`: gapless, crossfade, ReplayGain, AGC y EQ
+    paramétrico en el motor nativo (aceptado).
+  - `0012-playlists-entidad-y-escritura.md`: playlist local sin cuenta, fuentes
+    remotas, duplicados, tombstones y push bidireccional opt-in (propuesto).
+  - `0013-playlists-escala-y-smart.md`: paginación sin tope de 500, smart playlists
+    v2 con AND/OR, orden y límite, y portadas por mosaico (propuesto).
+  - `0014-adopcion-hallazgos-symfonium-audirvana.md`: adopción selectiva de los
+    hallazgos de Symfonium y Audirvāna; contrato de tags, cola, streaming y
+    límites de alcance (aceptado).
+  - `0015-migracion-colecciones-y-destinos.md`: favoritos, álbumes, artistas y
+    playlists; capacidad declarada por destino y revisión de dudosos (propuesto).
+  - `0016-migracion-ejecucion-y-undo.md`: idempotencia, reanudación, lotes con
+    rate limit, journal y undo best-effort (propuesto).
 - **`APP_FLOW.en.md`**: recorrido de extremo a extremo del flujo actual (en
   inglés): de conectar una cuenta a una descarga verificada en disco.
 - **`design-system.md`**: los 10 temas (4 estándar + 6 de servicio), tokens
@@ -129,7 +144,6 @@ Registros fechados que se conservan como evidencia. Ninguno es estado actual;
 todos llevan un banner «Estado actual» que dice qué quedó resuelto después y
 qué sigue abierto solo en ese fichero:
 
-- `HANDOFF-2026-10-11.md`: relevo del 2026-10-11 (hecho/verificado vs abierto).
 - `PLAN-Correccion-168.md`: plan v2 de los 168, ya consumido; retractaciones
   de la v1 y trazabilidad ID→carril.
 - `PENDIENTES.md`: acta de cierre del backlog v0.4.1 (sin trabajo abierto).

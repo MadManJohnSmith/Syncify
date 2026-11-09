@@ -6,14 +6,17 @@
 
 **Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): corregida la cadena de encolado (`queue_downloads` vive en `commands/download.rs` y delega en `commands/queue.rs::add_to_queue`), el bucle del worker ya es event-driven (`slot_available_notify`, sin sondeo de 3 s), el claim es atómico vía `claim_next_item`, `process_download` hoy son `process_download_claimed` + `process_download_internal`, añadido el estado `cancelled`, payload de `syncify:download_progress` completado y citas de línea sustituidas por símbolos. Sigue sin verificar en escritorio real la ejecución de descargas de punta a punta (GUI, red viva): véase README §"Verification and limitations".
 
-**Último cambio:** 2026-10-25 — re-revisión de comportamiento contra el árbol — archivos: `worker.rs`, `commands/download.rs`, `commands/queue.rs`, `main.rs`, `migrations/0004_production.sql`, `migrations/0046_download_queue_resume.sql`, `migrations/0050_download_queue_source_identity.sql`, `migrations/0060_quality_policy_and_decision_tracking.sql`. Previo: 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/`. Previo a ese: S40 — 2026-03-30.
-**Leer antes de modificar:** `worker.rs`, `commands/queue.rs`, `commands/download.rs`
+**Último cambio:** 2026-11-07 — P6 Fase C (ADR-0024): la descarga completada invalida la caché de streaming de la pista — archivos: `worker.rs`, `services/stream_cache.rs`. Previo: 2026-11-06 — P5: el despacho de proveedores pasa por el puerto `download/provider_gateway.rs` (ADR-0023) — archivos: `download/orchestrator.rs`, `download/provider_gateway.rs`, `download/providers/*`, `download/quality_reconcile.rs`, `worker.rs`. Previo: 2026-10-25 — re-revisión de comportamiento contra el árbol — archivos: `worker.rs`, `commands/download.rs`, `commands/queue.rs`, `main.rs`, `migrations/0004_production.sql`, `migrations/0046_download_queue_resume.sql`, `migrations/0050_download_queue_source_identity.sql`, `migrations/0060_quality_policy_and_decision_tracking.sql`. Previo: 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/`. Previo a ese: S40 — 2026-03-30.
+**Leer antes de modificar:** `worker.rs`, `commands/queue.rs`, `commands/download.rs`, `services/stream_cache.rs`
 **Archivos core:**
-- `src-tauri/src/worker.rs` (3.184 líneas — bucle del worker, claim atómico, eventos de progreso, supervisor auxiliar)
+- `src-tauri/src/worker.rs` (3.371 líneas — bucle del worker, claim atómico, eventos de progreso, supervisor auxiliar)
 - `src-tauri/src/download/mod.rs` (module index)
 - `src-tauri/src/download/orchestrator.rs` (DownloadOrchestrator)
+- `src-tauri/src/download/provider_gateway.rs` (puerto `DownloadProvider`, registro, `ProviderRequest`/`ProviderDelivery`/`ProviderError`)
 - `src-tauri/src/download/qobuz.rs` (credential-free Qobuz download)
 - `src-tauri/src/download/tidal.rs` (credential-free Tidal download)
+- `src-tauri/src/download/providers/` (adaptadores por proveedor: llamada al motor, normalización, provenance y reconciliación de calidad)
+- `src-tauri/src/download/quality_reconcile.rs` (reconciliación de calidad física compartida)
 - `src-tauri/src/download/amazon.rs` (Amazon Music download)
 - `src-tauri/src/download/http_client.rs` (shared HTTP client)
 - `src-tauri/src/download/progress.rs` (DownloadRequest, progress types)
@@ -70,7 +73,10 @@
 │     embed/artefacto; build DownloadRequest              │
 │  6. DownloadOrchestrator::download_track(request)       │
 │  7. On success: mark_complete (con métricas reales de   │
-│     download/audio_inspector.rs), emit "complete"       │
+│     download/audio_inspector.rs; si el ledger quedó     │
+│     escrito, invalida la caché de streaming de la pista │
+│     vía stream_cache::invalidate_track, ADR-0024),      │
+│     emit "complete"                                     │
 │  8. On failure: mark_failed, emit "failed"              │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -115,6 +121,14 @@ Methods: `pause()`, `resume()`, `stop()`, `wait_if_paused()`, `notify_available(
 | Tidal | `download/tidal.rs` (re-export del crate externo `syncify-tidal-downloader`) | Cliente HTTP nativo con progreso |
 | Amazon | `download/amazon.rs` (`AmazonDownloader`) | Vía servicio DoubleDouble |
 
+El despacho de descarga pasa por el puerto de proveedores
+(`download/provider_gateway.rs`, ADR-0023): el orquestador resuelve
+Qobuz/Tidal/Amazon por nombre y cada adaptador (`download/providers/*.rs`)
+encapsula la llamada al motor, la normalización de provenance y la
+reconciliación de calidad física. La política de fallback, auth, progreso y
+SongLink sigue en el orquestador; SongLink sigue siendo un resolvedor, no un
+proveedor.
+
 El worker instancia `crate::download::DownloadOrchestrator` dentro de
 `process_download_internal` (`worker.rs`). El directorio de salida lo resuelve
 `resolve_download_output_dir()` (método de `DownloadWorker` en `worker.rs`):
@@ -129,6 +143,31 @@ compartidas (título + duración) viven en `download/identity.rs`; el preflight
 que decide qué se puede encolar está en `commands/queue.rs`
 (`evaluate_track_preflight`, `preflight_download_batch`,
 `enqueue_eligible_batch`).
+
+### Interacción con la sesión de reproducción (P6 — ADR-0024)
+
+La reproducción prefiere el fichero local: `PlayerState::open`
+(`services/playback_session.rs`) consulta `downloads` antes de streamear. Dos
+consecuencias directas sobre el pipeline de descarga:
+
+- **Invalidación de caché al completar** (corrección 4 de la Fase C): cuando
+  `mark_complete` escribe el ledger de `downloads`, invoca
+  `stream_cache::invalidate_track` con el app handle del worker, que borra las
+  entradas de caché de streaming de la pista (fichero, `.done` y `.partial` de
+  todas las calidades; el sufijo `-` del prefijo evita colisiones
+  `track-1-`/`track-11-`). Así la siguiente reproducción no sirve contenido
+  viejo: o manda el fichero recién descargado, o se vuelve a streamear. Si el
+  ledger no llegó a escribirse, la caché se conserva (fallo blando; una
+  invalidación fallida nunca falla la descarga y la LRU la recoge después).
+- **Parciales reanudables y re-resolución única en streaming** (correcciones 2
+  y 3 de la Fase C): el streaming progresivo reanuda por HTTP Range desde el
+  byte recibido (un servidor sin soporte de Range degrada a descarga desde
+  cero) y DASH trunca a la frontera del último segmento completo y continúa en
+  el siguiente (marcador `.partial`); la cabecera FLAC se valida antes de dar
+  un parcial por bueno. Un fallo de catálogo 401/403/410 re-resuelve UNA vez
+  (ADR-0010.enm.4). La reanudación de parciales de la propia cola de descargas
+  (staging de `download_queue`) queda fuera del alcance (deuda declarada en
+  ADR-0024).
 
 ### Worker Supervisor (en `src-tauri/src/main.rs`, dentro del `setup`)
 

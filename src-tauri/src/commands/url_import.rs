@@ -289,14 +289,14 @@ pub async fn perform_import_from_url_with_quality(
     let final_quality = normalize_queue_quality_preference(Some(
         requested_quality.unwrap_or("lossless").to_string(),
     ));
-    let existing_queue: Option<(i64, String, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id, status, service_id, service_name, service_track_id, effective_service, effective_service_track_id, origin_service, origin_service_track_id FROM download_queue WHERE track_id = ? ORDER BY id DESC LIMIT 1",
+    let existing_queue: Option<(i64, String, Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT id, status, service_id, service_name, service_track_id, effective_service, effective_service_track_id, origin_service, origin_service_track_id, job_id FROM download_queue WHERE track_id = ? ORDER BY id DESC LIMIT 1",
     )
     .bind(track_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(|e| format!("Failed to look up URL import queue: {e}"))?;
-    let (queue_id, q_status) = if let Some((
+    let (queue_id, q_status, job_id) = if let Some((
         id,
         status,
         sid,
@@ -306,6 +306,7 @@ pub async fn perform_import_from_url_with_quality(
         effective_track,
         origin,
         origin_track,
+        existing_job_id,
     )) = existing_queue
     {
         if !matches!(status.as_str(), "queued" | "downloading")
@@ -322,8 +323,19 @@ pub async fn perform_import_from_url_with_quality(
                     .to_string(),
             );
         }
-        (id, status)
+        (id, status, existing_job_id)
     } else {
+        let job_request = crate::download::jobs::DownloadJobRequest {
+            kind: "url".to_string(),
+            label: Some(url.to_string()),
+            quality_preference: final_quality.clone(),
+            allow_fallback: Some(true),
+            filter: crate::download::jobs::DownloadJobFilter::default(),
+            ..Default::default()
+        };
+        let url_job_id = crate::download::jobs::create_job(&mut *tx, &job_request)
+            .await
+            .map_err(|e| e.to_string())?;
         let position: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(position), 0) + 1 FROM download_queue WHERE status = 'queued'",
         )
@@ -337,9 +349,9 @@ pub async fn perform_import_from_url_with_quality(
                 service_id, service_name, service_track_id, target_title, target_artist,
                 smart_studio_origin, allow_fallback,
                 origin_service, origin_service_track_id, effective_service,
-                effective_service_track_id, fallback_reason, match_method, created_at
+                effective_service_track_id, fallback_reason, match_method, job_id, created_at
             ) VALUES (?, 50, ?, ?, 'queued', 0.0, 0, ?, 1, ?, ?, ?, ?, ?, 0, 1,
-                      ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id"#,
+                      ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) RETURNING id"#,
         )
         .bind(track_id)
         .bind(&final_quality)
@@ -356,10 +368,19 @@ pub async fn perform_import_from_url_with_quality(
         .bind(&target_track_id)
         .bind(is_cross_platform.then_some("SongLink cross-platform URL import"))
         .bind(is_cross_platform.then_some("songlink_cross_platform"))
+        .bind(url_job_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| format!("Failed to enqueue URL import with provenance: {e}"))?;
-        (id, "queued".to_string())
+        sqlx::query(
+            "UPDATE download_jobs SET requested_count = 1, estimated_count = 1, \
+             updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        )
+        .bind(url_job_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to update URL import job counters: {e}"))?;
+        (id, "queued".to_string(), Some(url_job_id))
     };
     tx.commit()
         .await
@@ -371,6 +392,7 @@ pub async fn perform_import_from_url_with_quality(
         id: parsed.id,
         url: parsed.url,
         queue_id: Some(queue_id),
+        job_id,
         track_id: Some(track_id),
         title: Some(title),
         artist: Some(artist),

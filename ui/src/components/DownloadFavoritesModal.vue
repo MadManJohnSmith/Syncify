@@ -293,7 +293,55 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { downloadFavorites, syncFavorites, type DownloadFavoritesResult } from '../api/library'
+import { syncFavorites } from '../api/library'
+import {
+  createDownloadJob,
+  estimateDownloadJob,
+  type DownloadJobEstimate,
+  type DownloadJobRequest,
+} from '../api/downloadJobs'
+
+interface FavoritesModalResult {
+  total_candidates: number
+  enqueued: number
+  already_downloaded: number
+  already_queued: number
+  ready_exact?: number
+  ready_fallback?: number
+  unresolved_sources?: number
+  stale_sources?: number
+  ambiguous_sources?: number
+  no_download_provider?: number
+  is_preflight: boolean
+  estimated_size_mb?: number
+  message: string
+  job_id?: number
+}
+
+function toModalResult(estimate: DownloadJobEstimate, isPreflight: boolean): FavoritesModalResult {
+  const exact = estimate.byCapacity.hires + estimate.byCapacity.lossless
+  const fallback = estimate.byCapacity.high + estimate.byCapacity.lossy
+  const noProvider = estimate.byCapacity.unknown
+  return {
+    total_candidates: estimate.total,
+    enqueued: estimate.total,
+    already_downloaded: 0,
+    already_queued: 0,
+    ready_exact: exact,
+    ready_fallback: fallback,
+    unresolved_sources: noProvider,
+    stale_sources: 0,
+    ambiguous_sources: 0,
+    no_download_provider: noProvider,
+    is_preflight: isPreflight,
+    estimated_size_mb: estimate.estimatedSizeMb,
+    message: isPreflight
+      ? `Preflight: ${estimate.total} candidates (~${estimate.estimatedSizeMb} MB). Confirm to create the download job.`
+      : estimate.total === 0
+        ? 'No favorite tracks found matching the criteria.'
+        : `Ready to create a download job with ${estimate.total} candidates (~${estimate.estimatedSizeMb} MB).`,
+  }
+}
 
 const props = defineProps<{
   modelValue: boolean
@@ -301,7 +349,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void
-  (e: 'enqueued', result: DownloadFavoritesResult): void
+  (e: 'enqueued', result: FavoritesModalResult): void
 }>()
 
 const selectedService = ref<string>('all')
@@ -314,7 +362,7 @@ const syncBeforeDownload = ref<boolean>(false)
 const isProcessing = ref<boolean>(false)
 const isSyncing = ref<boolean>(false)
 const error = ref<string | null>(null)
-const result = ref<DownloadFavoritesResult | null>(null)
+const result = ref<FavoritesModalResult | null>(null)
 
 const serviceOptions = [
   { value: 'all', label: 'All Services', icon: 'hub' },
@@ -386,31 +434,34 @@ async function executeDownloadFavorites(isConfirmed: boolean = false) {
       }
     }
 
-    // Run with dry_run = true if mass batch and not confirmed
-    const dryRunParam = (selectedLimit.value === undefined && !isConfirmed) ? true : false
-
-    console.debug('[DownloadFavoritesModal] Invoking downloadFavorites with params:', {
-      service: serviceParam,
-      itemType: typeParam,
+    const jobRequest: DownloadJobRequest = {
+      kind: 'favorites',
+      sourceService: serviceParam,
       qualityPreference: selectedQuality.value,
       priority,
+      allowFallback: true,
       limit: selectedLimit.value,
-      dryRun: dryRunParam,
-    })
-
-    const res = await downloadFavorites(
-      serviceParam,
-      typeParam,
-      selectedQuality.value,
-      priority,
-      selectedLimit.value,
-      dryRunParam
-    )
-
-    result.value = res
-    if (!res.is_preflight) {
-      emit('enqueued', res)
+      filter: { itemType: typeParam as DownloadJobRequest['filter']['itemType'] },
     }
+
+    // Mass batches (unlimited limit and not confirmed) show the estimate first.
+    const dryRunParam = (selectedLimit.value === undefined && !isConfirmed) ? true : false
+    const estimate = await estimateDownloadJob(jobRequest)
+    const summary = toModalResult(estimate, dryRunParam)
+
+    if (dryRunParam || estimate.total === 0) {
+      result.value = summary
+      return
+    }
+
+    const created = await createDownloadJob(jobRequest)
+    const finalSummary: FavoritesModalResult = {
+      ...summary,
+      job_id: created.jobId,
+      message: `Download job #${created.jobId} created with ${estimate.total} candidate tracks (~${estimate.estimatedSizeMb} MB).`,
+    }
+    result.value = finalSummary
+    emit('enqueued', finalSummary)
   } catch (err: any) {
     console.error('Failed to download favorites:', err)
     error.value = typeof err === 'string' ? err : (err.message || 'Failed to process favorites download.')
