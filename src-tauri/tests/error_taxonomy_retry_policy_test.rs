@@ -4,8 +4,8 @@
 //! Covers the three places that make the decision:
 //! 1. `download::qobuz::classify_qobuz_http_failure` — what the downloader retries and
 //!    how long it waits.
-//! 2. `commands::queue::perform_retry_queue_item` / `perform_retry_all_failed` — what
-//!    the user may re-queue, and the message they get when they may not.
+//! 2. `commands::queue::perform_retry_queue_item` / `perform_retry_all_failed` — ManualRetry:
+//!    reencola cualquier fila failed, sin filtro de clase ni tope de intentos (ADR-0022).
 
 use sqlx::sqlite::SqlitePoolOptions;
 use syncify_core_domain::errors::ErrorTaxonomy;
@@ -110,7 +110,7 @@ async fn seed_queue_row(
 }
 
 #[tokio::test]
-async fn retry_queue_item_refuses_terminal_failures_with_the_taxonomy_message() {
+async fn manual_retry_accepts_every_failed_row_and_resets_the_budget() {
     let db = queue_db().await;
 
     let terminal_row = seed_queue_row(
@@ -120,46 +120,28 @@ async fn retry_queue_item_refuses_terminal_failures_with_the_taxonomy_message() 
         1,
     )
     .await;
-    let err = perform_retry_queue_item(&db, terminal_row)
-        .await
-        .expect_err("terminal failure must not be retryable");
-    assert!(
-        err.starts_with("Cannot auto-retry terminal failure:"),
-        "unexpected message: {}",
-        err
-    );
+
+    // La taxonomía sigue diciendo terminal: ese veredicto gobierna el reintento
+    // AUTOMÁTICO del worker, no el botón del usuario (ADR-0022).
     let taxonomy = syncify_tauri_lib::services::operation_recovery::classify_operation_error(
         syncify_core_domain::OperationType::DownloadTidal,
         "qobuz",
         "AmbiguousSource: Multiple matching tracks found without ISRC/MBID",
     );
-    assert_eq!(
-        err,
-        format!(
-            "Cannot auto-retry terminal failure: {}",
-            taxonomy.ui_message()
-        )
-    );
+    assert!(taxonomy.is_terminal() || taxonomy.requires_user_action());
 
-    let transient_row = seed_queue_row(
-        &db,
-        "qobuz",
-        "NetworkExhausted: Network error after 3 attempts: connection reset",
-        1,
-    )
-    .await;
-    // A spent retry budget is still an error the queue may re-attempt explicitly...
-    perform_retry_queue_item(&db, transient_row)
+    perform_retry_queue_item(&db, terminal_row)
         .await
-        .expect("transient failure stays retryable");
-    let status: String = sqlx::query_scalar("SELECT status FROM download_queue WHERE id = ?")
-        .bind(transient_row)
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(status, "queued");
+        .expect("manual retry is allowed for terminal classes");
+    let (status, retry_count): (String, i64) =
+        sqlx::query_as("SELECT status, retry_count FROM download_queue WHERE id = ?")
+            .bind(terminal_row)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!((status.as_str(), retry_count), ("queued", 0));
 
-    // ...unless the row already exhausted its budget.
+    // Un presupuesto agotado tampoco bloquea el reintento manual.
     let exhausted = seed_queue_row(
         &db,
         "qobuz",
@@ -167,11 +149,20 @@ async fn retry_queue_item_refuses_terminal_failures_with_the_taxonomy_message() 
         99,
     )
     .await;
-    assert!(perform_retry_queue_item(&db, exhausted).await.is_err());
+    perform_retry_queue_item(&db, exhausted)
+        .await
+        .expect("manual retry has no attempt cap");
+    let retry_count: i64 =
+        sqlx::query_scalar("SELECT retry_count FROM download_queue WHERE id = ?")
+            .bind(exhausted)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(retry_count, 0);
 }
 
 #[tokio::test]
-async fn retry_all_failed_agrees_with_the_single_item_verdict() {
+async fn retry_all_failed_requeues_every_failed_row() {
     let db = queue_db().await;
 
     let transient =
@@ -187,7 +178,10 @@ async fn retry_all_failed_agrees_with_the_single_item_verdict() {
     let not_found = seed_queue_row(&db, "tidal", "TrackUnresolved: not found on provider", 1).await;
 
     let retried = perform_retry_all_failed(&db).await.expect("retry all");
-    assert_eq!(retried, 1, "only the transient row may be re-queued");
+    assert_eq!(
+        retried, 4,
+        "manual retry has no class filter and no attempt cap"
+    );
 
     let rows: Vec<(i64, String, i64)> = sqlx::query_as(
         "SELECT id, status, retry_count FROM download_queue WHERE id IN (?, ?, ?, ?)",
@@ -200,15 +194,11 @@ async fn retry_all_failed_agrees_with_the_single_item_verdict() {
     .await
     .unwrap();
 
-    let mut by_id: std::collections::HashMap<i64, (String, i64)> = rows
-        .into_iter()
-        .map(|(id, status, rc)| (id, (status, rc)))
-        .collect();
-    assert_eq!(by_id.remove(&transient).unwrap(), ("queued".to_string(), 2));
-    assert_eq!(
-        by_id.remove(&ambiguous).unwrap(),
-        ("failed".to_string(), 99)
-    );
-    assert_eq!(by_id.remove(&expired).unwrap(), ("failed".to_string(), 1));
-    assert_eq!(by_id.remove(&not_found).unwrap(), ("failed".to_string(), 1));
+    for (id, status, retry_count) in rows {
+        assert_eq!(
+            (status.as_str(), retry_count),
+            ("queued", 0),
+            "row {id} must be reset to a fresh queued job"
+        );
+    }
 }

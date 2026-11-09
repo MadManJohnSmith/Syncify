@@ -155,6 +155,7 @@ describe('TASK-24: Album & Artist Detail interactive actions', () => {
             expect(batchCall?.args).toEqual({
                 trackIds: [201, 202],
                 allowFallback: true,
+                jobKind: 'album',
             });
         });
     });

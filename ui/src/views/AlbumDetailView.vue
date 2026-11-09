@@ -191,6 +191,7 @@ async function downloadAlbum() {
     const res = await addBatchToQueue({
       trackIds,
       allowFallback: true,
+      jobKind: 'album',
     })
     toast.success('Queued for download', `${res.added} tracks from ${album.value.title}`)
   } catch (err: any) {

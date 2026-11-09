@@ -146,7 +146,6 @@ Dated records kept as evidence. None of them is current state; each carries a
 "Estado actual" banner stating what was resolved afterwards and what is still
 open only in that file:
 
-- `HANDOFF-2026-10-11.md`: the 2026-10-11 handoff (done/verified vs open).
 - `PLAN-Correccion-168.md`: the consumed v2 plan of the 168; v1 retractions
   and ID→lane traceability.
 - `PENDIENTES.md`: the v0.4.1 backlog closure act (no open work).

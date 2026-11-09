@@ -1125,7 +1125,7 @@ import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
-import { auditDownloadQueue, type DownloadFavoritesResult, type QueueAuditReport } from '@/api/library'
+import { auditDownloadQueue, type QueueAuditReport } from '@/api/library'
 import { formatServiceName } from '@/composables/useGlobalTasks'
 
 export interface DownloadTimelineEntry {
@@ -1351,7 +1351,7 @@ const toast = useToast()
 const showDownloadFavoritesModal = ref(false)
 const auditReport = ref<QueueAuditReport | null>(null)
 
-async function handleFavoritesEnqueued(res: DownloadFavoritesResult) {
+async function handleFavoritesEnqueued(res: { message: string }) {
   toast.success('Favorites Enqueued', res.message)
   await fetchData()
 }
@@ -1984,9 +1984,13 @@ function handleProgressEvent(event: DownloadProgressEventPayload | null | undefi
       if (item.target_album && item.target_album.includes('Edition')) {
         artifactCounters.value.booklets += 1
       }
-    } else if (status === 'failed' || status === 'cancelled' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
+    } else if (status === 'cancelled') {
+      // ADR-0022: cancelar no es fallar; el estado llega tal cual desde el backend.
+      item.status = 'cancelled'
+      item.error_message = event.message || (typeof event.error === 'string' ? event.error : null) || 'Download cancelled by user'
+    } else if (status === 'failed' || status === 'stale_source' || status === 'error' || status === 'rejected_quality') {
       item.status = 'failed'
-      item.error_message = event.message || (typeof event.error === 'string' ? event.error : null) || (status === 'cancelled' ? 'Download cancelled by user' : 'Download failed')
+      item.error_message = event.message || (typeof event.error === 'string' ? event.error : null) || 'Download failed'
     } else if (status === 'started' || status === 'downloading') {
       item.status = 'downloading'
     }

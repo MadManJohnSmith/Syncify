@@ -74,6 +74,7 @@ describe('AlbumDetailView', () => {
         expect(batchCall?.args).toEqual({
             trackIds: [701, 702],
             allowFallback: true,
+            jobKind: 'album',
         });
     });
 

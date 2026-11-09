@@ -5,17 +5,30 @@ use super::*;
 //
 // Download queue management
 
-/// Queue tracks for download
+/// Queue tracks for download as a single selection job
 #[tauri::command]
 pub async fn queue_downloads(
     state: State<'_, AppState>,
     track_ids: Vec<i64>,
-) -> Result<String, String> {
+) -> Result<i64, String> {
     tracing::info!("queue_downloads called with {} tracks", track_ids.len());
 
-    let mut queued = 0;
+    let job_request = crate::download::jobs::DownloadJobRequest {
+        kind: "selection".to_string(),
+        filter: crate::download::jobs::DownloadJobFilter {
+            track_ids: Some(track_ids.clone()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let job_id = crate::download::jobs::create_job(&state.db, &job_request)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut queued: i64 = 0;
     for track_id in &track_ids {
-        let res = add_to_queue(
+        let res = perform_add_to_queue(
+            &state.db,
             *track_id,
             Some(50),
             None,
@@ -32,7 +45,7 @@ pub async fn queue_downloads(
             Some(true),
             Some(false),
             None,
-            state.clone(),
+            Some(job_id),
         )
         .await;
 
@@ -41,7 +54,26 @@ pub async fn queue_downloads(
         }
     }
 
-    Ok(format!("Queued {} tracks for download", queued))
+    let requested = track_ids.len() as i64;
+    sqlx::query(
+        "UPDATE download_jobs SET requested_count = ?, estimated_count = ?, skipped_count = ?, \
+         updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )
+    .bind(requested)
+    .bind(0_i64)
+    .bind(requested - queued)
+    .bind(job_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    tracing::info!(
+        "queue_downloads created job {} (queued {}/{})",
+        job_id,
+        queued,
+        requested
+    );
+    Ok(job_id)
 }
 
 /// Get current download queue
@@ -106,17 +138,12 @@ pub async fn get_failed_downloads(state: State<'_, AppState>) -> Result<Vec<Down
     Ok(downloads)
 }
 
-/// Reintenta las descargas fallidas que se pueden reintentar solas.
+/// Reintenta manualmente todas las descargas en `failed`.
 ///
-/// Este comando ya no reencola por su cuenta: delega en
-/// [`super::queue::perform_retry_all_failed`], que clasifica cada fallo con la
-/// taxonomía de errores, se salta los terminales y los que requieren acción
-/// del usuario, y para en el quinto intento.
-///
-/// Antes hacia un UPDATE sin clasificar (`WHERE status = 'failed'`), que
-/// devolvía a la cola descargas con un token caducado o una credencial
-/// revocada y las reintentaba sin límite. La UI llamaba a este comando, así
-/// que el fallo era alcanzable con un clic.
+/// Delega en [`super::queue::perform_retry_all_failed`], la transición
+/// ManualRetry de ADR-0022: reencola todas las filas fallidas, incluidas las
+/// clases terminales, porque el usuario pudo arreglar la cuenta o la conexión.
+/// No hay tope de intentos; el contador vuelve a cero.
 ///
 /// Existe para que la UI no tenga que conocer dos comandos que hacen lo mismo:
 /// `queue::retry_failed` acepta `queue_id: None` y llama al mismo sitio.
@@ -130,7 +157,7 @@ pub async fn retry_failed_downloads(state: State<'_, AppState>) -> Result<String
 
     tracing::info!(
         requeued = count,
-        "Requeued retryable failed downloads (terminal ones skipped)"
+        "Requeued failed downloads for manual retry"
     );
 
     Ok(format!("Requeued {count} failed downloads"))

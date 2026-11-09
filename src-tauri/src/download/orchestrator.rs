@@ -5,9 +5,13 @@ use crate::download::lyrics::LyricsClient;
 use crate::download::progress::{
     DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
+use crate::download::provider_gateway::{
+    AmazonProvider, DownloadProvider, ProviderDelivery, ProviderError, ProviderRequest,
+    ProviderRouting, QobuzProvider, TidalProvider,
+};
 use crate::download::qobuz::QobuzDownloader;
 use crate::download::songlink::SongLinkClient;
-use crate::download::tidal::{TidalDownloader, TidalOrchestratorExt};
+use crate::download::tidal::TidalDownloader;
 
 use crate::services::enrichment::{
     AudioAnalysisMetrics, AudioAnalyzer, EnrichedMetadata, EnrichmentEngine, OriginTrackMetadata,
@@ -17,6 +21,7 @@ use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use syncify_core_domain::errors::ErrorTaxonomy;
 use syncify_core_domain::quality::QualityPolicy;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -112,9 +117,11 @@ pub enum SongLinkEngineTarget {
 
 /// Download orchestrator that manages multiple services
 pub struct DownloadOrchestrator {
+    // Los motores concretos se conservan para la búsqueda de identidad y el
+    // refresh de fuentes (`resolve_edition_identity_fallback`), no para
+    // descargar: toda descarga de proveedor despacha por `providers`.
     qobuz: Arc<QobuzDownloader>,
     tidal: Arc<TidalDownloader>,
-    amazon: Arc<AmazonDownloader>,
     songlink: Arc<SongLinkClient>,
     // Cliente de letras: lo consume `enrich_staging_audio`, cubierta por el test
     // unitario de este módulo.
@@ -128,6 +135,11 @@ pub struct DownloadOrchestrator {
     service_priority: Vec<String>,
     /// Database pool for active account token resolution
     db: Option<sqlx::SqlitePool>,
+    /// Gateway de proveedores (D01): adaptadores `DownloadProvider` resolubles
+    /// por nombre de servicio en minúsculas. Los flujos primarios no cambian;
+    /// D02 enrutará por aquí y los tests sustituyen entradas con
+    /// `with_provider_override`.
+    providers: std::collections::BTreeMap<String, Arc<dyn DownloadProvider>>,
 }
 
 impl DownloadOrchestrator {
@@ -162,10 +174,13 @@ impl DownloadOrchestrator {
         Ok(enriched)
     }
     pub fn new() -> Self {
+        let qobuz = Arc::new(QobuzDownloader::new());
+        let tidal = Arc::new(TidalDownloader::new());
+        let amazon = Arc::new(AmazonDownloader::new());
         Self {
-            qobuz: Arc::new(QobuzDownloader::new()),
-            tidal: Arc::new(TidalDownloader::new()),
-            amazon: Arc::new(AmazonDownloader::new()),
+            providers: Self::default_providers(&qobuz, &tidal, &amazon, None),
+            qobuz,
+            tidal,
             songlink: Arc::new(SongLinkClient::new()),
             lyrics: Arc::new(LyricsClient::new()),
             enrichment: Arc::new(EnrichmentEngine::new()),
@@ -178,8 +193,103 @@ impl DownloadOrchestrator {
         }
     }
 
+    /// Registro por defecto: un adaptador por descargador real, compartiendo
+    /// los mismos `Arc` que los campos del orquestador. Compartirlos es
+    /// imprescindible: el orquestador fija token y país en `self.tidal` durante
+    /// la búsqueda de identidad, y el motor del registro debe ver ese estado.
+    /// `with_db` los reconstruye con el pool para la resolución de tokens por
+    /// cuenta.
+    fn default_providers(
+        qobuz: &Arc<QobuzDownloader>,
+        tidal: &Arc<TidalDownloader>,
+        amazon: &Arc<AmazonDownloader>,
+        db: Option<sqlx::SqlitePool>,
+    ) -> std::collections::BTreeMap<String, Arc<dyn DownloadProvider>> {
+        let mut providers: std::collections::BTreeMap<String, Arc<dyn DownloadProvider>> =
+            std::collections::BTreeMap::new();
+        providers.insert(
+            "qobuz".to_string(),
+            Arc::new(QobuzProvider::new(qobuz.clone(), db.clone())),
+        );
+        providers.insert(
+            "tidal".to_string(),
+            Arc::new(TidalProvider::new(tidal.clone(), db)),
+        );
+        providers.insert(
+            "amazon".to_string(),
+            Arc::new(AmazonProvider::new(amazon.clone())),
+        );
+        providers
+    }
+
+    /// Resuelve el proveedor por nombre de servicio (insensible a mayúsculas).
+    /// Devuelve `None` para los catalog-only (Deezer, SoundCloud, Spotify,
+    /// Apple Music): no son destinos de descarga.
+    pub fn resolve_provider(&self, service: &str) -> Option<Arc<dyn DownloadProvider>> {
+        self.providers.get(&service.to_ascii_lowercase()).cloned()
+    }
+
+    /// Despacha una descarga por el proveedor registrado y devuelve su entrega
+    /// normalizada. `routing` lleva la provenance del sitio que la pide; el
+    /// `account_id` es el del candidato primario del plan adjunto y solo
+    /// viaja como metadato de entrega: el motor vuelve a resolver la cuenta.
+    async fn download_via_provider(
+        &self,
+        service: &str,
+        request: &DownloadRequest,
+        routing: ProviderRouting,
+        cancel_token: Option<&CancellationToken>,
+    ) -> std::result::Result<ProviderDelivery, ProviderError> {
+        let provider = self
+            .resolve_provider(service)
+            .ok_or_else(|| ProviderError {
+                taxonomy: ErrorTaxonomy::UnavailableFromProvider {
+                    provider: service.to_string(),
+                    item_id: request.item_id.clone(),
+                    reason: "no provider registered for service".to_string(),
+                },
+                message: format!("No download provider registered for service '{service}'"),
+            })?;
+        debug!(
+            "[Orchestrator] Dispatching {} download through the provider registry",
+            provider.service_name()
+        );
+        let account_id = request
+            .resolution_plan
+            .as_ref()
+            .and_then(|plan| plan.primary())
+            .and_then(|candidate| candidate.account.as_ref())
+            .map(|account| account.account_id);
+        let provider_request = ProviderRequest {
+            request: request.clone(),
+            account_id,
+            routing,
+        };
+        provider.download(&provider_request, cancel_token).await
+    }
+
+    /// Sustituye o añade un proveedor en el registro. Seam de pruebas: los
+    /// tests inyectan el proveedor falso para probar job, enrutado y
+    /// verificación sin red.
+    #[allow(dead_code)]
+    pub fn with_provider_override(
+        mut self,
+        service: &str,
+        provider: Arc<dyn DownloadProvider>,
+    ) -> Self {
+        self.providers
+            .insert(service.to_ascii_lowercase(), provider);
+        self
+    }
+
     pub fn with_db(mut self, db: sqlx::SqlitePool) -> Self {
         self.enrichment = Arc::new(EnrichmentEngine::with_db(db.clone()));
+        // Amazon no tiene estado propio: se construye aquí y solo lo retiene el
+        // adaptador del registro. Qobuz/Tidal se comparten con los campos.
+        let amazon = Arc::new(AmazonDownloader::new());
+        let providers =
+            Self::default_providers(&self.qobuz, &self.tidal, &amazon, Some(db.clone()));
+        self.providers = providers;
         self.db = Some(db);
         self
     }
@@ -257,82 +367,17 @@ impl DownloadOrchestrator {
     }
 
     /// Download a track, trying services in priority order (backwards-compatible)
+    #[allow(dead_code)] // API pública consumida por tests de integración; el worker usa la variante cancelable.
     pub async fn download_track(&self, request: &DownloadRequest) -> Result<DownloadResult> {
         Box::pin(self.download_track_cancellable(request, None)).await
     }
 
-    /// Reconciles the downloaded file's physical audio metrics from disk (sample_rate, bit_depth, channels, bitrate)
-    /// and performs canonical quality policy evaluation against the physical reality.
+    /// Reconciles the downloaded file's physical audio metrics from disk and
+    /// evaluates the canonical quality policy. Delegates to
+    /// `quality_reconcile::reconcile_physical_audio_quality` so provider
+    /// adapters apply the same logic.
     pub fn reconcile_physical_audio_quality(res: &mut DownloadResult, request: &DownloadRequest) {
-        let path = std::path::Path::new(&res.file_path);
-        let phys_info = crate::download::audio_inspector::inspect_physical_audio_file(path);
-
-        let (
-            verified_bd,
-            verified_sr,
-            verified_fmt,
-            verified_channels,
-            verified_bitrate,
-            quality_label,
-        ) = if let Some(ref phys) = phys_info {
-            (
-                phys.bit_depth,
-                phys.sample_rate,
-                phys.format.clone(),
-                Some(phys.channels),
-                phys.bitrate,
-                phys.quality_string(),
-            )
-        } else {
-            let is_m4a = res.file_path.to_lowercase().ends_with(".m4a");
-            let is_mp3 = res.file_path.to_lowercase().ends_with(".mp3");
-            let fmt = if is_m4a {
-                "AAC"
-            } else if is_mp3 {
-                "MP3"
-            } else {
-                "FLAC"
-            };
-            let label = if fmt == "FLAC" {
-                format!(
-                    "FLAC {}-bit / {:.1}kHz",
-                    res.bit_depth,
-                    res.sample_rate as f64 / 1000.0
-                )
-            } else {
-                format!("{} 320kbps", fmt)
-            };
-            (
-                res.bit_depth,
-                res.sample_rate,
-                fmt.to_string(),
-                res.channels.or(Some(2)),
-                res.bitrate,
-                label,
-            )
-        };
-
-        res.bit_depth = verified_bd;
-        res.sample_rate = verified_sr;
-        if res.channels.is_none() {
-            res.channels = verified_channels;
-        }
-        if res.bitrate.is_none() {
-            res.bitrate = verified_bitrate;
-        }
-
-        let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
-            &request.quality,
-            &quality_label,
-            &verified_fmt,
-            verified_bd,
-            verified_sr as f64,
-            res.origin_service.as_deref().unwrap_or(&res.service),
-            &res.service,
-            request.strict_quality,
-            request.allow_fallback,
-        );
-        res.quality_decision = Some(q_eval);
+        crate::download::quality_reconcile::reconcile_physical_audio_quality(res, request);
     }
 
     /// Post-download quality gate: derives verified physical audio quality tier ("hires", "lossless", "lossy")
@@ -1422,7 +1467,7 @@ impl DownloadOrchestrator {
 
         if let Some(token) = cancel_token {
             if token.is_cancelled() {
-                PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, "Download cancelled"));
+                PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
                 return Err(anyhow!("Download cancelled by user"));
             }
         }
@@ -1436,10 +1481,10 @@ impl DownloadOrchestrator {
         let is_lossless_or_hires = QualityPolicy::is_lossless_or_hires(&request.quality);
 
         if primary_service == "qobuz" {
-            self.download_primary_qobuz(request, is_lossless_or_hires)
+            self.download_primary_qobuz(request, is_lossless_or_hires, cancel_token)
                 .await
         } else if primary_service == "tidal" {
-            self.download_primary_tidal(request, is_lossless_or_hires)
+            self.download_primary_tidal(request, is_lossless_or_hires, cancel_token)
                 .await
         } else {
             self.download_songlink_routing(
@@ -1456,6 +1501,7 @@ impl DownloadOrchestrator {
         &'a self,
         request: &'a DownloadRequest,
         is_lossless_or_hires: bool,
+        cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
@@ -1471,12 +1517,24 @@ impl DownloadOrchestrator {
                 qobuz_req.allow_fallback = false;
             }
             let qobuz_result = self
-                .qobuz
-                .download_track(&qobuz_req, self.db.as_ref())
+                .download_via_provider(
+                    "qobuz",
+                    &qobuz_req,
+                    ProviderRouting {
+                        origin_service: request.service_name.clone().or(Some("qobuz".to_string())),
+                        origin_service_track_id: request.service_track_id.clone(),
+                        effective_service_track_id: request.service_track_id.clone(),
+                        match_method: Some("exact_locked_source".to_string()),
+                        match_confidence: Some(1.0),
+                        fallback_reason: None,
+                    },
+                    cancel_token,
+                )
                 .await;
 
             match qobuz_result {
-                Ok(mut res) => {
+                Ok(delivery) => {
+                    let mut res = delivery.result;
                     res.origin_service = request.service_name.clone().or(Some("qobuz".to_string()));
                     res.origin_service_track_id = request.service_track_id.clone();
                     res.effective_service = Some("qobuz".to_string());
@@ -1493,7 +1551,7 @@ impl DownloadOrchestrator {
                     Ok(res)
                 }
                 Err(err) => {
-                    self.handle_qobuz_fallback(request, err, is_lossless_or_hires)
+                    self.handle_qobuz_fallback(request, err, is_lossless_or_hires, cancel_token)
                         .await
                 }
             }
@@ -1533,6 +1591,9 @@ impl DownloadOrchestrator {
     /// (nunca reintentable), fallo transitorio ya clasificado, texto ajeno a
     /// la autenticación, o petición de otro proveedor (una hermana de cuenta
     /// nunca cruza de servicio). Los tests de este módulo fijan cada caso.
+    // Se conserva para los tests unitarios de clasificación por string; el
+    // despacho en producción clasifica con la taxonomía compartida.
+    #[allow(dead_code)]
     fn planned_auth_retry<'a>(
         request: &'a DownloadRequest,
         error: &str,
@@ -1641,16 +1702,88 @@ impl DownloadOrchestrator {
     /// Devuelve `None` cuando NO debe reintentarse (ver `planned_auth_retry`).
     fn planned_auth_attempt(
         request: &DownloadRequest,
-        error: &str,
+        error: &ProviderError,
         provider_service: &str,
     ) -> Option<(i64, String, Option<i64>)> {
-        let plan = Self::planned_auth_retry(request, error, provider_service)?;
+        let plan = request.resolution_plan.as_ref()?;
+        if !request
+            .service_name
+            .as_deref()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case(provider_service)
+        {
+            return None;
+        }
+        // Sin cuenta previa no hay nada que excluir: reintentar sería reapuntar
+        // a la misma combinación.
         let primary = plan.primary()?;
+        primary.account.as_ref()?;
+        if !Self::is_provider_auth_error(error)
+            || !primary.service_name.eq_ignore_ascii_case(provider_service)
+            || request.service_track_id.as_deref() != Some(primary.service_track_id.as_str())
+        {
+            return None;
+        }
         Some((
             primary.service_id,
             primary.service_track_id.clone(),
             primary.account.as_ref().map(|a| a.account_id),
         ))
+    }
+
+    /// Veredicto de autenticación desde la taxonomía compartida, conservando
+    /// la exclusión de entity lookup del sitio: un 401/403 de `track/get` es un
+    /// veredicto sobre la consulta, no sobre la cuenta. Un fallo de transporte
+    /// o una cancelación ya llegan clasificados como otra clase y nunca son
+    /// autenticación.
+    fn is_provider_auth_error(error: &ProviderError) -> bool {
+        let lowered = error.message.to_ascii_lowercase();
+        if lowered.contains("track/get")
+            || lowered.contains("album/get")
+            || lowered.contains("entity lookup")
+        {
+            return false;
+        }
+        if matches!(
+            error.taxonomy,
+            ErrorTaxonomy::Cancelled { .. }
+                | ErrorTaxonomy::TemporaryNetworkFailure { .. }
+                | ErrorTaxonomy::Timeout { .. }
+                | ErrorTaxonomy::RateLimited { .. }
+        ) {
+            return false;
+        }
+        // La taxonomía no reconoce estos marcadores de credencial del sitio;
+        // se conservan como checks de string para no degradar el abort de auth.
+        matches!(
+            error.taxonomy,
+            ErrorTaxonomy::AuthInvalid { .. }
+                | ErrorTaxonomy::AuthRefreshable { .. }
+                | ErrorTaxonomy::EntitlementDenied { .. }
+        ) || lowered.contains("credential")
+            || lowered.contains("token expired")
+            || lowered.contains("token invalid")
+            || lowered.contains("stream entitlement")
+    }
+
+    /// Fuente no disponible según la taxonomía. Un 401/403 de entity lookup se
+    /// excluye como en el resto del sitio (el status no habla de la edición), y
+    /// se conservan dos checks de string que el clasificador compartido no
+    /// desambigua: "unavailable" genérico y "CountryNotAvailable".
+    fn is_stale_provider_error(error: &ProviderError) -> bool {
+        let lowered = error.message.to_ascii_lowercase();
+        let entity_http_status = (lowered.contains("track/get failed")
+            || lowered.contains("album/get failed")
+            || lowered.contains("entity lookup"))
+            && (lowered.contains("401") || lowered.contains("403"));
+        if entity_http_status {
+            return false;
+        }
+        matches!(
+            error.taxonomy,
+            ErrorTaxonomy::UnavailableFromProvider { .. }
+        ) || error.message.contains("unavailable")
+            || error.message.contains("CountryNotAvailable")
     }
 
     /// Raw provider errors may contain account or transport secrets. Only a
@@ -1723,12 +1856,13 @@ impl DownloadOrchestrator {
     fn handle_qobuz_fallback<'a>(
         &'a self,
         request: &'a DownloadRequest,
-        err: anyhow::Error,
+        err: ProviderError,
         is_lossless_or_hires: bool,
+        cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
-            let err_msg = err.to_string();
+            let err_msg = err.message.clone();
             warn!("[Orchestrator] Qobuz download failed: {}", err_msg);
 
             // 1a. WF-RES-01: antes de abortar, comprobar si el rechazo puede
@@ -1740,7 +1874,7 @@ impl DownloadOrchestrator {
             // resuelve con `requested_service` = qobuz, así que solo ve hermanas
             // Qobuz, y `allow_fallback=false` sigue prohibiendo Tidal.
             if let Some((service_id, attempted_track_id, attempted_account)) =
-                Self::planned_auth_attempt(request, &err_msg, "qobuz")
+                Self::planned_auth_attempt(request, &err, "qobuz")
             {
                 let re_resolution = Box::pin(self.reresolve_after_classified_failure(
                     request,
@@ -1749,6 +1883,7 @@ impl DownloadOrchestrator {
                     &attempted_track_id,
                     attempted_account,
                     is_lossless_or_hires,
+                    cancel_token,
                 ))
                 .await;
 
@@ -1770,7 +1905,7 @@ impl DownloadOrchestrator {
 
             // 1. Auth failure -> abort without cross-service fallback.
             // A bare "401" in edition metadata is not an auth verdict.
-            if Self::is_account_auth_rejection(&err_msg) {
+            if Self::is_provider_auth_error(&err) {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
                 let abort_reason = if err_msg.contains("401") || err_msg.contains("403") {
                     "RequiresAuth: Qobuz authentication required (HTTP 401/403). Automatic fallback aborted.".to_string()
@@ -1781,7 +1916,11 @@ impl DownloadOrchestrator {
                 return Err(anyhow!("{}", abort_reason));
             }
 
-            // 2. Network Exhausted (stream / connection failures that exhausted retries) -> abort without fallback
+            // 2. Network Exhausted (stream / connection failures that exhausted
+            // retries) -> abort without fallback. La taxonomía lo clasifica como
+            // `TemporaryNetworkFailure`, pero el sitio solo aborta ante el marcador
+            // de agotamiento, no ante cualquier fallo de red: se conserva el check
+            // de string.
             if err_msg.contains("NetworkExhausted") {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
                 return Err(anyhow!(
@@ -1791,24 +1930,16 @@ impl DownloadOrchestrator {
             }
 
             // 3. Check for stale source or quality rejection
-            let is_stale = err_msg.contains("404")
-                || err_msg.contains("NotFound")
-                || err_msg.contains("StaleSource")
-                || err_msg.contains("not found")
-                || (err_msg.contains("track/get failed")
-                    && !err_msg.contains("401")
-                    && !err_msg.contains("403"))
-                || err_msg.contains("unavailable")
-                || err_msg.contains("CountryNotAvailable");
-            let is_rejected_q = err_msg.contains("RejectedQuality");
-            let is_preview = err_msg.starts_with("QobuzPreviewPayload:");
+            let is_stale = Self::is_stale_provider_error(&err);
+            let is_rejected_q = matches!(err.taxonomy, ErrorTaxonomy::RejectedQuality { .. });
+            let is_preview = matches!(err.taxonomy, ErrorTaxonomy::QobuzPreviewPayload { .. });
 
             // A preview is neither a credential rejection nor a usable 320
             // stream. Do not turn it into StaleSource/RejectedQuality when
             // cross-service fallback is disabled; preserve the diagnosis.
             if is_preview && !request.allow_fallback {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
-                return Err(err);
+                return Err(err.into());
             }
 
             // 2.5 Stale primary source: before any diagnosis that ends the
@@ -1831,8 +1962,27 @@ impl DownloadOrchestrator {
                     if is_lossless_or_hires {
                         refresh_req.allow_fallback = false;
                     }
-                    match Box::pin(self.qobuz.download_track(&refresh_req, self.db.as_ref())).await
-                    {
+                    let refreshed = self
+                        .download_via_provider(
+                            "qobuz",
+                            &refresh_req,
+                            ProviderRouting {
+                                origin_service: Some("qobuz".to_string()),
+                                origin_service_track_id: request.service_track_id.clone(),
+                                effective_service_track_id: Some(fresh_id.to_string()),
+                                match_method: Some("stale_source_refresh".to_string()),
+                                match_confidence: Some(1.0),
+                                fallback_reason: Some(
+                                    "Qobuz source id was stale; refreshed on the same service"
+                                        .to_string(),
+                                ),
+                            },
+                            cancel_token,
+                        )
+                        .await
+                        .map(|delivery| delivery.result)
+                        .map_err(anyhow::Error::new);
+                    match refreshed {
                         Ok(mut res) => {
                             res.origin_service = Some("qobuz".to_string());
                             res.origin_service_track_id = request.service_track_id.clone();
@@ -1885,6 +2035,8 @@ impl DownloadOrchestrator {
 
             // A track/entity lookup 401/403 does not prove an invalid account or
             // a missing edition. Do not relabel it as a 404 or retry a sibling.
+            // La taxonomía lo clasificaría como AuthInvalid, pero la clase no
+            // distingue el origen del status; se conserva el check de string.
             if (err_msg.contains("track/get failed")
                 || err_msg.contains("album/get failed")
                 || err_msg.contains("entity lookup"))
@@ -1921,6 +2073,7 @@ impl DownloadOrchestrator {
                         &attempted_track_id,
                         attempted_account,
                         is_lossless_or_hires,
+                        cancel_token,
                     ))
                     .await;
 
@@ -1968,9 +2121,32 @@ impl DownloadOrchestrator {
                             // carry the old execution lock (it produced
                             // "Tidal request differs from resolved plan").
                             tidal_req.resolution_plan = None;
-                            match Box::pin(self.tidal.download_track(&tidal_req, self.db.as_ref()))
+                            let tidal_result = self
+                                .download_via_provider(
+                                    "tidal",
+                                    &tidal_req,
+                                    ProviderRouting {
+                                        origin_service: request
+                                            .service_name
+                                            .clone()
+                                            .or(Some("qobuz".to_string())),
+                                        origin_service_track_id: request.service_track_id.clone(),
+                                        effective_service_track_id: Some(
+                                            fallback_match.target_track_id.to_string(),
+                                        ),
+                                        match_method: Some(fallback_match.match_method.clone()),
+                                        match_confidence: Some(fallback_match.match_confidence),
+                                        fallback_reason: Some(format!(
+                                            "Qobuz requested quality unavailable ({}) -> Tidal fallback",
+                                            err_msg
+                                        )),
+                                    },
+                                    cancel_token,
+                                )
                                 .await
-                            {
+                                .map(|delivery| delivery.result)
+                                .map_err(anyhow::Error::new);
+                            match tidal_result {
                                 Ok(mut tidal_res) => {
                                     tidal_res.origin_service =
                                         request.service_name.clone().or(Some("qobuz".to_string()));
@@ -2043,11 +2219,28 @@ impl DownloadOrchestrator {
                             // ED-04: quality differs from the authenticated
                             // plan; re-resolve instead of failing validation.
                             qobuz_320_req.resolution_plan = None;
-                            if let Ok(mut qobuz_res) = self
-                                .qobuz
-                                .download_track(&qobuz_320_req, self.db.as_ref())
+                            let qobuz_320_result = self
+                                .download_via_provider(
+                                    "qobuz",
+                                    &qobuz_320_req,
+                                    ProviderRouting {
+                                        origin_service: Some("qobuz".to_string()),
+                                        origin_service_track_id: request.service_track_id.clone(),
+                                        effective_service_track_id: request.service_track_id
+                                            .clone(),
+                                        match_method: Some("exact_locked_source".to_string()),
+                                        match_confidence: Some(1.0),
+                                        fallback_reason: Some(
+                                            "No service had lossless; degraded to 320 kbps on Qobuz"
+                                                .to_string(),
+                                        ),
+                                    },
+                                    cancel_token,
+                                )
                                 .await
-                            {
+                                .map(|delivery| delivery.result)
+                                .map_err(anyhow::Error::new);
+                            if let Ok(mut qobuz_res) = qobuz_320_result {
                                 qobuz_res.origin_service = Some("qobuz".to_string());
                                 qobuz_res.origin_service_track_id =
                                     request.service_track_id.clone();
@@ -2089,11 +2282,32 @@ impl DownloadOrchestrator {
                         // ED-04: plan was resolved for Qobuz/lossless; the
                         // 320 cross-service request must re-resolve.
                         tidal_320_req.resolution_plan = None;
-                        let mut tidal_res = match Box::pin(
-                            self.tidal.download_track(&tidal_320_req, self.db.as_ref()),
-                        )
-                        .await
-                        {
+                        let tidal_320_result = self
+                            .download_via_provider(
+                                "tidal",
+                                &tidal_320_req,
+                                ProviderRouting {
+                                    origin_service: request
+                                        .service_name
+                                        .clone()
+                                        .or(Some("qobuz".to_string())),
+                                    origin_service_track_id: request.service_track_id.clone(),
+                                    effective_service_track_id: Some(
+                                        fallback_match.target_track_id.to_string(),
+                                    ),
+                                    match_method: Some(fallback_match.match_method.clone()),
+                                    match_confidence: Some(fallback_match.match_confidence),
+                                    fallback_reason: Some(format!(
+                                        "No service had lossless; Tidal 320 kbps fallback ({})",
+                                        err_msg
+                                    )),
+                                },
+                                cancel_token,
+                            )
+                            .await
+                            .map(|delivery| delivery.result)
+                            .map_err(anyhow::Error::new);
+                        let mut tidal_res = match tidal_320_result {
                             Ok(res) => res,
                             Err(tidal_err) if is_preview => {
                                 let combined = format!(
@@ -2144,11 +2358,29 @@ impl DownloadOrchestrator {
                             // ED-04: quality differs from the authenticated
                             // plan; re-resolve instead of failing validation.
                             qobuz_320_req.resolution_plan = None;
-                            if let Ok(mut qobuz_res) = self
-                                .qobuz
-                                .download_track(&qobuz_320_req, self.db.as_ref())
+                            let qobuz_320_result = self
+                                .download_via_provider(
+                                    "qobuz",
+                                    &qobuz_320_req,
+                                    ProviderRouting {
+                                        origin_service: Some("qobuz".to_string()),
+                                        origin_service_track_id: request.service_track_id.clone(),
+                                        effective_service_track_id: request
+                                            .service_track_id
+                                            .clone(),
+                                        match_method: Some("exact_locked_source".to_string()),
+                                        match_confidence: Some(1.0),
+                                        fallback_reason: Some(
+                                            "No Tidal match; degraded to 320 kbps on Qobuz"
+                                                .to_string(),
+                                        ),
+                                    },
+                                    cancel_token,
+                                )
                                 .await
-                            {
+                                .map(|delivery| delivery.result)
+                                .map_err(anyhow::Error::new);
+                            if let Ok(mut qobuz_res) = qobuz_320_result {
                                 qobuz_res.origin_service = Some("qobuz".to_string());
                                 qobuz_res.origin_service_track_id =
                                     request.service_track_id.clone();
@@ -2248,6 +2480,7 @@ impl DownloadOrchestrator {
         attempted_track_id: &str,
         attempted_account: Option<i64>,
         is_lossless_or_hires: bool,
+        cancel_token: Option<&CancellationToken>,
     ) -> std::result::Result<DownloadResult, AuthRetryFailure> {
         let canonical_track_id = request.canonical_track_id.unwrap_or_default();
         let exclusions = crate::download::exclusions_for_failure(
@@ -2352,11 +2585,37 @@ impl DownloadOrchestrator {
                 account.account_id
             );
 
-            let outcome = if candidate.service_name.eq_ignore_ascii_case("qobuz") {
-                Box::pin(self.qobuz.download_track(&candidate_req, Some(db))).await
-            } else {
-                Box::pin(self.tidal.download_track(&candidate_req, Some(db))).await
+            let re_resolution_routing = ProviderRouting {
+                origin_service: request.service_name.clone(),
+                origin_service_track_id: request.service_track_id.clone(),
+                effective_service_track_id: Some(candidate.service_track_id.clone()),
+                match_method: Some("plan_re_resolution".to_string()),
+                match_confidence: Some(0.95),
+                fallback_reason: Some(format!(
+                    "{} re-resolution after {:?} on verified candidate",
+                    candidate.service_name, trigger
+                )),
             };
+            let outcome = if candidate.service_name.eq_ignore_ascii_case("qobuz") {
+                self.download_via_provider(
+                    "qobuz",
+                    &candidate_req,
+                    re_resolution_routing,
+                    cancel_token,
+                )
+                .await
+            } else {
+                self.download_via_provider(
+                    "tidal",
+                    &candidate_req,
+                    re_resolution_routing,
+                    cancel_token,
+                )
+                .await
+            };
+            let outcome = outcome
+                .map(|delivery| delivery.result)
+                .map_err(anyhow::Error::new);
 
             match outcome {
                 Ok(mut res) => {
@@ -2423,6 +2682,7 @@ impl DownloadOrchestrator {
         &'a self,
         request: &'a DownloadRequest,
         is_lossless_or_hires: bool,
+        cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
@@ -2430,11 +2690,25 @@ impl DownloadOrchestrator {
             if is_lossless_or_hires {
                 tidal_req.allow_fallback = false;
             }
-            let tidal_result =
-                Box::pin(self.tidal.download_track(&tidal_req, self.db.as_ref())).await;
+            let tidal_result = self
+                .download_via_provider(
+                    "tidal",
+                    &tidal_req,
+                    ProviderRouting {
+                        origin_service: request.service_name.clone().or(Some("tidal".to_string())),
+                        origin_service_track_id: request.service_track_id.clone(),
+                        effective_service_track_id: request.service_track_id.clone(),
+                        match_method: Some("exact_locked_source".to_string()),
+                        match_confidence: Some(1.0),
+                        fallback_reason: None,
+                    },
+                    cancel_token,
+                )
+                .await;
 
             match tidal_result {
-                Ok(mut res) => {
+                Ok(delivery) => {
+                    let mut res = delivery.result;
                     res.origin_service = request.service_name.clone().or(Some("tidal".to_string()));
                     res.origin_service_track_id = request.service_track_id.clone();
                     res.effective_service = Some("tidal".to_string());
@@ -2447,7 +2721,7 @@ impl DownloadOrchestrator {
                     Ok(res)
                 }
                 Err(err) => {
-                    self.handle_tidal_fallback(request, err, is_lossless_or_hires)
+                    self.handle_tidal_fallback(request, err, is_lossless_or_hires, cancel_token)
                         .await
                 }
             }
@@ -2457,12 +2731,13 @@ impl DownloadOrchestrator {
     fn handle_tidal_fallback<'a>(
         &'a self,
         request: &'a DownloadRequest,
-        err: anyhow::Error,
+        err: ProviderError,
         is_lossless_or_hires: bool,
+        cancel_token: Option<&'a CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
             let item_id = &request.item_id;
-            let err_msg = err.to_string();
+            let err_msg = err.message.clone();
             warn!("[Orchestrator] Tidal download failed: {}", err_msg);
 
             // 1a. WF-RES-01: antes de abortar, comprobar si el rechazo puede
@@ -2470,7 +2745,7 @@ impl DownloadOrchestrator {
             // en Qobuz: nunca se cruza de servicio, y sin plan se conserva el
             // abort de abajo.
             if let Some((service_id, attempted_track_id, attempted_account)) =
-                Self::planned_auth_attempt(request, &err_msg, "tidal")
+                Self::planned_auth_attempt(request, &err, "tidal")
             {
                 let re_resolution = Box::pin(self.reresolve_after_classified_failure(
                     request,
@@ -2479,6 +2754,7 @@ impl DownloadOrchestrator {
                     &attempted_track_id,
                     attempted_account,
                     is_lossless_or_hires,
+                    cancel_token,
                 ))
                 .await;
 
@@ -2499,7 +2775,7 @@ impl DownloadOrchestrator {
 
             // 1. Auth failure -> abort without cross-service fallback.
             // A bare "401" in edition metadata is not an auth verdict.
-            if Self::is_account_auth_rejection(&err_msg) {
+            if Self::is_provider_auth_error(&err) {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
                 let abort_reason =
                     "RequiresAuth: Tidal account authentication required. Automatic fallback aborted.";
@@ -2508,7 +2784,7 @@ impl DownloadOrchestrator {
 
             if !request.allow_fallback {
                 PROGRESS_TRACKER.update(DownloadProgress::failed(item_id, &err_msg));
-                return Err(err);
+                return Err(err.into());
             }
 
             // Attempt fallback to Qobuz
@@ -2540,11 +2816,32 @@ impl DownloadOrchestrator {
                         // cross-service request must re-resolve, never carry
                         // the old execution lock.
                         qobuz_req.resolution_plan = None;
-                        if let Ok(mut qobuz_res) = self
-                            .qobuz
-                            .download_track(&qobuz_req, self.db.as_ref())
+                        let qobuz_fallback_result = self
+                            .download_via_provider(
+                                "qobuz",
+                                &qobuz_req,
+                                ProviderRouting {
+                                    origin_service: request
+                                        .service_name
+                                        .clone()
+                                        .or(Some("tidal".to_string())),
+                                    origin_service_track_id: request.service_track_id.clone(),
+                                    effective_service_track_id: Some(
+                                        fallback_match.target_track_id.to_string(),
+                                    ),
+                                    match_method: Some(fallback_match.match_method.clone()),
+                                    match_confidence: Some(fallback_match.match_confidence),
+                                    fallback_reason: Some(format!(
+                                        "Tidal unavailable ({}) -> Qobuz fallback",
+                                        err_msg
+                                    )),
+                                },
+                                cancel_token,
+                            )
                             .await
-                        {
+                            .map(|delivery| delivery.result)
+                            .map_err(anyhow::Error::new);
+                        if let Ok(mut qobuz_res) = qobuz_fallback_result {
                             qobuz_res.origin_service =
                                 request.service_name.clone().or(Some("tidal".to_string()));
                             qobuz_res.origin_service_track_id = request.service_track_id.clone();
@@ -2577,9 +2874,27 @@ impl DownloadOrchestrator {
                     // ED-04: quality differs from the authenticated plan; the
                     // 320 request must re-resolve instead of failing validation.
                     tidal_320_req.resolution_plan = None;
-                    if let Ok(mut tidal_res) =
-                        Box::pin(self.tidal.download_track(&tidal_320_req, self.db.as_ref())).await
-                    {
+                    let tidal_320_result = self
+                        .download_via_provider(
+                            "tidal",
+                            &tidal_320_req,
+                            ProviderRouting {
+                                origin_service: Some("tidal".to_string()),
+                                origin_service_track_id: request.service_track_id.clone(),
+                                effective_service_track_id: request.service_track_id.clone(),
+                                match_method: Some(fallback_match.match_method.clone()),
+                                match_confidence: Some(fallback_match.match_confidence),
+                                fallback_reason: Some(
+                                    "No service had lossless; degraded to 320 kbps on Tidal"
+                                        .to_string(),
+                                ),
+                            },
+                            cancel_token,
+                        )
+                        .await
+                        .map(|delivery| delivery.result)
+                        .map_err(anyhow::Error::new);
+                    if let Ok(mut tidal_res) = tidal_320_result {
                         tidal_res.origin_service = Some("tidal".to_string());
                         tidal_res.effective_service = Some("tidal".to_string());
                         tidal_res.fallback_reason = Some(
@@ -2600,9 +2915,30 @@ impl DownloadOrchestrator {
                     // cross-service request must re-resolve.
                     qobuz_320_req.resolution_plan = None;
                     let mut qobuz_res = self
-                        .qobuz
-                        .download_track(&qobuz_320_req, self.db.as_ref())
-                        .await?;
+                        .download_via_provider(
+                            "qobuz",
+                            &qobuz_320_req,
+                            ProviderRouting {
+                                origin_service: request
+                                    .service_name
+                                    .clone()
+                                    .or(Some("tidal".to_string())),
+                                origin_service_track_id: request.service_track_id.clone(),
+                                effective_service_track_id: Some(
+                                    fallback_match.target_track_id.to_string(),
+                                ),
+                                match_method: Some(fallback_match.match_method.clone()),
+                                match_confidence: Some(fallback_match.match_confidence),
+                                fallback_reason: Some(
+                                    "No service had lossless; degraded to 320 kbps on Qobuz"
+                                        .to_string(),
+                                ),
+                            },
+                            cancel_token,
+                        )
+                        .await
+                        .map(|delivery| delivery.result)
+                        .map_err(anyhow::Error::new)?;
                     qobuz_res.origin_service =
                         request.service_name.clone().or(Some("tidal".to_string()));
                     qobuz_res.origin_service_track_id = request.service_track_id.clone();
@@ -2627,9 +2963,26 @@ impl DownloadOrchestrator {
                         // adapter before any network call, so it must
                         // re-resolve like every other 320 rung.
                         tidal_320_req.resolution_plan = None;
-                        match Box::pin(self.tidal.download_track(&tidal_320_req, self.db.as_ref()))
+                        let tidal_320_result = self
+                            .download_via_provider(
+                                "tidal",
+                                &tidal_320_req,
+                                ProviderRouting {
+                                    origin_service: Some("tidal".to_string()),
+                                    origin_service_track_id: request.service_track_id.clone(),
+                                    effective_service_track_id: request.service_track_id.clone(),
+                                    match_method: Some("exact_locked_source".to_string()),
+                                    match_confidence: Some(1.0),
+                                    fallback_reason: Some(
+                                        "Degraded to 320 kbps on Tidal".to_string(),
+                                    ),
+                                },
+                                cancel_token,
+                            )
                             .await
-                        {
+                            .map(|delivery| delivery.result)
+                            .map_err(anyhow::Error::new);
+                        match tidal_320_result {
                             Ok(mut tidal_res) => {
                                 tidal_res.origin_service = Some("tidal".to_string());
                                 tidal_res.effective_service = Some("tidal".to_string());
@@ -2687,10 +3040,7 @@ impl DownloadOrchestrator {
                     for candidate in &candidates {
                         if let Some(token) = cancel_token {
                             if token.is_cancelled() {
-                                PROGRESS_TRACKER.update(DownloadProgress::failed(
-                                    item_id,
-                                    "Download cancelled",
-                                ));
+                                PROGRESS_TRACKER.update(DownloadProgress::cancelled(item_id));
                                 return Err(anyhow!("Download cancelled by user"));
                             }
                         }
@@ -2703,7 +3053,12 @@ impl DownloadOrchestrator {
                         match candidate {
                             SongLinkEngineTarget::Tidal(tidal_id) => {
                                 info!("[Orchestrator] Delegating SongLink match to native Tidal engine (Tidal ID: {})", tidal_id);
-                                match Box::pin(self.download_tidal_track(&cand_req, tidal_id)).await
+                                match Box::pin(self.download_tidal_track(
+                                    &cand_req,
+                                    tidal_id,
+                                    cancel_token,
+                                ))
+                                .await
                                 {
                                     Ok(res) => return Ok(res),
                                     Err(e) => {
@@ -2714,7 +3069,12 @@ impl DownloadOrchestrator {
                             }
                             SongLinkEngineTarget::Qobuz(qobuz_id) => {
                                 info!("[Orchestrator] Delegating SongLink match to native Qobuz engine (Qobuz ID: {})", qobuz_id);
-                                match Box::pin(self.download_qobuz_track(&cand_req, qobuz_id)).await
+                                match Box::pin(self.download_qobuz_track(
+                                    &cand_req,
+                                    qobuz_id,
+                                    cancel_token,
+                                ))
+                                .await
                                 {
                                     Ok(res) => return Ok(res),
                                     Err(e) => {
@@ -2724,11 +3084,42 @@ impl DownloadOrchestrator {
                                 }
                             }
                             SongLinkEngineTarget::Amazon(amazon_url) => {
-                                if !is_lossless_or_hires {
+                                // La pasada lossless solo admite proveedores que
+                                // declaren pérdida cero; Amazon lo declara falso.
+                                let amazon_supports_lossless = self
+                                    .resolve_provider("amazon")
+                                    .map(|provider| provider.capabilities().supports_lossless)
+                                    .unwrap_or(false);
+                                if !is_lossless_or_hires || amazon_supports_lossless {
                                     info!("[Orchestrator] Delegating SongLink match to Amazon fallback engine");
-                                    match Box::pin(self.amazon.download_track(request, amazon_url))
+                                    let mut amazon_req = request.clone();
+                                    amazon_req.service_track_id = Some(amazon_url.clone());
+                                    let amazon_result = self
+                                        .download_via_provider(
+                                            "amazon",
+                                            &amazon_req,
+                                            ProviderRouting {
+                                                origin_service: request.service_name.clone(),
+                                                origin_service_track_id: request
+                                                    .service_track_id
+                                                    .clone(),
+                                                effective_service_track_id: Some(
+                                                    amazon_url.clone(),
+                                                ),
+                                                match_method: Some(
+                                                    "songlink_cross_platform".to_string(),
+                                                ),
+                                                match_confidence: Some(1.0),
+                                                fallback_reason: Some(
+                                                    "SongLink cross-platform match".to_string(),
+                                                ),
+                                            },
+                                            cancel_token,
+                                        )
                                         .await
-                                    {
+                                        .map(|delivery| delivery.result)
+                                        .map_err(anyhow::Error::new);
+                                    match amazon_result {
                                         Ok(mut res) => {
                                             Self::reconcile_physical_audio_quality(
                                                 &mut res, request,
@@ -2758,26 +3149,56 @@ impl DownloadOrchestrator {
 
                             match candidate {
                                 SongLinkEngineTarget::Tidal(tidal_id) => {
-                                    if let Ok(res) =
-                                        Box::pin(self.download_tidal_track(&lossy_req, tidal_id))
-                                            .await
+                                    if let Ok(res) = Box::pin(self.download_tidal_track(
+                                        &lossy_req,
+                                        tidal_id,
+                                        cancel_token,
+                                    ))
+                                    .await
                                     {
                                         return Ok(res);
                                     }
                                 }
                                 SongLinkEngineTarget::Qobuz(qobuz_id) => {
-                                    if let Ok(res) =
-                                        Box::pin(self.download_qobuz_track(&lossy_req, qobuz_id))
-                                            .await
+                                    if let Ok(res) = Box::pin(self.download_qobuz_track(
+                                        &lossy_req,
+                                        qobuz_id,
+                                        cancel_token,
+                                    ))
+                                    .await
                                     {
                                         return Ok(res);
                                     }
                                 }
                                 SongLinkEngineTarget::Amazon(amazon_url) => {
-                                    if let Ok(mut res) =
-                                        Box::pin(self.amazon.download_track(&lossy_req, amazon_url))
-                                            .await
-                                    {
+                                    let mut amazon_req = lossy_req.clone();
+                                    amazon_req.service_track_id = Some(amazon_url.clone());
+                                    let amazon_result = self
+                                        .download_via_provider(
+                                            "amazon",
+                                            &amazon_req,
+                                            ProviderRouting {
+                                                origin_service: request.service_name.clone(),
+                                                origin_service_track_id: request
+                                                    .service_track_id
+                                                    .clone(),
+                                                effective_service_track_id: Some(
+                                                    amazon_url.clone(),
+                                                ),
+                                                match_method: Some(
+                                                    "songlink_cross_platform".to_string(),
+                                                ),
+                                                match_confidence: Some(1.0),
+                                                fallback_reason: Some(
+                                                    "SongLink cross-platform match".to_string(),
+                                                ),
+                                            },
+                                            cancel_token,
+                                        )
+                                        .await
+                                        .map(|delivery| delivery.result)
+                                        .map_err(anyhow::Error::new);
+                                    if let Ok(mut res) = amazon_result {
                                         Self::reconcile_physical_audio_quality(&mut res, request);
                                         PROGRESS_TRACKER
                                             .update(DownloadProgress::complete(item_id));
@@ -2810,8 +3231,26 @@ impl DownloadOrchestrator {
                         if let Some(ref track_url) = request.service_track_id {
                             if track_url.starts_with("http://") || track_url.starts_with("https://")
                             {
-                                let mut res =
-                                    self.amazon.download_track(request, track_url).await?;
+                                let mut res = self
+                                    .download_via_provider(
+                                        "amazon",
+                                        request,
+                                        ProviderRouting {
+                                            origin_service: request
+                                                .service_name
+                                                .clone()
+                                                .or(Some("amazon".to_string())),
+                                            origin_service_track_id: Some(track_url.clone()),
+                                            effective_service_track_id: Some(track_url.clone()),
+                                            match_method: Some("exact_locked_source".to_string()),
+                                            match_confidence: Some(1.0),
+                                            fallback_reason: None,
+                                        },
+                                        cancel_token,
+                                    )
+                                    .await
+                                    .map(|delivery| delivery.result)
+                                    .map_err(anyhow::Error::new)?;
                                 Self::reconcile_physical_audio_quality(&mut res, request);
                                 PROGRESS_TRACKER.update(DownloadProgress::complete(item_id));
                                 return Ok(res);
@@ -2965,6 +3404,7 @@ impl DownloadOrchestrator {
         &self,
         request: &DownloadRequest,
         tidal_id: &str,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<DownloadResult> {
         let item_id = &request.item_id;
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "tidal"));
@@ -2973,8 +3413,29 @@ impl DownloadOrchestrator {
         tidal_req.service_name = Some("tidal".to_string());
         tidal_req.service_track_id = Some(tidal_id.to_string());
 
-        let mut tidal_res =
-            Box::pin(self.tidal.download_track(&tidal_req, self.db.as_ref())).await?;
+        let mut tidal_res = self
+            .download_via_provider(
+                "tidal",
+                &tidal_req,
+                ProviderRouting {
+                    origin_service: request
+                        .service_name
+                        .clone()
+                        .or_else(|| Some("spotify".to_string())),
+                    origin_service_track_id: request
+                        .service_track_id
+                        .clone()
+                        .or_else(|| request.spotify_id.clone()),
+                    effective_service_track_id: Some(tidal_id.to_string()),
+                    match_method: Some("songlink_cross_platform".to_string()),
+                    match_confidence: Some(1.0),
+                    fallback_reason: Some("SongLink cross-platform match".to_string()),
+                },
+                cancel_token,
+            )
+            .await
+            .map(|delivery| delivery.result)
+            .map_err(anyhow::Error::new)?;
         tidal_res.origin_service = request
             .service_name
             .clone()
@@ -2998,6 +3459,7 @@ impl DownloadOrchestrator {
         &self,
         request: &DownloadRequest,
         qobuz_id: &str,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<DownloadResult> {
         let item_id = &request.item_id;
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "qobuz"));
@@ -3007,9 +3469,28 @@ impl DownloadOrchestrator {
         qobuz_req.service_track_id = Some(qobuz_id.to_string());
 
         let mut qobuz_res = self
-            .qobuz
-            .download_track(&qobuz_req, self.db.as_ref())
-            .await?;
+            .download_via_provider(
+                "qobuz",
+                &qobuz_req,
+                ProviderRouting {
+                    origin_service: request
+                        .service_name
+                        .clone()
+                        .or_else(|| Some("spotify".to_string())),
+                    origin_service_track_id: request
+                        .service_track_id
+                        .clone()
+                        .or_else(|| request.spotify_id.clone()),
+                    effective_service_track_id: Some(qobuz_id.to_string()),
+                    match_method: Some("songlink_cross_platform".to_string()),
+                    match_confidence: Some(1.0),
+                    fallback_reason: Some("SongLink cross-platform match".to_string()),
+                },
+                cancel_token,
+            )
+            .await
+            .map(|delivery| delivery.result)
+            .map_err(anyhow::Error::new)?;
         qobuz_res.origin_service = request
             .service_name
             .clone()
@@ -3470,6 +3951,67 @@ mod tests {
         }
     }
 
+    #[test]
+    fn provider_auth_predicate_uses_taxonomy_and_keeps_the_site_guards() {
+        for auth in [
+            "RequiresAuth: Qobuz token expired (HTTP 401)",
+            "Qobuz rejected the credentials (HTTP 401)",
+            "Failed to decrypt Qobuz credentials: private-provider-detail",
+            "stream entitlement denied for this account",
+            "EntitlementDenied: provider refused stream entitlement",
+        ] {
+            let error = ProviderError::classify("qobuz", auth);
+            assert!(
+                DownloadOrchestrator::is_provider_auth_error(&error),
+                "account auth: {auth}"
+            );
+        }
+        for unrelated in [
+            "Qobuz track/get failed for ID 123: HTTP 401 Unauthorized",
+            "Qobuz album/get failed for ID 123: HTTP 403 Forbidden",
+            "Qobuz entity lookup: HTTP 401",
+            "StaleSource: track/get failed: HTTP 404 not found",
+            "Download cancelled by user: token expired",
+            "NetworkExhausted: token expired while connection reset",
+            "error sending request: HTTP 401 token expired",
+            "RejectedQuality: requested lossless but received aac",
+        ] {
+            let error = ProviderError::classify("qobuz", unrelated);
+            assert!(
+                !DownloadOrchestrator::is_provider_auth_error(&error),
+                "not account auth: {unrelated}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_stale_predicate_covers_unavailable_and_keeps_entity_401_out() {
+        for stale in [
+            "StaleSource: Qobuz track/get failed: HTTP 404 not found",
+            "TrackUnresolved: not found on provider",
+            "Qobuz track unavailable in catalog",
+            "CountryNotAvailable: track is not licensed here",
+        ] {
+            let error = ProviderError::classify("qobuz", stale);
+            assert!(
+                DownloadOrchestrator::is_stale_provider_error(&error),
+                "stale: {stale}"
+            );
+        }
+        for unrelated in [
+            "Qobuz track/get failed for ID 123: HTTP 401 Unauthorized",
+            "RequiresAuth: Qobuz token expired (HTTP 401)",
+            "RejectedQuality: requested lossless but received aac",
+            "Download cancelled by user",
+        ] {
+            let error = ProviderError::classify("qobuz", unrelated);
+            assert!(
+                !DownloadOrchestrator::is_stale_provider_error(&error),
+                "not stale: {unrelated}"
+            );
+        }
+    }
+
     /// A retry must never be treated as account auth when it is only an entity
     /// lookup 401: the sibling loop then has no third attempt to exclude.
     #[test]
@@ -3705,8 +4247,12 @@ mod tests {
         let err = orchestrator
             .handle_qobuz_fallback(
                 &request,
-                anyhow!("QobuzPreviewPayload: Qobuz delivered MP3 instead of FLAC format_id=6"),
+                ProviderError::classify(
+                    "qobuz",
+                    "QobuzPreviewPayload: Qobuz delivered MP3 instead of FLAC format_id=6",
+                ),
                 true,
+                None,
             )
             .await
             .unwrap_err()
@@ -3729,8 +4275,12 @@ mod tests {
         let err = orchestrator
             .handle_qobuz_fallback(
                 &request,
-                anyhow!("QobuzPreviewPayload: Qobuz delivered MP3 instead of FLAC format_id=6"),
+                ProviderError::classify(
+                    "qobuz",
+                    "QobuzPreviewPayload: Qobuz delivered MP3 instead of FLAC format_id=6",
+                ),
                 true,
+                None,
             )
             .await
             .unwrap_err()

@@ -24,6 +24,7 @@ pub mod mpris;
 pub mod musicbrainz;
 pub mod notification;
 pub mod operation_recovery;
+pub mod playback_session;
 pub mod qobuz;
 pub mod rate_limiter;
 pub mod repair_guardrail;

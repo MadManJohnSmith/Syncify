@@ -142,25 +142,18 @@ describe('Download Preflight & Safe Batch Enqueuing (S138A)', () => {
     });
 
     describe('DownloadFavoritesModal Preflight Grid', () => {
-        it('renders preflight breakdown showing requested, ready exact, ready fallback and exclusions', async () => {
+        it('renders the aggregate estimate breakdown before creating a job', async () => {
             mockInvoke((cmd) => {
-                if (cmd === 'download_favorites') {
+                if (cmd === 'estimate_download_job') {
                     return {
-                        total_candidates: 100,
-                        enqueued: 60,
-                        ready_exact: 40,
-                        ready_fallback: 20,
-                        already_downloaded: 25,
-                        already_queued: 10,
-                        no_download_provider: 3,
-                        unresolved_sources: 3,
-                        stale_sources: 1,
-                        ambiguous_sources: 1,
-                        is_preflight: true,
-                        estimated_size_mb: 2100.0,
-                        message: 'Preflight summary: 100 candidate(s) total — 60 ready to queue',
+                        total: 100,
+                        bySource: [],
+                        byDestination: [],
+                        byCapacity: { hires: 40, lossless: 20, high: 10, lossy: 10, unknown: 20 },
+                        estimatedSizeMb: 2100,
                     };
                 }
+                if (cmd === 'create_download_job') return { jobId: 9 };
                 return null;
             });
 
@@ -169,8 +162,8 @@ describe('Download Preflight & Safe Batch Enqueuing (S138A)', () => {
             });
             await flushPromises();
 
-            // Select 'All' limit to trigger preflight
-            const allBtn = wrapper.findAll('button').find(b => b.text().includes('10k+') || b.text().includes('All'));
+            // Select 'All' limit to trigger the preflight estimate
+            const allBtn = wrapper.findAll('button').find(b => b.text().includes('10k+'));
             if (allBtn) {
                 await allBtn.trigger('click');
                 await flushPromises();
@@ -187,7 +180,7 @@ describe('Download Preflight & Safe Batch Enqueuing (S138A)', () => {
             expect(wrapper.text()).toContain('Fallback');
             expect(wrapper.text()).toContain('Downloaded');
             expect(wrapper.text()).toContain('In Queue');
-            expect(wrapper.text()).toContain('No Provider');
+             expect(wrapper.text()).toContain('No Provider');
         });
     });
 });

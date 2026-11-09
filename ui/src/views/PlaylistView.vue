@@ -1445,6 +1445,7 @@ async function downloadMissingTracks() {
       priority: 50,
       qualityPreference: 'hires',
       allowFallback: true,
+      jobKind: 'playlist',
     })
 
     const enqueued = res.enqueued ?? res.added

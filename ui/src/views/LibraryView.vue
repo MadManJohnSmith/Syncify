@@ -1122,7 +1122,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
-import { libraryApi, searchTracks, enqueueTracks, reconcileQueue, type DownloadFavoritesResult } from '@/api/library'
+import { libraryApi, searchTracks, enqueueTracks, reconcileQueue }  from '@/api/library'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
 import { settingsApi } from '@/api/settings'
@@ -1188,7 +1188,7 @@ const hasSyncingTask = computed(() => {
 
 const showDownloadFavoritesModal = ref(false)
 
-function handleFavoritesEnqueued(res: DownloadFavoritesResult) {
+function handleFavoritesEnqueued(res: { message: string }) {
   toast.success('Favorites Enqueued', res.message)
 }
 

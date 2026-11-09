@@ -16,6 +16,7 @@ pub mod concurrency;
 pub mod cover_rules;
 pub mod errors;
 pub mod events;
+pub mod job_state;
 pub mod layout;
 pub mod manifest;
 pub mod metadata;
