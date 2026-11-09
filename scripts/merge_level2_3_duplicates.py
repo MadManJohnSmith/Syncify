@@ -19,7 +19,10 @@ import time
 from collections import defaultdict
 
 
-def parse_args():
+from services.bridge_protocol import BridgeFailure, run_cli  # noqa: E402
+
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Merge Level 2/3 duplicate tracks with ISRC reconciliation and renumber album tracks."
     )
@@ -39,7 +42,7 @@ def parse_args():
         action="store_true",
         help="Simulate and report diagnostics without committing changes to disk",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def create_safety_backup(db_path: str, backup_dir: str) -> str:
@@ -630,15 +633,19 @@ def run_merge(db_path: str, backup_dir: str = "/tmp", dry_run: bool = False) -> 
     return True
 
 
-def main():
-    args = parse_args()
+def _run(args):
     success = run_merge(
         db_path=args.db_path,
         backup_dir=args.backup_dir,
         dry_run=args.dry_run,
     )
-    sys.exit(0 if success else 1)
+    if not success:
+        raise BridgeFailure("merge_level2_3_duplicates reported a failed run")
+
+
+def main():
+    return run_cli(_run, parse=parse_args)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

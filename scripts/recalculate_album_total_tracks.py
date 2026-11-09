@@ -39,6 +39,8 @@ import sqlite3
 import sys
 import time
 
+from services.bridge_protocol import BridgeFailure, run_cli  # noqa: E402
+
 DEFAULT_DB_CANDIDATES = [
     os.path.expanduser("~/.local/share/com.syncify.app/syncify.db"),
     os.path.abspath("workspace/audit_archive/data/syncify.db"),
@@ -54,7 +56,7 @@ def find_default_db() -> str:
     return DEFAULT_DB_CANDIDATES[0]
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Reconcile albums.local_track_count with COUNT(tracks) and albums.total_tracks with the declared total when there is one (BD-5), preserving stubs (TASK-138)."
     )
@@ -79,7 +81,7 @@ def parse_args():
         action="store_true",
         help="Skip installation of recurrence prevention SQLite triggers",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def column_exists(cur: sqlite3.Cursor, table: str, column: str) -> bool:
@@ -200,8 +202,7 @@ def run_recalculation(
     install_triggers: bool = True,
 ) -> bool:
     if not os.path.exists(db_path):
-        print(f"[TASK-138] Error: Database not found at {db_path}", file=sys.stderr)
-        return False
+        raise BridgeFailure(f"[TASK-138] Error: Database not found at {db_path}")
 
     print(f"[TASK-138] Target database: {db_path}")
 
@@ -345,20 +346,20 @@ def run_recalculation(
     print("[TASK-138] Validating database integrity and foreign key constraints...")
     fk_violations = cur.execute("PRAGMA foreign_key_check;").fetchall()
     if fk_violations:
-        print(f"[TASK-138] ERROR: PRAGMA foreign_key_check failed with {len(fk_violations)} violations!", file=sys.stderr)
-        for viol in fk_violations[:10]:
-            print(f"  FK violation: {viol}", file=sys.stderr)
+        violation_report = "\n".join(f"  FK violation: {viol}" for viol in fk_violations[:10])
         conn.rollback()
         conn.close()
-        return False
+        raise BridgeFailure(
+            "[TASK-138] ERROR: PRAGMA foreign_key_check failed with "
+            f"{len(fk_violations)} violations!\n{violation_report}"
+        )
     print("[TASK-138] PRAGMA foreign_key_check: OK (0 violations)")
 
     integrity_res = cur.execute("PRAGMA integrity_check;").fetchall()
     if not integrity_res or integrity_res[0][0] != "ok":
-        print(f"[TASK-138] ERROR: PRAGMA integrity_check failed: {integrity_res}", file=sys.stderr)
         conn.rollback()
         conn.close()
-        return False
+        raise BridgeFailure(f"[TASK-138] ERROR: PRAGMA integrity_check failed: {integrity_res}")
     print("[TASK-138] PRAGMA integrity_check: OK (ok)")
 
     # 7. Post-repair assertions
@@ -369,10 +370,11 @@ def run_recalculation(
     print("=" * 68)
 
     if divergent_after != 0:
-        print(f"[TASK-138] ERROR: Divergent albums remain after repair: {divergent_after}", file=sys.stderr)
         conn.rollback()
         conn.close()
-        return False
+        raise BridgeFailure(
+            f"[TASK-138] ERROR: Divergent albums remain after repair: {divergent_after}"
+        )
 
     # Check that stubs are preserved
     if has_is_stub and stub_albums_count > 0:
@@ -386,16 +388,18 @@ def run_recalculation(
     return True
 
 
-def main():
-    args = parse_args()
-    success = run_recalculation(
+def _run(args):
+    run_recalculation(
         db_path=args.db_path,
         backup_dir=args.backup_dir,
         dry_run=args.dry_run,
         install_triggers=not args.no_triggers,
     )
-    sys.exit(0 if success else 1)
+
+
+def main():
+    return run_cli(_run, parse=parse_args)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

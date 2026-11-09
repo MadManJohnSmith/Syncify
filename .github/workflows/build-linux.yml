@@ -99,7 +99,7 @@ jobs:
     needs: gate
     name: Compilar Syncify para Linux
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 180
 
     steps:
       - name: Checkout del repositorio
@@ -110,6 +110,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
+            libasound2-dev \
             build-essential \
             curl \
             wget \
@@ -145,11 +146,11 @@ jobs:
         run: |
           mkdir -p src-tauri/binaries
           curl -sL -o /tmp/ffmpeg-linux.tar.xz \
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-01-13-06/ffmpeg-N-127054-g9d3f0f2c58-linux64-gpl.tar.xz"
-          echo "4ec801cb048f2ec81ac3b06507fda2f6b48f70c46286e89a27cd89baa041605d  /tmp/ffmpeg-linux.tar.xz" | sha256sum -c -
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-05-12-48/ffmpeg-N-128433-gdb8537d8cc-linux64-gpl.tar.xz"
+          echo "759cc1547e23f77f324944e034d27654c383ddbc1117823c08b025db1cf5fa14  /tmp/ffmpeg-linux.tar.xz" | sha256sum -c -
           tar -xJf /tmp/ffmpeg-linux.tar.xz -C /tmp
-          cp /tmp/ffmpeg-N-127054-g9d3f0f2c58-linux64-gpl/bin/ffmpeg  src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
-          cp /tmp/ffmpeg-N-127054-g9d3f0f2c58-linux64-gpl/bin/ffprobe src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+          cp /tmp/ffmpeg-N-128433-gdb8537d8cc-linux64-gpl/bin/ffmpeg  src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          cp /tmp/ffmpeg-N-128433-gdb8537d8cc-linux64-gpl/bin/ffprobe src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
           curl -sL -o /tmp/fpcalc.tar.gz \
             "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-linux-x86_64.tar.gz"
           echo "4d7433a7f778e5946d7225230681cbcd634e153316ecac87c538c33ac32387a5  /tmp/fpcalc.tar.gz" | sha256sum -c -
@@ -342,6 +343,10 @@ jobs:
             exit 1
           fi
 
+          # appimagetool (continuous) rechaza directorios con modo 0700; los
+          # recursos que Tauri empaqueta conservan permisos restrictivos.
+          chmod -R a+rX "$WORK/squashfs-root"
+
           # Reempaquetar con appimagetool (conserva el AppRun y los hooks).
           curl -sL -o "$WORK/appimagetool" \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
@@ -378,6 +383,7 @@ jobs:
 
           # Reempaquetar conservando AppRun y hooks (misma técnica del paso
           # de GStreamer).
+          chmod -R a+rX "$ROOT"
           curl -sL -o "$WORK/appimagetool" \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
           chmod +x "$WORK/appimagetool"

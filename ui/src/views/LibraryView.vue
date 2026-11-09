@@ -1126,11 +1126,13 @@ import { libraryApi, searchTracks, enqueueTracks, reconcileQueue }  from '@/api/
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
 import { settingsApi } from '@/api/settings'
+import { metadataApi } from '@/api/metadata'
 import type { LibraryTrack, Playlist, LyricsType, QueueStats, WorkerStatus, EffectiveDownloadPreferences } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { usePlayer } from '@/composables/usePlayer'
+import { useEnrichmentProgress } from '@/composables/useEnrichmentProgress'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
 import { getArtGradient } from '@/utils/artGradient'
@@ -1232,74 +1234,29 @@ const selectedCount = ref(0)
 
 // Metadata enrichment
 const isEnriching = ref(false)
-const enrichProgress = ref<{ current: number; total: number; currentTrack: string } | null>(null)
-
-/** MusicBrainz event from `enrich_metadata_musicbrainz`. */
-interface MusicBrainzProgress {
-  status?: string
-  total: number
-  current: number
-  enriched?: number
-  failed?: number
-  currentTrack?: string
-}
-
-/**
- * `enrichment-progress` is a shared channel. MusicBrainz emits
- * `{ status, total, current, enriched, failed, currentTrack }` with no `type`
- * field; Last.fm emits `{ type: "lastfm_genre", status, current, total,
- * message }` where `current` counts hits, and incremental enrichment emits its
- * `EnrichmentJobSummary` in camelCase (`totalTracks`, `processedTracks`).
- * Neither of those describes the work this button started, so they are ignored
- * instead of painting a bar with `undefined`.
- */
-function asMusicBrainzProgress(payload: unknown): MusicBrainzProgress | null {
-  if (!payload || typeof payload !== 'object') return null
-  const candidate = payload as Record<string, unknown>
-  // MusicBrainz never tags the event; every other producer always does.
-  if ('type' in candidate) return null
-  if (typeof candidate.current !== 'number' || typeof candidate.total !== 'number') return null
-  if (!Number.isFinite(candidate.current) || !Number.isFinite(candidate.total)) return null
-  return {
-    status: typeof candidate.status === 'string' ? candidate.status : undefined,
-    current: candidate.current,
-    total: candidate.total,
-    enriched: typeof candidate.enriched === 'number' ? candidate.enriched : undefined,
-    failed: typeof candidate.failed === 'number' ? candidate.failed : undefined,
-    currentTrack: typeof candidate.currentTrack === 'string' ? candidate.currentTrack : '',
-  }
-}
+const {
+  progress: enrichProgress,
+  start: startEnrichmentProgress,
+  stop: stopEnrichmentProgress,
+} = useEnrichmentProgress()
 
 async function enrichMetadata() {
   if (isEnriching.value) return
 
   isEnriching.value = true
-  enrichProgress.value = { current: 0, total: 0, currentTrack: '' }
+  await startEnrichmentProgress()
 
-  const { listen } = await import('@tauri-apps/api/event')
-  const unlisten = await listen<unknown>(TauriEvents.ENRICHMENT_PROGRESS, (event) => {
-    const progress = asMusicBrainzProgress(event.payload)
-    if (!progress) return
-    enrichProgress.value = {
-      current: progress.current,
-      total: progress.total,
-      currentTrack: progress.currentTrack ?? ''
-    }
-  })
-  
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const result = await invoke<{ total: number; enriched: number; failed: number }>('enrich_metadata_musicbrainz', {})
-    
+    const result = await metadataApi.enrichMetadataMusicBrainz()
+
     if (result.enriched > 0) {
       await loadLibrary()
     }
   } catch (error) {
     console.error('Failed to enrich metadata:', error)
   } finally {
-    unlisten()
+    stopEnrichmentProgress()
     isEnriching.value = false
-    enrichProgress.value = null
   }
 }
 

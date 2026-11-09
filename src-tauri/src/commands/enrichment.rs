@@ -42,10 +42,7 @@ pub(crate) async fn resolve_lastfm_api_key(db: &crate::DbPool) -> Result<String,
 /// Enrich tracks with genre from Last.fm tags
 /// Requires a Last.fm API key (settings table o LASTFM_API_KEY env).
 #[tauri::command]
-pub async fn enrich_genre_lastfm(
-    state: State<'_, AppState>,
-    window: tauri::Window,
-) -> Result<String, String> {
+pub async fn enrich_genre_lastfm(state: State<'_, AppState>) -> Result<String, String> {
     use crate::services::lastfm::LastFmClient;
 
     tracing::info!("Starting Last.fm genre enrichment");
@@ -76,16 +73,6 @@ pub async fn enrich_genre_lastfm(
     let total = tracks.len();
     tracing::info!("Enriching {} tracks with Last.fm genre tags", total);
 
-    // Emit start event
-    let start_evt = serde_json::json!({
-        "type": "lastfm_genre",
-        "status": "started",
-        "current": 0,
-        "total": total,
-        "message": format!("Enriching {} tracks with genres...", total)
-    });
-    let _ = window.emit("enrichment-progress", &start_evt);
-
     let mut enriched = 0;
     for (track_id, artist, title) in &tracks {
         // Skip if artist is empty
@@ -115,29 +102,7 @@ pub async fn enrich_genre_lastfm(
                 tracing::debug!("Failed to get tags for '{}' - '{}': {}", artist, title, e);
             }
         }
-
-        // Emit progress every 20 tracks
-        if enriched % 20 == 0 {
-            let prog_evt = serde_json::json!({
-                "type": "lastfm_genre",
-                "status": "progress",
-                "current": enriched,
-                "total": total,
-                "message": format!("Enriched {}/{} tracks with genres", enriched, total)
-            });
-            let _ = window.emit("enrichment-progress", &prog_evt);
-        }
     }
-
-    // Emit completion
-    let comp_evt = serde_json::json!({
-        "type": "lastfm_genre",
-        "status": "completed",
-        "current": enriched,
-        "total": total,
-        "message": format!("Enriched {} tracks with genres", enriched)
-    });
-    let _ = window.emit("enrichment-progress", &comp_evt);
 
     tracing::info!(
         "Last.fm genre enrichment complete: {}/{} tracks",
@@ -310,9 +275,10 @@ pub async fn start_library_enrichment(
 
     incremental_enrichment_service(&db)
         .run_enrichment(&db, mode, track_ids, move |progress| {
-            // Solo el nombre canónico: el alias sin guion no tiene ningún
-            // listener en la UI y duplicaba el tráfico IPC por evento.
-            let _ = app_handle.emit("enrichment-progress", &progress);
+            crate::events::emit_enrichment(
+                &app_handle,
+                &crate::events::EnrichmentEvent::IncrementalSummary(progress.clone()),
+            );
         })
         .await
 }

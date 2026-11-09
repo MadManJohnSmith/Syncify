@@ -30,15 +30,7 @@ from typing import Optional, Dict, Any, Union, Sequence, Set
 BIN_DIR = Path(__file__).parent.parent / "bin"
 
 
-def json_response(success: bool, data=None, error=None):
-    """Output JSON response and exit."""
-    result = {"success": success}
-    if data:
-        result["data"] = data
-    if error:
-        result["error"] = error
-    print(json.dumps(result, ensure_ascii=False))
-    sys.exit(0 if success else 1)
+from services.bridge_protocol import BridgeFailure, run  # noqa: E402
 
 
 # Tool download URLs.
@@ -328,11 +320,11 @@ def check_all():
     
     all_available = all(r["available"] for r in results.values())
     
-    json_response(True, {
+    return {
         "all_available": all_available,
         "tools": results,
         "bin_dir": str(BIN_DIR),
-    })
+    }
 
 
 def install_all():
@@ -348,10 +340,9 @@ def install_all():
             results[tool] = install_tool(tool)
     
     all_success = all(r.get("success", False) for r in results.values())
-    
-    json_response(all_success, {
-        "results": results,
-    }, error="Some tools failed to install" if not all_success else None)
+    if all_success:
+        return {"results": results}
+    raise BridgeFailure("Some tools failed to install")
 
 
 def main():
@@ -376,17 +367,23 @@ def main():
     # Install-all command
     subparsers.add_parser("install-all", help="Install all missing tools")
     
-    args = parser.parse_args()
-    
+    return run(_handle, parse=parser.parse_args)
+
+
+def _handle(args):
     if args.command == "check":
-        check_all()
-    elif args.command == "install":
+        return check_all()
+    if args.command == "install":
         result = install_tool(args.tool, expected_hash=args.expected_hash)
-        json_response(result.get("success", False), result if result.get("success") else None, 
-                     result.get("error"))
-    elif args.command == "install-all":
-        install_all()
+        if result.get("success"):
+            return {"success": True, "data": result}
+        if result.get("error"):
+            raise BridgeFailure(result["error"])
+        return {"success": False}
+    if args.command == "install-all":
+        return install_all()
+    raise BridgeFailure("Unknown command: %s" % args.command)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

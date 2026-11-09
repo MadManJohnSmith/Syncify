@@ -413,6 +413,15 @@ export async function enrichMetadataMusicBrainz(limit?: number): Promise<{
     };
 }
 
+/**
+ * Enrich tracks that lack a genre using Last.fm tags. The backend returns a
+ * human-readable summary.
+ */
+export async function enrichGenreLastfm(): Promise<string> {
+    const raw = await invokeCommand<unknown>('enrich_genre_lastfm');
+    return typeof raw === 'string' ? raw : '';
+}
+
 // ==============================================
 // FINGERPRINTING
 // ==============================================
@@ -1027,6 +1036,7 @@ export async function reconcileMusicbrainzTags(pathOverride?: string): Promise<M
 // Export as namespace
 export const metadataApi = {
     enrichMetadata,
+    enrichGenreLastfm,
     batchEnrichMetadata,
     enrichAllNeeding,
     startLibraryEnrichment,

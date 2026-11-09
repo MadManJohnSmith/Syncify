@@ -25,8 +25,8 @@ CARGO_TARGET_DIR=/tmp/syncify-target cargo clippy --workspace --all-targets --lo
 cargo fmt --all -- --check
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 318 objetivos de test: recuento real
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --test batch_50_audit_test -- --test-threads=1
-npm --prefix ui run build && npm --prefix ui run test:run                  # 127 ficheros / 1087 tests
-python3 -m unittest discover -s scripts/tests                             # 311 tests (2 skipped)
+npm --prefix ui run build && npm --prefix ui run test:run                  # 129 ficheros / 1096 tests
+python3 -m unittest discover -s scripts/tests                             # 324 tests (2 skipped)
 ```
 
 Todo corre sin red salvo los 13 tests `#[ignore]`, que necesitan servicios reales.
