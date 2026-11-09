@@ -4,12 +4,14 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bridges;
 mod cmd_utils;
 mod commands;
 mod crypto;
 mod db;
 mod download;
 pub mod enrichment_worker;
+mod events;
 mod import_cache;
 mod logs_history;
 mod models;

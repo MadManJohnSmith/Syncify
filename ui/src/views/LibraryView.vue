@@ -1134,6 +1134,7 @@ import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { usePlayer } from '@/composables/usePlayer'
 import { useVirtualWindow } from '@/composables/useVirtualWindow'
 import { useTrackBrowser } from '@/composables/useTrackBrowser'
+import { useEnrichmentProgress } from '@/composables/useEnrichmentProgress'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
 import { getArtGradient } from '@/utils/artGradient'
@@ -1221,61 +1222,18 @@ const sortDirection = ref<'asc' | 'desc'>('desc')
 
 // Metadata enrichment
 const isEnriching = ref(false)
-const enrichProgress = ref<{ current: number; total: number; currentTrack: string } | null>(null)
-
-/** MusicBrainz event from `enrich_metadata_musicbrainz`. */
-interface MusicBrainzProgress {
-  status?: string
-  total: number
-  current: number
-  enriched?: number
-  failed?: number
-  currentTrack?: string
-}
-
-/**
- * `enrichment-progress` is a shared channel. MusicBrainz emits
- * `{ status, total, current, enriched, failed, currentTrack }` with no `type`
- * field; Last.fm emits `{ type: "lastfm_genre", status, current, total,
- * message }` where `current` counts hits, and incremental enrichment emits its
- * `EnrichmentJobSummary` in camelCase (`totalTracks`, `processedTracks`).
- * Neither of those describes the work this button started, so they are ignored
- * instead of painting a bar with `undefined`.
- */
-function asMusicBrainzProgress(payload: unknown): MusicBrainzProgress | null {
-  if (!payload || typeof payload !== 'object') return null
-  const candidate = payload as Record<string, unknown>
-  // MusicBrainz never tags the event; every other producer always does.
-  if ('type' in candidate) return null
-  if (typeof candidate.current !== 'number' || typeof candidate.total !== 'number') return null
-  if (!Number.isFinite(candidate.current) || !Number.isFinite(candidate.total)) return null
-  return {
-    status: typeof candidate.status === 'string' ? candidate.status : undefined,
-    current: candidate.current,
-    total: candidate.total,
-    enriched: typeof candidate.enriched === 'number' ? candidate.enriched : undefined,
-    failed: typeof candidate.failed === 'number' ? candidate.failed : undefined,
-    currentTrack: typeof candidate.currentTrack === 'string' ? candidate.currentTrack : '',
-  }
-}
+const {
+  progress: enrichProgress,
+  start: startEnrichmentProgress,
+  stop: stopEnrichmentProgress,
+} = useEnrichmentProgress()
 
 async function enrichMetadata() {
   if (isEnriching.value) return
 
   isEnriching.value = true
-  enrichProgress.value = { current: 0, total: 0, currentTrack: '' }
+  await startEnrichmentProgress()
 
-  const { listen } = await import('@tauri-apps/api/event')
-  const unlisten = await listen<unknown>(TauriEvents.ENRICHMENT_PROGRESS, (event) => {
-    const progress = asMusicBrainzProgress(event.payload)
-    if (!progress) return
-    enrichProgress.value = {
-      current: progress.current,
-      total: progress.total,
-      currentTrack: progress.currentTrack ?? ''
-    }
-  })
-  
   try {
     const result = await metadataApi.enrichMetadataMusicBrainz()
 
@@ -1285,9 +1243,8 @@ async function enrichMetadata() {
   } catch (error) {
     console.error('Failed to enrich metadata:', error)
   } finally {
-    unlisten()
+    stopEnrichmentProgress()
     isEnriching.value = false
-    enrichProgress.value = null
   }
 }
 

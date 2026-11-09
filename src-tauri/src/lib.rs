@@ -15,12 +15,14 @@
 //!
 //! Library crate for the Tauri application.
 
+pub mod bridges;
 pub mod cmd_utils;
 pub mod commands;
 pub mod crypto;
 pub mod db;
 pub mod download;
 pub mod enrichment_worker;
+pub mod events;
 pub mod import_cache;
 pub mod logs_history;
 pub mod models;

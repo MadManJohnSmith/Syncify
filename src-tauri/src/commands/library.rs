@@ -1212,8 +1212,8 @@ pub async fn enrich_metadata_musicbrainz(
     state: State<'_, AppState>,
     limit: Option<i64>,
 ) -> Result<crate::services::musicbrainz::EnrichmentResult, String> {
+    use crate::events::{emit_enrichment, EnrichmentEvent, MusicBrainzProgress, MusicBrainzStatus};
     use crate::services::MusicBrainzClient;
-    use tauri::Emitter;
 
     const BATCH_SIZE: usize = 20; // Process 20 tracks per batch
 
@@ -1245,15 +1245,18 @@ pub async fn enrich_metadata_musicbrainz(
     let num_batches = total.div_ceil(BATCH_SIZE);
 
     // Emit initial event
-    let _ = app.emit(
-        "enrichment-progress",
-        serde_json::json!({
-            "status": "started",
-            "total": total,
-            "current": 0,
-            "enriched": 0,
-            "failed": 0,
-            "currentTrack": format!("Processing {} tracks in {} batches", total, num_batches)
+    emit_enrichment(
+        &app,
+        &EnrichmentEvent::MusicBrainz(MusicBrainzProgress {
+            status: MusicBrainzStatus::Started,
+            total,
+            current: 0,
+            enriched: 0,
+            failed: 0,
+            current_track: Some(format!(
+                "Processing {} tracks in {} batches",
+                total, num_batches
+            )),
         }),
     );
 
@@ -1262,15 +1265,15 @@ pub async fn enrich_metadata_musicbrainz(
         let batch_start = batch_idx * BATCH_SIZE;
 
         // Emit batch progress
-        let _ = app.emit(
-            "enrichment-progress",
-            serde_json::json!({
-                "status": "processing",
-                "total": total,
-                "current": batch_start + batch.len(),
-                "enriched": enriched,
-                "failed": failed,
-                "currentTrack": format!("Batch {}/{}", batch_idx + 1, num_batches)
+        emit_enrichment(
+            &app,
+            &EnrichmentEvent::MusicBrainz(MusicBrainzProgress {
+                status: MusicBrainzStatus::Processing,
+                total,
+                current: batch_start + batch.len(),
+                enriched,
+                failed,
+                current_track: Some(format!("Batch {}/{}", batch_idx + 1, num_batches)),
             }),
         );
 
@@ -1402,15 +1405,15 @@ pub async fn enrich_metadata_musicbrainz(
     }
 
     // Emit completion event
-    let _ = app.emit(
-        "enrichment-progress",
-        serde_json::json!({
-            "status": "completed",
-            "total": total,
-            "current": total,
-            "enriched": enriched,
-            "failed": failed,
-            "currentTrack": ""
+    emit_enrichment(
+        &app,
+        &EnrichmentEvent::MusicBrainz(MusicBrainzProgress {
+            status: MusicBrainzStatus::Completed,
+            total,
+            current: total,
+            enriched,
+            failed,
+            current_track: None,
         }),
     );
 

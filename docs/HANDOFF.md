@@ -1,8 +1,8 @@
 # Handoff — Syncify: flujos de documentación
 
-**Estado:** vivo · **Última revisión:** 2026-11-05
+**Estado:** vivo · **Última revisión:** 2026-11-09
 
-Fecha: 2026-11-05. Rama: `dev`.
+Fecha: 2026-11-09. Rama: `dev`.
 Tracker: GitHub Issues de MadManJohnSmith/Syncify vía gh.
 
 ## Objetivo
@@ -24,13 +24,14 @@ ajustes/backup); el plan post-beta quedó reconciliado. Queda implementación.
 - Migración: ADR-0015 y ADR-0016 propuestos; spec #164; tickets #165-#174.
 - Letras: ADR-0017 y ADR-0018 propuestos; spec #176; tickets #178-#194.
 - Ajustes/backup: ADR-0019 y ADR-0020 propuestos; spec #195; tickets #196-#202.
+- Implementación: D00 cerrado (#112, migraciones 0102/0103 + tests de migración con fixture legacy); D01 cerrado (#113, gateway de proveedores con adaptadores Qobuz/Tidal/Amazon y proveedor falso); D02 cerrado (#114, jobs con estimación agregada y encolado por lotes); D03 cerrado (#115, worker con claim programado, reintentos y cancelación segura).
 
 ## Mapa de issues y dependencias
 - Sync: T01=#65 ... T18=#82 (T08 cuarentena #72, T09 identidad #73, T15 reauth #79, T16 metadatos #80).
 - Cuentas: A01=#84 ... A12=#95; A04 (reauth) depende de #79.
 - Biblioteca: L00=#97 (pertenencia por colección/cuenta; depende de #65-#68),  L01=#98 (consulta v2; depende de #97 y #88), L02..#L13=#99-#110.
-- Descargas: D00=#112, D01=#113, D02=#114, D03=#115, D04=#116, D05=#117, D06=#118, D07=#119, D08=#120, D09=#121, D10=#122, D11=#123, D12=#124, D13=#125, D14=#126, D15=#127, D16=#128.
-- Arranque: D00 y D01 en paralelo; D02 espera a ambos; D14 cierra los puertos; D15 es la aceptación.
+- Descargas: D00=#112 (cerrado), D01=#113 (cerrado), D02=#114 (cerrado), D03=#115 (cerrado), D04=#116, D05=#117, D06=#118, D07=#119, D08=#120, D09=#121, D10=#122, D11=#123, D12=#124, D13=#125, D14=#126, D15=#127, D16=#128.
+- Arranque: D00-D03 cerrados; D14 cierra los puertos; D15 es la aceptación.
 - Reproductor: P00=#131, P01=#132, P02=#133, P03=#134, P04=#135, P05=#136, P06=#137, P07=#138, P08=#139, P09=#140, P10=#141, P11=#142, P12=#143, P13=#144, P14=#145, P15=#146, P16=#147, P17=#148, P18=#149.
 - Grafo del reproductor: P00 → {P01, P04, P07, P09, P16}; P01 → {P02, P03, P05}; P05 → P06; P07 → P08; P03 + #121 → P10; P10 → {P11…P15}; {P10, P16, #119} → P17; {P02, P04, P06, P08, P09, P15, P17} → P18.
 - Playlists: PL00=#153, PL01=#154, PL02=#155, PL03=#156, PL04=#157, PL05=#158, PL06=#159, PL07=#160, PL08=#161, PL09=#162, PL10=#163.
@@ -48,7 +49,7 @@ ajustes/backup); el plan post-beta quedó reconciliado. Queda implementación.
 - PLAYLISTS: documentación cerrada; implementación pendiente de #153-#163.
 - MIGRACIÓN: documentación cerrada; implementación pendiente de #165-#174.
 - LETRAS: documentación cerrada; implementación pendiente de #178-#194.
-- Arranque: D00 (#112), D01 (#113) y P00 (#131) en paralelo; PL00 (#153) también.
+- Arranque: D00-D03 cerrados; el grafo de descargas sigue en el primer ticket abierto, D04 (#116). P00 (#131) y PL00 (#153) pueden arrancar en paralelo.
 - AJUSTES/BACKUP: documentación cerrada; implementación pendiente de #196-#202.
 - Documentación: los nueve flujos están cerrados; el plan post-beta quedó reconciliado
   (espera real: A-05, C-04, C-05, C-06, D-01/D-02, E-02 y los residuales parciales).
@@ -88,7 +89,7 @@ ajustes/backup); el plan post-beta quedó reconciliado. Queda implementación.
 - ask-matt si hay duda de skill; domain-modeling para glosario/ADR.
 
 ## Siguiente paso concreto
-1. Implementar D00 (#112) y D01 (#113) en paralelo; después D02 (#114) y el resto del grafo. P00 (#131), PL00 (#153) y M00 (#165) pueden arrancar en paralelo.
+1. D00-D03 cerrados (#112-#115); el grafo de descargas sigue en D04 (#116). P00 (#131), PL00 (#153) y M00 (#165) pueden arrancar en paralelo.
 2. Cerrar los spikes de D11 (#123) y D12 (#124) antes de escribir los adaptadores; sus incógnitas están en el ticket.
 3. REPRODUCTOR: P00 (#131), después P01 (#132) y el grafo de arriba.
 4. PLAYLISTS: PL00 (#153), después PL01 (#154) y el grafo de arriba.

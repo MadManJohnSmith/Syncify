@@ -3310,7 +3310,7 @@ fn soundcloud_credentials(creds: &serde_json::Value) -> Result<(String, i64), St
 /// eventos de progreso) y vuelca el resultado al terminar el brazo, de modo que
 /// el `match` de servicios sea una llamada y un volcado, no 240 líneas.
 #[derive(Default)]
-struct ArmOutcome {
+struct SyncOutcome {
     tracks_processed: u64,
     tracks_expanded: u64,
     tracks_new_global: u64,
@@ -3347,6 +3347,19 @@ struct ArmOutcome {
     warnings: Vec<String>,
 }
 
+impl SyncOutcome {
+    /// Política única de metadatos: `Enriched` suma a enriched; cualquier otro
+    /// estado suma a partial. Antes repetida quince veces por los brazos.
+    fn record_metadata(&mut self, completeness: syncify_metadata_domain::EnrichmentCompleteness) {
+        match completeness {
+            syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
+                self.metadata_enriched += 1
+            }
+            _ => self.metadata_partial += 1,
+        }
+    }
+}
+
 /// Brazo SoundCloud del sync: likes y playlists propias por el motor unificado.
 async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
     db: &sqlx::SqlitePool,
@@ -3355,8 +3368,8 @@ async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
     creds: &serde_json::Value,
     prefs: &ImportPreferences,
     emitter: Option<&E>,
-    mut arm: ArmOutcome,
-) -> Result<ArmOutcome, String> {
+    arm: &mut SyncOutcome,
+) -> Result<(), String> {
     let emit = |event: SyncProgressEvent| {
         if let Some(e) = emitter {
             e.emit_sync_progress(&event);
@@ -3425,12 +3438,7 @@ async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
                 }
                 arm.favorite_tracks_total += 1;
                 arm.favorites_seen += 1;
-                match res.completeness {
-                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                        arm.metadata_enriched += 1
-                    }
-                    _ => arm.metadata_partial += 1,
-                }
+                arm.record_metadata(res.completeness);
                 if page_finished {
                     emit(SyncProgressEvent::running(
                         &service_normalized,
@@ -3526,12 +3534,7 @@ async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
                 } else {
                     arm.skipped_tracks_total += 1;
                 }
-                match res.completeness {
-                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                        arm.metadata_enriched += 1
-                    }
-                    _ => arm.metadata_partial += 1,
-                }
+                arm.record_metadata(res.completeness);
                 if page_finished {
                     emit(SyncProgressEvent::running(
                         &service_normalized,
@@ -3595,7 +3598,7 @@ async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
             "SoundCloud: the API exposes a user's likes and own playlists — favorite albums/artists, purchases and listen history have no user endpoint; album and artist rows come from each track's own publisher_metadata".to_string(),
         );
     }
-    Ok(arm)
+    Ok(())
 }
 
 /// Brazo Deezer del sync. Recibe el motor de enriquecimiento ya construido por
@@ -3609,8 +3612,8 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
     prefs: &ImportPreferences,
     emitter: Option<&E>,
     enrichment_engine: &crate::services::enrichment::EnrichmentEngine,
-    mut arm: ArmOutcome,
-) -> Result<ArmOutcome, String> {
+    arm: &mut SyncOutcome,
+) -> Result<(), String> {
     let emit = |event: SyncProgressEvent| {
         if let Some(e) = emitter {
             e.emit_sync_progress(&event);
@@ -3785,12 +3788,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                             arm.skipped_tracks_total += 1;
                         }
                         arm.availability_checked += 1;
-                        match res.completeness {
-                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                                arm.metadata_enriched += 1
-                            }
-                            _ => arm.metadata_partial += 1,
-                        }
+                        arm.record_metadata(res.completeness);
                     }
                     Err(e) => arm.errors.push(format!("Deezer track {}: {}", track.id, e)),
                 }
@@ -3916,12 +3914,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                                 arm.skipped_tracks_total += 1;
                             }
                             arm.availability_checked += 1;
-                            match res.completeness {
-                                syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                                    arm.metadata_enriched += 1
-                                }
-                                _ => arm.metadata_partial += 1,
-                            }
+                            arm.record_metadata(res.completeness);
                         }
                         Err(e) => arm
                             .errors
@@ -4147,12 +4140,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                                 } else {
                                     arm.skipped_tracks_total += 1;
                                 }
-                                match res.completeness {
-                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                                        arm.metadata_enriched += 1
-                                    }
-                                    _ => arm.metadata_partial += 1,
-                                }
+                                arm.record_metadata(res.completeness);
                             }
                         }
                         match crate::services::import_pagination::next_offset(
@@ -4190,7 +4178,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 .to_string(),
         );
     }
-    Ok(arm)
+    Ok(())
 }
 
 /// Brazo Spotify del sync. Comparte el motor de enriquecimiento con los demás
@@ -4204,8 +4192,8 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
     prefs: &ImportPreferences,
     emitter: Option<&E>,
     enrichment_engine: &crate::services::enrichment::EnrichmentEngine,
-    mut arm: ArmOutcome,
-) -> Result<ArmOutcome, String> {
+    arm: &mut SyncOutcome,
+) -> Result<(), String> {
     let emit = |event: SyncProgressEvent| {
         if let Some(e) = emitter {
             e.emit_sync_progress(&event);
@@ -4341,12 +4329,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                 }
                                 arm.favorite_tracks_total += 1;
                                 arm.availability_checked += 1;
-                                match res.completeness {
-                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                                        arm.metadata_enriched += 1
-                                    }
-                                    _ => arm.metadata_partial += 1,
-                                }
+                                arm.record_metadata(res.completeness);
                             }
                             Err(e) => {
                                 arm.errors
@@ -4522,10 +4505,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                         arm.skipped_tracks_total += 1;
                                     }
                                     arm.availability_checked += 1;
-                                    match res.completeness {
-                                        syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
-                                        _ => arm.metadata_partial += 1,
-                                    }
+                                    arm.record_metadata(res.completeness);
                                 }
                             }
                         }
@@ -4767,10 +4747,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                                 arm.skipped_tracks_total += 1;
                                             }
                                             arm.availability_checked += 1;
-                                            match res.completeness {
-                                                syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
-                                                _ => arm.metadata_partial += 1,
-                                            }
+                                            arm.record_metadata(res.completeness);
                                         }
                                     }
                                 }
@@ -5035,7 +5012,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
             }
         }
     }
-    Ok(arm)
+    Ok(())
 }
 
 /// Brazo TIDAL del sync. Comparte el motor de enriquecimiento y es el que más
@@ -5049,8 +5026,8 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
     prefs: &ImportPreferences,
     emitter: Option<&E>,
     enrichment_engine: &crate::services::enrichment::EnrichmentEngine,
-    mut arm: ArmOutcome,
-) -> Result<ArmOutcome, String> {
+    arm: &mut SyncOutcome,
+) -> Result<(), String> {
     let emit = |event: SyncProgressEvent| {
         if let Some(e) = emitter {
             e.emit_sync_progress(&event);
@@ -5236,12 +5213,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                 }
                                 arm.favorite_tracks_total += 1;
                                 arm.availability_checked += 1;
-                                match res.completeness {
-                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                                        arm.metadata_enriched += 1
-                                    }
-                                    _ => arm.metadata_partial += 1,
-                                }
+                                arm.record_metadata(res.completeness);
                             }
                             Err(e) => {
                                 arm.errors.push(format!(
@@ -5568,10 +5540,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                                         arm.skipped_tracks_total += 1;
                                                     }
                                                     arm.availability_checked += 1;
-                                                    match res.completeness {
-                                                        syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
-                                                        _ => arm.metadata_partial += 1,
-                                                    }
+                                                    arm.record_metadata(res.completeness);
                                                 }
                                                 Err(e) => {
                                                     arm.tracks_expansion_failed += 1;
@@ -5911,10 +5880,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                                         arm.skipped_tracks_total += 1;
                                                     }
                                                     arm.availability_checked += 1;
-                                                    match res.completeness {
-                                                        syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
-                                                        _ => arm.metadata_partial += 1,
-                                                    }
+                                                    arm.record_metadata(res.completeness);
                                                 }
                                                 Err(e) => {
                                                     arm.tracks_expansion_failed += 1;
@@ -6137,7 +6103,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
             artists_provider_total
         );
     }
-    Ok(arm)
+    Ok(())
 }
 
 /// Brazo Qobuz del sync: el más grande y el que más expansiones de entidad abre
@@ -6151,8 +6117,8 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
     prefs: &ImportPreferences,
     emitter: Option<&E>,
     enrichment_engine: &crate::services::enrichment::EnrichmentEngine,
-    mut arm: ArmOutcome,
-) -> Result<ArmOutcome, String> {
+    arm: &mut SyncOutcome,
+) -> Result<(), String> {
     let emit = |event: SyncProgressEvent| {
         if let Some(e) = emitter {
             e.emit_sync_progress(&event);
@@ -6340,12 +6306,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                 }
                                 arm.favorite_tracks_total += 1;
                                 arm.availability_checked += 1;
-                                match res.completeness {
-                                    syncify_metadata_domain::EnrichmentCompleteness::Enriched => {
-                                        arm.metadata_enriched += 1
-                                    }
-                                    _ => arm.metadata_partial += 1,
-                                }
+                                arm.record_metadata(res.completeness);
                             }
                             Err(e) => {
                                 arm.errors
@@ -6634,10 +6595,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                             arm.album_expansion_metrics.tracks_existing += 1;
                                         }
                                         arm.availability_checked += 1;
-                                        match res.completeness {
-                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
-                                            _ => arm.metadata_partial += 1,
-                                        }
+                                        arm.record_metadata(res.completeness);
                                     }
                                     Err(e) => {
                                         arm.album_expansion_metrics.tracks_invalid += 1;
@@ -6907,10 +6865,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                             arm.album_expansion_metrics.tracks_existing += 1;
                                         }
                                         arm.availability_checked += 1;
-                                        match res.completeness {
-                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
-                                            _ => arm.metadata_partial += 1,
-                                        }
+                                        arm.record_metadata(res.completeness);
                                     }
                                     Err(e) => {
                                         arm.album_expansion_metrics.tracks_invalid += 1;
@@ -7224,10 +7179,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                             arm.skipped_tracks_total += 1;
                                         }
                                         arm.availability_checked += 1;
-                                        match res.completeness {
-                                            syncify_metadata_domain::EnrichmentCompleteness::Enriched => arm.metadata_enriched += 1,
-                                            _ => arm.metadata_partial += 1,
-                                        }
+                                        arm.record_metadata(res.completeness);
                                     }
                                 }
                                 // S198: advance by the REAL page length; stop at
@@ -7378,7 +7330,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
             arm.favorite_tracks_total,
         ));
     }
-    Ok(arm)
+    Ok(())
 }
 
 /// Sync body. `journal` is `Some` whenever a recovery-journal entry is open for
@@ -7605,43 +7557,12 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
 
     let enrichment_engine = crate::services::enrichment::EnrichmentEngine::with_db(db.clone());
     let sync_start = std::time::Instant::now();
-    let mut api_fetch_ms: u64 = 0;
-    let mut entity_expansion_ms: u64 = 0;
-    let mut enrichment_ms: u64 = 0;
-    let mut persistence_ms: u64 = 0;
     let availability_check_ms: u64 = 0;
 
-    let mut imported_tracks_total: u64 = 0;
-    let mut favorite_tracks_total: u64 = 0;
-    let mut reported_favorites: Option<i64> = None;
-    let mut reported_albums: Option<i64> = None;
-    let mut reported_playlists: Option<i64> = None;
-    let mut favorite_albums_total: u64 = 0;
-    let mut favorite_artists_total: u64 = 0;
-    let mut playlists_total: u64 = 0;
-    let mut purchases_total: u64 = 0;
-    let mut skipped_tracks_total: u64 = 0;
-    let mut metadata_enriched: u64 = 0;
-    let mut metadata_partial: u64 = 0;
-    let mut availability_checked: u64 = 0;
-    let mut album_expansion_metrics = crate::commands::types::AlbumSyncExpansionMetrics::default();
-    let mut errors: Vec<String> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-    let mut albums_unavailable: u64 = 0;
-    let mut tracks_unavailable: u64 = 0;
-    let mut tracks_expansion_deferred: u64 = 0;
-
-    let mut tracks_processed: u64 = 0;
-    let mut tracks_changed_unique: u64 = 0;
-    let mut tracks_new_global: u64 = 0;
-    let mut sources_new_for_service: u64 = 0;
-    let mut library_entries_new_for_account: u64 = 0;
-    let mut tracks_already_present: u64 = 0;
-    let mut favorites_seen: u64 = 0;
-    let mut albums_seen: u64 = 0;
-    let mut playlists_seen: u64 = 0;
-    let mut tracks_expanded: u64 = 0;
-    let mut tracks_expansion_failed: u64 = 0;
+    // Acumulador único del orquestador: los brazos lo mutan in situ y el
+    // resto de la función (mensajes, journal, timings y resultado) lo lee.
+    // Sin snapshot por brazo ni volcado campo a campo.
+    let mut arm = SyncOutcome::default();
 
     // A previous completed snapshot cannot certify an in-flight refresh. Keep
     // its reported figure for context, but mark it partial until re-observed.
@@ -7669,7 +7590,7 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
 
     match service_normalized.as_str() {
         "qobuz" => {
-            let arm = sync_qobuz_arm(
+            sync_qobuz_arm(
                 db,
                 &service_normalized,
                 account_id,
@@ -7677,81 +7598,12 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 &prefs,
                 emitter,
                 &enrichment_engine,
-                ArmOutcome {
-                    tracks_processed,
-                    tracks_expanded,
-                    tracks_new_global,
-                    sources_new_for_service,
-                    library_entries_new_for_account,
-                    tracks_already_present,
-                    tracks_changed_unique,
-                    imported_tracks_total,
-                    skipped_tracks_total,
-                    purchases_total,
-                    favorite_tracks_total,
-                    favorites_seen,
-                    metadata_enriched,
-                    metadata_partial,
-                    playlists_seen,
-                    playlists_total,
-                    api_fetch_ms,
-                    entity_expansion_ms,
-                    enrichment_ms,
-                    persistence_ms,
-                    albums_seen,
-                    availability_checked,
-                    albums_unavailable,
-                    tracks_unavailable,
-                    tracks_expansion_deferred,
-                    tracks_expansion_failed,
-                    favorite_albums_total,
-                    favorite_artists_total,
-                    reported_favorites,
-                    reported_albums,
-                    reported_playlists,
-                    album_expansion_metrics,
-                    errors,
-                    warnings,
-                },
+                &mut arm,
             )
             .await?;
-            tracks_processed = arm.tracks_processed;
-            tracks_expanded = arm.tracks_expanded;
-            tracks_new_global = arm.tracks_new_global;
-            sources_new_for_service = arm.sources_new_for_service;
-            library_entries_new_for_account = arm.library_entries_new_for_account;
-            tracks_already_present = arm.tracks_already_present;
-            tracks_changed_unique = arm.tracks_changed_unique;
-            imported_tracks_total = arm.imported_tracks_total;
-            skipped_tracks_total = arm.skipped_tracks_total;
-            purchases_total = arm.purchases_total;
-            favorite_tracks_total = arm.favorite_tracks_total;
-            favorites_seen = arm.favorites_seen;
-            metadata_enriched = arm.metadata_enriched;
-            metadata_partial = arm.metadata_partial;
-            playlists_seen = arm.playlists_seen;
-            playlists_total = arm.playlists_total;
-            api_fetch_ms = arm.api_fetch_ms;
-            entity_expansion_ms = arm.entity_expansion_ms;
-            enrichment_ms = arm.enrichment_ms;
-            persistence_ms = arm.persistence_ms;
-            albums_seen = arm.albums_seen;
-            availability_checked = arm.availability_checked;
-            albums_unavailable = arm.albums_unavailable;
-            tracks_unavailable = arm.tracks_unavailable;
-            tracks_expansion_deferred = arm.tracks_expansion_deferred;
-            tracks_expansion_failed = arm.tracks_expansion_failed;
-            favorite_albums_total = arm.favorite_albums_total;
-            favorite_artists_total = arm.favorite_artists_total;
-            reported_favorites = arm.reported_favorites;
-            reported_albums = arm.reported_albums;
-            reported_playlists = arm.reported_playlists;
-            album_expansion_metrics = arm.album_expansion_metrics;
-            errors = arm.errors;
-            warnings = arm.warnings;
         }
         "tidal" => {
-            let arm = sync_tidal_arm(
+            sync_tidal_arm(
                 db,
                 &service_normalized,
                 account_id,
@@ -7759,81 +7611,12 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 &prefs,
                 emitter,
                 &enrichment_engine,
-                ArmOutcome {
-                    tracks_processed,
-                    tracks_expanded,
-                    tracks_new_global,
-                    sources_new_for_service,
-                    library_entries_new_for_account,
-                    tracks_already_present,
-                    tracks_changed_unique,
-                    imported_tracks_total,
-                    skipped_tracks_total,
-                    purchases_total,
-                    favorite_tracks_total,
-                    favorites_seen,
-                    metadata_enriched,
-                    metadata_partial,
-                    playlists_seen,
-                    playlists_total,
-                    api_fetch_ms,
-                    entity_expansion_ms,
-                    enrichment_ms,
-                    persistence_ms,
-                    albums_seen,
-                    availability_checked,
-                    albums_unavailable,
-                    tracks_unavailable,
-                    tracks_expansion_deferred,
-                    tracks_expansion_failed,
-                    favorite_albums_total,
-                    favorite_artists_total,
-                    reported_favorites,
-                    reported_albums,
-                    reported_playlists,
-                    album_expansion_metrics,
-                    errors,
-                    warnings,
-                },
+                &mut arm,
             )
             .await?;
-            tracks_processed = arm.tracks_processed;
-            tracks_expanded = arm.tracks_expanded;
-            tracks_new_global = arm.tracks_new_global;
-            sources_new_for_service = arm.sources_new_for_service;
-            library_entries_new_for_account = arm.library_entries_new_for_account;
-            tracks_already_present = arm.tracks_already_present;
-            tracks_changed_unique = arm.tracks_changed_unique;
-            imported_tracks_total = arm.imported_tracks_total;
-            skipped_tracks_total = arm.skipped_tracks_total;
-            purchases_total = arm.purchases_total;
-            favorite_tracks_total = arm.favorite_tracks_total;
-            favorites_seen = arm.favorites_seen;
-            metadata_enriched = arm.metadata_enriched;
-            metadata_partial = arm.metadata_partial;
-            playlists_seen = arm.playlists_seen;
-            playlists_total = arm.playlists_total;
-            api_fetch_ms = arm.api_fetch_ms;
-            entity_expansion_ms = arm.entity_expansion_ms;
-            enrichment_ms = arm.enrichment_ms;
-            persistence_ms = arm.persistence_ms;
-            albums_seen = arm.albums_seen;
-            availability_checked = arm.availability_checked;
-            albums_unavailable = arm.albums_unavailable;
-            tracks_unavailable = arm.tracks_unavailable;
-            tracks_expansion_deferred = arm.tracks_expansion_deferred;
-            tracks_expansion_failed = arm.tracks_expansion_failed;
-            favorite_albums_total = arm.favorite_albums_total;
-            favorite_artists_total = arm.favorite_artists_total;
-            reported_favorites = arm.reported_favorites;
-            reported_albums = arm.reported_albums;
-            reported_playlists = arm.reported_playlists;
-            album_expansion_metrics = arm.album_expansion_metrics;
-            errors = arm.errors;
-            warnings = arm.warnings;
         }
         "spotify" => {
-            let arm = sync_spotify_arm(
+            sync_spotify_arm(
                 db,
                 &service_normalized,
                 account_id,
@@ -7841,81 +7624,12 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 &prefs,
                 emitter,
                 &enrichment_engine,
-                ArmOutcome {
-                    tracks_processed,
-                    tracks_expanded,
-                    tracks_new_global,
-                    sources_new_for_service,
-                    library_entries_new_for_account,
-                    tracks_already_present,
-                    tracks_changed_unique,
-                    imported_tracks_total,
-                    skipped_tracks_total,
-                    purchases_total,
-                    favorite_tracks_total,
-                    favorites_seen,
-                    metadata_enriched,
-                    metadata_partial,
-                    playlists_seen,
-                    playlists_total,
-                    api_fetch_ms,
-                    entity_expansion_ms,
-                    enrichment_ms,
-                    persistence_ms,
-                    albums_seen,
-                    availability_checked,
-                    albums_unavailable,
-                    tracks_unavailable,
-                    tracks_expansion_deferred,
-                    tracks_expansion_failed,
-                    favorite_albums_total,
-                    favorite_artists_total,
-                    reported_favorites,
-                    reported_albums,
-                    reported_playlists,
-                    album_expansion_metrics,
-                    errors,
-                    warnings,
-                },
+                &mut arm,
             )
             .await?;
-            tracks_processed = arm.tracks_processed;
-            tracks_expanded = arm.tracks_expanded;
-            tracks_new_global = arm.tracks_new_global;
-            sources_new_for_service = arm.sources_new_for_service;
-            library_entries_new_for_account = arm.library_entries_new_for_account;
-            tracks_already_present = arm.tracks_already_present;
-            tracks_changed_unique = arm.tracks_changed_unique;
-            imported_tracks_total = arm.imported_tracks_total;
-            skipped_tracks_total = arm.skipped_tracks_total;
-            purchases_total = arm.purchases_total;
-            favorite_tracks_total = arm.favorite_tracks_total;
-            favorites_seen = arm.favorites_seen;
-            metadata_enriched = arm.metadata_enriched;
-            metadata_partial = arm.metadata_partial;
-            playlists_seen = arm.playlists_seen;
-            playlists_total = arm.playlists_total;
-            api_fetch_ms = arm.api_fetch_ms;
-            entity_expansion_ms = arm.entity_expansion_ms;
-            enrichment_ms = arm.enrichment_ms;
-            persistence_ms = arm.persistence_ms;
-            albums_seen = arm.albums_seen;
-            availability_checked = arm.availability_checked;
-            albums_unavailable = arm.albums_unavailable;
-            tracks_unavailable = arm.tracks_unavailable;
-            tracks_expansion_deferred = arm.tracks_expansion_deferred;
-            tracks_expansion_failed = arm.tracks_expansion_failed;
-            favorite_albums_total = arm.favorite_albums_total;
-            favorite_artists_total = arm.favorite_artists_total;
-            reported_favorites = arm.reported_favorites;
-            reported_albums = arm.reported_albums;
-            reported_playlists = arm.reported_playlists;
-            album_expansion_metrics = arm.album_expansion_metrics;
-            errors = arm.errors;
-            warnings = arm.warnings;
         }
         "deezer" => {
-            let arm = sync_deezer_arm(
+            sync_deezer_arm(
                 db,
                 &service_normalized,
                 account_id,
@@ -7923,78 +7637,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 &prefs,
                 emitter,
                 &enrichment_engine,
-                ArmOutcome {
-                    tracks_processed,
-                    tracks_expanded,
-                    tracks_new_global,
-                    sources_new_for_service,
-                    library_entries_new_for_account,
-                    tracks_already_present,
-                    tracks_changed_unique,
-                    imported_tracks_total,
-                    skipped_tracks_total,
-                    purchases_total,
-                    favorite_tracks_total,
-                    favorites_seen,
-                    metadata_enriched,
-                    metadata_partial,
-                    playlists_seen,
-                    playlists_total,
-                    api_fetch_ms,
-                    entity_expansion_ms,
-                    enrichment_ms,
-                    persistence_ms,
-                    albums_seen,
-                    availability_checked,
-                    albums_unavailable,
-                    tracks_unavailable,
-                    tracks_expansion_deferred,
-                    tracks_expansion_failed,
-                    favorite_albums_total,
-                    favorite_artists_total,
-                    reported_favorites,
-                    reported_albums,
-                    reported_playlists,
-                    album_expansion_metrics,
-                    errors,
-                    warnings,
-                },
+                &mut arm,
             )
             .await?;
-            tracks_processed = arm.tracks_processed;
-            tracks_expanded = arm.tracks_expanded;
-            tracks_new_global = arm.tracks_new_global;
-            sources_new_for_service = arm.sources_new_for_service;
-            library_entries_new_for_account = arm.library_entries_new_for_account;
-            tracks_already_present = arm.tracks_already_present;
-            tracks_changed_unique = arm.tracks_changed_unique;
-            imported_tracks_total = arm.imported_tracks_total;
-            skipped_tracks_total = arm.skipped_tracks_total;
-            purchases_total = arm.purchases_total;
-            favorite_tracks_total = arm.favorite_tracks_total;
-            favorites_seen = arm.favorites_seen;
-            metadata_enriched = arm.metadata_enriched;
-            metadata_partial = arm.metadata_partial;
-            playlists_seen = arm.playlists_seen;
-            playlists_total = arm.playlists_total;
-            api_fetch_ms = arm.api_fetch_ms;
-            entity_expansion_ms = arm.entity_expansion_ms;
-            enrichment_ms = arm.enrichment_ms;
-            persistence_ms = arm.persistence_ms;
-            albums_seen = arm.albums_seen;
-            availability_checked = arm.availability_checked;
-            albums_unavailable = arm.albums_unavailable;
-            tracks_unavailable = arm.tracks_unavailable;
-            tracks_expansion_deferred = arm.tracks_expansion_deferred;
-            tracks_expansion_failed = arm.tracks_expansion_failed;
-            favorite_albums_total = arm.favorite_albums_total;
-            favorite_artists_total = arm.favorite_artists_total;
-            reported_favorites = arm.reported_favorites;
-            reported_albums = arm.reported_albums;
-            reported_playlists = arm.reported_playlists;
-            album_expansion_metrics = arm.album_expansion_metrics;
-            errors = arm.errors;
-            warnings = arm.warnings;
         }
         "apple_music" => {
             // F3-2: brazo propio del motor unificado. Delega en el importador de
@@ -8006,53 +7651,30 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                 .map_err(|e| format!("RequiresAuth: {}", e))?;
             match run_apple_music_library_import(db, |_| {}).await {
                 Ok(summary) => {
-                    imported_tracks_total = summary.imported.max(0) as u64;
-                    skipped_tracks_total = summary.skipped.max(0) as u64;
-                    tracks_processed = (summary.imported + summary.skipped).max(0) as u64;
-                    favorite_tracks_total = (summary.imported + summary.skipped).max(0) as u64;
-                    favorite_albums_total += summary.albums_imported.max(0) as u64;
-                    playlists_total += summary.playlists_imported.max(0) as u64;
-                    warnings.extend(summary.warnings);
+                    arm.imported_tracks_total = summary.imported.max(0) as u64;
+                    arm.skipped_tracks_total = summary.skipped.max(0) as u64;
+                    arm.tracks_processed = (summary.imported + summary.skipped).max(0) as u64;
+                    arm.favorite_tracks_total = (summary.imported + summary.skipped).max(0) as u64;
+                    arm.favorite_albums_total += summary.albums_imported.max(0) as u64;
+                    arm.playlists_total += summary.playlists_imported.max(0) as u64;
+                    arm.warnings.extend(summary.warnings);
                 }
                 Err(am_err) => {
-                    errors.push(format!("Apple Music library: {}", am_err));
+                    arm.errors.push(format!("Apple Music library: {}", am_err));
                 }
             }
         }
         "soundcloud" => {
-            let arm = sync_soundcloud_arm(
+            sync_soundcloud_arm(
                 db,
                 &service_normalized,
                 account_id,
                 &creds,
                 &prefs,
                 emitter,
-                ArmOutcome {
-                    imported_tracks_total,
-                    favorite_tracks_total,
-                    ..Default::default()
-                },
+                &mut arm,
             )
             .await?;
-            imported_tracks_total = arm.imported_tracks_total;
-            favorite_tracks_total = arm.favorite_tracks_total;
-            tracks_processed += arm.tracks_processed;
-            tracks_expanded += arm.tracks_expanded;
-            tracks_new_global += arm.tracks_new_global;
-            sources_new_for_service += arm.sources_new_for_service;
-            library_entries_new_for_account += arm.library_entries_new_for_account;
-            tracks_already_present += arm.tracks_already_present;
-            tracks_changed_unique += arm.tracks_changed_unique;
-            skipped_tracks_total += arm.skipped_tracks_total;
-            favorites_seen += arm.favorites_seen;
-            metadata_enriched += arm.metadata_enriched;
-            metadata_partial += arm.metadata_partial;
-            playlists_seen += arm.playlists_seen;
-            playlists_total += arm.playlists_total;
-            api_fetch_ms += arm.api_fetch_ms;
-            enrichment_ms += arm.enrichment_ms;
-            errors.extend(arm.errors);
-            warnings.extend(arm.warnings);
         }
         _ => {
             let err_msg = format!("Unsupported service for sync: {}", service_name);
@@ -8073,11 +7695,11 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
         &service_normalized,
         Some(account_id),
         "persisting",
-        imported_tracks_total,
-        Some(imported_tracks_total),
+        arm.imported_tracks_total,
+        Some(arm.imported_tracks_total),
         "Persisting sync metadata and updating timestamps...",
-        imported_tracks_total,
-        favorite_tracks_total,
+        arm.imported_tracks_total,
+        arm.favorite_tracks_total,
     ));
 
     // BD-9: every track/album/playlist is already in the catalog; what remains is
@@ -8086,9 +7708,9 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     if let Some(j) = journal {
         j.checkpoint_persisting(Some(&format!(
             "imported_tracks={} albums={} playlists={}",
-            imported_tracks_total,
-            favorite_albums_total + purchases_total,
-            playlists_total
+            arm.imported_tracks_total,
+            arm.favorite_albums_total + arm.purchases_total,
+            arm.playlists_total
         )))
         .await;
     }
@@ -8107,23 +7729,24 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     )
     .bind(&service_normalized)
     .execute(db)).await;
-    persistence_ms += t_pers.elapsed().as_millis() as u64;
+    arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
 
-    // Check partial failure: If albums were received/requested for sync but 0 tracks were found/persisted/existing due to errors or empty expansions
-    if album_expansion_metrics.albums_received > 0
-        && album_expansion_metrics.tracks_persisted_new == 0
-        && album_expansion_metrics.tracks_existing == 0
+    // Check partial failure: If albums were received/requested for sync but 0 tracks were found/persisted/existing due to arm.errors or empty expansions
+    if arm.album_expansion_metrics.albums_received > 0
+        && arm.album_expansion_metrics.tracks_persisted_new == 0
+        && arm.album_expansion_metrics.tracks_existing == 0
     {
-        let err_detail = album_expansion_metrics
+        let err_detail = arm
+            .album_expansion_metrics
             .first_error_code
             .as_deref()
             .unwrap_or("Albums contained 0 tracks or expansion failed");
         let partial_msg = format!(
             "Qobuz album expansion failed: received {} albums, but 0 tracks imported ({})",
-            album_expansion_metrics.albums_received, err_detail
+            arm.album_expansion_metrics.albums_received, err_detail
         );
-        if !errors.contains(&partial_msg) {
-            errors.push(partial_msg);
+        if !arm.errors.contains(&partial_msg) {
+            arm.errors.push(partial_msg);
         }
     }
 
@@ -8131,21 +7754,25 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     // a complete collection. NULL means no provider total was observed this run.
     // Skipped items with imports on the board are a partial collection, not a
     // hard error: the account card must not claim nothing was imported.
-    let snapshot_state = if errors.is_empty() {
+    let snapshot_state = if arm.errors.is_empty() {
         "complete"
-    } else if favorite_tracks_total > 0
-        || favorite_albums_total > 0
-        || playlists_total > 0
-        || purchases_total > 0
+    } else if arm.favorite_tracks_total > 0
+        || arm.favorite_albums_total > 0
+        || arm.playlists_total > 0
+        || arm.purchases_total > 0
     {
         "partial"
     } else {
         "error"
     };
     for (collection, total, imported) in [
-        ("favorites", reported_favorites, favorite_tracks_total),
-        ("albums", reported_albums, favorite_albums_total),
-        ("playlists", reported_playlists, playlists_total),
+        (
+            "favorites",
+            arm.reported_favorites,
+            arm.favorite_tracks_total,
+        ),
+        ("albums", arm.reported_albums, arm.favorite_albums_total),
+        ("playlists", arm.reported_playlists, arm.playlists_total),
     ] {
         if total.is_some() {
             record_account_import_count(
@@ -8160,19 +7787,22 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
         }
     }
 
-    let sync_outcome = if !errors.is_empty() {
-        if tracks_processed > 0 || favorite_tracks_total > 0 || favorite_albums_total > 0 {
+    let sync_outcome = if !arm.errors.is_empty() {
+        if arm.tracks_processed > 0
+            || arm.favorite_tracks_total > 0
+            || arm.favorite_albums_total > 0
+        {
             "partial_failure".to_string()
         } else {
             "failed".to_string()
         }
-    } else if albums_unavailable > 0 || !warnings.is_empty() {
+    } else if arm.albums_unavailable > 0 || !arm.warnings.is_empty() {
         "success_with_warnings".to_string()
     } else {
         "success".to_string()
     };
 
-    // Per-item skips are warnings, not a dead connection: if anything was
+    // Per-item skips are arm.warnings, not a dead connection: if anything was
     // imported, the sync ran end-to-end and must be presented as a completed
     // sync with skipped items. Only a run that imported nothing is a hard
     // failure (the UI reserves its connection-error message for that case).
@@ -8182,66 +7812,66 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
         format!(
             "Sync completed for {}: {} tracks new global, {} sources new, {} library entries new ({} already present, {} favorites, {} albums, {} playlists)",
             service_name,
-            tracks_new_global,
-            sources_new_for_service,
-            library_entries_new_for_account,
-            tracks_already_present,
-            favorite_tracks_total,
-            favorite_albums_total,
-            playlists_total
+            arm.tracks_new_global,
+            arm.sources_new_for_service,
+            arm.library_entries_new_for_account,
+            arm.tracks_already_present,
+            arm.favorite_tracks_total,
+            arm.favorite_albums_total,
+            arm.playlists_total
         )
     } else if sync_outcome == "success_with_warnings" {
         format!(
             "Sync completed with warnings for {}: {} favorites, {} albums ({} unavailable from provider), {} playlists",
             service_name,
-            favorite_tracks_total,
-            favorite_albums_total,
-            albums_unavailable,
-            playlists_total
+            arm.favorite_tracks_total,
+            arm.favorite_albums_total,
+            arm.albums_unavailable,
+            arm.playlists_total
         )
     } else if sync_outcome == "partial_failure" {
         format!(
             "Sync completed for {} with {} skipped item(s) ({} expansion failures): {} favorites, {} albums, {} playlists",
             service_name,
-            errors.len(),
-            tracks_expansion_failed,
-            favorite_tracks_total,
-            favorite_albums_total,
-            playlists_total
+            arm.errors.len(),
+            arm.tracks_expansion_failed,
+            arm.favorite_tracks_total,
+            arm.favorite_albums_total,
+            arm.playlists_total
         )
     } else {
         format!(
             "Sync failed for {}: {} item(s) could not be imported",
             service_name,
-            errors.len()
+            arm.errors.len()
         )
     };
 
     // Diagnostics: thousands of per-item strings are never logged one by one.
     // Group them into stable reasons so the next run's log identifies the
-    // causes (duplicate editions, identity collisions, DB errors) without
+    // causes (duplicate editions, identity collisions, DB arm.errors) without
     // dumping the full error list.
     // Cierre observable: la línea se emite siempre. Antes solo aparecía con
     // errores, así que un servicio con cero se leía como un servicio colgado.
-    if errors.is_empty() {
+    if arm.errors.is_empty() {
         tracing::info!(
             service = %service_normalized,
-            tracks_expansion_failed,
+            arm.tracks_expansion_failed,
             "[sync] 0 item error(s) for {} — servicio completo",
             service_normalized
         );
     } else {
-        let kinds = sync_error_kinds(&errors);
+        let kinds = sync_error_kinds(&arm.errors);
         tracing::warn!(
             service = %service_normalized,
-            error_count = errors.len(),
-            tracks_expansion_failed,
+            error_count = arm.errors.len(),
+            arm.tracks_expansion_failed,
             "[sync] {} item error(s) for {} — top reasons: {}",
-            errors.len(),
+            arm.errors.len(),
             service_normalized,
             format_sync_error_kinds(&kinds, 8)
         );
-        for sample in errors.iter().take(3) {
+        for sample in arm.errors.iter().take(3) {
             tracing::warn!(
                 "[sync/{}] item error sample: {}",
                 service_normalized,
@@ -8288,15 +7918,15 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             &service_normalized,
             Some(account_id),
             &message,
-            imported_tracks_total,
-            favorite_tracks_total,
-            Some(imported_tracks_total),
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
+            Some(arm.imported_tracks_total),
         ));
     } else {
         tracing::warn!(
             "Sync failed for {} with {} item errors",
             service_name,
-            errors.len()
+            arm.errors.len()
         );
         emit(SyncProgressEvent::failed(
             &service_normalized,
@@ -8304,15 +7934,15 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             "completed",
             format!(
                 "Sync completed with {} errors: {}",
-                errors.len(),
-                summarize_sync_errors(&errors, 5)
+                arm.errors.len(),
+                summarize_sync_errors(&arm.errors, 5)
             ),
-            imported_tracks_total,
-            favorite_tracks_total,
+            arm.imported_tracks_total,
+            arm.favorite_tracks_total,
         ));
     }
 
-    let albums_total = favorite_albums_total + purchases_total;
+    let albums_total = arm.favorite_albums_total + arm.purchases_total;
     let availability_unknown: u64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM track_sources WHERE availability_status = 'unknown_unchecked'",
     )
@@ -8321,10 +7951,10 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     .unwrap_or(0) as u64;
 
     let phase_timings = SyncPhaseTimings {
-        api_fetch_ms,
-        entity_expansion_ms,
-        enrichment_ms,
-        persistence_ms,
+        api_fetch_ms: arm.api_fetch_ms,
+        entity_expansion_ms: arm.entity_expansion_ms,
+        enrichment_ms: arm.enrichment_ms,
+        persistence_ms: arm.persistence_ms,
         availability_check_ms,
         total_elapsed_ms: sync_start.elapsed().as_millis() as u64,
     };
@@ -8345,41 +7975,41 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
         account_id: Some(account_id),
         success,
         message,
-        imported_tracks_total,
-        favorite_tracks_total,
-        favorite_albums_total,
-        favorite_artists_total,
-        playlists_total,
-        purchases_total,
-        skipped_tracks_total,
+        imported_tracks_total: arm.imported_tracks_total,
+        favorite_tracks_total: arm.favorite_tracks_total,
+        favorite_albums_total: arm.favorite_albums_total,
+        favorite_artists_total: arm.favorite_artists_total,
+        playlists_total: arm.playlists_total,
+        purchases_total: arm.purchases_total,
+        skipped_tracks_total: arm.skipped_tracks_total,
         albums_total,
-        metadata_enriched,
-        metadata_partial,
+        metadata_enriched: arm.metadata_enriched,
+        metadata_partial: arm.metadata_partial,
         availability_unknown,
-        availability_checked,
+        availability_checked: arm.availability_checked,
         phase_timings: Some(phase_timings),
-        album_expansion_metrics: if album_expansion_metrics.albums_received > 0 {
-            Some(album_expansion_metrics)
+        album_expansion_metrics: if arm.album_expansion_metrics.albums_received > 0 {
+            Some(arm.album_expansion_metrics)
         } else {
             None
         },
-        tracks_processed,
-        tracks_changed_unique,
-        tracks_new_global,
-        sources_new_for_service,
-        library_entries_new_for_account,
-        tracks_already_present,
-        favorites_seen,
-        albums_seen,
-        playlists_seen,
-        tracks_expanded,
-        tracks_expansion_failed,
-        albums_unavailable,
-        tracks_unavailable,
-        tracks_expansion_deferred,
+        tracks_processed: arm.tracks_processed,
+        tracks_changed_unique: arm.tracks_changed_unique,
+        tracks_new_global: arm.tracks_new_global,
+        sources_new_for_service: arm.sources_new_for_service,
+        library_entries_new_for_account: arm.library_entries_new_for_account,
+        tracks_already_present: arm.tracks_already_present,
+        favorites_seen: arm.favorites_seen,
+        albums_seen: arm.albums_seen,
+        playlists_seen: arm.playlists_seen,
+        tracks_expanded: arm.tracks_expanded,
+        tracks_expansion_failed: arm.tracks_expansion_failed,
+        albums_unavailable: arm.albums_unavailable,
+        tracks_unavailable: arm.tracks_unavailable,
+        tracks_expansion_deferred: arm.tracks_expansion_deferred,
         sync_outcome: Some(sync_outcome),
-        warnings,
-        errors,
+        warnings: arm.warnings,
+        errors: arm.errors,
         ..Default::default()
     })
 }
@@ -9214,6 +8844,7 @@ mod sync_arm_contracts {
         let engine = crate::services::enrichment::EnrichmentEngine::with_db(pool.clone());
         let creds = json!({"user_id": 1});
 
+        let mut arm = SyncOutcome::default();
         let error = match sync_deezer_arm(
             &pool,
             "deezer",
@@ -9222,7 +8853,7 @@ mod sync_arm_contracts {
             &prefs_sin_fases(),
             Some(&emitter),
             &engine,
-            ArmOutcome::default(),
+            &mut arm,
         )
         .await
         {
@@ -9245,6 +8876,7 @@ mod sync_arm_contracts {
         let engine = crate::services::enrichment::EnrichmentEngine::with_db(pool.clone());
         let creds = json!({});
 
+        let mut arm = SyncOutcome::default();
         let error = match sync_spotify_arm(
             &pool,
             "spotify",
@@ -9253,7 +8885,7 @@ mod sync_arm_contracts {
             &prefs_sin_fases(),
             Some(&emitter),
             &engine,
-            ArmOutcome::default(),
+            &mut arm,
         )
         .await
         {
@@ -9274,6 +8906,7 @@ mod sync_arm_contracts {
         let emitter = ArmEmitter::default();
         let engine = crate::services::enrichment::EnrichmentEngine::with_db(pool.clone());
 
+        let mut arm = SyncOutcome::default();
         let error = match sync_tidal_arm(
             &pool,
             "tidal",
@@ -9282,7 +8915,7 @@ mod sync_arm_contracts {
             &prefs_sin_fases(),
             Some(&emitter),
             &engine,
-            ArmOutcome::default(),
+            &mut arm,
         )
         .await
         {
@@ -9303,6 +8936,7 @@ mod sync_arm_contracts {
         let emitter = ArmEmitter::default();
         let engine = crate::services::enrichment::EnrichmentEngine::with_db(pool.clone());
 
+        let mut arm = SyncOutcome::default();
         let error = match sync_qobuz_arm(
             &pool,
             "qobuz",
@@ -9311,7 +8945,7 @@ mod sync_arm_contracts {
             &prefs_sin_fases(),
             Some(&emitter),
             &engine,
-            ArmOutcome::default(),
+            &mut arm,
         )
         .await
         {
@@ -9332,18 +8966,19 @@ mod sync_arm_contracts {
         let emitter = ArmEmitter::default();
         let creds = json!({"oauth_token": "tok", "user_id": 1});
 
-        let arm = sync_soundcloud_arm(
+        let mut arm = SyncOutcome {
+            imported_tracks_total: 5,
+            favorite_tracks_total: 7,
+            ..Default::default()
+        };
+        sync_soundcloud_arm(
             &pool,
             "soundcloud",
             1,
             &creds,
             &prefs_sin_fases(),
             Some(&emitter),
-            ArmOutcome {
-                imported_tracks_total: 5,
-                favorite_tracks_total: 7,
-                ..Default::default()
-            },
+            &mut arm,
         )
         .await
         .expect("sin fases activas el brazo no debe fallar");

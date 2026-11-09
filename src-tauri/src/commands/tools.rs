@@ -21,21 +21,13 @@ use super::*;
 // METADATA ENRICHMENT COMMANDS
 // ==============================================
 
-/// Metadata enrichment result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataResult {
-    pub success: bool,
-    pub data: Option<serde_json::Value>,
-    pub error: Option<String>,
-}
-
 #[tauri::command]
 pub async fn enrich_metadata(
     track: String,
     artist: String,
     isrc: Option<String>,
     album: Option<String>,
-) -> Result<MetadataResult, String> {
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     tracing::info!("enrich_metadata: {} - {}", artist, track);
 
     let mut args = vec!["enrich", &track, &artist];
@@ -49,36 +41,32 @@ pub async fn enrich_metadata(
         args.push(a);
     }
 
-    run_bridge_command::<MetadataResult>("metadata_bridge.py", &args).await
+    run_bridge::<serde_json::Value>("metadata_bridge.py", &args).await
 }
 
 // ==============================================
 // FINGERPRINT / ACOUSTID COMMANDS
 // ==============================================
 
-/// Fingerprint result from Python subprocess
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FingerprintResult {
-    pub success: bool,
-    pub data: Option<serde_json::Value>,
-    pub error: Option<String>,
-}
-
 #[tauri::command]
-pub async fn check_fingerprint_available() -> Result<FingerprintResult, String> {
+pub async fn check_fingerprint_available(
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     tracing::info!("check_fingerprint_available");
-    run_bridge_command::<FingerprintResult>("fingerprint_bridge.py", &["check"]).await
+    run_bridge::<serde_json::Value>("fingerprint_bridge.py", &["check"]).await
 }
 
 #[tauri::command]
-pub async fn identify_audio(file_path: String) -> Result<FingerprintResult, String> {
+pub async fn identify_audio(
+    file_path: String,
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     tracing::info!("identify_audio: {}", file_path);
-    run_bridge_command::<FingerprintResult>("fingerprint_bridge.py", &["identify", &file_path])
-        .await
+    run_bridge::<serde_json::Value>("fingerprint_bridge.py", &["identify", &file_path]).await
 }
 
 #[tauri::command]
-pub async fn find_audio_duplicates(paths: Vec<String>) -> Result<FingerprintResult, String> {
+pub async fn find_audio_duplicates(
+    paths: Vec<String>,
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     tracing::info!("find_audio_duplicates: {:?}", paths);
 
     let mut args = vec!["duplicates"];
@@ -86,25 +74,18 @@ pub async fn find_audio_duplicates(paths: Vec<String>) -> Result<FingerprintResu
         args.push(path);
     }
 
-    run_bridge_command::<FingerprintResult>("fingerprint_bridge.py", &args).await
+    run_bridge::<serde_json::Value>("fingerprint_bridge.py", &args).await
 }
 
 // ==============================================
 // CONVERSION COMMANDS (FFmpeg)
 // ==============================================
 
-/// Generic bridge result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeResult {
-    pub success: bool,
-    pub data: Option<serde_json::Value>,
-    pub error: Option<String>,
-}
-
 /// Check if FFmpeg is available
 #[tauri::command]
-pub async fn check_ffmpeg_available() -> Result<BridgeResult, String> {
-    run_bridge_command("conversion_bridge.py", &["check"]).await
+pub async fn check_ffmpeg_available(
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
+    run_bridge("conversion_bridge.py", &["check"]).await
 }
 
 // ==============================================
@@ -117,7 +98,7 @@ pub async fn scan_local_library(
     directory: String,
     recursive: Option<bool>,
     limit: Option<i32>,
-) -> Result<BridgeResult, String> {
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     let mut args = vec!["scan", &directory];
 
     if recursive == Some(false) {
@@ -130,13 +111,15 @@ pub async fn scan_local_library(
         args.push(l);
     }
 
-    run_bridge_command::<BridgeResult>("scanner_bridge.py", &args).await
+    run_bridge::<serde_json::Value>("scanner_bridge.py", &args).await
 }
 
 /// Get metadata for a single audio file
 #[tauri::command]
-pub async fn get_local_track_metadata(file_path: String) -> Result<BridgeResult, String> {
-    run_bridge_command::<BridgeResult>("scanner_bridge.py", &["metadata", &file_path]).await
+pub async fn get_local_track_metadata(
+    file_path: String,
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
+    run_bridge::<serde_json::Value>("scanner_bridge.py", &["metadata", &file_path]).await
 }
 
 // ==============================================
@@ -335,84 +318,22 @@ pub fn get_python_executable() -> String {
     "python".to_string()
 }
 
-/// Run a Python bridge command and return the result
-async fn run_bridge_command<T>(script: &str, args: &[&str]) -> Result<T, String>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let project_root = get_project_root();
-    let python_cmd = get_python_executable();
-
-    // Los puentes viven en layouts empaquetados que get_project_root no ve
-    // (Tauri coloca `../scripts` en `_up_/scripts`); resolutor central.
-    let scripts_dir = crate::cmd_utils::find_scripts_dir(&project_root);
-    let script_path = scripts_dir.join(script);
-
-    tracing::debug!(
-        "Running bridge: {} {:?} (cwd: {:?})",
+/// Lanza un puente Python con el presupuesto por defecto.
+///
+/// El lanzamiento y el envelope viven en `crate::bridges`; aquí solo se fija
+/// el timeout común (`DEFAULT_BRIDGE_TIMEOUT`) y se convierte el error tipado
+/// al `String` que esperan los comandos IPC.
+async fn run_bridge<T: serde::de::DeserializeOwned>(
+    script: &str,
+    args: &[&str],
+) -> Result<crate::bridges::BridgeEnvelope<T>, String> {
+    crate::bridges::BridgeClient::call(
         script,
         args,
-        project_root
-    );
-
-    let mut cmd = crate::cmd_utils::create_tokio_command(&python_cmd);
-    crate::cmd_utils::apply_bundled_tool_env(&mut cmd);
-    cmd.arg(&script_path);
-
-    for arg in args {
-        cmd.arg(arg);
-    }
-
-    cmd.current_dir(&project_root);
-    cmd.kill_on_drop(true);
-    let output = tokio::time::timeout(crate::cmd_utils::DEFAULT_BRIDGE_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| {
-            format!(
-                "Bridge {} timed out after {} seconds",
-                script,
-                crate::cmd_utils::DEFAULT_BRIDGE_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|e| format!("Failed to run {}: {}", script, e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if !stderr.is_empty() {
-        tracing::warn!("Bridge {} stderr: {}", script, stderr);
-    }
-
-    let trimmed_stdout = stdout.trim();
-    let trimmed_stderr = stderr.trim();
-
-    if !output.status.success() && trimmed_stdout.is_empty() {
-        let err_detail = if !trimmed_stderr.is_empty() {
-            trimmed_stderr.to_string()
-        } else {
-            format!("Process exited with status {}", output.status)
-        };
-        return Err(format!("Bridge {} failed: {}", script, err_detail));
-    }
-
-    if let Ok(result) = serde_json::from_str::<T>(trimmed_stdout) {
-        Ok(result)
-    } else if trimmed_stdout.is_empty() && !trimmed_stderr.is_empty() {
-        Err(format!(
-            "Bridge {} produced no output. Error: {}",
-            script, trimmed_stderr
-        ))
-    } else if !trimmed_stderr.is_empty() {
-        Err(format!(
-            "Failed to parse result from {}: {} (stderr: {})",
-            script, trimmed_stdout, trimmed_stderr
-        ))
-    } else {
-        Err(format!(
-            "Failed to parse result from {}: {}",
-            script, trimmed_stdout
-        ))
-    }
+        crate::bridges::CallOptions::with_timeout(crate::cmd_utils::DEFAULT_BRIDGE_TIMEOUT),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 // ==============================================
@@ -591,7 +512,7 @@ fn spawn_library_watcher(
 
             let scan_id = uuid::Uuid::new_v4().to_string();
             emit_progress(&app_handle, ProgressEvent::new("scan", &scan_id));
-            let result = run_bridge_command::<BridgeResult>("scanner_bridge.py", &args).await;
+            let result = run_bridge::<serde_json::Value>("scanner_bridge.py", &args).await;
             match &result {
                 Ok(r) if r.success => {
                     let total = r
@@ -653,7 +574,7 @@ pub async fn scan_local_library_with_progress(
     recursive: Option<bool>,
     watch_for_changes: Option<bool>,
     skip_small_files: Option<bool>,
-) -> Result<BridgeResult, String> {
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     let scan_id = uuid::Uuid::new_v4().to_string();
 
     // Emit start event
@@ -676,7 +597,7 @@ pub async fn scan_local_library_with_progress(
         args.push(mb.as_str());
     }
 
-    let result = run_bridge_command::<BridgeResult>("scanner_bridge.py", &args).await;
+    let result = run_bridge::<serde_json::Value>("scanner_bridge.py", &args).await;
 
     // Emit completion event
     match &result {
@@ -733,7 +654,7 @@ pub async fn scan_local_library_with_progress(
 pub async fn batch_enrich_metadata(
     app_handle: tauri::AppHandle,
     tracks: Vec<serde_json::Value>,
-) -> Result<BridgeResult, String> {
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     use tauri::Manager;
     let state = app_handle.try_state::<crate::AppState>();
     let batch_id = uuid::Uuid::new_v4().to_string();
@@ -820,7 +741,7 @@ pub async fn batch_enrich_metadata(
             }
         }
 
-        let result = run_bridge_command::<BridgeResult>("metadata_bridge.py", &args).await;
+        let result = run_bridge::<serde_json::Value>("metadata_bridge.py", &args).await;
 
         match result {
             Ok(r) if r.success => {
@@ -850,7 +771,7 @@ pub async fn batch_enrich_metadata(
 
     let failed = total.saturating_sub(enriched);
 
-    Ok(BridgeResult {
+    Ok(crate::bridges::BridgeEnvelope::<serde_json::Value> {
         success: true,
         data: Some(serde_json::json!({
             "batch_id": batch_id,
@@ -873,8 +794,8 @@ pub async fn batch_enrich_metadata(
 pub async fn fetch_remote_playlist_tracks(
     service: String,
     playlist_id: String,
-) -> Result<BridgeResult, String> {
-    run_bridge_command::<BridgeResult>("playlist_bridge.py", &["get", &service, &playlist_id]).await
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
+    run_bridge::<serde_json::Value>("playlist_bridge.py", &["get", &service, &playlist_id]).await
 }
 
 /// Export playlist to JSON or M3U format
@@ -883,9 +804,9 @@ pub async fn export_playlist(
     service: String,
     playlist_id: String,
     format: Option<String>,
-) -> Result<BridgeResult, String> {
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     let format_arg = format.as_deref().unwrap_or("json");
-    run_bridge_command::<BridgeResult>(
+    run_bridge::<serde_json::Value>(
         "playlist_bridge.py",
         &["export", &service, &playlist_id, "--format", format_arg],
     )
@@ -901,8 +822,8 @@ pub async fn export_playlist(
 pub async fn match_playlist_to_service(
     playlist_file: String,
     target_service: String,
-) -> Result<BridgeResult, String> {
-    run_bridge_command::<BridgeResult>(
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
+    run_bridge::<serde_json::Value>(
         "playlist_bridge.py",
         &["match", &playlist_file, &target_service],
     )
@@ -929,34 +850,38 @@ pub fn validate_tool(tool: &str) -> Result<String, String> {
 
 /// Check status of all external dependencies (FFmpeg, fpcalc)
 #[tauri::command]
-pub async fn check_dependencies() -> Result<BridgeResult, String> {
-    run_bridge_command::<BridgeResult>("dependency_manager.py", &["check"]).await
+pub async fn check_dependencies(
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
+    run_bridge::<serde_json::Value>("dependency_manager.py", &["check"]).await
 }
 
 /// Install a specific dependency (auto-download)
 #[tauri::command]
-pub async fn install_dependency(tool: String) -> Result<BridgeResult, String> {
+pub async fn install_dependency(
+    tool: String,
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     let normalized_tool = validate_tool(&tool)?;
     tracing::info!("Installing dependency: {}", normalized_tool);
-    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &normalized_tool])
-        .await
+    run_bridge::<serde_json::Value>("dependency_manager.py", &["install", &normalized_tool]).await
 }
 
 /// Install all missing dependencies
 #[tauri::command]
-pub async fn install_all_dependencies() -> Result<BridgeResult, String> {
+pub async fn install_all_dependencies(
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     tracing::info!("Installing all missing dependencies");
-    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install-all"]).await
+    run_bridge::<serde_json::Value>("dependency_manager.py", &["install-all"]).await
 }
 
 /// Ensure a dependency is available, installing if needed
 #[tauri::command]
-pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
+pub async fn ensure_dependency(
+    tool: String,
+) -> Result<crate::bridges::BridgeEnvelope<serde_json::Value>, String> {
     let normalized_tool = validate_tool(&tool)?;
 
     // First check
-    let check_result =
-        run_bridge_command::<BridgeResult>("dependency_manager.py", &["check"]).await?;
+    let check_result = run_bridge::<serde_json::Value>("dependency_manager.py", &["check"]).await?;
 
     if let Some(data) = &check_result.data {
         if let Some(tools) = data.get("tools") {
@@ -966,7 +891,7 @@ pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
                 {
-                    return Ok(BridgeResult {
+                    return Ok(crate::bridges::BridgeEnvelope::<serde_json::Value> {
                         success: true,
                         data: Some(serde_json::json!({
                             "status": "already_available",
@@ -984,8 +909,7 @@ pub async fn ensure_dependency(tool: String) -> Result<BridgeResult, String> {
         "Dependency {} not found, auto-installing...",
         normalized_tool
     );
-    run_bridge_command::<BridgeResult>("dependency_manager.py", &["install", &normalized_tool])
-        .await
+    run_bridge::<serde_json::Value>("dependency_manager.py", &["install", &normalized_tool]).await
 }
 
 // ==============================================

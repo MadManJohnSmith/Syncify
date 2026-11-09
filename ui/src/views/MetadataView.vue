@@ -1320,6 +1320,7 @@ import type { CountryTagRepairReport, TagVerification, TrackTagsSnapshot } from 
 import { settingsApi } from '@/api/settings'
 import { toolsApi } from '@/api/tools'
 import { TauriEvents } from '@/api/tauri'
+import { useEnrichmentProgress } from '@/composables/useEnrichmentProgress'
 import type { LibraryTrack, TrackSourceAvailability } from '@/api/types'
 import MetadataEditModal from '@/components/MetadataEditModal.vue'
 import MusicBrainzMatchModal from '@/components/MusicBrainzMatchModal.vue'
@@ -1421,11 +1422,14 @@ const isRefreshing = ref(false)
 let isLoadingTracks = false
 const isSaving = ref(false)
 const isEnriching = ref(false)
-let unlistenEnrichment: UnlistenFn | null = null
 let unlistenBg: UnlistenFn | null = null
 let bgRefreshTimer: ReturnType<typeof setTimeout> | undefined
 let hasPendingBatchRefresh = false
-const enrichProgress = ref<{ current: number; total: number; currentTrack: string } | null>(null)
+const {
+  progress: enrichProgress,
+  start: startEnrichmentProgress,
+  stop: stopEnrichmentProgress,
+} = useEnrichmentProgress()
 
 // Virtual Scrolling: kernel compartido useVirtualWindow (ADR-0025).
 // Paridad congelada: filas de 64 px y overscan 5, sin footer ni throttle.
@@ -1707,10 +1711,6 @@ onUnmounted(() => {
   if (unlistenBg) {
     unlistenBg()
     unlistenBg = null
-  }
-  if (unlistenEnrichment) {
-    unlistenEnrichment()
-    unlistenEnrichment = null
   }
   if (coverSweepUnlisten) {
     coverSweepUnlisten()
@@ -2571,19 +2571,9 @@ function onTrackSaved(updatedTrack: LibraryTrack) {
 // Run MusicBrainz enrichment on selected tracks (or all if none)
 async function runMusicBrainzEnrichment() {
   isEnriching.value = true
-  enrichProgress.value = { current: 0, total: 0, currentTrack: '' }
+  await startEnrichmentProgress()
 
   try {
-    // Listen for progress events
-    const { listen } = await import('@tauri-apps/api/event')
-    unlistenEnrichment = await listen<{ status: string; total: number; current: number; enriched: number; failed: number; currentTrack?: string; message?: string }>(TauriEvents.ENRICHMENT_PROGRESS, (event) => {
-      enrichProgress.value = {
-        current: event.payload.current,
-        total: event.payload.total,
-        currentTrack: event.payload.currentTrack ?? event.payload.message ?? ''
-      }
-    })
-
     let result: { total: number; enriched: number; failed: number }
 
     if (selectedTracks.value.length > 0) {
@@ -2596,7 +2586,15 @@ async function runMusicBrainzEnrichment() {
         try {
           await metadataApi.enrichMetadata(trackId)
           result.enriched++
-          enrichProgress.value = { current: done, total: ids.length, currentTrack: `Track ${trackId}` }
+          enrichProgress.value = {
+            kind: 'musicbrainz',
+            status: 'processing',
+            total: ids.length,
+            current: done,
+            enriched: done,
+            failed: result.failed,
+            currentTrack: `Track ${trackId}`,
+          }
         } catch (err) {
           console.warn(`Enrichment failed for track ${trackId}:`, err)
           result.failed++
@@ -2620,12 +2618,8 @@ async function runMusicBrainzEnrichment() {
     console.error('Failed to enrich metadata:', error)
     showToast('Failed to enrich metadata', 'error')
   } finally {
-    if (unlistenEnrichment) {
-      unlistenEnrichment()
-      unlistenEnrichment = null
-    }
+    stopEnrichmentProgress()
     isEnriching.value = false
-    enrichProgress.value = null
   }
 }
 

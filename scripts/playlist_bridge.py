@@ -35,15 +35,7 @@ if os.getenv("SYNCIFY_ENV", "").strip().lower() in ("development", "dev"):
         pass
 
 
-def json_response(success: bool, data: Any = None, error: Optional[str] = None):
-    """Output JSON response and exit."""
-    result = {"success": success}
-    if data is not None:
-        result["data"] = data
-    if error is not None:
-        result["error"] = error
-    print(json.dumps(result, ensure_ascii=False, default=str))
-    sys.exit(0 if success else 1)
+from services.bridge_protocol import BridgeFailure, run  # noqa: E402
 
 
 # ==============================================================================
@@ -768,39 +760,38 @@ def list_playlists(service: str):
         elif service_norm in ("local", "library"):
             playlists = get_local_playlists()
         else:
-            json_response(False, error=f"Unsupported service: {service}")
-            return
+            raise BridgeFailure(f"Unsupported service: {service}")
 
-        json_response(True, {
+        return {
             "service": service_norm,
             "count": len(playlists),
             "playlists": playlists,
-        })
+        }
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
 
 
 def get_playlist(service: str, playlist_id: str):
     """Get playlist tracks from a service or local source."""
     try:
         tracks = get_tracks_for_service(service, playlist_id)
-        json_response(True, {
+        return {
             "service": service.lower(),
             "playlist_id": playlist_id,
             "track_count": len(tracks),
             "tracks": tracks,
-        })
+        }
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
 
 
 def export_playlist(service: str, playlist_id: str, format_type: str = "json", output_path: Optional[str] = None):
     """Export playlist to a file format (json, m3u, m3u8)."""
     try:
         data = export_playlist_data(service, playlist_id, format_type, output_path)
-        json_response(True, data)
+        return data
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
 
 
 # Services whose catalogs can address a track by ISRC. SoundCloud is absent on
@@ -878,9 +869,9 @@ def classify_playlist_by_isrc(playlist_file: str, target_service: str) -> Dict[s
 def match_playlist_tracks(playlist_file: str, target_service: str):
     """Classify playlist entries by ISRC availability for a transfer to `target_service`."""
     try:
-        json_response(True, classify_playlist_by_isrc(playlist_file, target_service))
+        return classify_playlist_by_isrc(playlist_file, target_service)
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
 
 
 def main():
@@ -919,17 +910,20 @@ def main():
         help="Target service the playlist would be transferred to (spotify, qobuz, tidal, deezer)",
     )
 
-    args = parser.parse_args()
+    return run(_handle, parse=parser.parse_args)
 
+
+def _handle(args):
     if args.command == "list":
-        list_playlists(args.service)
+        return list_playlists(args.service)
     elif args.command == "get":
-        get_playlist(args.service, args.playlist_id)
+        return get_playlist(args.service, args.playlist_id)
     elif args.command == "export":
-        export_playlist(args.service, args.playlist_id, args.format, args.output)
+        return export_playlist(args.service, args.playlist_id, args.format, args.output)
     elif args.command == "match":
-        match_playlist_tracks(args.playlist_file, args.target_service)
+        return match_playlist_tracks(args.playlist_file, args.target_service)
+    raise BridgeFailure("Unknown command: %s" % args.command)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

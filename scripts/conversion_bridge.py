@@ -29,15 +29,7 @@ if os.getenv("SYNCIFY_ENV", "").strip().lower() in ("development", "dev"):
         pass
 
 
-def json_response(success: bool, data=None, error=None):
-    """Output JSON response and exit."""
-    result = {"success": success}
-    if data:
-        result["data"] = data
-    if error:
-        result["error"] = error
-    print(json.dumps(result, ensure_ascii=False))
-    sys.exit(0 if success else 1)
+from services.bridge_protocol import BridgeFailure, run  # noqa: E402
 
 
 def find_ffmpeg():
@@ -78,34 +70,32 @@ def check_availability():
                 text=True
             )
             version_line = result.stdout.split('\n')[0] if result.stdout else None
-            json_response(True, {
+            return {
                 "available": True,
                 "path": ffmpeg_path,
                 "version": version_line,
-            })
+            }
         except Exception as e:
-            json_response(True, {
+            return {
                 "available": False,
                 "error": str(e),
-            })
+            }
     else:
-        json_response(True, {
+        return {
             "available": False,
             "path": None,
-        })
+        }
 
 
 def get_audio_info(audio_path: str):
     """Get audio file metadata using ffprobe."""
     path = Path(audio_path)
     if not path.exists():
-        json_response(False, error=f"File not found: {audio_path}")
-        return
+        raise BridgeFailure(f"File not found: {audio_path}")
     
     ffmpeg_path = find_ffmpeg()
     if not ffmpeg_path:
-        json_response(False, error="ffmpeg not found")
-        return
+        raise BridgeFailure("ffmpeg not found")
     
     # ffprobe is usually alongside ffmpeg
     ffprobe_path = Path(ffmpeg_path).parent / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe")
@@ -113,8 +103,7 @@ def get_audio_info(audio_path: str):
         ffprobe_path = shutil.which("ffprobe")
     
     if not ffprobe_path:
-        json_response(False, error="ffprobe not found")
-        return
+        raise BridgeFailure("ffprobe not found")
     
     try:
         result = subprocess.run(
@@ -158,25 +147,23 @@ def get_audio_info(audio_path: str):
                     "bits_per_sample": audio_stream.get("bits_per_raw_sample"),
                 })
             
-            json_response(True, data)
+            return data
         else:
-            json_response(False, error=result.stderr)
+            raise BridgeFailure(result.stderr)
             
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
 
 
 def convert_audio(input_path: str, output_path: str, format: str = "mp3", quality: str = "high"):
     """Convert audio file to different format."""
     input_file = Path(input_path)
     if not input_file.exists():
-        json_response(False, error=f"Input file not found: {input_path}")
-        return
+        raise BridgeFailure(f"Input file not found: {input_path}")
     
     ffmpeg_path = find_ffmpeg()
     if not ffmpeg_path:
-        json_response(False, error="ffmpeg not found")
-        return
+        raise BridgeFailure("ffmpeg not found")
     
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -224,26 +211,25 @@ def convert_audio(input_path: str, output_path: str, format: str = "mp3", qualit
         cmd.append(str(output_file))
     
     else:
-        json_response(False, error=f"Unsupported format: {format}")
-        return
+        raise BridgeFailure(f"Unsupported format: {format}")
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
         if result.returncode == 0 and output_file.exists():
-            json_response(True, {
+            return {
                 "input": str(input_file.absolute()),
                 "output": str(output_file.absolute()),
                 "format": format,
                 "size_bytes": output_file.stat().st_size,
-            })
+            }
         else:
-            json_response(False, error=result.stderr or "Conversion failed")
+            raise BridgeFailure(result.stderr or "Conversion failed")
             
     except subprocess.TimeoutExpired:
-        json_response(False, error="Conversion timed out")
+        raise BridgeFailure("Conversion timed out")
     except Exception as e:
-        json_response(False, error=str(e))
+        raise BridgeFailure(str(e))
 
 
 def main():
@@ -270,15 +256,18 @@ def main():
                                 choices=["low", "medium", "high", "320"],
                                 help="Quality level")
     
-    args = parser.parse_args()
-    
+    return run(_handle, parse=parser.parse_args)
+
+
+def _handle(args):
     if args.command == "check":
-        check_availability()
+        return check_availability()
     elif args.command == "info":
-        get_audio_info(args.audio_file)
+        return get_audio_info(args.audio_file)
     elif args.command == "convert":
-        convert_audio(args.input, args.output, args.format, args.quality)
+        return convert_audio(args.input, args.output, args.format, args.quality)
+    raise BridgeFailure("Unknown command: %s" % args.command)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

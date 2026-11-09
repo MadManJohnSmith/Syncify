@@ -414,11 +414,12 @@ export async function enrichMetadataMusicBrainz(limit?: number): Promise<{
 }
 
 /**
- * Run Last.fm genre enrichment over the library (backend fills empty genres only).
- * Returns the backend's human-readable summary of the run.
+ * Enrich tracks that lack a genre using Last.fm tags. The backend returns a
+ * human-readable summary.
  */
 export async function enrichGenreLastfm(): Promise<string> {
-    return invokeCommand<string>('enrich_genre_lastfm');
+    const raw = await invokeCommand<unknown>('enrich_genre_lastfm');
+    return typeof raw === 'string' ? raw : '';
 }
 
 // ==============================================
