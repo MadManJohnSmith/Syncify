@@ -1654,6 +1654,17 @@ pub async fn search_tracks(
     offset: Option<i64>,
     limit: Option<i64>,
 ) -> Result<SearchResult, String> {
+    search_tracks_inner(&state.db, &query, offset, limit).await
+}
+
+/// Shared body of `search_tracks` so the FTS rows can be exercised without a
+/// full Tauri `AppState` (same pattern as `query_favorite_tracks`).
+async fn search_tracks_inner(
+    db: &DbPool,
+    query: &str,
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<SearchResult, String> {
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(100);
     tracing::info!(
@@ -1668,10 +1679,10 @@ pub async fn search_tracks(
     let total: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM tracks WHERE id IN (SELECT rowid FROM library_fts WHERE library_fts MATCH ?) OR display_title LIKE ? OR title LIKE ?"
     )
-    .bind(&query)
+    .bind(query)
     .bind(&pattern)
     .bind(&pattern)
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await
     .unwrap_or((0,));
 
@@ -1709,6 +1720,15 @@ pub async fn search_tracks(
              JOIN services s_all ON s_all.id = ts_all.service_id
              WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
+            -- FE-10: same classification as get_audio_quality_distribution so the
+            -- /library?filter=quality&quality=<label> deep-link matches the
+            -- dashboard's quality card counts exactly.
+            CASE
+                WHEN d.track_id IS NULL THEN NULL
+                WHEN COALESCE(d.bit_depth, 0) >= 24 OR COALESCE(d.sample_rate, 0) > 48000 THEN 'Hi-Res (24-bit+)'
+                WHEN d.file_format IN ('FLAC', 'ALAC', 'WAV') THEN 'CD Quality'
+                ELSE 'Lossy'
+            END as quality_bucket,
             CASE
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
                 WHEN dq.status = 'queued' OR dq.status = 'downloading' THEN 'queued'
@@ -1762,12 +1782,12 @@ pub async fn search_tracks(
         LIMIT ? OFFSET ?
         "#,
     )
-    .bind(&query)
+    .bind(query)
     .bind(&pattern)
     .bind(&pattern)
     .bind(limit)
     .bind(offset)
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
     .map_err(|e| format!("Search error: {}", e))?;
 
@@ -2170,6 +2190,15 @@ pub(crate) async fn query_favorite_tracks(
              JOIN services s_all ON s_all.id = ts_all.service_id
              WHERE ts_all.track_id = t.id) as availability_summary,
             COALESCE(d.file_format, ts.format) as quality,
+            -- FE-10: same classification as get_audio_quality_distribution so the
+            -- /library?filter=quality&quality=<label> deep-link matches the
+            -- dashboard's quality card counts exactly.
+            CASE
+                WHEN d.track_id IS NULL THEN NULL
+                WHEN COALESCE(d.bit_depth, 0) >= 24 OR COALESCE(d.sample_rate, 0) > 48000 THEN 'Hi-Res (24-bit+)'
+                WHEN d.file_format IN ('FLAC', 'ALAC', 'WAV') THEN 'CD Quality'
+                ELSE 'Lossy'
+            END as quality_bucket,
             CASE
                 WHEN d.file_path IS NOT NULL THEN 'downloaded'
                 WHEN dq.status = 'queued' OR dq.status = 'downloading' THEN 'queued'
@@ -2619,6 +2648,122 @@ mod library_tests {
         ).execute(&pool).await.unwrap();
 
         let page = get_library_inner(&pool, Some(0), Some(50)).await.unwrap();
+        assert_eq!(page.tracks.len(), 4);
+
+        let bucket = |title: &str| {
+            page.tracks
+                .iter()
+                .find(|t| t.title == title)
+                .unwrap()
+                .quality_bucket
+                .clone()
+        };
+        assert_eq!(bucket("HiRes Song").as_deref(), Some("Hi-Res (24-bit+)"));
+        assert_eq!(bucket("CD Song").as_deref(), Some("CD Quality"));
+        assert_eq!(bucket("Lossy Song").as_deref(), Some("Lossy"));
+        assert_eq!(bucket("Stream Only").as_deref(), None);
+    }
+
+    // ADR-0025 (decisión 5): search_tracks must expose the same quality-bucket
+    // classification as get_audio_quality_distribution so the
+    // /library?filter=quality&quality=<label> deep-link matches the
+    // dashboard's quality card counts instead of degrading on FTS results.
+    #[tokio::test]
+    async fn test_search_tracks_quality_bucket_matches_dashboard() {
+        let pool = setup_test_db().await;
+
+        // The FTS trigger auto-indexes each title.
+        sqlx::query("INSERT INTO tracks (title) VALUES ('HiRes Song')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracks (title) VALUES ('CD Song')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracks (title) VALUES ('Lossy Song')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracks (title) VALUES ('Stream Only Song')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // 24/96 FLAC -> Hi-Res (24-bit+); 16/44.1 FLAC -> CD Quality;
+        // MP3 -> Lossy; no downloads row -> NULL bucket.
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate) VALUES (1, '/tmp/hires.flac', 'FLAC', 24, 96000)",
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate) VALUES (2, '/tmp/cd.flac', 'FLAC', 16, 44100)",
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format) VALUES (3, '/tmp/lossy.mp3', 'MP3')",
+        ).execute(&pool).await.unwrap();
+
+        let result = search_tracks_inner(&pool, "Song", Some(0), Some(50))
+            .await
+            .unwrap();
+        assert_eq!(result.tracks.len(), 4);
+
+        let bucket = |title: &str| {
+            result
+                .tracks
+                .iter()
+                .find(|t| t.title == title)
+                .unwrap()
+                .quality_bucket
+                .clone()
+        };
+        assert_eq!(bucket("HiRes Song").as_deref(), Some("Hi-Res (24-bit+)"));
+        assert_eq!(bucket("CD Song").as_deref(), Some("CD Quality"));
+        assert_eq!(bucket("Lossy Song").as_deref(), Some("Lossy"));
+        assert_eq!(bucket("Stream Only Song").as_deref(), None);
+    }
+
+    // ADR-0025 (decisión 5): get_favorite_tracks must expose the same
+    // quality-bucket classification as get_audio_quality_distribution so the
+    // /library?filter=quality&quality=<label> deep-link matches the
+    // dashboard's quality card counts instead of degrading on favorites.
+    #[tokio::test]
+    async fn test_favorite_tracks_quality_bucket_matches_dashboard() {
+        let pool = setup_test_db().await;
+
+        // Favorited tracks with no mapped favorites rows come from the CTE's
+        // fallback branch.
+        sqlx::query("INSERT INTO tracks (title, is_favorite) VALUES ('HiRes Song', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracks (title, is_favorite) VALUES ('CD Song', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracks (title, is_favorite) VALUES ('Lossy Song', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO tracks (title, is_favorite) VALUES ('Stream Only', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // 24/96 FLAC -> Hi-Res (24-bit+); 16/44.1 FLAC -> CD Quality;
+        // MP3 -> Lossy; no downloads row -> NULL bucket.
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate) VALUES (1, '/tmp/hires.flac', 'FLAC', 24, 96000)",
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate) VALUES (2, '/tmp/cd.flac', 'FLAC', 16, 44100)",
+        ).execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO downloads (track_id, file_path, file_format) VALUES (3, '/tmp/lossy.mp3', 'MP3')",
+        ).execute(&pool).await.unwrap();
+
+        let page = query_favorite_tracks(&pool, Some(0), Some(50))
+            .await
+            .unwrap();
         assert_eq!(page.tracks.len(), 4);
 
         let bucket = |title: &str| {

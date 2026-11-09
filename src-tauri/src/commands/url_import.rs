@@ -180,8 +180,11 @@ pub async fn perform_import_from_url_with_quality(
         .await
         .map_err(|e| format!("Failed to resolve target service: {e}"))?
         .ok_or_else(|| format!("Target service is not configured: {target_service}"))?;
+    // S195-fix: BEGIN IMMEDIATE toma el lock de escritura AQUÍ, de modo que
+    // busy_timeout aplique desde el inicio. Con BEGIN diferido, dos importaciones
+    // concurrentes recibían BUSY_SNAPSHOT inmediato al promover read->write.
     let mut tx = db
-        .begin()
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to begin URL import: {e}"))?;
 

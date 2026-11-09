@@ -675,14 +675,14 @@
                 :class="[
                   'track-row flex items-center gap-2 px-3 py-2 border-b border-gray-100 dark:border-border-dark/50 last:border-0 transition-all group cursor-pointer box-border',
                   track.isPlaying ? 'bg-primary/5 border-l-4 border-l-primary' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight/30',
-                  track.isSelected ? 'bg-accent-soft' : '',
+                  selection.isSelected(track.id) ? 'bg-accent-soft' : '',
                   (virtualStartIndex + index) % 2 === 1 ? 'bg-surface/30' : '',
                   highlightedTrackId === track.id ? 'bg-primary/10 ring-1 ring-inset ring-primary' : ''
                 ]"
               >
                 <!-- Checkbox Cell -->
                 <div class="track-cell w-10 flex justify-center shrink-0">
-                  <input type="checkbox" v-model="track.isSelected" @click.stop class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
+                  <input type="checkbox" :checked="selection.isSelected(track.id)" @click.stop="selection.toggle(track.id)" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
                 </div>
 
                 <!-- Dynamic Cells based on Columns Order -->
@@ -1125,13 +1125,15 @@ import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
 import { libraryApi, searchTracks, enqueueTracks, reconcileQueue }  from '@/api/library'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
-import { settingsApi } from '@/api/settings'
 import { metadataApi } from '@/api/metadata'
+import { settingsApi } from '@/api/settings'
 import type { LibraryTrack, Playlist, LyricsType, QueueStats, WorkerStatus, EffectiveDownloadPreferences } from '@/api/types'
 import { useToast } from '@/composables/useToast'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { usePlayer } from '@/composables/usePlayer'
+import { useVirtualWindow } from '@/composables/useVirtualWindow'
+import { useTrackBrowser } from '@/composables/useTrackBrowser'
 import { useEnrichmentProgress } from '@/composables/useEnrichmentProgress'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
@@ -1211,26 +1213,12 @@ function handleAlbumPlay(album: { tracks: Track[] }) {
   }
 }
 
-// Fetch real data from backend
-const isLoading = ref(true)
-/** Failure of the last load; distinguishes "empty library" from "could not read". */
-const loadError = ref<string | null>(null)
-
 // State - will be updated from backend
-const trackCount = ref(0)
 const searchQuery = ref('')
-const searchResults = ref<any[]>([])
-const isSearching = ref(false)
-const searchOffset = ref(0)
-const searchTotal = ref(0)
-const hasMoreSearch = ref(false)
-const currentFtsQuery = ref('')
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
-const SEARCH_PAGE_SIZE = 100
 
 const sortBy = ref('dateAdded')
 const sortDirection = ref<'asc' | 'desc'>('desc')
-const selectedCount = ref(0)
 
 // Metadata enrichment
 const isEnriching = ref(false)
@@ -1262,7 +1250,8 @@ async function enrichMetadata() {
 
 // View State
 const viewMode = ref<'list' | 'grid'>('list')
-const groupBy = ref<'none' | 'artist' | 'album' | 'year' | 'genre' | 'quality'>('none')
+// El tipo 'year' murió sin uso (sin dropdown, computed ni template): fuera.
+const groupBy = ref<'none' | 'artist' | 'album' | 'genre' | 'quality'>('none')
 
 // Dropdowns
 const showGroupDropdown = ref(false)
@@ -1490,14 +1479,12 @@ interface Track {
   duration: string
   isFavorite: boolean
   isPlaying: boolean
-  isSelected: boolean
   // Route 2 (2026-10-18): identifies the favorited release when the same track
   // appears once per release in the expanded favorites list.
   editionItemId?: string | null
 }
 
-// Mock tracks data
-const tracks = ref<Track[]>([])
+// Las filas viven en el composable (`tracks` es alias de `browser.rows`).
 const provenanceTrack = ref<Track | null>(null)
 
 // Convert LibraryTrack to UI Track
@@ -1544,9 +1531,8 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     sourceTitle: item.source_title || item.title,
     fileDisambiguator: item.file_disambiguator || null,
     duration: `${mins}:${secs.toString().padStart(2, '0')}`,
-    isFavorite: !!(item as any).is_favorite,
+    isFavorite: !!item.is_favorite,
     isPlaying: false,
-    isSelected: false,
     editionItemId: item.edition_item_id ?? null,
   };
 }
@@ -1558,78 +1544,79 @@ function trackRowKey(track: Track): string {
   return `${track.id}:${track.editionItemId ?? track.album}`
 }
 
-// Pagination state
-const totalTracks = ref(0);
-const currentOffset = ref(0);
-const hasMore = ref(false);
-const isLoadingMore = ref(false);
+// ==============================================
+// Navegador de pistas (ADR-0025, decisiones 2 y 3): la vista declara la fuente
+// (triple fuente según filtros + búsqueda FTS), el mapeo y el tamaño de
+// página; el composable posee la paginación, los resultados de búsqueda y la
+// selección por ids. Debajo, los nombres históricos quedan como alias para que
+// el resto del script y el template no cambien.
+// ==============================================
 const PAGE_SIZE = 100;
+const SEARCH_PAGE_SIZE = 100;
+
+/** Triple fuente según filtros: duplicados > favoritos > biblioteca general. */
+async function fetchLibraryPage(offset: number, limit: number) {
+  return activeFilters.value.includes('duplicates')
+    ? await libraryApi.getDuplicateTracks(offset, limit)
+    : activeFilters.value.includes('favorites')
+    ? await libraryApi.getFavoriteTracks(offset, limit)
+    : await libraryApi.getLibrary(offset, limit);
+}
+
+const browser = useTrackBrowser<LibraryTrack, Track>({
+  source: { kind: 'paged', load: fetchLibraryPage },
+  searchSource: { load: searchTracks },
+  mapRow: mapToTrack,
+  pageSize: PAGE_SIZE,
+  searchPageSize: SEARCH_PAGE_SIZE,
+});
+
+const selection = browser.selection;
+const selectedCount = selection.selectedCount;
+const tracks = browser.rows;
+const totalTracks = browser.total;
+const currentOffset = browser.currentOffset;
+const hasMore = browser.hasMore;
+const isLoadingMore = browser.isLoadingMore;
+const pageAppendCount = browser.pageAppendCount;
+const searchResults = browser.search.rows;
+const isSearching = browser.search.isSearching;
+const hasMoreSearch = browser.search.hasMore;
+
+/** Failure of the last load; distinguishes "empty library" from "could not read". */
+const isLoading = browser.isLoading;
+const loadError = browser.loadError;
 
 // Load tracks from backend
 async function loadLibrary() {
-  isLoading.value = true;
-  loadError.value = null;
-  currentOffset.value = 0;
-  try {
-    const page = activeFilters.value.includes('duplicates')
-      ? await libraryApi.getDuplicateTracks(0, PAGE_SIZE)
-      : activeFilters.value.includes('favorites')
-      ? await libraryApi.getFavoriteTracks(0, PAGE_SIZE)
-      : await libraryApi.getLibrary(0, PAGE_SIZE);
-
-    tracks.value = page.tracks.map(mapToTrack);
-    trackCount.value = tracks.value.length;
-    totalTracks.value = page.total;
-    hasMore.value = page.has_more;
-    currentOffset.value = page.offset + page.tracks.length;
-  } catch (error) {
-    // Without flagging it, a load failure renders as an empty library.
-    loadError.value = String(error);
-    console.error('Failed to load library:', error);
-  } finally {
-    isLoading.value = false;
+  await browser.load();
+  // Los flags de selección morían con las filas al recargar: por ids, la
+  // recarga parte de selección vacía (solo con carga exitosa; el contador
+  // derivado no puede quedar huérfano como antes quedaba el incremental).
+  if (browser.loadError.value === null) {
+    selection.clear();
   }
 }
 
 // Load more tracks (infinite scroll)
-async function loadMore() {
-  if (isLoadingMore.value || !hasMore.value) return;
-  
-  isLoadingMore.value = true;
-  try {
-    const page = activeFilters.value.includes('duplicates')
-      ? await libraryApi.getDuplicateTracks(currentOffset.value, PAGE_SIZE)
-      : activeFilters.value.includes('favorites')
-      ? await libraryApi.getFavoriteTracks(currentOffset.value, PAGE_SIZE)
-      : await libraryApi.getLibrary(currentOffset.value, PAGE_SIZE);
-      
-    const newTracks = page.tracks.map(mapToTrack);
-    tracks.value.push(...newTracks);
-    pageAppendCount.value++;
-    trackCount.value = tracks.value.length;
-    hasMore.value = page.has_more;
-    currentOffset.value = page.offset + page.tracks.length;
-  } catch (error) {
-    console.error('Failed to load more tracks:', error);
-  } finally {
-    isLoadingMore.value = false;
-  }
-}
+const loadMore = browser.loadMore;
 
 // ==============================================
 // VIRTUAL SCROLLING LOGIC FOR LIBRARY (23,000+ ROWS)
-// Ported from DownloadsView.vue:549-564, 1768-1807 (PR-02)
+// La mecánica de ventana vive en el kernel compartido useVirtualWindow
+// (ADR-0025); aquí queda la config congelada de esta vista (filas de 56 px,
+// overscan 10, throttle de 120 ms, footer de fin de lista de 48 px).
 // ==============================================
 const ROW_HEIGHT = 56 // px per table row (40px cover + py-2 padding + 1px border)
 const OVERSCAN = 10   // extra rows above and below visible area
-
-const listContainerRef = ref<HTMLElement | null>(null)
-const libraryScrollTop = ref(0)
-const libraryViewportHeight = ref(800)
+const SCROLL_THROTTLE_MS = 120
+// Reserva vertical del indicador "Showing all N tracks" al acabar la lista.
+const END_OF_LIST_FOOTER_PX = 48
 
 // ==============================================
 // DOWNLOAD QUEUE STATS & CONCURRENCY (L-12)
-// Replicated from DownloadsView.vue:1420-1454, 1870-1903
+// Réplica del panel de la cola de DownloadsView; la ventana virtual de esa
+// vista ya no se duplica: vive en el kernel useVirtualWindow (ADR-0025).
 // ==============================================
 const queueStats = ref<QueueStats>({ total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 })
 const workerStatus = ref<WorkerStatus>({ running: true, paused: false, active_downloads: 0, max_concurrent: 3 })
@@ -1665,56 +1652,20 @@ async function fetchQueueStats() {
   }
 }
 
-// Infinite scroll fires a burst of scroll events per flick (B-4).
-//
-// PR-01 / PR-02: Reading layout properties (scrollHeight/scrollTop/clientHeight)
-// BEFORE the throttle cut forces synchronous reflow on every single event frame.
-// We update libraryScrollTop without layout reflow, and move layout reading
-// strictly inside the throttled dispatch.
-let lastScrollCheck = 0;
-const SCROLL_THROTTLE_MS = 120;
-let scrollThrottleTimer: ReturnType<typeof setTimeout> | null = null;
-function handleScroll(event: Event) {
-  const target = event.target as HTMLElement;
-  if (!target) return;
-
-  // Immediate reactive update for virtual window slicing (no reflow)
-  libraryScrollTop.value = target.scrollTop;
-  if (target.clientHeight && libraryViewportHeight.value !== target.clientHeight) {
-    libraryViewportHeight.value = target.clientHeight;
-  }
-
-  // Throttle heavy layout measurements (scrollHeight/scrollTop/clientHeight)
-  // PR-01 / PR-02: layout reading is STRICTLY inside the throttle cut
-  const checkAndDispatchLoadMore = (el: HTMLElement) => {
-    lastScrollCheck = Date.now();
-    const scrollBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (scrollBottom < 300) {
-      if (searchQuery.value.trim()) {
-        if (hasMoreSearch.value && !isSearching.value) {
-          loadMoreSearchResults();
-        }
-      } else {
-        if (hasMore.value && !isLoadingMore.value) {
-          loadMore();
-        }
+// Infinite scroll fires a burst of scroll events per flick (B-4). El kernel
+// mide la distancia al fondo DENTRO del corte de throttle (PR-01/PR-02);
+// aquí solo se decide si toca pedir la página siguiente.
+function maybeLoadMore(scrollBottom: number) {
+  if (scrollBottom < 300) {
+    if (searchQuery.value.trim()) {
+      if (hasMoreSearch.value && !isSearching.value) {
+        loadMoreSearchResults();
+      }
+    } else {
+      if (hasMore.value && !isLoadingMore.value) {
+        loadMore();
       }
     }
-  };
-
-  const elapsed = Date.now() - lastScrollCheck;
-  if (elapsed >= SCROLL_THROTTLE_MS) {
-    checkAndDispatchLoadMore(target);
-    return;
-  }
-  if (!scrollThrottleTimer) {
-    scrollThrottleTimer = setTimeout(() => {
-      scrollThrottleTimer = null;
-      const el = listContainerRef.value || target;
-      if (el) {
-        checkAndDispatchLoadMore(el);
-      }
-    }, SCROLL_THROTTLE_MS - elapsed);
   }
 }
 
@@ -1722,82 +1673,22 @@ function handleScroll(event: Event) {
 loadColumnsOrder();
 loadLibrary();
 
-// Database search
-async function performDatabaseSearch(query: string) {
-  if (!query.trim()) {
-    searchResults.value = []
-    searchOffset.value = 0
-    searchTotal.value = 0
-    hasMoreSearch.value = false
-    currentFtsQuery.value = ''
-    isSearching.value = false
-    return
-  }
-
-  isSearching.value = true
-  try {
-    const ftsQuery = query
-      .trim()
-      .split(/\s+/)
-      .map(w => w.replace(/[^\w]/g, ''))
-      .filter(w => w.length > 0)
-      .map(w => w + '*')
-      .join(' ')
-    
-    if (!ftsQuery) {
-      searchResults.value = []
-      isSearching.value = false
-      return
-    }
-    
-    searchOffset.value = 0
-    currentFtsQuery.value = ftsQuery
-    
-    const result = await searchTracks(ftsQuery, 0, SEARCH_PAGE_SIZE)
-    searchResults.value = result.tracks.map(mapToTrack)
-    searchTotal.value = result.total
-    hasMoreSearch.value = result.has_more
-    searchOffset.value = result.offset + result.tracks.length
-  } catch (error) {
-    console.error('Database search failed:', error)
-    searchResults.value = []
-  } finally {
-    isSearching.value = false
-  }
-}
-
-async function loadMoreSearchResults() {
-  if (isSearching.value || !hasMoreSearch.value || !currentFtsQuery.value) return
-  
-  isSearching.value = true
-  try {
-    const result = await searchTracks(currentFtsQuery.value, searchOffset.value, SEARCH_PAGE_SIZE)
-    const newTracks = result.tracks.map(mapToTrack)
-    searchResults.value = [...searchResults.value, ...newTracks]
-    hasMoreSearch.value = result.has_more
-    searchOffset.value = result.offset + result.tracks.length
-  } catch (error) {
-    console.error('Failed to load more search results:', error)
-  } finally {
-    isSearching.value = false
-  }
-}
+// Database search: la mecánica (prefijo `*` por palabra, paginador propio de
+// 100 y guards) vive en el composable; aquí quedan los alias con los nombres
+// históricos. El debounce del input es ritmo de la vista y sigue aquí.
+const performDatabaseSearch = browser.search.run;
+const loadMoreSearchResults = browser.search.loadMore;
 
 watch(searchQuery, (newQuery) => {
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
   }
-  
+
   if (!newQuery.trim()) {
-    searchResults.value = []
-    searchOffset.value = 0
-    searchTotal.value = 0
-    hasMoreSearch.value = false
-    currentFtsQuery.value = ''
-    isSearching.value = false
+    browser.search.reset()
     return
   }
-  
+
   isSearching.value = true
   searchDebounceTimer = setTimeout(() => {
     performDatabaseSearch(newQuery)
@@ -1832,21 +1723,14 @@ async function addTrackToPlaylist(playlistId: number, trackId: number) {
   }
 }
 
-// Track selection & downloads
-// L-05: the counter was O(n) per click (a filter over the whole library). With
-// 23k tracks that was noticeable on rapid clicks; now it is incremental.
+// Track selection & downloads. La selección vive en el composable por ids
+// (ADR-0025, decisión 3): el contador se deriva de los ids, no se lleva a mano.
 function handleTrackClick(track: Track) {
-  track.isSelected = !track.isSelected;
-  selectedCount.value += track.isSelected ? 1 : -1;
+  selection.toggle(track.id);
 }
 
 const { play, playNext, enqueue, toggle: togglePlayback, current: playerCurrent } = usePlayer();
 
-// S194 residual: double-click plays the LOCAL downloaded file through the
-// syncify-media protocol. Tracks without a local file fail with the backend's
-// honest error: with a track in progress the status-bar player shows
-// player.error, and without current (hidden bar) these catches surface it as a
-// toast; provider streaming is out of scope.
 async function handleTrackPlay(track: Track) {
   try {
     await play({
@@ -1976,7 +1860,7 @@ const isEnqueuingSelection = ref(false)
 
 async function downloadSelectedTracks() {
   if (isEnqueuingSelection.value) return
-  const selectedTracks = tracks.value.filter(t => t.isSelected)
+  const selectedTracks = tracks.value.filter(t => selection.isSelected(t.id))
   if (selectedTracks.length === 0) return
 
   isEnqueuingSelection.value = true
@@ -2043,8 +1927,7 @@ async function downloadSelectedTracks() {
 }
 
 function clearSelection() {
-  tracks.value.forEach(t => t.isSelected = false)
-  selectedCount.value = 0
+  selection.clear()
 }
 
 // Context menu with viewport bounds protection
@@ -2202,7 +2085,6 @@ async function handleRemoveFromLibrary(track: Track) {
     const index = tracks.value.findIndex(t => t.id === track.id);
     if (index > -1) {
       tracks.value.splice(index, 1);
-      trackCount.value = tracks.value.length;
     }
     await reconcilePlaylistCounts();
     toast.success('Track removed', `"${track.title}" removed from library`);
@@ -2212,7 +2094,7 @@ async function handleRemoveFromLibrary(track: Track) {
 }
 
 async function handleBulkRemove() {
-  const selectedTracks = tracks.value.filter(t => t.isSelected);
+  const selectedTracks = tracks.value.filter(t => selection.isSelected(t.id));
   if (selectedTracks.length === 0) return;
 
   const ok = window.confirm(`Remove ${selectedTracks.length} track(s) from your library? This cannot be undone.`);
@@ -2221,9 +2103,8 @@ async function handleBulkRemove() {
   try {
     const ids = selectedTracks.map(t => t.id);
     const removed = await libraryApi.bulkRemoveTracks(ids);
-    tracks.value = tracks.value.filter(t => !t.isSelected);
-    selectedCount.value = 0;
-    trackCount.value = tracks.value.length;
+    tracks.value = tracks.value.filter(t => !selection.isSelected(t.id));
+    selection.clear();
     showBulkMenu.value = false;
     await reconcilePlaylistCounts();
     toast.success('Tracks removed', `${removed} tracks removed from library`);
@@ -2321,13 +2202,17 @@ function getLyricsTypeIcon(type: string): { icon: string; class: string; title: 
 }
 
 function toggleSelectAll() {
-  const allSelected = tracks.value.every(t => t.isSelected)
-  tracks.value.forEach(t => t.isSelected = !allSelected)
-  selectedCount.value = allSelected ? 0 : tracks.value.length
+  // Misma semántica que antes: si todo lo cargado está seleccionado se vacía,
+  // si no, la selección pasa a ser exactamente las filas actuales.
+  if (tracks.value.every(t => selection.isSelected(t.id))) {
+    selection.clear()
+  } else {
+    selection.selectAll(tracks.value)
+  }
 }
 
 // Only page appends may reuse a sorted prefix; all other invalidations sort anew.
-const pageAppendCount = ref(0)
+// `pageAppendCount` lo incrementa el composable en cada append de página.
 let sortedPrefix: Track[] = []
 let previousSortKey = ''
 let previousFilterKey = ''
@@ -2424,34 +2309,30 @@ const filteredTracks = computed(() => {
   return sortedPrefix
 })
 
-// Virtual scrolling computed window (PR-02)
-const totalVirtualHeight = computed(() => {
-  return filteredTracks.value.length * ROW_HEIGHT + (!hasMore.value && tracks.value.length > 0 ? 48 : 0)
-})
-
-const virtualStartIndex = computed(() => {
-  return Math.max(0, Math.floor(libraryScrollTop.value / ROW_HEIGHT) - OVERSCAN)
-})
-
-const virtualEndIndex = computed(() => {
-  return Math.min(
-    filteredTracks.value.length,
-    Math.ceil((libraryScrollTop.value + libraryViewportHeight.value) / ROW_HEIGHT) + OVERSCAN
-  )
-})
-
-const virtualOffsetY = computed(() => {
-  return virtualStartIndex.value * ROW_HEIGHT
-})
-
-const visibleTracks = computed(() => {
-  return filteredTracks.value.slice(virtualStartIndex.value, virtualEndIndex.value)
+// Ventana virtual: kernel compartido (useVirtualWindow, ADR-0025). Los
+// nombres históricos se conservan como alias; el template no cambia.
+const {
+  containerRef: listContainerRef,
+  scrollTop: libraryScrollTop,
+  viewportHeight: libraryViewportHeight,
+  totalHeight: totalVirtualHeight,
+  startIndex: virtualStartIndex,
+  endIndex: virtualEndIndex,
+  offsetY: virtualOffsetY,
+  visibleItems: visibleTracks,
+  handleScroll,
+  reset: resetVirtualScroll,
+} = useVirtualWindow(filteredTracks, {
+  rowHeight: ROW_HEIGHT,
+  overscan: OVERSCAN,
+  footerHeight: () => (!hasMore.value && tracks.value.length > 0 ? END_OF_LIST_FOOTER_PX : 0),
+  scrollThrottleMs: SCROLL_THROTTLE_MS,
+  onScrollMeasured: maybeLoadMore,
 })
 
 watch([() => filteredTracks.value.length, searchQuery, () => activeFilters.value], () => {
   if (listContainerRef.value && libraryScrollTop.value > totalVirtualHeight.value) {
-    listContainerRef.value.scrollTop = 0
-    libraryScrollTop.value = 0
+    resetVirtualScroll()
   }
 })
 
@@ -2472,7 +2353,8 @@ interface Album {
   tracks: Track[]
 }
 
-const expandedGroups = ref<string[]>(['Kavinsky', 'M83', 'OutRun', 'Hurry Up, We\'re Dreaming', 'Electronic', 'Synthwave', 'Rock', 'Pop'])
+// Todo colapsado al entrar: los nombres de demo iniciales eran datos falsos.
+const expandedGroups = ref<string[]>([])
 
 const groupedByArtist = computed(() => {
   const groups: { artist: string; tracks: Track[] }[] = []
@@ -2683,13 +2565,13 @@ function handleKeydown(event: KeyboardEvent) {
     }
   } else if (event.key === 'n' || event.key === 'N') {
     // FE-9: "Play Next" on the context track or the first selected track.
-    const nextTarget = contextMenu.value.track ?? tracks.value.find(t => t.isSelected)
+    const nextTarget = contextMenu.value.track ?? tracks.value.find(t => selection.isSelected(t.id))
     if (nextTarget) void handlePlayNext(nextTarget)
   } else if (event.key === 'f' || event.key === 'F') {
     if (contextMenu.value.track) {
       handleToggleFavorite(contextMenu.value.track)
     } else {
-      const selected = tracks.value.find(t => t.isSelected)
+      const selected = tracks.value.find(t => selection.isSelected(t.id))
       if (selected) handleToggleFavorite(selected)
     }
   } else if (event.key === ' ' || event.code === 'Space') {
@@ -2848,10 +2730,6 @@ onUnmounted(() => {
   }
   if (reloadDebounceTimer) {
     clearTimeout(reloadDebounceTimer)
-  }
-  if (scrollThrottleTimer) {
-    clearTimeout(scrollThrottleTimer)
-    scrollThrottleTimer = null
   }
   if (highlightClearTimer) {
     clearTimeout(highlightClearTimer)
