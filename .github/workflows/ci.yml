@@ -16,10 +16,15 @@ jobs:
     name: Detectar areas afectadas
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Comparacion explicita con 'true' y no un `||`: dorny/paths-filter
+    # emite el string "false" cuando no hay coincidencia, y en las
+    # expresiones de GitHub cualquier string no vacio (incluido "false")
+    # es truthy, de modo que el `||` enmascaraba al fallback y una PR
+    # de solo .github/ o docs/ quedaba en verde sin ejecutar nada.
     outputs:
-      rust: ${{ steps.filter.outputs.rust || steps.fallback.outputs.RUST }}
-      frontend: ${{ steps.filter.outputs.frontend || steps.fallback.outputs.FRONTEND }}
-      python: ${{ steps.filter.outputs.python || steps.fallback.outputs.PYTHON }}
+      rust: ${{ steps.filter.outputs.rust == 'true' || steps.fallback.outputs.RUST == 'true' }}
+      frontend: ${{ steps.filter.outputs.frontend == 'true' || steps.fallback.outputs.FRONTEND == 'true' }}
+      python: ${{ steps.filter.outputs.python == 'true' || steps.fallback.outputs.PYTHON == 'true' }}
     steps:
     - uses: actions/checkout@v4
     - id: filter
