@@ -1036,7 +1036,6 @@ export async function reconcileMusicbrainzTags(pathOverride?: string): Promise<M
 // Export as namespace
 export const metadataApi = {
     enrichMetadata,
-    enrichGenreLastfm,
     batchEnrichMetadata,
     enrichAllNeeding,
     startLibraryEnrichment,
@@ -1048,6 +1047,7 @@ export const metadataApi = {
     applyMusicBrainzMatch,
     autoMatchMusicBrainz,
     enrichMetadataMusicBrainz,
+    enrichGenreLastfm,
     checkFingerprintAvailable,
     identifyAudio,
     findAudioDuplicates,

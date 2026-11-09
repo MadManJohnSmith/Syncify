@@ -296,8 +296,9 @@ pub struct LibraryTrack {
     pub availability_summary: Option<String>, // JSON or summary of source statuses
     pub quality: Option<String>,  // e.g. "24/96", "16/44.1", "320kbps"
     // FE-10: dashboard-compatible quality bucket ('Hi-Res (24-bit+)' |
-    // 'CD Quality' | 'Lossy'), only computed by get_library for the
-    // /library?filter=quality deep-link.
+    // 'CD Quality' | 'Lossy'), computed by get_library, search_tracks and
+    // get_favorite_tracks (ADR-0025, decisión 5) so the /library?filter=quality
+    // deep-link no longer degrades on FTS and favorites.
     #[sqlx(default)]
     pub quality_bucket: Option<String>,
     pub download_status: Option<String>, // "downloaded", "queued", "not_downloaded"

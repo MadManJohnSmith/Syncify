@@ -1310,10 +1310,13 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { listen as listenEvent, type UnlistenFn } from '@tauri-apps/api/event'
 import { useRoute } from 'vue-router'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
+import { useVirtualWindow } from '@/composables/useVirtualWindow'
+import { useTrackBrowser } from '@/composables/useTrackBrowser'
+import type { BrowserFixedPage } from '@/composables/useTrackBrowser'
 import { libraryApi } from '@/api/library'
 import { lyricsApi, type AnimatedCoverSweepResult } from '@/api/lyrics'
 import { metadataApi } from '@/api/metadata'
-import type { CountryTagRepairReport } from '@/api/metadata'
+import type { CountryTagRepairReport, TagVerification, TrackTagsSnapshot } from '@/api/metadata'
 import { settingsApi } from '@/api/settings'
 import { toolsApi } from '@/api/tools'
 import { TauriEvents } from '@/api/tauri'
@@ -1397,8 +1400,24 @@ interface MetadataStats {
 let isMounted = true
 const activeToastTimers = new Set<ReturnType<typeof setTimeout>>()
 
-// Loading state (MET-01)
-const isLoading = ref(true)
+// Loading state (MET-01). `isLoading` vive en el composable del navegador
+// (ADR-0025); `isRefreshing` es política visual de esta vista: solo marca
+// refresco cuando ya hay filas que conservar.
+const METADATA_PAGE_SIZE = 500
+
+// Navegador de pistas (ADR-0025, decisiones 2 y 3): la vista declara la fuente
+// de página fija (se elige al cargar según `filterType`), el mapeo y el límite;
+// el composable posee la carga, el mapeo y la selección por ids.
+const browser = useTrackBrowser<LibraryTrack, MetadataTrack>({
+  source: { kind: 'fixed', load: fetchMetadataPage },
+  mapRow: mapToMetadataTrack,
+  pageSize: METADATA_PAGE_SIZE,
+  onLoadError: () => {
+    if (!isMounted) return
+    showToast('Failed to load tracks', 'error')
+  },
+})
+const isLoading = browser.isLoading
 const isRefreshing = ref(false)
 let isLoadingTracks = false
 const isSaving = ref(false)
@@ -1412,12 +1431,10 @@ const {
   stop: stopEnrichmentProgress,
 } = useEnrichmentProgress()
 
-// Virtual Scrolling (MET-01 / DownloadsView:549-564 parity)
+// Virtual Scrolling: kernel compartido useVirtualWindow (ADR-0025).
+// Paridad congelada: filas de 64 px y overscan 5, sin footer ni throttle.
 const ROW_HEIGHT = 64 // px per track row
 const OVERSCAN = 5
-const trackContainerRef = ref<HTMLElement | null>(null)
-const trackScrollTop = ref(0)
-const trackViewportHeight = ref(800)
 
 // Background enrichment status
 interface BackgroundEnrichmentStatus {
@@ -1436,8 +1453,9 @@ const searchQuery = ref('')
 const filterType = ref('all')
 const sortBy = ref('score')
 
-// Selection
-const selectedTracks = ref<number[]>([])
+// Selection: los ids viven en el composable (ADR-0025, decisión 3); la vista
+// expone el mismo nombre para template y watches.
+const selectedTracks = browser.selection.selectedIds
 
 // UI State - Modals
 const showQualityReport = ref(false)
@@ -1460,9 +1478,9 @@ const contextMenu = reactive({
   track: null as MetadataTrack | null
 })
 
-// Tracks from library
-const tracks = ref<MetadataTrack[]>([])
-const totalTracks = ref(0)
+// Tracks from library (filas mapeadas por el composable; siguen siendo MetadataTrack)
+const tracks = browser.rows
+const totalTracks = browser.total
 
 // Metadata stats for quality report
 const metadataStats = ref<MetadataStats | null>(null)
@@ -1563,6 +1581,17 @@ function mapToMetadataTrack(item: LibraryTrack): MetadataTrack {
   }
 }
 
+// Fuente de página fija declarada por la vista (sin `has_more`): el endpoint
+// especializado para «missing», la biblioteca general para el resto.
+async function fetchMetadataPage(limit: number): Promise<BrowserFixedPage<LibraryTrack>> {
+  if (filterType.value === 'missing') {
+    const rawTracks = await metadataApi.getTracksNeedingMetadata(limit)
+    return { tracks: rawTracks, total: rawTracks.length } // Estimate
+  }
+  const page = await libraryApi.getLibrary(0, limit)
+  return { tracks: page.tracks, total: page.total }
+}
+
 // Load tracks from backend (MET-01: supports silent background refresh)
 async function loadTracks(isRefresh = false) {
   if (!isMounted) return
@@ -1576,33 +1605,14 @@ async function loadTracks(isRefresh = false) {
   }
 
   try {
-    let nextTracks: MetadataTrack[] = []
-    let nextTotal = 0
-
-    // If filtering by "missing", use specialized endpoint
-    if (filterType.value === 'missing') {
-      const rawTracks = await metadataApi.getTracksNeedingMetadata(500)
-      if (!isMounted) return
-      nextTracks = rawTracks.map(mapToMetadataTrack)
-      nextTotal = rawTracks.length // Estimate
-    } else {
-      // Otherwise load general library
-      const page = await libraryApi.getLibrary(0, 500)
-      if (!isMounted) return
-      nextTracks = page.tracks.map(mapToMetadataTrack)
-      nextTotal = page.total
-    }
-
-    tracks.value = nextTracks
-    totalTracks.value = nextTotal
-
-    // Preserve selections for tracks that still exist
-    const currentIdSet = new Set(nextTracks.map(t => t.id))
-    selectedTracks.value = selectedTracks.value.filter(id => currentIdSet.has(id))
-  } catch (error) {
+    await browser.load()
     if (!isMounted) return
-    console.error('Failed to load tracks:', error)
-    showToast('Failed to load tracks', 'error')
+
+    // Preserve selections for tracks that still exist (solo tras una carga
+    // con éxito: en fallo, el composable conserva las filas y su selección).
+    if (browser.loadError.value === null) {
+      browser.selection.preserve(tracks.value.map(t => t.id))
+    }
   } finally {
     isLoadingTracks = false
     if (isMounted) {
@@ -1829,53 +1839,36 @@ const filteredTracks = computed(() => {
 })
 
 // ==============================================
-// VIRTUAL SCROLLING COMPUTEDS (DownloadsView:549-564 parity)
+// Ventana virtual: kernel compartido (useVirtualWindow, ADR-0025). Los
+// nombres históricos se conservan como alias; el template no cambia.
 // ==============================================
-const totalVirtualHeight = computed(() => {
-  return filteredTracks.value.length * ROW_HEIGHT
+const {
+  containerRef: trackContainerRef,
+  scrollTop: trackScrollTop,
+  viewportHeight: trackViewportHeight,
+  totalHeight: totalVirtualHeight,
+  startIndex: virtualStartIndex,
+  endIndex: virtualEndIndex,
+  offsetY: virtualOffsetY,
+  visibleItems: visibleTracks,
+  handleScroll: onTrackScroll,
+  reset: resetVirtualScroll,
+  scrollToOffset,
+} = useVirtualWindow(filteredTracks, {
+  rowHeight: ROW_HEIGHT,
+  overscan: OVERSCAN,
+  emptyViewportHeight: 800,
 })
-
-const virtualStartIndex = computed(() => {
-  return Math.max(0, Math.floor(trackScrollTop.value / ROW_HEIGHT) - OVERSCAN)
-})
-
-const virtualEndIndex = computed(() => {
-  return Math.min(
-    filteredTracks.value.length,
-    Math.ceil((trackScrollTop.value + trackViewportHeight.value) / ROW_HEIGHT) + OVERSCAN
-  )
-})
-
-const virtualOffsetY = computed(() => {
-  return virtualStartIndex.value * ROW_HEIGHT
-})
-
-const visibleTracks = computed(() => {
-  return filteredTracks.value.slice(virtualStartIndex.value, virtualEndIndex.value)
-})
-
-function onTrackScroll(e: Event) {
-  const target = e.target as HTMLElement
-  if (target) {
-    trackScrollTop.value = target.scrollTop
-    trackViewportHeight.value = target.clientHeight || 800
-  }
-}
 
 function scrollToTrack(trackId: number) {
   const index = filteredTracks.value.findIndex(t => t.id === trackId)
-  if (index !== -1 && trackContainerRef.value) {
-    const targetScrollTop = Math.max(0, (index - 1) * ROW_HEIGHT)
-    trackContainerRef.value.scrollTop = targetScrollTop
-    trackScrollTop.value = targetScrollTop
+  if (index !== -1) {
+    scrollToOffset(Math.max(0, (index - 1) * ROW_HEIGHT))
   }
 }
 
 watch([searchQuery, filterType, sortBy], () => {
-  trackScrollTop.value = 0
-  if (trackContainerRef.value) {
-    trackContainerRef.value.scrollTop = 0
-  }
+  resetVirtualScroll()
 })
 
 // Current track being edited
@@ -1889,28 +1882,6 @@ const currentTrack = computed(() => {
 // ==============================================
 // S191: File Tag Editor (FLAC roundtrip via syncify-flac-writer)
 // ==============================================
-
-interface TrackTagsSnapshot {
-  track_id: number
-  file_path: string
-  file_format: string
-  all_tags: Record<string, string[]>
-  has_cover: boolean
-  cover_mime?: string
-}
-
-interface TagVerification {
-  file_exists: boolean
-  flac_valid: boolean
-  tags_match: boolean
-  cover_present: boolean
-  cover_size_bytes?: number
-  cover_mime?: string
-  lyrics_present: boolean
-  synced_lyrics_present: boolean
-  unsynced_lyrics_present: boolean
-  bpm_present: boolean
-}
 
 const fileTagsSnapshot = ref<TrackTagsSnapshot | null>(null)
 const fileTagsError = ref<string | null>(null)
@@ -1954,8 +1925,7 @@ async function readTrackFileTags() {
   fileTagsError.value = null
   tagVerification.value = null
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const snap = await invoke<TrackTagsSnapshot>('read_track_tags', { trackId: currentTrack.value.id })
+    const snap = await metadataApi.readTrackTags(currentTrack.value.id)
     fileTagsSnapshot.value = snap
     // Prefill editable fields from the raw facets (first value wins).
     const first = (k: string) => (snap.all_tags[k] && snap.all_tags[k][0]) ?? ''
@@ -1985,7 +1955,6 @@ async function writeTrackFileTags() {
   fileTagsError.value = null
   tagVerification.value = null
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
     const opt = (v: string | undefined): string | undefined => {
       const t = (v ?? '').trim()
       return t.length > 0 ? t : undefined
@@ -1994,32 +1963,29 @@ async function writeTrackFileTags() {
       const n = parseInt(v ?? '', 10)
       return Number.isFinite(n) && n > 0 ? n : undefined
     }
-    const verification = await invoke<TagVerification>('write_track_tags', {
-      trackId: currentTrack.value.id,
-      metadata: {
-        title: opt(editableFileTags['title']) ?? currentTrack.value.title,
-        artist: opt(editableFileTags['artist']) ?? currentTrack.value.artist,
-        album: opt(editableFileTags['album']) ?? currentTrack.value.album ?? '',
-        album_artist: opt(editableFileTags['album_artist']),
-        composer: opt(editableFileTags['composer']),
-        genre: opt(editableFileTags['genre']),
-        style: opt(editableFileTags['style']),
-        mood: opt(editableFileTags['mood']),
-        grouping: opt(editableFileTags['grouping']),
-        language: opt(editableFileTags['language']),
-        copyright: opt(editableFileTags['copyright']),
-        label: opt(editableFileTags['label']),
-        catalog_number: opt(editableFileTags['catalog_number']),
-        isrc: opt(editableFileTags['isrc']),
-        release_year: opt(editableFileTags['release_year']),
-        comment: opt(editableFileTags['comment']),
-        track_number: num(editableFileTags['track_number']),
-        track_total: undefined,
-        disc_number: undefined,
-        disc_total: undefined,
-        bpm: num(editableFileTags['bpm']),
-        initial_key: opt(editableFileTags['initial_key']),
-      }
+    const verification = await metadataApi.writeTrackTags(currentTrack.value.id, {
+      title: opt(editableFileTags['title']) ?? currentTrack.value.title,
+      artist: opt(editableFileTags['artist']) ?? currentTrack.value.artist,
+      album: opt(editableFileTags['album']) ?? currentTrack.value.album ?? '',
+      album_artist: opt(editableFileTags['album_artist']),
+      composer: opt(editableFileTags['composer']),
+      genre: opt(editableFileTags['genre']),
+      style: opt(editableFileTags['style']),
+      mood: opt(editableFileTags['mood']),
+      grouping: opt(editableFileTags['grouping']),
+      language: opt(editableFileTags['language']),
+      copyright: opt(editableFileTags['copyright']),
+      label: opt(editableFileTags['label']),
+      catalog_number: opt(editableFileTags['catalog_number']),
+      isrc: opt(editableFileTags['isrc']),
+      release_year: opt(editableFileTags['release_year']),
+      comment: opt(editableFileTags['comment']),
+      track_number: num(editableFileTags['track_number']),
+      track_total: undefined,
+      disc_number: undefined,
+      disc_total: undefined,
+      bpm: num(editableFileTags['bpm']),
+      initial_key: opt(editableFileTags['initial_key']),
     })
     tagVerification.value = verification
     // Re-read so the raw dump reflects what actually landed in the file.
@@ -2484,29 +2450,22 @@ const batchFields = reactive({
 // ACTIONS
 // ==============================================
 
+// Selección por ids del composable (ADR-0025, decisión 3); los nombres
+// externos se conservan porque el template los consume.
 function selectTrack(track: MetadataTrack) {
-  if (selectedTracks.value.includes(track.id)) {
-    // Already selected, do nothing (or could toggle off)
-  } else {
-    selectedTracks.value = [track.id]
-  }
+  browser.selection.selectOnly(track.id)
 }
 
 function toggleTrackSelection(trackId: number) {
-  const index = selectedTracks.value.indexOf(trackId)
-  if (index === -1) {
-    selectedTracks.value.push(trackId)
-  } else {
-    selectedTracks.value.splice(index, 1)
-  }
+  browser.selection.toggle(trackId)
 }
 
 function clearSelection() {
-  selectedTracks.value = []
+  browser.selection.clear()
 }
 
 function selectAll() {
-  selectedTracks.value = filteredTracks.value.map(t => t.id)
+  browser.selection.selectAll(filteredTracks.value)
 }
 
 function openArtPicker() {
@@ -2643,12 +2602,7 @@ async function runMusicBrainzEnrichment() {
       }
     } else {
       // Global sweep: backend batches ISRC → MBID lookups with progress events.
-      const raw = await metadataApi.enrichMetadataMusicBrainz()
-      result = {
-        total: raw.total ?? raw.enriched ?? 0,
-        enriched: raw.enriched ?? 0,
-        failed: raw.failed ?? 0,
-      }
+      result = await metadataApi.enrichMetadataMusicBrainz()
     }
 
     console.log(`Enriched ${result.enriched}/${result.total} tracks (${result.failed} failed)`)
@@ -3092,8 +3046,7 @@ async function openComparison() {
   adoptedFromFileFields.value = new Set()
   isComparingSources.value = true
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    comparisonFileTags.value = await invoke<TrackTagsSnapshot>('read_track_tags', { trackId: currentTrack.value.id })
+    comparisonFileTags.value = await metadataApi.readTrackTags(currentTrack.value.id)
   } catch (err) {
     console.error('Failed to read file tags for comparison:', err)
     comparisonError.value = err instanceof Error ? err.message : String(err)
