@@ -16,6 +16,12 @@ use syncify_core_domain::{
 };
 use tracing::{info, warn};
 
+/// S222/Q6: a partir de aquí `measured_audio_facts` deja `warn` (visible con
+/// `RUST_LOG=info`, el nivel de `prueba-limpia.sh`); mismo criterio que el
+/// resto de inspecciones físicas: normal por debajo de 100 ms, un pico delata
+/// saturación del pool de blocking o ficheros enormes.
+const SLOW_FACTS_WARN_MS: u64 = 500;
+
 /// Serializes the post-crash download reconciliation across the whole process.
 ///
 /// Startup runs the reconciliation from a detached task while the download worker
@@ -917,10 +923,17 @@ async fn reconcile_startup_operations_locked(
                             tokio::task::spawn_blocking(move || measured_audio_facts(&facts_path))
                                 .await
                                 .unwrap_or((None, None, None));
+                        let facts_elapsed_ms = facts_start.elapsed().as_millis() as u64;
                         tracing::debug!(
-                            elapsed_ms = facts_start.elapsed().as_millis() as u64,
+                            elapsed_ms = facts_elapsed_ms,
                             "S222: measured_audio_facts (reconcile)"
                         );
+                        if facts_elapsed_ms >= SLOW_FACTS_WARN_MS {
+                            tracing::warn!(
+                                elapsed_ms = facts_elapsed_ms,
+                                "S222: measured_audio_facts lenta (reconcile)"
+                            );
+                        }
                         match dl_existing {
                             Some((dl_id, old_fp)) => {
                                 if old_fp != *dest {

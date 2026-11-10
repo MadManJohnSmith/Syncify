@@ -17,6 +17,12 @@ use tokio::sync::{Notify, Semaphore};
 // BPM DSP is CPU intensive; never run more than one analysis per worker process.
 static BPM_ANALYSIS_SLOTS: Semaphore = Semaphore::const_new(1);
 
+/// S222/Q6: a partir de aquí una inspección física deja `warn` (visible con
+/// `RUST_LOG=info`, el nivel de `prueba-limpia.sh`). Una inspección normal va
+/// por debajo de 100 ms; el elapsed incluye la espera del pool de blocking,
+/// así que un pico delata saturación del pool o ficheros enormes.
+const SLOW_INSPECT_WARN_MS: u64 = 500;
+
 fn bpm_postprocess_key(queue_id: i64) -> String {
     format!("bpm_postprocess_queue_{queue_id}")
 }
@@ -769,10 +775,17 @@ impl DownloadWorker {
             tracing::warn!("S222: inspección física cancelada en mark_complete: {e}");
             None
         });
+        let inspect_elapsed_ms = inspect_start.elapsed().as_millis() as u64;
         tracing::debug!(
-            elapsed_ms = inspect_start.elapsed().as_millis() as u64,
+            elapsed_ms = inspect_elapsed_ms,
             "S222: inspect_physical_audio_file (mark_complete)"
         );
+        if inspect_elapsed_ms >= SLOW_INSPECT_WARN_MS {
+            tracing::warn!(
+                elapsed_ms = inspect_elapsed_ms,
+                "S222: inspección física lenta (mark_complete)"
+            );
+        }
 
         let real_bit_depth = phys_info
             .as_ref()
