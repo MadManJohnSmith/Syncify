@@ -150,3 +150,22 @@ fuera de las filas y las acciones masivas los consumen. Las filas no llevan esta
 de selección propio.
 _Evitar_: 'seleccionado' como flag dentro de la fila; contadores paralelos al array
 de ids.
+
+## Publicación
+
+**Puerta de publicación**:
+Las tres reglas que deciden si un tag puede existir: formato vX.Y.Z, CI verde para
+el SHA exacto a publicar, y tag no movible (nunca se mueve ni borra uno existente,
+salvo que apunte exactamente al mismo SHA). Es un módulo único que los workflows de
+build invocan; nadie la reimplementa.
+_Evitar_: «gating» a secas; «check de release», que suena opcional; reimplementarla
+en un workflow.
+
+## Empaquetado
+
+**Proveedor de binarios**:
+El módulo único que descarga, verifica por SHA-256 y coloca los binarios externos
+(ffmpeg, ffprobe, fpcalc) y el runtime Python empaquetado. Es la única fuente de
+pines: CI y build local consumen la misma tabla.
+_Evitar_: «dependency manager» (nombre de implementación); «instalador de
+dependencias»; una segunda tabla de pines.

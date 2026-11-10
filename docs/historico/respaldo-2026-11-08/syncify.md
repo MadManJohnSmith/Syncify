@@ -1,0 +1,300 @@
+# Handoff — Syncify: optimización del codebase para agentes (P7 implementado — PR #224 abierto)
+
+**Fecha:** 2026-11-06 · **Actualizado:** 2026-11-08 (P7 implementado; respaldo reemplazado)
+
+## LÉEME PRIMERO — estado pre-formateo (2026-11-08)
+
+Este es el handoff vivo de desarrollo. Todo lo importante está en GitHub o en
+`handoffs/syncify-respaldo-2026-11-08/` (bundle git verificado con 21/21 fetches
+de prueba, incluidos los colgantes; docs de proceso de P7; patch del trabajo sin
+commit del otro agente). El respaldo del 07-nov fue REEMPLAZADO por este, por
+decisión del dueño.
+
+1. **Restaurar el repo**: clonar `https://github.com/MadManJohnSmith/Syncify`
+   (dev = `74c5a03`, `p7/track-browser` = `7202103`, todo empujado). Los 21
+   commits colgantes están duraderos en origin como `refs/rescate/<sha>`:
+   `git fetch origin 'refs/rescate/*:refs/rescate/*'` (entre ellos `2d6d4cb`, el
+   D03 del otro agente, que no está en ninguna rama). El bundle local del
+   respaldo (`syncify-respaldo-2026-11-08/`, verificado 21/21 fetches) muere con
+   la máquina; a Drive subió solo lo no-versionado.
+2. **P7 · TrackBrowser IMPLEMENTADO** (7 commits, `caa3244..7202103`, ADR-0025):
+   kernel `useVirtualWindow` con paridad estricta, `useTrackBrowser` (paginación +
+   selección por ids), `quality_bucket` alineado en las tres fuentes, higiene IPC
+   (11 invokes migrados), docs/cifras. Local: 2987 passed / 0 failed / 13 ignored,
+   batch_50 2/2, UI 129 ficheros / 1130 tests, Python 311 OK. **PR #224 abierto**
+   contra `dev`, MERGEABLE; falta la pasada visual humana y el merge. CI del PR:
+   Frontend y Python verdes; Rust falló por un test FLAKY ajeno al diff
+   (`url_import_queue_test::test_concurrent_same_url_import_reuses_one_queue_row`,
+   «database is locked»; re-lanzar la corrida).
+3. **Worktrees y targets de /tmp mueren**: regenerables (worktree nuevo desde la
+   rama; `npm ci` en raíz y `ui/`; `ui/dist/index.html` dummy para cargo;
+   `CARGO_TARGET_DIR=/tmp/syncify-target` con `CARGO_BUILD_JOBS=4`).
+4. **Deudas vivas**: issue #222 (runtime se detiene ~83 s con la cola en tormenta),
+   el test flaky de `url_import_queue`, caché de apt en ci.yml, `metadata_score`
+   de FTS divergente, homogenización de las divergencias de ventana virtual, toast
+   local de MetadataView.
+5. **Decisiones del dueño**: 07-nov — datos de la app `com.syncify.app` MUEREN;
+   el peso de `syncify-repro` (5,2 GiB de AppImages) MUERE (harness+tools
+   respaldados); bench_*.py EMPUJADOS a `scripts/bench/` (4968171);
+   ANALISIS_MUSICBRAINZ.md+SHA256SUMS EMPUJADOS a `docs/mb-analysis/` (74c5a03);
+   issue-mapa de estado CREADO (#223). 08-nov — respaldo REEMPLAZADO por
+   `syncify-respaldo-2026-11-08/` (bundle verificado, fetch de prueba 21/21);
+   refs/rescate/* EMPUJADAS a origin (colgantes duraderos en GitHub, ls-remote
+   21/21) y a Drive subió SOLO lo no-versionado (`rclone check` 0 diferencias;
+   sin bundle, sin BD).
+6. El handoff de la AUDITORÍA de almacenamiento es `syncify-auditoria.md` (de otro
+   agente); este documento es el de desarrollo.
+
+**Fecha:** 2026-11-06 · **Repo:** MadManJohnSmith/Syncify · **Workspace:** /home/alan/Documents/Syncify-improvement/Syncify
+
+## Objetivo
+
+«Optimizar todo el codebase para agentes» en partes, una oportunidad por PR. El release
+que congeló el trabajo previo ya está publicado: **v0.6.2**
+(https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.2). El informe de
+oportunidades (7 tarjetas, evidencia verificada) está en:
+`/home/alan/.zcode/v2/visualizations/f50a5578ebb5a8e8213377b98f69ebecceed05bbac07408c3391b277dd184f8/arquitectura-syncify-2026-11-05.html`
+(glob: `/home/alan/.zcode/v2/*/*/arquitectura-syncify-2026-11-05.html`).
+El modo acordado con el usuario: **grillado previo de cada parte** (skill
+`grill-with-docs` o `grilling` + `domain-modeling`) y **un PR por parte**.
+
+## Estado por partes
+
+| Parte | Estado | Dónde |
+|---|---|---|
+| P1 · EnrichmentEvent | **Merged main** | PR #150 → commit 29e9c47 |
+| P2 · SyncOutcome | **Merged main** | PR #205 → 8827553 |
+| P3 · BridgeClient | **Merged main** | PR #209 → b41f5cb; ADR-0021; 2834 tests Rust, 324 Python |
+| P4 · DownloadJob | **Merged dev** | PR #210 → f349864; ADR-0022; CI del rerun VERDE (42216381025) |
+| P5 · DownloadProvider | **Merged dev** | PR #211 → bb55042; ADR-0023; CI verde (42255355676) |
+| P6 · PlaybackSession | **Merged dev** | PR #221 → 7fa4e74; ADR-0024; CI verde; puerta de audio en vivo PASS |
+| P7 · TrackBrowser | **Implementado** — PR #224 abierto (pasada visual + merge pendientes) | `p7/track-browser` @ `7202103`; ADR-0025 |
+
+`main` = trunk; `dev` = integración del trabajo en vuelo de otro agente (D00/D01/D02).
+
+## P5 · DownloadProvider — decisiones ya cerradas (ronda 1, NO re-litigar)
+
+1. **Alcance:** solo el puerto común (trait + registro + orquestador sin conocer
+   proveedores). Migrar Qobuz/Tidal/Amazon y SongLink. **No** añadir Deezer/SoundCloud
+   (ADR-0009) en esta parte.
+2. **Contexto del trait:** `&DownloadJobContext` reducido (track, calidad, cuenta,
+   destino, staging, presupuesto), construido por el orquestador desde
+   `DownloadRequest` (30 campos). DownloadRequest no se descompone en P5.
+3. **Errores:** el trait devuelve `ProviderError` que envuelve la `ErrorTaxonomy`
+   existente (`crates/syncify-core-domain/src/errors.rs`) + mensaje; el orquestador
+   deja de parsear strings para decidir reintento.
+4. **Caracterización:** tests por proveedor ANTES de mover cada adaptador (request →
+   forma de la llamada, calidades, previews, remapeos), con dobles y sin red.
+
+**Falta para cerrar el grill:** la ronda 2 depende del inventario del gateway real.
+Hecho decisivo: el informe se escribió contra `main`, pero `dev` ya trae **D01
+«gateway de proveedores»** (`src-tauri/src/download/provider_gateway.rs`) y P4 le
+propagó el `CancellationToken`. La ronda 2 debe responder: ¿el trait `DownloadProvider`
+se construye SOBRE el gateway (el gateway = registro) o lo sustituye? ¿sigue el
+despacho por string y el caso especial de Amazon? ¿qué firmas reales tienen los
+adaptadores en `dev`? Un agente de inventario estaba corriendo al cerrar esta sesión;
+si el resultado no está en el nuevo chat, **relanzar el mismo inventario** (prompt
+sugerido abajo).
+
+## Riesgos y deudas abiertas (leer antes de tocar `dev`)
+
+1. **El otro agente tiene trabajo local en `dev`**: 5 commits propios (D00 `bf62c57`,
+   D01 `dab4c33`, D02 `f7578b3` + docs) y cambios sin commitear (`errors.rs`, docs) en
+   el worktree principal. `origin/dev` ya está en **f349864** (merge de P4) y **contiene
+   D00-D02 subidos dentro del PR #210**. Ese agente tendrá que integrar el merge al
+   retomar. No tocar su worktree.
+2. **CI de dev (corrida 42216381025, RESUELTA: rerun en verde):** el rerun terminó
+   con `conclusion: success` (Rust incluido), así que `dev` queda con CI verde. El primer intento
+   murió a los 60 min porque `apt-get install` seguía descargando del mirror
+   (`timeout-minutes: 60` en `.github/workflows/ci.yml:47`). No fue código. Mejora de
+   entorno pendiente: cachear apt + `Acquire::Retries` (PR aparte).
+3. **Migraciones:** `dev` tiene 0102/0103 (download_jobs, failure_class,
+   next_attempt_at); `main` no. P4 eliminó su migración nueva por eso. Cualquier parte
+   que toque esquema de descargas debe partir de `dev`.
+4. **`.github/workflows/ci.yml` de `dev`**: se añadió `libasound2-dev` en el PR #210
+   (main ya lo tenía); no perderlo al reconciliar.
+5. **`download_jobs`** (agregado distinto): vocabulario propio, campos muertos
+   (`completed/partial`, contadores). Deuda documentada en ADR-0022; fuera de P4.
+
+## Worktrees y artefactos
+
+- `/tmp/syncify-p4` — base `main`, rama `p4/download-job-state`, commit local
+  `wip(p4)` **obsoleto** (P4 vive en dev vía `/tmp/syncify-p4-dev`). Borrar.
+- `/tmp/syncify-p4-dev` — base dev+P4, rama `p4/download-job-state-dev` (ya fusionada y
+  borrada en remoto). Útil para leer el territorio P5. Borrar cuando no haga falta.
+- `/tmp/p4.patch` — diff P4 contra origin/main (histórico).
+- Targets de cargo: `/home/alan/.cache/syncify/p4-target` y `p4-dev-target` (~8G cada
+  uno). Borrar si no se reutilizan. **No** borrar `/tmp/syncify-target` (lo usa el otro
+  agente).
+- `ui/node_modules` en los worktrees es un **symlink** al del worktree principal; no
+  commitear.
+
+## Prompt sugerido para el inventario P5 (relanzar si hace falta)
+
+«Inventario de hechos del territorio P5 DownloadProvider sobre `/tmp/syncify-p4-dev`
+(dev+P4): (1) interfaz de `provider_gateway.rs` y quién lo llama; (2) si el orquestador
+sigue guardando adaptadores concretos y despachando por string, caso Amazon; (3) firmas
+reales de qobuz/tidal/amazon y campos de DownloadRequest + remapeo Tidal; (4) qué rutas
+comprueban el CancellationToken tras P4; (5) tipos de error por adaptador; (6) tests y
+rarezas por proveedor; (7) literales de servicio; (8) estado de ADR-0009. Solo evidencia
+con file:line, sin propuestas.»
+
+## Puertas deterministas del repo
+
+`AGENTS.md` (raíz) es la referencia: cargo check/clippy/fmt `--locked`, `cargo test`,
+`batch_50_audit_test -- --test-threads=1`, `npm --prefix ui run build && test:run`,
+`python3 -m unittest discover -s scripts/tests`, más higiene de comandos/eventos/docs.
+El target de Rust va fuera del repo. No relajar aserciones; arreglar la causa.
+
+## Skills sugeridos para la sesión nueva
+
+- `improve-codebase-architecture` — para P6/P7 (el informe ya existe) y para cerrar el
+  encuadre de P5 si hace falta.
+- `grill-with-docs` — ronda 2 de P5 y cada parte siguiente (crea ADR/GLOSSARY).
+- `grilling` + `domain-modeling` — invocadas por grill-with-docs.
+- `chief-of-staff` — si se quiere seguir orquestando partes con subagentes.
+- `pr` — cuerpo de PR.
+- `handoff` — al volver a cambiar de sesión.
+
+## P5 — resultado de la ronda 2 y de la implementación (2026-11-06)
+
+Decisiones cerradas con el propietario (ronda 2, sobre el gateway real de D01):
+
+1. **Contrato:** `ProviderRequest` completo (DownloadRequest de 30 campos + account_id
+   + `ProviderRouting`). El contexto reducido de la ronda 1 queda APLAZADO (los
+   descargadores usan 22/20/9 campos; reconstruirlo introduciría defaults silenciosos).
+2. **Profundidad:** el adaptador posee descarga + normalización + provenance +
+   reconciliación de calidad; el orquestador conserva routing/fallback/auth/progreso/SongLink.
+3. **Errores:** clasificación en la frontera (`ProviderError::classify`); el orquestador
+   consume `ErrorTaxonomy`. Checks de string anotados donde la taxonomía no desambigua
+   (entity lookup 401/403, NetworkExhausted, credenciales) y el clasificador de
+   re-resolución sigue por string: deuda en ADR-0023.
+4. **SongLink:** fuera de P5 (resolvedor, no proveedor). Amazon primera clase con
+   `ProviderCapabilities.supports_lossless=false` y `OperationType::DownloadAmazon`.
+
+Implementación (rama `p5/download-provider`, 6 commits, PR #211):
+
+- 6691324 OperationType::DownloadAmazon · f914b71 quality_reconcile extraído ·
+  4e56e75 adaptadores tras traits de motor (providers/{qobuz,tidal,amazon}.rs) ·
+  b637fa5 despacho por registro (16 call sites; campo `amazon` fuera; Arcs compartidos
+  con los campos qobuz/tidal de búsqueda de identidad) · d54b1a0 fallbacks por
+  taxonomía · f8d5906 ADR-0023 + glosario + pipeline doc.
+- Tests nuevos: `provider_adapters_test` (12), `provider_dispatch_test` (7).
+- Verificación local: check/clippy/fmt OK; suite completa 2876 passed / 0 failed /
+  13 ignored; batch_50 2/2; Python 311 OK (2 skipped). AGENTS.md actualizado a
+  318 objetivos / 311 tests.
+- Worktree `/tmp/syncify-p5` (ui/dist es copia dummy, no symlink). Borrar tras el merge.
+
+## Siguiente paso concreto
+
+1. Comprobar la corrida de CI 422166381025 (rerun) con
+   `gh run view 42216381025 --repo MadManJohnSmith/Syncify`; si el job de Rust volvió
+   a morir por apt, abrir PR de caché/reintentos en `ci.yml` (rama desde `dev`).
+2. Recuperar/relanzar el inventario P5 y plantear la **ronda 2** con las preguntas del
+   §P5.
+3. Confirmar el diseño completo de P5 y implementarlo en un worktree desde `dev`, con
+   PR a `dev`.
+
+## Anexo (2026-11-06): resultado del inventario P5
+
+Llegó después de cerrar la sesión; se resume aquí para no perderlo. Fuente completa:
+salida del agente de inventario (no versionada). Territorio leído sobre `dev` + P4.
+
+**Hallazgo principal: el puerto ya existe — y está muerto.** D01 creó en
+`src-tauri/src/download/provider_gateway.rs`:
+- `trait DownloadProvider: Send + Sync` (`:142-150`) con `service_name()` y
+  `download(&ProviderRequest, Option<&CancellationToken>) -> ProviderDelivery`.
+- `ProviderRequest` = `DownloadRequest` + `account_id` (`:38-56`);
+  `ProviderDelivery` (`:62-95`) con inspección física; `ProviderError { taxonomy:
+  ErrorTaxonomy, message }` (`:101-128`).
+- Adapters `QobuzProvider` / `TidalProvider` / `AmazonProvider` (`:163-259`), cada uno
+  con pre-check de cancelación y `ProviderError::classify`.
+- Registro en el orquestador (`orchestrator.rs:134-138,196-218,225-249`).
+
+Pero **ningún flujo de producción invoca `DownloadProvider::download`**: el
+orquestador conserva campos concretos `qobuz/tidal/amazon` (`orchestrator.rs:118-120`),
+despacha por string (`:1495-1516`), mantiene los casos especiales de Amazon
+(`:2837-2843,2897-2901,2932-2946`) y el gateway está marcado `dead_code`/staged
+(`mod.rs:13-18`; gateway `:36,43,224,232`). Es decir: P5 es **cablear el puerto
+existente y borrar el despacho por string**, no diseñarlo.
+
+**Datos duros para la ronda 2:**
+- `DownloadRequest` = 30 campos (`download/progress.rs:827-871`); Tidal re-mapea a 17
+  (`services/tidal_pipeline.rs:114-144` desde `tidal.rs:68-105`).
+- Rutas sin cancelación: `SongLinkClient::query_songlink` no recibe token
+  (`songlink.rs:270`); la fase auth/búsqueda de Qobuz previa a transferencia tampoco
+  (solo `qobuz.rs:1548-1553,1698-1704`); el wrapper no cancelable pasa `None`
+  (`orchestrator.rs:325-326`).
+- Errores: adaptadores devuelven `anyhow::Result`; el gateway ya clasifica a
+  `ErrorTaxonomy` con `classify_operation_error` (`services/operation_recovery.rs:652-666`).
+- Tests: `src-tauri/tests/provider_gateway_test.rs` ya cubre el registro con un
+  `FakeProvider` y los adaptadores por nombre (incl. Amazon 403). `amazon.rs` y
+  `songlink.rs` **no tienen** `#[cfg(test)]`.
+- Literales `qobuz|tidal|amazon` en `orchestrator.rs`: ~110 líneas; 161 en todo
+  `download/` con los cinco servicios.
+- ADR-0009 sigue **propuesto**: Deezer/SoundCloud sin adaptador (`resolve_provider`
+  devuelve `None` y un test lo fija), módulos `services/deezer.rs`/`soundcloud.rs` solo
+  auth/catálogo/import.
+
+**Preguntas de la ronda 2 que quedan abiertas:**
+1. ¿El trait se queda donde está (`provider_gateway.rs`) o se mueve/renombra
+   (`download/provider.rs`)? ¿Quién implementa: los adaptadores directamente o los
+   wrappers `*Provider` actuales?
+2. ¿Qué pasa con los casos especiales de Amazon (solo si no es lossless/hires; descarga
+   por URL directa cuando SongLink falla)? ¿Se mueven dentro de `AmazonProvider` como
+   política del proveedor o quedan como  política del orquestador?
+3. ¿El routing SongLink pasa a ser un proveedor más (`SongLinkProvider`) o queda como
+   fallback del orquestador? (Afecta a la cancelación de `query_songlink`.)
+4. ¿Se exige que `download_track_cancellable` desaparezca y todo pase por
+   `DownloadProvider::download`, incluida la fase de búsqueda/auth (token en todos los
+   pasos)?
+
+## P6 — resultado del grill y de la implementación (2026-11-07)
+
+Decisiones cerradas con el propietario (dos rondas de `grill-with-docs`; ADR-0024):
+
+1. La sesión de reproducción es la **única dueña** del ciclo open local→caché→streaming,
+   la generación única `core.seq` y tick/frontera/ended. Alcance **estrictamente
+   una-pista** (la cola queda fuera; spec #130).
+2. `player_load` (comando + wrapper + mocks) **eliminado**; la UI consume un único
+   token `Transition{aborted}` (adiós `transitionGen`).
+3. Correcciones Fase C: seek tras frontera con **espera acotada + 1 re-resolución**
+   (Q4); re-resolución **única** ante fallo de catálogo 401/403/410
+   (ADR-0010.enm.4); **parciales reanudables** (progresivo por Range con degradación
+   a 200, DASH por segmentos completos, validación de cabecera FLAC antes de prime);
+   **invalidación de caché al descargar** (`stream_cache::invalidate_track`).
+4. Orden cancel/carga preservado por fuente. Puerta de **audio en vivo** obligatoria
+   (escucha + capturas objetivas) antes del merge.
+
+Implementación (rama `p6/playback-session`, 11 commits, PR #221 → merge 7fa4e74):
+
+- de8873b ADR-0024+glosario · 783560f motor con salida inyectable (sim.rs) ·
+  598e861 caracterización · 191b81d extracción (`services/playback_session.rs`) ·
+  4974bc9 player_load fuera · 5bc731e/e14c799/43e13b0/0d23b49 correcciones 1-3 ·
+  7a2f927 corrección 4 · 620f5df docs.
+- Verificación: suite 2983 passed / 13 ignored; batch_50 2/2; UI 127 ficheros /
+  1087 tests; Python 311 OK. Cifras de AGENTS.md corregidas (UI 126/1083 → 127/1087,
+  desfasado en dev desde P4).
+
+**Puerta de audio en vivo (07-11-2026): PASS, sin regresiones de P6.** Evidencia y
+hallazgos en el cuerpo del PR #221. Lo esencial:
+
+- Audio correcto en local, Qobuz y Tidal FLAC 24/96 (DASH); cambios a mitad de prime
+  correctos; seek tras frontera: mecanismo verificado (motor en pausa-buffer en el
+  destino, re-resolución activa) aunque el audio final lo bloqueó la caída de los
+  endpoints de Tidal esa noche. Con suscripción Qobuz expirada, el resolver rechaza
+  la preview con causa explícita.
+- **Issue #222 (nuevo)**: la recuperación de la cola con el proveedor en tormenta
+  bloquea el runtime asíncrono ~83 s (app muda con audio sonando; puente Python
+  síncrono como sospecha). Preexistente (P5), no bloquea P6.
+- Observación a reverificar: el stream y la descarga de Qobuz no son el mismo
+  fichero (PCM difiere, Δdur 2,04 s en la muestra del 4-nov, pre-P6).
+
+## Siguiente paso concreto
+
+1. Pasada visual de PR #224 con el dueño y merge (re-lanzar el CI de Rust si hace
+   falta: el fallo actual es el test flaky de `url_import_queue`). Con el merge,
+   P1–P7 queda completo.
+2. Vigilar #222 (estancamiento del runtime con la cola en tormenta): candidato
+   natural a interludio post-P7, con el grill pertinente.
+3. Caché/reintentos de apt en `ci.yml` sigue pendiente (ver riesgo 2 más arriba).

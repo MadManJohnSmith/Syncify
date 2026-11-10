@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Syncify — oportunidades de profundización</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1b; --muted: #62625c;
+    --line: #dcdcd5; --accent: #0f6b5c; --accent-soft: #e3f2ee;
+    --warn: #8a4b0f; --warn-soft: #fbeee1; --risk: #8a1f1f; --risk-soft: #fbe9e9;
+    --code: #f0f0ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141614; --panel: #1c1f1c; --ink: #eceee8; --muted: #a3a79d;
+      --line: #343a33; --accent: #6fd3bd; --accent-soft: #16302a;
+      --warn: #e0a463; --warn-soft: #332617; --risk: #ef8a8a; --risk-soft: #331d1d;
+      --code: #232821;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 22px 80px; }
+  .eyebrow { text-transform: uppercase; letter-spacing: .14em; font-size: 12px;
+    color: var(--accent); font-weight: 700; margin: 0 0 10px; }
+  h1 { font-size: clamp(28px, 4vw, 44px); line-height: 1.1; margin: 0 0 14px;
+    letter-spacing: -0.02em; }
+  .lede { font-size: 18px; color: var(--muted); max-width: 78ch; margin: 0 0 18px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 0; }
+  .pill { border: 1px solid var(--line); background: var(--panel); border-radius: 999px;
+    padding: 5px 11px; font-size: 13px; color: var(--muted); }
+  h2 { font-size: 24px; margin: 48px 0 14px; letter-spacing: -0.01em; }
+  h3 { font-size: 19px; margin: 0 0 6px; }
+  p { margin: 10px 0; }
+  a { color: var(--accent); }
+  .note { border-left: 3px solid var(--accent); background: var(--accent-soft);
+    padding: 12px 16px; border-radius: 0 10px 10px 0; color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line);
+    vertical-align: top; font-size: 14.5px; }
+  th { font-size: 12.5px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); background: var(--code); }
+  tr:last-child td { border-bottom: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    padding: 22px 22px 18px; margin: 18px 0; }
+  .card-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+  .num { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 800;
+    font-size: 14px; border: 1px solid var(--accent); border-radius: 8px; padding: 2px 8px; }
+  .zone { color: var(--muted); font-size: 13.5px; margin: 2px 0 12px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 14px; }
+  .badge { font-size: 12.5px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); }
+  .badge.high { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .badge.risk { border-color: var(--risk); color: var(--risk); background: var(--risk-soft); }
+  .badge.med { border-color: var(--warn); color: var(--warn); background: var(--warn-soft); }
+  ul { margin: 8px 0 8px 20px; padding: 0; }
+  li { margin: 5px 0; }
+  code { background: var(--code); border: 1px solid var(--line); border-radius: 5px;
+    padding: 1px 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .88em; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 15px; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px; line-height: 1.45; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .box { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .box h4 { margin: 0 0 6px; font-size: 12.5px; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--muted); }
+  .box p, .box li { font-size: 14.5px; }
+  .part { display: grid; grid-template-columns: 42px 1fr auto; gap: 12px;
+    align-items: start; padding: 13px 0; border-bottom: 1px solid var(--line); }
+  .part:last-child { border-bottom: 0; }
+  .part .n { font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .part .t { font-weight: 650; }
+  .part .d { color: var(--muted); font-size: 14px; }
+  .dep { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+  footer { margin-top: 48px; color: var(--muted); font-size: 13.5px;
+    border-top: 1px solid var(--line); padding-top: 18px; }
+  .toc { columns: 2; column-gap: 24px; font-size: 14.5px; }
+  @media (max-width: 700px) { .toc { columns: 1; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <p class="eyebrow">Syncify · arquitectura para agentes</p>
+  <h1>Siete oportunidades de profundización</h1>
+  <p class="lede">Un inventario de módulos que hoy son superficiales: obligan a conocer su implementación para usarlos. Cada ficha propone una interfaz más pequeña que esconde más, con la evidencia y el coste de no hacerlo. No es un plan de reescritura; es una lista de partes para atacar de una en una.</p>
+  <div class="meta">
+    <span class="pill">Base: <code>v0.6.1..dev</code> · 77 commits</span>
+    <span class="pill">Fecha: 2026-11-05</span>
+    <span class="pill">Fuentes: git log, GLOSSARY.md, ADR 0001–0009</span>
+    <span class="pill">Solo lectura: ningún candidato implementado</span>
+  </div>
+</header>
+
+<section id="como-leer">
+  <h2>Cómo leer esto</h2>
+  <p>Vocabulario de <em>codebase-design</em>, sin traducciones flojas: un <strong>módulo</strong> es una unidad con interfaz e implementación; la <strong>profundidad</strong> es cuánto esconde una interfaz pequeña; un <strong>seam</strong> es el lugar donde se puede cambiar de implementación sin tocar al cliente; un <strong>adapter</strong> conecta una implementación concreta a ese seam; <strong>leverage</strong> es cuántos cambios futuros facilita; <strong>locality</strong> es que un cambio quede en un sitio.</p>
+  <p class="note">La <strong>prueba de borrado</strong> decide: si al borrar el módulo la complejidad desaparece, el módulo era superficial. Si solo se muda a otro sitio, no aportaba profundidad. Las siete fichas son hipótesis: cada una se somete a grilling antes de escribir código; algunas pueden rechazarse.</p>
+</section>
+
+<section id="resumen">
+  <h2>Resumen</h2>
+  <table>
+    <thead><tr><th>#</th><th>Oportunidad</th><th>Zona</th><th>Leverage</th><th>Riesgo</th><th>Parte</th></tr></thead>
+    <tbody>
+      <tr><td><a href="#c1">1</a></td><td><code>SyncOutcome</code>: el saco de 34 campos de los brazos de sync</td><td>Rust · sync</td><td>Alto</td><td>Medio</td><td>P2</td></tr>
+      <tr><td><a href="#c2">2</a></td><td><code>EnrichmentEvent</code>: un canal, tres contratos, vistas que los descifran</td><td>UI · IPC</td><td>Medio</td><td>Bajo</td><td>P1</td></tr>
+      <tr><td><a href="#c3">3</a></td><td><code>DownloadProvider</code>: el orquestador hace de trait</td><td>Download · crates</td><td>Alto</td><td>Alto</td><td>P5</td></tr>
+      <tr><td><a href="#c4">4</a></td><td><code>PlaybackSession</code>: resolución, caché y motor sin una sola puerta</td><td>Reproductor</td><td>Alto</td><td>Alto</td><td>P6</td></tr>
+      <tr><td><a href="#c5">5</a></td><td><code>TrackBrowser</code>: estado de listas duplicado en tres vistas</td><td>UI · vistas</td><td>Medio-alto</td><td>Medio</td><td>P7</td></tr>
+      <tr><td><a href="#c6">6</a></td><td><code>DownloadJob</code>: la máquina de estados vive en strings SQL</td><td>Download · estado</td><td>Alto</td><td>Alto</td><td>P4</td></tr>
+      <tr><td><a href="#c7">7</a></td><td><code>BridgeClient</code>: tres lanzadores y 17 contratos de CLI</td><td>Python · puentes</td><td>Alto</td><td>Medio</td><td>P3</td></tr>
+    </tbody>
+  </table>
+  <p style="margin-top:12px"><a href="#partes">Ver la partición propuesta y el orden →</a></p>
+</section>
+
+<section id="partes">
+  <h2>Partes propuestas</h2>
+  <p>Cada parte es un PR independiente con su caracterización y su propia puerta. No se abre la siguiente hasta cerrar la anterior. El orden no es por tamaño: es por dependencia y por lo que desbloquea.</p>
+  <div class="part"><div class="n">P1</div><div><div class="t">Contrato de eventos de enriquecimiento</div><div class="d">Ficha 2. Es la más barata y la que más mejora la navegación: un solo contrato tipado y fuera los <code>invoke</code> crudos de las vistas.</div></div><div class="dep">sin dependencias</div></div>
+  <div class="part"><div class="n">P2</div><div><div class="t">Resultado de los brazos de sync</div><div class="d">Ficha 1. Local a <code>service.rs</code>; elimina 153 asignaciones campo a campo y fija la semántica de merge en un tipo.</div></div><div class="dep">sin dependencias</div></div>
+  <div class="part"><div class="n">P3</div><div><div class="t">Cliente de puentes Python</div><div class="d">Ficha 7. Un lanzador y un protocolo; habilita P4 y P5 sin que cada puente reinvente el envelope.</div></div><div class="dep">sin dependencias</div></div>
+  <div class="part"><div class="n">P4</div><div><div class="t">Estado del job de descarga</div><div class="d">Ficha 6. Define el vocabulario y el contexto estrecho que P5 necesita; antes hay que enhebrar el token de cancelación.</div></div><div class="dep">tras P3</div></div>
+  <div class="part"><div class="n">P5</div><div><div class="t">Puerto de proveedores de descarga</div><div class="d">Ficha 3. El mayor leverage para ADR-0009: añadir Deezer, SoundCloud o Amazon deja de tocar el orquestador.</div></div><div class="dep">tras P4</div></div>
+  <div class="part"><div class="n">P6</div><div><div class="t">Sesión de reproducción</div><div class="d">Ficha 4. Alta leverage y alto riesgo: toca el camino de audio. Conviene después de P3/P4 para reutilizar contratos y con tests en vivo.</div></div><div class="dep">independiente · tras P3</div></div>
+  <div class="part"><div class="n">P7</div><div><div class="t">Navegador de pistas</div><div class="d">Ficha 5. Se puede hacer en paralelo; es UI pura y no bloquea el backend.</div></div><div class="dep">paralelo</div></div>
+</section>
+
+<main id="candidatos">
+<h2>Las siete fichas</h2>
+
+<article class="card" id="c1">
+  <div class="card-top"><span class="num">1</span><h3><code>SyncOutcome</code>: el saco de 34 campos</h3></div>
+  <p class="zone">Núcleo Rust · <code>src-tauri/src/commands/service.rs</code></p>
+  <div class="badges"><span class="badge high">Leverage alto</span><span class="badge med">Riesgo medio</span><span class="badge">Parte P2</span></div>
+  <p><strong>Hoy.</strong> La interfaz de los cinco brazos de sync es un struct con 34 campos. Para añadir un contador o un brazo hay que conocer todos los campos, el despacho los vuelve a copiar uno a uno y la semántica de merge cambia según el brazo.</p>
+  <ul>
+    <li><code>service.rs:3313-3348</code>: <code>ArmOutcome</code> con 32 contadores + <code>errors</code>/<code>warnings</code>.</li>
+    <li>Brazos: <code>:3351</code> SoundCloud, <code>:3604</code> Deezer, <code>:4199</code> Spotify, <code>:5044</code> TIDAL, <code>:6146</code> Qobuz; todos reciben y devuelven el mismo saco.</li>
+    <li>Despacho <code>:7670-8040</code>: <strong>153 asignaciones</strong> de vuelta (138 <code>=</code>, 15 <code>+=</code>); el merge no es uniforme.</li>
+    <li>Política de metadatos repetida 15 veces (p. ej. <code>:3430-3433</code>, <code>:4523-4526</code>) y el closure <code>emit</code> repetido en cada brazo (p. ej. <code>:3360</code>).</li>
+  </ul>
+  <pre>trait SyncArm {
+    async fn run(ctx: SyncArmContext&lt;'_&gt;) -&gt; Result&lt;SyncOutcome, ArmError&gt;;
+}
+struct SyncOutcome { /* 34 contadores privados */ }
+impl SyncOutcome {
+    fn record_import(&amp;mut self, n: u32);
+    fn record_metadata(&amp;mut self, c: Completeness);
+    fn absorb(&amp;mut self, other: SyncOutcome);
+}</pre>
+  <div class="grid">
+    <div class="box"><h4>Prueba de borrado</h4><p>Desaparecen las 153 asignaciones y las 15 copias de la política; el merge y la semántica de cada contador quedan en un solo tipo. La complejidad no se muda: se concentra.</p></div>
+    <div class="box"><h4>Leverage y riesgo</h4><p>Añadir un contador o un brazo deja de tocar 4,5k líneas. El riesgo es el camino caliente del sync: hay 10 contratos offline y la suite completa como red; la caracterización va delante.</p></div>
+  </div>
+  <p><strong>Para un agente.</strong> Un trait, un tipo de resultado y un método de merge. Hoy hay que leer el despacho entero para saber qué devuelve un brazo.</p>
+</article>
+
+<article class="card" id="c2">
+  <div class="card-top"><span class="num">2</span><h3><code>EnrichmentEvent</code>: un canal, tres contratos</h3></div>
+  <p class="zone">UI · IPC · <code>ui/src</code> + <code>commands/{library,enrichment}.rs</code></p>
+  <div class="badges"><span class="badge high">Leverage medio</span><span class="badge">Riesgo bajo</span><span class="badge">Parte P1</span></div>
+  <p><strong>Hoy.</strong> El canal <code>enrichment-progress</code> transporta tres payloads distintos y cada vista los descifra a mano; además hay <code>invoke</code> crudos aunque exista wrapper.</p>
+  <ul>
+    <li><code>library.rs:1248-1258</code> emite <code>{status,total,current,enriched,failed,currentTrack}</code>.</li>
+    <li><code>enrichment.rs:81-87</code> emite <code>{"type":"lastfm_genre",...}</code>; <code>:312-315</code> emite <code>EnrichmentJobSummary</code> en camelCase.</li>
+    <li><code>LibraryView.vue:1240-1268</code> documenta los tres y los discrimina; <code>MetadataView.vue:2621</code> declara el payload inline.</li>
+    <li>9 <code>invoke</code> crudos fuera de <code>api/</code>; 4 son de enriquecimiento: <code>LibraryView.vue:1292</code>, <code>MetadataView.vue:2157</code>, <code>:2640</code> y <code>:2650</code>. Hay wrappers para <code>enrich_metadata</code> (<code>metadata.ts:213</code>) y <code>enrich_metadata_musicbrainz</code> (<code>:403</code>).</li>
+  </ul>
+  <pre>type EnrichmentEvent =
+  | { kind: 'musicbrainz'; total: number; current: number; enriched: number; failed: number; currentTrack?: string }
+  | { kind: 'lastfm_genre'; message: string }
+  | { kind: 'summary'; totalTracks: number; processedTracks: number };</pre>
+  <div class="grid">
+    <div class="box"><h4>Prueba de borrado</h4><p>Desaparecen el discriminador de la vista, el tipo inline de Metadata y los cuatro <code>invoke</code> de enriquecimiento. Queda un emisor en Rust y un decoder en <code>ui/src/api/enrichment.ts</code>.</p></div>
+    <div class="box"><h4>Leverage y riesgo</h4><p>Cualquier cambio de evento pasa a ser un error de compilación, no una regresión silenciosa. El riesgo es bajo: la puerta de simetría de eventos ya existe; el coste es tocar dos vistas.</p></div>
+  </div>
+  <p><strong>Para un agente.</strong> El contrato vive en un fichero y la vista consume un composable; no hay que reconstruir el payload leyendo tres productores.</p>
+  <p class="note"><strong>Corrección al implementar P1.</strong> El resumen incremental <em>sí</em> tenía consumidor: <code>useIncrementalEnrichment</code> escuchaba el alias del mismo canal y casteaba cualquier payload a <code>EnrichmentJobSummary</code>. El contrato final tipa dos variantes vivas —<code>musicbrainz</code> e <code>incrementalSummary</code>— y retira solo Last.fm, que no tenía listener. Ver PR #150.</p>
+</article>
+
+<article class="card" id="c3">
+  <div class="card-top"><span class="num">3</span><h3><code>DownloadProvider</code>: el orquestador hace de trait</h3></div>
+  <p class="zone">Descargas · <code>src-tauri/src/download/</code> + crates</p>
+  <div class="badges"><span class="badge high">Leverage alto</span><span class="badge risk">Riesgo alto</span><span class="badge">Parte P5</span></div>
+  <p><strong>Hoy.</strong> El orquestador conoce los adaptadores concretos, despacha por string y tiene un caso especial por proveedor. No hay un puerto común; cada adaptador recibe una forma distinta y la cancelación solo se comprueba en una ruta.</p>
+  <ul>
+    <li><code>orchestrator.rs:115-117</code> guarda Qobuz/Tidal/Amazon concretos; <code>:1438-1450</code> despacha por string; <code>:2809-2823</code> trata Amazon aparte; 107 líneas con literales de servicio.</li>
+    <li>Firmas dispares: <code>qobuz.rs:1852-1856</code> (request + pool), <code>tidal.rs:34-40</code> (trait local), <code>amazon.rs:226-230</code> (URL sin DB).</li>
+    <li><code>DownloadRequest</code> tiene 30 campos (<code>progress.rs:827-871</code>) y Tidal lo re-mapea a 17 (<code>tidal_pipeline.rs:114-148</code>).</li>
+    <li>Cancelación solo en la ruta SongLink (<code>orchestrator.rs:2664-2688</code>).</li>
+  </ul>
+  <pre>trait DownloadProvider {
+    async fn fetch(&amp;self, job: &amp;DownloadJobContext, cancel: &amp;CancelToken)
+        -&gt; Result&lt;DownloadOutcome, ProviderError&gt;;
+}</pre>
+  <div class="grid">
+    <div class="box"><h4>Prueba de borrado</h4><p>Desaparecen el despacho por string y el caso Amazon; el orquestador deja de conocer la forma de cada proveedor. Añadir un proveedor es registrar un adapter, no editar el <code>match</code>.</p></div>
+    <div class="box"><h4>Leverage y riesgo</h4><p>Es el mayor leverage para ADR-0009 (Deezer, SoundCloud, Amazon). El riesgo es alto: cada proveedor tiene rarezas y hay rutas sin tests de integración; exige caracterización por proveedor antes de mover nada.</p></div>
+  </div>
+  <p><strong>Para un agente.</strong> Un trait muestra el contrato completo; cada proveedor es un fichero autocontenido en vez de una rama de un <code>match</code> de 4,3k líneas.</p>
+</article>
+
+<article class="card" id="c4">
+  <div class="card-top"><span class="num">4</span><h3><code>PlaybackSession</code>: cuatro fuentes sin una sola puerta</h3></div>
+  <p class="zone">Reproductor · <code>commands/player.rs</code> + <code>services/streaming.rs</code> + <code>stream_cache.rs</code> + <code>crates/syncify-player</code></p>
+  <div class="badges"><span class="badge high">Leverage alto</span><span class="badge risk">Riesgo alto</span><span class="badge">Parte P6</span></div>
+  <p><strong>Hoy.</strong> <code>player_load_track</code> es el verdadero orquestador: decide local vs. red, resuelve la fuente, gestiona la caché, numera la generación, hace el prime y arranca el motor. La verificación de cabecera y el flag DASH se filtran hasta la capa de comando.</p>
+  <ul>
+    <li><code>player.rs:312-372</code>: SQL directo a <code>downloads</code>, cálculo de caché, decisión caché completa vs. descarga progresiva.</li>
+    <li><code>player.rs:469</code> y <code>:591</code>: <code>spawn_stream_download</code> / <code>spawn_dash_stream_download</code>; <code>:741</code>: <code>guard_stream_frontier</code> desde el ticker.</li>
+    <li><code>stream_cache.rs:283-298</code>: <code>download_dash(..., on_prime, on_progress)</code> expone la mecánica interna.</li>
+    <li><code>streaming.rs:1479-1482</code> verifica cabecera; <code>:70-82</code> <code>ResolvedStream</code> aún transporta <code>url</code> y <code>is_dash</code>.</li>
+  </ul>
+  <pre>impl PlaybackSession {
+    async fn open(track: &amp;Track, quality: Quality) -&gt; Result&lt;Self, PlaybackError&gt;;
+    async fn read_at(&amp;mut self, offset: u64, buf: &amp;mut [u8]) -&gt; Result&lt;usize, PlaybackError&gt;;
+    async fn seek(&amp;mut self, position: Duration) -&gt; Result&lt;(), PlaybackError&gt;;
+}</pre>
+  <div class="grid">
+    <div class="box"><h4>Prueba de borrado</h4><p>El comando queda delgado; la URL firmada, el DASH, la caché y la generación no cruzan el seam. La complejidad se concentra en una sesión que se puede probar con un proveedor falso.</p></div>
+    <div class="box"><h4>Leverage y riesgo</h4><p>Habilita reproductor local, streaming y caché sin que cada uno conozca a los otros. El riesgo es el camino de audio: la puerta automatizada no ejercita audio real ni GUI; hacen falta tests en vivo y una caracterización antes de mover.</p></div>
+  </div>
+  <p><strong>Para un agente.</strong> Una sola entrada <code>open</code> y un contrato de lectura/seek; hoy hay que seguir cuatro módulos y un ticker para entender qué suena.</p>
+</article>
+
+<article class="card" id="c5">
+  <div class="card-top"><span class="num">5</span><h3><code>TrackBrowser</code>: estado de listas duplicado</h3></div>
+  <p class="zone">UI · <code>ui/src/views/{Library,Metadata,Downloads}View.vue</code></p>
+  <div class="badges"><span class="badge high">Leverage medio-alto</span><span class="badge med">Riesgo medio</span><span class="badge">Parte P7</span></div>
+  <p><strong>Hoy.</strong> Tres vistas grandes clonan el mismo comportamiento de lista: mapear el modelo, filtrar, ordenar, paginar, virtualizar y sincronizar la ruta. Cada copia tiene sus constantes y su propia paginación.</p>
+  <ul>
+    <li>Mapeo duplicado: <code>LibraryView.vue:1547</code> y <code>MetadataView.vue:1516</code> (mismos <code>qualityBucket</code>, <code>availabilitySummary</code>, <code>filePath</code>).</li>
+    <li>Ventana virtual clonada: <code>LibraryView.vue:2475,2490</code> (56px), <code>MetadataView.vue:1838,1853</code> (64px), <code>DownloadsView.vue:1729,1747</code> (60px); el comentario de <code>MetadataView.vue:1833</code> admite la paridad.</li>
+    <li>Filtro y orden: 8 predicados en <code>LibraryView.vue:2408-2435</code>; <code>switch</code> de 10 casos + sort en <code>MetadataView.vue:1769-1832</code>.</li>
+    <li>Paginación triplicada: <code>LibraryView.vue:1612-1621</code> y <code>1638-1647</code>; además el paginador FTS (<code>1222-1227</code>, <code>1799-1826</code>).</li>
+  </ul>
+  <pre>const browser = useTrackBrowser(source, { rowHeight: 56 })
+browser.rows      // ya mapeadas, filtradas y ordenadas
+browser.total
+browser.hasMore
+browser.loadMore()</pre>
+  <div class="grid">
+    <div class="box"><h4>Prueba de borrado</h4><p>Desaparecen dos mapeadores, tres ventanas virtuales y tres paginadores; la lógica de lista queda en un composable y cada vista declara su fuente. La complejidad se concentra, no se muda.</p></div>
+    <div class="box"><h4>Leverage y riesgo</h4><p>Un cambio de orden, selección o scroll se hace una vez. El riesgo es medio: filas agrupadas, reordenación y selección por ids; hay que caracterizar la paridad visual antes de borrar la copia vieja.</p></div>
+  </div>
+  <p><strong>Para un agente.</strong> Un fichero explica cómo se comporta una lista; hoy hay que comparar tres vistas de ~3k líneas para saber si un cambio es global o local.</p>
+</article>
+
+<article class="card" id="c6">
+  <div class="card-top"><span class="num">6</span><h3><code>DownloadJob</code>: el estado vive en strings SQL</h3></div>
+  <p class="zone">Descargas · <code>download/orchestrator.rs</code>, <code>commands/{queue,library}.rs</code></p>
+  <div class="badges"><span class="badge high">Leverage alto</span><span class="badge risk">Riesgo alto</span><span class="badge">Parte P4</span></div>
+  <p><strong>Hoy.</strong> El estado del job no es un tipo: es una columna de texto consultada en muchos sitios. Cancelar, reintentar y recuperar al arrancar son políticas separadas, sin una máquina de estados que las ate.</p>
+  <ul>
+    <li>Predicados dispersos: <code>library.rs:448,587,1148,1711,2172</code> tratan <code>queued</code>/<code>downloading</code>; <code>queue.rs:2265-2269</code> cuenta cuatro estados.</li>
+    <li>Cancelar es un <code>UPDATE ... status='cancelled'</code> (<code>queue.rs:2392</code>); reintentar tiene dos presupuestos distintos (<code>queue.rs:2437</code> <code>retry_count &lt; 99</code>; <code>:2469</code> <code>&lt; 5</code>).</li>
+    <li>Al arrancar, <code>queue.rs:2546</code> resetea <em>todos</em> los <code>downloading</code> a <code>queued</code>: la recuperación es un barrido, no una transición.</li>
+    <li>Dos vocabularios de error: el adaptador devuelve mensajes y el orquestador los clasifica para decidir reintento (<code>orchestrator.rs:1536,1602,1641</code>); la cancelación se consulta solo en SongLink (<code>:2664-2688</code>).</li>
+  </ul>
+  <pre>enum JobState { Queued, Downloading, Complete, Failed(Reason), Cancelled }
+impl DownloadJob {
+    fn transition(self, event: JobEvent) -&gt; Result&lt;Self, IllegalTransition&gt;;
+    fn cancel(&amp;self) -&gt; CancelHandle;
+    fn retry_verdict(&amp;self, now: Instant) -&gt; RetryVerdict;
+}</pre>
+  <div class="grid">
+    <div class="box"><h4>Prueba de borrado</h4><p>Desaparecen los ~20 predicados de estado, los tres caminos de reintento y el barrido de arranque; las transiciones legales y sus presupuestos viven en un grafo. El token de cancelación sustituye el flag que solo mira una ruta.</p></div>
+    <div class="box"><h4>Leverage y riesgo</h4><p>Es la base para P5: el proveedor recibe un contexto estrecho y no decide estados. El riesgo es alto: los strings son contrato con la UI y hay filas legadas; hay que caracterizar cancelación, reintento y recuperación antes de mover nada.</p></div>
+  </div>
+  <p><strong>Para un agente.</strong> Un enum y un método <code>transition</code> responden qué puede pasar; hoy la respuesta está repartida entre SQL, un flag atómico y funciones de clasificación.</p>
+</article>
+
+<article class="card" id="c7">
+  <div class="card-top"><span class="num">7</span><h3><code>BridgeClient</code>: cada puente reinventa el contrato</h3></div>
+  <p class="zone">Python · <code>scripts/*.py</code>, <code>scripts/services/</code> y <code>cmd_utils.rs</code></p>
+  <div class="badges"><span class="badge high">Leverage alto</span><span class="badge med">Riesgo medio</span><span class="badge">Parte P3</span></div>
+  <p><strong>Hoy.</strong> Hay 17 puentes de nivel superior y 16 módulos de servicio. El lanzador genérico existe (<code>tools.rs:339</code>), pero autenticación y ajustes lanzan Python por su cuenta, y cada script repite <code>argparse</code>, captura de stdout, envelope JSON y códigos de salida.</p>
+  <ul>
+    <li>Rust: <code>run_bridge_command</code> en <code>commands/tools.rs:339</code> con 19 llamadas; <code>auth.rs:116-143</code> construye su propio comando; <code>settings.rs:972-975</code> hace lo mismo.</li>
+    <li>Python: <code>download_bridge.py</code> documenta el contrato completo (stdout = un JSON, salida incidental a stderr, códigos 0/1/2); <code>auth_bridge.py:42-57</code>, <code>lyrics_bridge.py:50</code> y <code>metadata_bridge.py:50</code> lo reimplementan.</li>
+    <li>Seis scripts insertan <code>SCRIPTS_DIR</code> en <code>sys.path</code>; el resto depende del cwd o de un <code>.env</code>. La resolución de herramientas ya vive en <code>cmd_utils.rs:21-331</code>; el protocolo no.</li>
+  </ul>
+  <pre>impl BridgeClient {
+    async fn call&lt;T: DeserializeOwned&gt;(&amp;self, script: &amp;str, args: &amp;[&amp;str],
+        stdin: Option&lt;&amp;[u8]&gt;, timeout: Duration) -&gt; Result&lt;T, BridgeError&gt;;
+}
+
+// Python: cada script es un handler, no un CLI
+from bridge_protocol import run
+def handle(args): ...
+if __name__ == "__main__":
+    run(handle)</pre>
+  <div class="grid">
+    <div class="box"><h4>Prueba de borrado</h4><p>Desaparecen el envelope repetido, los <code>argparse</code> propios y las tres formas de lanzar; queda un cliente Rust y un módulo Python. Cada puente solo declara su handler.</p></div>
+    <div class="box"><h4>Leverage y riesgo</h4><p>Habilita P4/P5 y hace que un error de protocolo se arregle una vez. El riesgo es medio: encoding en Windows, Python embebido/venv, secretos por stdin y mensajes de error que la UI ya consume; hay que mantener adaptadores para auth en streaming.</p></div>
+  </div>
+  <p><strong>Para un agente.</strong> Una interfaz <code>call</code> y un módulo <code>bridge_protocol</code>; añadir un puente deja de ser copiar 80 líneas de ceremonia.</p>
+</article>
+</main>
+
+<section id="siguiente">
+  <h2>Siguiente paso</h2>
+  <p>No hay ninguna parte aprobada todavía. El proceso es: elegir una ficha, grillarla hasta que la interfaz y el alcance estén cerrados, implementarla en un PR con caracterización, y solo entonces abrir la siguiente. La recomendación es empezar por <a href="#c2"><strong>P1 (EnrichmentEvent)</strong></a>: es la más barata, valida el método y mejora de inmediato la navegación de la UI; después <strong>P2 (SyncOutcome)</strong> y <strong>P3 (BridgeClient)</strong>, que desbloquean el trabajo de descargas.</p>
+  <p class="note">Estas fichas son hipótesis de diseño, no resultados. La evidencia está verificada contra el árbol, pero ninguna interfaz propuesta se ha compilado ni probado. El grilling puede rechazar una ficha o cambiar su alcance; eso también es un resultado.</p>
+</section>
+
+<footer>
+  <p>Método: puntos calientes de <code>git log v0.6.1..dev</code>, vocabulario de <code>GLOSSARY.md</code>, decisiones de <code>docs/adr/0001..0009</code> y tres exploraciones de solo lectura sobre el árbol. Evidencia comprobada con <code>rg</code>/<code>sed</code>; sin modificar el repositorio.</p>
+  <p>Syncify · informe de arquitectura · 2026-11-05</p>
+</footer>
+</div>
+</body>
+</html>
