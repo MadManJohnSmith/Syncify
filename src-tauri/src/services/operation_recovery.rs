@@ -1319,7 +1319,7 @@ fn is_valid_audio_file(path: &Path) -> bool {
     // fichero ENTERO con std::fs::read, bloqueando el runtime async un tiempo
     // proporcional al tamaño por cada fila reconciliada.
     use std::io::Read;
-    let Ok(mut file) = std::fs::File::open(path) else {
+    let Ok(file) = std::fs::File::open(path) else {
         return false;
     };
     let mut prefix = Vec::new();
