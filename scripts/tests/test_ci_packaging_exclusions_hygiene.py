@@ -10,7 +10,9 @@ Verifies:
    while legitimate production scripts are retained.
 3. Cryptographic SHA-256 integrity verification for all binary, archive, and script
    downloads in packaging workflows prior to execution or decompression.
-4. Enforcement of known static SHA-256 hashes for pinned dependencies (fpcalc, python-embed).
+4. Enforcement of known static SHA-256 hashes for the pinned dependencies still
+   inline in the workflows (python-embed); ffmpeg/fpcalc pins live in the
+   provider's table and are proven by test_dependency_manager_pins.py.
 5. Abort/cleanup mechanisms on integrity check failures to prevent executing untrusted binaries.
 """
 
@@ -183,9 +185,14 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
         )
 
     def test_pinned_dependencies_have_known_sha256_digests(self):
-        """Verify that pinned tools have their authentic SHA-256 digests in build-windows.yml."""
+        """Verify that pinned tools still in the workflow carry their digests.
+
+        ffmpeg/fpcalc moved to the provider's pin table (#241): the workflow
+        no longer carries their digests, and freezing them here again would
+        break the repin-is-one-commit guarantee. python-embed is still inline
+        until install-runtime (#242) absorbs it, so its digest stays checked.
+        """
         known_hashes = {
-            "fpcalc (Chromaprint 1.5.1 Windows)": "36b478e16aa69f757f376645db0d436073a42c0097b6bb2677109e7835b59bbc",
             "python-embed (Python 3.11.9 amd64)": "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b",
         }
 

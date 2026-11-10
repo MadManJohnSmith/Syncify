@@ -191,7 +191,9 @@ jobs:
       if: needs.changed.outputs.python == 'true'
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12'
+        # La misma 3.11.x que empaquetan los builds de release: lo que CI
+        # testea debe ser el runtime que se publica.
+        python-version: '3.11.9'
     - name: Instalar dependencias de bridges
       if: needs.changed.outputs.python == 'true'
       run: python -m pip install --disable-pip-version-check -r scripts/requirements.txt
