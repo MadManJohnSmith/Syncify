@@ -32,6 +32,15 @@ python3 -m unittest discover -s scripts/tests                             # 324 
 Todo corre sin red salvo los 13 tests `#[ignore]`, que necesitan servicios reales.
 No los des-ignores en CI ni añadas `--skip`.
 
+### Puerta previa al push
+
+`tools/prepush-check.sh` adelanta a la máquina local el veredicto de CI:
+fmt + clippy con las mismas banderas de arriba (~2 min en caliente);
+`--with-tests` añade la suite completa. Las exportaciones específicas de la
+máquina (p. ej. `PKG_CONFIG_PATH` para OpenSSL) van en el entorno o en el hook,
+no en el script. La receta del hook local opcional está en la cabecera del
+script: no versiones el hook, que no es reproducible entre clones.
+
 ### Verificación manual
 
 `tools/prueba-limpia.sh` arranca la app con `npm run dev` (`tauri dev`), fija
