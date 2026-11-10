@@ -35,7 +35,13 @@ fn reconciliation_lock() -> &'static tokio::sync::Mutex<()> {
 /// it re-queues interrupted rows the recovery has already settled them. The passes
 /// are idempotent, so the detached startup task running them again is a no-op.
 pub async fn reconcile_downloads_on_startup(db: &SqlitePool) {
+    let reconcile_start = std::time::Instant::now();
+    info!("S222: reconcile_downloads_on_startup adquiriendo lock de reconciliación");
     let _guard = reconciliation_lock().lock().await;
+    info!(
+        lock_wait_ms = reconcile_start.elapsed().as_millis() as u64,
+        "S222: lock de reconciliación adquirido"
+    );
 
     if let Err(e) = reconcile_startup_operations_locked(db, None).await {
         warn!(
@@ -55,6 +61,10 @@ pub async fn reconcile_downloads_on_startup(db: &SqlitePool) {
             e
         );
     }
+    info!(
+        elapsed_ms = reconcile_start.elapsed().as_millis() as u64,
+        "S222: reconcile_downloads_on_startup completado"
+    );
 }
 
 /// Record a new operation in the persistent journal.
@@ -899,7 +909,18 @@ async fn reconcile_startup_operations_locked(
                         let f_size = std::fs::metadata(&dest_path)
                             .map(|m| m.len() as i64)
                             .unwrap_or(0);
-                        let (fmt, depth, rate) = measured_audio_facts(&dest_path);
+                        // S222-fix: metaflac lee IO sync; fuera del hilo del
+                        // runtime async al pool de blocking.
+                        let facts_start = std::time::Instant::now();
+                        let facts_path = dest_path.clone();
+                        let (fmt, depth, rate) =
+                            tokio::task::spawn_blocking(move || measured_audio_facts(&facts_path))
+                                .await
+                                .unwrap_or((None, None, None));
+                        tracing::debug!(
+                            elapsed_ms = facts_start.elapsed().as_millis() as u64,
+                            "S222: measured_audio_facts (reconcile)"
+                        );
                         match dl_existing {
                             Some((dl_id, old_fp)) => {
                                 if old_fp != *dest {
@@ -1293,12 +1314,22 @@ fn is_valid_audio_file(path: &Path) -> bool {
     if !path.exists() {
         return false;
     }
-    if let Ok(bytes) = std::fs::read(path) {
-        if bytes.len() >= 4 {
-            return AudioByteValidator::is_flac_magic(&bytes)
-                || AudioByteValidator::is_mp3_magic(&bytes)
-                || AudioByteValidator::is_m4a_magic(&bytes);
-        }
+    // S222-fix: los checks de magic solo miran el arranque del fichero (FLAC 4,
+    // MP3 2-3, M4A `ftyp` en [4..8]); 16 bytes alcanzan. Antes se leía el
+    // fichero ENTERO con std::fs::read, bloqueando el runtime async un tiempo
+    // proporcional al tamaño por cada fila reconciliada.
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut prefix = Vec::new();
+    if file.take(16).read_to_end(&mut prefix).is_err() {
+        return false;
+    }
+    if prefix.len() >= 4 {
+        return AudioByteValidator::is_flac_magic(&prefix)
+            || AudioByteValidator::is_mp3_magic(&prefix)
+            || AudioByteValidator::is_m4a_magic(&prefix);
     }
     false
 }

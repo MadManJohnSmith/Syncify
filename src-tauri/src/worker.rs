@@ -731,8 +731,23 @@ impl DownloadWorker {
     /// Mark item as complete
     pub async fn mark_complete(&self, queue_id: i64, res: &crate::download::DownloadResult) {
         // Inspect physical audio file on disk to get ground-truth audio metrics
-        let path = std::path::Path::new(&res.file_path);
-        let phys_info = crate::download::audio_inspector::inspect_physical_audio_file(path);
+        // S222-fix: la inspección es IO sync (metaflac / parsers en proceso);
+        // corre en el pool de blocking para no ocupar un hilo del runtime async
+        // mientras la cola está en plena actividad.
+        let inspect_path = std::path::PathBuf::from(&res.file_path);
+        let inspect_start = std::time::Instant::now();
+        let phys_info = tokio::task::spawn_blocking(move || {
+            crate::download::audio_inspector::inspect_physical_audio_file(&inspect_path)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("S222: inspección física cancelada en mark_complete: {e}");
+            None
+        });
+        tracing::debug!(
+            elapsed_ms = inspect_start.elapsed().as_millis() as u64,
+            "S222: inspect_physical_audio_file (mark_complete)"
+        );
 
         let real_bit_depth = phys_info
             .as_ref()
