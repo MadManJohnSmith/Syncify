@@ -192,8 +192,11 @@ jobs:
       uses: actions/setup-python@v5
       with:
         # La misma 3.11.x que empaquetan los builds de release: lo que CI
-        # testea debe ser el runtime que se publica.
-        python-version: '3.11.9'
+        # testea debe ser el runtime que se publica. Flotante dentro de 3.11:
+        # el manifest de setup-python no trae el parche exacto 3.11.9 para el
+        # runner nuevo (Ubuntu 26.04); la verificación exacta del runtime
+        # publicado llega con #242 y sus smokes sobre el Python empaquetado.
+        python-version: '3.11'
     - name: Instalar dependencias de bridges
       if: needs.changed.outputs.python == 'true'
       run: python -m pip install --disable-pip-version-check -r scripts/requirements.txt
