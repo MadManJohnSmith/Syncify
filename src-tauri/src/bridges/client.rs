@@ -28,6 +28,12 @@ impl<'a> CallOptions<'a> {
 /// Presupuesto para escribir la carga de stdin antes de cerrar el pipe.
 pub const STDIN_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// S222/Q6: a partir de aquí una captura deja `warn` (que sobrevive a
+/// `RUST_LOG=info`, el nivel de `prueba-limpia.sh`). Una captura normal
+/// (arranque de Python + HTTP del proveedor) va por debajo del segundo; varios
+/// segundos por captura es la firma de tormenta que congelaba el runtime.
+const SLOW_CAPTURE_WARN_MS: u64 = 2_000;
+
 /// Salida cruda de un puente: para los call sites que interpretan su propio
 /// payload (auth tiene su envelope histórico con campos extra).
 #[derive(Debug)]
@@ -135,11 +141,19 @@ impl BridgeClient {
                 source: e,
             })?;
 
+        let capture_elapsed_ms = capture_start.elapsed().as_millis() as u64;
         tracing::debug!(
             script = %script,
-            elapsed_ms = capture_start.elapsed().as_millis() as u64,
+            elapsed_ms = capture_elapsed_ms,
             "S222: bridge capture completado"
         );
+        if capture_elapsed_ms >= SLOW_CAPTURE_WARN_MS {
+            tracing::warn!(
+                script = %script,
+                elapsed_ms = capture_elapsed_ms,
+                "S222: bridge capture lento"
+            );
+        }
         Ok(RawBridgeOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
