@@ -60,6 +60,25 @@ async fn status_of(pool: &SqlitePool, id: i64) -> String {
         .expect("row exists")
 }
 
+async fn insert_job_with_service(
+    pool: &SqlitePool,
+    track_id: i64,
+    status: &str,
+    service_name: &str,
+    position: i64,
+) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO download_queue (track_id, status, service_name, position) VALUES (?, ?, ?, ?) RETURNING id",
+    )
+    .bind(track_id)
+    .bind(status)
+    .bind(service_name)
+    .bind(position)
+    .fetch_one(pool)
+    .await
+    .expect("insert queue row with service")
+}
+
 fn worker(pool: &SqlitePool) -> DownloadWorker {
     DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1))
 }
@@ -216,6 +235,68 @@ async fn recover_interrupted_jobs_only_touches_downloading() {
     assert_eq!(status_of(&pool, downloading).await, "queued");
     assert_eq!(status_of(&pool, failed).await, "failed");
     assert_eq!(status_of(&pool, cancelled).await, "cancelled");
+}
+
+#[tokio::test]
+async fn recover_interrupted_jobs_staggers_the_initial_claim() {
+    let pool = migrated_pool().await;
+    let tid = seed_track(&pool, "stagger").await;
+    let mut ids = Vec::new();
+    for _ in 0..5 {
+        ids.push(insert_job(&pool, tid, "downloading", None, 0, None).await);
+    }
+
+    let w = worker(&pool);
+    let recovered = recover_interrupted_jobs(&pool).await;
+    assert_eq!(recovered, 5);
+    for id in &ids {
+        assert_eq!(status_of(&pool, *id).await, "queued");
+    }
+
+    // Q4: el puesto 0 es reclamable al momento; cada puesto siguiente espera
+    // su escalón. Un claim no debe saltarse la espera de la recuperación.
+    let first = w.claim_next_item().await.expect("rank 0 is due now");
+    assert_eq!(first.0, ids[0]);
+    assert!(
+        w.claim_next_item().await.is_none(),
+        "ranks 1..4 are still inside their stagger window"
+    );
+    for id in &ids[1..] {
+        assert_eq!(status_of(&pool, *id).await, "queued");
+    }
+}
+
+#[tokio::test]
+async fn transport_storm_opens_provider_breaker_and_claim_skips_it() {
+    let pool = migrated_pool().await;
+    let tid = seed_track(&pool, "storm").await;
+    let w = worker(&pool);
+
+    let qobuz_a = insert_job_with_service(&pool, tid, "queued", "qobuz", 1).await;
+    let tidal_b = insert_job_with_service(&pool, tid, "queued", "tidal", 2).await;
+
+    // Sin tormenta, el orden de la cola manda: gana la fila de qobuz.
+    let claimed = w.claim_next_item().await.expect("the queue is not empty");
+    assert_eq!(claimed.0, qobuz_a);
+    w.mark_failed(qobuz_a, "connection reset by peer").await;
+
+    // Racha de 5 fallos de transporte de qobuz (A + 4 filas más): abre el
+    // circuito del proveedor.
+    for _ in 0..4 {
+        let id = insert_job_with_service(&pool, tid, "downloading", "qobuz", 0).await;
+        w.mark_failed(id, "connection reset by peer").await;
+        assert_eq!(status_of(&pool, id).await, "failed");
+    }
+
+    // Con el circuito de qobuz abierto, el claim pasa a tidal y deja la fila
+    // de qobuz en su sitio hasta que venza la apertura.
+    let qobuz_d = insert_job_with_service(&pool, tid, "queued", "qobuz", 3).await;
+    let claimed = w
+        .claim_next_item()
+        .await
+        .expect("tidal survives the qobuz breaker");
+    assert_eq!(claimed.0, tidal_b);
+    assert_eq!(status_of(&pool, qobuz_d).await, "queued");
 }
 
 #[tokio::test]

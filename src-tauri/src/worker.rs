@@ -542,6 +542,7 @@ pub struct DownloadWorker {
     db: SqlitePool,
     state: DownloadWorkerState,
     app_handle: Option<tauri::AppHandle>,
+    breaker: crate::download::breaker::ProviderBreaker,
 }
 
 impl DownloadWorker {
@@ -550,6 +551,7 @@ impl DownloadWorker {
             db,
             state,
             app_handle: None,
+            breaker: Default::default(),
         }
     }
 
@@ -667,8 +669,23 @@ impl DownloadWorker {
     /// un `next_attempt_at` vencido (reintento automático programado). La misma
     /// condición se aplica al UPDATE para que una cancelación entre el SELECT y
     /// el claim gane la carrera.
+    ///
+    /// Q4: los proveedores con el circuito abierto (`ProviderBreaker`) no se
+    /// reclaman; el resto de la cola sigue avanzando mientras el proveedor
+    /// caído descansa. El breaker solo modula el ritmo: la fila abierta
+    /// conserva su propio `next_attempt_at`.
     pub async fn claim_next_item(&self) -> Option<(i64, i64, String, String)> {
-        let item: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+        let open = self.breaker.open_services(std::time::Instant::now());
+        let exclusion = if open.is_empty() {
+            String::new()
+        } else {
+            let placeholders = std::iter::repeat("?")
+                .take(open.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(r#" AND LOWER(COALESCE(dq.service_name, '')) NOT IN ({placeholders})"#)
+        };
+        let sql = format!(
             r#"
             SELECT dq.id, dq.track_id,
                    COALESCE(dq.target_title, t.title) as title,
@@ -681,13 +698,16 @@ impl DownloadWorker {
                OR (dq.status = 'failed'
                    AND dq.next_attempt_at IS NOT NULL
                    AND dq.next_attempt_at <= datetime('now'))
+            {exclusion}
             ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
             LIMIT 1
-            "#,
-        )
-        .fetch_optional(&self.db)
-        .await
-        .ok()?;
+            "#
+        );
+        let mut query = sqlx::query_as::<_, (i64, i64, Option<String>, Option<String>)>(&sql);
+        for service in &open {
+            query = query.bind(service);
+        }
+        let item = query.fetch_optional(&self.db).await.ok()?;
 
         if let Some((qid, tid, title, artist)) = item {
             let res = sqlx::query(
@@ -730,6 +750,11 @@ impl DownloadWorker {
 
     /// Mark item as complete
     pub async fn mark_complete(&self, queue_id: i64, res: &crate::download::DownloadResult) {
+        // Q4: una entrega es la respuesta definitiva del proveedor; cierra el
+        // circuito abierto (si lo estaba) del servicio que entregó la descarga.
+        let delivered_service = res.effective_service.as_deref().unwrap_or(&res.service);
+        self.breaker.record_success(delivered_service);
+
         // Inspect physical audio file on disk to get ground-truth audio metrics
         // S222-fix: la inspección es IO sync (metaflac / parsers en proceso);
         // corre en el pool de blocking para no ocupar un hilo del runtime async
@@ -1195,11 +1220,25 @@ impl DownloadWorker {
         );
         let failure_class = failure_class_for(&taxonomy);
         let attempts = u32::try_from(retry_count_prev.max(0)).unwrap_or(u32::MAX);
-        let next_attempt_at = match syncify_core_domain::job_state::JobState::Failed.retry_verdict(
-            &taxonomy,
-            attempts,
-            std::time::Instant::now(),
-        ) {
+        let now = std::time::Instant::now();
+        // Q4: señal para el breaker por proveedor. La fila guarda su propio
+        // reintento (con jitter por semilla para que la tormenta no vuelva
+        // sincronizada); el breaker añade la pausa compartida del proveedor.
+        if let Some(service) = service_name.as_deref() {
+            if self.breaker.record_failure(service, &taxonomy, now) {
+                tracing::warn!(
+                    service,
+                    "Q4: circuito abierto por tormenta de transporte; el claim saltará este proveedor"
+                );
+            }
+        }
+        let next_attempt_at = match syncify_core_domain::job_state::JobState::Failed
+            .retry_verdict_jittered(
+                &taxonomy,
+                attempts,
+                now,
+                u64::try_from(queue_id.max(0)).unwrap_or(u64::MAX),
+            ) {
             syncify_core_domain::job_state::RetryVerdict::RetryAt(at) => {
                 Some(sqlite_utc_timestamp(at))
             }

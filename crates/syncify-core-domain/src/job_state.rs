@@ -23,6 +23,12 @@ pub const BACKOFF_SCHEDULE: [Duration; 5] = [
     Duration::from_secs(4 * 60 * 60),
 ];
 
+/// Jitter del backoff, como fracción del escalón: el delay efectivo cae en
+/// `±BACKOFF_JITTER_FRACTION` del escalón. Sin jitter, todos los jobs que
+/// fallaron en la misma ventana reintentan exactamente a la hora programada y
+/// la tormenta vuelve sincronizada cada escalón.
+pub const BACKOFF_JITTER_FRACTION: f64 = 0.25;
+
 /// Estado de una fila de `download_queue`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -146,20 +152,67 @@ impl JobState {
         attempts: u32,
         now: Instant,
     ) -> RetryVerdict {
-        if *self != JobState::Failed || !class.is_retryable() || attempts >= MAX_AUTOMATIC_ATTEMPTS
-        {
+        if !self.has_retry(class, attempts) {
             return RetryVerdict::Permanent;
         }
-        let base = BACKOFF_SCHEDULE[(attempts as usize).min(BACKOFF_SCHEDULE.len() - 1)];
-        let delay = match class {
+        RetryVerdict::RetryAt(now + Self::effective_delay(class, backoff_step(attempts)))
+    }
+
+    /// Igual que [`Self::retry_verdict`], con jitter determinista por semilla.
+    ///
+    /// El escalón exacto sincroniza los reintentos: toda una tormenta de 5xx
+    /// vuelve a golpear a la vez cada escalón. La semilla — en la práctica el
+    /// id de la fila — reparte el delay en `±BACKOFF_JITTER_FRACTION` del
+    /// escalón de forma reproducible (misma semilla, mismo veredicto). El suelo
+    /// `retry_after` de `RateLimited` se aplica después del jitter, así que la
+    /// directiva del servidor nunca se acorta.
+    pub fn retry_verdict_jittered(
+        &self,
+        class: &ErrorTaxonomy,
+        attempts: u32,
+        now: Instant,
+        seed: u64,
+    ) -> RetryVerdict {
+        if !self.has_retry(class, attempts) {
+            return RetryVerdict::Permanent;
+        }
+        let jittered = backoff_step(attempts).mul_f64(1.0 + jitter_fraction(seed));
+        RetryVerdict::RetryAt(now + Self::effective_delay(class, jittered))
+    }
+
+    /// ¿Hay reintento para este estado con esta clase y este presupuesto?
+    fn has_retry(&self, class: &ErrorTaxonomy, attempts: u32) -> bool {
+        *self == JobState::Failed && class.is_retryable() && attempts < MAX_AUTOMATIC_ATTEMPTS
+    }
+
+    /// Escalón efectivo: la directiva `retry_after` del servidor es un suelo
+    /// y nunca se acorta por el jitter.
+    fn effective_delay(class: &ErrorTaxonomy, step: Duration) -> Duration {
+        match class {
             ErrorTaxonomy::RateLimited {
                 retry_after_sec: Some(secs),
                 ..
-            } => base.max(Duration::from_secs(*secs)),
-            _ => base,
-        };
-        RetryVerdict::RetryAt(now + delay)
+            } => step.max(Duration::from_secs(*secs)),
+            _ => step,
+        }
     }
+}
+
+/// Escalón del schedule para `attempts` intentos ya consumidos.
+fn backoff_step(attempts: u32) -> Duration {
+    BACKOFF_SCHEDULE[(attempts as usize).min(BACKOFF_SCHEDULE.len() - 1)]
+}
+
+/// Fracción de jitter en `[-FRACTION, FRACTION)` para una semilla, vía
+/// splitmix64. El hash hace que ids contiguos (1, 2, 3…) no produzcan
+/// fracciones contiguas: la manada se reparte aunque las filas sean vecinas.
+fn jitter_fraction(seed: u64) -> f64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    let unit = (z >> 11) as f64 / (1u64 << 53) as f64;
+    (unit * 2.0 - 1.0) * BACKOFF_JITTER_FRACTION
 }
 
 #[cfg(test)]
@@ -329,6 +382,100 @@ mod tests {
         match JobState::Failed.retry_verdict(&small, 0, now) {
             RetryVerdict::RetryAt(at) => assert_eq!((at - now).as_secs(), 60, "backoff wins"),
             RetryVerdict::Permanent => panic!("rate limited must retry"),
+        }
+    }
+
+    #[test]
+    fn jittered_verdict_stays_within_the_step_bounds() {
+        let now = tick();
+        for attempts in 0..BACKOFF_SCHEDULE.len() as u32 {
+            let step = BACKOFF_SCHEDULE[attempts as usize];
+            for seed in 0..500u64 {
+                match JobState::Failed.retry_verdict_jittered(&retryable(), attempts, now, seed) {
+                    RetryVerdict::RetryAt(at) => {
+                        let delay = at - now;
+                        let lower = step.mul_f64(1.0 - BACKOFF_JITTER_FRACTION);
+                        let upper = step.mul_f64(1.0 + BACKOFF_JITTER_FRACTION);
+                        assert!(
+                            delay >= lower - Duration::from_millis(1)
+                                && delay <= upper + Duration::from_millis(1),
+                            "seed {seed} attempt {attempts}: {delay:?} outside {lower:?}..{upper:?}"
+                        );
+                    }
+                    RetryVerdict::Permanent => panic!("attempt {attempts} must retry"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn jitter_is_deterministic_per_seed() {
+        let now = tick();
+        let a = JobState::Failed.retry_verdict_jittered(&retryable(), 0, now, 42);
+        let b = JobState::Failed.retry_verdict_jittered(&retryable(), 0, now, 42);
+        assert_eq!(a, b, "same seed must reproduce the same verdict");
+    }
+
+    #[test]
+    fn contiguous_seeds_spread_the_herd() {
+        let now = tick();
+        let delays: Vec<u64> = (1..=64u64)
+            .map(
+                |seed| match JobState::Failed.retry_verdict_jittered(&retryable(), 0, now, seed) {
+                    RetryVerdict::RetryAt(at) => (at - now).as_secs(),
+                    RetryVerdict::Permanent => panic!("must retry"),
+                },
+            )
+            .collect();
+        // El escalón de 60 s con ±25 % cubre 30 valores de segundo (45..75);
+        // sin jitter, los 64 vecinos caerían en UNO. El hash debe repartirlos
+        // por la ventana, no concentrarlos.
+        let distinct = delays
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        assert!(
+            distinct >= 15,
+            "64 vecinos produjeron solo {distinct} delays distintos (techo físico: 30): la manada no se reparte"
+        );
+    }
+
+    #[test]
+    fn rate_limit_floor_survives_the_jitter() {
+        let now = tick();
+        let big = ErrorTaxonomy::RateLimited {
+            provider: "qobuz".into(),
+            retry_after_sec: Some(9000),
+        };
+        for seed in 0..100u64 {
+            match JobState::Failed.retry_verdict_jittered(&big, 0, now, seed) {
+                RetryVerdict::RetryAt(at) => assert_eq!(
+                    (at - now).as_secs(),
+                    9000,
+                    "the server directive is a floor, jitter must not shorten it"
+                ),
+                RetryVerdict::Permanent => panic!("rate limited must retry"),
+            }
+        }
+    }
+
+    #[test]
+    fn permanent_verdicts_ignore_the_seed() {
+        let now = tick();
+        for seed in [0u64, 1, 12345] {
+            assert_eq!(
+                JobState::Failed.retry_verdict_jittered(&terminal(), 0, now, seed),
+                RetryVerdict::Permanent
+            );
+            assert_eq!(
+                JobState::Failed.retry_verdict_jittered(
+                    &retryable(),
+                    MAX_AUTOMATIC_ATTEMPTS,
+                    now,
+                    seed
+                ),
+                RetryVerdict::Permanent
+            );
         }
     }
 
