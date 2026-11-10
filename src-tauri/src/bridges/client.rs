@@ -74,6 +74,7 @@ impl BridgeClient {
             args,
             project_root
         );
+        let capture_start = std::time::Instant::now();
 
         let mut cmd =
             crate::cmd_utils::create_python_tokio_command(&python_cmd, Some(scripts_dir.as_path()));
@@ -134,6 +135,11 @@ impl BridgeClient {
                 source: e,
             })?;
 
+        tracing::debug!(
+            script = %script,
+            elapsed_ms = capture_start.elapsed().as_millis() as u64,
+            "S222: bridge capture completado"
+        );
         Ok(RawBridgeOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
