@@ -502,8 +502,6 @@ export async function getDownloadSettings(): Promise<DownloadSettings> {
     const generalKeys = [
         'dl_concurrent_downloads',
         'dl_retry_failed',
-        'dl_retry_count',
-        'dl_retry_delay',
         'dl_download_path',
         'download_dir',
         'dl_temp_dir',
