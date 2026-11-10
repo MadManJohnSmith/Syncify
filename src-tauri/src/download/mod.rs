@@ -3,6 +3,8 @@
 
 pub mod amazon;
 pub mod audio_inspector;
+// Q4 (#87): pausa compartida por proveedor para tormentas de transporte.
+pub mod breaker;
 pub mod http_client;
 pub mod identity;
 pub mod job;

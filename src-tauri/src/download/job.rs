@@ -12,6 +12,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::db::DbPool;
 
+/// Q4: espera añadida por puesto al reencolar jobs interrumpidos. El primer
+/// puesto (rank 0) queda reclamable al momento; cada siguiente espera 2 s más.
+const RECOVERY_STAGGER_STEP_SEC: i64 = 2;
+/// Techo del escalonado individual: a partir de aquí los puestos restantes
+/// comparten espera y el goteo corre a ritmo de reclamación del worker.
+const RECOVERY_STAGGER_MAX_SEC: i64 = 60;
+
 /// Tokens de cancelación de los jobs que el worker tiene reclamados.
 ///
 /// Una entrada existe solo mientras el job está en vuelo: el worker la crea al
@@ -78,12 +85,76 @@ impl Drop for CancellationGuard {
     }
 }
 
-/// Recuperación de arranque: toda fila `downloading` queda `queued`.
+/// Recuperación de arranque: toda fila `downloading` vuelve `queued`.
 ///
 /// Es la única transición `downloading → queued` del árbol (ADR-0022). No toca
 /// `failed` ni `cancelled`: un fallo programado conserva su `next_attempt_at` y
 /// una cancelación del usuario sigue cancelada.
+///
+/// Q4: la fila reencolada no queda reclamable de inmediato sino escalonada
+/// (`next_attempt_at` creciente por puesto). Tras un cierre o crash durante una
+/// tormenta, reencolar sin espera lanza la cola entera contra el proveedor en
+/// el primer segundo; el escalonado convierte esa andanada en un goteo y deja
+/// que el jitter y el breaker por proveedor se ocupen de los reintentos.
 pub async fn recover_interrupted_jobs(pool: &DbPool) -> u64 {
+    let ids: Vec<i64> = match sqlx::query_scalar(
+        "SELECT id FROM download_queue WHERE status = 'downloading' ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(ids) => ids,
+        Err(error) => {
+            tracing::warn!(%error, "No se pudieron listar las descargas interrumpidas");
+            return bulk_recover_interrupted_jobs(pool).await;
+        }
+    };
+    if ids.is_empty() {
+        return 0;
+    }
+
+    let mut tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(error) => {
+            tracing::warn!(%error, "No se pudo abrir la transacción de recuperación");
+            return bulk_recover_interrupted_jobs(pool).await;
+        }
+    };
+
+    let mut recovered = 0u64;
+    for (rank, id) in ids.iter().enumerate() {
+        let delay = ((rank as i64) * RECOVERY_STAGGER_STEP_SEC).min(RECOVERY_STAGGER_MAX_SEC);
+        match sqlx::query(
+            "UPDATE download_queue SET status = 'queued', started_at = NULL, next_attempt_at = datetime('now', ?) WHERE id = ? AND status = 'downloading'",
+        )
+        .bind(format!("+{delay} seconds"))
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        {
+            Ok(result) => recovered += result.rows_affected(),
+            Err(error) => {
+                tracing::warn!(%error, "No se pudieron reencolar las descargas interrumpidas");
+                // El drop del rollback devuelve las filas a `downloading`; el
+                // respaldo bulk rehace la transición sin escalonado.
+                return bulk_recover_interrupted_jobs(pool).await;
+            }
+        }
+    }
+
+    match tx.commit().await {
+        Ok(()) => recovered,
+        Err(error) => {
+            tracing::warn!(%error, "No se pudo confirmar la recuperación escalonada; fallback sin escalonado");
+            bulk_recover_interrupted_jobs(pool).await
+        }
+    }
+}
+
+/// Recuperación original, una sola UPDATE sin escalonado: el respaldo cuando el
+/// camino escalonado no puede completarse. Deja las filas reclamables de
+/// inmediato, el comportamiento que la puerta S222 caracterizó.
+async fn bulk_recover_interrupted_jobs(pool: &DbPool) -> u64 {
     match sqlx::query(
         "UPDATE download_queue SET status = 'queued', started_at = NULL WHERE status = 'downloading'",
     )
