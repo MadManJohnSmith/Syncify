@@ -26,8 +26,6 @@ describe('S121 P0 Path Consistency & Validation Suite', () => {
       temp_dir: 'D:\\LosslessMusic\\.staging',
       dl_concurrent_downloads: '3',
       dl_retry_failed: 'true',
-      dl_retry_count: '3',
-      dl_retry_delay: '5000',
     }
 
     folderDb = {
@@ -80,8 +78,6 @@ describe('S121 P0 Path Consistency & Validation Suite', () => {
           fallback_action: folderDb.fallback_action,
           max_concurrent_downloads: 3,
           retry_failed: true,
-          retry_count: 3,
-          retry_delay_ms: 5000,
           auto_download_favorites: false,
           organize_by_artist: true,
           organize_by_album: true,
@@ -230,6 +226,24 @@ describe('S121 P0 Path Consistency & Validation Suite', () => {
     const general = useGeneralSettings()
     await general.loadSettings()
     expect(general.settings.temp_dir).toBe(customStaging)
+  })
+
+  it('#261: the save -> get cycle no longer writes the retired dl_retry_count/dl_retry_delay keys', async () => {
+    const download = useDownloadSettings()
+    await download.loadSettings()
+
+    download.downloadPath.value = 'K:\\RetiredKeys\\Syncify'
+    await download.saveGeneralSettings()
+    await download.saveFolderSettings()
+
+    // Retired in #261: neither load nor save may (re)create these KV keys.
+    expect(backendDb.dl_retry_count).toBeUndefined()
+    expect(backendDb.dl_retry_delay).toBeUndefined()
+
+    const freshDownload = useDownloadSettings()
+    await freshDownload.loadSettings()
+    expect(backendDb.dl_retry_count).toBeUndefined()
+    expect(backendDb.dl_retry_delay).toBeUndefined()
   })
 
   it('guarantees that settings loading does not overwrite freshly saved paths with defaults', async () => {

@@ -1868,8 +1868,6 @@ pub struct DownloadSettingsDto {
     pub fallback_action: String,
     pub max_concurrent_downloads: i64,
     pub retry_failed: bool,
-    pub retry_count: i64,
-    pub retry_delay_ms: i64,
     pub auto_download_favorites: bool,
     pub organize_by_artist: bool,
     pub organize_by_album: bool,
@@ -1895,14 +1893,6 @@ pub async fn perform_get_download_settings(
     tracing::info!("get_download_settings called");
 
     let folder: FolderSettings = perform_get_folder_settings(&state.db).await?;
-    let sync: SyncSettings = sqlx::query_as::<_, SyncSettings>(
-        "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup,
-         background_download, max_concurrent_downloads, rate_limit_delay_ms,
-         pause_on_metered, pause_on_low_battery FROM sync_settings WHERE id = 1",
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
 
     let effective = resolve_effective_download_paths(&state.db).await?;
 
@@ -1926,14 +1916,6 @@ pub async fn perform_get_download_settings(
         .get("dl_retry_failed")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(true);
-    let retry_count = dl_map
-        .get("dl_retry_count")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3);
-    let retry_delay_ms = dl_map
-        .get("dl_retry_delay")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(sync.rate_limit_delay_ms as i64);
     let auto_download_favorites = dl_map
         .get("dl_auto_download_favorites")
         .map(|v| v == "true" || v == "1")
@@ -1981,8 +1963,6 @@ pub async fn perform_get_download_settings(
         fallback_action: folder.fallback_action,
         max_concurrent_downloads: max_concurrent,
         retry_failed,
-        retry_count,
-        retry_delay_ms,
         auto_download_favorites,
         organize_by_artist,
         organize_by_album,
@@ -2031,11 +2011,13 @@ pub async fn perform_save_download_settings(
     .map_err(|e| format!("Database error updating folder_settings: {}", e))?;
 
     // 2. Update sync_settings, advanced_settings, and worker state
+    // Note: rate_limit_delay_ms (the Sync-tab inter-download delay) is no longer
+    // touched here; it has its own surface via save_sync_settings. The retired
+    // dl_retry_count/dl_retry_delay keys are not written anymore (#261).
     sqlx::query(
-        "UPDATE sync_settings SET max_concurrent_downloads = ?, rate_limit_delay_ms = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1"
+        "UPDATE sync_settings SET max_concurrent_downloads = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1"
     )
     .bind(settings.max_concurrent_downloads as i32)
-    .bind(settings.retry_delay_ms as i32)
     .execute(&state.db)
     .await
     .map_err(|e| format!("Database error updating sync_settings: {}", e))?;
@@ -2066,14 +2048,6 @@ pub async fn perform_save_download_settings(
         (
             "dl_retry_failed".to_string(),
             settings.retry_failed.to_string(),
-        ),
-        (
-            "dl_retry_count".to_string(),
-            settings.retry_count.to_string(),
-        ),
-        (
-            "dl_retry_delay".to_string(),
-            settings.retry_delay_ms.to_string(),
         ),
         (
             "dl_create_artist_folder".to_string(),
@@ -2588,11 +2562,6 @@ pub async fn perform_save_effective_download_preferences(
         (
             "dl_retry_failed".to_string(),
             (prefs.max_retries > 0).to_string(),
-        ),
-        ("dl_retry_count".to_string(), prefs.max_retries.to_string()),
-        (
-            "dl_retry_delay".to_string(),
-            (prefs.retry_delay_seconds * 1000).to_string(),
         ),
         (
             "dl_auto_download_favorites".to_string(),

@@ -78,11 +78,11 @@ const audioProcessingSettings = reactive<AudioProcessingSettings>({
 })
 
 // General download KV settings (singleton)
+// Note: retryCount/retryDelay were retired (#261) — the worker's retry budget
+// and backoff come from domain constants, so these settings only lied.
 const generalSettings = reactive({
     concurrentDownloads: '3',
     retryFailed: '3',
-    retryCount: '3',
-    retryDelay: '5000',
     organizeByArtist: true,
     organizeByAlbum: true,
     autoDownloadFavorites: false,
@@ -240,9 +240,7 @@ async function loadFromBackendInner() {
                 downloadDto.free_space_bytes = effective.freeSpaceBytes
 
                 generalSettings.concurrentDownloads = effective.maxConcurrentDownloads.toString()
-                generalSettings.retryCount = effective.maxRetries.toString()
                 generalSettings.retryFailed = effective.maxRetries.toString()
-                generalSettings.retryDelay = (effective.retryDelaySeconds * 1000).toString()
                 generalSettings.autoDownloadFavorites = effective.autoDownloadFavorites
 
                 if (effective.downloadPath) {
@@ -266,8 +264,6 @@ async function loadFromBackendInner() {
         const generalKeys = [
             'dl_concurrent_downloads',
             'dl_retry_failed',
-            'dl_retry_count',
-            'dl_retry_delay',
             'dl_download_path',
             'download_dir',
             'dl_temp_dir',
@@ -305,8 +301,6 @@ async function loadFromBackendInner() {
         const kv = (generalKV || {}) as Record<string, string>
         if (kv.dl_concurrent_downloads) generalSettings.concurrentDownloads = kv.dl_concurrent_downloads
         if (kv.dl_retry_failed) generalSettings.retryFailed = kv.dl_retry_failed
-        if (kv.dl_retry_count) generalSettings.retryCount = kv.dl_retry_count
-        if (kv.dl_retry_delay) generalSettings.retryDelay = kv.dl_retry_delay
 
         const configuredDownloadPath = (kv.dl_download_path ?? kv.download_dir ?? '').trim()
         const resolvedLibraryRoot = unifiedDto?.library_root || configuredDownloadPath || folder?.base_folder || defaultDownloadPath || ''
@@ -347,8 +341,6 @@ async function saveGeneralSettings() {
         const mapped: Record<string, string> = {
             dl_concurrent_downloads: generalSettings.concurrentDownloads,
             dl_retry_failed: generalSettings.retryFailed,
-            dl_retry_count: generalSettings.retryCount,
-            dl_retry_delay: generalSettings.retryDelay,
             dl_download_path: root,
             download_dir: root,
             dl_create_artist_folder: generalSettings.organizeByArtist.toString(),

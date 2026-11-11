@@ -50,8 +50,6 @@ const mockQualityPreferences = [
 const mockKvSettings = {
   dl_concurrent_downloads: '3',
   dl_retry_failed: '3',
-  dl_retry_count: '3',
-  dl_retry_delay: '5000',
   dl_download_path: '/Users/tardis/Music/Syncify',
   dl_create_artist_folder: 'true',
   dl_create_album_folder: 'true',
@@ -164,6 +162,16 @@ describe('SettingsDownloads.vue', () => {
     await flushPromises()
 
     expect(wrapper.find('select[data-testid="global-max-quality-select"]').exists()).toBe(false)
+  })
+
+  it('#261: the retired dl_retry_count/dl_retry_delay settings are not rendered', async () => {
+    const wrapper = mount(SettingsDownloads)
+    await flushPromises()
+
+    // Retired in #261: the worker ignores these keys (fixed backoff from #260),
+    // so no retry count/delay control may come back in this view.
+    expect(wrapper.html()).not.toMatch(/retry[-_ ]?(count|delay)/i)
+    expect(wrapper.findAll('input[id*="retry"], select[id*="retry"], [data-testid*="retry"]').length).toBe(0)
   })
 
   it('does not write service presets merely by editing the target selects', async () => {

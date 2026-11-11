@@ -40,8 +40,6 @@ const sampleQuality = [
 const sampleKV = {
   dl_concurrent_downloads: '4',
   dl_retry_failed: '3',
-  dl_retry_count: '3',
-  dl_retry_delay: '5000',
   dl_download_path: '/Users/tardis/Music/Syncify',
   dl_create_artist_folder: 'true',
   dl_create_album_folder: 'true',
@@ -115,6 +113,18 @@ describe('useDownloadSettings composable', () => {
     expect(concurrentDownloads.value).toBe(5)
     expect(invoke).toHaveBeenCalledWith('set_max_concurrent_downloads', { max: 5 })
     expect(invoke).toHaveBeenCalledWith('save_setting', { key: 'dl_concurrent_downloads', value: '5' })
+  })
+
+  it('#261: saveGeneralSettings no longer writes the retired dl_retry_count/dl_retry_delay keys', async () => {
+    const { saveGeneralSettings } = useDownloadSettings()
+
+    await saveGeneralSettings()
+
+    const batchCall = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'save_settings_batch')
+    expect(batchCall).toBeDefined()
+    const settings = (batchCall?.[1] as { settings: Record<string, string> }).settings
+    expect(settings.dl_retry_count).toBeUndefined()
+    expect(settings.dl_retry_delay).toBeUndefined()
   })
 
   it('S203: allows up to 10 concurrent threads without clamping', async () => {
