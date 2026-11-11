@@ -234,7 +234,9 @@ class TestLinuxBundledPythonPackaging(unittest.TestCase):
     pineada, los requirements y el smoke canónico se prueban en las suites del
     módulo, no congelando aquí los pasos que ya no existen. Esta clase conserva
     lo que build-linux.yml sigue siendo dueño de hacer: inyectar el árbol
-    montado en el AppImage y el DEB, y verificar los imports en los tres
+    montado en el DEB (la cadena del AppImage vive desde #243 en
+    scripts/ci/package_appimage.sh y se prueba por comportamiento en
+    test_package_appimage.py), y verificar los imports en los tres
     artefactos finales antes de publicar.
     """
 
@@ -252,22 +254,6 @@ class TestLinuxBundledPythonPackaging(unittest.TestCase):
             docs = yaml.safe_load(f)
         self.assertIsInstance(docs, dict)
         self.assertIn("jobs", docs)
-
-    def test_appimage_injection_places_python_and_scripts_in_resources(self):
-        self.assertRegex(
-            self.content,
-            r"resources/scripts",
-            "el AppImage debe llevar resources/scripts (get_project_root lo usa de marcador)",
-        )
-        self.assertRegex(
-            self.content,
-            r"resources/python",
-            "el AppImage debe llevar resources/python (candidate 0 de get_python_executable)",
-        )
-        self.assertIn(
-            "appimagetool", self.content,
-            "la inyección debe reempaquetar con appimagetool conservando AppRun",
-        )
 
     def test_deb_injection_places_python_beside_up_scripts(self):
         self.assertIn("dpkg-deb -R", self.content)
