@@ -83,54 +83,20 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Descargar FFmpeg y Chromaprint (fpcalc) preempaquetados
+      # FFmpeg (con ffprobe como subproducto del archive) y Chromaprint fpcalc
+      # para el instalador NSIS (bundle.externalBin) y el portable (bin/).
+      # La URL y el SHA-256 de cada herramienta viven en la tabla única del
+      # proveedor (scripts/dependency_manager.py): un repin es un commit alli,
+      # no aqui. Descarga, verificacion y colocacion con triple es lo que hace
+      # el modulo; bin/ queda poblado para el paso del portable.
+      - name: Descargar y colocar binarios externos (ffmpeg, ffprobe, fpcalc)
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path "bin"
-
-          Write-Host ">>> Descargando FFmpeg (win64)..."
-          # Release fechada de BtbN pineada: "latest" es rolling y su hash cambia
-          # con cada build, lo que rompe la verificación SHA-256 (fallo del 2026-10-03).
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-05-12-48/ffmpeg-N-128433-gdb8537d8cc-win64-gpl.zip" -OutFile "ffmpeg.zip"
-          Write-Host ">>> Verificando integridad SHA-256 de FFmpeg..."
-          $ffmpegHash = (Get-FileHash -Path "ffmpeg.zip" -Algorithm SHA256).Hash.ToLower()
-          $knownFfmpegHashes = @(
-            "6e20a5744f9863883484af1cb5dca91e7e01d9af43b58d97fce7344e34393702"
-          )
-          if ($knownFfmpegHashes -notcontains $ffmpegHash) {
-            Remove-Item -Force "ffmpeg.zip"
-            throw "FFmpeg SHA256 verification failed: untrusted digest $ffmpegHash"
-          }
-          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg-temp"
-          $ffmpegExe = Get-ChildItem -Path "ffmpeg-temp" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
-          $ffprobeExe = Get-ChildItem -Path "ffmpeg-temp" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
-          if ($ffmpegExe) { Copy-Item $ffmpegExe.FullName -Destination "bin/ffmpeg.exe" -Force }
-          if ($ffprobeExe) { Copy-Item $ffprobeExe.FullName -Destination "bin/ffprobe.exe" -Force }
-          Remove-Item -Recurse -Force "ffmpeg-temp", "ffmpeg.zip"
-
-          Write-Host ">>> Descargando Chromaprint fpcalc..."
-          Invoke-WebRequest -Uri "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip" -OutFile "fpcalc.zip"
-          Write-Host ">>> Verificando integridad SHA-256 de fpcalc..."
-          $fpcalcHash = (Get-FileHash -Path "fpcalc.zip" -Algorithm SHA256).Hash.ToLower()
-          $expectedFpcalcHash = "36b478e16aa69f757f376645db0d436073a42c0097b6bb2677109e7835b59bbc"
-          if ($fpcalcHash -ne $expectedFpcalcHash) {
-            Remove-Item -Force "fpcalc.zip"
-            throw "fpcalc SHA256 mismatch! Esperado: $expectedFpcalcHash, Obtenido: $fpcalcHash"
-          }
-          Expand-Archive -Path "fpcalc.zip" -DestinationPath "fpcalc-temp"
-          $fpcalcExe = Get-ChildItem -Path "fpcalc-temp" -Recurse -Filter "fpcalc.exe" | Select-Object -First 1
-          if ($fpcalcExe) { Copy-Item $fpcalcExe.FullName -Destination "bin/fpcalc.exe" -Force }
-          Remove-Item -Recurse -Force "fpcalc-temp", "fpcalc.zip"
-
+          python scripts/dependency_manager.py place-external --triple x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "place-external fallo con codigo $LASTEXITCODE" }
           Write-Host ">>> Binarios en bin/:"
           Get-ChildItem -Path "bin"
-
-          # Copiar a src-tauri/binaries/ con sufijo de target triple: los exige
-          # bundle.externalBin (tauri.conf.json) para incluirlos en el instalador NSIS.
-          New-Item -ItemType Directory -Force -Path "src-tauri/binaries"
-          Copy-Item "bin/ffmpeg.exe"  "src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe" -Force
-          Copy-Item "bin/ffprobe.exe" "src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe" -Force
-          Copy-Item "bin/fpcalc.exe"  "src-tauri/binaries/fpcalc-x86_64-pc-windows-msvc.exe" -Force
+          Write-Host ">>> Binarios colocados en src-tauri/binaries/:"
           Get-ChildItem -Path "src-tauri/binaries"
 
       - name: Preparar entorno Python embebido autónomo

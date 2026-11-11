@@ -96,23 +96,14 @@ jobs:
           workspaces: src-tauri
 
       # Binarios estáticos que viajan dentro del DEB/AppImage (bundle.externalBin):
-      # el usuario no instala ni configura ffmpeg/fpcalc. Builds pineadas por
-      # fecha (BtbN) y por versión (Chromaprint), con SHA-256 verificado.
-      - name: Descargar binarios externos (ffmpeg, ffprobe, fpcalc)
+      # el usuario no instala ni configura ffmpeg/fpcalc. La URL y el SHA-256 de
+      # cada herramienta viven en la tabla única del proveedor
+      # (scripts/dependency_manager.py): un repin es un commit allí, no aquí.
+      # Descarga, verificación y colocación con triple es lo que hace el módulo.
+      - name: Descargar y colocar binarios externos (ffmpeg, ffprobe, fpcalc)
         run: |
-          mkdir -p src-tauri/binaries
-          curl -sL -o /tmp/ffmpeg-linux.tar.xz \
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-05-12-48/ffmpeg-N-128433-gdb8537d8cc-linux64-gpl.tar.xz"
-          echo "759cc1547e23f77f324944e034d27654c383ddbc1117823c08b025db1cf5fa14  /tmp/ffmpeg-linux.tar.xz" | sha256sum -c -
-          tar -xJf /tmp/ffmpeg-linux.tar.xz -C /tmp
-          cp /tmp/ffmpeg-N-128433-gdb8537d8cc-linux64-gpl/bin/ffmpeg  src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
-          cp /tmp/ffmpeg-N-128433-gdb8537d8cc-linux64-gpl/bin/ffprobe src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
-          curl -sL -o /tmp/fpcalc.tar.gz \
-            "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-linux-x86_64.tar.gz"
-          echo "4d7433a7f778e5946d7225230681cbcd634e153316ecac87c538c33ac32387a5  /tmp/fpcalc.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/fpcalc.tar.gz -C /tmp
-          cp /tmp/chromaprint-fpcalc-1.5.1-linux-x86_64/fpcalc src-tauri/binaries/fpcalc-x86_64-unknown-linux-gnu
-          chmod +x src-tauri/binaries/*
+          set -euo pipefail
+          python3 scripts/dependency_manager.py place-external --triple x86_64-unknown-linux-gnu
           ls -la src-tauri/binaries/
 
       - name: Preparar Python autónomo con dependencias

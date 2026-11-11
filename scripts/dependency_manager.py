@@ -6,6 +6,10 @@ Usage:
     python dependency_manager.py check  # Check all dependencies
     python dependency_manager.py install <tool>  # Install specific tool
     python dependency_manager.py install-all  # Install all missing
+    python dependency_manager.py place-external [--triple <triple>]
+        # Place ffmpeg/ffprobe/fpcalc (downloading them from the pin table
+        # if bin/ lacks them) as src-tauri/binaries/<tool>-<triple>[.exe],
+        # the exact names bundle.externalBin demands at build time.
 
 Tools supported:
     - ffmpeg: Audio/video processing
@@ -19,6 +23,7 @@ import json
 import sys
 import os
 import shutil
+import subprocess
 import zipfile
 import platform
 import hashlib
@@ -29,23 +34,50 @@ from typing import Optional, Dict, Any, Union, Sequence, Set
 # Bin directory for downloaded tools
 BIN_DIR = Path(__file__).parent.parent / "bin"
 
+# Placement directory of the bundled external binaries: the exact names
+# `bundle.externalBin` (tauri.conf.json) demands at build time, one file per
+# tool per Rust target triple (`<tool>-<triple>[.exe]`). The release builds
+# and local production builds both get them through `place-external`.
+BINARIES_DIR = Path(__file__).parent.parent / "src-tauri" / "binaries"
+
+# Tools that must exist next to the app executable. ffprobe carries no
+# download URL: it is a byproduct of the pinned ffmpeg archive above.
+BUNDLED_TOOLS = ("ffmpeg", "ffprobe", "fpcalc")
+
+# Target triples of the published platforms, mapped to the platform keys of
+# the pin table. Only these two triples get files placed; darwin is not a
+# released platform.
+SUPPORTED_TRIPLES = {
+    "linux": "x86_64-unknown-linux-gnu",
+    "windows": "x86_64-pc-windows-msvc",
+}
+
 
 from services.bridge_protocol import BridgeFailure, run  # noqa: E402
 
 
 # Tool download URLs.
 #
+# This table is THE single pin store of the repo (ticket #241): the release
+# builds (build-linux.yml / build-windows.yml) consume it through
+# `place-external`, so a repin is one commit here and nothing else.
+#
 # ffmpeg is pinned to a DATED BtbN release on Windows and Linux: "latest" is
 # rolling and its hash changes with every build, which would break the SHA-256
-# verification. The Linux entry used to be johnvansickle's rolling
-# `ffmpeg-release-amd64-static` tarball with a fixed hash — the same trap: the
-# next upstream rebuild would fail the integrity check forever. macOS is not a
-# released platform, so its evermeet entry stays as-is.
+# verification. The pins are the ones the release workflows carried when the
+# table absorbed them (BtbN autobuild 2026-11-05, N-128433). The Linux entry
+# used to be johnvansickle's rolling `ffmpeg-release-amd64-static` tarball with
+# a fixed hash — the same trap: the next upstream rebuild would fail the
+# integrity check forever. macOS is not a released platform, so its evermeet
+# entry stays as-is.
+#
+# ffprobe has NO row of its own: it travels inside the pinned ffmpeg archive
+# as a byproduct and is placed next to ffmpeg by `place_bundled_binaries`.
 TOOL_URLS = {
     "ffmpeg": {
-        "windows": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-01-13-06/ffmpeg-N-127054-g9d3f0f2c58-win64-gpl.zip",
+        "windows": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-05-12-48/ffmpeg-N-128433-gdb8537d8cc-win64-gpl.zip",
         "darwin": "https://evermeet.cx/ffmpeg/getrelease/zip",
-        "linux": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-01-13-06/ffmpeg-N-127054-g9d3f0f2c58-linux64-gpl.tar.xz",
+        "linux": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-05-12-48/ffmpeg-N-128433-gdb8537d8cc-linux64-gpl.tar.xz",
     },
     "fpcalc": {
         "windows": "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip",
@@ -55,14 +87,17 @@ TOOL_URLS = {
 }
 
 # Known authentic SHA-256 hashes for tool archives by platform
-# These prevent tampered or malicious downloads from executing (SEC-008 / TASK-92)
+# These prevent tampered or malicious downloads from executing (SEC-008 / TASK-92).
+# Same pins the release workflows verified inline before the table absorbed
+# them; changing a URL without its hash (or the reverse) breaks the repin-is-
+# one-commit guarantee and is caught by test_dependency_manager_pins.py.
 KNOWN_SHA256_HASHES: Dict[str, Dict[str, str]] = {
     "ffmpeg": {
-        "windows": "c1bb626bca84c6f471a04c13a90af68e406c631cf8f9ea2f1a141d4a71adcf52",
+        "windows": "6e20a5744f9863883484af1cb5dca91e7e01d9af43b58d97fce7344e34393702",
         "darwin": "8a8c9e549983409fe6604b9aa665648b7a5def9407fe814c39c8b2ea7f64a48f",
-        # Same pinned BtbN build used by build-linux.yml for the packaged
-        # externalBin copy (sha256 of the .tar.xz asset).
-        "linux": "4ec801cb048f2ec81ac3b06507fda2f6b48f70c46286e89a27cd89baa041605d",
+        # SHA-256 of the pinned BtbN .tar.xz asset that carries both ffmpeg
+        # and ffprobe for the packaged externalBin copies.
+        "linux": "759cc1547e23f77f324944e034d27654c383ddbc1117823c08b025db1cf5fa14",
     },
     "fpcalc": {
         "windows": "36b478e16aa69f757f376645db0d436073a42c0097b6bb2677109e7835b59bbc",
@@ -110,16 +145,22 @@ def get_platform():
         return "linux"
 
 
-def get_tool_path(tool: str) -> Optional[Path]:
-    """Get path to tool binary."""
+def find_bundled_tool(tool: str) -> Optional[Path]:
+    """Locate a tool inside the bin/ download tree only, never the system PATH.
+
+    Placement must copy the PINNED builds, so a system ffmpeg on the runner's
+    PATH must not shadow the downloaded one (the Ubuntu runner installs ffmpeg
+    via apt; copying it would silently downgrade the bundle to a
+    dynamically-linked build).
+    """
     plat = get_platform()
     exe = ".exe" if plat == "windows" else ""
-    
+
     # Check bin directory first
     bin_path = BIN_DIR / f"{tool}{exe}"
     if bin_path.exists():
         return bin_path
-    
+
     # Check in bin subdirectories (for extracted archives)
     for subdir in BIN_DIR.iterdir() if BIN_DIR.exists() else []:
         if subdir.is_dir():
@@ -130,12 +171,21 @@ def get_tool_path(tool: str) -> Optional[Path]:
             potential = subdir / "bin" / f"{tool}{exe}"
             if potential.exists():
                 return potential
-    
+
+    return None
+
+
+def get_tool_path(tool: str) -> Optional[Path]:
+    """Get path to tool binary (bin/ tree first, then system PATH)."""
+    bundled = find_bundled_tool(tool)
+    if bundled:
+        return bundled
+
     # Check system PATH
     system_path = shutil.which(tool)
     if system_path:
         return Path(system_path)
-    
+
     return None
 
 
@@ -243,19 +293,26 @@ def extract_archive(
         return False
 
 
-def install_tool(tool: str, expected_hash: Optional[str] = None) -> Dict[str, Any]:
-    """Download and install a tool with cryptographic SHA-256 verification."""
+def install_tool(
+    tool: str, expected_hash: Optional[str] = None, use_system_path: bool = True
+) -> Dict[str, Any]:
+    """Download and install a tool with cryptographic SHA-256 verification.
+
+    ``use_system_path=False`` skips the already-installed shortcut on the
+    system PATH: placement uses it so the pinned archive is always downloaded
+    and verified even when the runner ships the tool via its package manager.
+    """
     plat = get_platform()
-    
+
     if tool not in TOOL_URLS:
         return {"success": False, "error": f"Unknown tool: {tool}"}
-    
+
     url = TOOL_URLS[tool].get(plat)
     if not url:
         return {"success": False, "error": f"Tool {tool} not available for {plat}"}
-    
+
     # Check if already installed
-    existing = get_tool_path(tool)
+    existing = get_tool_path(tool) if use_system_path else find_bundled_tool(tool)
     if existing:
         return {
             "success": True,
@@ -298,7 +355,7 @@ def install_tool(tool: str, expected_hash: Optional[str] = None) -> Dict[str, An
     archive_path.unlink(missing_ok=True)
     
     # Verify installation
-    installed_path = get_tool_path(tool)
+    installed_path = get_tool_path(tool) if use_system_path else find_bundled_tool(tool)
     if installed_path:
         # Make executable on Unix
         if plat != "windows":
@@ -345,6 +402,114 @@ def install_all():
     raise BridgeFailure("Some tools failed to install")
 
 
+def resolve_triple(explicit: Optional[str] = None) -> str:
+    """Resolve the Rust target triple used for placement.
+
+    Order: explicit argument > TARGET_TRIPLE env > `rustc -vV` host triple >
+    the published triple of the running platform. Mirrors what the absorbed
+    prepare_bundled_binaries scripts did, so local flows keep working.
+    """
+    if explicit:
+        return explicit.strip()
+    env_triple = os.environ.get("TARGET_TRIPLE")
+    if env_triple:
+        return env_triple.strip()
+
+    rustc = shutil.which("rustc")
+    if rustc:
+        try:
+            proc = subprocess.run(
+                [rustc, "-vV"], capture_output=True, text=True, timeout=30
+            )
+            for line in proc.stdout.splitlines():
+                if line.startswith("host:"):
+                    return line.split(":", 1)[1].strip()
+        except Exception as e:
+            print(f"[DependencyManager] rustc -vV failed: {e}", file=sys.stderr)
+
+    return SUPPORTED_TRIPLES[get_platform()]
+
+
+def bundled_binary_name(tool: str, triple: str) -> str:
+    """The exact file name bundle.externalBin expects for tool+triple."""
+    ext = ".exe" if "windows" in triple else ""
+    return f"{tool}-{triple}{ext}"
+
+
+def _ensure_bundled_tool(tool: str) -> Dict[str, Any]:
+    """Make sure `tool` exists in the bin/ download tree (pin table only).
+
+    Never falls back to the system PATH: placement must ship the pinned
+    builds, not whatever the runner's package manager installed.
+    """
+    found = find_bundled_tool(tool)
+    if found:
+        return {"success": True, "already_installed": True, "path": str(found)}
+
+    if tool not in TOOL_URLS:
+        # ffprobe travels inside the ffmpeg archive: there is nothing to
+        # download on its own. Missing while ffmpeg is present means a stale
+        # or incomplete bin/ tree.
+        return {
+            "success": False,
+            "error": (
+                f"{tool} has no download URL (it is a byproduct of the ffmpeg "
+                "archive); reinstall ffmpeg so the archive is extracted again"
+            ),
+        }
+
+    result = install_tool(tool, use_system_path=False)
+    if not result.get("success"):
+        return result
+    found = find_bundled_tool(tool)
+    if not found:
+        return {"success": False, "error": f"{tool} not found after installation"}
+    return {**result, "path": str(found)}
+
+
+def place_bundled_binaries(triple: Optional[str] = None) -> Dict[str, Any]:
+    """Place the pinned external binaries with the triple-suffixed names.
+
+    Copies ffmpeg/ffprobe/fpcalc from the bin/ download tree into
+    src-tauri/binaries/<tool>-<triple>[.exe] — the exact file names
+    bundle.externalBin demands at build time. Tools missing from bin/ are
+    downloaded and SHA-256-verified against the pin table first. This
+    absorbs the download/copy steps the release workflows carried inline and
+    the prepare_bundled_binaries.sh/.ps1 scripts.
+    """
+    resolved = resolve_triple(triple)
+
+    placed = []
+    for tool in BUNDLED_TOOLS:
+        ensured = _ensure_bundled_tool(tool)
+        if not ensured.get("success"):
+            return {
+                "success": False,
+                "error": f"{tool}: {ensured.get('error', 'unavailable')}",
+                "triple": resolved,
+            }
+        source = Path(ensured["path"])
+        BINARIES_DIR.mkdir(parents=True, exist_ok=True)
+        dest = BINARIES_DIR / bundled_binary_name(tool, resolved)
+        shutil.copyfile(source, dest)
+        if get_platform() != "windows":
+            os.chmod(dest, 0o755)
+        placed.append(
+            {
+                "tool": tool,
+                "source": str(source),
+                "dest": str(dest),
+            }
+        )
+
+    return {
+        "success": True,
+        "triple": resolved,
+        "binaries_dir": str(BINARIES_DIR),
+        "placed": placed,
+    }
+
+
 def main():
     import argparse
     
@@ -366,7 +531,25 @@ def main():
     
     # Install-all command
     subparsers.add_parser("install-all", help="Install all missing tools")
-    
+
+    # Place-external command (bundled binaries for bundle.externalBin)
+    place_parser = subparsers.add_parser(
+        "place-external",
+        help=(
+            "Place ffmpeg/ffprobe/fpcalc in src-tauri/binaries/ with the "
+            "<tool>-<triple>[.exe] names bundle.externalBin demands"
+        ),
+    )
+    place_parser.add_argument(
+        "--triple",
+        dest="triple",
+        default=None,
+        help=(
+            "Rust target triple (default: TARGET_TRIPLE env, rustc host "
+            "triple, or the published triple of the running platform)"
+        ),
+    )
+
     return run(_handle, parse=parser.parse_args)
 
 
@@ -382,6 +565,11 @@ def _handle(args):
         return {"success": False}
     if args.command == "install-all":
         return install_all()
+    if args.command == "place-external":
+        result = place_bundled_binaries(triple=args.triple)
+        if result.get("success"):
+            return {"success": True, "data": result}
+        raise BridgeFailure(result.get("error", "external binary placement failed"))
     raise BridgeFailure("Unknown command: %s" % args.command)
 
 
