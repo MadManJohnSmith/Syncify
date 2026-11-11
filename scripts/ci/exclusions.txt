@@ -1,0 +1,30 @@
+# Fuente unica de exclusiones de packaging (TASK-95 / SEC-011) — #244.
+#
+# Una glob por linea. Formato neutro a proposito: lineas vacias y comentarios
+# se ignoran (semantica de `rsync --exclude-from`; PowerShell las puede
+# filtrar igual), patrones sin barra inicial que casan contra el nombre en
+# cualquier nivel del arbol. Cualquier exclusion nueva de seguridad se anade
+# AQUI, no en el adaptador: una fuente, dos adaptadores.
+#
+# Consumidores:
+#   - Linux: scripts/ci/assemble_raw.sh (rsync --exclude-from) para el
+#     tarball crudo. Desde que la fuente es comun, Linux gana `*.pyc`
+#     (antes su lista inline no lo tenia: SEC-011 detecto el desajuste).
+#   - Windows: el portable adoptara este mismo fichero en #247; hasta
+#     entonces la lista gemela vive inline en
+#     .github/workflows/build-windows.yml (la adopta el mismo ticket que
+#     borra esa copia, para que el desajuste no tenga ventana).
+#
+# Las 11 globs canonicas: no reordenar sin motivo; el orden es el del
+# congelador original y hace los diffs legibles.
+.*
+*.json
+*.cache
+*.pyc
+__pycache__
+*.log
+*.tmp
+*.db
+*.key
+credentials*
+.env*

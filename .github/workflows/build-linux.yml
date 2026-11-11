@@ -171,6 +171,7 @@ jobs:
 
       - name: Organizar artefactos de compilación Linux
         run: |
+          set -euo pipefail
           mkdir -p dist/linux
           # Copiar paquetes DEB
           if ls target/release/bundle/deb/*.deb 1> /dev/null 2>&1; then
@@ -188,51 +189,20 @@ jobs:
             echo "Aviso: No se encontraron paquetes AppImage generados."
           fi
 
-          # Copiar binario crudo y scripts con exclusión de secretos
-          mkdir -p dist/linux/Syncify-Linux-Raw
-          cp target/release/syncify-tauri dist/linux/Syncify-Linux-Raw/syncify
-          chmod +x dist/linux/Syncify-Linux-Raw/syncify
+          # Tarball crudo (#244): binario + bin/ + scripts/ + python/
+          # autónomo y el .tar.gz. Las exclusiones de seguridad SEC-011 no
+          # se escriben aquí: las consume scripts/ci/exclusions.txt, fuente
+          # única compartida con el portable de Windows (desde que la fuente
+          # es común, Linux gana *.pyc). Diagnósticos y tarball en el script.
+          bash scripts/ci/assemble_raw.sh
 
-          # Incluir los binarios externos junto al binario crudo (resolución en runtime)
-          mkdir -p dist/linux/Syncify-Linux-Raw/bin
-          cp src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu  dist/linux/Syncify-Linux-Raw/bin/ffmpeg
-          cp src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu dist/linux/Syncify-Linux-Raw/bin/ffprobe
-          cp src-tauri/binaries/fpcalc-x86_64-unknown-linux-gnu  dist/linux/Syncify-Linux-Raw/bin/fpcalc
-          chmod +x dist/linux/Syncify-Linux-Raw/bin/ffmpeg dist/linux/Syncify-Linux-Raw/bin/ffprobe dist/linux/Syncify-Linux-Raw/bin/fpcalc
-
-          # Copiar scripts excluyendo secretos y cachés temporales
-          mkdir -p dist/linux/Syncify-Linux-Raw/scripts
-          rsync -av --exclude='.*' --exclude='*.json' --exclude='*.cache' --exclude='__pycache__' \
-            --exclude='*.log' --exclude='*.tmp' --exclude='*.db' --exclude='*.key' \
-            --exclude='credentials*' --exclude='.env*' scripts/ dist/linux/Syncify-Linux-Raw/scripts/
-
-          # Python autónomo junto a scripts/: get_project_root encuentra
-          # Syncify-Linux-Raw (tiene scripts/) y get_python_executable
-          # devuelve <raíz>/python/bin/python.
-          cp -a bundle/python dist/linux/Syncify-Linux-Raw/python
-
-          # Inyectar el mismo Python en el DEB: los recursos de Tauri viven
-          # en usr/lib/<producto>/_up_/scripts, y el resolutor acepta un
-          # python/ hermano de ese scripts/.
+          # Inyección del Python montado en el DEB (#244): localiza
+          # _up_/scripts por el marcador, monta python/ hermano, regenera
+          # md5sums y reempaqueta con --root-owner-group. Todo en el script,
+          # probado contra fixtures con dpkg-deb falso.
           if ls dist/linux/*.deb 1> /dev/null 2>&1; then
             DEB=$(ls dist/linux/*.deb | head -1)
-            DEBWORK="$(mktemp -d)"
-            dpkg-deb -R "$DEB" "$DEBWORK/pkg"
-            UP_SCRIPTS="$(dirname "$(find "$DEBWORK/pkg" -path '*_up_/scripts/dependency_manager.py' | head -1)")"
-            if [ -z "$UP_SCRIPTS" ] || [ "$UP_SCRIPTS" = "/" ]; then
-              echo "::error::el DEB no contiene _up_/scripts; no se puede inyectar Python"
-              exit 1
-            fi
-            cp -a bundle/python "$UP_SCRIPTS/../python"
-            # Regenerar md5sums: dpkg no lo hace al reempaquetar.
-            (
-              cd "$DEBWORK/pkg"
-              find . -type f ! -path './DEBIAN/*' -printf '%P\0' | sort -z \
-                | xargs -0 -I{} md5sum "{}" > DEBIAN/md5sums
-            )
-            dpkg-deb --root-owner-group -b "$DEBWORK/pkg" "$DEB"
-            rm -rf "$DEBWORK"
-            echo "Python inyectado en $DEB"
+            bash scripts/ci/package_deb.sh "$DEB" bundle/python
           fi
 
           # ── Smoke test del Python empaquetado en cada artefacto final ──
@@ -271,10 +241,6 @@ jobs:
             echo "OK deb"
             rm -rf "$DEBWORK"
           fi
-
-          cd dist/linux && tar -czf Syncify-Linux-x86_64.tar.gz Syncify-Linux-Raw/
-          echo "Tarball crudo generado en dist/linux/Syncify-Linux-x86_64.tar.gz"
-          du -sh Syncify-Linux-Raw Syncify-Linux-x86_64.tar.gz *.AppImage 2>/dev/null || true
 
       # El abort de EGL ("Could not create default EGL display: EGL_BAD_PARAMETER.
       # Aborting...") mata el proceso entero y ningun paso anterior lo ve: el
