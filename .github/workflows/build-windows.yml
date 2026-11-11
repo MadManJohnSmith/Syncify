@@ -99,48 +99,22 @@ jobs:
           Write-Host ">>> Binarios colocados en src-tauri/binaries/:"
           Get-ChildItem -Path "src-tauri/binaries"
 
+      # Runtime Python autónomo para el instalador NSIS y el portable. El
+      # proveedor (scripts/dependency_manager.py) descarga el embed 3.11.9,
+      # verifica el SHA-256 de la tabla de pines, habilita `import site` en el
+      # ._pth, bootstrapa pip con get-pip.py pineado (su hash vive en la
+      # tabla: el repin de emergencia es un commit allí), instala
+      # requirements y corre el smoke canónico de 10 imports (gana aiohttp,
+      # yaml, musicbrainzngs y m3u8 frente a los 6 que se verificaban antes).
+      # Produce python/, el árbol que consume el overlay de Tauri
+      # (../python/**) y los pasos de packaging de abajo.
       - name: Preparar entorno Python embebido autónomo
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path "python"
-
-          Write-Host ">>> Descargando Python 3.11 embebido para Windows..."
-          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip" -OutFile "python-embed.zip"
-          Write-Host ">>> Verificando integridad SHA-256 de Python embebido..."
-          $pythonHash = (Get-FileHash -Path "python-embed.zip" -Algorithm SHA256).Hash.ToLower()
-          $expectedPythonHash = "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
-          if ($pythonHash -ne $expectedPythonHash) {
-            Remove-Item -Force "python-embed.zip"
-            throw "python-embed SHA256 mismatch! Esperado: $expectedPythonHash, Obtenido: $pythonHash"
-          }
-          Expand-Archive -Path "python-embed.zip" -DestinationPath "python" -Force
-          Remove-Item -Force "python-embed.zip"
-
-          # Habilitar site-packages descomentando "import site" en python311._pth
-          $pthFile = Get-ChildItem -Path "python" -Filter "*._pth" | Select-Object -First 1
-          if ($pthFile) {
-            (Get-Content $pthFile.FullName) -replace '#import site', 'import site' | Set-Content $pthFile.FullName
-          }
-
-          Write-Host ">>> Instalando pip en entorno embebido..."
-          Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "python/get-pip.py"
-          Write-Host ">>> Verificando integridad SHA-256 de get-pip.py..."
-          $pipHash = (Get-FileHash -Path "python/get-pip.py" -Algorithm SHA256).Hash.ToLower()
-          $knownPipHashes = @(
-            "356e0d0de21cdc348c3394084d90939b85e4246c4d14c76aee6ca4f46646ea98"
-          )
-          if ($knownPipHashes -notcontains $pipHash) {
-            Remove-Item -Force "python/get-pip.py"
-            throw "get-pip.py SHA256 verification failed: untrusted digest $pipHash"
-          }
-          & "python/python.exe" "python/get-pip.py" --no-warn-script-location
-          Remove-Item -Force "python/get-pip.py"
-
-          Write-Host ">>> Instalando dependencias de scripts/requirements.txt..."
-          & "python/python.exe" -m pip install -r "scripts/requirements.txt" --no-warn-script-location
-
-          Write-Host ">>> Verificando modulos criticos en Python embebido..."
-          & "python/python.exe" -c "import spotipy, acoustid, dotenv, requests, mutagen, yarl; print('TODOS LOS MODULOS PYTHON ESTAN LISTOS!')"
+          python scripts/dependency_manager.py install-runtime
+          if ($LASTEXITCODE -ne 0) { throw "install-runtime fallo con codigo $LASTEXITCODE" }
+          Write-Host ">>> Runtime Python listo en python/:"
+          Get-ChildItem -Path "python" | Select-Object -First 12
 
       - name: Instalar dependencias de UI
         working-directory: ui

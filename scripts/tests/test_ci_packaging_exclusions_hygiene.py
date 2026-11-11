@@ -8,11 +8,13 @@ Verifies:
    being packaged into portable releases.
 2. Simulated pattern matching ensuring all known sensitive file patterns are excluded
    while legitimate production scripts are retained.
-3. Cryptographic SHA-256 integrity verification for all binary, archive, and script
-   downloads in packaging workflows prior to execution or decompression.
-4. Enforcement of known static SHA-256 hashes for the pinned dependencies still
-   inline in the workflows (python-embed); ffmpeg/fpcalc pins live in the
-   provider's table and are proven by test_dependency_manager_pins.py.
+3. Cryptographic SHA-256 integrity verification for the downloads that remain
+   inline in the packaging workflows (the optional WebView2 bootstrapper).
+4. Since #241/#242, ALL pinned dependencies (ffmpeg/fpcalc/ffprobe, CPython,
+   get-pip.py) live in the provider's single pin table
+   (scripts/dependency_manager.py) and are proven by
+   test_dependency_manager_pins.py / test_dependency_manager_runtime.py; the
+   workflows carry no digests of their own anymore.
 5. Abort/cleanup mechanisms on integrity check failures to prevent executing untrusted binaries.
 """
 
@@ -163,7 +165,13 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
     # ═══════════════════════════════════════════════════════
 
     def test_all_invoke_webrequests_have_sha256_verification(self):
-        """Verify that all external downloads in build-windows.yml perform SHA-256 verification."""
+        """Verify that every download left inline in build-windows.yml performs SHA-256 verification.
+
+        The pinned runtime/tool downloads moved into the provider module
+        (#241/#242), where the hash-before-extract rule is enforced and proven
+        by the module suites. What stays inline is the OPTIONAL WebView2
+        bootstrapper, and it must keep its digest check.
+        """
         # Find all Invoke-WebRequest calls with -OutFile
         download_matches = re.findall(
             r'Invoke-WebRequest[^\n]+-OutFile\s+["\']?([^"\'\n]+)["\']?',
@@ -184,56 +192,20 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
             f"and SHA256 checks ({len(hash_check_matches)})"
         )
 
-    def test_pinned_dependencies_have_known_sha256_digests(self):
-        """Verify that pinned tools still in the workflow carry their digests.
-
-        ffmpeg/fpcalc moved to the provider's pin table (#241): the workflow
-        no longer carries their digests, and freezing them here again would
-        break the repin-is-one-commit guarantee. python-embed is still inline
-        until install-runtime (#242) absorbs it, so its digest stays checked.
-        """
-        known_hashes = {
-            "python-embed (Python 3.11.9 amd64)": "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b",
-        }
-
-        for tool_name, digest in known_hashes.items():
-            self.assertIn(
-                digest,
-                self.build_windows_content.lower(),
-                f"Known authentic SHA-256 digest for {tool_name} missing in build-windows.yml"
-            )
-
-    def test_archive_expansion_and_execution_guarded_by_hash_check(self):
-        """Verify that Expand-Archive and script executions occur strictly AFTER hash verification."""
-        # Split workflow by steps
-        steps = self.build_windows_content.split("- name:")
-
-        for step in steps:
-            if "Expand-Archive" in step and "Invoke-WebRequest" in step:
-                download_idx = step.find("Invoke-WebRequest")
-                hash_idx = step.find("Get-FileHash")
-                expand_idx = step.find("Expand-Archive")
-
-                self.assertNotEqual(hash_idx, -1, f"Step with download & Expand-Archive missing Get-FileHash:\n{step[:200]}")
-                self.assertLess(download_idx, hash_idx, "Download must occur before Get-FileHash")
-                self.assertLess(hash_idx, expand_idx, "Get-FileHash must occur before Expand-Archive")
-
-            if "get-pip.py" in step and "Invoke-WebRequest" in step:
-                download_idx = step.find("Invoke-WebRequest")
-                hash_idx = step.find("Get-FileHash")
-                exec_idx = step.find("& \"python/python.exe\" \"python/get-pip.py\"")
-
-                self.assertNotEqual(hash_idx, -1, "get-pip.py missing Get-FileHash check")
-                self.assertLess(download_idx, hash_idx, "get-pip download must occur before Get-FileHash")
-                self.assertLess(hash_idx, exec_idx, "Get-FileHash must occur before executing get-pip.py")
-
     def test_integrity_check_failure_aborts_or_purges(self):
-        """Verify that checksum mismatch causes an abort (throw) and purges the unverified file."""
+        """Verify that checksum mismatch causes an abort (throw) and purges the unverified file.
+
+        One inline download remains (the optional WebView2 installer) and it
+        must keep its throw-on-mismatch. The pinned downloads abort inside the
+        provider module — mismatch means no extraction — and the workflow
+        throws on its nonzero exit code; that behavior is frozen by
+        test_dependency_manager_security.py and the runtime suite, not here.
+        """
         # Checks should contain throw statements on failure
         throw_matches = re.findall(r'throw\s+["\'].*?SHA256.*?["\']', self.build_windows_content, re.IGNORECASE)
         self.assertGreaterEqual(
             len(throw_matches),
-            3,
+            1,
             "Workflow must contain throw statements on SHA256 integrity verification failures"
         )
 
@@ -257,8 +229,13 @@ class TestLinuxBundledPythonPackaging(unittest.TestCase):
     Cada artefacto Linux debe llevar un CPython autónomo con las dependencias
     de scripts/requirements.txt ya instaladas, para que la app funcione tras
     instalar sin pedirle Python, pip ni debugging al usuario (mirror del
-    python-embed de Windows). Quitar el bundle, el hash pineado o el smoke
-    test rompe esa garantía y debe fallar la CI aquí primero.
+    runtime de Windows). Desde #242 el MONTAJE del runtime vive en el
+    proveedor (install-runtime en scripts/dependency_manager.py): la descarga
+    pineada, los requirements y el smoke canónico se prueban en las suites del
+    módulo, no congelando aquí los pasos que ya no existen. Esta clase conserva
+    lo que build-linux.yml sigue siendo dueño de hacer: inyectar el árbol
+    montado en el AppImage y el DEB, y verificar los imports en los tres
+    artefactos finales antes de publicar.
     """
 
     @classmethod
@@ -275,31 +252,6 @@ class TestLinuxBundledPythonPackaging(unittest.TestCase):
             docs = yaml.safe_load(f)
         self.assertIsInstance(docs, dict)
         self.assertIn("jobs", docs)
-
-    def test_python_bundle_step_downloads_pinned_standalone_cpython(self):
-        self.assertIn("python-build-standalone", self.content)
-        self.assertIn(
-            "cpython-3.11.9",
-            self.content,
-            "el bundle debe pinear la misma 3.11.x que el python-embed de Windows",
-        )
-        # Hash verificado contra el sidecar .sha256 oficial de la release.
-        self.assertIn(
-            "78b1c16a9fd032997ba92a60f46a64f795cd18ff335659dfdf6096df277b24d5",
-            self.content.lower(),
-            "el tarball del CPython autónomo debe verificarse con su SHA-256",
-        )
-
-    def test_python_bundle_installs_requirements_and_verifies_imports(self):
-        self.assertIn(
-            "requirements.txt", self.content,
-            "las dependencias de los puentes deben instalarse en el bundle",
-        )
-        self.assertRegex(
-            self.content,
-            r"import spotipy, acoustid[^\n]*mutagen[^\n]*yarl",
-            "el bundle debe verificar los módulos críticos antes de empaquetarse",
-        )
 
     def test_appimage_injection_places_python_and_scripts_in_resources(self):
         self.assertRegex(
@@ -337,17 +289,12 @@ class TestLinuxBundledPythonPackaging(unittest.TestCase):
         self.assertIn("OK appimage", self.content)
         self.assertIn("OK deb", self.content)
         # El smoke del AppImage replica el entorno de AppRun: si un
-        # LD_LIBRARY_PATH del AppDir sombreara el libpython del bundle,
-        # este es el sitio donde se detecta.
+        # LD_LIBRARY_PATH del AppDir sombreadera el libpython del bundle,
+        # este es el sitio donde se detecta. La lista de imports y la
+        # limpieza de PYTHONHOME/PYTHONPATH las aplica el módulo
+        # (smoke-imports); aquí solo se elige el intérprete por artefacto.
         self.assertIn("LD_LIBRARY_PATH", self.content)
-
-    def test_smoke_env_clears_python_env_vars(self):
-        # AppRun exporta PYTHONHOME (ver main.rs); el smoke test debe correr
-        # sin él para reproducir lo que ve el binario tras el clear de main.rs.
-        self.assertIn(
-            "-u PYTHONHOME", self.content,
-            "el smoke test debe limpiar PYTHONHOME/PYTHONPATH como hace la app",
-        )
+        self.assertIn("smoke-imports", self.content)
 
     def test_tauri_resources_include_services_package(self):
         conf = (self.build_linux_path.parent.parent.parent / "src-tauri/tauri.conf.json"
