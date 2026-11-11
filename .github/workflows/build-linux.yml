@@ -106,22 +106,19 @@ jobs:
           python3 scripts/dependency_manager.py place-external --triple x86_64-unknown-linux-gnu
           ls -la src-tauri/binaries/
 
+      # Mirror de Windows (runtime autónomo + requirements + smoke): un CPython
+      # reubicable con las dependencias ya instaladas viaja dentro de cada
+      # artefacto Linux, de modo que la app funcione tras instalar sin pedirle
+      # Python ni pip al usuario. Descarga (python-build-standalone 20240415),
+      # verificación SHA-256, requirements y smoke canónico de 10 imports viven
+      # en la tabla de pines y el módulo del proveedor
+      # (scripts/dependency_manager.py): un repin es un commit allí, no aquí.
+      # Produce bundle/python, el árbol que consumen la inyección en el
+      # AppImage/DEB, el tarball crudo y los smokes del final.
       - name: Preparar Python autónomo con dependencias
         run: |
           set -euo pipefail
-          # Mirror de Windows (python-embed + get-pip + requirements.txt): un
-          # CPython autónomo y reubicable con las dependencias ya instaladas
-          # viaja dentro de cada artefacto Linux, de modo que la app funcione
-          # tras instalar sin pedirle Python ni pip al usuario.
-          curl -sL -o /tmp/cpython.tar.gz \
-            "https://github.com/astral-sh/python-build-standalone/releases/download/20240415/cpython-3.11.9%2B20240415-x86_64-unknown-linux-gnu-install_only.tar.gz"
-          echo "78b1c16a9fd032997ba92a60f46a64f795cd18ff335659dfdf6096df277b24d5  /tmp/cpython.tar.gz" | sha256sum -c -
-          mkdir -p bundle
-          tar -xzf /tmp/cpython.tar.gz -C bundle
-          PY=bundle/python/bin/python3
-          "$PY" -m pip install --no-input --disable-pip-version-check \
-            -r scripts/requirements.txt
-          "$PY" -c "import spotipy, acoustid, dotenv, requests, mutagen, yarl, aiohttp, yaml, musicbrainzngs, m3u8; print('Python bundle listo')"
+          python3 scripts/dependency_manager.py install-runtime
           du -sh bundle/python
 
       - name: Instalar dependencias de UI
@@ -410,20 +407,24 @@ jobs:
 
           # ── Smoke test del Python empaquetado en cada artefacto final ──
           # Un paquete cuyo Python no importe los módulos críticos se
-          # publica roto; esto lo detecta antes de subir nada.
-          SMOKE_IMPORTS="import spotipy, acoustid, dotenv, requests, mutagen, yarl, aiohttp, yaml, musicbrainzngs, m3u8"
-          SMOKE_ENV="env -u PYTHONHOME -u PYTHONPATH -u PYTHONDONTWRITEBYTECODE"
-
+          # publica roto; esto lo detecta antes de subir nada. La lista
+          # canónica de imports y la limpieza de PYTHONHOME/PYTHONPATH viven
+          # en el módulo (smoke-imports); aquí solo se elige qué intérprete
+          # se verifica en cada artefacto.
           echo "== Smoke python: tarball crudo =="
-          $SMOKE_ENV timeout 120 dist/linux/Syncify-Linux-Raw/python/bin/python3 -c "$SMOKE_IMPORTS; print('OK tarball')"
+          python3 scripts/dependency_manager.py smoke-imports \
+            --python dist/linux/Syncify-Linux-Raw/python/bin/python3
+          echo "OK tarball"
 
           echo "== Smoke python: AppImage (con el entorno que deja AppRun) =="
           AI=$(ls dist/linux/*.AppImage | head -1)
           AI_ABS="$PWD/$AI"
           AIWORK="$(mktemp -d)"
           ( cd "$AIWORK" && "$AI_ABS" --appimage-extract >/dev/null )
-          $SMOKE_ENV LD_LIBRARY_PATH="$AIWORK/squashfs-root/usr/lib" \
-            timeout 120 "$AIWORK/squashfs-root/resources/python/bin/python" -c "$SMOKE_IMPORTS; print('OK appimage')"
+          LD_LIBRARY_PATH="$AIWORK/squashfs-root/usr/lib" \
+            python3 scripts/dependency_manager.py smoke-imports \
+            --python "$AIWORK/squashfs-root/resources/python/bin/python"
+          echo "OK appimage"
           rm -rf "$AIWORK"
 
           if ls dist/linux/*.deb 1> /dev/null 2>&1; then
@@ -436,7 +437,8 @@ jobs:
               echo "::error::el DEB final no contiene _up_/python/bin/python"
               exit 1
             fi
-            $SMOKE_ENV timeout 120 "$PYDEB" -c "$SMOKE_IMPORTS; print('OK deb')"
+            python3 scripts/dependency_manager.py smoke-imports --python "$PYDEB"
+            echo "OK deb"
             rm -rf "$DEBWORK"
           fi
 

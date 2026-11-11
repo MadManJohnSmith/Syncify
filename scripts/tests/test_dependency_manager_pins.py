@@ -2,11 +2,12 @@
 """Pin-table integrity and bundled-binary placement for dependency_manager.
 
 The table (TOOL_URLS + KNOWN_SHA256_HASHES) is the single pin store of the
-repo (#241): the release builds consume it through `place-external`, so a
-repin must be one commit here. These tests PROVE the table instead of
-freezing workflow YAML: every URL carries a hash, rolling URLs are rejected,
-and placement produces exactly the `<tool>-<triple>[.exe]` names that
-`bundle.externalBin` demands at build time.
+repo (#241/#242): the release builds consume it through `place-external` and
+`install-runtime`, so a repin must be one commit here. These tests PROVE the
+table instead of freezing workflow YAML: every URL carries a hash, rolling
+URLs are rejected, the runtime rows pin the exact CPython builds both
+platforms ship, and placement produces exactly the `<tool>-<triple>[.exe]`
+names that `bundle.externalBin` demands at build time.
 
 Behavior tests use fakes/fixtures (no network): a fake `download_file` and a
 patched table entry simulate the pinned download, same pattern as the
@@ -65,14 +66,22 @@ class PinTableIntegrityTest(unittest.TestCase):
             )
 
     def test_supported_platforms_have_pinned_hashes(self):
+        # The two published platforms must carry a digest for every row that
+        # declares them; get-pip only declares windows (the standalone tarball
+        # ships pip already), so the rule is per declared row.
         for tool, per_platform in dependency_manager.KNOWN_SHA256_HASHES.items():
-            for platform in ("windows", "linux"):
-                digest = per_platform.get(platform, "")
+            for platform, digest in per_platform.items():
                 self.assertRegex(
                     digest,
                     SHA256_RE,
                     f"{tool}/{platform} must carry a pinned sha256 (got {digest!r})",
                 )
+        for platform in ("windows", "linux"):
+            self.assertIn(
+                platform,
+                dependency_manager.KNOWN_SHA256_HASHES["cpython"],
+                f"the shipped runtime must be pinned on {platform}",
+            )
 
     def test_darwin_rows_stay_declared(self):
         # macOS is not a released platform, but the table keeps its rows so
@@ -108,6 +117,76 @@ class PinTableIntegrityTest(unittest.TestCase):
         self.assertIn("ffprobe", dependency_manager.BUNDLED_TOOLS)
         # check_all surfaces it alongside the rest, as before.
         self.assertIn("ffprobe", dependency_manager.check_all()["tools"])
+
+
+class RuntimePinRowsTest(unittest.TestCase):
+    """The cpython/get-pip rows: same 3.11.x runtime on both platforms."""
+
+    def test_linux_pins_python_build_standalone_20240415(self):
+        url = dependency_manager.TOOL_URLS["cpython"]["linux"]
+        self.assertIn("python-build-standalone", url)
+        self.assertIn("/20240415/", url, "the standalone release tag must be explicit")
+        self.assertIn("cpython-3.11.9", url, "the runtime patch must match the embed")
+        self.assertIn("install_only", url, "the relocatable install_only build")
+        self.assertNotIn("/latest/", url)
+
+    def test_windows_pins_the_python_org_embed(self):
+        url = dependency_manager.TOOL_URLS["cpython"]["windows"]
+        self.assertIn("python.org/ftp/python/", url)
+        self.assertIn("/3.11.9/", url, "same 3.11.x patch as the Linux runtime")
+        self.assertIn("embed-amd64.zip", url)
+        self.assertNotIn("/latest/", url)
+
+    def test_runtime_version_constant_matches_the_table(self):
+        for platform, url in dependency_manager.TOOL_URLS["cpython"].items():
+            self.assertIn(
+                dependency_manager.RUNTIME_PYTHON_VERSION,
+                url,
+                f"{platform}: RUNTIME_PYTHON_VERSION drifted from the pinned URL",
+            )
+
+    def test_runtime_rows_have_no_darwin_entry(self):
+        # macOS is not a published platform; install-runtime rejects it.
+        self.assertNotIn("darwin", dependency_manager.TOOL_URLS["cpython"])
+        self.assertNotIn("darwin", dependency_manager.TOOL_URLS["get-pip"])
+
+    def test_get_pip_is_pinned_with_a_digest(self):
+        url = dependency_manager.TOOL_URLS["get-pip"]["windows"]
+        self.assertIn("bootstrap.pypa.io/get-pip.py", url)
+        self.assertRegex(
+            dependency_manager.KNOWN_SHA256_HASHES["get-pip"]["windows"], SHA256_RE,
+            "the mutable bootstrap must carry its hash in the table",
+        )
+
+    def test_runtime_rows_are_not_installable_tools(self):
+        # `install cpython` would download+extract into bin/ and then fail
+        # tool-path verification: the runtime has its own subcommand.
+        for tool in sorted(dependency_manager.RUNTIME_TOOLS):
+            result = dependency_manager.install_tool(tool)
+            self.assertFalse(result["success"])
+            self.assertIn("install-runtime", result["error"])
+
+    def test_canonical_smoke_list_is_the_frozen_ten(self):
+        # Ten modules on BOTH platforms; Windows used to verify only six and
+        # could ship without aiohttp/yaml/musicbrainzngs/m3u8. The spec
+        # freezes this list, so the equality is exact.
+        self.assertEqual(
+            dependency_manager.CANONICAL_SMOKE_IMPORTS,
+            (
+                "spotipy",
+                "acoustid",
+                "dotenv",
+                "requests",
+                "mutagen",
+                "yarl",
+                "aiohttp",
+                "yaml",
+                "musicbrainzngs",
+                "m3u8",
+            ),
+        )
+        statement = dependency_manager.smoke_import_statement()
+        self.assertEqual(statement, "import " + ", ".join(dependency_manager.CANONICAL_SMOKE_IMPORTS))
 
 
 class ExternalBinPlacementTest(unittest.TestCase):
