@@ -233,11 +233,13 @@ class TestLinuxBundledPythonPackaging(unittest.TestCase):
     proveedor (install-runtime en scripts/dependency_manager.py): la descarga
     pineada, los requirements y el smoke canónico se prueban en las suites del
     módulo, no congelando aquí los pasos que ya no existen. Esta clase conserva
-    lo que build-linux.yml sigue siendo dueño de hacer: inyectar el árbol
-    montado en el DEB (la cadena del AppImage vive desde #243 en
-    scripts/ci/package_appimage.sh y se prueba por comportamiento en
-    test_package_appimage.py), y verificar los imports en los tres
-    artefactos finales antes de publicar.
+    lo que build-linux.yml sigue siendo dueño de hacer: verificar los imports
+    en los tres artefactos finales antes de publicar. Ambas inyecciones
+    dejaron de ser inline: la cadena del AppImage vive desde #243 en
+    scripts/ci/package_appimage.sh (comportamiento en
+    test_package_appimage.py) y la del DEB desde #244 en
+    scripts/ci/package_deb.sh (comportamiento en test_ci_package_deb.py);
+    sus aserciones congeladas murieron aquí.
     """
 
     @classmethod
@@ -254,21 +256,6 @@ class TestLinuxBundledPythonPackaging(unittest.TestCase):
             docs = yaml.safe_load(f)
         self.assertIsInstance(docs, dict)
         self.assertIn("jobs", docs)
-
-    def test_deb_injection_places_python_beside_up_scripts(self):
-        self.assertIn("dpkg-deb -R", self.content)
-        self.assertIn("dpkg-deb --root-owner-group -b", self.content)
-        # El resolutor (cmd_utils::packaged_python_candidates) busca un
-        # python/ hermano del _up_/scripts que Tauri empaqueta.
-        self.assertRegex(
-            self.content,
-            r"\*_up_/scripts/dependency_manager\.py",
-            "la inyección en el DEB debe localizar _up_/scripts por el marcador",
-        )
-        self.assertIn(
-            "md5sums", self.content,
-            "los md5sums del DEB deben regenerarse tras la inyección",
-        )
 
     def test_final_smoke_test_covers_all_three_artifacts(self):
         self.assertIn("OK tarball", self.content)
