@@ -56,6 +56,9 @@ ALLOWED_TRACKED_TXT = (
     "requirements.txt",
     "scripts/requirements.txt",
     "src-tauri/tests/fixtures/playlists_import/sample.txt",
+    # Fuente única de las 11 globs SEC-011 (una por línea), consumida por el
+    # ensamblado Linux con rsync --exclude-from (#244); Windows la adopta en #247.
+    "scripts/ci/exclusions.txt",
 )
 
 # Directories that are build output or dependencies, never repository content.
@@ -189,6 +192,28 @@ class SweepArtifactHygieneTests(unittest.TestCase):
             '"sample.txt"',
             consumer,
             "the allowlisted fixture is no longer read by the playlist parser test; "
+            "drop it from the allowlist instead of keeping a dead exemption",
+        )
+
+    def test_the_allowed_packaging_exclusions_are_still_consumed_by_the_assembler(self):
+        """The exclusions allowlist entry is bound to its consumer.
+
+        A `.txt` allowed "for packaging" that no script reads is exactly the
+        kind of leftover this module exists to catch, so the exemption is
+        bound to the assembly script that applies it.
+        """
+        source = "scripts/ci/exclusions.txt"
+        self.assertIn(source, ALLOWED_TRACKED_TXT)
+        self.assertTrue(
+            (REPO_ROOT / source).is_file(), f"the allowlisted source is gone: {source}"
+        )
+        consumer = (REPO_ROOT / "scripts/ci/assemble_raw.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "--exclude-from",
+            consumer,
+            "no assembly script applies the exclusions source any more; "
             "drop it from the allowlist instead of keeping a dead exemption",
         )
 
