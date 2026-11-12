@@ -307,6 +307,12 @@ enum ServerStep {
 /// Servidor HTTP falso: cada conexión consume la siguiente entrada del
 /// guion; sin más guion, la conexión queda abierta sin enviar nada
 /// (descarga estancada), como un servidor que deja de responder.
+///
+/// Todas las respuestas llevan `Connection: close`: el server cierra de
+/// verdad tras cada petición y así lo declara, para que hyper no agrupe una
+/// conexión muerta y el siguiente reintento falle en el cliente sin llegar
+/// a hacerse aceptar (el contador de peticiones sería indeterminista: el
+/// flake 8≠9 del issue #274).
 struct FakeStreamServer {
     url: String,
     requests: Arc<AtomicUsize>,
@@ -416,7 +422,7 @@ async fn serve_one(
     if let Some(from) = range_from {
         let from = (from as usize).min(body.len());
         let head = format!(
-            "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\n\
+            "HTTP/1.1 206 Partial Content\r\nConnection: close\r\nContent-Type: application/octet-stream\r\n\
              Content-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\n\r\n",
             from,
             body.len() - 1,
@@ -473,7 +479,7 @@ async fn serve_plain(
         Some(ServerStep::Respond(payload)) => {
             let payload = payload.clone();
             let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/octet-stream\r\n\
                  Content-Length: {}\r\n\r\n",
                 payload.len()
             );
@@ -485,13 +491,17 @@ async fn serve_plain(
         }
         Some(ServerStep::Reject(status)) => {
             let status = *status;
-            let head = format!("HTTP/1.1 {status} Denied\r\nContent-Length: 0\r\n\r\n");
+            let head = format!(
+                "HTTP/1.1 {status} Denied\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+            );
             let _ = stream.write_all(head.as_bytes()).await;
             return;
         }
         _ => {}
     }
-    let mut head = String::from("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n");
+    let mut head = String::from(
+        "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/octet-stream\r\n",
+    );
     match content_length {
         Some(len) => head.push_str(&format!("Content-Length: {len}\r\n")),
         None => head.push_str("Transfer-Encoding: chunked\r\n"),
