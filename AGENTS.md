@@ -26,7 +26,7 @@ cargo fmt --all -- --check
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 318 objetivos de test: recuento real
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --test batch_50_audit_test -- --test-threads=1
 npm --prefix ui run build && npm --prefix ui run test:run                  # 131 ficheros / 1142 tests
-python3 -m unittest discover -s scripts/tests                             # 423 tests (2 skipped)
+python3 -m unittest discover -s scripts/tests                             # 428 tests (2 skipped)
 ```
 
 Todo corre sin red salvo los 13 tests `#[ignore]`, que necesitan servicios reales.
@@ -40,6 +40,8 @@ fmt + clippy con las mismas banderas de arriba (~2 min en caliente);
 máquina (p. ej. `PKG_CONFIG_PATH` para OpenSSL) van en el entorno o en el hook,
 no en el script. La receta del hook local opcional está en la cabecera del
 script: no versiones el hook, que no es reproducible entre clones.
+`tools/doctor.sh` comprueba antes los prerrequisitos locales (webkit, OpenSSL,
+cargo, `.venv`, `node_modules`) y avisa qué puertas quedarán solo para CI.
 
 ### Verificación manual
 
@@ -61,6 +63,7 @@ El repo se vigila a sí mismo; si una falla, el fallo es el mensaje:
 | `ui/src/__tests__/api/tauri_events_symmetry.spec.ts` | Simetría de eventos emitidos y escuchados |
 | `scripts/tests/test_docs_consistency.py` | Que las docs no citen ficheros o ramas inexistentes |
 | `scripts/tests/test_readme_claims.py` | Cifras del README contra el árbol real |
+| `scripts/tests/test_agents_claims.py` | Cifras del AGENTS.md contra el árbol real (objetivos cargo, suites, ficheros UI) |
 | `scripts/tests/test_tracked_artifact_hygiene.py` | Artefactos generados que no deben estar versionados |
 
 Arregla la causa: no añadas excepciones a esas listas, no pongas
