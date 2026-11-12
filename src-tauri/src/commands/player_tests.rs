@@ -1970,8 +1970,11 @@ async fn server_without_range_support_discards_the_partial_and_redownloads() {
         "tras el 200 el parcial se descarta y el re-GET no lleva Range: {}",
         server.headers_of(1)
     );
+    // El marcador de done aparece un instante antes de que el estado se
+    // asiente (cache registrada como completa): el polling espera el estado
+    // final, que es justo lo que afirman las aserciones de abajo.
     wait_until(
-        || marker_path_of(&cache_path).exists(),
+        || stream_cache::read_complete_cache(&cache_path).is_some(),
         "caché completada tras el descarte del parcial",
     )
     .await;
@@ -2024,8 +2027,21 @@ async fn dash_partial_resumes_from_the_next_complete_segment() {
         "init + seg3 + seg4: nada re-descargado"
     );
 
+    // El marcador de done aparece un instante antes de que el estado se
+    // asiente (sesión completa, marcador parcial borrado, cache registrada):
+    // el polling espera el estado final, que es justo lo que afirman las
+    // aserciones de abajo.
     wait_until(
-        || marker_path_of(&cache_path).exists(),
+        || {
+            app.state::<StreamCacheState>()
+                .current()
+                .map(|session| {
+                    session.complete.load(Ordering::SeqCst) && session.segments_done() == 4
+                })
+                .unwrap_or(false)
+                && !partial_marker_path_of(&cache_path).exists()
+                && stream_cache::read_complete_cache(&cache_path).is_some()
+        },
         "DASH completado tras la reanudación",
     )
     .await;

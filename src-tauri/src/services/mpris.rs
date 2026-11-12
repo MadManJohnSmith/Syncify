@@ -20,6 +20,9 @@
 //! Sin bus de sesión disponible (o fuera de Linux) el servicio degrada a no-op:
 //! la app arranca igual y los comandos no fallan.
 
+// El Mutex solo lo tocan el estado compartido y lock_shared, plumbing del
+// hilo D-Bus de Linux; fuera de Linux el servicio es un stub.
+#[cfg(target_os = "linux")]
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -36,6 +39,9 @@ pub enum PlaybackStatus {
 }
 
 impl PlaybackStatus {
+    // Solo el hilo D-Bus de Linux lo traduce a string; en el resto de
+    // plataformas el servicio es un stub y quedaria como codigo muerto.
+    #[cfg(target_os = "linux")]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Stopped => "Stopped",
@@ -47,6 +53,7 @@ impl PlaybackStatus {
 
 /// `LoopStatus` de MPRIS ("None" | "Track" | "Playlist").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg(target_os = "linux")]
 enum LoopStatus {
     #[default]
     None,
@@ -54,6 +61,7 @@ enum LoopStatus {
     Playlist,
 }
 
+#[cfg(target_os = "linux")]
 impl LoopStatus {
     fn as_str(self) -> &'static str {
         match self {
@@ -82,14 +90,23 @@ pub struct MprisMetadataInput {
     pub album: Option<String>,
     pub duration_sec: Option<f64>,
     pub art_url: Option<String>,
+    // Solo los lee el hilo D-Bus de Linux; en el resto de plataformas el
+    // servicio es un stub. La UI los sigue enviando: serde ignora las claves
+    // que el struct no declara (sin deny_unknown_fields).
     #[serde(default)]
+    #[cfg(target_os = "linux")]
     pub shuffle: bool,
     #[serde(default)]
+    #[cfg(target_os = "linux")]
     pub loop_status: Option<String>,
 }
 
 /// Copia interna (normalizada) de los metadatos.
+// El plumbing siguiente (MprisMetadata, Shared, Snapshot, lock_shared,
+// LoopStatus) solo lo consume el hilo D-Bus de Linux; en el resto de
+// plataformas el servicio es un stub y quedaria como codigo muerto.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg(target_os = "linux")]
 struct MprisMetadata {
     track_id: Option<i64>,
     title: Option<String>,
@@ -99,6 +116,7 @@ struct MprisMetadata {
     art_url: Option<String>,
 }
 
+#[cfg(target_os = "linux")]
 impl From<&MprisMetadataInput> for MprisMetadata {
     fn from(input: &MprisMetadataInput) -> Self {
         Self {
@@ -117,6 +135,7 @@ impl From<&MprisMetadataInput> for MprisMetadata {
 
 /// Estado compartido entre el ticker/UI y el hilo D-Bus.
 #[derive(Debug, Clone, Default)]
+#[cfg(target_os = "linux")]
 struct Shared {
     playback: PlaybackStatus,
     position_us: i64,
@@ -127,6 +146,7 @@ struct Shared {
 
 /// Subconjunto que decide si hay que emitir `PropertiesChanged`.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg(target_os = "linux")]
 struct Snapshot {
     playback: PlaybackStatus,
     metadata: MprisMetadata,
@@ -134,6 +154,7 @@ struct Snapshot {
     shuffle: bool,
 }
 
+#[cfg(target_os = "linux")]
 impl From<&Shared> for Snapshot {
     fn from(shared: &Shared) -> Self {
         Self {
@@ -145,6 +166,7 @@ impl From<&Shared> for Snapshot {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn lock_shared(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
     shared
         .lock()

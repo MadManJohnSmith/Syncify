@@ -109,6 +109,14 @@ TOOL_URLS = {
         "darwin": "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-macos-x86_64.tar.gz",
         "linux": "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-linux-x86_64.tar.gz",
     },
+    # flac is NOT a bundled tool: no release ships it. The row exists for the
+    # Windows verification family (#268): the integration tests encode
+    # synthetic WAVs through the `flac` CLI, which apt provides on the Linux
+    # leg and this pinned official Xiph build provides on Windows. Windows
+    # only: Linux keeps its apt install and darwin is not a CI platform.
+    "flac": {
+        "windows": "https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0-win.zip",
+    },
     "cpython": {
         "windows": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip",
         "linux": "https://github.com/astral-sh/python-build-standalone/releases/download/20240415/cpython-3.11.9%2B20240415-x86_64-unknown-linux-gnu-install_only.tar.gz",
@@ -136,6 +144,11 @@ KNOWN_SHA256_HASHES: Dict[str, Dict[str, str]] = {
         "darwin": "c6c2797c4f087cf139eedd71554bc59ef8f26a783dc00c7f3ad5ae71d3a616fe",
         "linux": "4d7433a7f778e5946d7225230681cbcd634e153316ecac87c538c33ac32387a5",
     },
+    # flac: SHA-256 of the official Xiph Windows asset, verified identical on
+    # github.com/xiph/flac and the ftp.osuosl.org mirror (2026-11-12).
+    "flac": {
+        "windows": "53f1500f0d6e7c61379d7fee50d4a9f7f504c650009506d9ba015530d76c0dde",
+    },
     # Runtime pins (install-runtime): the exact digests the release workflows
     # verified inline before this table absorbed them. The Linux digest is the
     # python-build-standalone 20240415 install_only tarball; the Windows one is
@@ -154,6 +167,15 @@ KNOWN_SHA256_HASHES: Dict[str, Dict[str, str]] = {
 # and must not be reachable through `install <tool>` (that flow verifies the
 # result via get_tool_path, which makes no sense for an interpreter runtime).
 RUNTIME_TOOLS = frozenset({"cpython", "get-pip"})
+
+# Subdirectory of the extracted archive that carries the executable, for tools
+# whose pinned archive does not follow the layouts find_bundled_tool resolves
+# by default (flat, or BtbN's <top>/bin/). Xiph's flac nests the Windows exe
+# in <top>/Win64/ next to its libFLAC.dll. Data of the pin row, not code: the
+# repin stays one commit in the table above.
+ARCHIVE_EXE_DIRS: Dict[str, Dict[str, str]] = {
+    "flac": {"windows": "Win64"},
+}
 
 # Version of the shipped runtime, asserted by the pins suite against the
 # table rows above (both platforms must carry the same 3.11.x patch).
@@ -264,6 +286,13 @@ def find_bundled_tool(tool: str) -> Optional[Path]:
             potential = subdir / "bin" / f"{tool}{exe}"
             if potential.exists():
                 return potential
+            # Archives that declare an exe directory in the pin table
+            # (ARCHIVE_EXE_DIRS) resolve one level deeper: <top>/<hint>/<tool>.
+            exe_dir = ARCHIVE_EXE_DIRS.get(tool, {}).get(plat)
+            if exe_dir:
+                potential = subdir / exe_dir / f"{tool}{exe}"
+                if potential.exists():
+                    return potential
 
     return None
 

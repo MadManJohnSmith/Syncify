@@ -13,6 +13,7 @@
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::path::PathBuf;
+use std::process::Command;
 use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
 use syncify_tauri_lib::commands::library::perform_purge_orphan_empty_albums;
 
@@ -35,17 +36,38 @@ fn create_test_flac_file() -> TestFlacFile {
             .unwrap()
             .as_nanos()
     ));
-    let mut flac_bytes = Vec::new();
-    flac_bytes.extend_from_slice(b"fLaC");
-    flac_bytes.extend_from_slice(&[
-        0x80, 0x00, 0x00, 0x22, // Last metadata block (STREAMINFO), length 34
-        0x10, 0x00, 0x10, 0x00, // min/max block size
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // min/max frame size
-        0x0A, 0xC4, 0x42, 0xF0, // 44.1kHz, 2 channels, 16 bits, 0 samples
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00,
-    ]);
-    std::fs::write(&path, &flac_bytes).expect("Failed to write initial FLAC bytes");
+    // FLAC real codificado con la CLI (mismo patron que los demas tests de
+    // tags): el fixture sintetico de solo-STREAMINFO sin frames no parsea
+    // igual tras el ciclo de escritura de tags en Windows.
+    let wav_path = path.with_extension("wav");
+    let sample_rate = 44_100u32;
+    let num_samples = 441u16; // 10 ms de silencio
+    let mut wav_bytes = Vec::new();
+    wav_bytes.extend_from_slice(b"RIFF");
+    let data_len = (num_samples as u32) * 2;
+    wav_bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav_bytes.extend_from_slice(b"WAVE");
+    wav_bytes.extend_from_slice(b"fmt ");
+    wav_bytes.extend_from_slice(&16u32.to_le_bytes());
+    wav_bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav_bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav_bytes.extend_from_slice(&sample_rate.to_le_bytes());
+    wav_bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    wav_bytes.extend_from_slice(&2u16.to_le_bytes());
+    wav_bytes.extend_from_slice(&16u16.to_le_bytes());
+    wav_bytes.extend_from_slice(b"data");
+    wav_bytes.extend_from_slice(&data_len.to_le_bytes());
+    wav_bytes.extend_from_slice(&vec![0u8; data_len as usize]);
+    std::fs::write(&wav_path, &wav_bytes).expect("Write wav");
+
+    let status = Command::new("flac")
+        .args(["-f", "--silent", "-o"])
+        .arg(&path)
+        .arg(&wav_path)
+        .status()
+        .expect("Run flac encoder");
+    let _ = std::fs::remove_file(&wav_path);
+    assert!(status.success(), "flac encode must succeed");
     TestFlacFile { path }
 }
 

@@ -50,6 +50,23 @@ class FailureEnvelope(dict):
     """
 
 
+def _force_utf8_stdio() -> None:
+    """Fuerza stdio UTF-8 en los modos CLI del bridge.
+
+    En Windows el stdout/stderr capturado es cp1252 por defecto y los
+    informes de mantenimiento imprimen banners Unicode (══, ✓): morian con
+    UnicodeEncodeError antes de terminar (la ejecucion de scripts desde los
+    tests de CI y el runtime embebido de Windows la sufren igual). En Linux
+    es un no-op.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            # StringIO en tests o stream ya cerrado: se escribe igual.
+            pass
+
+
 def _write_envelope(payload: dict) -> None:
     """Escribe un envelope JSON UTF-8 por stdout, sin escapar no-ASCII."""
     try:
@@ -82,6 +99,7 @@ def run(
     recibe el handler; por defecto la lista llega tal cual. ``argv`` permite
     inyectar argumentos en tests.
     """
+    _force_utf8_stdio()
     try:
         result = _invoke(handler, parse, argv)
     except BridgeFailure as exc:
@@ -112,6 +130,7 @@ def run_cli(
     parseo de argumentos, el tratamiento de ``BridgeFailure`` y los códigos de
     salida.
     """
+    _force_utf8_stdio()
     try:
         _invoke(handler, parse, argv)
         return 0

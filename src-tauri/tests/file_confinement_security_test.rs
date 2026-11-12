@@ -21,7 +21,7 @@
 
 mod common;
 
-use common::resolve_sandbox_test_base;
+use common::{render_ipc_string, resolve_sandbox_test_base};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -166,16 +166,13 @@ async fn test_lyrics_import_path_traversal_rejected() {
     let test_dir = resolve_writable_test_dir("lyrics_traversal");
     let _guard = TestDirGuard(test_dir.clone());
 
+    // STRING crudo (superficie real de IPC), sin prefijo verbatim: sobre
+    // `\\?\` el parseo de components() no clasifica los `..` como ParentDir.
+    let base = render_ipc_string(&test_dir);
     let traversal_cases = [
-        test_dir.join("../.bashrc").to_string_lossy().to_string(),
-        test_dir
-            .join("../../etc/passwd")
-            .to_string_lossy()
-            .to_string(),
-        test_dir
-            .join("sub/../../.ssh/id_rsa.txt")
-            .to_string_lossy()
-            .to_string(),
+        format!("{base}/../.bashrc"),
+        format!("{base}/../../etc/passwd"),
+        format!("{base}/sub/../../.ssh/id_rsa.txt"),
     ];
 
     for path in traversal_cases {
@@ -361,6 +358,9 @@ fn test_m3u_write_relative_and_traversal_paths_rejected() {
     let test_dir = resolve_writable_test_dir("m3u_traversal");
     let _guard = TestDirGuard(test_dir.clone());
 
+    // STRING crudo (superficie real de IPC), sin prefijo verbatim: sobre
+    // `\\?\` el parseo de components() no clasifica los `..` como ParentDir.
+    let base = render_ipc_string(&test_dir);
     let invalid_cases = vec![
         "playlist.m3u".to_string(),
         "./playlist.m3u".to_string(),
@@ -368,11 +368,8 @@ fn test_m3u_write_relative_and_traversal_paths_rejected() {
         "sub/playlist.m3u8".to_string(),
         "".to_string(),
         "   ".to_string(),
-        test_dir.join("../escape.m3u").to_string_lossy().to_string(),
-        test_dir
-            .join("../../etc/cron.m3u")
-            .to_string_lossy()
-            .to_string(),
+        format!("{base}/../escape.m3u"),
+        format!("{base}/../../etc/cron.m3u"),
     ];
 
     for path in &invalid_cases {
@@ -490,6 +487,9 @@ async fn test_backup_export_relative_and_traversal_paths_rejected() {
     let test_dir = resolve_writable_test_dir("backup_traversal");
     let _guard = TestDirGuard(test_dir.clone());
 
+    // STRING crudo (superficie real de IPC), sin prefijo verbatim: sobre
+    // `\\?\` el parseo de components() no clasifica los `..` como ParentDir.
+    let base = render_ipc_string(&test_dir);
     let invalid_cases = vec![
         "backup.json".to_string(),
         "./backup.json".to_string(),
@@ -497,14 +497,8 @@ async fn test_backup_export_relative_and_traversal_paths_rejected() {
         "sub/backup.json".to_string(),
         "".to_string(),
         "   ".to_string(),
-        test_dir
-            .join("../escape.json")
-            .to_string_lossy()
-            .to_string(),
-        test_dir
-            .join("../../etc/backup.json")
-            .to_string_lossy()
-            .to_string(),
+        format!("{base}/../escape.json"),
+        format!("{base}/../../etc/backup.json"),
     ];
 
     for path in invalid_cases {

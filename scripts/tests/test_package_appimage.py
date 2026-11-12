@@ -175,6 +175,10 @@ sys.exit(0)
 """
 
 
+# Maquinaria de release Linux: package_appimage.sh orquesta appimagetool y
+# mksquashfs, que no existen en Windows. Los tests corren donde la maquinaria
+# existe.
+@unittest.skipIf(sys.platform.startswith("win"), "Linux release machinery: POSIX tooling")
 class PackageAppImageScriptTest(unittest.TestCase):
     """Ciclo unico, inyecciones, guardas y pin de appimagetool, contra fixtures."""
 

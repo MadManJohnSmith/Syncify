@@ -170,7 +170,9 @@ class InstallRuntimeLinuxTest(unittest.TestCase):
         pip_cmd, smoke_cmd = calls[0]["cmd"], calls[1]["cmd"]
         self.assertEqual(pip_cmd[1:3], ["-m", "pip"])
         self.assertIn("-r", pip_cmd)
-        self.assertTrue(pip_cmd[-1].endswith("scripts/requirements.txt"))
+        self.assertTrue(
+            Path(pip_cmd[-1]).as_posix().endswith("scripts/requirements.txt")
+        )
         self.assertEqual(
             smoke_cmd[2], dependency_manager.smoke_import_statement() + "; print('OK')"
         )
@@ -542,6 +544,10 @@ class RuntimeCliEnvelopeTest(unittest.TestCase):
             patch.dict(dependency_manager.KNOWN_SHA256_HASHES["cpython"],
                        {"linux": self.fixture_hash}),
             patch.object(dependency_manager.subprocess, "run", fake_run),
+            # The fixtures are the Linux standalone flow; force the platform
+            # so the CLI seam exercises it on any host (the Windows embed flow
+            # has its own class below).
+            patch.object(dependency_manager, "get_platform", return_value="linux"),
         ]
 
     def test_install_runtime_success_envelope(self):
@@ -555,7 +561,7 @@ class RuntimeCliEnvelopeTest(unittest.TestCase):
         self.assertEqual(envelope["data"]["platform"], "linux")
         self.assertEqual(envelope["data"]["runtime_version"], "3.11.9")
         self.assertTrue(
-            envelope["data"]["python"].endswith("python/bin/python3"),
+            Path(envelope["data"]["python"]).as_posix().endswith("python/bin/python3"),
             envelope["data"]["python"],
         )
         self.assertEqual(len(envelope["data"]["imports"]), 10)

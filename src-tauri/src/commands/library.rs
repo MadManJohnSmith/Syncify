@@ -7819,7 +7819,13 @@ mod local_library_tests {
 
     /// Unreadable audio files must abort the scan; the previous behaviour of
     /// storing `String::new()` as the hash silently bypassed hash deduplication.
+    ///
+    /// Producir un fichero ilegible es un truco de permisos POSIX (chmod 000);
+    /// el equivalente en Windows exige deny ACLs (icacls) y queda como
+    /// seguimiento. La ruta de error es platform-neutral y este test la cubre
+    /// en la pata Linux, que corre en cada PR.
     #[test]
+    #[cfg(unix)]
     fn test_scan_local_audio_files_reports_unreadable_file() {
         let temp_dir = TempDir::new().unwrap();
         let flac = temp_dir.path().join("unreadable.flac");

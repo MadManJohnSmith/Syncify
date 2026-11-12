@@ -21,6 +21,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from services.browser_launcher import _is_bundled_path, scrub_loader_env  # noqa: E402
 
 
+# Entorno de runtime del AppImage (raices squashfs/.mount_, LD_LIBRARY_PATH):
+# solo tiene sentido en el release de Linux; en Windows no hay nada que
+# limpiar y los prefijos POSIX nunca matchean.
+@unittest.skipIf(sys.platform.startswith("win"), "AppImage runtime env: Linux release only")
 class IsBundledPathTest(unittest.TestCase):
     def test_mount_path_is_bundled(self):
         self.assertTrue(_is_bundled_path("/tmp/.mount_SyncifABCD/usr/lib"))
@@ -42,6 +46,7 @@ class IsBundledPathTest(unittest.TestCase):
         self.assertFalse(_is_bundled_path("/opt/mytools/lib"))
 
 
+@unittest.skipIf(sys.platform.startswith("win"), "AppImage runtime env: Linux release only")
 class ScrubLoaderEnvTest(unittest.TestCase):
     def setUp(self):
         self._saved = {k: os.environ.get(k) for k in ("APPDIR", "LD_LIBRARY_PATH", "LD_PRELOAD")}

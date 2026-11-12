@@ -23,6 +23,7 @@ No network, no real dpkg. Mirrors the harness of test_release_gate.py.
 import hashlib
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -57,6 +58,10 @@ def _write(path: Path, content: bytes, mode: int = 0o644) -> None:
     path.chmod(mode)
 
 
+# Maquinaria de release Linux: package_deb.sh es un script POSIX (dpkg-deb,
+# fakeroot). En Windows el subprocess cae en el stub de WSL; los tests corren
+# donde la maquinaria existe.
+@unittest.skipIf(sys.platform.startswith("win"), "Linux release machinery: POSIX tooling")
 class PackageDebBehaviorTests(unittest.TestCase):
     """«DEB con runtime inyectado» contra fixtures, no contra su texto."""
 
