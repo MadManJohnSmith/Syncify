@@ -289,6 +289,12 @@ async fn test_nested_subdirectory_creation_in_allowed_directory() {
     let _ = fs::remove_dir_all(&test_dir);
 }
 
+// El escape por symlink de la prueba es un mecanismo POSIX (std::os::unix);
+// en Windows crear el enlace exige privilegio y no hay equivalente portable,
+// asi que la defensa se ejercita en la pata unix (la comprobacion de
+// symlink_metadata del validador es cross-platform y cubre los symlinks
+// NTFS en produccion).
+#[cfg(unix)]
 #[tokio::test]
 async fn test_symlink_overwriting_prevented() {
     let temp_sandbox = tempfile::tempdir().expect("Must create temp sandbox dir");
