@@ -31,6 +31,8 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import dependency_manager
 
+IS_WINDOWS = sys.platform.startswith("win")
+
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # The exact file names bundle.externalBin (tauri.conf.json) resolves at build
@@ -214,9 +216,15 @@ class ExternalBinPlacementTest(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _dir_patches(self):
+        # The behavior tests seed the Linux layout (no .exe suffix, linux
+        # triples, tar.gz fixtures): force the platform so they exercise the
+        # linux flow deterministically on any host, without reaching the
+        # network. The Windows flow is covered by the hint test below and by
+        # the Windows CI leg running the real provider.
         return [
             patch.object(dependency_manager, "BIN_DIR", self.bin_dir),
             patch.object(dependency_manager, "BINARIES_DIR", self.binaries_dir),
+            patch.object(dependency_manager, "get_platform", return_value="linux"),
         ]
 
     def _seed_bin_tree(self):
@@ -255,10 +263,13 @@ class ExternalBinPlacementTest(unittest.TestCase):
         for name in EXTERNAL_BIN_NAMES["x86_64-unknown-linux-gnu"]:
             dest = self.binaries_dir / name
             self.assertTrue(dest.is_file(), f"missing placed binary {name}")
-            self.assertTrue(
-                dest.stat().st_mode & 0o111,
-                f"{name} must be executable after placement",
-            )
+            # POSIX exec bits do not exist on NTFS: the placement calls
+            # os.chmod either way, the filesystem just cannot represent them.
+            if not IS_WINDOWS:
+                self.assertTrue(
+                    dest.stat().st_mode & 0o111,
+                    f"{name} must be executable after placement",
+                )
 
     def test_place_overwrites_stale_placeholders(self):
         self._seed_bin_tree()
@@ -287,6 +298,7 @@ class ExternalBinPlacementTest(unittest.TestCase):
         # runner (the Ubuntu image installs one via apt) must not satisfy it.
         (self.bin_dir / "fpcalc").write_bytes(b"pinned fpcalc")
         with patch.object(dependency_manager, "BIN_DIR", self.bin_dir), \
+                patch.object(dependency_manager, "get_platform", return_value="linux"), \
                 patch("dependency_manager.shutil.which", return_value="/usr/bin/ffmpeg") as which:
             found = dependency_manager.find_bundled_tool("fpcalc")
             missing = dependency_manager.find_bundled_tool("ffmpeg")
@@ -329,6 +341,7 @@ class ExternalBinPlacementTest(unittest.TestCase):
 
         with patch.object(dependency_manager, "BIN_DIR", self.bin_dir), \
                 patch.object(dependency_manager, "BINARIES_DIR", self.binaries_dir), \
+                patch.object(dependency_manager, "get_platform", return_value="linux"), \
                 patch.dict(
                     dependency_manager.KNOWN_SHA256_HASHES["fpcalc"],
                     {"linux": archive_hash},
@@ -405,6 +418,10 @@ class PlaceExternalCliEnvelopeTest(unittest.TestCase):
         patches = [
             patch.object(dependency_manager, "BIN_DIR", self.bin_dir),
             patch.object(dependency_manager, "BINARIES_DIR", self.binaries_dir),
+            # Deterministic linux flow: the seeded bin/ tree uses the POSIX
+            # names, so without this the Windows host would hit the network
+            # and download the real pinned tools inside a unit test.
+            patch.object(dependency_manager, "get_platform", return_value="linux"),
             patch.object(sys, "argv", ["dependency_manager.py", *argv]),
             patch("sys.stdout", stdout),
             *extra_patches,

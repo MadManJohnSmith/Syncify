@@ -97,6 +97,11 @@ sys.exit(5)
 """
 
 
+# The CLI seam injects fake gh/git as POSIX scripts on PATH. Windows cannot
+# resolve them (CreateProcess only loads .exe from PATH), so the real gh runs
+# and the scenarios never happen. The gate itself runs on ubuntu in both
+# release workflows, which is the only platform that matters here.
+@unittest.skipIf(sys.platform.startswith("win"), "fake gh/git are POSIX PATH shims")
 class ReleaseGateCLITest(unittest.TestCase):
     """Exit codes and diagnostics of the gate CLI, with injected fakes."""
 

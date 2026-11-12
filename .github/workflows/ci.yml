@@ -108,6 +108,15 @@ jobs:
       run: |
         python scripts/dependency_manager.py place-external --triple x86_64-pc-windows-msvc
         python scripts/dependency_manager.py install flac
+    # El overlay de empaquetado de Windows (tauri.windows.conf.json) declara
+    # el runtime Python embebido como recurso (../python/**/*); el build.rs de
+    # tauri aborta si el glob no matchea nada. El flujo de release lo monta
+    # antes de tocar cargo (build-windows.yml): mismo orden aqui.
+    - name: Montar runtime Python embebido (recurso del overlay de Windows)
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
+      working-directory: ${{ github.workspace }}
+      shell: bash
+      run: python scripts/dependency_manager.py install-runtime
     - name: Herramientas pineadas en PATH
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
       working-directory: ${{ github.workspace }}

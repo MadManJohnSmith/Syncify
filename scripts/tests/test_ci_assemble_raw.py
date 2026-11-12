@@ -26,6 +26,7 @@ import fnmatch
 import os
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -105,6 +106,11 @@ def _write(path: Path, content: bytes, mode: int = 0o644) -> None:
     path.chmod(mode)
 
 
+# Maquinaria de release Linux: assemble_raw.sh es un script POSIX y el arbol
+# que ensambla es el del AppImage. En Windows el subprocess cae en el stub de
+# WSL; los tests corren donde la maquinaria existe (patron del suite: los
+# casos POSIX de test_browser_launcher_detection ya se declaran igual).
+@unittest.skipIf(sys.platform.startswith("win"), "Linux release machinery: POSIX tooling")
 class AssembleRawBehaviorTests(unittest.TestCase):
     """«Arbol de scripts con basura -> salida limpia», mas el tarball."""
 

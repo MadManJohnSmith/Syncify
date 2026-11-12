@@ -107,7 +107,7 @@ class SweepArtifactHygieneTests(unittest.TestCase):
             for path in (REPO_ROOT / root).rglob("*.txt"):
                 if any(part in IGNORED_TREES for part in path.parts):
                     continue
-                relative = str(path.relative_to(REPO_ROOT))
+                relative = path.relative_to(REPO_ROOT).as_posix()
                 if relative in ALLOWED_TRACKED_TXT:
                     continue
                 leftovers.append(relative)
