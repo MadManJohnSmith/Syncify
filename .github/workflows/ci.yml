@@ -208,7 +208,10 @@ jobs:
         }
         Write-Host "Manifiesto embebido en $patched exe de test"
     - name: Suite de tests completa
-      run: cargo test --locked
+      # --no-fail-fast (el comando canonico del AGENTS.md): un binario de test
+      # que falle no tapa el resultado de los demas, la evidencia es completa
+      # por corrida en las dos patas del matrix.
+      run: cargo test --locked --no-fail-fast
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
     - name: batch_50_audit_test serializado (--test-threads=1)
       timeout-minutes: 10
