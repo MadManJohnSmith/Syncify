@@ -51,31 +51,18 @@ async fn test_path_traversal_sequences_rejected() {
 
     // Traversal using .. components toward sensitive targets (/etc/, ~/.bashrc, ~/.ssh/)
     let traversal_cases = [
-        download_dir
-            .join("../.bashrc")
-            .to_string_lossy()
-            .to_string(),
-        download_dir
-            .join("../../etc/passwd.txt")
-            .to_string_lossy()
-            .to_string(),
-        download_dir
-            .join("../.ssh/authorized_keys")
-            .to_string_lossy()
-            .to_string(),
-        download_dir
-            .join("sub/../../.profile")
-            .to_string_lossy()
-            .to_string(),
-        doc_dir
-            .join("../../../etc/shadow.log")
-            .to_string_lossy()
-            .to_string(),
-        doc_dir.join("../.bashrc").to_string_lossy().to_string(),
-        doc_dir
-            .join("../.ssh/id_rsa.txt")
-            .to_string_lossy()
-            .to_string(),
+        // STRING crudo (superficie real de IPC): Path::join sobre una base
+        // verbatim de Windows resuelve los `..` antes del validador.
+        format!("{}/../.bashrc", download_dir.display()),
+        format!("{}/../../etc/passwd.txt", download_dir.display()),
+        format!("{}/../.ssh/authorized_keys", download_dir.display()),
+        format!("{}/sub/../../.profile", download_dir.display()),
+        // STRING crudo (superficie real de IPC): Path::join sobre una base
+        // verbatim de Windows resuelve los `..` antes del validador y el
+        // caso ya no es traversal.
+        format!("{}/../../../etc/shadow.log", doc_dir.display()),
+        format!("{}/../.bashrc", doc_dir.display()),
+        format!("{}/../.ssh/id_rsa.txt", doc_dir.display()),
         "/etc/passwd".to_string(),
         "/etc/cron.d/malicious.txt".to_string(),
         "/var/log/audit.log".to_string(),

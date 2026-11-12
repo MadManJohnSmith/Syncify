@@ -167,15 +167,11 @@ async fn test_lyrics_import_path_traversal_rejected() {
     let _guard = TestDirGuard(test_dir.clone());
 
     let traversal_cases = [
-        test_dir.join("../.bashrc").to_string_lossy().to_string(),
-        test_dir
-            .join("../../etc/passwd")
-            .to_string_lossy()
-            .to_string(),
-        test_dir
-            .join("sub/../../.ssh/id_rsa.txt")
-            .to_string_lossy()
-            .to_string(),
+        // STRING crudo (superficie real de IPC): Path::join sobre una base
+        // verbatim de Windows resuelve los `..` antes del validador.
+        format!("{}/../.bashrc", test_dir.display()),
+        format!("{}/../../etc/passwd", test_dir.display()),
+        format!("{}/sub/../../.ssh/id_rsa.txt", test_dir.display()),
     ];
 
     for path in traversal_cases {
@@ -368,11 +364,11 @@ fn test_m3u_write_relative_and_traversal_paths_rejected() {
         "sub/playlist.m3u8".to_string(),
         "".to_string(),
         "   ".to_string(),
-        test_dir.join("../escape.m3u").to_string_lossy().to_string(),
-        test_dir
-            .join("../../etc/cron.m3u")
-            .to_string_lossy()
-            .to_string(),
+        // Casos construidos como STRING crudo (la superficie real de IPC):
+        // Path::join sobre una base verbatim de Windows resuelve los `..`
+        // antes de que lleguen al validador y el caso ya no seria traversal.
+        format!("{}/../escape.m3u", test_dir.display()),
+        format!("{}/../../etc/cron.m3u", test_dir.display()),
     ];
 
     for path in &invalid_cases {
@@ -497,14 +493,10 @@ async fn test_backup_export_relative_and_traversal_paths_rejected() {
         "sub/backup.json".to_string(),
         "".to_string(),
         "   ".to_string(),
-        test_dir
-            .join("../escape.json")
-            .to_string_lossy()
-            .to_string(),
-        test_dir
-            .join("../../etc/backup.json")
-            .to_string_lossy()
-            .to_string(),
+        // STRING crudo (superficie real de IPC): Path::join sobre una base
+        // verbatim de Windows resuelve los `..` antes del validador.
+        format!("{}/../escape.json", test_dir.display()),
+        format!("{}/../../etc/backup.json", test_dir.display()),
     ];
 
     for path in invalid_cases {

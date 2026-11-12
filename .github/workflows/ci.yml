@@ -110,13 +110,18 @@ jobs:
         python scripts/dependency_manager.py install flac
     # El overlay de empaquetado de Windows (tauri.windows.conf.json) declara
     # el runtime Python embebido como recurso (../python/**/*); el build.rs de
-    # tauri aborta si el glob no matchea nada. El flujo de release lo monta
-    # antes de tocar cargo (build-windows.yml): mismo orden aqui.
-    - name: Montar runtime Python embebido (recurso del overlay de Windows)
+    # tauri aborta si el glob no matchea nada. La familia de verificacion no
+    # ejecuta la app: basta un marcador explicito, y asi el arbol sigue sin
+    # runtime empaquetado (la higiene de cmd_utils_test lo vigila y los
+    # builds de release montan el runtime real con install-runtime).
+    - name: Marcador del recurso python/ que exige el overlay de Windows
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
       working-directory: ${{ github.workspace }}
       shell: bash
-      run: python scripts/dependency_manager.py install-runtime
+      run: |
+        mkdir -p python
+        printf 'Marcador de CI: tauri-build exige que el glob ../python/**/* matchee. El runtime real lo monta dependency_manager.py install-runtime en los builds de release (build-windows.yml).\n' > python/CI-RESOURCE-PLACEHOLDER.txt
+        ls -la python/
     - name: Herramientas pineadas en PATH
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
       working-directory: ${{ github.workspace }}
