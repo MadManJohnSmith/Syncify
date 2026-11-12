@@ -20,6 +20,9 @@
 //! Sin bus de sesión disponible (o fuera de Linux) el servicio degrada a no-op:
 //! la app arranca igual y los comandos no fallan.
 
+// El Mutex solo lo tocan el estado compartido y lock_shared, plumbing del
+// hilo D-Bus de Linux; fuera de Linux el servicio es un stub.
+#[cfg(target_os = "linux")]
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
