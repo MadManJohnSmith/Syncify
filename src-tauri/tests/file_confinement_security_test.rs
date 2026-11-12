@@ -21,7 +21,7 @@
 
 mod common;
 
-use common::resolve_sandbox_test_base;
+use common::{render_ipc_string, resolve_sandbox_test_base};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -166,12 +166,13 @@ async fn test_lyrics_import_path_traversal_rejected() {
     let test_dir = resolve_writable_test_dir("lyrics_traversal");
     let _guard = TestDirGuard(test_dir.clone());
 
+    // STRING crudo (superficie real de IPC), sin prefijo verbatim: sobre
+    // `\\?\` el parseo de components() no clasifica los `..` como ParentDir.
+    let base = render_ipc_string(&test_dir);
     let traversal_cases = [
-        // STRING crudo (superficie real de IPC): Path::join sobre una base
-        // verbatim de Windows resuelve los `..` antes del validador.
-        format!("{}/../.bashrc", test_dir.display()),
-        format!("{}/../../etc/passwd", test_dir.display()),
-        format!("{}/sub/../../.ssh/id_rsa.txt", test_dir.display()),
+        format!("{base}/../.bashrc"),
+        format!("{base}/../../etc/passwd"),
+        format!("{base}/sub/../../.ssh/id_rsa.txt"),
     ];
 
     for path in traversal_cases {
@@ -357,6 +358,9 @@ fn test_m3u_write_relative_and_traversal_paths_rejected() {
     let test_dir = resolve_writable_test_dir("m3u_traversal");
     let _guard = TestDirGuard(test_dir.clone());
 
+    // STRING crudo (superficie real de IPC), sin prefijo verbatim: sobre
+    // `\\?\` el parseo de components() no clasifica los `..` como ParentDir.
+    let base = render_ipc_string(&test_dir);
     let invalid_cases = vec![
         "playlist.m3u".to_string(),
         "./playlist.m3u".to_string(),
@@ -364,11 +368,8 @@ fn test_m3u_write_relative_and_traversal_paths_rejected() {
         "sub/playlist.m3u8".to_string(),
         "".to_string(),
         "   ".to_string(),
-        // Casos construidos como STRING crudo (la superficie real de IPC):
-        // Path::join sobre una base verbatim de Windows resuelve los `..`
-        // antes de que lleguen al validador y el caso ya no seria traversal.
-        format!("{}/../escape.m3u", test_dir.display()),
-        format!("{}/../../etc/cron.m3u", test_dir.display()),
+        format!("{base}/../escape.m3u"),
+        format!("{base}/../../etc/cron.m3u"),
     ];
 
     for path in &invalid_cases {
@@ -486,6 +487,9 @@ async fn test_backup_export_relative_and_traversal_paths_rejected() {
     let test_dir = resolve_writable_test_dir("backup_traversal");
     let _guard = TestDirGuard(test_dir.clone());
 
+    // STRING crudo (superficie real de IPC), sin prefijo verbatim: sobre
+    // `\\?\` el parseo de components() no clasifica los `..` como ParentDir.
+    let base = render_ipc_string(&test_dir);
     let invalid_cases = vec![
         "backup.json".to_string(),
         "./backup.json".to_string(),
@@ -493,10 +497,8 @@ async fn test_backup_export_relative_and_traversal_paths_rejected() {
         "sub/backup.json".to_string(),
         "".to_string(),
         "   ".to_string(),
-        // STRING crudo (superficie real de IPC): Path::join sobre una base
-        // verbatim de Windows resuelve los `..` antes del validador.
-        format!("{}/../escape.json", test_dir.display()),
-        format!("{}/../../etc/backup.json", test_dir.display()),
+        format!("{base}/../escape.json"),
+        format!("{base}/../../etc/backup.json"),
     ];
 
     for path in invalid_cases {
