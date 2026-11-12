@@ -78,7 +78,6 @@ describe('S121 P0 Path Consistency & Validation Suite', () => {
           fallback_action: folderDb.fallback_action,
           max_concurrent_downloads: 3,
           retry_failed: true,
-          auto_download_favorites: false,
           organize_by_artist: true,
           organize_by_album: true,
           generate_lyrics_lrc: true,
@@ -153,7 +152,6 @@ describe('S121 P0 Path Consistency & Validation Suite', () => {
       if (command === 'get_default_download_path') return 'C:\\Users\\User\\Music\\Syncify'
       if (command === 'get_default_temp_path') return 'C:\\Users\\User\\AppData\\Local\\Temp\\Syncify'
       if (command === 'get_quality_preferences') return []
-      if (command === 'get_duplicate_settings') return null
       if (command === 'get_audio_processing_settings') return null
       return null
     })

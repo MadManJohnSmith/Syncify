@@ -18,10 +18,6 @@
                  <input type="checkbox" v-model="syncSettings.settings[service.key].syncSavedAlbums" @change="syncSettings.updateServiceSettings(service.key)" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-transparent">
                  Sync saved albums
                </label>
-               <label class="flex items-start gap-2 text-xs text-gray-700 dark:text-gray-300">
-                 <input type="checkbox" v-model="syncSettings.settings[service.key].incrementalOnly" @change="syncSettings.updateServiceSettings(service.key)" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-transparent mt-0.5">
-                 <div><span>Incremental sync only</span><span class="block text-[10px] text-text-secondary">Only fetch changes since last sync</span></div>
-               </label>
             </div>
          </div>
       </div>

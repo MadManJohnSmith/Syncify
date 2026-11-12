@@ -12,7 +12,6 @@ export function useGeneralSettings() {
         start_on_boot: false,
         start_minimized: false,
         close_to_tray: true,
-        db_location: '',
         download_dir: '',
         temp_dir: '',
     })
@@ -43,7 +42,6 @@ export function useGeneralSettings() {
                 'start_on_boot',
                 'start_minimized',
                 'close_to_tray',
-                'db_location',
                 'download_dir',
                 'dl_download_path',
                 'temp_dir',
@@ -61,8 +59,6 @@ export function useGeneralSettings() {
 
             // Keep the tray behavior in sync with the persisted preference (IN-5).
             void syncTraySettings(settings.close_to_tray)
-
-            settings.db_location = values['db_location'] || ''
 
             // Single Source of Truth for Download & Temporary Paths via unified contract
             let canonicalDownloadPath = unifiedDto?.library_root || ''
@@ -110,8 +106,6 @@ export function useGeneralSettings() {
                 'start_minimized': settings.start_minimized.toString(),
                 'close_to_tray': settings.close_to_tray.toString(),
             }
-
-            if (settings.db_location) batch['db_location'] = settings.db_location
 
             if (settings.download_dir) {
                 batch['dl_download_path'] = settings.download_dir

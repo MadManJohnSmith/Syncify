@@ -67,7 +67,6 @@ describe('SettingsView — Reset to Defaults covers every category', () => {
       if (command === 'get_lyrics_config') return null
       if (command === 'get_metadata_preferences') return null
       if (command === 'get_advanced_settings') return null
-      if (command === 'get_duplicate_settings') return null
       if (command === 'get_audio_processing_settings') return null
       if (command === 'get_folder_settings') return null
       if (command === 'get_download_settings') return null

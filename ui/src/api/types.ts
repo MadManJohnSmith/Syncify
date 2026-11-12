@@ -612,7 +612,6 @@ export interface PlaylistTrack {
 export interface AppSettings {
     download_path: string;
     preferred_quality: string;
-    auto_download_favorites: boolean;
 }
 
 export type PathStatus = 'valid' | 'missing' | 'not_writable' | 'unavailable';
@@ -754,13 +753,14 @@ export interface SyncSettings {
     pause_on_low_battery: boolean;
 }
 
+// #197 (SB02): `incremental_sync` retirado del contrato; la columna
+// (DEFAULT 1) permanece en BD sin lectores.
 export interface ServiceSyncSettings {
     id: number;
     service_name: string;
     sync_favorites: boolean;
     sync_playlists: boolean;
     sync_albums: boolean;
-    incremental_sync: boolean;
     last_synced: string | null;
 }
 
@@ -794,7 +794,6 @@ export interface EffectiveDownloadPreferences {
     rateLimitDelayMs: number;
     maxRetries: number;
     retryDelaySeconds: number;
-    autoDownloadFavorites: boolean;
     generateLyricsLrc: boolean;
     generateCoverArt: boolean;
     generateAnimatedCover: boolean;
@@ -823,17 +822,6 @@ export interface FolderSettings {
     replace_spaces_with: string | null;
     max_path_length: number;
     fallback_action: string;
-}
-
-export interface DuplicateSettings {
-    id: number;
-    enable_detection: boolean;
-    prefer_higher_quality: boolean;
-    prefer_lossless: boolean;
-    replace_same_quality_different_source: boolean;
-    quality_threshold_kbps: number;
-    delete_duplicates_immediately: boolean;
-    move_to_trash: boolean;
 }
 
 export interface AudioProcessingSettings {
@@ -1118,6 +1106,8 @@ export interface DestinationTrackMatch {
     confidence: number;
 }
 
+// #197 (SB02): `incremental_sync` retirado; el sync siempre es recorrido
+// completo (spec #64).
 export interface ImportPreferences {
     service_name: string;
     favorite_tracks: boolean;
@@ -1127,7 +1117,6 @@ export interface ImportPreferences {
     purchases: boolean;
     library_history: boolean;
     include_appearances: boolean;
-    incremental_sync: boolean;
 }
 
 export interface ServiceSyncResult {

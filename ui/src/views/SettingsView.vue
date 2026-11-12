@@ -69,7 +69,6 @@
           <SettingsQuality v-if="activeCategory === 'quality'" />
           <SettingsMetadata v-if="activeCategory === 'metadata'" />
           <SettingsLyrics v-if="activeCategory === 'lyrics'" />
-          <SettingsDuplicates v-if="activeCategory === 'duplicates'" />
           <SettingsProcessing v-if="activeCategory === 'processing'" />
           <SettingsDownloads v-if="activeCategory === 'folders'" />
           <SettingsSync v-if="activeCategory === 'sync'" />
@@ -102,7 +101,6 @@ import SettingsGeneral from './settings/SettingsGeneral.vue'
 import SettingsAppearance from './settings/SettingsAppearance.vue'
 import SettingsServices from './settings/SettingsServices.vue'
 import SettingsLyrics from './settings/SettingsLyrics.vue'
-import SettingsDuplicates from './settings/SettingsDuplicates.vue'
 import SettingsProcessing from './settings/SettingsProcessing.vue'
 import SettingsBackup from './settings/SettingsBackup.vue'
 import SettingsAdvanced from './settings/SettingsAdvanced.vue'
@@ -306,7 +304,8 @@ const settingsCategories = [
   { id: 'quality', name: 'Audio Quality', icon: 'high_quality', desc: 'Format preferences and limits' },
   { id: 'metadata', name: 'Metadata & Tags', icon: 'tag', desc: 'Tagging sources and rules' },
   { id: 'lyrics', name: 'Lyrics', icon: 'lyrics', desc: 'Lyrics providers and storage' },
-  { id: 'duplicates', name: 'Duplicates', icon: 'content_copy', desc: 'Detection and upgrade policy' },
+  // #197 (SB02): la pestaña «Duplicates» se oculta — sus ajustes carecían de
+  // lector; reapertura en docs/auditoria/matriz-ajustes.md.
   { id: 'processing', name: 'Audio Processing', icon: 'graphic_eq', desc: 'Normalization and transcoding' },
   { id: 'folders', name: 'Folder Structure', icon: 'folder_open', desc: 'Naming templates and organization' },
   { id: 'sync', name: 'Sync & Scheduling', icon: 'sync', desc: 'Auto-sync and intervals' },

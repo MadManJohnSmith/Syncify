@@ -7,84 +7,14 @@
         </h3>
       </div>
 
-      <!-- AP-01 Context / Purpose Banner -->
-      <div class="p-3.5 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-start gap-3 text-xs text-text-secondary">
-        <span class="material-symbols-outlined text-blue-500 text-[20px] shrink-0 mt-0.5">info</span>
-        <div>
-          <span class="font-medium text-gray-900 dark:text-white block mb-0.5">When should you use audio processing?</span>
-          <span>Disabled by default because Syncify prioritizes direct bit-perfect downloads from the platforms. Enable it only if your portable player or sound system cannot play advanced formats (DSD, 24-bit FLAC, MQA) and you need conversion to standard MP3 or AAC.</span>
-        </div>
-      </div>
-
       <div v-if="downloadSettings.isLoading.value" class="flex items-center gap-2 text-text-secondary py-4">
         <span class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
         <span class="text-sm">Loading audio settings...</span>
       </div>
       <div v-else class="space-y-6">
-        <!-- Transcoding -->
-        <div class="p-4 bg-white dark:bg-surface-dark rounded-xl border border-gray-200 dark:border-border-dark space-y-3">
-          <BaseToggle
-            title="Enable transcoding"
-            subtitle="Convert rare or hi-res formats to standard consumer formats (MP3/AAC/FLAC)"
-            tooltip="Enables transcoding with FFmpeg. When disabled, files are kept in their native format exactly as downloaded."
-            :checked="audioProcessing.transcode_enabled"
-            @click="toggleTranscoding"
-          />
-
-          <div v-if="audioProcessing.transcode_enabled" class="mt-4 space-y-4 pt-4 border-t border-gray-100 dark:border-gray-700">
-            <div class="grid grid-cols-2 gap-4">
-              <div>
-                <div class="flex items-center gap-1.5 mb-1">
-                  <label class="block text-xs font-medium text-gray-600 dark:text-gray-400">Target format</label>
-                  <span
-                    class="relative group/fmt-tip inline-flex items-center"
-                    title="Target format to convert tracks to."
-                  >
-                    <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 dark:bg-surface-highlight text-gray-600 dark:text-gray-300 text-[10px] font-bold cursor-help">?</span>
-                    <span role="tooltip" class="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 hidden group-hover/fmt-tip:block z-40 w-52 p-2 text-xs font-normal text-white bg-gray-900 dark:bg-gray-800 rounded-lg shadow-xl pointer-events-none">
-                      Final format of the encoded file (MP3, AAC, FLAC, Opus).
-                    </span>
-                  </span>
-                </div>
-                <select
-                  :value="audioProcessing.transcode_format"
-                  @change="setTranscodeFormat(getEventValue($event))"
-                  class="w-full px-3 py-1.5 bg-gray-50 dark:bg-surface-highlight border border-gray-300 dark:border-gray-600 rounded-lg text-xs text-gray-900 dark:text-white"
-                >
-                  <option value="mp3">MP3</option>
-                  <option value="aac">AAC (M4A)</option>
-                  <option value="flac">FLAC</option>
-                  <option value="opus">Opus</option>
-                </select>
-              </div>
-
-              <div>
-                <div class="flex items-center gap-1.5 mb-1">
-                  <label class="block text-xs font-medium text-gray-600 dark:text-gray-400">Bitrate</label>
-                  <span
-                    class="relative group/br-tip inline-flex items-center"
-                    title="Target bitrate for lossy formats (CBR)."
-                  >
-                    <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 dark:bg-surface-highlight text-gray-600 dark:text-gray-300 text-[10px] font-bold cursor-help">?</span>
-                    <span role="tooltip" class="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 hidden group-hover/br-tip:block z-40 w-52 p-2 text-xs font-normal text-white bg-gray-900 dark:bg-gray-800 rounded-lg shadow-xl pointer-events-none">
-                      Compression bitrate. 320 kbps is the maximum quality for MP3.
-                    </span>
-                  </span>
-                </div>
-                <select
-                  :value="audioProcessing.transcode_bitrate"
-                  @change="setTranscodeBitrate(Number(getEventValue($event)))"
-                  class="w-full px-3 py-1.5 bg-gray-50 dark:bg-surface-highlight border border-gray-300 dark:border-gray-600 rounded-lg text-xs text-gray-900 dark:text-white"
-                >
-                  <option :value="128">128 kbps</option>
-                  <option :value="192">192 kbps</option>
-                  <option :value="256">256 kbps</option>
-                  <option :value="320">320 kbps</option>
-                </select>
-              </div>
-            </div>
-          </div>
-        </div>
+        <!-- #197 (SB02): la transcodificación se oculta — la feature no
+             existe aún (el worker no consume sus ajustes); reapertura en la
+             matriz. -->
 
         <!-- Embed Settings -->
         <div class="p-4 bg-white dark:bg-surface-dark rounded-xl border border-gray-200 dark:border-border-dark space-y-4">
@@ -109,30 +39,8 @@
             @click="toggleEmbedArtwork"
           />
 
-          <div v-if="audioProcessing.embed_artwork" class="pt-3 border-t border-gray-100 dark:border-gray-700">
-            <div class="flex justify-between items-center text-xs mb-1">
-              <div class="flex items-center gap-1.5">
-                <label class="font-medium text-gray-700 dark:text-gray-300">Max artwork resolution</label>
-                <span
-                  class="relative group/art-tip inline-flex items-center"
-                  title="Maximum desired resolution for the embedded cover art."
-                >
-                  <span class="inline-flex items-center justify-center w-4 h-4 rounded-full bg-gray-200 dark:bg-surface-highlight text-gray-600 dark:text-gray-300 text-[10px] font-bold cursor-help">?</span>
-                  <span role="tooltip" class="absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 hidden group-hover/art-tip:block z-40 w-56 p-2 text-xs font-normal text-white bg-gray-900 dark:bg-gray-800 rounded-lg shadow-xl pointer-events-none">
-                    Maximum desired width/height dimension. During native download, Syncify fetches the original high-resolution cover and caps the file size at 800 KB for maximum mobile compatibility.
-                  </span>
-                </span>
-              </div>
-              <span class="text-primary font-bold">{{ audioProcessing.artwork_max_size }} px</span>
-            </div>
-            <input
-              type="range"
-              min="500" max="3000" step="100"
-              :value="audioProcessing.artwork_max_size"
-              @input="setArtworkMaxSize(Number(getEventValue($event)))"
-              class="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-primary mt-1"
-            >
-          </div>
+          <!-- #197 (SB02): el tamaño máximo de portada se oculta — el worker
+               fija el límite de tamaño (800 KB) y no consume el ajuste. -->
         </div>
 
         <!-- ReplayGain Settings -->
@@ -214,21 +122,6 @@ const getEventValue = (e: any) => e.target?.value || ''
 const downloadSettings = useDownloadSettings()
 const audioProcessing = computed(() => downloadSettings.audioProcessingSettings)
 
-async function toggleTranscoding() {
-  downloadSettings.audioProcessingSettings.transcode_enabled = !downloadSettings.audioProcessingSettings.transcode_enabled
-  await downloadSettings.saveAudioProcessingSettings()
-}
-
-async function setTranscodeFormat(format: string) {
-  downloadSettings.audioProcessingSettings.transcode_format = format
-  await downloadSettings.saveAudioProcessingSettings()
-}
-
-async function setTranscodeBitrate(bitrate: number) {
-  downloadSettings.audioProcessingSettings.transcode_bitrate = bitrate
-  await downloadSettings.saveAudioProcessingSettings()
-}
-
 async function toggleEmbedLyrics() {
   downloadSettings.audioProcessingSettings.embed_lyrics = !downloadSettings.audioProcessingSettings.embed_lyrics
   await downloadSettings.saveAudioProcessingSettings()
@@ -236,11 +129,6 @@ async function toggleEmbedLyrics() {
 
 async function toggleEmbedArtwork() {
   downloadSettings.audioProcessingSettings.embed_artwork = !downloadSettings.audioProcessingSettings.embed_artwork
-  await downloadSettings.saveAudioProcessingSettings()
-}
-
-async function setArtworkMaxSize(size: number) {
-  downloadSettings.audioProcessingSettings.artwork_max_size = size
   await downloadSettings.saveAudioProcessingSettings()
 }
 

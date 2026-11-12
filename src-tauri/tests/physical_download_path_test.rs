@@ -110,7 +110,6 @@ async fn test_physical_path_persistence_across_restart_and_execution() {
         fallback_action: "strict".to_string(),
         max_concurrent_downloads: 1,
         retry_failed: true,
-        auto_download_favorites: false,
         organize_by_artist: true,
         organize_by_album: true,
         generate_lyrics_lrc: true,

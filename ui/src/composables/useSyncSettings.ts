@@ -13,7 +13,6 @@ export interface ServiceSyncSettingsLocal {
     syncFavorites: boolean
     syncPlaylists: boolean
     syncSavedAlbums: boolean  // Maps to sync_albums in backend
-    incrementalOnly: boolean  // Maps to incremental_sync in backend
     lastSynced: string | null
 }
 
@@ -23,7 +22,6 @@ const defaultServiceSettings: ServiceSyncSettingsLocal = {
     syncFavorites: true,
     syncPlaylists: true,
     syncSavedAlbums: true,
-    incrementalOnly: false,
     lastSynced: null,
 }
 
@@ -112,7 +110,6 @@ async function loadFromBackend() {
                         syncFavorites: svc.sync_favorites,
                         syncPlaylists: svc.sync_playlists,
                         syncSavedAlbums: svc.sync_albums,
-                        incrementalOnly: svc.incremental_sync,
                         lastSynced: svc.last_synced,
                     }
                 }
@@ -170,7 +167,6 @@ async function updateServiceSettings(serviceName: ServiceName | string) {
             settings.syncFavorites,
             settings.syncPlaylists,
             settings.syncSavedAlbums,
-            settings.incrementalOnly,
         )
         const eventBus = useEventBus()
         eventBus.emit('sync-settings-updated', { service: key })

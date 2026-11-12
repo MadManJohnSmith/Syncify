@@ -373,11 +373,13 @@ pub struct DownloadItem {
 }
 
 /// Application settings
+///
+/// #197: `auto_download_favorites` retirado — el disparador de auto-descarga
+/// de favoritos no existe (PLAN A-04); se reabre al cablear el disparador.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub download_path: String,
     pub preferred_quality: String,
-    pub auto_download_favorites: bool,
 }
 
 /// Library statistics
@@ -505,6 +507,10 @@ pub struct ServiceNotification {
 }
 
 /// Unified Import Preferences per Service DTO
+///
+/// #197: `incremental_sync` retirado del contrato — ningún código lo leía para
+/// decidir el recorrido del sync (siempre recorrido completo, spec #64); la
+/// columna con DEFAULT 1 permanece en BD sin consumidores.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportPreferences {
     pub service_name: String,
@@ -515,7 +521,6 @@ pub struct ImportPreferences {
     pub purchases: bool,
     pub library_history: bool,
     pub include_appearances: bool,
-    pub incremental_sync: bool,
     #[serde(default)]
     pub force_retry_unavailable: bool,
 }
@@ -595,7 +600,6 @@ impl Default for ImportPreferences {
             purchases: false,
             library_history: false,
             include_appearances: false,
-            incremental_sync: true,
             force_retry_unavailable: false,
         }
     }
@@ -621,7 +625,6 @@ pub struct EffectiveDownloadPreferences {
     pub rate_limit_delay_ms: u32,
     pub max_retries: u32,
     pub retry_delay_seconds: u32,
-    pub auto_download_favorites: bool,
     pub generate_lyrics_lrc: bool,
     pub generate_cover_art: bool,
     pub generate_animated_cover: bool,

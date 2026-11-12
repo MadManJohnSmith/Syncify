@@ -51,7 +51,8 @@ pub struct ServiceSyncSettings {
     pub sync_library_history: bool,
     #[serde(default)]
     pub sync_include_appearances: bool,
-    pub incremental_sync: bool,
+    // #197: `incremental_sync` fuera del contrato; la columna (DEFAULT 1)
+    // permanece en BD sin lectores hasta la retirada de esquema.
     pub last_synced: Option<String>,
 }
 
@@ -83,18 +84,9 @@ pub struct FolderSettings {
     pub fallback_action: String,
 }
 
-/// Duplicate detection and handling settings (singleton)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct DuplicateSettings {
-    pub id: i64,
-    pub enable_detection: bool,
-    pub prefer_higher_quality: bool,
-    pub prefer_lossless: bool,
-    pub replace_same_quality_different_source: bool,
-    pub quality_threshold_kbps: i64,
-    pub delete_duplicates_immediately: bool,
-    pub move_to_trash: bool,
-}
+// #197 (SB02): el struct `DuplicateSettings` se retiró junto a sus comandos
+// CRUD; la tabla `duplicate_settings` permanece para el reset y su reapertura
+// está registrada en docs/auditoria/matriz-ajustes.md.
 
 /// Audio processing settings (singleton)
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

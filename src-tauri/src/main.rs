@@ -1204,8 +1204,9 @@ fn main() {
             commands::get_folder_settings,
             commands::update_folder_settings,
             commands::preview_folder_path,
-            commands::get_duplicate_settings,
-            commands::update_duplicate_settings,
+            // #197 (SB02): get_duplicate_settings/update_duplicate_settings
+            // retirados; la tabla sigue para el reset y la matriz lleva el
+            // plan de reapertura de la deduplicacion configurable.
             commands::get_audio_processing_settings,
             commands::get_available_qualities_for_service,
             commands::update_audio_processing_settings,
