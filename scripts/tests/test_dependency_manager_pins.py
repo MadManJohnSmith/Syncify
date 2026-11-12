@@ -110,6 +110,17 @@ class PinTableIntegrityTest(unittest.TestCase):
         for platform in ("windows", "linux"):
             self.assertIn("v1.5.1", fpcalc[platform])
 
+    def test_flac_is_the_pinned_official_xiph_build(self):
+        # Row added for the Windows verification family (#268): the `flac`
+        # CLI the integration tests drive, which apt provides on the Linux
+        # leg. Not a bundled tool: it never ships in a release.
+        self.assertNotIn("flac", dependency_manager.BUNDLED_TOOLS)
+        url = dependency_manager.TOOL_URLS["flac"]["windows"]
+        self.assertIn("github.com/xiph/flac/releases/download/", url)
+        self.assertIn("/1.5.0/", url, "flac must pin an explicit upstream version")
+        self.assertNotIn("/latest/", url)
+        self.assertRegex(dependency_manager.KNOWN_SHA256_HASHES["flac"]["windows"], SHA256_RE)
+
     def test_ffprobe_is_a_byproduct_with_no_url_row(self):
         # ffprobe travels inside the pinned ffmpeg archive; a URL row of its
         # own would promise a source that does not exist.
@@ -282,6 +293,19 @@ class ExternalBinPlacementTest(unittest.TestCase):
         self.assertEqual(found, self.bin_dir / "fpcalc")
         self.assertIsNone(missing)
         which.assert_not_called()
+
+    def test_archive_exe_dir_hint_resolves_nested_layouts(self):
+        # Xiph's flac archive nests the exe in <top>/Win64/: without the
+        # ARCHIVE_EXE_DIRS hint `install flac` extracts fine but never
+        # verifies, because find_bundled_tool only scans flat and <top>/bin/.
+        nested = self.bin_dir / "flac-1.5.0-win" / "Win64"
+        nested.mkdir(parents=True)
+        (nested / "flac.exe").write_bytes(b"MZ")
+        with patch.object(dependency_manager, "BIN_DIR", self.bin_dir), \
+                patch.object(dependency_manager, "get_platform", return_value="windows"):
+            found = dependency_manager.find_bundled_tool("flac")
+        self.assertIsNotNone(found)
+        self.assertEqual(found, nested / "flac.exe")
 
     def test_missing_fpcalc_is_downloaded_from_the_pin_table(self):
         (self.bin_dir / "ffmpeg").write_bytes(b"pinned ffmpeg")

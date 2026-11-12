@@ -21,6 +21,9 @@ jobs:
     # cualquier string no vacio (incluido "false") es truthy, la trampa que
     # costo 5 commits de reparacion. Aqui solo viaja UN output, una lista
     # JSON que los tres jobs consultan por pertenencia exacta.
+    # El workflow que ejecuta la familia es parte de cada area: tocar ci.yml
+    # re-ejecuta la familia en las dos patas del matrix, la misma filosofia
+    # fail-safe del fallback (correr todo antes que no correr nada).
     outputs:
       areas: ${{ steps.areas.outputs.areas }}
     steps:
@@ -30,7 +33,7 @@ jobs:
       with:
         base: ${{ github.event.pull_request.base.sha || github.event.before }}
         ref: ${{ github.sha }}
-        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\nfrontend:\n  - 'ui/**'\npython:\n  - 'scripts/**'\n"
+        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\n  - '.github/workflows/ci.yml'\nfrontend:\n  - 'ui/**'\n  - '.github/workflows/ci.yml'\npython:\n  - 'scripts/**'\n  - '.github/workflows/ci.yml'\n"
     - id: areas
       name: Resolver areas afectadas (fallback incluido)
       env:
@@ -41,8 +44,15 @@ jobs:
   rust:
     name: Rust (src-tauri · check · test · clippy · fmt)
     needs: changed
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # La familia de verificacion corre en las dos patas (#268): la de Linux es
+    # la hermana historica; la de Windows consume solo lo versionado (WebView2
+    # en vez de webkit2gtk, herramientas de test desde el proveedor pineado).
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     defaults:
       run:
         working-directory: src-tauri
@@ -71,16 +81,47 @@ jobs:
     #    tambien (conservador, a cambio de una clave unica y sin estado).
     - name: Reintentos de apt ante un mirror lento (Acquire::Retries)
       run: 'echo "Acquire::Retries \"5\";" | sudo tee /etc/apt/apt.conf.d/80-retries'
-      if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Linux'
     - name: Cache de paquetes apt descargados
       uses: actions/cache@v4
       with:
         path: /var/cache/apt/archives
         key: apt-v1-${{ runner.os }}-${{ hashFiles('**/ci.yml') }}
-      if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Linux'
     - name: Instalar dependencias nativas de Tauri (GTK y WebKit2GTK)
       run: "sudo apt-get update\nsudo apt-get install -y \\\n  ffmpeg \\\n  flac \\\n  libasound2-dev \\\n  libwebkit2gtk-4.1-dev \\\n  libgtk-3-dev \\\n  libayatana-appindicator3-dev \\\n  librsvg2-dev\n"
-      if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Linux'
+    # En Windows Tauri usa WebView2 (no webkit2gtk): check/clippy/test no
+    # necesitan dependencias GTK. Las herramientas de test (ffmpeg/ffprobe/
+    # fpcalc/flac) no vienen de un gestor de paquetes sino del proveedor
+    # pineado del arbol (scripts/dependency_manager.py, SHA-256 verificado),
+    # la misma tabla que consumen los builds de release.
+    - name: Configurar Python 3.11 (host CI para el proveedor de pines)
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Descargar y colocar herramientas pineadas (ffmpeg, ffprobe, fpcalc, flac)
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
+      working-directory: ${{ github.workspace }}
+      shell: bash
+      run: |
+        python scripts/dependency_manager.py place-external --triple x86_64-pc-windows-msvc
+        python scripts/dependency_manager.py install flac
+    - name: Herramientas pineadas en PATH
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
+      working-directory: ${{ github.workspace }}
+      shell: bash
+      run: |
+        for tool in ffmpeg ffprobe fpcalc flac; do
+          dir="$(python -c "import sys; sys.path.insert(0, 'scripts'); import dependency_manager; p = dependency_manager.get_tool_path('$tool'); print(p.parent if p else '')")"
+          if [ -z "$dir" ]; then
+            echo "::error::Herramienta $tool no encontrada en bin/ tras el proveedor"
+            exit 1
+          fi
+          echo "$dir" >> "$GITHUB_PATH"
+          echo "$tool -> $dir"
+        done
     - name: Comprobar ejecutable FLAC requerido por tests
       run: flac --version
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
@@ -99,6 +140,10 @@ jobs:
       uses: Swatinem/rust-cache@v2
       with:
         workspaces: src-tauri
+        # Aislamiento explicito de las dos patas del matrix: target/debug
+        # contiene artefactos MSVC en Windows y ELF en Linux; que no se
+        # crucen aunque la accion ya separe por OS.
+        key: ${{ runner.os }}
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
     - name: Configurar Node.js 20 con cache npm
       uses: actions/setup-node@v4
@@ -114,6 +159,45 @@ jobs:
     - name: cargo check --all-targets --locked
       run: cargo check --all-targets --locked
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
+    # Los exe de test no llevan el manifiesto que tauri-build embebe en el
+    # binario de la app: el loader de Windows resuelve comctl32 v5 y mueren al
+    # cargar (STATUS_ENTRYPOINT_NOT_FOUND) por imports que solo existen en v6
+    # (SetWindowSubclass y compania, via tao/wry). Mismo problema y misma cura
+    # que la guardia del keyring en build-windows.yml: compilar sin ejecutar,
+    # embeber el manifiesto v6 con mt.exe en cada exe de deps/ y correr.
+    - name: Compilar binarios de test sin ejecutar (base del manifiesto comctl32)
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
+      run: cargo test --locked --no-run
+    - name: Embeber manifiesto comctl32 v6 en los exe de test
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $mt = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\mt.exe" |
+                Sort-Object FullName -Descending | Select-Object -First 1
+        if (-not $mt) { throw "mt.exe no encontrado en Windows Kits" }
+        Write-Host "mt: $($mt.FullName)"
+        $manifest = Join-Path $env:RUNNER_TEMP "comctl32-v6.manifest"
+        $manifestLines = @(
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">'
+          '  <dependency>'
+          '    <dependentAssembly>'
+          '      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>'
+          '    </dependentAssembly>'
+          '  </dependency>'
+          '</assembly>'
+        )
+        $manifestLines | Set-Content -Encoding UTF8 $manifest
+        # El target/ del workspace vive en la raiz del repo, no en src-tauri/.
+        $deps = Join-Path $env:GITHUB_WORKSPACE "target\debug\deps"
+        $patched = 0
+        Get-ChildItem -Path $deps -Filter "*.exe" | ForEach-Object {
+          & $mt.FullName -manifest $manifest -outputresource:"$($_.FullName);#1" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "mt.exe fallo con $($_.Name)" }
+          $patched++
+        }
+        Write-Host "Manifiesto embebido en $patched exe de test"
     - name: Suite de tests completa
       run: cargo test --locked
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
@@ -130,8 +214,14 @@ jobs:
   frontend:
     needs: changed
     name: Frontend (ui · vue-tsc · vitest)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Mismo matrix que la familia rust (#268): la UI y su suite son
+    # cross-platform (Node/Vitest/Vue-tsc), no hay pasos por OS.
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     defaults:
       run:
         working-directory: ui
@@ -166,8 +256,14 @@ jobs:
   python:
     needs: changed
     name: Python (bridges · tests unitarios)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Mismo matrix que la familia rust (#268): la suite ya declara sus casos
+    # POSIX con skipIf(IS_WINDOWS) y las dependencias tienen ruedas Windows.
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
     - name: Area sin cambios
       working-directory: ${{ github.workspace }}
