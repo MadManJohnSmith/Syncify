@@ -233,6 +233,7 @@ export const TauriEvents = {
     SYNC_PROGRESS: 'sync-progress',
     SYNC_COMPLETE: 'sync-complete',
     SYNC_FAILED: 'sync-failed',
+    MB_DUMP_PROGRESS: 'mb-dump-progress',
 
     // Auth events
     AUTH_STATE_UPDATED: 'auth-state-updated',

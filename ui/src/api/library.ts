@@ -111,6 +111,52 @@ export async function getLibraryStats(): Promise<LibraryStats> {
 }
 
 /**
+ * Catálogo local MusicBrainz (mb_dump_*): tipos y wrappers de los comandos
+ * `import_mb_dump` / `get_mb_dump_state` (issues #264 punto 1). Los campos
+ * llegan con las claves snake_case de los structs Rust.
+ */
+export interface MbDumpImportCounts {
+    recording: number;
+    artist: number;
+    artist_credit_name: number;
+    isrc: number;
+}
+
+export interface MbDumpImportState {
+    dump_path: string;
+    dump_timestamp: string;
+    schema_version: number;
+    recording_rows: number;
+    isrc_rows: number;
+    artist_rows: number;
+    artist_credit_name_rows: number;
+    status: 'importing' | 'completed' | 'failed';
+    error: string | null;
+    imported_at: string | null;
+}
+
+export interface MbDumpProgress {
+    table: string;
+    rows: number;
+    expected: number;
+}
+
+/**
+ * Importa un mbdump legacy de MusicBrainz al catálogo local. Larga: resuelve
+ * al terminar; el progreso llega por el evento MB_DUMP_PROGRESS.
+ */
+export async function importMbDump(dumpPath: string): Promise<MbDumpImportCounts> {
+    return invokeCommand<MbDumpImportCounts>('import_mb_dump', { dumpPath });
+}
+
+/**
+ * Último intento de importación del catálogo; null si nunca se importó.
+ */
+export async function getMbDumpImportState(): Promise<MbDumpImportState | null> {
+    return invokeCommand<MbDumpImportState | null>('get_mb_dump_state');
+}
+
+/**
  * Search tracks using FTS5 (paginated)
  */
 export async function searchTracks(

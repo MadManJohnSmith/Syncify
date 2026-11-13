@@ -231,6 +231,16 @@
           <span v-else>Starting...</span>
         </button>
 
+        <!-- MB Dump Catalog Button (#264 punto 1): importación local del mbdump -->
+        <button
+          @click="toggleMbDumpPanel"
+          :class="['flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all border', mbDumpPanelOpen ? 'bg-primary/20 text-primary border-primary/40' : 'bg-primary/10 text-primary hover:bg-primary/20 border-primary/30']"
+          title="Import a local MusicBrainz mbdump catalog"
+        >
+          <span class="material-symbols-outlined text-[16px]">storage</span>
+          <span>MB Catalog</span>
+        </button>
+
         <!-- MF-BULK-15: no complete account/playlist inventory or safe preview API is exposed yet. -->
         <button
           type="button"
@@ -314,6 +324,34 @@
             </button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- MB dump catalog import (#264 punto 1): panel mínimo colapsable -->
+    <div v-if="mbDumpPanelOpen" class="px-8 pb-3">
+      <div class="p-4 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl space-y-3">
+        <div class="flex items-center gap-2">
+          <input
+            v-model="mbDumpPath"
+            type="text"
+            placeholder="Path to the MusicBrainz mbdump (tar with recording/isrc/artist/artist_credit_name)"
+            class="flex-1 px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm text-ink focus:outline-none focus:ring-2 focus:ring-primary transition-all"
+            :disabled="mbDumpImporting"
+          >
+          <button
+            @click="startMbDumpImport"
+            :disabled="mbDumpImporting || !mbDumpPath.trim()"
+            class="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <span :class="['material-symbols-outlined text-[16px]', mbDumpImporting && 'animate-spin']">{{ mbDumpImporting ? 'progress_activity' : 'upload_file' }}</span>
+            <span>{{ mbDumpImporting ? 'Importing…' : 'Import catalog' }}</span>
+          </button>
+        </div>
+        <p v-if="mbDumpProgressLine" class="text-xs text-text-secondary">{{ mbDumpProgressLine }}</p>
+        <p v-if="mbDumpMessage" :class="['text-xs', mbDumpError ? 'text-error' : 'text-primary']">{{ mbDumpMessage }}</p>
+        <p v-if="!mbDumpMessage && mbDumpState" class="text-xs text-text-secondary">
+          Last import: {{ mbDumpState.status }} · {{ mbDumpState.recording_rows }} recordings · {{ mbDumpState.artist_credit_name_rows }} artist credits · {{ mbDumpState.isrc_rows }} isrcs<template v-if="mbDumpState.error"> · {{ mbDumpState.error }}</template>
+        </p>
       </div>
     </div>
 
@@ -1122,7 +1160,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
-import { libraryApi, searchTracks, enqueueTracks, reconcileQueue }  from '@/api/library'
+import { libraryApi, searchTracks, enqueueTracks, reconcileQueue, importMbDump, getMbDumpImportState, type MbDumpImportState, type MbDumpProgress }  from '@/api/library'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
 import { metadataApi } from '@/api/metadata'
@@ -2676,6 +2714,44 @@ async function focusTrackFromQuery() {
 // Lifecycle
 let queueStatsInterval: ReturnType<typeof setInterval> | null = null
 
+// MB dump catalog import (#264 punto 1)
+const mbDumpPanelOpen = ref(false)
+const mbDumpPath = ref('')
+const mbDumpImporting = ref(false)
+const mbDumpProgressLine = ref('')
+const mbDumpMessage = ref('')
+const mbDumpError = ref(false)
+const mbDumpState = ref<MbDumpImportState | null>(null)
+
+function toggleMbDumpPanel() {
+  mbDumpPanelOpen.value = !mbDumpPanelOpen.value
+  if (mbDumpPanelOpen.value) {
+    getMbDumpImportState()
+      .then((s) => { mbDumpState.value = s })
+      .catch(() => { mbDumpState.value = null })
+  }
+}
+
+async function startMbDumpImport() {
+  if (mbDumpImporting.value || !mbDumpPath.value.trim()) return
+  mbDumpImporting.value = true
+  mbDumpError.value = false
+  mbDumpMessage.value = ''
+  mbDumpProgressLine.value = ''
+  try {
+    const counts = await importMbDump(mbDumpPath.value.trim())
+    mbDumpMessage.value = `Catalog imported: ${counts.recording} recordings · ${counts.artist_credit_name} artist credits · ${counts.isrc} isrcs · ${counts.artist} artists`
+  } catch (e) {
+    mbDumpError.value = true
+    mbDumpMessage.value = `Import failed: ${e instanceof Error ? e.message : String(e)}`
+  } finally {
+    mbDumpImporting.value = false
+    getMbDumpImportState()
+      .then((s) => { mbDumpState.value = s })
+      .catch(() => { mbDumpState.value = null })
+  }
+}
+
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleKeydown)
@@ -2698,6 +2774,9 @@ onMounted(async () => {
   })
   eventBus.on(TauriEvents.SYNC_COMPLETE, async () => {
     debouncedReloadLibrary()
+  })
+  eventBus.on(TauriEvents.MB_DUMP_PROGRESS, (progress: MbDumpProgress) => {
+    mbDumpProgressLine.value = `${progress.table}: ${progress.rows}/${progress.expected} rows`
   })
   eventBus.on(TauriEvents.DOWNLOAD_PROGRESS, async () => {
     fetchQueueStats()
