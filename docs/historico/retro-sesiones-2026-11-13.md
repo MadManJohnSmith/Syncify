@@ -81,6 +81,14 @@ secuencia avanzó de paso). Lecciones:
   expresión de plantilla (error de compilación Vue), tipo inventado
   `tauri::UrlParseError` (E0425) y move de `cookies` tomado prestado (E0505),
   más una línea fuera de fmt. Los arregló el jefe de gabinete en el worktree;
-  clippy/check/fmt/1149 tests UI/430 Python/38 de docs en verde tras ellos.
-  La suite Rust completa quedó corriendo en background al cierre de este
-  apunte; su resultado, en el handoff del carril.
+  clippy/check/fmt/1149 tests UI/430 Python/38 de docs en verde tras ellos,
+  y la suite Rust completa acreditó 328 binarios con 3046 passed y 0 failed
+  (batch_50 con un hilo: 2/2). El carril cerró con squash-merge en `dev`
+  (`4136a67`, PR #283, 8/8 checks); el issue #63 queda abierto a la espera de
+  la corrida real del operador.
+- **Casi-error capturado antes de empujar**: `git add -A` en el worktree
+  commiteó los symlinks del entorno (`.venv`, `ui/node_modules`) — los
+  patrones de `.gitignore` con barra final ignoran directorios, no symlinks.
+  Detectado en la revisión del commit y corregido con `git rm --cached` +
+  amend antes del push. Lección: tras enlazar entorno en un worktree, el
+  staging es `git add` explícito por fichero, nunca `-A`.
