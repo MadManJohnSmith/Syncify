@@ -33,9 +33,7 @@ pub async fn debug_deezer_cookie_probe(app: tauri::AppHandle) -> Result<String, 
         .map_err(|e| e.to_string())?
         .join("debug-deezer-probe");
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    let url: tauri::Url = "https://www.deezer.com/login"
-        .parse()
-        .map_err(|e: tauri::UrlParseError| e.to_string())?;
+    let url = tauri::Url::parse("https://www.deezer.com/login").map_err(|e| e.to_string())?;
     let window = tauri::WebviewWindowBuilder::new(
         &app,
         "debug-deezer-cookie-probe",
@@ -57,7 +55,7 @@ pub async fn debug_deezer_cookie_probe(app: tauri::AppHandle) -> Result<String, 
             .map_err(|e| format!("Could not read cookie metadata: {e}"))?;
         if let Some(arl) = cookies.iter().find(|cookie| cookie.name() == "arl") {
             let mut report = String::from("Deezer cookie metadata (values omitted):\n");
-            for cookie in cookies {
+            for cookie in &cookies {
                 use std::fmt::Write;
                 let _ = writeln!(
                     report,

@@ -25,10 +25,12 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
 ## Especificaciones de Módulos y Arquitectura Vigente
 
 - **`features/`**: especificaciones funcionales de los subsistemas principales
-  (8 ficheros). Cada una abre con un sello `**Estado de revisión:**` que dice
+  (9 ficheros). Cada una abre con un sello `**Estado de revisión:**` que dice
   cuándo se contrastó contra el árbol:
   - `auth-flow.md`: flujos de autenticación OAuth, PKCE y scraping de sesión,
     reconciliación multi-cuenta.
+  - `authentication.md`: la sonda de diagnóstico solo-debug del login de
+    Deezer (cookie jar, sin valores) de AUTH-WV-01.
   - `download-pipeline.md`: arquitectura del orquestador, cola y los motores
     nativos por proveedor.
   - `track-browser.md`: la maquinaria de listas de pistas — kernel de ventana

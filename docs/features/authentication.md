@@ -1,3 +1,6 @@
+# Deezer debug cookie probe
+
+**Estado de revisión:** 2026-11-13 — fichero creado con AUTH-WV-01 (issue #63, PR #283), revisado contra el árbol de ese PR: el comando `debug_deezer_cookie_probe` es `#[cfg(debug_assertions)]` en `src-tauri/src/commands/auth.rs`, su invocador en debug es el botón de `ui/src/views/settings/SettingsAdvanced.vue` gated por `import.meta.env.DEV` (via wrapper en `ui/src/api/accounts.ts`). No verificado en escritorio real: la corrida con login vivo de Deezer la hace el operador (evidencia esperada del issue #63); GUI y red viva siguen sin ejercitarse en CI.
 
 ## Deezer debug cookie probe
 
