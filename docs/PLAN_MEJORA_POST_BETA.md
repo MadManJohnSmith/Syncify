@@ -38,7 +38,7 @@ migración #164, letras #176, ajustes/backup #195):
 
 - **A-01** cuarentena → #72 (T08); complementan #77 y spec #64.
 - **A-02** huella de playlist → spec #64 y adaptadores #66–#68.
-- **A-03** `incremental_sync` → retirado por decisión de spec #64; la retirada efectiva la ejecuta #197.
+- **A-03** `incremental_sync` → retirado por decisión de spec #64; la retirada efectiva la ejecutó #197 (SB02, 2026-11-12).
 - **A-04** parcial: el manual está cubierto (#114, #122, #148); falta el disparador automático.
 - **A-05** en espera (sin watcher ni feed de lanzamientos).
 - **A-06** parcial: el insumo está en #161 (PL08); faltan disparador y `is_owned`.
@@ -86,12 +86,12 @@ recorrido completo. Es un no-op de punta a punta: o se implementa (encima de A-0
 retira el ajuste para que deje de mentir en la UI. `◆`_
 
 _A-04 · `parcial` · **`auto_download_favorites` — el motor sin disparador.** El
-ajuste existe, tiene onboarding (`ui/src/OnboardingWizard.vue:850`) y un motor completo
-de encolado (`src-tauri/src/commands/favorites.rs:2719`) con guardrails, clasificación de
-fallos 404/stale/ambiguo y **preview seco ya implementado** (`favorites.rs:3077`). Lo que
-no existe es el disparador: **cero lecturas en Rust**. La feature pedida está al 90%.
-Encadenamiento recomendado: primero modo propuesta/notificación (la infraestructura de
-preview ya está), después auto-encolado opt-in. `◆`_
+ajuste se retiró de la superficie en #197 (SB02, 2026-11-12): ni onboarding ni UI
+exponen ya la KV, que queda huérfana sin lectores hasta que el disparador exista.
+El motor de encolado de favoritos con guardrails sigue en el backend; lo que no
+existe es el disparador. Encadenamiento recomendado: primero modo
+propuesta/notificación, después auto-encolado opt-in; al conectarlo, re-exponer el
+ajuste (fila SB02-R2 de la matriz). `◆`_
 
 _A-05 · `en espera` · **Auto-descarga por artista seguido.** No hay watcher de
 nuevos lanzamientos. La condición natural es: sigue a X → sale álbum → se encola la

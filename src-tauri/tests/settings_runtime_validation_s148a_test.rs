@@ -254,7 +254,6 @@ async fn test_runtime_validation_suite_s148a() {
         rate_limit_delay_ms: 800,
         max_retries: 4,
         retry_delay_seconds: 8,
-        auto_download_favorites: true,
         generate_lyrics_lrc: true,
         generate_cover_art: true,
         generate_animated_cover: true,

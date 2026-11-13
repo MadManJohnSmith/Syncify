@@ -718,3 +718,48 @@ Hallazgo (#261): los dos ajustes se guardaban desde la superficie de descargas p
 | RET-02 | `dl_retry_delay` (KV `settings`) | Mismos sitios (`retryDelay` / `retry_delay_ms`) y, al guardar, `perform_save_download_settings` pisaba `sync_settings.rate_limit_delay_ms` (el «Retardo entre descargas» de Sync) con el valor del ajuste retirado | Campo fuera del DTO; el UPDATE de `sync_settings` ya no toca `rate_limit_delay_ms`, que conserva su propia superficie (`save_sync_settings`) | Misma mentira, más una contaminación cruzada: el espaciado real es `BACKOFF_SCHEDULE` + jitter de #260, y `rate_limit_delay_ms` es otro ajuste con dueño | Bajo: quien llamara al comando ya no puede pisar el retardo de Sync desde la superficie retirada; el wrapper UI (`saveDownloadSettings`) nunca envía esos campos | Mismas suites que RET-01; el valor de Sync queda intacto tras un guardado de descargas | Cablear post-beta solo con política de producto explícita: espaciado parametrizable en el dominio conviviendo con el jitter; mientras, nada que cablear | retirado (#261) |
 
 **Evidencia (2026-11-10, rama `ticket-261-retirar-dl-retry`):** ver el cuerpo del PR de #261 (fmt, clippy, `cargo check --workspace --all-targets`, `cargo test --locked --no-fail-fast`, build + vitest de UI, puertas Python, todo en verde).
+
+## SB02 — huérfanos ocultos e interruptor de sync incremental retirado (#197, 2026-11-12)
+
+Aplicación del ADR-0019 (decisión 2): un ajuste existe solo con lector; el que no
+tiene consumidor deja de renderizarse y queda registrado aquí con el plan que lo
+reabre. Ninguna migración aplicada se editó ni ninguna columna se borró: los
+valores en BD quedan como huérfanos inofensivos y vuelven a exponerse cuando su
+feature exista. La vista entera de Duplicados sale del sidebar; `get_duplicate_stats`
+(detección real de la biblioteca, DUP-01) no se toca. Los controles de Avanzado con
+lector (`log_level`/`log_to_file`, consumidos por `services/logging.rs`) y la pareja
+ReplayGain/target loudness (flujo del reproductor, P07) quedan visibles.
+
+### Retirados de la superficie (mecanismo #261: fuera de UI, DTO y escritura)
+
+| ID | Ajuste retirado | Dónde vivía | Qué se hizo | Por qué | Prueba | Plan de reapertura | Estado |
+|---|---|---|---|---|---|---|---|
+| SB02-R1 | `incremental_sync` (columna `service_sync_settings`, DEFAULT 1) | `AccountsView.vue` (pestaña Advanced del modal), `SettingsSync.vue` (checkbox por servicio), `useSyncSettings.ts` (`incrementalOnly`), `OnboardingWizard.vue` (payload), `ImportPreferences` (`commands/types.rs`), `ServiceSyncSettings` (`models.rs`), CRUD en `commands/settings.rs` | Interruptor fuera de las dos vistas y del DTO/CRUD; el sync siempre fue recorrido completo y ningún código leía la columna | A-03 del PLAN post-beta: interruptor muerto de punta a punta; la decisión de retirarlo ya estaba tomada (spec #64) | SettingsSyncScope («no exposed»), AccountsSyncUnification sin el campo, `import_preferences_sync_test` con regresión de columna huérfana, `service_sync_settings_migration_test` en 4 args | Si la spec de sync implementa sincronización incremental (encima de A-02): nueva migración que re-exponga el valor, fila aquí antes de tocar código | retirado (#197) |
+| SB02-R2 | `auto_download_favorites` (KV `auto_download_favorites` y `dl_auto_download_favorites`) | `DownloadsView.vue` (toggle), `OnboardingWizard.vue` (toggle + KV), `useDownloadSettings.ts` (estado y lote), `AppSettings` y `EffectiveDownloadPreferences` (`commands/types.rs`), `get_app_settings`/`service_save_settings` (`commands/service.rs`), DTO de descargas (`commands/settings.rs`) | Toggle fuera de las dos vistas y de los tres DTOs; las lecturas/escrituras de ambas KVs fuera de los comandos | A-04 del PLAN: el motor de encolado existe pero el disparador no — cero lecturas en Rust; el ajuste visible mentía. Decisión del propietario en #264 resuelta: oculto hasta post-beta con el mismo mecanismo que R1 | OnboardingWizardPersistence (la KV ya no se escribe), SettingsDownloads/useDownloadSettings sin el campo, suites Rust de descargas sin los campos | Conectar el disparador al motor de encolado de favoritos (modo propuesta/notificación primero, luego auto-encolado opt-in) y re-exponer el ajuste; preregistrar fila aquí | retirado (#197) |
+| SB02-R3 | atributo `#[tauri::command]` de `perform_get_service_preferences` | `commands/settings.rs` | Atributo fuera del helper interno con dos consumidores; el comando registrado es `get_service_preferences` | Higiene del ADR-0019 (decisión 6): atributo de comando sin registro | `cargo check`/clippy; barrido `#[tauri::command]` vs `generate_handler!` en verde | — | retirado (#197) |
+| SB02-R4 | comandos `get_duplicate_settings` / `update_duplicate_settings` | `commands/settings.rs`, `main.rs`, `ui/src/api/settings.ts`, `useDownloadSettings.ts` | Comandos fuera de `generate_handler!` y del código (patrón IN-5); la tabla `duplicate_settings` y su reset permanecen | Sin su vista no queda invocador y la puerta `dead_commands_hygiene` exige cero huérfanos registrados | Puerta `dead_commands_hygiene` en verde; `queries_consistency_test` (tabla para reset) intacto | Con la deduplicación configurable: reaparecen DTO y comandos; fila previa aquí | retirado (#197) |
+
+### Ocultos del render (comandos de superficie que siguen vivos sin cambios)
+
+| ID | Ajuste oculto | Dónde se oculta | Plan de reapertura | Estado |
+|---|---|---|---|---|
+| SB02-H1 | `duplicate_settings` completo (7 ajustes; pestaña «Duplicates» entera) | `SettingsView.vue` (categoría fuera), vista eliminada; la tarjeta viva de estadísticas (`get_duplicate_stats`) se reubicará cuando la deduplicación configurable exista | Feature de deduplicación configurable con resolución (mover a papelera, umbral kbps, preferir lossless): recablear DTO/comandos y re-crear la pestaña | oculto (#197) |
+| SB02-H2 | `transcode_enabled`, `transcode_format`, `transcode_bitrate`, `keep_original_after_transcode` (y su banner AP-01) | `SettingsProcessing.vue` | Transcodificación con FFmpeg cableada al worker: el bloque reaparece con sus valores de BD intactos (la CRUD siguió viva) | oculto (#197) |
+| SB02-H3 | `artwork_max_size` | `SettingsProcessing.vue` | Si el worker pasa a consumir el ajuste en vez del límite fijo de 800 KB | oculto (#197) |
+| SB02-H4 | KV `db_location` (visor deshabilitado) | `SettingsGeneral.vue`, `useGeneralSettings.ts` | Solo si el motor llega a soportar reubicación de BD; AJ-01 queda anulado por esta decisión (el visor mostraba una KV sin lector) | oculto (#197) |
+| SB02-H5 | `enable_acoustid` | Ya no se renderizaba (sin control); queda registrado | Enriquecimiento por AcoustID cableado al enriquecedor | oculto (#197, sin render previo) |
+| SB02-H6 | `cache_enabled`, `cache_max_size_mb`, `cache_ttl_hours` | `SettingsAdvanced.vue` (sección Cache fuera) | Caché de imágenes/metadatos con lector operativo | oculto (#197) |
+| SB02-H7 | `use_acoustic_fingerprinting`, `prefer_exact_matches`, `fuzzy_match_threshold` | Ya no se renderizaban (sin control) | Matching acústico/exacto cableado al matcher | oculto (#197, sin render previo) |
+| SB02-H8 | `use_proxy`, `proxy_url` | Ya no se renderizaban (sin control) | Soporte de proxy en los puentes/red | oculto (#197, sin render previo) |
+| SB02-H9 | `request_timeout_seconds`, `worker_timeout_seconds`, `max_concurrent_imports` | `SettingsAdvanced.vue` (sección Workers fuera; timeout de red fuera de Network) | Timeouts parametrizables con lector en el runtime de red/worker | oculto (#197) |
+| SB02-H10 | `debug_mode`, `verbose_api_logging` | `SettingsAdvanced.vue` (toggles de debug fuera) | Log verbose operado por el runtime; es el «logging» huérfano del ADR-0019 | oculto (#197) |
+
+Fuera de alcance de #197 (quedan como están): `advanced_settings.max_retries` y
+`retry_delay_seconds` (duplicados reales de Servicios según la auditoría — clase
+«duplicados», no «huérfanos»), `enable_lastfm` y flags `write_*` de metadatos
+(cableado de SB03/#198), defaults y reset único (SB00/#196).
+
+**Evidencia (2026-11-12, rama `ticket-197-sb02-huerfanos`):** ver el cuerpo del PR
+de #197: fmt, clippy `-D warnings`, `cargo check --workspace --all-targets`,
+`cargo test --locked --no-fail-fast`, build + vitest de UI (132 ficheros / 1149
+tests), puertas Python, todo en verde.

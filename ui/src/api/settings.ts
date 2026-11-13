@@ -16,7 +16,6 @@ import type {
     ServiceSyncSettings,
     QualityPreference,
     FolderSettings,
-    DuplicateSettings,
     AudioProcessingSettings,
     LyricsProviderSetting,
     LyricsConfig,
@@ -174,19 +173,18 @@ export async function getServiceSyncSettings(): Promise<ServiceSyncSettings[]> {
 /**
  * Update per-service sync settings
  */
+// #197 (SB02): `incrementalSync` fuera del contrato de sync por servicio.
 export async function updateServiceSyncSettings(
     serviceName: string,
     syncFavorites: boolean,
     syncPlaylists: boolean,
-    syncAlbums: boolean,
-    incrementalSync: boolean
+    syncAlbums: boolean
 ): Promise<ServiceSyncSettings> {
     return invokeCommand<ServiceSyncSettings>('update_service_sync_settings', {
         serviceName,
         syncFavorites,
         syncPlaylists,
         syncAlbums,
-        incrementalSync,
     });
 }
 
@@ -241,21 +239,6 @@ export async function previewFolderPath(trackId: number): Promise<string> {
     return invokeCommand<string>('preview_folder_path', { trackId });
 }
 
-/**
- * Get duplicate settings
- */
-export async function getDuplicateSettings(): Promise<DuplicateSettings> {
-    return invokeCommand<DuplicateSettings>('get_duplicate_settings');
-}
-
-/**
- * Update duplicate settings
- */
-export async function updateDuplicateSettings(settings: DuplicateSettings): Promise<DuplicateSettings> {
-    return invokeCommand<DuplicateSettings>('update_duplicate_settings', { settings });
-}
-
-/**
 /**
  * Get audio processing settings
  */
@@ -507,8 +490,7 @@ export async function getDownloadSettings(): Promise<DownloadSettings> {
         'dl_temp_dir',
         'temp_dir',
         'dl_create_artist_folder',
-        'dl_create_album_folder',
-        'dl_auto_download_favorites'
+        'dl_create_album_folder'
     ];
     const [folder, quality, kvRaw, defaultPath] = await Promise.all([
         getFolderSettings().catch(() => null),
@@ -659,8 +641,6 @@ export const settingsApi = {
     getFolderSettings,
     updateFolderSettings,
     previewFolderPath,
-    getDuplicateSettings,
-    updateDuplicateSettings,
     getAudioProcessingSettings,
     updateAudioProcessingSettings,
     getDownloadSettings,

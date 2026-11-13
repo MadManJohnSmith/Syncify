@@ -16,7 +16,6 @@ import { useEventBus } from '@/composables/useEventBus'
 import type {
     QualityPreference,
     FolderSettings,
-    DuplicateSettings,
     AudioProcessingSettings,
 } from '@/api/types'
 
@@ -51,18 +50,6 @@ const folderSettings = reactive<FolderSettings>({
     fallback_action: 'try_next',
 })
 
-// Duplicate settings (singleton)
-const duplicateSettings = reactive<DuplicateSettings>({
-    id: 1,
-    enable_detection: true,
-    prefer_higher_quality: true,
-    prefer_lossless: true,
-    replace_same_quality_different_source: false,
-    quality_threshold_kbps: 64,
-    delete_duplicates_immediately: false,
-    move_to_trash: true,
-})
-
 // Audio processing settings (singleton)
 const audioProcessingSettings = reactive<AudioProcessingSettings>({
     id: 1,
@@ -81,11 +68,12 @@ const audioProcessingSettings = reactive<AudioProcessingSettings>({
 // Note: retryCount/retryDelay were retired (#261) — the worker's retry budget
 // and backoff come from domain constants, so these settings only lied.
 const generalSettings = reactive({
+    // Nota: autoDownloadFavorites se retiró (#197, SB02) — el disparador de
+    // auto-descarga de favoritos no existe (PLAN A-04).
     concurrentDownloads: '3',
     retryFailed: '3',
     organizeByArtist: true,
     organizeByAlbum: true,
-    autoDownloadFavorites: false,
     maxSpeed: 0,
     pauseOnMetered: false,
 })
@@ -241,18 +229,13 @@ async function loadFromBackendInner() {
 
                 generalSettings.concurrentDownloads = effective.maxConcurrentDownloads.toString()
                 generalSettings.retryFailed = effective.maxRetries.toString()
-                generalSettings.autoDownloadFavorites = effective.autoDownloadFavorites
 
                 if (effective.downloadPath) {
                     lastValidLibraryRoot.value = effective.downloadPath
                 }
 
                 // Also load auxiliary singleton tables
-                const [duplicate, audio] = await Promise.all([
-                    settingsApi.getDuplicateSettings().catch(() => null),
-                    settingsApi.getAudioProcessingSettings().catch(() => null),
-                ])
-                if (duplicate) Object.assign(duplicateSettings, duplicate)
+                const audio = await settingsApi.getAudioProcessingSettings().catch(() => null)
                 if (audio) Object.assign(audioProcessingSettings, audio)
 
                 return
@@ -269,14 +252,12 @@ async function loadFromBackendInner() {
             'dl_temp_dir',
             'temp_dir',
             'dl_create_artist_folder',
-            'dl_create_album_folder',
-            'dl_auto_download_favorites'
+            'dl_create_album_folder'
         ]
 
-        const [quality, folder, duplicate, audio, generalKV, defaultDownloadPath, unifiedDto] = await Promise.all([
+        const [quality, folder, audio, generalKV, defaultDownloadPath, unifiedDto] = await Promise.all([
             settingsApi.getQualityPreferences().catch(() => []),
             settingsApi.getFolderSettings().catch(() => null),
-            settingsApi.getDuplicateSettings().catch(() => null),
             settingsApi.getAudioProcessingSettings().catch(() => null),
             settingsApi.getSettingsByKeys(generalKeys).catch(() => ({} as Record<string, string>)),
             settingsApi.getDefaultDownloadPath().catch(() => ''),
@@ -290,9 +271,6 @@ async function loadFromBackendInner() {
         if (folder) {
             Object.assign(folderSettings, folder)
         }
-
-        // Update duplicate settings
-        if (duplicate) Object.assign(duplicateSettings, duplicate)
 
         // Update audio processing settings
         if (audio) Object.assign(audioProcessingSettings, audio)
@@ -319,7 +297,6 @@ async function loadFromBackendInner() {
 
         if (kv.dl_create_artist_folder) generalSettings.organizeByArtist = kv.dl_create_artist_folder === 'true'
         if (kv.dl_create_album_folder) generalSettings.organizeByAlbum = kv.dl_create_album_folder === 'true'
-        if (kv.dl_auto_download_favorites) generalSettings.autoDownloadFavorites = kv.dl_auto_download_favorites === 'true'
 
         console.log('Loaded unified download settings:', {
             library_root: downloadDto.library_root,
@@ -345,7 +322,6 @@ async function saveGeneralSettings() {
             download_dir: root,
             dl_create_artist_folder: generalSettings.organizeByArtist.toString(),
             dl_create_album_folder: generalSettings.organizeByAlbum.toString(),
-            dl_auto_download_favorites: generalSettings.autoDownloadFavorites.toString(),
         }
         if (staging) {
             mapped.dl_temp_dir = staging
@@ -619,18 +595,6 @@ async function saveDownloadSettings() {
     }
 }
 
-// Save duplicate settings
-async function saveDuplicateSettings() {
-    try {
-        const updated = await settingsApi.updateDuplicateSettings({ ...duplicateSettings })
-        Object.assign(duplicateSettings, updated)
-        return updated
-    } catch (e) {
-        console.error('Failed to save duplicate settings:', e)
-        throw e
-    }
-}
-
 // Save audio processing settings
 async function saveAudioProcessingSettings() {
     try {
@@ -673,7 +637,6 @@ export function useDownloadSettings() {
         folderSettings,
         generalSettings,
         temporaryPath,
-        duplicateSettings,
         audioProcessingSettings,
 
         // Computed
@@ -705,9 +668,6 @@ export function useDownloadSettings() {
         // Folder
         saveFolderSettings,
         previewPath,
-
-        // Duplicate
-        saveDuplicateSettings,
 
         // Audio Processing
         saveAudioProcessingSettings,

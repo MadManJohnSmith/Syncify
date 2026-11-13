@@ -70,7 +70,6 @@ function recordingHandler(calls: InvokeCall[], overrides: Record<string, unknown
         purchases: true,
         library_history: true,
         include_appearances: true,
-        incremental_sync: false,
       }
     }
     if (command === 'scan_local_library_with_progress') {
@@ -224,29 +223,28 @@ describe('OnboardingWizard persistence (FE-5)', () => {
       purchases: true,
       library_history: true,
       include_appearances: true,
-      incremental_sync: false,
     })
   })
 
-  it('persists the auto-download favorites toggle only when a service is connected', async () => {
+  it('#197: no longer persists the retired auto-download favorites KV', async () => {
     const wrapper = await mountWizard(calls)
     const vm = wrapper.vm as any
 
-    // No service connected: the toggle was never shown, nothing must be written
+    // No service connected: nothing may be written
     await vm.completeSetup()
     expect(calls.filter(c => c.command === 'save_setting')).toHaveLength(0)
     expect(calls.filter(c => c.command === 'update_service_import_preferences')).toHaveLength(0)
 
     const apple = vm.services.find((s: any) => s.id === 'apple')
     apple.connected = true
-    vm.autoDownload = true
     await vm.completeSetup()
 
-    const kv = calls.filter(c => c.command === 'save_setting')
-    expect(kv).toHaveLength(1)
-    expect(kv[0].args).toMatchObject({ key: 'dl_auto_download_favorites', value: 'true' })
+    // Retired in #197 (SB02): the auto-download trigger does not exist
+    // (PLAN A-04), so the wizard must never (re)create the KV key.
+    expect(calls.filter(c => c.command === 'save_setting' && (c.args as { key?: string })?.key === 'dl_auto_download_favorites')).toHaveLength(0)
     // 'apple' must be translated to the backend name 'apple_music'
     const prefs = calls.find(c => c.command === 'update_service_import_preferences')
+    expect(prefs).toBeDefined()
     expect((prefs!.args?.preferences as Record<string, unknown>).service_name).toBe('apple_music')
   })
 

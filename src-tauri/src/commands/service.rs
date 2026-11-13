@@ -1366,17 +1366,11 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
             .await
             .ok()
             .flatten();
-    let auto_dl: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM settings WHERE key = 'auto_download_favorites'")
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
-
+    // #197: `auto_download_favorites` fuera de la superficie; el disparador de
+    // auto-descarga de favoritos no existe (PLAN A-04).
     Ok(AppSettings {
         download_path: effective.library_root,
         preferred_quality: quality.map(|r| r.0).unwrap_or_else(|| "lossless".into()),
-        auto_download_favorites: auto_dl.map(|r| r.0 == "true").unwrap_or(true),
     })
 }
 
@@ -1408,18 +1402,6 @@ pub async fn service_save_settings(
         .execute(&state.db)
         .await
         .map_err(|e| e.to_string())?;
-
-    sqlx::query(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES ('auto_download_favorites', ?)",
-    )
-    .bind(if settings.auto_download_favorites {
-        "true"
-    } else {
-        "false"
-    })
-    .execute(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
 
     Ok("Settings saved".into())
 }
@@ -8832,7 +8814,6 @@ mod sync_arm_contracts {
             purchases: false,
             library_history: false,
             include_appearances: false,
-            incremental_sync: false,
             force_retry_unavailable: false,
         }
     }

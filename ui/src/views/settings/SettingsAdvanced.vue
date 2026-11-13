@@ -24,47 +24,17 @@
         />
       </section>
 
-      <!-- Workers Section -->
-      <section class="space-y-4">
-        <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark flex items-center gap-2">
-          <span class="material-symbols-outlined text-primary">memory</span> Workers
-        </h3>
-        <div class="grid grid-cols-2 gap-4">
-          <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-max-imports">Max Imports</label>
-            <input type="number" min="1" max="5" id="advanced-max-imports" :value="advancedSettings.settings.max_concurrent_imports" @change="updateClamped('max_concurrent_imports', getEventValue($event), 1, 5)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
-          </div>
-          <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-worker-timeout">Timeout (sec)</label>
-            <input type="number" min="30" max="600" id="advanced-worker-timeout" :value="advancedSettings.settings.worker_timeout_seconds" @change="updateClamped('worker_timeout_seconds', getEventValue($event), 30, 600)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
-          </div>
-        </div>
-      </section>
-
-       <!-- Cache Section -->
-       <section class="space-y-4">
-         <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark flex items-center gap-2">
-           <span class="material-symbols-outlined text-primary">cached</span> Cache
-         </h3>
-<BaseToggle
-           title="Enable Cache"
-           subtitle="Improve performance by caching images and metadata"
-           :checked="advancedSettings.settings.cache_enabled"
-           @click="advancedSettings.updateField('cache_enabled', !advancedSettings.settings.cache_enabled)"
-         />
-
-       </section>
+      <!-- #197 (SB02): las secciones Workers y Cache se ocultan — sus
+           ajustes no tienen lector operativo; reapertura en
+           docs/auditoria/matriz-ajustes.md. -->
 
       <!-- Network Section -->
       <section class="space-y-4">
         <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark flex items-center gap-2">
           <span class="material-symbols-outlined text-primary">wifi</span> Network
         </h3>
-        <div class="grid grid-cols-3 gap-4">
-          <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
-            <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-request-timeout">Timeout</label>
-            <input type="number" min="5" max="300" id="advanced-request-timeout" :value="advancedSettings.settings.request_timeout_seconds" @change="updateClamped('request_timeout_seconds', getEventValue($event), 5, 300)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
-          </div>
+        <!-- #197 (SB02): el timeout de red se oculta — sin lector operativo. -->
+        <div class="grid grid-cols-2 gap-4">
           <div class="p-4 bg-gray-50 dark:bg-surface-highlight rounded-lg">
             <label class="text-sm font-medium text-gray-900 dark:text-white block mb-2" for="advanced-max-retries">Retries</label>
             <input type="number" min="0" max="10" id="advanced-max-retries" :value="advancedSettings.settings.max_retries" @change="updateClamped('max_retries', getEventValue($event), 0, 10)" class="w-full px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm"/>
@@ -82,18 +52,9 @@
            <span class="material-symbols-outlined text-primary">bug_report</span> Debug
          </h3>
          
-         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-           <BaseToggle
-             title="Debug Mode"
-             :checked="advancedSettings.settings.debug_mode"
-             @click="advancedSettings.updateField('debug_mode', !advancedSettings.settings.debug_mode)"
-           />
-           <BaseToggle
-             title="API Logs"
-             :checked="advancedSettings.settings.verbose_api_logging"
-             @click="advancedSettings.updateField('verbose_api_logging', !advancedSettings.settings.verbose_api_logging)"
-           />
-         </div>
+         <!-- #197 (SB02): los toggles de debug y de logs verbosos se ocultan
+              — ningún código los lee (el runtime de logging solo consume el
+              nivel y el vuelcado a fichero); reapertura en la matriz. -->
 
          <!-- Diagnostic Results -->
          <div v-if="advancedSettings.diagnostics.value.length > 0" class="space-y-2 mt-4">

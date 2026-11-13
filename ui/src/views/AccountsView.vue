@@ -882,19 +882,10 @@
                 </div>
               </div>
               
-              <!-- Advanced Tab -->
-              <div v-else-if="activeSettingsTab === 'advanced'" class="space-y-6">
-                <div>
-                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Sync Mode</h4>
-                  <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors">
-                    <div>
-                      <span class="text-sm font-medium text-gray-700 dark:text-gray-300 block">Incremental sync only</span>
-                      <span class="text-xs text-text-secondary">Only fetch tracks added since last sync</span>
-                    </div>
-                    <input type="checkbox" v-model="servicePreferencesData.incremental_sync" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                  </label>
-                </div>
-              </div>
+              <!-- #197 (SB02): la pestaña «Advanced» del modal se retira con
+                   el interruptor de sync incremental — ningún código lo leía
+                   para decidir el recorrido del sync (siempre recorrido
+                   completo). -->
             </div>
             
             <!-- Modal Footer -->
@@ -1834,13 +1825,11 @@ const servicePreferencesData = reactive<any>({
   purchases: false,
   library_history: false,
   include_appearances: false,
-  incremental_sync: false,
 })
 
 const settingsTabs = [
   { id: 'import', label: 'Import Preferences' },
   { id: 'general', label: 'Account' },
-  { id: 'advanced', label: 'Advanced' },
 ]
 
 async function openServiceSettings(service: any) {
@@ -1859,7 +1848,6 @@ async function openServiceSettings(service: any) {
     servicePreferencesData.purchases = prefs.purchases
     servicePreferencesData.library_history = prefs.library_history
     servicePreferencesData.include_appearances = prefs.include_appearances
-    servicePreferencesData.incremental_sync = prefs.incremental_sync
   } catch (e) {
     console.error('Failed to load service import preferences:', e)
   } finally {
@@ -1880,7 +1868,6 @@ async function saveServicePreferences() {
       purchases: servicePreferencesData.purchases,
       library_history: servicePreferencesData.library_history,
       include_appearances: servicePreferencesData.include_appearances,
-      incremental_sync: servicePreferencesData.incremental_sync,
     })
     
     // Also notify global event bus

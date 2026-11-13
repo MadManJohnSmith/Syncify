@@ -101,7 +101,6 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
         fallback_action: "skip".to_string(),
         max_concurrent_downloads: 5,
         retry_failed: true,
-        auto_download_favorites: true,
         organize_by_artist: true,
         organize_by_album: true,
         generate_lyrics_lrc: true,
@@ -137,7 +136,7 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
     assert_eq!(saved_settings.replace_spaces_with, Some("_".to_string()));
     assert_eq!(saved_settings.max_path_length, 240);
     assert_eq!(saved_settings.fallback_action, "skip");
-    assert_eq!(saved_settings.auto_download_favorites, true);
+    // #197 (SB02): auto_download_favorites fuera del DTO de descargas.
     assert_eq!(saved_settings.generate_animated_cover, false);
     assert_eq!(saved_settings.generate_booklet, false);
 
@@ -458,7 +457,6 @@ async fn test_configured_download_path_respected_in_library_layout() {
         fallback_action: "try_next".to_string(),
         max_concurrent_downloads: 3,
         retry_failed: true,
-        auto_download_favorites: false,
         organize_by_artist: true,
         organize_by_album: true,
         generate_lyrics_lrc: true,
@@ -597,7 +595,6 @@ async fn test_microsd_or_custom_path_staging_derivation_and_space() {
         fallback_action: "skip".to_string(),
         max_concurrent_downloads: 2,
         retry_failed: true,
-        auto_download_favorites: false,
         organize_by_artist: true,
         organize_by_album: true,
         generate_lyrics_lrc: true,
@@ -691,7 +688,6 @@ async fn test_save_download_settings_synchronizes_all_legacy_keys() {
         fallback_action: "skip".to_string(),
         max_concurrent_downloads: 3,
         retry_failed: true,
-        auto_download_favorites: false,
         organize_by_artist: true,
         organize_by_album: true,
         generate_lyrics_lrc: true,

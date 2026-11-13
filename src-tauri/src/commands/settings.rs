@@ -11,9 +11,11 @@ use super::*;
 
 use crate::models::{MetadataPreferences, ServicePreference, ServiceSyncSettings, SyncSettings};
 
-/// Get all service preferences ordered by priority
-#[tauri::command]
 /// Perform get service preferences ordered by priority
+///
+/// Helper interno compartido: no lleva `#[tauri::command]` porque no se
+/// registra en `generate_handler!`; el comando registrado es
+/// `get_service_preferences` (#197: atributo sin registro fuera).
 pub async fn perform_get_service_preferences(
     db: &crate::DbPool,
 ) -> Result<Vec<ServicePreference>, String> {
@@ -160,13 +162,15 @@ pub async fn get_service_sync_settings(
 ) -> Result<Vec<ServiceSyncSettings>, String> {
     tracing::info!("get_service_sync_settings called");
 
+    // #197: la columna `incremental_sync` (DEFAULT 1, no migrada) deja de
+    // leerse: ningún código la consultaba para decidir el recorrido del sync.
     sqlx::query_as::<_, ServiceSyncSettings>(
         r#"SELECT id, service_name, sync_favorites, sync_playlists, sync_albums,
                   IFNULL(sync_favorite_artists, 1) as sync_favorite_artists,
                   IFNULL(sync_purchases, 0) as sync_purchases,
                   IFNULL(sync_library_history, 0) as sync_library_history,
                   IFNULL(sync_include_appearances, 0) as sync_include_appearances,
-                  incremental_sync, last_synced
+                  last_synced
            FROM service_sync_settings"#,
     )
     .fetch_all(&state.db)
@@ -181,16 +185,16 @@ pub async fn perform_update_service_sync_settings(
     sync_favorites: bool,
     sync_playlists: bool,
     sync_albums: bool,
-    incremental_sync: bool,
 ) -> Result<ServiceSyncSettings, String> {
+    // #197: `incremental_sync` ya no se escribe; el UPDATE conservará el valor
+    // huérfano previo de la columna (DEFAULT 1) hasta su retirada de esquema.
     sqlx::query(
         "UPDATE service_sync_settings SET sync_favorites = ?, sync_playlists = ?, sync_albums = ?,
-         incremental_sync = ?, updated_at = CURRENT_TIMESTAMP WHERE service_name = ?",
+         updated_at = CURRENT_TIMESTAMP WHERE service_name = ?",
     )
     .bind(sync_favorites)
     .bind(sync_playlists)
     .bind(sync_albums)
-    .bind(incremental_sync)
     .bind(service_name)
     .execute(db)
     .await
@@ -202,7 +206,7 @@ pub async fn perform_update_service_sync_settings(
                   IFNULL(sync_purchases, 0) as sync_purchases,
                   IFNULL(sync_library_history, 0) as sync_library_history,
                   IFNULL(sync_include_appearances, 0) as sync_include_appearances,
-                  incremental_sync, last_synced
+                  last_synced
            FROM service_sync_settings WHERE service_name = ?"#,
     )
     .bind(service_name)
@@ -219,7 +223,6 @@ pub async fn update_service_sync_settings(
     sync_favorites: bool,
     sync_playlists: bool,
     sync_albums: bool,
-    incremental_sync: bool,
 ) -> Result<ServiceSyncSettings, String> {
     tracing::info!("update_service_sync_settings: {}", service_name);
     perform_update_service_sync_settings(
@@ -228,7 +231,6 @@ pub async fn update_service_sync_settings(
         sync_favorites,
         sync_playlists,
         sync_albums,
-        incremental_sync,
     )
     .await
 }
@@ -238,15 +240,16 @@ pub async fn perform_get_service_import_preferences(
     db: &sqlx::SqlitePool,
     service_name: &str,
 ) -> Result<ImportPreferences, String> {
-    let row: Option<(bool, bool, bool, bool, bool, bool, bool, bool)> = sqlx::query_as(
+    // #197: `incremental_sync` fuera del contrato; el sync siempre es
+    // recorrido completo (spec #64 / A-03 del PLAN post-beta).
+    let row: Option<(bool, bool, bool, bool, bool, bool, bool)> = sqlx::query_as(
         r#"SELECT IFNULL(sync_favorites, 1),
                   IFNULL(sync_albums, 1),
                   IFNULL(sync_favorite_artists, 1),
                   IFNULL(sync_playlists, 1),
                   IFNULL(sync_purchases, 0),
                   IFNULL(sync_library_history, 0),
-                  IFNULL(sync_include_appearances, 0),
-                  IFNULL(incremental_sync, 1)
+                  IFNULL(sync_include_appearances, 0)
            FROM service_sync_settings
            WHERE service_name = ?"#,
     )
@@ -256,20 +259,17 @@ pub async fn perform_get_service_import_preferences(
     .map_err(|e| format!("Database error fetching import preferences: {}", e))?;
 
     match row {
-        Some((fav_t, fav_a, fav_art, pl, pur, lib_hist, inc_app, inc_sync)) => {
-            Ok(ImportPreferences {
-                service_name: service_name.to_string(),
-                favorite_tracks: fav_t,
-                favorite_albums: fav_a,
-                favorite_artists: fav_art,
-                playlists: pl,
-                purchases: pur,
-                library_history: lib_hist,
-                include_appearances: inc_app,
-                incremental_sync: inc_sync,
-                force_retry_unavailable: false,
-            })
-        }
+        Some((fav_t, fav_a, fav_art, pl, pur, lib_hist, inc_app)) => Ok(ImportPreferences {
+            service_name: service_name.to_string(),
+            favorite_tracks: fav_t,
+            favorite_albums: fav_a,
+            favorite_artists: fav_art,
+            playlists: pl,
+            purchases: pur,
+            library_history: lib_hist,
+            include_appearances: inc_app,
+            force_retry_unavailable: false,
+        }),
         None => Ok(ImportPreferences {
             service_name: service_name.to_string(),
             ..ImportPreferences::default()
@@ -282,10 +282,12 @@ pub async fn perform_update_service_import_preferences(
     db: &sqlx::SqlitePool,
     prefs: ImportPreferences,
 ) -> Result<ImportPreferences, String> {
+    // #197: `incremental_sync` fuera de la superficie; la columna con DEFAULT 1
+    // conserva su valor huérfano en filas existentes sin que nada lo lea.
     sqlx::query(
         r#"INSERT INTO service_sync_settings
-           (service_name, sync_favorites, sync_albums, sync_favorite_artists, sync_playlists, sync_purchases, sync_library_history, sync_include_appearances, incremental_sync)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (service_name, sync_favorites, sync_albums, sync_favorite_artists, sync_playlists, sync_purchases, sync_library_history, sync_include_appearances)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(service_name) DO UPDATE SET
                sync_favorites = excluded.sync_favorites,
                sync_albums = excluded.sync_albums,
@@ -293,8 +295,7 @@ pub async fn perform_update_service_import_preferences(
                sync_playlists = excluded.sync_playlists,
                sync_purchases = excluded.sync_purchases,
                sync_library_history = excluded.sync_library_history,
-               sync_include_appearances = excluded.sync_include_appearances,
-               incremental_sync = excluded.incremental_sync"#
+               sync_include_appearances = excluded.sync_include_appearances"#
     )
     .bind(&prefs.service_name)
     .bind(prefs.favorite_tracks)
@@ -304,7 +305,6 @@ pub async fn perform_update_service_import_preferences(
     .bind(prefs.purchases)
     .bind(prefs.library_history)
     .bind(prefs.include_appearances)
-    .bind(prefs.incremental_sync)
     .execute(db)
     .await
     .map_err(|e| format!("Database error updating import preferences: {}", e))?;
@@ -334,9 +334,7 @@ pub async fn update_service_import_preferences(
 // SPRINT 2: DOWNLOADS + FILE SETTINGS
 // ==============================================
 
-use crate::models::{
-    AudioProcessingSettings, DuplicateSettings, FolderSettings, QualityPreference,
-};
+use crate::models::{AudioProcessingSettings, FolderSettings, QualityPreference};
 
 /// Perform get all quality preferences for all services
 pub async fn perform_get_quality_preferences(
@@ -612,49 +610,10 @@ pub async fn preview_folder_path(
     Ok(resolved.to_string_lossy().to_string())
 }
 
-/// Get duplicate settings (singleton)
-#[tauri::command]
-pub async fn get_duplicate_settings(
-    state: State<'_, AppState>,
-) -> Result<DuplicateSettings, String> {
-    tracing::info!("get_duplicate_settings");
-
-    sqlx::query_as::<_, DuplicateSettings>(
-        "SELECT id, enable_detection, prefer_higher_quality, prefer_lossless,
-         replace_same_quality_different_source, quality_threshold_kbps,
-         delete_duplicates_immediately, move_to_trash FROM duplicate_settings WHERE id = 1",
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))
-}
-
-/// Update duplicate settings
-#[tauri::command]
-pub async fn update_duplicate_settings(
-    state: State<'_, AppState>,
-    settings: DuplicateSettings,
-) -> Result<DuplicateSettings, String> {
-    tracing::info!("update_duplicate_settings");
-
-    sqlx::query(
-        "UPDATE duplicate_settings SET enable_detection = ?, prefer_higher_quality = ?, prefer_lossless = ?,
-         replace_same_quality_different_source = ?, quality_threshold_kbps = ?,
-         delete_duplicates_immediately = ?, move_to_trash = ?, updated_at = datetime('now') WHERE id = 1"
-    )
-    .bind(settings.enable_detection)
-    .bind(settings.prefer_higher_quality)
-    .bind(settings.prefer_lossless)
-    .bind(settings.replace_same_quality_different_source)
-    .bind(settings.quality_threshold_kbps)
-    .bind(settings.delete_duplicates_immediately)
-    .bind(settings.move_to_trash)
-    .execute(&state.db)
-    .await
-    .map_err(|e| format!("Update error: {}", e))?;
-
-    get_duplicate_settings(state).await
-}
+// #197 (SB02): `get_duplicate_settings`/`update_duplicate_settings` retirados.
+// La tabla `duplicate_settings` permanece (migración aplicada, reset incluido);
+// sus ajustes carecían de lector y su vista se oculta hasta que la feature de
+// deduplicación configurable exista (plan de reapertura en la matriz).
 
 /// Get audio processing settings (singleton)
 #[tauri::command]
@@ -1868,7 +1827,6 @@ pub struct DownloadSettingsDto {
     pub fallback_action: String,
     pub max_concurrent_downloads: i64,
     pub retry_failed: bool,
-    pub auto_download_favorites: bool,
     pub organize_by_artist: bool,
     pub organize_by_album: bool,
     pub generate_lyrics_lrc: bool,
@@ -1916,10 +1874,6 @@ pub async fn perform_get_download_settings(
         .get("dl_retry_failed")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(true);
-    let auto_download_favorites = dl_map
-        .get("dl_auto_download_favorites")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
     let organize_by_artist = dl_map
         .get("dl_create_artist_folder")
         .map(|v| v == "true" || v == "1")
@@ -1963,7 +1917,6 @@ pub async fn perform_get_download_settings(
         fallback_action: folder.fallback_action,
         max_concurrent_downloads: max_concurrent,
         retry_failed,
-        auto_download_favorites,
         organize_by_artist,
         organize_by_album,
         generate_lyrics_lrc,
@@ -2056,10 +2009,6 @@ pub async fn perform_save_download_settings(
         (
             "dl_create_album_folder".to_string(),
             settings.organize_by_album.to_string(),
-        ),
-        (
-            "dl_auto_download_favorites".to_string(),
-            settings.auto_download_favorites.to_string(),
         ),
         (
             "dl_generate_lyrics_lrc".to_string(),
@@ -2339,10 +2288,9 @@ pub async fn resolve_effective_download_preferences(
 
     let kv_map: std::collections::HashMap<String, String> = kv_rows.into_iter().collect();
 
-    let auto_download_favorites = kv_map
-        .get("dl_auto_download_favorites")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    // #197: `dl_auto_download_favorites` ya no se lee en el DTO efectivo: el
+    // disparador de auto-descarga de favoritos no existe (PLAN A-04) y la
+    // superficie deja de exponerlo hasta que la feature lo conecte.
     let generate_lyrics_lrc = kv_map
         .get("dl_generate_lyrics_lrc")
         .map(|v| v == "true" || v == "1")
@@ -2387,7 +2335,6 @@ pub async fn resolve_effective_download_preferences(
         rate_limit_delay_ms: sync.rate_limit_delay_ms.max(0) as u32,
         max_retries,
         retry_delay_seconds,
-        auto_download_favorites,
         generate_lyrics_lrc,
         generate_cover_art,
         generate_animated_cover,
@@ -2562,10 +2509,6 @@ pub async fn perform_save_effective_download_preferences(
         (
             "dl_retry_failed".to_string(),
             (prefs.max_retries > 0).to_string(),
-        ),
-        (
-            "dl_auto_download_favorites".to_string(),
-            prefs.auto_download_favorites.to_string(),
         ),
         (
             "dl_generate_lyrics_lrc".to_string(),

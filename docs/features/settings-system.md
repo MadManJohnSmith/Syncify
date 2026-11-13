@@ -53,8 +53,8 @@ composable.save()
 - `service_sync_settings` → `get_service_sync_settings()` / `update_service_sync_settings()`
 - `quality_preferences` → `get_quality_preferences()` / `update_quality_preference()`
 - `folder_settings` → `get_folder_settings()` / `update_folder_settings()`
-- `duplicate_settings` → `get_duplicate_settings()` / `update_duplicate_settings()`
 - `audio_processing_settings` → `get_audio_processing_settings()` / `update_audio_processing_settings()`
+- `duplicate_settings` → **sin comandos desde #197 (SB02)**: sus ajustes carecían de lector, la pestaña se ocultó y los comandos se retiraron (reapertura en `docs/auditoria/matriz-ajustes.md`); la tabla queda para el reset
 - `lyrics_provider_settings` → `get_lyrics_providers()` / `update_lyrics_provider()`
 - `lyrics_config` → `get_lyrics_config()` / `update_lyrics_config()`
 - `metadata_preferences` → `get_metadata_preferences()` / `update_metadata_preferences()`
@@ -162,7 +162,7 @@ export function useXxxSettings() {
 | `service_sync_settings` | No (per-service) | 0008 |
 | `quality_preferences` | No (per-service) | 0009 |
 | `folder_settings` | Yes (id=1) | 0010 |
-| `duplicate_settings` | Yes (id=1) | 0011 |
+| `duplicate_settings` | Yes (id=1) | 0011 | <!-- sin superficie IPC desde #197; solo reset -->
 | `audio_processing_settings` | Yes (id=1) | 0012 |
 | `lyrics_provider_settings` | No (per-provider) | 0013 |
 | `lyrics_config` | Yes (id=1) | 0014 |

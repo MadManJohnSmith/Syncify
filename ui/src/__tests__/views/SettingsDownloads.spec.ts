@@ -53,7 +53,6 @@ const mockKvSettings = {
   dl_download_path: '/Users/tardis/Music/Syncify',
   dl_create_artist_folder: 'true',
   dl_create_album_folder: 'true',
-  dl_auto_download_favorites: 'false',
 }
 
 describe('SettingsDownloads.vue', () => {
@@ -69,7 +68,6 @@ describe('SettingsDownloads.vue', () => {
       if (command === 'save_setting') return null
       if (command === 'set_max_concurrent_downloads') return null
       if (command === 'get_default_download_path') return '/Users/tardis/Music/Syncify'
-      if (command === 'get_duplicate_settings') return null
       if (command === 'get_audio_processing_settings') return null
       return null
     })

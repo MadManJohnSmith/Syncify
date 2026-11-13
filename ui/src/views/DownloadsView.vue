@@ -1034,17 +1034,8 @@
                   <option value="5">5 Threads</option>
                 </select>
               </div>
-              
-              <!-- Auto-download favorites -->
-              <div class="flex items-center justify-between">
-                <label class="text-sm text-gray-700 dark:text-gray-300">Auto-download new favorites</label>
-                <button 
-                  @click="settings.autoDownloadFavorites = !settings.autoDownloadFavorites"
-                  :class="['relative w-12 h-6 rounded-full transition-colors', settings.autoDownloadFavorites ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-600']"
-                >
-                  <span :class="['absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform', settings.autoDownloadFavorites ? 'translate-x-6' : '']"></span>
-                </button>
-              </div>
+              <!-- #197 (SB02): «Auto-download new favorites» oculto — el
+                   disparador no existe (PLAN A-04); reapertura al cablearlo. -->
             </div>
           </div>
           
