@@ -957,6 +957,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Library
             commands::get_library,
+            #[cfg(debug_assertions)]
+            commands::debug_deezer_cookie_probe,
             commands::sync_local_library_cmd,
             commands::get_library_stats,
             commands::get_dashboard_stats,

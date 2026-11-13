@@ -51,6 +51,10 @@
          <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark flex items-center gap-2">
            <span class="material-symbols-outlined text-primary">bug_report</span> Debug
          </h3>
+         <div v-if="import.meta.env.DEV" class="p-4 space-y-2">
+           <button class="px-4 py-2 bg-primary text-on-accent rounded" @click="runDeezerCookieProbe">Run Deezer cookie probe</button>
+           <pre v-if="deezerProbeReport" class="whitespace-pre-wrap text-xs">{{ deezerProbeReport }}</pre>
+         </div>
          
          <!-- #197 (SB02): los toggles de debug y de logs verbosos se ocultan
               — ningún código los lee (el runtime de logging solo consume el
@@ -133,6 +137,12 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
+import { debugDeezerCookieProbe } from '@/api/accounts'
+const deezerProbeReport = ref('')
+async function runDeezerCookieProbe() {
+  deezerProbeReport.value = await debugDeezerCookieProbe()
+}
 import { ref, watch, onMounted } from 'vue'
 // R13: unified confirm (previously native plugin-dialog, outside the window).
 import { confirm } from '@/composables/useToast'
