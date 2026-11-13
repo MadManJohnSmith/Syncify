@@ -49,3 +49,38 @@ delegación completo.
 Si el patrón «completado sin entregar» se repite (segunda ocurrencia), se
 ticketará junto a #277 como hueco de plataforma distinto: no es un run
 muerto (el run termina), es un run que termina sin el artefacto contratado.
+
+## Actualización del mismo día · continuación del delegado (run 2) y toma del carril
+
+El run 2 con el contrato endurecido terminó honesto (declaró no alcanzar el
+mínimo) pero con el autoinforme erróneo en ambos sentidos: decía «no hay
+commit ni PR» y **sí había** commit (`2ee84a3`, 5 ficheros, +74 líneas) y PR
+abierto (#283), con timestamps posteriores a su borrador de informe. Además
+su guion de puertas siguió corriendo como proceso huérfano tras el fin del
+turno (clippy/check vivos contra el target compartido; al matarlos, la
+secuencia avanzó de paso). Lecciones:
+
+- **El estado verificado manda sobre el autoinforme.** Antes de actuar sobre
+  un informe de delegado: `git log dev..rama`, `gh pr list`. Los dos primeros
+  informes de esta lane divergieron del árbol real (uno por defecto, otro por
+  exceso de pesimismo).
+- **Los procesos huérfanos de un run terminado pueden bloquear el lock de
+  `/tmp/syncify-target`** — causa plausible del bloqueo que el run 2 reportó
+  (contendría también con cualquier puerta que el checkout padre corra en
+  paralelo, p. ej. el hook pre-push de un push de docs). Contramedida: al
+  retomar un carril, `pgrep cargo` antes de gatear; los briefs de delegación
+  deberían usar target privado por worktree cuando el padre puede gatear a la
+  vez.
+- **El worktree de un delegado nace sin entorno**: sin `ui/node_modules` ni
+  `.venv` (gitignored, sin script de setup). Enlazar los del checkout padre
+  funciona cuando el PR no toca lockfiles (verificado aquí). Candidato a
+  estándar: enlazar o instalar el entorno en la preparación del worktree.
+- **El contrato endurecido mejoró la honestidad, no la calidad del código.**
+  La review del diff de 74 líneas encontró cuatro defectos antes de las
+  puertas: import duplicado de `ref` (TS2300), `import.meta.env` en
+  expresión de plantilla (error de compilación Vue), tipo inventado
+  `tauri::UrlParseError` (E0425) y move de `cookies` tomado prestado (E0505),
+  más una línea fuera de fmt. Los arregló el jefe de gabinete en el worktree;
+  clippy/check/fmt/1149 tests UI/430 Python/38 de docs en verde tras ellos.
+  La suite Rust completa quedó corriendo en background al cierre de este
+  apunte; su resultado, en el handoff del carril.
