@@ -41,6 +41,9 @@ pub use library::*;
 pub mod logging;
 pub use logging::*;
 
+pub mod mb_dump;
+pub use mb_dump::*;
+
 pub mod lyrics;
 pub use lyrics::*;
 

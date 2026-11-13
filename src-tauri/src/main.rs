@@ -960,6 +960,8 @@ fn main() {
             #[cfg(debug_assertions)]
             commands::debug_deezer_cookie_probe,
             commands::sync_local_library_cmd,
+            commands::import_mb_dump,
+            commands::get_mb_dump_state,
             commands::get_library_stats,
             commands::get_dashboard_stats,
             commands::get_health_checks,
