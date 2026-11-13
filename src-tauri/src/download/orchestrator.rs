@@ -1480,7 +1480,7 @@ impl DownloadOrchestrator {
 
         let is_lossless_or_hires = QualityPolicy::is_lossless_or_hires(&request.quality);
 
-        if primary_service == "qobuz" {
+        let result = if primary_service == "qobuz" {
             self.download_primary_qobuz(request, is_lossless_or_hires, cancel_token)
                 .await
         } else if primary_service == "tidal" {
@@ -1494,7 +1494,15 @@ impl DownloadOrchestrator {
                 &primary_service,
             )
             .await
+        };
+
+        // DLX-01 (#42): cronología por pista como artefacto de medición. Opt-in
+        // vía SYNCIFY_DLX_TIMELINE_DIR; nunca altera el resultado de la descarga.
+        if let Ok(res) = &result {
+            crate::download::timeline::record_download_result(res);
         }
+
+        result
     }
 
     fn download_primary_qobuz<'a>(

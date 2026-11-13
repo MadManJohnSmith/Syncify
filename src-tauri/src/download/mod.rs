@@ -25,6 +25,8 @@ pub mod qobuz;
 pub mod resolver;
 pub mod songlink;
 pub mod tidal;
+// DLX-01 (#42): cronología por pista como artefacto de medición.
+pub mod timeline;
 
 #[allow(unused_imports)]
 pub use audio_inspector::{
