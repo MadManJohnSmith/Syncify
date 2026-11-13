@@ -5,6 +5,9 @@
  */
 
 import { invokeCommand } from './tauri';
+
+export const debugDeezerCookieProbe = (): Promise<string> =>
+    invokeCommand('debug_deezer_cookie_probe');
 import { asArray, asNumber, asRecord } from './normalize';
 import type {
     Service,

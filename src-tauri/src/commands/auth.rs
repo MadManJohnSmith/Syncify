@@ -22,6 +22,59 @@ static AUTH_IN_PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// "Authorization timed out", que sí explica qué pasó.
 pub const AUTH_BRIDGE_TIMEOUT_SECS: u64 = 330;
 
+/// Opens an isolated Deezer login window and returns cookie metadata only.
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub async fn debug_deezer_cookie_probe(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let data_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("debug-deezer-probe");
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let url = tauri::Url::parse("https://www.deezer.com/login").map_err(|e| e.to_string())?;
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "debug-deezer-cookie-probe",
+        tauri::WebviewUrl::External(url.clone()),
+    )
+    .title("Deezer login diagnostic")
+    .data_directory(data_dir)
+    .build()
+    .map_err(|e| format!("Could not open diagnostic window: {e}"))?;
+    loop {
+        if app
+            .get_webview_window("debug-deezer-cookie-probe")
+            .is_none()
+        {
+            return Ok("Probe closed before completion; no cookie report produced.".into());
+        }
+        let cookies = window
+            .cookies_for_url(url.clone())
+            .map_err(|e| format!("Could not read cookie metadata: {e}"))?;
+        if let Some(arl) = cookies.iter().find(|cookie| cookie.name() == "arl") {
+            let mut report = String::from("Deezer cookie metadata (values omitted):\n");
+            for cookie in &cookies {
+                use std::fmt::Write;
+                let _ = writeln!(
+                    report,
+                    "{}; HttpOnly={}; Secure={}; SameSite={:?}",
+                    cookie.name(),
+                    cookie.http_only().unwrap_or(false),
+                    cookie.secure().unwrap_or(false),
+                    cookie.same_site()
+                );
+            }
+            use std::fmt::Write;
+            let _ = writeln!(report, "arl HttpOnly={}", arl.http_only().unwrap_or(false));
+            let _ = window.close();
+            return Ok(report);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
 fn try_begin_spotify_auth(lock: &std::sync::atomic::AtomicBool) -> bool {
     lock.compare_exchange(
         false,

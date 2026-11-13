@@ -50,6 +50,8 @@ against the code.
 
 - `features/auth-flow.md`: OAuth, PKCE and browser session-capture flows,
   multi-account reconciliation.
+- `features/authentication.md`: the debug-only Deezer login diagnostic probe
+  (cookie jar, no values) from AUTH-WV-01.
 - `features/download-pipeline.md`: orchestrator architecture, the queue and
   the native per-provider delivery pipelines.
 - `features/track-browser.md`: the track-list machinery — the virtual-window
