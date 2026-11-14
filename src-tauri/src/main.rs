@@ -16,6 +16,7 @@ mod import_cache;
 mod logs_history;
 mod models;
 mod services;
+mod settings_defaults;
 mod sync_scheduler;
 mod system_conditions;
 mod tray;

@@ -1,9 +1,11 @@
 /**
- * SettingsView "Reset to Defaults" regression (audit item 4).
+ * SettingsView "Reset to Defaults" contract (SB00, #196).
  *
- * The confirmation promises every setting, but the handler only restored the
- * general keys and the download paths: quality, metadata, service priorities
- * and lyrics providers kept whatever the user had set.
+ * El reset completo es una operación del backend: `reset_to_defaults('all')`
+ * restaura TODAS las superficies tipadas y la KV de ajustes dentro de una
+ * transacción (`settings_defaults::reset_all_settings`). La UI solo pide el
+ * reset y recarga; ya no compensa en cliente re-sembrando quality, metadata,
+ * prioridades de servicio ni proveedores de letras.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -25,18 +27,14 @@ vi.mock('@/composables/useToast', async (importOriginal) => {
 import { mockInvoke, resetMocks } from '../setup'
 import SettingsView from '@/views/SettingsView.vue'
 
-function seedInvoked() {
-  return [] as Array<{ command: string; args?: Record<string, unknown> }>
-}
-
-describe('SettingsView — Reset to Defaults covers every category', () => {
-  let invoked: ReturnType<typeof seedInvoked>
+describe('SettingsView — Reset to Defaults es backend puro (SB00)', () => {
+  let invoked: Array<{ command: string; args?: Record<string, unknown> }>
 
   beforeEach(() => {
     resetMocks()
     vi.clearAllMocks()
     confirmMock.mockResolvedValue(true)
-    invoked = seedInvoked()
+    invoked = []
 
     mockInvoke((command, args) => {
       invoked.push({ command, args })
@@ -48,22 +46,14 @@ describe('SettingsView — Reset to Defaults covers every category', () => {
       if (command === 'get_quality_preferences') {
         return [
           { id: 1, service_name: 'spotify', max_quality: 'lossless', preferred_format: 'flac', fallback_quality: 'lossless', fallback_format: 'flac' },
-          { id: 2, service_name: 'apple_music', max_quality: 'master', preferred_format: 'flac', fallback_quality: 'hifi', fallback_format: 'flac' },
         ]
       }
       if (command === 'get_service_preferences') {
         return [
           { id: 1, service_name: 'qobuz', priority: 1, auto_import_enabled: true },
-          { id: 2, service_name: 'spotify', priority: 2, auto_import_enabled: false },
         ]
       }
-      if (command === 'get_lyrics_providers') {
-        return [
-          { id: 1, provider_id: 'genius', provider_name: 'Genius', enabled: false, priority: 1, sync_level: 'none' },
-          { id: 2, provider_id: 'apple_music', provider_name: 'Apple Music', enabled: true, priority: 2, sync_level: 'syllable' },
-          { id: 3, provider_id: 'lrclib', provider_name: 'LRCLIB', enabled: true, priority: 3, sync_level: 'line' },
-        ]
-      }
+      if (command === 'get_lyrics_providers') return []
       if (command === 'get_lyrics_config') return null
       if (command === 'get_metadata_preferences') return null
       if (command === 'get_advanced_settings') return null
@@ -99,7 +89,7 @@ describe('SettingsView — Reset to Defaults covers every category', () => {
     return invoked.filter(c => c.command === command)
   }
 
-  it('asks the backend to wipe the settings tables it owns', async () => {
+  it('asks the backend for the full reset', async () => {
     await reset()
 
     const resets = callsTo('reset_to_defaults')
@@ -107,66 +97,17 @@ describe('SettingsView — Reset to Defaults covers every category', () => {
     expect(resets.some(c => c.args?.settingsType === 'all')).toBe(true)
   })
 
-  it('restores every quality cap, including services without a seeded row', async () => {
+  it('does not re-seed quality, metadata, priorities or lyrics from the client', async () => {
     await reset()
 
-    const updates = callsTo('update_quality_preference')
-    const byService = Object.fromEntries(
-      updates.map(c => [c.args?.serviceName, c.args])
-    )
-
-    expect(byService.spotify).toMatchObject({
-      maxQuality: 'high', preferredFormat: 'ogg',
-      fallbackQuality: 'medium', fallbackFormat: 'ogg',
-    })
-    // apple_music has no seed in migration 0009, so the column defaults apply.
-    expect(byService.apple_music).toMatchObject({
-      maxQuality: 'lossless', preferredFormat: 'flac',
-      fallbackQuality: 'high', fallbackFormat: 'mp3',
-    })
-  })
-
-  it('restores the metadata preferences row', async () => {
-    await reset()
-
-    const updates = callsTo('update_metadata_preferences')
-    expect(updates).toHaveLength(1)
-    expect(updates[0].args?.settings).toMatchObject({
-      enable_musicbrainz: true,
-      enable_lastfm: false,
-      enable_acoustid: false,
-      preserve_custom_tags: true,
-      multi_value_separator: ';',
-      weight_album: 1,
-    })
-  })
-
-  it('restores the seeded service priority without dropping connected services', async () => {
-    await reset()
-
-    const reorders = callsTo('reorder_service_priorities')
-    expect(reorders).toHaveLength(1)
-    expect(reorders[0].args?.serviceNames).toEqual(['spotify', 'qobuz'])
-  })
-
-  it('turns auto-import back off', async () => {
-    await reset()
-
-    const updates = callsTo('update_service_preference')
-    expect(updates).toHaveLength(1)
-    expect(updates[0].args).toMatchObject({ serviceName: 'qobuz', autoImportEnabled: false })
-  })
-
-  it('restores the seeded lyrics provider order and re-enables disabled providers', async () => {
-    await reset()
-
-    const reorders = callsTo('reorder_lyrics_providers')
-    expect(reorders).toHaveLength(1)
-    expect(reorders[0].args?.providerIds).toEqual(['apple_music', 'lrclib', 'genius'])
-
-    const updates = callsTo('update_lyrics_provider')
-    expect(updates.length).toBeGreaterThanOrEqual(1)
-    expect(updates.some(c => c.args?.providerId === 'genius')).toBe(true)
+    // SB00: la compensación en cliente se retiró. Ninguna de estas llamadas
+    // es parte del reset; si reaparecen, el reset volvió a depender de la UI.
+    expect(callsTo('update_quality_preference')).toHaveLength(0)
+    expect(callsTo('update_metadata_preferences')).toHaveLength(0)
+    expect(callsTo('update_service_preference')).toHaveLength(0)
+    expect(callsTo('reorder_service_priorities')).toHaveLength(0)
+    expect(callsTo('reorder_lyrics_providers')).toHaveLength(0)
+    expect(callsTo('update_lyrics_provider')).toHaveLength(0)
   })
 
   it('does nothing when the confirmation is dismissed', async () => {

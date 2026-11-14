@@ -1,5 +1,12 @@
 <template>
   <div class="space-y-8 animate-in fade-in duration-300">
+    <!-- SB00 (#196): los valores iniciales del composable son esqueleto de
+         carga; nada se renderiza hasta que el backend responde. -->
+    <div v-if="syncSettings.isLoading.value" class="flex items-center gap-2 text-text-secondary py-4">
+      <span class="animate-spin rounded-full h-4 w-4 border-2 border-gray-400 border-t-transparent"></span>
+      Loading sync settings…
+    </div>
+    <template v-else>
     <section class="space-y-4">
       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Per-Service Sync Settings</h3>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -38,6 +45,7 @@
         >
       </div>
     </section>
+    </template>
   </div>
 </template>
 

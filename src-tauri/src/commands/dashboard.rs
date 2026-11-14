@@ -293,7 +293,10 @@ pub async fn run_diagnostics(state: State<'_, AppState>) -> Result<Vec<Diagnosti
     Ok(results)
 }
 
-/// Reset settings to defaults
+/// Reset settings to defaults. SB00 (#196): el reset completo vive en
+/// `settings_defaults` (una sola fuente de defaults, una transacción, todos
+/// los errores propagados). Las dos escrituras silenciosas que había aquí
+/// (D-06) se retiraron con esta reescritura.
 #[tauri::command]
 pub async fn reset_to_defaults(
     state: State<'_, AppState>,
@@ -303,33 +306,11 @@ pub async fn reset_to_defaults(
 
     match settings_type.as_str() {
         "advanced" => {
-            sqlx::query("DELETE FROM advanced_settings WHERE id = 1")
-                .execute(&state.db)
-                .await
-                .map_err(|e| format!("Delete error: {}", e))?;
-            sqlx::query("INSERT INTO advanced_settings (id) VALUES (1)")
-                .execute(&state.db)
-                .await
-                .map_err(|e| format!("Insert error: {}", e))?;
+            crate::settings_defaults::reset_advanced_settings(&state.db).await?;
             Ok("Advanced settings reset to defaults".to_string())
         }
         "all" => {
-            // Reset all settings tables
-            for table in &[
-                "advanced_settings",
-                "sync_settings",
-                "folder_settings",
-                "duplicate_settings",
-                "audio_processing_settings",
-                "lyrics_config",
-            ] {
-                let _ = sqlx::query(&format!("DELETE FROM {} WHERE id = 1", table))
-                    .execute(&state.db)
-                    .await;
-                let _ = sqlx::query(&format!("INSERT OR IGNORE INTO {} (id) VALUES (1)", table))
-                    .execute(&state.db)
-                    .await;
-            }
+            crate::settings_defaults::reset_all_settings(&state.db).await?;
             Ok("All settings reset to defaults".to_string())
         }
         _ => Err(format!("Unknown settings type: {}", settings_type)),
