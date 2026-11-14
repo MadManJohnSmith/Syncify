@@ -2182,22 +2182,19 @@ pub async fn resolve_effective_download_preferences(
     // 1. Effective paths
     let effective_paths = resolve_effective_download_paths(db).await?;
 
-    // 2. Folder settings
+    // 2. Folder settings — el fallback sale de la fuente única de defaults
+    // (settings_defaults); la plantilla divergente `[{Year}]` se retira.
     let folder: FolderSettings =
         perform_get_folder_settings(db)
             .await
             .unwrap_or_else(|_| FolderSettings {
-                id: 1,
                 base_folder: effective_paths.library_root.clone(),
-                folder_template: "{AlbumArtist}/[{Year}] {Album}".to_string(),
-                file_template: "{TrackNumber:pad2} - {Title}".to_string(),
-                artist_separator: ", ".to_string(),
-                replace_spaces_with: None,
-                max_path_length: 255,
-                fallback_action: "try_next".to_string(),
+                ..crate::models::FolderSettings::default()
             });
 
-    // 3. Sync settings
+    // 3. Sync settings — fallback desde la fuente única (antes divergía:
+    // auto_sync TRUE / 1 'hours' / startup TRUE contra la semilla FALSE /
+    // 60 'minutes' / FALSE).
     let sync: SyncSettings = sqlx::query_as::<_, SyncSettings>(
         "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup,
          background_download, max_concurrent_downloads, rate_limit_delay_ms,
@@ -2206,18 +2203,7 @@ pub async fn resolve_effective_download_preferences(
     .fetch_optional(db)
     .await
     .unwrap_or(None)
-    .unwrap_or_else(|| SyncSettings {
-        id: 1,
-        auto_sync_enabled: true,
-        sync_interval_value: 1,
-        sync_interval_unit: "hours".to_string(),
-        sync_on_startup: true,
-        background_download: true,
-        max_concurrent_downloads: 3,
-        rate_limit_delay_ms: 500,
-        pause_on_metered: true,
-        pause_on_low_battery: true,
-    });
+    .unwrap_or_else(crate::models::SyncSettings::default);
 
     // 4. Advanced settings
     #[derive(sqlx::FromRow)]
@@ -2232,11 +2218,16 @@ pub async fn resolve_effective_download_preferences(
     .await
     .unwrap_or(None);
 
-    let max_retries = adv.as_ref().and_then(|a| a.max_retries).unwrap_or(3).max(0) as u32;
+    let adv_defaults = crate::models::AdvancedSettings::default();
+    let max_retries = adv
+        .as_ref()
+        .and_then(|a| a.max_retries)
+        .unwrap_or(adv_defaults.max_retries as i32)
+        .max(0) as u32;
     let retry_delay_seconds = adv
         .as_ref()
         .and_then(|a| a.retry_delay_seconds)
-        .unwrap_or(5)
+        .unwrap_or(adv_defaults.retry_delay_seconds as i32)
         .max(0) as u32;
 
     // 5. Quality preferences
