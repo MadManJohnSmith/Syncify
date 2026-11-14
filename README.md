@@ -115,8 +115,8 @@ that: it turns "your" catalog into *your* catalog.
 
 Under the hood: a **Tauri 2** desktop app (Rust core + Vue 3 UI) with a typed
 IPC layer, a multi-threaded download/repair engine, and a local schema
-hardened across **91 SQL migrations in this working tree** (87 committed plus
-4 new here). Service logins run through small
+hardened across **100 SQL migrations** (`src-tauri/migrations/`). Service
+logins run through small
 audited Python bridges (Playwright, Mutagen, AcoustID).
 
 ### How it comes together
@@ -262,19 +262,20 @@ behaviour listed under [verification and limitations](#verification-and-limitati
 
 ### Verification and limitations
 
-PR #26 was squash-merged into `main` as `94376b4`; the follow-up docs
-change from `5dcf4b6` was squash-merged as `ed440a9` (PR #27). Tag `v0.6.0`
-points exactly to `ed440a96f669c264a7e477e76b791e325e900b7f`, and the
-[Syncify v0.6.0 release](https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.0)
-is published with five Linux and Windows assets. Its notes come from
-[the v0.6.0 release notes](docs/historico/RELEASE_NOTES_v0.6.0.md). CI (Rust, Frontend,
-Python), the release gate, and both release builds (Linux and Windows) are
-green on that exact SHA. What has **not** been proven here:
+Released as
+[v0.6.0](https://github.com/MadManJohnSmith/Syncify/releases/tag/v0.6.0)
+(2026-10-12): CI (Rust, frontend, Python), the release gate, and both release
+builds (Linux and Windows) were green on the exact SHA the tag points to
+(`ed440a9`); notes in
+[the v0.6.0 release notes](docs/historico/RELEASE_NOTES_v0.6.0.md). What the
+release and the green CI do **not** prove — each item tracked as its own
+verification ticket:
 
 - **The graphical session.** UI layout, audio playback, tray, MPRIS/D-Bus,
-  and window-manager behaviour have not been exercised on a real desktop.
-- **Live network paths.** No launch login, provider enrichment, download, or
-  lyrics resolution ran against real services.
+  and window-manager behaviour have not been exercised on a real desktop
+  (#149).
+- **Live network paths.** No launch login (#63), no real download (#127), and
+  no provider enrichment or lyrics resolution against real services (#178).
 - **Ignored Rust tests.** The 13 ignored tests — kept out of CI because they
   need live network, real credentials, a runtime SQLite database, physical
   storage or wall-clock timing — have not been exercised.
