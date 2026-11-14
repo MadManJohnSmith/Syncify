@@ -136,3 +136,10 @@ Cinco roles canónicos con la etiqueta igual a su nombre (`needs-triage`,
 
 **single-context**: un `GLOSSARY.md` en la raíz y las decisiones en
 `docs/adr/*.md`. Ver `docs/agents/domain.md`.
+
+### Wiki del agente
+
+Memoria operativa entre sesiones del jefe de gabinete en `docs/agents/wiki/`
+(entrada por `docs/agents/wiki/index.md`). Claims fechados con cita de
+fuente, nunca estado actual; el estado canónico sigue en el tracker y en
+`docs/auditoria/matriz-ajustes.md`.
