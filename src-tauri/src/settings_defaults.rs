@@ -320,21 +320,27 @@ impl Default for MetadataPreferences {
         Self {
             id: 1,
             enable_musicbrainz: true,
-            enable_lastfm: false,
+            // SB03 (#198): fábrica = comportamiento actual (migración 0105);
+            // el fallback de enrich_track ya intentaba Last.fm sin condición.
+            enable_lastfm: true,
             enable_acoustid: false,
             overwrite_on_reimport: false,
             preserve_custom_tags: true,
             multi_value_separator: ";".to_string(),
             write_releasetype: true,
             write_label: true,
-            write_work_composer: false,
+            // SB03 (#198): fábrica = comportamiento actual. El escritor siempre
+            // emitió WORK/COMPOSER, LYRICS/UNSYNCEDLYRICS y SYNCIFY_*_SOURCE;
+            // la semilla 0 heredada de 0021 rompería la paridad al cablear los
+            // flags (migración 0105).
+            write_work_composer: true,
             write_musicbrainz_ids: true,
-            write_download_source: false,
+            write_download_source: true,
             write_download_date: false,
             write_only_available_on: false,
             write_not_available_streaming: false,
             write_quality_score: false,
-            write_lyrics_tags: false,
+            write_lyrics_tags: true,
             weight_album: 1,
             weight_isrc: 1,
             weight_mb_id: 1,

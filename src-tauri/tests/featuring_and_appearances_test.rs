@@ -209,6 +209,7 @@ async fn test_enrichment_associates_featured_in_track_artists() {
         service_name: "qobuz".to_string(),
         service_id: 1,
         account_id: 1,
+        include_appearances: false,
         service_track_id: "q_feat_101".to_string(),
         duration_ms: Some(240000),
         format: Some("FLAC".to_string()),

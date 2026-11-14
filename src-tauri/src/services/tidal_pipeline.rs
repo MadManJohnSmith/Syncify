@@ -28,7 +28,7 @@ use crate::services::repair_guardrail::{
 };
 pub use syncify_core_domain::metadata::TidalTrack;
 pub use syncify_flac_writer::{
-    apply_and_verify_flac_tags, audit_flac_stage, verify_flac_tags, FlacMetadata,
+    apply_and_verify_flac_tags_with_options, audit_flac_stage, verify_flac_tags, FlacMetadata,
 };
 pub use syncify_tidal_downloader::{PipelineError, TidalDownloader, TidalGuiCredentials};
 
@@ -2156,7 +2156,22 @@ where
 
         // Apply all tags (base + cover + lyrics + enrichment) in one pass
         phase_tracker.start_phase(DownloadPhase::Tagging);
-        match apply_and_verify_flac_tags(&staged_file_path, &flac_meta) {
+        // SB03 (#198): política write_* + provenancia de descarga.
+        let tag_prefs = crate::services::tag_writer::load_tag_policy(db).await;
+        flac_meta.download_date = Some(chrono::Utc::now().to_rfc3339());
+        flac_meta.quality_score = Some(
+            syncify_core_domain::quality::classify_audio_tier(
+                flac_meta.bit_depth,
+                flac_meta.sample_rate.map(|r| r as i32),
+                None,
+                Some("FLAC"),
+            )
+            .as_str()
+            .to_string(),
+        );
+        crate::services::tag_writer::apply_tag_policy(&mut flac_meta, &tag_prefs);
+        let tag_opts = crate::services::tag_writer::tag_write_options(&tag_prefs);
+        match apply_and_verify_flac_tags_with_options(&staged_file_path, &flac_meta, &tag_opts) {
             Ok(_) => {
                 tagging_result_str = "Success (metaflac Verified)".to_string();
                 info!("[Pipeline §6] FLAC tagging completed (base + cover + lyrics + enrichment)");
@@ -4605,7 +4620,7 @@ pub async fn reenrich_download_file_with_baseline(
 
     // Tagging
     let tags_applied = if ext_lower == "flac" {
-        let flac_meta = FlacMetadata {
+        let mut flac_meta = FlacMetadata {
             title: final_title.clone(),
             artist: final_artist.clone(),
             album: final_album.clone(),
@@ -4631,7 +4646,13 @@ pub async fn reenrich_download_file_with_baseline(
             lyrics_source: lyrics_src.clone(),
             ..Default::default()
         };
-        apply_and_verify_flac_tags(&current_path, &flac_meta).is_ok()
+        // SB03 (#198): el re-etiquetado de reparación respeta la misma
+        // política write_* / preserve_custom_tags (sin provenancia: no es una
+        // descarga nueva).
+        let tag_prefs = crate::services::tag_writer::load_tag_policy(db).await;
+        crate::services::tag_writer::apply_tag_policy(&mut flac_meta, &tag_prefs);
+        let tag_opts = crate::services::tag_writer::tag_write_options(&tag_prefs);
+        apply_and_verify_flac_tags_with_options(&current_path, &flac_meta, &tag_opts).is_ok()
     } else {
         let mp4_meta = Mp4Metadata {
             title: final_title.clone(),
