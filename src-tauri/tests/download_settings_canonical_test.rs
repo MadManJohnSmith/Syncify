@@ -86,7 +86,9 @@ async fn test_canonical_effective_preferences_get_and_atomic_save() {
         .expect("get_effective_download_preferences should succeed");
 
     assert_eq!(initial.download_path, base_path);
-    assert_eq!(initial.max_concurrent_downloads, 2);
+    // SB01 (#199): el DTO muestra la superficie canónica (sync_settings,
+    // semilla 3), no el estado vivo del worker (2).
+    assert_eq!(initial.max_concurrent_downloads, 3);
     assert_eq!(initial.fallback_action, "try_next");
     assert!(initial.allow_downgrade);
     assert!(!initial.strict_quality);

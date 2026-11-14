@@ -119,7 +119,16 @@ pub async fn update_sync_settings(
     settings: SyncSettings,
 ) -> Result<SyncSettings, String> {
     tracing::info!("update_sync_settings called");
+    perform_update_sync_settings(&state, settings).await
+}
 
+/// SB01 (#199): sync_settings es la superficie canónica del límite
+/// concurrente. El worker se sincroniza en vivo (estado de ejecución, no otra
+/// superficie); ni advanced_settings ni la KV reciben copia.
+pub async fn perform_update_sync_settings(
+    state: &AppState,
+    settings: SyncSettings,
+) -> Result<SyncSettings, String> {
     sqlx::query(
         "UPDATE sync_settings SET auto_sync_enabled = ?, sync_interval_value = ?, sync_interval_unit = ?,
          sync_on_startup = ?, background_download = ?, max_concurrent_downloads = ?, rate_limit_delay_ms = ?,
@@ -142,17 +151,14 @@ pub async fn update_sync_settings(
     let max_concurrency = (settings.max_concurrent_downloads as usize).max(1);
     state.worker_state.set_max_concurrent(max_concurrency);
 
-    let _ = sqlx::query("UPDATE advanced_settings SET max_concurrent_downloads = ?, updated_at = datetime('now') WHERE id = 1")
-        .bind(max_concurrency as i32)
-        .execute(&state.db)
-        .await;
-
-    let _ = sqlx::query("INSERT INTO settings (key, value) VALUES ('dl_concurrent_downloads', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(max_concurrency.to_string())
-        .execute(&state.db)
-        .await;
-
-    get_sync_settings(state).await
+    sqlx::query_as::<_, SyncSettings>(
+        "SELECT id, auto_sync_enabled, sync_interval_value, sync_interval_unit, sync_on_startup,
+         background_download, max_concurrent_downloads, rate_limit_delay_ms,
+         pause_on_metered, pause_on_low_battery FROM sync_settings WHERE id = 1",
+    )
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| format!("Database error: {}", e))
 }
 
 /// Get per-service sync settings
@@ -513,16 +519,9 @@ pub async fn perform_update_folder_settings(
     .await
     .map_err(|e| format!("Update error: {}", e))?;
 
-    if !settings.base_folder.trim().is_empty() {
-        let trimmed = settings.base_folder.trim();
-        for key in &["dl_download_path", "download_dir", "download_path"] {
-            let _ = sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
-                .bind(key)
-                .bind(trimmed)
-                .execute(db)
-                .await;
-        }
-    }
+    // SB01 (#199): folder_settings.base_folder es la única superficie de la
+    // ruta; los lectores legacy (KV dl_download_path/download_dir/download_path)
+    // solo se consultan cuando aquí no hay valor.
 
     perform_get_folder_settings(db).await
 }
@@ -1354,19 +1353,13 @@ pub async fn perform_save_setting(
                 return Ok(());
             }
         } else {
-            let _ = sqlx::query("UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1")
+            // SB01 (#199): la ruta canónica es folder_settings.base_folder;
+            // la clave KV se enruta allí y no se escribe espejo.
+            sqlx::query("UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1")
                 .bind(trimmed_val)
                 .execute(db)
-                .await;
-            for k in &["dl_download_path", "download_dir", "download_path"] {
-                let _ = sqlx::query(
-                    "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
-                )
-                .bind(k)
-                .bind(trimmed_val)
-                .execute(db)
-                .await;
-            }
+                .await
+                .map_err(|e| format!("Failed to save setting '{}': {}", key, e))?;
             return Ok(());
         }
     }
@@ -1687,20 +1680,13 @@ pub async fn perform_get_kv_settings(
             .unwrap_or(true);
 
     if missing_or_blank_download_path {
+        // SB01 (#199): solo lectura a través (read-through). La ruta canónica
+        // vive en folder_settings; ya no se auto-siembran espejos en la KV
+        // para lectores legacy — esos lectores resuelven por su cuenta.
         let eff = resolve_effective_download_paths(db)
             .await
             .map(|e| e.library_root)
             .unwrap_or_else(|_| default_download_path());
-
-        for k in &["dl_download_path", "download_dir", "download_path"] {
-            let _ = sqlx::query(
-                "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))"
-            )
-            .bind(k)
-            .bind(&eff)
-            .execute(db)
-            .await;
-        }
 
         result.insert("dl_download_path".to_string(), eff);
     }
@@ -1904,7 +1890,22 @@ pub async fn perform_get_download_settings(
         .map(|v| v == "true" || v == "1")
         .unwrap_or(true);
 
-    let max_concurrent = state.worker_state.max_concurrent() as i64;
+    // SB01 (#199): el DTO muestra el valor de la superficie canónica
+    // (sync_settings, con lectura tolerante del resto legacy en la KV); el
+    // worker vivo solo es el último recurso si la BD no dice nada.
+    let canonical_concurrency: Option<i64> = sqlx::query_scalar(
+        "SELECT COALESCE(
+            (SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1),
+            (SELECT CAST(value AS INTEGER) FROM settings
+             WHERE key = 'dl_concurrent_downloads' AND value IS NOT NULL AND TRIM(value) != '')
+        )",
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+    let max_concurrent =
+        canonical_concurrency.unwrap_or_else(|| state.worker_state.max_concurrent() as i64);
 
     Ok(DownloadSettingsDto {
         download_path,
@@ -1975,29 +1976,18 @@ pub async fn perform_save_download_settings(
     .await
     .map_err(|e| format!("Database error updating sync_settings: {}", e))?;
 
-    let _ = sqlx::query(
-        "UPDATE advanced_settings SET max_concurrent_downloads = ?, updated_at = datetime('now') WHERE id = 1"
-    )
-    .bind(settings.max_concurrent_downloads as i32)
-    .execute(&state.db)
-    .await;
-
+    // SB01 (#199): sync_settings es la única superficie del límite
+    // concurrente; ni advanced_settings ni la KV reciben copia.
     state
         .worker_state
         .set_max_concurrent(settings.max_concurrent_downloads as usize);
 
-    // 3. Update settings key-value table and keep all legacy keys synchronized
+    // 3. Update settings key-value table. SB01: fuera el espejo triple de la
+    // ruta (dl_download_path/download_dir/download_path) y la copia del límite
+    // concurrente — la ruta vive en folder_settings y el límite en
+    // sync_settings. Las claves dl_generate_* y dl_retry_failed siguen siendo
+    // la superficie canónica de sus valores (única escritura).
     let mut kv_pairs = vec![
-        (
-            "dl_download_path".to_string(),
-            settings.download_path.clone(),
-        ),
-        ("download_dir".to_string(), settings.download_path.clone()),
-        ("download_path".to_string(), settings.download_path.clone()),
-        (
-            "dl_concurrent_downloads".to_string(),
-            settings.max_concurrent_downloads.to_string(),
-        ),
         (
             "dl_retry_failed".to_string(),
             settings.retry_failed.to_string(),
@@ -2175,7 +2165,6 @@ pub async fn perform_update_sidecar_settings(
 /// Resolve all effective download and scheduling preferences from canonical sources
 pub async fn resolve_effective_download_preferences(
     db: &crate::DbPool,
-    worker_state: &crate::worker::DownloadWorkerState,
 ) -> Result<EffectiveDownloadPreferences, String> {
     tracing::info!("resolve_effective_download_preferences called");
 
@@ -2303,7 +2292,9 @@ pub async fn resolve_effective_download_preferences(
         .map(|v| v == "true" || v == "1")
         .unwrap_or(true);
 
-    let max_concurrent_downloads = worker_state.max_concurrent().max(1) as u32;
+    // SB01 (#199): el valor efectivo sale de sync_settings (`sync`, leído
+    // arriba de la superficie canónica), no del estado vivo del worker.
+    let max_concurrent_downloads = sync.max_concurrent_downloads.max(1) as u32;
 
     let fallback_action = folder.fallback_action.clone();
     let allow_downgrade = fallback_action != "skip";
@@ -2350,7 +2341,7 @@ pub async fn resolve_effective_download_preferences(
 pub async fn perform_get_effective_download_preferences(
     state: &AppState,
 ) -> Result<EffectiveDownloadPreferences, String> {
-    resolve_effective_download_preferences(&state.db, &state.worker_state).await
+    resolve_effective_download_preferences(&state.db).await
 }
 
 /// Perform save effective download preferences atomically
@@ -2443,14 +2434,14 @@ pub async fn perform_save_effective_download_preferences(
     .await
     .map_err(|e| format!("Failed to update sync_settings: {}", e))?;
 
-    // 5. Update advanced_settings
+    // 5. Update advanced_settings. SB01: la copia del límite concurrente
+    // desaparece; max_retries/retry_delay sí son superficie propia (la única)
+    // de advanced_settings.
     let _ = sqlx::query(
         r#"UPDATE advanced_settings
-           SET max_concurrent_downloads = ?,
-               max_retries = ?, retry_delay_seconds = ?, updated_at = datetime('now')
+           SET max_retries = ?, retry_delay_seconds = ?, updated_at = datetime('now')
            WHERE id = 1"#,
     )
-    .bind(prefs.max_concurrent_downloads as i32)
     .bind(prefs.max_retries as i32)
     .bind(prefs.retry_delay_seconds as i32)
     .execute(&mut *tx)
@@ -2488,15 +2479,10 @@ pub async fn perform_save_effective_download_preferences(
         .await;
     }
 
-    // 8. Update settings key-value table
+    // 8. Update settings key-value table. SB01: sin espejo de ruta (vive en
+    // folder_settings) ni copia del límite concurrente (vive en
+    // sync_settings).
     let kv_pairs = vec![
-        ("dl_download_path".to_string(), canonical_path.clone()),
-        ("download_dir".to_string(), canonical_path.clone()),
-        ("download_path".to_string(), canonical_path.clone()),
-        (
-            "dl_concurrent_downloads".to_string(),
-            prefs.max_concurrent_downloads.to_string(),
-        ),
         (
             "dl_retry_failed".to_string(),
             (prefs.max_retries > 0).to_string(),
@@ -2547,7 +2533,7 @@ pub async fn perform_save_effective_download_preferences(
     let concurrency = (prefs.max_concurrent_downloads as usize).max(1);
     state.worker_state.set_max_concurrent(concurrency);
 
-    resolve_effective_download_preferences(&state.db, &state.worker_state).await
+    resolve_effective_download_preferences(&state.db).await
 }
 
 /// Get canonical effective download preferences

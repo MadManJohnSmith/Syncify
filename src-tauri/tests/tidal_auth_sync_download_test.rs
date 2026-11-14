@@ -224,22 +224,23 @@ async fn test_concurrency_persistence_roundtrip_values() {
                 .unwrap();
         assert_eq!(sync_val as usize, concurrency);
 
-        // Verify SQLite advanced_settings
+        // Verify SQLite advanced_settings — SB01 (#199): sin copia; queda la
+        // semilla de defaults (3) intacta.
         let adv_val: i32 = sqlx::query_scalar(
             "SELECT max_concurrent_downloads FROM advanced_settings WHERE id = 1",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(adv_val as usize, concurrency);
+        assert_eq!(adv_val, 3);
 
-        // Verify SQLite settings table key
-        let kv_val: String =
+        // Verify SQLite settings table key — SB01: sin copia en la KV.
+        let kv_val: Option<String> =
             sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-                .fetch_one(&pool)
+                .fetch_optional(&pool)
                 .await
                 .unwrap();
-        assert_eq!(kv_val.parse::<usize>().unwrap(), concurrency);
+        assert!(kv_val.is_none(), "no KV copy of concurrency");
 
         // Verify settings DTO reflects updated concurrency
         let settings_dto = perform_get_download_settings(&state).await.unwrap();

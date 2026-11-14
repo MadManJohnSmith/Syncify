@@ -2692,18 +2692,26 @@ impl DownloadWorker {
         // Repair legacy queue rows with missing service_track_id
         Self::repair_unresolved_queue_sources(&self.db).await;
 
-        // FS-07: Restore persisted concurrency limit from SQLite on worker startup
-        if let Ok(Some((concurrency_str,))) = sqlx::query_as::<_, (String,)>(
-            "SELECT value FROM settings WHERE key = 'dl_concurrent_downloads' AND value IS NOT NULL AND TRIM(value) != ''"
+        // FS-07: Restore persisted concurrency limit from SQLite on worker
+        // startup. SB01 (#199): sync_settings es la superficie canónica; la
+        // clave KV `dl_concurrent_downloads` queda como lectura tolerante de
+        // restos legacy de versiones anteriores.
+        let restored_concurrency: Option<i64> = sqlx::query_scalar(
+            "SELECT COALESCE(
+                (SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1),
+                (SELECT CAST(value AS INTEGER) FROM settings
+                 WHERE key = 'dl_concurrent_downloads' AND value IS NOT NULL AND TRIM(value) != '')
+            )",
         )
         .fetch_optional(&self.db)
         .await
-        {
-            if let Ok(threads) = concurrency_str.trim().parse::<usize>() {
-                if (1..=10).contains(&threads) {
-                    self.state.set_max_concurrent(threads);
-                    tracing::info!("[Worker] Restored max_concurrent = {} on startup", threads);
-                }
+        .ok()
+        .flatten();
+        if let Some(threads) = restored_concurrency {
+            let threads = threads.max(0) as usize;
+            if (1..=10).contains(&threads) {
+                self.state.set_max_concurrent(threads);
+                tracing::info!("[Worker] Restored max_concurrent = {} on startup", threads);
             }
         }
 

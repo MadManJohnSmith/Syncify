@@ -86,7 +86,9 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
         .await
         .expect("get_download_settings should succeed");
 
-    assert_eq!(initial_settings.max_concurrent_downloads, 2);
+    // SB01 (#199): el DTO muestra la superficie canónica (sync_settings,
+    // semilla 3), no el estado vivo del worker (2).
+    assert_eq!(initial_settings.max_concurrent_downloads, 3);
 
     // Update settings with custom configuration
     let new_custom_path = format!("{}/CustomMusicLibrary", base_path);
@@ -155,12 +157,13 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
             .unwrap();
     assert_eq!(db_sync_max, 5);
 
-    let db_kv_concurrent: String =
+    // SB01 (#199): sin copia en la KV; sync_settings es la única superficie.
+    let db_kv_concurrent: Option<String> =
         sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-            .fetch_one(&pool)
+            .fetch_optional(&pool)
             .await
             .unwrap();
-    assert_eq!(db_kv_concurrent, "5");
+    assert!(db_kv_concurrent.is_none(), "no KV copy of concurrency");
 }
 
 #[tokio::test]
@@ -230,13 +233,14 @@ async fn test_set_max_concurrent_downloads_command_persists() {
             .unwrap();
     assert_eq!(sync_max, 4);
 
-    // Verify settings KV in DB
-    let kv_val: String =
+    // Verify settings KV in DB — SB01: sin copia; sync_settings es la única
+    // superficie del límite concurrente.
+    let kv_val: Option<String> =
         sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-            .fetch_one(&pool)
+            .fetch_optional(&pool)
             .await
             .unwrap();
-    assert_eq!(kv_val, "4");
+    assert!(kv_val.is_none(), "no KV copy of concurrency");
 }
 
 #[tokio::test]
@@ -669,7 +673,7 @@ async fn test_batch_health_check_reports_effective_download_and_staging_paths() 
 }
 
 #[tokio::test]
-async fn test_save_download_settings_synchronizes_all_legacy_keys() {
+async fn test_save_download_settings_leaves_a_single_trace() {
     let (state, pool, temp_dir) = setup_test_app_state(2).await;
     let new_path = temp_dir
         .path()
@@ -705,32 +709,23 @@ async fn test_save_download_settings_synchronizes_all_legacy_keys() {
         .await
         .unwrap();
 
-    // Verify all keys in SQLite directly
+    // SB01 (#199): rastro único — folder_settings es la única superficie de
+    // la ruta; las claves legacy de la KV no reciben copia.
     let base_folder: String =
         sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
             .fetch_one(&pool)
             .await
             .unwrap();
-    let dl_download_path: String =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_download_path'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    let download_dir: String =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_dir'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    let download_path: String =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_path'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-
     assert_eq!(base_folder, new_path);
-    assert_eq!(dl_download_path, new_path);
-    assert_eq!(download_dir, new_path);
-    assert_eq!(download_path, new_path);
+
+    for key in ["dl_download_path", "download_dir", "download_path"] {
+        let mirror: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+        assert!(mirror.is_none(), "KV key {key} must not be written anymore");
+    }
 }
 
 #[tokio::test]
@@ -745,7 +740,8 @@ async fn test_concurrency_persistence_and_restart_simulation() {
         assert_eq!(res, target_concurrency);
         assert_eq!(state.worker_state.max_concurrent(), target_concurrency);
 
-        // 2. Verify all DB persistence tables match
+        // 2. Verify DB persistence: sync_settings canónico; ni
+        // advanced_settings ni la KV reciben copia (SB01, #199).
         let sync_val: i32 =
             sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
                 .fetch_one(&pool)
@@ -757,15 +753,15 @@ async fn test_concurrency_persistence_and_restart_simulation() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        let kv_val: String =
+        let kv_val: Option<String> =
             sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-                .fetch_one(&pool)
+                .fetch_optional(&pool)
                 .await
                 .unwrap();
 
         assert_eq!(sync_val as usize, target_concurrency);
-        assert_eq!(adv_val as usize, target_concurrency);
-        assert_eq!(kv_val.parse::<usize>().unwrap(), target_concurrency);
+        assert_eq!(adv_val, 3, "advanced_settings must not receive a copy");
+        assert!(kv_val.is_none(), "no KV copy of concurrency");
 
         // 3. Verify get_download_settings matches
         let settings = perform_get_download_settings(&state).await.unwrap();

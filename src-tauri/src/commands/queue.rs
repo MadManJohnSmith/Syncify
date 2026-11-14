@@ -2653,24 +2653,20 @@ pub fn pause_worker(state: State<'_, AppState>) {
     tracing::info!("Download worker paused");
 }
 
-/// Perform set maximum concurrent downloads
+/// Perform set maximum concurrent downloads. SB01 (#199): sync_settings es la
+/// única superficie persistida (error propagado; antes había 3 escrituras
+/// silenciosas repartidas en advanced_settings y la KV); el worker recibe el
+/// valor en vivo como estado de ejecución.
 pub async fn perform_set_max_concurrent_downloads(
     state: &AppState,
     max: usize,
 ) -> Result<usize, String> {
     state.worker_state.set_max_concurrent(max);
-    let _ = sqlx::query("UPDATE sync_settings SET max_concurrent_downloads = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1")
+    sqlx::query("UPDATE sync_settings SET max_concurrent_downloads = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1")
         .bind(max as i32)
         .execute(&state.db)
-        .await;
-    let _ = sqlx::query("UPDATE advanced_settings SET max_concurrent_downloads = ?, updated_at = datetime('now') WHERE id = 1")
-        .bind(max as i32)
-        .execute(&state.db)
-        .await;
-    let _ = sqlx::query("INSERT INTO settings (key, value) VALUES ('dl_concurrent_downloads', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(max.to_string())
-        .execute(&state.db)
-        .await;
+        .await
+        .map_err(|e| format!("Failed to persist max concurrent downloads: {}", e))?;
     tracing::info!("Max concurrent downloads set to {} and persisted", max);
     Ok(max)
 }
