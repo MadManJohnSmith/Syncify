@@ -1384,17 +1384,13 @@ pub async fn service_save_settings(
 
     if !settings.download_path.trim().is_empty() {
         let trimmed = settings.download_path.trim();
+        // SB01 (#199): folder_settings.base_folder es la única superficie de
+        // la ruta; sin espejo en la KV.
         let _ = crate::db::write_or_log("service_save_settings", sqlx::query(
             "UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1",
         )
         .bind(trimmed)
         .execute(&state.db)).await;
-        for key in &["download_path", "dl_download_path", "download_dir"] {
-            let _ = crate::db::write_or_log("service_save_settings", sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
-                .bind(key)
-                .bind(trimmed)
-                .execute(&state.db)).await;
-        }
     }
 
     sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('preferred_quality', ?)")
