@@ -1592,7 +1592,7 @@ impl EnrichmentEngine {
                 }
             }
 
-            let flac_meta = crate::services::tag_writer::FlacMetadata {
+            let mut flac_meta = crate::services::tag_writer::FlacMetadata {
                 title: if !clean_title.is_empty() {
                     clean_title
                 } else {
@@ -1688,8 +1688,15 @@ impl EnrichmentEngine {
                 ..Default::default()
             };
 
-            crate::services::tag_writer::apply_flac_tags(flac_path, &flac_meta)
-                .map_err(|e| format!("Failed to apply FLAC tags: {}", e))?;
+            // SB03 (#198): el re-etiquetado por enriquecimiento respeta la
+            // misma política write_* / preserve_custom_tags.
+            let tag_prefs = crate::services::tag_writer::load_tag_policy(db).await;
+            crate::services::tag_writer::apply_tag_policy(&mut flac_meta, &tag_prefs);
+            let tag_opts = crate::services::tag_writer::tag_write_options(&tag_prefs);
+            crate::services::tag_writer::apply_flac_tags_with_options(
+                flac_path, &flac_meta, &tag_opts,
+            )
+            .map_err(|e| format!("Failed to apply FLAC tags: {}", e))?;
 
             crate::services::tag_writer::verify_flac_tags(flac_path, &flac_meta)
                 .map_err(|e| format!("FLAC re-read verification failed: {}", e))?;
@@ -2742,6 +2749,18 @@ impl EnrichmentEngine {
                 .execute(&mut *tx)).await;
             }
 
+            // SB03 (#198): include_appearances — el artista del track que no
+            // es el primario del álbum también se registra (aparición).
+            // Idempotente; en el caso divergente ya quedó registrado a 0.
+            if input.include_appearances && artist_id != album_artist_id {
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
+                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 0)"
+                )
+                .bind(aid)
+                .bind(artist_id)
+                .execute(&mut *tx)).await;
+            }
+
             // S198: favorite-album marking + provider album id (guarded, idempotent).
             // Only ever widens data: is_favorite flips 0→1 with a COALESCE'd
             // timestamp; the provider id is written once and never stolen from
@@ -3765,6 +3784,11 @@ pub struct SyncTrackInput {
     // Los cubren los tests de sincronía de álbum (`tests/tidal_sync_persistence_test.rs`).
     #[allow(dead_code)]
     pub album_provider_track_id: Option<String>,
+    /// SB03 (#198): `sync_include_appearances`. Cuando es `true`, el artista
+    /// del track que no es el artista primario del álbum también se registra
+    /// en `album_artists` (is_primary = 0) — una aparición. Fábrica `false`:
+    /// solo el primario, comportamiento histórico.
+    pub include_appearances: bool,
 }
 
 /// Result returned from sync-time pre-enrichment

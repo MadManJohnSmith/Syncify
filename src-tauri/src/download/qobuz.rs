@@ -28,7 +28,7 @@ use syncify_core_domain::byte_validators::AudioByteValidator;
 use syncify_core_domain::errors::ErrorTaxonomy;
 use syncify_core_domain::quality::FormatId;
 use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
-use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
+use syncify_flac_writer::{apply_and_verify_flac_tags_with_options, FlacMetadata};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
@@ -2881,7 +2881,28 @@ impl QobuzDownloader {
                 }
                 // 7e. Tagging phase
                 phase_tracker.start_phase(DownloadPhase::Tagging);
-                match apply_and_verify_flac_tags(&staging_path, &flac_meta) {
+                // SB03 (#198): los flags write_* de metadata_preferences
+                // filtran el DTO; sin BD, defaults de fábrica (histórico).
+                let tag_prefs = if let Some(db) = db_opt {
+                    crate::services::tag_writer::load_tag_policy(db).await
+                } else {
+                    crate::models::MetadataPreferences::default()
+                };
+                flac_meta.download_date = Some(chrono::Utc::now().to_rfc3339());
+                flac_meta.quality_score = Some(
+                    syncify_core_domain::quality::classify_audio_tier(
+                        flac_meta.bit_depth,
+                        flac_meta.sample_rate.map(|r| r as i32),
+                        None,
+                        Some("FLAC"),
+                    )
+                    .as_str()
+                    .to_string(),
+                );
+                crate::services::tag_writer::apply_tag_policy(&mut flac_meta, &tag_prefs);
+                let tag_opts = crate::services::tag_writer::tag_write_options(&tag_prefs);
+                match apply_and_verify_flac_tags_with_options(&staging_path, &flac_meta, &tag_opts)
+                {
                     Ok(verified) => {
                         info!(
                         "[Qobuz] Tagged and verified FLAC (flac_valid: {}, tags_match: {}, cover: {}, lyrics: {})",

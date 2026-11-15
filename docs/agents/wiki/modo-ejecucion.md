@@ -55,3 +55,16 @@ LY00, parte sin credenciales) → programas grandes por spec, uno en vuelo
 cada vez. El inventario completo y los bloqueados no se copian aquí: viven
 en `docs/historico/HANDOFF-2026-11-13.md` y el estado canónico en el
 tracker y `docs/auditoria/matriz-ajustes.md`.
+
+### Progreso fechado
+
+- **2026-11-14**: carril A cerrado (PR #286, rebaja de §«Verification and
+  limitations») y SB00 fusionado el día anterior (#287, `ea62b39`).
+  Fuente: `git log dev`.
+- **2026-11-14**: SB01 (#199) fusionado por squash en PR #288 (`d5976c6`
+  en `dev`); issue cerrado manualmente citando el SHA. La puerta de
+  claims del AGENTS.md cazó el objetivo de test nuevo (319→320). El
+  carril venía a medio hacer de una sesión anterior (cambios sin
+  commit); se completó inline, con 4 objetivos de test de
+  caracterización actualizados al contrato de superficie única. Fuente:
+  PR #288. Siguiente del orden: SB03 (#198).

@@ -1841,6 +1841,7 @@ pub async fn sync_soundcloud_likes_with_engine<F>(
     account_id: i64,
     soundcloud_service_id: i64,
     client: &crate::services::SoundCloudClient,
+    include_appearances: bool,
     mut on_track: F,
 ) -> Result<SoundCloudLikesSyncTotals, String>
 where
@@ -1887,6 +1888,7 @@ where
                 service_name: "soundcloud".to_string(),
                 service_id: soundcloud_service_id,
                 account_id,
+                include_appearances,
                 is_favorite: true,
                 format: Some("MP3".to_string()),
                 // SoundCloud solo reparte audio con pérdida (la migración 0064 fija
@@ -1976,6 +1978,7 @@ pub async fn sync_soundcloud_playlists_with_engine<F>(
     account_id: i64,
     soundcloud_service_id: i64,
     client: &crate::services::SoundCloudClient,
+    include_appearances: bool,
     mut on_track: F,
 ) -> Result<SoundCloudPlaylistsSyncTotals, String>
 where
@@ -2074,6 +2077,7 @@ where
                         service_name: "soundcloud".to_string(),
                         service_id: soundcloud_service_id,
                         account_id,
+                        include_appearances,
                         // Pertenencia a playlist: no es un like de la cuenta.
                         is_favorite: false,
                         format: Some("MP3".to_string()),
@@ -2189,6 +2193,15 @@ async fn run_soundcloud_likes_import(
         account_id,
         soundcloud_service_id,
         &client,
+        // SB03 (#198): el envoltorio legacy no recibe ImportPreferences; lee
+        // la preferencia persistida del servicio (fábrica 0: histórico).
+        sqlx::query_scalar::<_, bool>(
+            "SELECT sync_include_appearances FROM service_sync_settings WHERE service_name = 'soundcloud'",
+        )
+        .fetch_optional(db)
+        .await
+        .unwrap_or(Some(false))
+        .unwrap_or(false),
         |_res, processed, _page_finished| on_progress(processed),
     )
     .await?;
@@ -3394,6 +3407,7 @@ async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
             account_id,
             soundcloud_service_id,
             &client,
+            prefs.include_appearances,
             |res, processed, page_finished| {
                 arm.tracks_processed += 1;
                 if res.is_new_global_track {
@@ -3491,6 +3505,7 @@ async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
             account_id,
             soundcloud_service_id,
             &client,
+            prefs.include_appearances,
             |res, playlist_title, processed, page_finished| {
                 arm.tracks_processed += 1;
                 arm.tracks_expanded += 1;
@@ -3727,6 +3742,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                     service_name: "deezer".to_string(),
                     service_id: deezer_service_id,
                     account_id,
+                    include_appearances: prefs.include_appearances,
                     is_favorite: true,
                     format: Some("FLAC".to_string()),
                     bit_depth: Some(16),
@@ -3850,6 +3866,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                         service_name: "deezer".to_string(),
                         service_id: deezer_service_id,
                         account_id,
+                        include_appearances: prefs.include_appearances,
                         is_favorite: false,
                         // S198 engine extension works for deezer too:
                         // the ALBUM is a favorite even though no
@@ -4262,6 +4279,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                             service_name: "spotify".to_string(),
                             service_id: spotify_service_id,
                             account_id,
+                            include_appearances: prefs.include_appearances,
                             is_favorite: true,
                             is_purchased: false,
                             format: Some("OGG".to_string()),
@@ -4436,6 +4454,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                     service_name: "spotify".to_string(),
                                     service_id: spotify_service_id,
                                     account_id,
+                                    include_appearances: prefs.include_appearances,
                                     is_favorite: false,
                                     is_purchased: false,
                                     format: Some("OGG".to_string()),
@@ -4666,6 +4685,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                             service_name: "spotify".to_string(),
                                             service_id: spotify_service_id,
                                             account_id,
+                                            include_appearances: prefs.include_appearances,
                                             is_favorite: false,
                                             is_purchased: false,
                                             format: Some("OGG".to_string()),
@@ -4869,6 +4889,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                         service_name: "spotify".to_string(),
                                         service_id: spotify_service_id,
                                         account_id,
+                                        include_appearances: prefs.include_appearances,
                                         is_favorite: false,
                                         is_purchased: false,
                                         format: Some("OGG_VORBIS".to_string()),
@@ -5139,6 +5160,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                             service_name: "tidal".to_string(),
                             service_id: tidal_service_id,
                             account_id,
+                            include_appearances: prefs.include_appearances,
                             is_favorite: true,
                             is_purchased: false,
                             // FIX 2026-08-25 (matriz de metadatos): calidad
@@ -5471,6 +5493,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                                 service_name: "tidal".to_string(),
                                                 service_id: tidal_service_id,
                                                 account_id,
+                                                include_appearances: prefs.include_appearances,
                                                 is_favorite: false,
                                                 is_purchased: false,
                                                 format: Some("FLAC".to_string()),
@@ -5793,6 +5816,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                                 service_name: "tidal".to_string(),
                                                 service_id: tidal_service_id,
                                                 account_id,
+                                                include_appearances: prefs.include_appearances,
                                                 is_favorite: false,
                                                 is_purchased: false,
                                                 format: Some("FLAC".to_string()),
@@ -6234,6 +6258,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                             service_name: "qobuz".to_string(),
                             service_id: qobuz_service_id,
                             account_id,
+                            include_appearances: prefs.include_appearances,
                             is_favorite: true,
                             is_purchased: false,
                             format: Some("FLAC".to_string()),
@@ -6515,6 +6540,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                     service_name: "qobuz".to_string(),
                                     service_id: qobuz_service_id,
                                     account_id,
+                                    include_appearances: prefs.include_appearances,
                                     is_favorite: false,
                                     is_purchased: false,
                                     format: Some("FLAC".to_string()),
@@ -6786,6 +6812,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                     service_name: "qobuz".to_string(),
                                     service_id: qobuz_service_id,
                                     account_id,
+                                    include_appearances: prefs.include_appearances,
                                     is_favorite: false,
                                     is_purchased: true,
                                     format: Some("FLAC".to_string()),
@@ -7092,6 +7119,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                         service_name: "qobuz".to_string(),
                                         service_id: qobuz_service_id,
                                         account_id,
+                                        include_appearances: prefs.include_appearances,
                                         is_favorite: false,
                                         is_purchased: false,
                                         format: Some("FLAC".to_string()),

@@ -6734,13 +6734,41 @@ pub async fn sync_local_library_inner(
     // file in this run uses the same persisted preferences.
     let scoring_weights = load_local_scoring_weights(db).await?;
     let (service_id, account_id) = ensure_local_service_registered(db).await?;
-    let scanned = scan_local_audio_files_with_weights(path, recursive, &scoring_weights)?;
+    let mut scanned = scan_local_audio_files_with_weights(path, recursive, &scoring_weights)?;
     let total_scanned = scanned.len();
 
     let mut imported = 0usize;
     let mut duplicates_matched = 0usize;
     let mut duplicates_skipped = 0usize;
     let mut errors = Vec::new();
+
+    // SB03 (#198): política de reimportado leída una vez por corrida.
+    // - overwrite_on_reimport: refresca metadatos del track al reimportar.
+    // - multi_value_separator: delimitador que además de los legacy (';' y
+    //   '/') separa los géneros multivalor del fichero; con la fábrica (';')
+    //   el primario resultante es el mismo que produce hoy el trigger de
+    //   TASK-142 (migración 0074), que la inserción seguirá re-aplicando.
+    let (overwrite_on_reimport, multi_value_separator) =
+        match sqlx::query_as::<_, (bool, String)>(
+            "SELECT overwrite_on_reimport, multi_value_separator FROM metadata_preferences WHERE id = 1",
+        )
+        .fetch_optional(db)
+        .await
+        {
+            Ok(Some(row)) => row,
+            _ => (false, ";".to_string()),
+        };
+    for t in scanned.iter_mut() {
+        if let Some(ref g) = t.genre {
+            let primary = g
+                .split(multi_value_separator.as_str())
+                .flat_map(|part| part.split([';', '/']))
+                .map(|s| s.trim())
+                .find(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            t.genre = primary;
+        }
+    }
 
     for track in scanned {
         // Step 1: Check if file already exists in downloads
@@ -6777,6 +6805,32 @@ pub async fn sync_local_library_inner(
                         tid, e
                     ));
                     continue;
+                }
+
+                // SB03 (#198): overwrite_on_reimport gobierna si el
+                // reimportado refresca los metadatos del track en la BD desde
+                // las etiquetas del fichero. Fábrica (off): solo se verifica
+                // y enlaza, como hasta ahora. Los campos de identidad (ISRC,
+                // ids de servicio) nunca se tocan aquí.
+                if overwrite_on_reimport {
+                    let refresh = sqlx::query(
+                        "UPDATE tracks SET title = ?, genre = ?, release_year = ?, track_number = ?, duration_ms = ? WHERE id = ?",
+                    )
+                    .bind(&track.title)
+                    .bind(&track.genre)
+                    .bind(track.release_year)
+                    .bind(track.track_number)
+                    .bind(track.duration_ms)
+                    .bind(tid)
+                    .execute(db)
+                    .await;
+                    if let Err(e) = refresh {
+                        errors.push(format!(
+                            "Error overwriting track metadata for track #{}: {}",
+                            tid, e
+                        ));
+                        continue;
+                    }
                 }
 
                 let link_ts = sqlx::query(

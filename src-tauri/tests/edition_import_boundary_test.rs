@@ -36,6 +36,7 @@ fn input(
         service_name: service.into(),
         service_id,
         account_id: 1,
+        include_appearances: false,
         is_favorite: false,
         is_purchased: false,
         format: None,

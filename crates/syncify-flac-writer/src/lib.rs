@@ -100,6 +100,13 @@ pub struct FlacMetadata {
     /// Used by Symfonium to index multiple artists per track.
     pub artists: Option<Vec<String>>,
     pub media_type: Option<String>,
+    /// SB03 (#198): provenance extras. Written only when the caller populates
+    /// them AND the corresponding `write_*` flag is on (see `apply_tag_policy`
+    /// on the app side); absent values write nothing.
+    pub download_date: Option<String>,
+    pub only_available_on: Option<String>,
+    pub not_available_streaming: Option<bool>,
+    pub quality_score: Option<String>,
 }
 
 impl FlacMetadata {
@@ -347,6 +354,110 @@ pub fn unify_album_compilation_metadata(
     }
 }
 
+/// SB03 (#198): writer-level policy knobs. Factory default preserves the
+/// historical behavior exactly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagWriteOptions {
+    /// When `false`, Vorbis comments the writer does not manage (see
+    /// `MANAGED_VORBIS_KEYS`) are stripped before the managed set is written.
+    pub preserve_custom_tags: bool,
+}
+
+impl Default for TagWriteOptions {
+    fn default() -> Self {
+        Self {
+            preserve_custom_tags: true,
+        }
+    }
+}
+
+/// Vorbis comment keys this writer owns (sets or rewrites). Anything outside
+/// this set counts as a custom tag and survives only when
+/// `TagWriteOptions::preserve_custom_tags` is `true`.
+const MANAGED_VORBIS_KEYS: &[&str] = &[
+    "TITLE",
+    "ARTIST",
+    "ALBUM",
+    "ALBUMARTIST",
+    "COMPOSER",
+    "PERFORMER",
+    "WORK",
+    "GENRE",
+    "STYLE",
+    "ALBUMSTYLE",
+    "TRACKSTYLE",
+    "MOOD",
+    "ALBUMMOOD",
+    "TRACKMOOD",
+    "TAGS",
+    "ALBUMTAGS",
+    "ARTISTS_TAGS",
+    "RELEASETYPE",
+    "RELEASESTATUS",
+    "RELEASECOUNTRY",
+    "RELEASEREGION",
+    "LANGUAGE",
+    "COPYRIGHT",
+    "LABEL",
+    "RECORDLABEL",
+    "ORGANIZATION",
+    "BARCODE",
+    "UPC",
+    "CATALOGNUMBER",
+    "ORIGINALDATE",
+    "TRACKNUMBER",
+    "TRACKTOTAL",
+    "DISCNUMBER",
+    "DISCTOTAL",
+    "TOTALDISCS",
+    "DISCSUBTITLE",
+    "ISRC",
+    "YEAR",
+    "DATE",
+    "RELEASEDATE",
+    "EXPLICIT",
+    "MUSICTYPE",
+    "MEDIA",
+    "BPM",
+    "TBPM",
+    "TEMPO",
+    "KEY",
+    "INITIALKEY",
+    "ENERGY",
+    "DANCEABILITY",
+    "LOUDNESS",
+    "REPLAYGAIN_TRACK_GAIN",
+    "REPLAYGAIN_TRACK_PEAK",
+    "REPLAYGAIN_ALBUM_GAIN",
+    "REPLAYGAIN_ALBUM_PEAK",
+    "REPLAYGAIN_REFERENCE_LOUDNESS",
+    "R128_TRACK_GAIN",
+    "COMMENT",
+    "BITDEPTH",
+    "SAMPLINGRATE",
+    "LYRICS",
+    "UNSYNCEDLYRICS",
+    "MUSICBRAINZ_TRACKID",
+    "MUSICBRAINZ_RELEASETRACKID",
+    "MUSICBRAINZ_ARTISTID",
+    "MUSICBRAINZ_ALBUMID",
+    "MUSICBRAINZ_ALBUMARTISTID",
+    "MUSICBRAINZ_RELEASEGROUPID",
+    "MUSICBRAINZ_RELEASEID",
+    "MUSICBRAINZ_WORKID",
+    "ACOUSTID_ID",
+    "ACOUSTID_FINGERPRINT",
+    "COMPILATION",
+    "GROUPING",
+    "SYNCIFY_LYRICS_SOURCE",
+    "SYNCIFY_COVER_SOURCE",
+    "SYNCIFY_AUDIO_SOURCE",
+    "SYNCIFY_DOWNLOAD_DATE",
+    "SYNCIFY_ONLY_AVAILABLE_ON",
+    "SYNCIFY_NOT_AVAILABLE_STREAMING",
+    "SYNCIFY_QUALITY_SCORE",
+];
+
 /// Apply FLAC tags directly into the FLAC file using metaflac for complete Symfonium compatibility.
 ///
 /// Uses VorbisComments (XiphComment) for FLAC files following exact Symfonium tag naming rules.
@@ -354,6 +465,16 @@ pub fn unify_album_compilation_metadata(
 pub fn apply_flac_tags(
     file_path: &Path,
     metadata: &FlacMetadata,
+) -> std::result::Result<(), String> {
+    apply_flac_tags_with_options(file_path, metadata, &TagWriteOptions::default())
+}
+
+/// SB03 (#198): same as [`apply_flac_tags`] with the writer policy made
+/// explicit (`preserve_custom_tags`).
+pub fn apply_flac_tags_with_options(
+    file_path: &Path,
+    metadata: &FlacMetadata,
+    options: &TagWriteOptions,
 ) -> std::result::Result<(), String> {
     use metaflac::block::PictureType;
 
@@ -382,6 +503,16 @@ pub fn apply_flac_tags(
     });
 
     let comments = tag.vorbis_comments_mut();
+
+    // SB03 (#198): when the policy says custom tags are not preserved, strip
+    // everything the writer does not manage before writing the managed set.
+    if !options.preserve_custom_tags {
+        for key in comments.comments.keys().cloned().collect::<Vec<_>>() {
+            if !MANAGED_VORBIS_KEYS.contains(&key.as_str()) {
+                comments.remove(&key);
+            }
+        }
+    }
 
     let (cleaned_title, feat_from_title) = clean_title_and_extract_featured(&metadata.title);
     let title_to_write = if !cleaned_title.is_empty() {
@@ -745,6 +876,27 @@ pub fn apply_flac_tags(
 
     if let Some(ref a_src) = metadata.audio_source {
         comments.set("SYNCIFY_AUDIO_SOURCE", vec![a_src.clone()]);
+    }
+
+    // SB03 (#198): provenance extras, gated by presence only — the write_*
+    // flag filter runs on the caller side before this point.
+    if let Some(ref d_date) = metadata.download_date {
+        comments.set("SYNCIFY_DOWNLOAD_DATE", vec![d_date.clone()]);
+    }
+
+    if let Some(ref avail) = metadata.only_available_on {
+        comments.set("SYNCIFY_ONLY_AVAILABLE_ON", vec![avail.clone()]);
+    }
+
+    if let Some(no_stream) = metadata.not_available_streaming {
+        comments.set(
+            "SYNCIFY_NOT_AVAILABLE_STREAMING",
+            vec![no_stream.to_string()],
+        );
+    }
+
+    if let Some(ref q_score) = metadata.quality_score {
+        comments.set("SYNCIFY_QUALITY_SCORE", vec![q_score.clone()]);
     }
 
     if let Some(depth) = metadata.bit_depth {
@@ -2214,7 +2366,16 @@ pub fn apply_and_verify_flac_tags(
     file_path: &Path,
     metadata: &FlacMetadata,
 ) -> std::result::Result<TagVerification, String> {
-    apply_flac_tags(file_path, metadata)?;
+    apply_and_verify_flac_tags_with_options(file_path, metadata, &TagWriteOptions::default())
+}
+
+/// SB03 (#198): apply with explicit [`TagWriteOptions`] and verify in one step.
+pub fn apply_and_verify_flac_tags_with_options(
+    file_path: &Path,
+    metadata: &FlacMetadata,
+    options: &TagWriteOptions,
+) -> std::result::Result<TagVerification, String> {
+    apply_flac_tags_with_options(file_path, metadata, options)?;
     verify_flac_tags(file_path, metadata)
 }
 

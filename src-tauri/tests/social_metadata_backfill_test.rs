@@ -398,6 +398,7 @@ async fn test_enrichment_engine_canonical_year_and_genre_derivation() {
                 service_name: "qobuz".to_string(),
                 service_track_id: "qb_radiohead_bodysnatchers".to_string(),
                 account_id: 1,
+                include_appearances: false,
                 is_favorite: true,
                 is_purchased: false,
                 album_provider_track_id: None,
