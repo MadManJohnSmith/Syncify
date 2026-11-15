@@ -207,6 +207,14 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   convierte en el contador único del orquestador (hoy se siembra y se vuelca por brazo) y
   escribir la caracterización con red que hoy falta (secuencia de progreso completa y
   recuento por servicio contra un proveedor simulado).
+- **Hecho (2026-11-14, D-08a, #40)**: contador único unificado en PR #205 (fusionado
+  2026-11-05). `ArmOutcome`
+  pasó a llamarse `SyncOutcome` y ya no se siembra ni se vuelca por brazo: el orquestador
+  crea una instancia (`SyncOutcome::default()` en `src-tauri/src/commands/service.rs`, en
+  `perform_sync_service_with_emitter_inner`), los cinco brazos (y `apple_music` embebido) la
+  mutan in situ por `&mut`, y el resto de la función lee de ella; desaparecieron los 153
+  volcados campo a campo y el saco de snapshots. El contrato queda documentado en el doc
+  comment del propio struct. La caracterización con red sigue pendiente (issue #41).
 - **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
   después, y el orquestador reducido a un bucle corto sobre los brazos.
 

@@ -3297,9 +3297,16 @@ fn soundcloud_credentials(creds: &serde_json::Value) -> Result<(String, i64), St
 
 /// Acumuladores que un brazo de sincronización puede tocar, en un sitio.
 ///
-/// El orquestador siembra los que ya traen valor (los que aparecen en los
-/// eventos de progreso) y vuelca el resultado al terminar el brazo, de modo que
-/// el `match` de servicios sea una llamada y un volcado, no 240 líneas.
+/// Contrato (D-08a): es EL contador único de los cinco brazos del motor
+/// (qobuz, tidal, spotify, deezer, soundcloud) y del brazo embebido
+/// `apple_music`. El orquestador crea una única instancia
+/// (`SyncOutcome::default()`) y cada brazo la recibe por `&mut` y la muta
+/// in situ; no hay snapshot por brazo ni volcado campo a campo, y ningún
+/// brazo mantiene contadores locales en paralelo: todo lo que un brazo
+/// cuenta pasa por aquí. El resto de la función (eventos de progreso,
+/// journal, timings y `ServiceSyncResult`) lee de esta instancia. Solo un
+/// brazo corre por sincronización (el `match` elige por servicio), así que
+/// sus campos le pertenecen en exclusiva mientras tanto.
 #[derive(Default)]
 struct SyncOutcome {
     tracks_processed: u64,
