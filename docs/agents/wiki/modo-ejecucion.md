@@ -4,7 +4,24 @@ Cómo se ejecuta el trabajo en este proyecto. Decisión del propietario, no
 preferencia del agente. Relacionadas: [`entorno.md`](entorno.md) y
 [`protocolo-pr.md`](protocolo-pr.md).
 
-## Inline es el modo preferente
+## Por issue, un subagente por issue (vigente)
+
+- **2026-11-14, decisión del propietario**: el trabajo pasa a hacerse por
+  issue, cada issue con su subagente dedicado; ya no implementación inline
+  por el hilo del jefe de gabinete. Suplanta la decisión del 2026-11-13
+  (inline preferente): nueva evidencia del propietario, decisión suya, no
+  del agente. La sesión del 2026-11-14 validó la infraestructura de
+  carriles: SB01 y SB03 viajaron limpios por rama + PR con puertas
+  locales completas antes de empujar. Fuente:
+  `docs/historico/HANDOFF-2026-11-14.md` §Cambio de modo.
+- Riesgos del modo delegado y mitigaciones (no re-litigar): fallback de
+  «completado sin entregar» escala a #277 como hueco de plataforma;
+  este proveedor puede rechazar delegado en background (`3008`) y se
+  delege en primer plano o con otro modelo vía `orchestrator_capabilities`;
+  dos carriles que comparten fichero mina se serializan o usan
+  `isolation: worktree`. Fuente: misma sección del handoff.
+
+## Histórico: inline preferente (supersado)
 
 - **2026-11-13, decisión del propietario**: implementación inline con el
   modelo del hilo del jefe de gabinete; ese día los dos carriles
@@ -68,3 +85,8 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   commit); se completó inline, con 4 objetivos de test de
   caracterización actualizados al contrato de superficie única. Fuente:
   PR #288. Siguiente del orden: SB03 (#198).
+- **2026-11-14**: SB03 (#198) fusionado por squash en PR #289 (`b16d70e`
+  en `dev`); issue cerrado manualmente citando el SHA. Los checks de
+  CI quedaron verdes antes del merge (Rust 29m47s / 47m59s). Siguiente
+  del orden: SB04 (#200), primer issue delegado bajo el modo nuevo.
+  Fuente: PR #289 y `git log dev`.
