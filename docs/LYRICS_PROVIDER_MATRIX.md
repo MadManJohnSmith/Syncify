@@ -1,7 +1,8 @@
 # Matriz de resolución de letras: 12 fuentes configurables sobre 10 redes
 
 **Estado:** vigente — reescrito contra el árbol.
-**Última revisión:** 2026-10-25. Catálogo y despacho en
+**Última revisión:** 2026-11-14 (spike LY00, issue #178: sondeos en red de los
+endpoints de las 12 fuentes; evidencia fechada en §4). Catálogo y despacho en
 `src-tauri/src/download/lyrics.rs`, migraciones `src-tauri/migrations/0013_lyrics_provider_settings.sql`,
 `src-tauri/migrations/0014_lyrics_config.sql` y `src-tauri/migrations/0100_lyrics_provider_catalog.sql`,
 capa de ajustes (`src-tauri/src/commands/lyrics.rs`, `src-tauri/src/commands/settings.rs`) y UI
@@ -9,8 +10,8 @@ capa de ajustes (`src-tauri/src/commands/lyrics.rs`, `src-tauri/src/commands/set
 estrategias sino un catálogo de **12 fuentes configurables por el usuario**; la prioridad y el
 habilitado/deshabilitado por fuente se documentan como capa propia (§2.3); se corrige la cita de un
 test que no existía (§5); los endpoints citados se contrastan con el código vigente y las
-discrepancias quedan anotadas (§4); la evidencia de auditoría por red se conserva como **medición
-heredada, no re-verificada**. Nota de trazabilidad: este documento se llamaba
+discrepancias quedan anotadas (§4); la evidencia de red fue **re-verificada con sondeos en vivo el 2026-11-14**
+(§4); la medición de 2026-10-05 se conserva como histórico en §4.1. Nota de trazabilidad: este documento se llamaba
 LYRICS_16_PROVIDER_MATRIX.md; el «16» del título antiguo describía una arquitectura que ya no
 existe (§6).
 
@@ -103,36 +104,88 @@ La migración 0100 preserva las decisiones del usuario en las filas existentes (
 
 ## 3. Las 12 fuentes
 
-Mecanismos verificados en el código vigente (2026-10-25):
+Mecanismos verificados en el código vigente (2026-10-25; contrastados de nuevo
+contra el árbol el 2026-11-14 y con la forma de respuesta documentada):
 
 | Fuente (`provider_id`) | Fetcher | Red | Mecanismo | Credencial | Entrega |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `apple_music_ttml` | `fetch_apple_music_ttml` | Apple Music | búsqueda por storefront (`gb`, `us`, `de`, `fr`, `mx`) en `https://amp-api.music.apple.com/v1/catalog/{sf}/search` (`types=songs`) y letra en `/v1/catalog/{sf}/songs/{id}/lyrics`; TTML → elrc (`parse_ttml_to_elrc`) | token Bearer WebPlayKid extraído dinámicamente (`extract_apple_music_token`, caché de sesión centralizada en `src-tauri/src/services/animated_cover.rs`) | `KARAOKE_WORD_SYNCED` + elrc |
-| `spotify_color` | `fetch_spotify_lyrics` | Spotify | cookie sp_dc (variable de entorno `SPOTIFY_SP_DC`, leída al construir el cliente) → token web player vía `open.spotify.com` → `https://spclient.wg.spotify.com/color-lyrics/v2/track/{id}?format=json&market=from_token` | `SPOTIFY_SP_DC` | `KARAOKE_WORD_SYNCED` si hay sílabas; si no `LINE_SYNCED`; elrc si sílabas |
-| `musixmatch_richsync` | `fetch_musixmatch_richsync` | Musixmatch | usertoken desktop auto (`token.get`, caché de 10 min) + `track.richsync.get` en `apic-desktop.musixmatch.com` (por `commontrack_id`) | usertoken auto | `KARAOKE_WORD_SYNCED` + elrc |
+| `spotify_color` | `fetch_spotify_lyrics` | Spotify | cookie sp_dc (variable de entorno `SPOTIFY_SP_DC`, leída al construir el cliente) → token web player vía `open.spotify.com/get_access_token` → búsqueda en `api.spotify.com/v1/search` → `https://spclient.wg.spotify.com/color-lyrics/v2/track/{id}?format=json&market=from_token` | `SPOTIFY_SP_DC` | `KARAOKE_WORD_SYNCED` si hay sílabas; si no `LINE_SYNCED`; elrc si sílabas |
+| `musixmatch_richsync` | `fetch_musixmatch_richsync` | Musixmatch | usertoken desktop auto (`token.get`, caché de 10 min) + `track.search` (artista/título) + `track.richsync.get` en `apic-desktop.musixmatch.com` (por `commontrack_id`) | usertoken auto | `KARAOKE_WORD_SYNCED` + elrc |
 | `ultrastar` | `fetch_ultrastar_karaoke` | UltraStar USDB | `https://usdb.animux.de/api/v1/songs` (búsqueda) + `index.php?link=gettxt` (TXT); TXT → elrc (`parse_ultrastar_to_elrc`) | ninguna | `KARAOKE_WORD_SYNCED` + elrc |
 | `kugou` | `fetch_kugou_karaoke` | Kugou | `http://lyrics.kugou.com/search` + `http://lyrics.kugou.com/download` (`fmt=krc`); KRC descifrado con clave embebida + zlib | ninguna | `KARAOKE_WORD_SYNCED` + elrc |
 | `qqmusic` | `fetch_qqmusic_lyrics` | QQ Music | búsqueda en `https://c.y.qq.com/soso/fcgi-bin/client_search_cp` + letra en `https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg` (por `songmid`) | ninguna | `KARAOKE_WORD_SYNCED` si karaoke; si no `LINE_SYNCED`; elrc si karaoke |
 | `netease_synced` | `fetch_netease_lyrics` | NetEase | búsqueda en `https://music.163.com/api/search/get` + **una sola** llamada a `https://music.163.com/api/song/lyric?id={}&lv=-1&kv=-1&tv=-1`; prefiere klyric y si no lrc; karaoke si la letra trae marcaje `<mm:ss.xx>` | ninguna (Referer `music.163.com`) | `KARAOKE_WORD_SYNCED` si karaoke; si no `LINE_SYNCED`; elrc si karaoke |
 | `lyricsplus` | `fetch_lyricsplus` | LyricsPlus | `https://lyricsplus-api.vercel.app/v1/search?q=`; exige ≥ 4 líneas | ninguna | `KARAOKE_WORD_SYNCED` si karaoke; si no `LINE_SYNCED`; elrc si karaoke |
 | `lrclib_synced` | `search_lyrics` | LRCLIB | **una sola búsqueda puntuada** en `https://lrclib.net/api/search?q=` (rate-limit `LRCLIB_LIMITER`, definido en `src-tauri/src/download/http_client.rs`): +100 sincronizada, +30 título exacto, duración (±3 s fuerte, ±8 s débil, fuera de tolerancia descartada), +60 idioma preferido; elrc si la letra sincronizada trae marcaje por palabra | ninguna | `KARAOKE_WORD_SYNCED` / `LINE_SYNCED` (o `UNSYNCED` si solo hay texto) |
-| `musixmatch_plain` | `fetch_musixmatch_plain` | Musixmatch | `track.lyrics.get` en `apic-desktop.musixmatch.com`; una llamada | usertoken auto | `UNSYNCED` |
+| `musixmatch_plain` | `fetch_musixmatch_plain` | Musixmatch | `track.search` (artista/título) + `track.lyrics.get` en `apic-desktop.musixmatch.com`; dos llamadas | usertoken auto | `UNSYNCED` |
 | `lrclib_plain` | `fetch_lrclib_plain` | LRCLIB | `https://lrclib.net/api/get?artist_name={}&track_name={}`; una llamada | ninguna | `UNSYNCED` |
-| `tekstowo_plain` | `fetch_tekstowo_plain` | Tekstowo.pl | `https://www.tekstowo.pl/szukaj,wykonawca,{},tytul,{}.html` + página de la canción (scraping) | ninguna | `UNSYNCED` |
+| `tekstowo_plain` | `fetch_tekstowo_plain` | Tekstowo.pl | `https://www.tekstowo.pl/szukaj,wykonawca,{},tytul,{}.html` + página de la canción (scraping). **2026-11-14:** la búsqueda responde tras 301 al nuevo formato `/szukaj/wykonawca,...`, pero los enlaces de canción son hoy `/artysta/tytul` (p. ej. `/gloria-gaynor/i-will-survive`): la regex del motor que busca `/piosenka,` ya no encuentra nada (§4) | ninguna | `UNSYNCED` |
 
 Notas de despacho: las «estrategias dobles» de la versión anterior ya no son pasos separados.
 `netease_synced`, `lyricsplus` y `qqmusic` deciden palabra/línea dentro de una sola respuesta;
 `lrclib_synced` es una búsqueda puntuada (no «exact + simplified»); `musixmatch_plain` y
 `lrclib_plain` son una llamada cada uno.
 
-## 4. Evidencia de auditoría por red (medición heredada, no re-verificada)
+## 4. Evidencia de red re-verificada (spike LY00, 2026-11-14)
 
-Estados heredados de la revisión anterior de este documento (última edición versionada: commit
-f2bfb8a, 2026-10-05). **No** se han re-verificado en la revisión de 2026-10-25: la suite offline
-del repositorio no toca la red, de modo que estos valores son una fotografía de aquella medición,
-no una garantía actual. Vocabulario heredado: `available` (endpoint público devolviendo letras),
-`requires_auth` (necesita credencial del usuario), `source_unavailable` (endpoint caído o
-limitado); `parser_tested`/`fixture_tested` (test offline de parseo) y
+Sondeos sin credenciales del **2026-11-14** contra cada endpoint en su forma
+documentada (§3), con peticiones reales (`curl`) y cabeceras equivalentes a las del
+motor; se comprueba estado HTTP y la respuesta mínima esperada (campo clave del
+cuerpo). Vocabulario de esta sección: **verificado sin credenciales** (la cadena
+completa respondió en la forma documentada), **fallo de red** (endpoint vivo pero
+no entrega en la forma documentada; se cita el fallo exacto), **pendiente de
+credenciales** (requiere credencial de cuenta; no se sondeó, regla dura del spike
+#178). Los sondeos prueban disponibilidad del endpoint, no política de aceptación
+del motor.
+
+| Fuente | Estado (2026-11-14) | Evidencia |
+| :--- | :--- | :--- |
+| `apple_music_ttml` | búsqueda **verificada sin credenciales**; letra **pendiente de credenciales** | extracción del token WebPlayKid verificada (1 token en el bundle `index~B8RKPfmaCI.js` de `music.apple.com`); `search` storefront `us`: **200** con 5 resultados correctos; `GET /v1/catalog/us/songs/{id}/lyrics`: **404** con `code 40403` «No related resources found for lyrics» en dos pistas (una sin letra y una con letra conocida en el app, 1468058171); mismo 404 con `?extend=lyrics`, en el host `amp-api-edge` y en su storefront propio; sin `Origin`, 401. El token web ya no da letras: hace falta `media-user-token` de cuenta Apple Music |
+| `spotify_color` | **pendiente de credenciales** | no sondeado (regla dura del spike): el flujo exige cookie `sp_dc` de cuenta real para el token y para color-lyrics |
+| `musixmatch_richsync` | **fallo de red** + **pendiente de credenciales** | `token.get`: **200** pero devuelve el usertoken dummy (56× «0»); `track.search` con ese token: **200** pero resultados irrelevantes a la consulta (5 pistas ajenas a lo buscado); `track.richsync.get`: **404** (HTTP y `status_code` JSON, sin `body`). La entrega karaoke no opera hoy sin usertoken real |
+| `ultrastar` | **fallo de red** (búsqueda) + **pendiente de credenciales** (descarga) | `GET /api/v1/songs`: **404** (API retirada; el sitio `usdb.animux.de` sigue vivo, HTML 200); `index.php?link=gettxt`: página de login con «ERROR: You are not logged in. Login to use this function.» — el TXT exige cuenta USDB |
+| `kugou` | **verificado sin credenciales** | `lyrics.kugou.com/search`: **200** (10 candidatos con keyword en chino; 0 con keywords latinos pese a responder 200: la búsqueda occidental puede no devolver candidatos); `download` con `id`+`accesskey` del candidato: **200**, `fmt=krc`, contenido KRC de 4744 caracteres |
+| `qqmusic` | **verificado sin credenciales** | `client_search_cp`: **200** con 5 resultados correctos (`songmid` de «I Will Survive»); `fcg_query_lyric_new.fcg`: **200** con `lyric` base64 que decodifica a LRC completo (5336 caracteres en base64) |
+| `netease_synced` | **verificado sin credenciales** | `api/search/get`: **200** con resultados correctos; `api/song/lyric?id={}&lv=-1&kv=-1&tv=-1`: **200** con `lrc.lyric` (2374 caracteres) y estructura `klyric`/`tlyric` presente (`klyric` vacía para la pista probada) |
+| `lyricsplus` | **fallo de red total** | `lyricsplus-api.vercel.app` (raíz y `/v1/search`): **404** `DEPLOYMENT_NOT_FOUND` de Vercel — el deployment fue eliminado; sin host alternativo documentado. Impacto: fuente muerta hoy; consume un intento por prioridad por defecto antes de caer a las fuentes siguientes |
+| `lrclib_synced` | **verificado sin credenciales** | `api/search?q=`: **200** con resultados correctos (duración 195 s, `plainLyrics` y letra sincronizada en cuerpo) |
+| `musixmatch_plain` | letra **responde**; cadena degradada + **pendiente de credenciales** | mismo `token.get`/`track.search` degradados que `musixmatch_richsync`; `track.lyrics.get` por `commontrack_id` conocido: **200** con `lyrics_body` (3437 caracteres) incluso con el token dummy. Verificación end-to-end exige usertoken real |
+| `lrclib_plain` | **verificado sin credenciales** | `api/get?artist_name=&track_name=`: **200** con objeto completo (`plainLyrics` presente) |
+| `tekstowo_plain` | **fallo documentado** (sitio vivo; scraping del motor roto) | búsqueda: **200** tras 301 al formato nuevo `/szukaj/wykonawca,...` (el cliente sigue redirects por defecto); página de resultados con **0** enlaces `/piosenka,` — los enlaces de canción son hoy `/artysta/tytul` (p. ej. `/gloria-gaynor/i-will-survive`); la URL antigua `piosenka,...html` redirige 301 a la página nueva y esta conserva el bloque `inner-text`. La regex `href="(/piosenka,[^"]+)"` del motor no encuentra canción: fuente inoperante tal como está documentada, con la página de letra alcanzable una vez corregido el patrón de extracción |
+
+Correcciones aplicadas en la matriz en esta revisión (2026-11-14):
+
+- **Tekstowo**: enlaces de canción documentados ahora como `/artysta/tytul` y la
+  búsqueda con su 301 (§3 corregido). La regex del fetcher queda señalada como
+  inoperante; la corrección de código queda fuera de este ticket de evidencia.
+- **Musixmatch**: los dos fetchers hacen `track.search` antes del endpoint de
+  letra; `musixmatch_plain` son dos llamadas, no una (§3 corregido).
+- **Spotify**: el flujo incluye la búsqueda en `api.spotify.com/v1/search` antes
+  de color-lyrics (§3 corregido).
+- **Apple Music**: la letra exige hoy credencial de cuenta (`media-user-token`);
+  la extracción del token web y la búsqueda siguen sin credencial.
+
+Impacto en la prioridad por defecto (§2.4) según este sondeo:
+
+- **Karaoke/sílabo**: `apple_music_ttml` (prioridad 1) exige credencial Apple;
+  `musixmatch_richsync` (6) y `ultrastar` (7) no entregan hoy. El único camino a
+  `KARAOKE_WORD_SYNCED` sin credenciales es `kugou` (8) y, condicionado a que la
+  búsqueda devuelva la pista, `qqmusic` (9).
+- **Línea**: operativas sin credenciales `lrclib_synced` (2), `netease_synced` (3)
+  y `qqmusic` (9); `lyricsplus` (10) muerta.
+- **Plano**: `lrclib_plain` (12) operativa; `musixmatch_plain` (11) responde pero
+  su búsqueda está degradada; `tekstowo_plain` (13) con scraping roto.
+
+### 4.1 Medición heredada de 2026-10-05 (histórico, no vigente)
+
+Estados heredados de la revisión anterior de este documento (última edición
+versionada: commit f2bfb8a, 2026-10-05). Se mantuvieron sin re-verificar en la
+revisión de 2026-10-25 y quedaron sustituidos por la medición de §4 el
+2026-11-14; se conservan aquí como fotografía histórica. Vocabulario heredado:
+`available` (endpoint público devolviendo letras), `requires_auth` (necesita
+credencial del usuario), `source_unavailable` (endpoint caído o limitado);
+`parser_tested`/`fixture_tested` (test offline de parseo) y
 `network_tested`/`untested_network` (endpoint ejercitado o no en pruebas con red).
 
 | Fuente (catálogo actual) | Estado heredado | Red heredada | Filas de la matriz antigua que absorbe |
@@ -150,7 +203,7 @@ limitado); `parser_tested`/`fixture_tested` (test offline de parseo) y
 | `lrclib_plain` | `available` | `network_tested` | 13 y 15 («exact»/«simplified») |
 | `tekstowo_plain` | `available` | `network_tested` | 16 |
 
-Correcciones que esta revisión introduce sobre esa medición (contraste con el código vigente):
+Correcciones que la revisión de 2026-10-25 introdujo sobre esa medición (contraste con el código vigente):
 
 - **UltraStar**: el mecanismo real es `usdb.animux.de/api/v1/songs` + `index.php?link=gettxt`; la
   fila antigua citaba `/api/v1/txt`.
@@ -163,7 +216,7 @@ Correcciones que esta revisión introduce sobre esa medición (contraste con el 
 - **LRCLIB synced**: no hay variante «simplified»: un brazo (`lrclib_synced`), una búsqueda
   puntuada, una llamada.
 
-### 4.1 Caso de validación con descarga real (heredado)
+### 4.2 Caso de validación con descarga real (heredado)
 
 Prueba de descarga real contra Qobuz registrada en la revisión anterior:
 
