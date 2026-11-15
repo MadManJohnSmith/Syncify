@@ -4,12 +4,12 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
-**Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): corregida la cadena de encolado (`queue_downloads` vive en `commands/download.rs` y delega en `commands/queue.rs::add_to_queue`), el bucle del worker ya es event-driven (`slot_available_notify`, sin sondeo de 3 s), el claim es atómico vía `claim_next_item`, `process_download` hoy son `process_download_claimed` + `process_download_internal`, añadido el estado `cancelled`, payload de `syncify:download_progress` completado y citas de línea sustituidas por símbolos. Sigue sin verificar en escritorio real la ejecución de descargas de punta a punta (GUI, red viva): véase README §"Verification and limitations".
+**Estado de revisión:** 2026-11-14 — re-derivación contra el árbol (verificación dirigida de símbolos y comportamiento; D-04b, issue #59). Re-deriva y absorbe la re-revisión del 2026-10-25 (cadena de encolado `queue_downloads` → `commands/queue.rs::add_to_queue`; bucle del worker event-driven con `slot_available_notify`; claim atómico vía `claim_next_item`; `process_download_claimed` + `process_download_internal`; estado `cancelled`; payload de `syncify:download_progress`) y las entradas del 2026-11-06/07 (puerto de proveedores ADR-0023, invalidación de caché de streaming ADR-0024). Ajustado ahora al árbol: `worker.rs` ronda hoy las 3.400 líneas; el arranque del worker ya no es un reset simple — ejecuta en orden `sanitize_stuck_downloads` (TASK-84: descargas `downloading` de más de 1 h a `failed` y staging purgado), `reconcile_downloads_on_startup` (`services/operation_recovery.rs`), `recover_interrupted_jobs` (`download/job.rs`) para el reset restante a `queued`, `repair_unresolved_queue_sources` y la restauración de la concurrencia desde `sync_settings` (SB01: superficie canónica; la KV `dl_concurrent_downloads` queda como lectura tolerante de legado). El barrido periódico cada 60 s aplica la misma sanitización TASK-84. Sigue sin verificar en escritorio real la ejecución de descargas de punta a punta (GUI, red viva): véase README §"Verification and limitations".
 
-**Último cambio:** 2026-11-07 — P6 Fase C (ADR-0024): la descarga completada invalida la caché de streaming de la pista — archivos: `worker.rs`, `services/stream_cache.rs`. Previo: 2026-11-06 — P5: el despacho de proveedores pasa por el puerto `download/provider_gateway.rs` (ADR-0023) — archivos: `download/orchestrator.rs`, `download/provider_gateway.rs`, `download/providers/*`, `download/quality_reconcile.rs`, `worker.rs`. Previo: 2026-10-25 — re-revisión de comportamiento contra el árbol — archivos: `worker.rs`, `commands/download.rs`, `commands/queue.rs`, `main.rs`, `migrations/0004_production.sql`, `migrations/0046_download_queue_resume.sql`, `migrations/0050_download_queue_source_identity.sql`, `migrations/0060_quality_policy_and_decision_tracking.sql`. Previo: 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/`. Previo a ese: S40 — 2026-03-30.
+**Último cambio:** 2026-11-14 — re-derivación completa contra el árbol (issue #59) — archivos: `worker.rs`, `download/job.rs`, `services/operation_recovery.rs`. Previo: 2026-11-07 — P6 Fase C (ADR-0024): la descarga completada invalida la caché de streaming de la pista — archivos: `worker.rs`, `services/stream_cache.rs`. Previo: 2026-11-06 — P5: el despacho de proveedores pasa por el puerto `download/provider_gateway.rs` (ADR-0023) — archivos: `download/orchestrator.rs`, `download/provider_gateway.rs`, `download/providers/*`, `download/quality_reconcile.rs`, `worker.rs`. Previo: 2026-10-25 — re-revisión de comportamiento contra el árbol. Previo: 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/`. Previo a ese: S40 — 2026-03-30.
 **Leer antes de modificar:** `worker.rs`, `commands/queue.rs`, `commands/download.rs`, `services/stream_cache.rs`
 **Archivos core:**
-- `src-tauri/src/worker.rs` (3.371 líneas — bucle del worker, claim atómico, eventos de progreso, supervisor auxiliar)
+- `src-tauri/src/worker.rs` (~3.400 líneas — bucle del worker, claim atómico, eventos de progreso, supervisor auxiliar)
 - `src-tauri/src/download/mod.rs` (module index)
 - `src-tauri/src/download/orchestrator.rs` (DownloadOrchestrator)
 - `src-tauri/src/download/provider_gateway.rs` (puerto `DownloadProvider`, registro, `ProviderRequest`/`ProviderDelivery`/`ProviderError`)
@@ -45,9 +45,19 @@
 │  BACKGROUND WORKER (worker.rs — spawn supervisado en    │
 │  el setup de main.rs)                                   │
 │                                                         │
-│  1. On startup: reset status='downloading' → 'queued'   │
+│  1. On startup, en orden:                               │
+│     a. sanitize_stuck_downloads (TASK-84): las filas    │
+│        'downloading' de más de 1 h pasan a 'failed'     │
+│        y se purga su staging                            │
+│     b. reconcile_downloads_on_startup                   │
+│        (services/operation_recovery.rs)                 │
+│     c. recover_interrupted_jobs (download/job.rs):      │
+│        el resto de 'downloading' → 'queued'             │
+│     d. repair_unresolved_queue_sources                  │
+│     e. Concurrencia restaurada de sync_settings (SB01)  │
 │  2. Loop:                                               │
-│     a. Cada 60 s: barrido de descargas atascadas (>1 h) │
+│     a. Cada 60 s: sanitize_stuck_downloads (TASK-84,    │
+│        >1 h → 'failed')                                 │
 │     b. Check stopped flag → break                       │
 │     c. Wait if paused (Notify-based)                    │
 │     d. Si no hay hueco de concurrencia: espera en       │
@@ -208,7 +218,7 @@ Status values: `"started"`, `"downloading"`, `"complete"`, `"failed"`
 ## Puntos de ruptura conocidos
 
 1. **Worker restart limit**: After 3 panics, worker stops permanently until app restart. No self-healing beyond that.
-2. **Interrupted downloads**: On startup, all `status='downloading'` rows are reset to `'queued'`. This means partial downloads get retried from scratch (no resume).
+2. **Interrupted downloads**: el arranque primero sanciona (TASK-84: `downloading` de más de 1 h → `failed`, staging purgado) y después resetea el resto de `downloading` a `'queued'` (`recover_interrupted_jobs`). Las descargas interrumpidas se reintentan desde cero (la reanudación de parciales de `download_queue` es deuda declarada en ADR-0024).
 3. **ffmpeg en PATH**: `download/lyrics.rs` requiere `ffmpeg` del sistema para conversión de audio; no hay binario empaquetado ni fallback.
 
 ### Resueltos / eliminados (2026-08-25)

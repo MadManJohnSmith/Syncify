@@ -4,9 +4,9 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
-**Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): números de línea de `commands/service.rs` sustituidos por símbolos (el fichero ronda las 9.400 líneas), `import_qobuz_library` ya no pagina ×500 — delega en el motor unificado `perform_sync_service_with_emitter` (S128B/TASK-108) —, page sizes corregidos (Deezer 50, SoundCloud 100 vía `next_href`, Tidal 10 en favoritos) y caché de álbumes actualizada a `get_or_create_album_with_compilation` (Various Artists canónico + `is_compilation`). Sigue sin verificar en escritorio real la ejecución de imports contra servicios vivos (GUI, red): véase README §"Verification and limitations".
+**Estado de revisión:** 2026-11-14 — re-derivación contra el árbol (verificación dirigida de símbolos y comportamiento; D-04c, issue #60). Re-deriva y absorbe la re-revisión del 2026-10-25 (números de línea de `commands/service.rs` sustituidos por símbolos; `import_qobuz_library` delega en el motor unificado `perform_sync_service_with_emitter`, S128B/TASK-108; page sizes Deezer 50, SoundCloud 100 vía `next_href`, Tidal 10 en favoritos; caché de álbumes con `get_or_create_album_with_compilation`, Various Artists canónico + `is_compilation`). Corregido ahora: `library_entries` se escribe con `INSERT … ON CONFLICT(account_id, track_id) DO UPDATE` (upsert que repara `added_at` 1970/NULL), no con un INSERT que dependa de la UNIQUE; la creación de álbumes usa `INSERT … RETURNING id` con un reintento de conciliación vía `find_album_candidates`; el reintento de `track_artists` (3 reintentos, backoff 100 ms × reintento) vive en `commands/service.rs` y al agotarse registra el error y deja el enlace sin escribir; `service.rs` ronda hoy las 9.000 líneas. `import_service` es el dispatcher legacy: Spotify solo devuelve la auth URL, Qobuz usa credenciales de entorno con `insert_synthetic_account`, Deezer exige `DEEZER_ARL` de entorno. Sigue sin verificar en escritorio real la ejecución de imports contra servicios vivos (GUI, red): véase README §"Verification and limitations".
 
-**Último cambio:** 2026-10-25 — re-revisión de comportamiento contra el árbol — archivos: `commands/service.rs`, `import_cache.rs`, `services/import_pagination.rs`, `services/soundcloud.rs`, `services/tidal.rs`. Previo: S42 — 2026-04-01 — archivos: `service.rs`, `import_cache.rs`, `services/qobuz.rs`
+**Último cambio:** 2026-11-14 — re-derivación completa contra el árbol (issue #60) — archivos: `commands/service.rs`, `import_cache.rs`, `services/import_pagination.rs`, `services/soundcloud.rs`, `services/tidal.rs`. Previo: 2026-10-25 — re-revisión de comportamiento contra el árbol. Previo: S42 — 2026-04-01 — archivos: `service.rs`, `import_cache.rs`, `services/qobuz.rs`
 **Leer antes de modificar:** `commands/auth.rs`, `crypto.rs`
 **Archivos core:**
 - `src-tauri/src/commands/service.rs` (comandos de import + motor unificado)
@@ -51,7 +51,7 @@ PHASE 5: Emit "import-complete" → return ImportResult { imported, skipped }
 ### Import Functions
 
 Todas viven en `commands/service.rs`. Se citan por símbolo (el fichero ronda las
-9.400 líneas y los números de línea rotan con cada commit).
+9.000 líneas y los números de línea rotan con cada commit).
 
 | Function                      | Concurrency      | Page Size | Notas |
 |------------------------------|------------------|-----------|-------|
@@ -63,7 +63,7 @@ Todas viven en `commands/service.rs`. Se citan por símbolo (el fichero ronda la
 | `import_deezer_library`      | Sequential        | 50 | |
 | `import_soundcloud_library`  | Delega en `sync_soundcloud_likes_with_engine` (vía `run_soundcloud_likes_import`) | 100 (likes, paginado por `next_href`) | Deduplicación canónica del motor |
 | `import_apple_music_library` | Sequential (núcleo compartido `run_apple_music_library_import` con el brazo del motor unificado) | 100 | |
-| `import_service` (dispatcher)| Delegates         | N/A | |
+| `import_service` (dispatcher)| Delegates         | N/A | Entrada legacy: Spotify solo devuelve la auth URL (`resolve_spotify_config`); Qobuz usa credenciales de entorno (`QOBUZ_APP_ID`/`QOBUZ_APP_SECRET`/`QOBUZ_USERNAME`/`QOBUZ_PASSWORD`) con `insert_synthetic_account` y `QobuzClient::import_library`; Tidal resuelve credenciales con `resolve_tidal_import_credentials` y llama a `TidalClient::import_favorites`; Deezer exige `DEEZER_ARL` de entorno |
 
 ### Motor unificado y enriquecimiento
 
@@ -95,7 +95,7 @@ struct ImportCache {
 | Method | Strategy |
 |--------|----------|
 | `get_or_create_artist(db, name)` | Cache → SELECT LOWER → INSERT OR IGNORE → SELECT |
-| `get_or_create_album_with_compilation(db, key, ...)` | Cache → SELECT by title+artist → INSERT OR IGNORE → link album_artists; canonical Various Artists (id 30698), marca `albums.is_compilation = 1` y deduplica álbumes compartidos bajo Various Artists |
+| `get_or_create_album_with_compilation(db, key, ...)` | Cache → SELECT de candidatos (`find_album_candidates`) → `INSERT … RETURNING id` (con una reconciliación de reintento si un import concurrente insertó la fila entre el lookup y el insert) → link `album_artists`; canonical Various Artists (`CANONICAL_VARIOUS_ARTISTS_ID` = 30698), marca `albums.is_compilation = 1` y deduplica álbumes compartidos bajo Various Artists |
 | `get_or_create_various_artists(db)` | Resuelve y cachea el ID canónico de Various Artists |
 | `get_service_id(db, name)` | Cache → SELECT FROM services |
 | `stats()` | Returns (artists_cached, albums_cached) |
@@ -113,7 +113,7 @@ Fully lock-free design using SQLite ACID constraints.
 | `albums` | id, title, release_date, cover_art_url | ImportCache |
 | `album_artists` | album_id, artist_id, is_primary | ImportCache |
 | `track_artists` | track_id, artist_id, role | import ("primary"/"featured") |
-| `library_entries` | account_id, track_id, added_at, is_liked | import (UNIQUE constraint) |
+| `library_entries` | account_id, track_id, added_at, is_liked | import (`INSERT … ON CONFLICT(account_id, track_id) DO UPDATE`: re-marca `is_liked` y repara `added_at` NULL/1970-01-01; la UNIQUE `account_id+track_id` respalda el upsert) |
 | `track_sources` | track_id, service_id, service_track_id | import (cross-service link) |
 | `playlists` | account_id, service_playlist_id, name | playlist import |
 | `playlist_tracks` | playlist_id, track_id, position | playlist import |
@@ -135,4 +135,5 @@ Fully lock-free design using SQLite ACID constraints.
 2. **Parallel page fetching**: Spotify uses `futures::join_all` × 4 pages. Rate-limit failures are logged but skipped.
 3. **ISRC dedup**: Tracks without ISRC may appear as duplicates across services.
 4. **Playlist tracks ≠ library**: `import_spotify_playlists` does NOT add tracks to `library_entries`. Playlist-only tracks won't show in main library.
-5. **DB retry**: `track_artists` INSERT retries up to 3× with 100ms×retry backoff for busy DB.
+5. **DB retry**: el INSERT de `track_artists` (bucle en `commands/service.rs`, camino Spotify) reintenta hasta 3 veces con backoff de 100 ms × reintento; agotados los reintentos, registra con `tracing::error!` y deja ese enlace sin escribir (la pista se importa igual).
+6. **Escrituras silenciosas**: el import usa `let _ = window.emit(...)` y `INSERT OR IGNORE` en varias tablas (`albums`, `album_artists`, `track_sources`): un fallo de esas escrituras no aborta el import ni deja rastro más allá del contador de omitidos (D-06 ratchet).
