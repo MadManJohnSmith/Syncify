@@ -608,7 +608,8 @@ async fn test_backup_export_legitimate_destinations_succeed() {
 
     let content = fs::read_to_string(&custom_output.file_path).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&content).expect("Must be valid JSON");
-    assert_eq!(parsed["version"], "1.0.0");
+    // Manifest v2 (ADR-0020): ajustes y metadatos de cuenta viajan en el export.
+    assert_eq!(parsed["version"], "2.0.0");
     assert_eq!(parsed["tracks"].as_array().unwrap().len(), 1);
 
     // 2. Default destination path (output_path == None)

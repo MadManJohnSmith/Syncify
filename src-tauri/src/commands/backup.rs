@@ -55,6 +55,57 @@ pub struct LibraryBackupManifest {
     pub albums: Vec<BackupAlbumDto>,
     pub artists: Vec<BackupArtistDto>,
     pub playlists: Vec<BackupPlaylistDto>,
+    // Manifest v2 (ADR-0020): ajustes completos y metadatos de cuenta, sin
+    // ningún secreto. Opcionales para que un manifest v1 siga deserializando.
+    #[serde(default)]
+    pub settings: Option<BackupSettingsDto>,
+    #[serde(default)]
+    pub accounts: Option<Vec<BackupAccountDto>>,
+}
+
+/// Ajustes exportables del manifest v2: todas las superficies tipadas y la KV
+/// de ajustes de usuario. La KV excluye explícitamente las claves sensibles
+/// (tokens, claves de API, credenciales); ninguna tabla tipada de este
+/// catálogo tiene columna de credenciales.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BackupSettingsDto {
+    #[serde(default)]
+    pub kv: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub service_preferences: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub sync_settings: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub service_sync_settings: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub quality_preferences: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub folder_settings: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub duplicate_settings: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub audio_processing_settings: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub lyrics_provider_settings: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub lyrics_config: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub metadata_preferences: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub advanced_settings: Vec<serde_json::Value>,
+}
+
+/// Metadatos de cuenta del manifest v2: solo identidad, nunca credenciales.
+/// `credentials_json` y cualquier token se quedan en la BD; al restaurar en
+/// otra máquina la cuenta pide login (ADR-0020 decisión 1, cláusula 10 de
+/// ADR-0007).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupAccountDto {
+    pub service: String,
+    pub external_user_id: Option<String>,
+    pub display_name: Option<String>,
+    pub email: Option<String>,
+    pub is_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,6 +377,123 @@ pub fn validate_safe_backup_import_path_with_bases(
     Ok(canonical)
 }
 
+// ---------------------------------------------------------------------------
+// Manifest v2: ajustes y metadatos de cuenta (ADR-0020)
+// ---------------------------------------------------------------------------
+
+/// Convierte una fila SQLite en un objeto JSON tipando cada celda en orden de
+/// intento: entero, real, texto, blob. Los blobs (que no deben existir en
+/// superficies de ajustes) viajan como texto base64 en vez de fallar el export.
+fn sqlite_row_to_json(row: &sqlx::sqlite::SqliteRow) -> serde_json::Value {
+    use base64::Engine as _;
+    use sqlx::{Column, Row};
+
+    let mut map = serde_json::Map::new();
+    for (idx, col) in row.columns().iter().enumerate() {
+        let value: serde_json::Value = if let Ok(v) = row.try_get::<Option<i64>, _>(idx) {
+            v.map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null)
+        } else if let Ok(v) = row.try_get::<Option<f64>, _>(idx) {
+            v.map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null)
+        } else if let Ok(v) = row.try_get::<Option<String>, _>(idx) {
+            v.map(serde_json::Value::String)
+                .unwrap_or(serde_json::Value::Null)
+        } else if let Ok(v) = row.try_get::<Option<Vec<u8>>, _>(idx) {
+            v.map(|b| {
+                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(b))
+            })
+            .unwrap_or(serde_json::Value::Null)
+        } else {
+            serde_json::Value::Null
+        };
+        map.insert(col.name().to_string(), value);
+    }
+    serde_json::Value::Object(map)
+}
+
+async fn export_settings_table_rows(
+    db: &crate::DbPool,
+    table: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let sql = format!("SELECT * FROM {} ORDER BY id ASC", table);
+    let rows = sqlx::query(&sql)
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("Failed to export settings surface '{}': {}", table, e))?;
+    Ok(rows.iter().map(sqlite_row_to_json).collect())
+}
+
+/// Exporta la KV de ajustes: solo las claves del catálogo de usuario
+/// (`SETTINGS_KV_KEYS`, el mismo universo que borra el reset) y, dentro de
+/// él, ninguna clave sensible: tokens, claves de API ni credenciales de
+/// ningún tipo se quedan fuera del manifest (contrato testeable).
+async fn export_settings_kv(
+    db: &crate::DbPool,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT key, value FROM settings ORDER BY key ASC")
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("Failed to export settings KV: {}", e))?;
+
+    Ok(rows
+        .into_iter()
+        .filter(|(key, _)| {
+            crate::settings_defaults::SETTINGS_KV_KEYS.contains(&key.as_str())
+                && !is_sensitive_setting_key(key)
+        })
+        .collect())
+}
+
+async fn export_settings_manifest(db: &crate::DbPool) -> Result<BackupSettingsDto, String> {
+    Ok(BackupSettingsDto {
+        kv: export_settings_kv(db).await?,
+        service_preferences: export_settings_table_rows(db, "service_preferences").await?,
+        sync_settings: export_settings_table_rows(db, "sync_settings").await?,
+        service_sync_settings: export_settings_table_rows(db, "service_sync_settings").await?,
+        quality_preferences: export_settings_table_rows(db, "quality_preferences").await?,
+        folder_settings: export_settings_table_rows(db, "folder_settings").await?,
+        duplicate_settings: export_settings_table_rows(db, "duplicate_settings").await?,
+        audio_processing_settings: export_settings_table_rows(db, "audio_processing_settings")
+            .await?,
+        lyrics_provider_settings: export_settings_table_rows(db, "lyrics_provider_settings")
+            .await?,
+        lyrics_config: export_settings_table_rows(db, "lyrics_config").await?,
+        metadata_preferences: export_settings_table_rows(db, "metadata_preferences").await?,
+        advanced_settings: export_settings_table_rows(db, "advanced_settings").await?,
+    })
+}
+
+/// Metadatos de cuenta: servicio, identidad externa y nombre. La consulta no
+/// toca `credentials_json` ni ninguna columna de autenticación.
+async fn export_account_metadata(db: &crate::DbPool) -> Result<Vec<BackupAccountDto>, String> {
+    let rows: Vec<(String, Option<String>, Option<String>, Option<String>, i64)> = sqlx::query_as(
+        r#"
+            SELECT s.name, a.external_user_id, a.display_name, a.email, a.is_active
+            FROM accounts a
+            JOIN services s ON s.id = a.service_id
+            ORDER BY s.name ASC, a.id ASC
+            "#,
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to export account metadata: {}", e))?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(service, external_user_id, display_name, email, is_active)| BackupAccountDto {
+                service,
+                external_user_id,
+                display_name,
+                email,
+                is_active: is_active != 0,
+            },
+        )
+        .collect())
+}
+
 /// Export the full library into a portable, versioned backup manifest JSON file
 #[tauri::command]
 pub async fn export_library(
@@ -501,9 +669,18 @@ pub async fn export_library_with_bases(
     let artists_count = backup_artists.len();
     let playlists_count = backup_playlists.len();
 
+    // Manifest v2 (ADR-0020): la biblioteca viaja como en v1, más todas las
+    // superficies de ajustes y los metadatos de cuenta sin secretos. La
+    // versión de esquema se deriva del estado real de esta BD.
+    let schema_version = detect_schema_version(&state.db)
+        .await
+        .map_err(|e| format!("Failed to derive manifest schema version: {}", e))?;
+    let settings = export_settings_manifest(&state.db).await?;
+    let accounts = export_account_metadata(&state.db).await?;
+
     let mut manifest = LibraryBackupManifest {
-        version: "1.0.0".to_string(),
-        schema_version: 47,
+        version: "2.0.0".to_string(),
+        schema_version,
         exported_at: chrono::Utc::now().to_rfc3339(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         checksum_sha256: None,
@@ -511,6 +688,8 @@ pub async fn export_library_with_bases(
         albums: backup_albums,
         artists: backup_artists,
         playlists: backup_playlists,
+        settings: Some(settings),
+        accounts: Some(accounts),
     };
 
     // Serialize to JSON without checksum to compute hash

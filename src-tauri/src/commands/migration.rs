@@ -22,7 +22,11 @@ const REQUIRED_AUDIT_TABLES: [&str; 5] = [
     "migration_templates",
 ];
 
-async fn detect_schema_version(db: &sqlx::SqlitePool) -> Result<i64, String> {
+/// Versión de esquema real de la BD: la mayor migración aplicada
+/// (`_sqlx_migrations`), con `PRAGMA user_version` como respaldo. La comparte
+/// el manifest de backup para que su `schema_version` se derive del estado
+/// real y no de una constante (ADR-0020 decisión 2).
+pub async fn detect_schema_version(db: &sqlx::SqlitePool) -> Result<i64, String> {
     match sqlx::query_as::<_, (Option<i64>,)>("SELECT MAX(version) FROM _sqlx_migrations")
         .fetch_one(db)
         .await
