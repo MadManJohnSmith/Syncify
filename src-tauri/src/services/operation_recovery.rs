@@ -1053,28 +1053,34 @@ async fn reconcile_startup_operations_locked(
 
                                     match dl_existing {
                                         Some((dl_id, _old_fp)) => {
-                                            let _ = sqlx::query(
-                                                "UPDATE downloads SET file_path = ?, file_size_bytes = ?, downloaded_at = CURRENT_TIMESTAMP WHERE id = ?"
+                                            let _ = crate::db::write_or_log(
+                                                "reconcile_startup_operations",
+                                                sqlx::query(
+                                                    "UPDATE downloads SET file_path = ?, file_size_bytes = ?, downloaded_at = CURRENT_TIMESTAMP WHERE id = ?"
+                                                )
+                                                .bind(dest_str)
+                                                .bind(f_size)
+                                                .bind(dl_id)
+                                                .execute(db),
                                             )
-                                            .bind(dest_str)
-                                            .bind(f_size)
-                                            .bind(dl_id)
-                                            .execute(db)
                                             .await;
                                         }
                                         None => {
-                                            let _ = sqlx::query(
-                                                r#"
-                                                INSERT OR REPLACE INTO downloads (
-                                                    track_id, file_path, file_size_bytes, file_format, bit_depth,
-                                                    sample_rate, downloaded_at
-                                                ) VALUES (?, ?, ?, 'FLAC', 16, 44100, CURRENT_TIMESTAMP)
-                                                "#
+                                            let _ = crate::db::write_or_log(
+                                                "reconcile_startup_operations",
+                                                sqlx::query(
+                                                    r#"
+                                                    INSERT OR REPLACE INTO downloads (
+                                                        track_id, file_path, file_size_bytes, file_format, bit_depth,
+                                                        sample_rate, downloaded_at
+                                                    ) VALUES (?, ?, ?, 'FLAC', 16, 44100, CURRENT_TIMESTAMP)
+                                                    "#
+                                                )
+                                                .bind(tid)
+                                                .bind(dest_str)
+                                                .bind(f_size)
+                                                .execute(db),
                                             )
-                                            .bind(tid)
-                                            .bind(dest_str)
-                                            .bind(f_size)
-                                            .execute(db)
                                             .await;
                                         }
                                     }
@@ -1082,11 +1088,14 @@ async fn reconcile_startup_operations_locked(
 
                                 if let Some(qid_str) = entity_id.as_deref() {
                                     if let Ok(qid) = qid_str.parse::<i64>() {
-                                        let _ = sqlx::query(
-                                            "UPDATE download_queue SET status = 'complete', progress_percent = 100.0, completed_at = CURRENT_TIMESTAMP WHERE id = ?"
+                                        let _ = crate::db::write_or_log(
+                                            "reconcile_startup_operations",
+                                            sqlx::query(
+                                                "UPDATE download_queue SET status = 'complete', progress_percent = 100.0, completed_at = CURRENT_TIMESTAMP WHERE id = ?"
+                                            )
+                                            .bind(qid)
+                                            .execute(db),
                                         )
-                                        .bind(qid)
-                                        .execute(db)
                                         .await;
                                     }
                                 }
@@ -1123,11 +1132,14 @@ async fn reconcile_startup_operations_locked(
 
                             if let Some(qid_str) = entity_id.as_deref() {
                                 if let Ok(qid) = qid_str.parse::<i64>() {
-                                    let _ = sqlx::query(
-                                        "UPDATE download_queue SET status = 'failed' WHERE id = ?",
+                                    let _ = crate::db::write_or_log(
+                                        "reconcile_startup_operations",
+                                        sqlx::query(
+                                            "UPDATE download_queue SET status = 'failed' WHERE id = ?",
+                                        )
+                                        .bind(qid)
+                                        .execute(db),
                                     )
-                                    .bind(qid)
-                                    .execute(db)
                                     .await;
                                 }
                             }
@@ -1139,7 +1151,11 @@ async fn reconcile_startup_operations_locked(
 
                             if let Some(qid_str) = entity_id.as_deref() {
                                 if let Ok(qid) = qid_str.parse::<i64>() {
-                                    let _ = sqlx::query("UPDATE download_queue SET status = 'queued', started_at = NULL WHERE id = ?").bind(qid).execute(db).await;
+                                    let _ = crate::db::write_or_log(
+                                        "reconcile_startup_operations",
+                                        sqlx::query("UPDATE download_queue SET status = 'queued', started_at = NULL WHERE id = ?").bind(qid).execute(db),
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -1154,11 +1170,14 @@ async fn reconcile_startup_operations_locked(
 
                         if let Some(qid_str) = entity_id.as_deref() {
                             if let Ok(qid) = qid_str.parse::<i64>() {
-                                let _ = sqlx::query(
-                                    "UPDATE download_queue SET status = 'failed' WHERE id = ?",
+                                let _ = crate::db::write_or_log(
+                                    "reconcile_startup_operations",
+                                    sqlx::query(
+                                        "UPDATE download_queue SET status = 'failed' WHERE id = ?",
+                                    )
+                                    .bind(qid)
+                                    .execute(db),
                                 )
-                                .bind(qid)
-                                .execute(db)
                                 .await;
                             }
                         }
@@ -1169,7 +1188,11 @@ async fn reconcile_startup_operations_locked(
 
                         if let Some(qid_str) = entity_id.as_deref() {
                             if let Ok(qid) = qid_str.parse::<i64>() {
-                                let _ = sqlx::query("UPDATE download_queue SET status = 'queued', started_at = NULL WHERE id = ?").bind(qid).execute(db).await;
+                                let _ = crate::db::write_or_log(
+                                    "reconcile_startup_operations",
+                                    sqlx::query("UPDATE download_queue SET status = 'queued', started_at = NULL WHERE id = ?").bind(qid).execute(db),
+                                )
+                                .await;
                             }
                         }
                     }
@@ -1196,35 +1219,43 @@ async fn reconcile_startup_operations_locked(
         }
 
         // Update operation journal status
-        let _ = sqlx::query(
-            "UPDATE operation_journal SET status = ?, result_summary = ?, checkpoint_at = CURRENT_TIMESTAMP WHERE operation_id = ?"
+        let _ = crate::db::write_or_log(
+            "reconcile_startup_operations",
+            sqlx::query(
+                "UPDATE operation_journal SET status = ?, result_summary = ?, checkpoint_at = CURRENT_TIMESTAMP WHERE operation_id = ?"
+            )
+            .bind(new_status.as_str())
+            .bind(&message)
+            .bind(&op_id)
+            .execute(db),
         )
-        .bind(new_status.as_str())
-        .bind(&message)
-        .bind(&op_id)
-        .execute(db)
         .await;
 
         // Record in operation_recovery_audit (append-only)
         let recovery_id = format!("rec-{}", uuid_or_timestamp(&op_id));
-        let _ = sqlx::query(
-            r#"
-            INSERT INTO operation_recovery_audit (
-                recovery_id, operation_id, operation_type, previous_status,
-                new_status, action_taken, error_taxonomy, message, details_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#,
+        let _ = crate::db::write_or_log(
+            "reconcile_startup_operations",
+            sqlx::query(
+                r#"
+                INSERT INTO operation_recovery_audit (
+                    recovery_id, operation_id, operation_type, previous_status,
+                    new_status, action_taken, error_taxonomy, message, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&recovery_id)
+            .bind(&op_id)
+            .bind(op_type.as_str())
+            .bind(prev_status.as_str())
+            .bind(new_status.as_str())
+            .bind(format!("{:?}", action_taken))
+            .bind(&tax_str)
+            .bind(&message)
+            .bind(
+                serde_json::json!({ "phase": phase.as_str(), "entity_id": entity_id }).to_string(),
+            )
+            .execute(db),
         )
-        .bind(&recovery_id)
-        .bind(&op_id)
-        .bind(op_type.as_str())
-        .bind(prev_status.as_str())
-        .bind(new_status.as_str())
-        .bind(format!("{:?}", action_taken))
-        .bind(&tax_str)
-        .bind(&message)
-        .bind(serde_json::json!({ "phase": phase.as_str(), "entity_id": entity_id }).to_string())
-        .execute(db)
         .await;
 
         if new_status == OperationStatus::Recovered {
@@ -1803,11 +1834,14 @@ pub async fn reconcile_canonical_download_records(
             // If the file already exists at the canonical path, just update DB
             if canonical_path.exists() {
                 if !dry_run {
-                    let _ = sqlx::query("UPDATE downloads SET file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-                        .bind(&canonical_path_str)
-                        .bind(dl_id)
-                        .execute(db)
-                        .await;
+                    let _ = crate::db::write_or_log(
+                        "reconcile_canonical_download_records",
+                        sqlx::query("UPDATE downloads SET file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                            .bind(&canonical_path_str)
+                            .bind(dl_id)
+                            .execute(db),
+                    )
+                    .await;
                 }
                 report.updated_records += 1;
             }

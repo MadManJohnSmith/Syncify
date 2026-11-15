@@ -100,12 +100,15 @@ pub async fn enrich_genre_lastfm(state: State<'_, AppState>) -> Result<String, S
 
                 if genre.is_some() {
                     // Update track with genre
-                    let _ = sqlx::query("UPDATE tracks SET genre = ?, subgenre = ? WHERE id = ?")
-                        .bind(&genre)
-                        .bind(&subgenre)
-                        .bind(track_id)
-                        .execute(&state.db)
-                        .await;
+                    let _ = crate::db::write_or_log(
+                        "enrich_genre_lastfm",
+                        sqlx::query("UPDATE tracks SET genre = ?, subgenre = ? WHERE id = ?")
+                            .bind(&genre)
+                            .bind(&subgenre)
+                            .bind(track_id)
+                            .execute(&state.db),
+                    )
+                    .await;
 
                     enriched += 1;
                 }
@@ -163,11 +166,14 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
             if mb.0.is_none() {
                 let mb_client = crate::services::MusicBrainzClient::with_db(state.db.clone());
                 if let Ok(Some(recording)) = mb_client.lookup_by_isrc(isrc).await {
-                    let _ = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
-                        .bind(&recording.id)
-                        .bind(track_id)
-                        .execute(&state.db)
-                        .await;
+                    let _ = crate::db::write_or_log(
+                        "enrich_track_musicbrainz",
+                        sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                            .bind(&recording.id)
+                            .bind(track_id)
+                            .execute(&state.db),
+                    )
+                    .await;
                     enrichments.push("MusicBrainz ID");
                 }
             }
@@ -200,13 +206,15 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
                         genre.as_deref(),
                     );
                     if genre.is_some() {
-                        let _ =
+                        let _ = crate::db::write_or_log(
+                            "enrich_track_lastfm",
                             sqlx::query("UPDATE tracks SET genre = ?, subgenre = ? WHERE id = ?")
                                 .bind(&genre)
                                 .bind(&subgenre)
                                 .bind(track_id)
-                                .execute(&state.db)
-                                .await;
+                                .execute(&state.db),
+                        )
+                        .await;
                         enrichments.push("Genre");
                     }
                 }

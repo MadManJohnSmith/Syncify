@@ -1163,19 +1163,22 @@ impl DownloadWorker {
                             .unwrap_or(None);
                     if let Some(tid) = track_id_opt {
                         let is_embedded = physical_format.to_uppercase() == "FLAC";
-                        let _ = sqlx::query(
-                            r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
-                               VALUES (?, 'lrc', 'line', 'sidecar', ?, NULL, ?)
-                               ON CONFLICT(track_id, format) DO UPDATE SET
-                                   content = excluded.content,
-                                   sync_level = COALESCE(lyrics.sync_level, excluded.sync_level),
-                                   source = COALESCE(lyrics.source, excluded.source),
-                                   embedded_in_file = excluded.embedded_in_file"#
+                        let _ = crate::db::write_or_log(
+                            "worker_mark_complete_sidecar_lyrics",
+                            sqlx::query(
+                                r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
+                                   VALUES (?, 'lrc', 'line', 'sidecar', ?, NULL, ?)
+                                   ON CONFLICT(track_id, format) DO UPDATE SET
+                                       content = excluded.content,
+                                       sync_level = COALESCE(lyrics.sync_level, excluded.sync_level),
+                                       source = COALESCE(lyrics.source, excluded.source),
+                                       embedded_in_file = excluded.embedded_in_file"#
+                            )
+                            .bind(tid)
+                            .bind(&content)
+                            .bind(if is_embedded { 1i64 } else { 0i64 })
+                            .execute(&self.db),
                         )
-                        .bind(tid)
-                        .bind(&content)
-                        .bind(if is_embedded { 1i64 } else { 0i64 })
-                        .execute(&self.db)
                         .await;
                     }
                 }
@@ -2447,19 +2450,22 @@ impl DownloadWorker {
                     if let (Some(ref srv), Some(account_id)) =
                         (&target_service, attributable_account_id)
                     {
-                        let _ = sqlx::query(
-                            r#"
-                            UPDATE accounts
-                            SET last_auth_error = ?,
-                                last_auth_error_at = ?
-                            WHERE id = ? AND service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?))
-                            "#
+                        let _ = crate::db::write_or_log(
+                            "worker_record_entitlement_error",
+                            sqlx::query(
+                                r#"
+                                UPDATE accounts
+                                SET last_auth_error = ?,
+                                    last_auth_error_at = ?
+                                WHERE id = ? AND service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?))
+                                "#
+                            )
+                            .bind("Playback entitlement unavailable")
+                            .bind(&now_iso)
+                            .bind(account_id)
+                            .bind(srv)
+                            .execute(&self.db),
                         )
-                        .bind("Playback entitlement unavailable")
-                        .bind(&now_iso)
-                        .bind(account_id)
-                        .bind(srv)
-                        .execute(&self.db)
                         .await;
                     }
                 }
@@ -2623,11 +2629,19 @@ impl DownloadWorker {
             // 'failed' must also see the corresponding postprocess error.
             if let Some(message) = message {
                 // The queue remains complete; expose the postprocess error separately.
-                let _ = sqlx::query("UPDATE download_queue SET error_message = ? WHERE id = ? AND status = 'complete'")
-                    .bind(message).bind(queue_id).execute(&db).await;
+                let _ = crate::db::write_or_log(
+                    "worker_publish_postprocess_error",
+                    sqlx::query("UPDATE download_queue SET error_message = ? WHERE id = ? AND status = 'complete'")
+                        .bind(message).bind(queue_id).execute(&db),
+                )
+                .await;
             } else {
-                let _ = sqlx::query("UPDATE download_queue SET error_message = NULL WHERE id = ? AND status = 'complete'")
-                    .bind(queue_id).execute(&db).await;
+                let _ = crate::db::write_or_log(
+                    "worker_publish_postprocess_error",
+                    sqlx::query("UPDATE download_queue SET error_message = NULL WHERE id = ? AND status = 'complete'")
+                        .bind(queue_id).execute(&db),
+                )
+                .await;
             }
             if let Err(error) =
                 sqlx::query("UPDATE settings SET value = ? WHERE key = ? AND value = 'running'")
@@ -2788,14 +2802,17 @@ impl DownloadWorker {
             if allow_fb.unwrap_or(0) == 0 {
                 let reason =
                     "SourceIdentityMissing: Legacy queue row without locked source identity";
-                let _ = sqlx::query(
-                    "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, decision_reason = COALESCE(?, decision_reason), retry_count = retry_count + 1, failure_class = 'identity_conflict', next_attempt_at = NULL WHERE id = ? AND status = 'queued'"
+                let _ = crate::db::write_or_log(
+                    "worker_quarantine_unresolved_row",
+                    sqlx::query(
+                        "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, decision_reason = COALESCE(?, decision_reason), retry_count = retry_count + 1, failure_class = 'identity_conflict', next_attempt_at = NULL WHERE id = ? AND status = 'queued'"
+                    )
+                    .bind(reason)
+                    .bind(reason)
+                    .bind(reason)
+                    .bind(qid)
+                    .execute(db),
                 )
-                .bind(reason)
-                .bind(reason)
-                .bind(reason)
-                .bind(qid)
-                .execute(db)
                 .await;
                 quarantined += 1;
             }

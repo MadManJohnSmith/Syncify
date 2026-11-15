@@ -1445,12 +1445,15 @@ pub async fn start_migration<R: tauri::Runtime>(
         Ok(tracks) => tracks,
         Err(e) => {
             tracing::error!("Migration {} failed reading source tracks: {}", job_id, e);
-            let _ = sqlx::query(
-                "UPDATE migration_jobs SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            let _ = crate::db::write_or_log(
+                "start_migration_mark_failed",
+                sqlx::query(
+                    "UPDATE migration_jobs SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                )
+                .bind(&e)
+                .bind(&job_id)
+                .execute(&state.db),
             )
-            .bind(&e)
-            .bind(&job_id)
-            .execute(&state.db)
             .await;
             return Err(e);
         }

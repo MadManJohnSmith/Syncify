@@ -2000,12 +2000,14 @@ impl EnrichmentEngine {
                 if !current_is_valid {
                     if let Some(mb_art) = meta.musicbrainz_artist_id.value() {
                         if FieldValidator::is_valid_musicbrainz_artist_id(mb_art, Some(&art_name)) {
-                            let _ =
+                            let _ = crate::db::write_or_log(
+                                "apply_to_database",
                                 sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
                                     .bind(mb_art)
                                     .bind(aid)
-                                    .execute(&mut *tx)
-                                    .await;
+                                    .execute(&mut *tx),
+                            )
+                            .await;
                         }
                     }
                 }
@@ -3189,12 +3191,14 @@ impl EnrichmentEngine {
             }
 
             if input.service_name == "qobuz" {
-                let _ =
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
                     sqlx::query("UPDATE tracks SET qobuz_id = COALESCE(qobuz_id, ?) WHERE id = ?")
                         .bind(&input.service_track_id)
                         .bind(tid)
-                        .execute(&mut *tx)
-                        .await;
+                        .execute(&mut *tx),
+                )
+                .await;
             } else if input.service_name == "spotify" {
                 let _ = crate::db::write_or_log(
                     "enrich_and_persist_sync_track",

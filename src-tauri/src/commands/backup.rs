@@ -862,11 +862,14 @@ pub async fn import_library_with_bases(
         {
             Some(id) => {
                 if let Some(fav) = &album.favorite_at {
-                    let _ = sqlx::query("UPDATE albums SET favorite_at = ? WHERE id = ?")
-                        .bind(fav)
-                        .bind(id)
-                        .execute(&mut *tx)
-                        .await;
+                    let _ = crate::db::write_or_log(
+                        "restore_backup",
+                        sqlx::query("UPDATE albums SET favorite_at = ? WHERE id = ?")
+                            .bind(fav)
+                            .bind(id)
+                            .execute(&mut *tx),
+                    )
+                    .await;
                 }
                 id
             }
@@ -885,12 +888,14 @@ pub async fn import_library_with_bases(
         };
 
         // Link album_artists
-        let _ =
+        let _ = crate::db::write_or_log(
+            "restore_backup",
             sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
                 .bind(album_id)
                 .bind(artist_id)
-                .execute(&mut *tx)
-                .await;
+                .execute(&mut *tx),
+        )
+        .await;
 
         albums_imported += 1;
         if album.favorite_at.is_some() {
@@ -940,11 +945,14 @@ pub async fn import_library_with_bases(
             {
                 Some(existing_id) => {
                     if let Some(fav) = &track.favorite_at {
-                        let _ = sqlx::query("UPDATE tracks SET favorite_at = ? WHERE id = ?")
-                            .bind(fav)
-                            .bind(existing_id)
-                            .execute(&mut *tx)
-                            .await;
+                        let _ = crate::db::write_or_log(
+                            "restore_backup",
+                            sqlx::query("UPDATE tracks SET favorite_at = ? WHERE id = ?")
+                                .bind(fav)
+                                .bind(existing_id)
+                                .execute(&mut *tx),
+                        )
+                        .await;
                     }
                     existing_id
                 }
@@ -981,11 +989,14 @@ pub async fn import_library_with_bases(
             {
                 Some(existing_id) => {
                     if let Some(fav) = &track.favorite_at {
-                        let _ = sqlx::query("UPDATE tracks SET favorite_at = ? WHERE id = ?")
-                            .bind(fav)
-                            .bind(existing_id)
-                            .execute(&mut *tx)
-                            .await;
+                        let _ = crate::db::write_or_log(
+                            "restore_backup",
+                            sqlx::query("UPDATE tracks SET favorite_at = ? WHERE id = ?")
+                                .bind(fav)
+                                .bind(existing_id)
+                                .execute(&mut *tx),
+                        )
+                        .await;
                     }
                     existing_id
                 }
@@ -1013,12 +1024,15 @@ pub async fn import_library_with_bases(
         };
 
         // Link track_artists
-        let _ = sqlx::query(
-            "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+        let _ = crate::db::write_or_log(
+            "restore_backup",
+            sqlx::query(
+                "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+            )
+            .bind(track_id)
+            .bind(artist_id)
+            .execute(&mut *tx),
         )
-        .bind(track_id)
-        .bind(artist_id)
-        .execute(&mut *tx)
         .await;
 
         tracks_imported += 1;
@@ -1047,13 +1061,16 @@ pub async fn import_library_with_bases(
                 .ok()
                 .flatten()
             {
-                let _ = sqlx::query(
-                    "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                let _ = crate::db::write_or_log(
+                    "restore_backup",
+                    sqlx::query(
+                        "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+                    )
+                    .bind(pl_id)
+                    .bind(tid)
+                    .bind(pos as i64)
+                    .execute(&mut *tx),
                 )
-                .bind(pl_id)
-                .bind(tid)
-                .bind(pos as i64)
-                .execute(&mut *tx)
                 .await;
             }
         }

@@ -3002,22 +3002,25 @@ pub async fn refetch_karaoke_lyrics(
                     }
 
                     // F5.3: Ensure embedded_in_file is accurately persisted in lyrics table (mitiga A11)
-                    let _ = sqlx::query(
-                        r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
-                           VALUES (?, ?, ?, ?, ?, NULL, ?)
-                           ON CONFLICT(track_id, format) DO UPDATE SET
-                               content = excluded.content,
-                               sync_level = excluded.sync_level,
-                               source = excluded.source,
-                               embedded_in_file = excluded.embedded_in_file"#
+                    let _ = crate::db::write_or_log(
+                        "refetch_karaoke_lyrics",
+                        sqlx::query(
+                            r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
+                               VALUES (?, ?, ?, ?, ?, NULL, ?)
+                               ON CONFLICT(track_id, format) DO UPDATE SET
+                                   content = excluded.content,
+                                   sync_level = excluded.sync_level,
+                                   source = excluded.source,
+                                   embedded_in_file = excluded.embedded_in_file"#
+                        )
+                        .bind(tr.track_id)
+                        .bind(format)
+                        .bind(sync_level)
+                        .bind(&resolution.provider)
+                        .bind(&content)
+                        .bind(if embedded_ok { 1i64 } else { 0i64 })
+                        .execute(&state.db),
                     )
-                    .bind(tr.track_id)
-                    .bind(format)
-                    .bind(sync_level)
-                    .bind(&resolution.provider)
-                    .bind(&content)
-                    .bind(if embedded_ok { 1i64 } else { 0i64 })
-                    .execute(&state.db)
                     .await;
 
                     if matches!(decision, S202UpgradeDecision::ApplyUpgrade) {
