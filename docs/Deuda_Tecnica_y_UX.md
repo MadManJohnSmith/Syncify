@@ -133,13 +133,26 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   `services/tidal.rs` 9, `services/qobuz.rs` 21 y `commands/service.rs` 28. Los cinco
   ficheros de mayor riesgo del plan quedan cubiertos; el ratchet baja de 243 a 113 (patrón
   bruto; 95 silenciosos + 18 que propagan) y solo puede bajar.
+- **Progreso (lote D-06a, servicios de proveedor, 2026-11-14, [#37](https://github.com/MadManJohnSmith/Syncify/issues/37))**:
+  42 puntos migrados a `crate::db::write_or_log`, ninguno propaga (son escrituras
+  best-effort dentro de bucles de importación/merge/hidratación donde abortar cambiaría
+  el comportamiento observable): `services/musicbrainz.rs` 13 (`resolve_ghost_artists` 6,
+  `hydrate_stub_albums` 7), `services/apple_music.rs` 10, `services/spotify.rs` 8,
+  `services/track_matcher.rs` 5, `services/deezer.rs` 4, `services/tidal_pipeline.rs` 1
+  y `crypto.rs` 1 (el flag de migración de credenciales, ya no fatal por diseño).
+  Spotify tenía un octavo punto en forma multilínea (`let _ =` con la query en la línea
+  siguiente) que la expresión del ratchet no contaba; migrado igualmente. Medido con la
+  expresión del ratchet: 99 sitios antes del lote, 58 después; el suelo registrado baja
+  de 113 a 58.
 - **Lo que la frontera destapó (2026-10-19)**: en la primera prueba manual,
   `context="enrich_and_persist_sync_track"` registró 51 fallos que antes eran
   invisibles: `UNIQUE constraint failed: tracks.isrc`. Corregido en `c7325a7`
   (ver D-07). Es el argumento de la frontera: no cambia el comportamiento, pero
   convierte un fallo mudo en una línea de log accionable.
-- **Cierra**: migrar el resto por lotes (enrichment 45, service 28, qobuz 21, favorites 19,
-  tidal 17), un fichero por commit con su suite verde, y seguir bajando el baseline.
+- **Cierra**: migrar el resto por lotes (comandos, worker y caché:
+  [#38](https://github.com/MadManJohnSmith/Syncify/issues/38)), un fichero por commit
+  con su suite verde, y seguir bajando el baseline; el ratchet automático es
+  [#39](https://github.com/MadManJohnSmith/Syncify/issues/39).
 
 ### D-08 — Dos funciones monstruo
 

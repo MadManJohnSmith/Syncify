@@ -650,16 +650,17 @@ pub async fn migrate_legacy_credentials(db: &sqlx::SqlitePool) -> Result<(u32, V
         || (migrated_count == 0 && failed_ids.len() == rows.len());
 
     if should_mark_complete {
-        let _ = sqlx::query(
-            "INSERT OR REPLACE INTO settings (key, value, updated_at) \
-             VALUES ('credential_migration_v1_complete', 'true', CURRENT_TIMESTAMP)",
+        // Non-fatal: migration will re-run next boot but won't corrupt data;
+        // write_or_log records the failure if the flag cannot be written.
+        let _ = crate::db::write_or_log(
+            "credential_migration_v1_complete",
+            sqlx::query(
+                "INSERT OR REPLACE INTO settings (key, value, updated_at) \
+                 VALUES ('credential_migration_v1_complete', 'true', CURRENT_TIMESTAMP)",
+            )
+            .execute(db),
         )
-        .execute(db)
-        .await
-        .map_err(|e| {
-            tracing::warn!("Failed to record migration completion flag: {}", e);
-            // Non-fatal: migration will re-run next boot but won't corrupt data
-        });
+        .await;
     }
 
     Ok((migrated_count, failed_ids))
