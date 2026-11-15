@@ -13,9 +13,10 @@ wiki (desde su creación el 2026-11-13):
 
 ## Cómo se trabaja
 
-- [`modo-ejecucion.md`](modo-ejecucion.md) — decisión del propietario sobre
-  ejecución inline vs. delegación, contrato de entrega endurecido y orden de
-  carriles del 2026-11-13.
+- [`modo-ejecucion.md`](modo-ejecucion.md) — decisiones del propietario sobre
+  ejecución: por issue con un subagente por issue (2026-11-14, vigente),
+  antes inline preferente (2026-11-13, supersado); contrato de entrega
+  endurecido, riesgos del modo delegado y progreso fechado de carriles.
 - [`protocolo-pr.md`](protocolo-pr.md) — protocolo de integración: PR con
   base `dev`, squash-merge, cierre manual de issues y qué viaja directo.
 
