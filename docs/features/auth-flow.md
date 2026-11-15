@@ -4,11 +4,11 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
-**Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): corregidos el refresh de Spotify (un único camino PKCE, sin discriminación por `token_type`; `refresh_from_sp_dc` no existe en el árbol), el fallback Qobuz (lee la BD cifrada canónica, no el JSON del puente), el upsert de cuentas (reconciliación de identidades en `upsert_service_account`), la siembra de `services` (migration 0002, no 0001) y el fallback a Chrome del sistema (compartido por 5 puentes de auth). Sustituidos los números de línea muertos por símbolos y rellenados vacíos: columnas de multi-cuenta (`external_user_id`, `invalid_reason`, `streaming_entitled`, `display_name_custom`) e inyección de expiración de token Tidal. Sigue sin verificar en escritorio real el flujo completo contra proveedores vivos: los tests que necesitan red están `#[ignore]`.
+**Estado de revisión:** 2026-11-14 — re-derivación contra el árbol (verificación dirigida de símbolos y comportamiento). Re-deriva y absorbe la re-revisión del 2026-10-25 (refresh de Spotify con un único camino PKCE, sin discriminación por `token_type`; `refresh_from_sp_dc` no existe en el árbol; el fallback Qobuz lee la BD cifrada canónica, no el JSON del puente; upsert de cuentas con reconciliación de identidades en `upsert_service_account`; siembra de `services` en la migration 0002; fallback a Chrome del sistema compartido por 5 puentes de auth). Novedades del árbol desde entonces: el contrato del puente es único — `scripts/services/bridge_protocol.py` define el envelope `{"success": …}`/`BridgeFailure` con exit 1 y `scripts/auth_bridge.py` cierra en `run(_handle, parse=_parse)` — y `HANDLERS` incluye `apple_music` (6 servicios). El refresh de Spotify resuelve su configuración con `resolve_spotify_config` (`src-tauri/src/commands/settings.rs`, no `service.rs`). La sonda solo-debug de Deezer (`debug_deezer_cookie_probe`) se documenta en `authentication.md`. Sigue sin verificar en escritorio real el flujo completo contra proveedores vivos: los tests que necesitan red están `#[ignore]`.
 
 **Migración declarada:** [#62](https://github.com/MadManJohnSmith/Syncify/issues/62) — inicio de sesión dentro del webview de la app; la sonda de Deezer es [#63](https://github.com/MadManJohnSmith/Syncify/issues/63).
 
-**Último cambio:** 2026-10-25 — re-revisión de comportamiento; archivos: `src-tauri/src/commands/auth.rs`, `src-tauri/src/commands/service.rs`, `src-tauri/src/services/spotify.rs`
+**Último cambio:** 2026-11-14 — re-derivación completa contra el árbol (D-04a, issue #58); archivos: `src-tauri/src/commands/auth.rs`, `scripts/auth_bridge.py`, `scripts/services/bridge_protocol.py`, `src-tauri/src/commands/settings.rs`. Previo: 2026-10-25 — re-revisión de comportamiento; archivos: `src-tauri/src/commands/auth.rs`, `src-tauri/src/commands/service.rs`, `src-tauri/src/services/spotify.rs`
 **Leer antes de modificar:** `src-tauri/src/crypto.rs`, `migrations/0031_add_credentials_invalid.sql`
 **Archivos core:**
 - `scripts/auth_bridge.py`
@@ -48,9 +48,11 @@
                                 ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │  PYTHON: scripts/auth_bridge.py                                       │
-│    Entry: main() → HANDLERS[service](action)                         │
+│    Entry: run(_handle, parse=_parse) (services/bridge_protocol.py)   │
+│    _handle → HANDLERS[service](action)                               │
 │    Per-service handler → delegates to services/<service>_auth.py     │
 │    Returns JSON to stdout: {"success": true/false, "data": {...}}    │
+│    (BridgeFailure → {"success": false, "error": ...}, exit 1)        │
 └───────────────────────────────┬────────────────────────────────────────┘
                                 │
                     ┌───────────┴───────────┐
@@ -86,7 +88,7 @@
 The function `get_or_refresh_spotify_token()` in `src-tauri/src/commands/service.rs` handles token lifecycle with a single PKCE path:
 
 1. Checks `expires_at` with 300s buffer
-2. Refreshes via `grant_type=refresh_token` against `accounts.spotify.com`; the client config is resolved by `resolve_spotify_config(db)` (settings en BD primero, env como fallback en dev)
+2. Refreshes via `grant_type=refresh_token` against `accounts.spotify.com`; the client config is resolved by `resolve_spotify_config(db)` en `src-tauri/src/commands/settings.rs` (settings en BD primero, env como fallback en dev)
 3. Re-encrypts updated credentials (`access_token`, `refresh_token`, `expires_at`) and saves to `accounts` table
 
 No discrimina por `token_type`: no hay camino separado para sesiones sp_dc (`refresh_from_sp_dc` no existe en el árbol). `SpotifyConfig::refresh_access_token` existe en `src-tauri/src/services/spotify.rs` pero solo se usa internamente. La reparación de sesión por sp_dc es un comando aparte: `refresh_spotify_session(sp_dc)` en `src-tauri/src/commands/auth.rs`.
