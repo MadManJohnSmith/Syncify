@@ -80,10 +80,11 @@ que pase.
   sustituyó a `resolve_playback_source` y al protocolo `syncify-media://`, que se
   borraron (C-19 en `docs/Deuda_Tecnica_y_UX.md`). `commands/playback.rs` conserva
   solo la escucha local (`record_local_play`).
-- **Escrituras silenciosas:** hay ~58 `let _ = sqlx::query(...)` en producción (el
-  registro D-06 de `docs/Deuda_Tecnica_y_UX.md` lleva el ratchet y no debe subir): una
-  escritura puede fallar y la transacción confirmar sin rastro. Si tocas una, propaga
-  el error o registra con `tracing::warn!`.
+- **Escrituras silenciosas:** hay ~19 `let _ = sqlx::query(...)` en producción (18 ya
+  propagan con `map_err(..)?` y 1 está dentro de un bloque comentado de `main.rs`, sin
+  efecto en ejecución; el registro D-06 de `docs/Deuda_Tecnica_y_UX.md` lleva el
+  ratchet y no debe subir): una escritura puede fallar y la transacción confirmar sin
+  rastro. Si tocas una, propaga el error o registra con `tracing::warn!`.
 - **Entorno:** `.venv`, `node_modules` y los lockfiles son el entorno; no los
   regeneres sin motivo. `src-tauri/gen/` no está en el árbol: no lo recrees.
 
