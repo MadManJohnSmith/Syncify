@@ -90,3 +90,9 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   CI quedaron verdes antes del merge (Rust 29m47s / 47m59s). Siguiente
   del orden: SB04 (#200), primer issue delegado bajo el modo nuevo.
   Fuente: PR #289 y `git log dev`.
+- **2026-11-14**: LY00 (#178) fusionado por squash en PR #290 (`7efbd20`
+  en `dev`); issue cerrado manualmente citando el SHA. Primera
+  delegación de investigación completada bajo el modo nuevo: solo la
+  matriz, cero código del motor, puerta Python verbatim en el informe.
+  Las 4 fuentes con credenciales quedaron como tarjeta al propietario.
+  Fuente: PR #290 y `git log dev`.
