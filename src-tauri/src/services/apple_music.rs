@@ -616,12 +616,13 @@ impl AppleMusicClient {
                 let track_id = self.get_or_create_track(db, attrs, album_id).await?;
 
                 // Link artist to track
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_library", sqlx::query(
                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                 )
                 .bind(track_id)
                 .bind(artist_id)
                 .execute(db)
+                )
                 .await;
 
                 // Add to library entry with normalized added_at (TASK-108: never NULL or 1970)
@@ -655,7 +656,7 @@ impl AppleMusicClient {
                 }
 
                 // Add track source (Apple Music is typically 256kbps AAC)
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_library", sqlx::query(
                     r#"
                     INSERT OR REPLACE INTO track_sources
                     (track_id, service_id, service_track_id, format, bitrate, quality_score, available)
@@ -666,6 +667,7 @@ impl AppleMusicClient {
                 .bind(service_id)
                 .bind(&track.id)
                 .execute(db)
+                )
                 .await;
             }
 
@@ -739,12 +741,13 @@ impl AppleMusicClient {
                     let track_id = self
                         .get_or_create_track(db, track_attrs, Some(album_id))
                         .await?;
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_albums", sqlx::query(
                         "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                     )
                     .bind(track_id)
                     .bind(artist_id)
                     .execute(db)
+                    )
                     .await;
 
                     let normalized_date = crate::services::import_pagination::normalize_added_at(
@@ -779,7 +782,7 @@ impl AppleMusicClient {
                         skipped += 1;
                     }
 
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_albums", sqlx::query(
                         r#"
                         INSERT OR REPLACE INTO track_sources
                         (track_id, service_id, service_track_id, format, bitrate, quality_score, available)
@@ -790,6 +793,7 @@ impl AppleMusicClient {
                     .bind(service_id)
                     .bind(&track.id)
                     .execute(db)
+                    )
                     .await;
                 }
             }
@@ -916,22 +920,24 @@ impl AppleMusicClient {
                     };
 
                     let track_id = self.get_or_create_track(db, track_attrs, album_id).await?;
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                         "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                     )
                     .bind(track_id)
                     .bind(artist_id)
                     .execute(db)
+                    )
                     .await;
 
                     // Link to playlist_tracks
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                         "INSERT OR REPLACE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
                     )
                     .bind(playlist_db_id)
                     .bind(track_id)
                     .bind(idx as i32)
                     .execute(db)
+                    )
                     .await;
 
                     let normalized_date = crate::services::import_pagination::normalize_added_at(
@@ -966,7 +972,7 @@ impl AppleMusicClient {
                         skipped += 1;
                     }
 
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                         r#"
                         INSERT OR REPLACE INTO track_sources
                         (track_id, service_id, service_track_id, format, bitrate, quality_score, available)
@@ -977,6 +983,7 @@ impl AppleMusicClient {
                     .bind(service_id)
                     .bind(&track.id)
                     .execute(db)
+                    )
                     .await;
                 }
             }
@@ -1323,12 +1330,13 @@ impl AppleMusicClient {
                 .map_err(|e| format!("Album insert failed: {}", e))?;
 
         // Link album to artist
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("get_or_create_album", sqlx::query(
             "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
         )
         .bind(album_id)
         .bind(primary_artist_id)
         .execute(db)
+        )
         .await;
 
         Ok(album_id)
@@ -1369,18 +1377,21 @@ impl AppleMusicClient {
             }
         };
 
-        let _ = sqlx::query(
-            "UPDATE albums SET
+        let _ = crate::db::write_or_log(
+            "get_or_create_album_from_attrs",
+            sqlx::query(
+                "UPDATE albums SET
                 release_date = COALESCE(?, release_date),
                 total_tracks = COALESCE(?, total_tracks),
                 upc = COALESCE(?, upc)
              WHERE id = ?",
+            )
+            .bind(attrs.release_date.as_deref())
+            .bind(attrs.track_count)
+            .bind(upc)
+            .bind(album_id)
+            .execute(db),
         )
-        .bind(attrs.release_date.as_deref())
-        .bind(attrs.track_count)
-        .bind(upc)
-        .bind(album_id)
-        .execute(db)
         .await;
 
         Ok(album_id)
@@ -1401,12 +1412,15 @@ impl AppleMusicClient {
             {
                 // Update album_id if not set
                 if let Some(album_id) = album_id {
-                    let _ = sqlx::query(
-                        "UPDATE tracks SET album_id = ? WHERE id = ? AND album_id IS NULL",
+                    let _ = crate::db::write_or_log(
+                        "get_or_create_track",
+                        sqlx::query(
+                            "UPDATE tracks SET album_id = ? WHERE id = ? AND album_id IS NULL",
+                        )
+                        .bind(album_id)
+                        .bind(row.0)
+                        .execute(db),
                     )
-                    .bind(album_id)
-                    .bind(row.0)
-                    .execute(db)
                     .await;
                 }
                 return Ok(row.0);

@@ -773,12 +773,13 @@ impl DeezerClient {
                 let track_id = self.get_or_create_track(db, track, album_id).await?;
 
                 // Link artist to track
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_library", sqlx::query(
                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                 )
                 .bind(track_id)
                 .bind(artist_id)
                 .execute(db)
+                )
                 .await;
 
                 // Add to library entry
@@ -798,7 +799,7 @@ impl DeezerClient {
                 }
 
                 // Add track source (Deezer provides up to FLAC quality)
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_library", sqlx::query(
                     r#"
                     INSERT OR REPLACE INTO track_sources
                     (track_id, service_id, service_track_id, format, bit_depth, sample_rate, available)
@@ -809,6 +810,7 @@ impl DeezerClient {
                 .bind(deezer_service_id)
                 .bind(&track.id)
                 .execute(db)
+                )
                 .await;
             }
 
@@ -876,12 +878,13 @@ impl DeezerClient {
                 .map_err(|e| format!("Album insert failed: {}", e))?;
 
         // Link album to artist
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("get_or_create_album_by_title", sqlx::query(
             "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
         )
         .bind(album_id)
         .bind(primary_artist_id)
         .execute(db)
+        )
         .await;
 
         Ok(album_id)
@@ -902,12 +905,15 @@ impl DeezerClient {
             {
                 // Update album_id if not set
                 if album_id.is_some() {
-                    let _ = sqlx::query(
-                        "UPDATE tracks SET album_id = ? WHERE id = ? AND album_id IS NULL",
+                    let _ = crate::db::write_or_log(
+                        "get_or_create_track",
+                        sqlx::query(
+                            "UPDATE tracks SET album_id = ? WHERE id = ? AND album_id IS NULL",
+                        )
+                        .bind(album_id)
+                        .bind(row.0)
+                        .execute(db),
                     )
-                    .bind(album_id)
-                    .bind(row.0)
-                    .execute(db)
                     .await;
                 }
                 return Ok(row.0);

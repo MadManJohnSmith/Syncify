@@ -1283,13 +1283,14 @@ impl SpotifyClient {
 
             // Add track source
             let spotify_service_id = self.get_service_id(db, "spotify").await?;
-            let _ = sqlx::query(
+            let _ = crate::db::write_or_log("process_spotify_import_batch", sqlx::query(
                 "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, available) VALUES (?, ?, ?, 1)"
             )
             .bind(track_id)
             .bind(spotify_service_id)
             .bind(&track.id)
             .execute(db)
+            )
             .await;
         }
 
@@ -1374,7 +1375,7 @@ impl SpotifyClient {
                 // derivation) and is recorded in declared_total_tracks too —
                 // the old COALESCE(total_tracks, ?) kept the derived count and
                 // the declaration was never captured.
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("get_or_create_album", sqlx::query(
                     "UPDATE albums SET
                         is_compilation = 1,
                         spotify_id = COALESCE(spotify_id, ?),
@@ -1394,14 +1395,16 @@ impl SpotifyClient {
                 .bind(&upc)
                 .bind(existing_id)
                 .execute(db)
+                )
                 .await;
 
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("get_or_create_album", sqlx::query(
                     "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)",
                 )
                 .bind(existing_id)
                 .bind(effective_artist_id)
                 .execute(db)
+                )
                 .await;
 
                 return Ok(existing_id);
@@ -1443,12 +1446,13 @@ impl SpotifyClient {
         let album_id = album_id.0;
 
         // Link album to artist
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("get_or_create_album", sqlx::query(
             "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
         )
         .bind(album_id)
         .bind(effective_artist_id)
         .execute(db)
+        )
         .await;
 
         Ok(album_id)
@@ -1472,8 +1476,8 @@ impl SpotifyClient {
         .fetch_optional(db)
         .await {
             if let Some(alb_id) = album_id {
-                let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
-                    .bind(alb_id).bind(existing_id).execute(db).await;
+                let _ = crate::db::write_or_log("get_or_create_track", sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                    .bind(alb_id).bind(existing_id).execute(db)).await;
             }
             return Ok(existing_id);
         }
@@ -1486,12 +1490,14 @@ impl SpotifyClient {
                 .await
         {
             if let Some(alb_id) = album_id {
-                let _ =
+                let _ = crate::db::write_or_log(
+                    "get_or_create_track",
                     sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
                         .bind(alb_id)
                         .bind(existing_id)
-                        .execute(db)
-                        .await;
+                        .execute(db),
+                )
+                .await;
             }
             return Ok(existing_id);
         }
@@ -1514,8 +1520,8 @@ impl SpotifyClient {
                     .await
             {
                 if let Some(alb_id) = album_id {
-                    let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?), spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
-                        .bind(alb_id).bind(&track.id).bind(existing_id).execute(db).await;
+                    let _ = crate::db::write_or_log("get_or_create_track", sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?), spotify_id = COALESCE(spotify_id, ?) WHERE id = ?")
+                        .bind(alb_id).bind(&track.id).bind(existing_id).execute(db)).await;
                 }
                 return Ok(existing_id);
             }
@@ -1675,13 +1681,16 @@ impl SpotifyClient {
                     for album in albums {
                         let upc = album.external_ids.as_ref().and_then(|ext| ext.upc.clone());
 
-                        let _ = sqlx::query(
-                            "UPDATE albums SET label = ?, upc = ? WHERE spotify_id = ?",
+                        let _ = crate::db::write_or_log(
+                            "enrich_albums",
+                            sqlx::query(
+                                "UPDATE albums SET label = ?, upc = ? WHERE spotify_id = ?",
+                            )
+                            .bind(&album.label)
+                            .bind(&upc)
+                            .bind(&album.id)
+                            .execute(&mut *tx),
                         )
-                        .bind(&album.label)
-                        .bind(&upc)
-                        .bind(&album.id)
-                        .execute(&mut *tx)
                         .await;
 
                         enriched += 1;

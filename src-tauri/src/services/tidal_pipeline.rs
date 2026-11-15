@@ -3267,9 +3267,10 @@ where
         let album_id: i64 = match existing_album_id {
             Some(aid) => {
                 if is_compilation {
-                    let _ = sqlx::query("UPDATE albums SET is_compilation = 1 WHERE id = ? AND is_compilation != 1")
+                    let _ = crate::db::write_or_log("execute_tidal_single_track_download", sqlx::query("UPDATE albums SET is_compilation = 1 WHERE id = ? AND is_compilation != 1")
                         .bind(aid)
                         .execute(&mut *tx)
+                        )
                         .await;
                 }
                 aid

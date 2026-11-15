@@ -1041,30 +1041,40 @@ impl MusicBrainzClient {
             .unwrap_or(None);
 
             if let Some((target_id, _target_name)) = existing_match {
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("resolve_ghost_artists", sqlx::query(
                     "UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, ?) WHERE id = ?"
                 )
                 .bind(ghost_fav_at)
                 .bind(target_id)
                 .execute(db)
-                .await;
-
-                let _ = sqlx::query(
-                    "UPDATE OR IGNORE track_credits SET artist_id = ? WHERE artist_id = ?",
                 )
-                .bind(target_id)
-                .bind(ghost_id)
-                .execute(db)
                 .await;
-                let _ = sqlx::query("DELETE FROM track_credits WHERE artist_id = ?")
-                    .bind(ghost_id)
-                    .execute(db)
-                    .await;
 
-                let _ = sqlx::query("DELETE FROM artists WHERE id = ?")
+                let _ = crate::db::write_or_log(
+                    "resolve_ghost_artists",
+                    sqlx::query(
+                        "UPDATE OR IGNORE track_credits SET artist_id = ? WHERE artist_id = ?",
+                    )
+                    .bind(target_id)
                     .bind(ghost_id)
-                    .execute(db)
-                    .await;
+                    .execute(db),
+                )
+                .await;
+                let _ = crate::db::write_or_log(
+                    "resolve_ghost_artists",
+                    sqlx::query("DELETE FROM track_credits WHERE artist_id = ?")
+                        .bind(ghost_id)
+                        .execute(db),
+                )
+                .await;
+
+                let _ = crate::db::write_or_log(
+                    "resolve_ghost_artists",
+                    sqlx::query("DELETE FROM artists WHERE id = ?")
+                        .bind(ghost_id)
+                        .execute(db),
+                )
+                .await;
 
                 report.duplicates_merged += 1;
             } else {
@@ -1087,20 +1097,23 @@ impl MusicBrainzClient {
                             .unwrap_or((None, None));
                         let has_ext = spotify_id.is_some() || tidal_id.is_some();
 
-                        let _ = sqlx::query(
-                            r#"
+                        let _ = crate::db::write_or_log(
+                            "resolve_ghost_artists",
+                            sqlx::query(
+                                r#"
                             UPDATE artists
                             SET musicbrainz_id = ?,
                                 spotify_id = COALESCE(spotify_id, ?),
                                 tidal_id = COALESCE(tidal_id, ?)
                             WHERE id = ?
                             "#,
+                            )
+                            .bind(&mbid)
+                            .bind(spotify_id)
+                            .bind(tidal_id)
+                            .bind(ghost_id)
+                            .execute(db),
                         )
-                        .bind(&mbid)
-                        .bind(spotify_id)
-                        .bind(tidal_id)
-                        .bind(ghost_id)
-                        .execute(db)
                         .await;
 
                         report.musicbrainz_resolved += 1;
@@ -1109,11 +1122,14 @@ impl MusicBrainzClient {
                         }
                     }
                     Ok(None) => {
-                        let _ = sqlx::query(
-                            "UPDATE artists SET musicbrainz_id = 'NOT_FOUND' WHERE id = ?",
+                        let _ = crate::db::write_or_log(
+                            "resolve_ghost_artists",
+                            sqlx::query(
+                                "UPDATE artists SET musicbrainz_id = 'NOT_FOUND' WHERE id = ?",
+                            )
+                            .bind(ghost_id)
+                            .execute(db),
                         )
-                        .bind(ghost_id)
-                        .execute(db)
                         .await;
                     }
                     Err(e) => {
@@ -1189,8 +1205,10 @@ impl MusicBrainzClient {
             };
 
             if let Some((target_id,)) = target_populated {
-                let _ = sqlx::query(
-                    r#"
+                let _ = crate::db::write_or_log(
+                    "hydrate_stub_albums",
+                    sqlx::query(
+                        r#"
                     UPDATE albums
                     SET is_favorite = 1,
                         favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP),
@@ -1201,32 +1219,40 @@ impl MusicBrainzClient {
                         cover_art_url = COALESCE(cover_art_url, ?)
                     WHERE id = ?
                     "#,
+                    )
+                    .bind(spot_id)
+                    .bind(qob_id)
+                    .bind(tid_id)
+                    .bind(upc)
+                    .bind(cover_url)
+                    .bind(target_id)
+                    .execute(db),
                 )
-                .bind(spot_id)
-                .bind(qob_id)
-                .bind(tid_id)
-                .bind(upc)
-                .bind(cover_url)
-                .bind(target_id)
-                .execute(db)
                 .await;
 
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("hydrate_stub_albums", sqlx::query(
                     "INSERT OR IGNORE INTO album_artists (album_id, artist_id) SELECT ?, artist_id FROM album_artists WHERE album_id = ?"
                 )
                 .bind(target_id)
                 .bind(stub_id)
                 .execute(db)
+                )
                 .await;
 
-                let _ = sqlx::query("DELETE FROM album_artists WHERE album_id = ?")
-                    .bind(stub_id)
-                    .execute(db)
-                    .await;
-                let _ = sqlx::query("DELETE FROM albums WHERE id = ?")
-                    .bind(stub_id)
-                    .execute(db)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "hydrate_stub_albums",
+                    sqlx::query("DELETE FROM album_artists WHERE album_id = ?")
+                        .bind(stub_id)
+                        .execute(db),
+                )
+                .await;
+                let _ = crate::db::write_or_log(
+                    "hydrate_stub_albums",
+                    sqlx::query("DELETE FROM albums WHERE id = ?")
+                        .bind(stub_id)
+                        .execute(db),
+                )
+                .await;
 
                 report.duplicate_stubs_merged += 1;
             } else {
@@ -1323,12 +1349,13 @@ impl MusicBrainzClient {
                                         } else if let (Some(aid), Some(mbid)) =
                                             (artist_id, track_artist_mbid)
                                         {
-                                            let _ = sqlx::query(
+                                            let _ = crate::db::write_or_log("hydrate_stub_albums", sqlx::query(
                                                 "UPDATE artists SET musicbrainz_id = ? WHERE id = ? AND musicbrainz_id IS NULL"
                                             )
                                             .bind(mbid)
                                             .bind(aid)
                                             .execute(db)
+                                            )
                                             .await;
                                         }
 
@@ -1376,12 +1403,13 @@ impl MusicBrainzClient {
                                         .unwrap_or(None);
 
                                         if let (Some(tid), Some(aid)) = (track_id_res, artist_id) {
-                                            let _ = sqlx::query(
+                                            let _ = crate::db::write_or_log("hydrate_stub_albums", sqlx::query(
                                                 "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                                             )
                                             .bind(tid)
                                             .bind(aid)
                                             .execute(db)
+                                            )
                                             .await;
                                             inserted_for_album += 1;
                                             report.tracks_inserted += 1;
@@ -1399,12 +1427,13 @@ impl MusicBrainzClient {
                             };
 
                             let effective_rel_date = rel_date.as_deref().or(rel.date.as_deref());
-                            let _ = sqlx::query("UPDATE albums SET musicbrainz_id = COALESCE(?, musicbrainz_id), release_date = COALESCE(release_date, ?), total_tracks = ? WHERE id = ?")
+                            let _ = crate::db::write_or_log("hydrate_stub_albums", sqlx::query("UPDATE albums SET musicbrainz_id = COALESCE(?, musicbrainz_id), release_date = COALESCE(release_date, ?), total_tracks = ? WHERE id = ?")
                                 .bind(rel_mbid)
                                 .bind(effective_rel_date)
                                 .bind(inserted_for_album)
                                 .bind(stub_id)
                                 .execute(db)
+                                )
                                 .await;
                             report.albums_hydrated += 1;
                         }
