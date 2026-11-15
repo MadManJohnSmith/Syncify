@@ -24,14 +24,11 @@ impl Drop for TestFlacFile {
 }
 
 fn create_test_flac_file() -> TestFlacFile {
-    let path = std::env::temp_dir().join(format!(
-        "test_multidisc_flac_{}_{}.flac",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    // uuid, no nanos de reloj: en Windows dos tests del mismo proceso pueden
+    // obtener el mismo tick y colisionar el nombre (un test pisa el FLAC del
+    // otro y la verificación lee tags ajenos).
+    let path =
+        std::env::temp_dir().join(format!("test_multidisc_flac_{}.flac", uuid::Uuid::new_v4()));
     let mut flac_bytes = Vec::new();
     flac_bytes.extend_from_slice(b"fLaC");
     flac_bytes.extend_from_slice(&[
