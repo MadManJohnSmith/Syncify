@@ -96,3 +96,9 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   matriz, cero código del motor, puerta Python verbatim en el informe.
   Las 4 fuentes con credenciales quedaron como tarjeta al propietario.
   Fuente: PR #290 y `git log dev`.
+- **2026-11-14**: re-derivación de la spec #36 (mitad delegable) fusionada
+  por squash en PR #291 (`788c195` en `dev`); issues de ejecución
+  #58–#61 cerrados citando el SHA y D-04 cerrada en el ledger de la
+  Deuda. La mitad de verificación de red (brazos SoundCloud y Apple
+  Music) sigue condicionada a credenciales del propietario (D-01).
+  Fuente: PR #291, `docs/Deuda_Tecnica_y_UX.md` §D-04.

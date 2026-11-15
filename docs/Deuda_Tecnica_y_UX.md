@@ -102,19 +102,21 @@ Rust, no solo el `app_id`. Antes de eso: ítem 9.1 del plan post-auditoría
   No depende de una entrada externa, pero tampoco de una entrega con fecha: es tiempo
   de lectura que se ejecuta junto al próximo cambio de cada subsistema, y hasta
   entonces se declara con su condición en vez de quedar como pendiente suelto.
+- **Cerrada el 2026-11-14**: los cuatro documentos se re-derivaron completos contra
+  el árbol, con símbolos verificados y sello de revisión fechado (PR #291,
+  `788c195`); issues de ejecución #58–#61 cerrados.
 
 ## Alcance condicionado: lo que este registro NO declara como pendiente
 
-Las dos entradas anteriores (D-01 y D-04) están **registradas, con su condición de
-cierre, y ninguna de las dos bloquea una entrega**. No son defectos: son alcance
-condicionado. Un cierre correcto las declara como tales y no como trabajo pendiente,
-porque confundirlas convierte un bloqueo conocido en una promesa que el proyecto no
-puede cumplir.
+La entrada anterior (D-01) está **registrada, con su condición de cierre, y no
+bloquea una entrega**. No es un defecto: es alcance condicionado. Un cierre correcto
+lo declara como tal y no como trabajo pendiente, porque confundirlo convierte un
+bloqueo conocido en una promesa que el proyecto no puede cumplir. (D-04, que
+compartía esta sección hasta el 2026-11-14, se cerró ese día: ver su entrada.)
 
 | ID | Condiciona | Entrada externa que la resuelve |
 |---|---|---|
 | D-01 | Verificación end-to-end de los brazos SoundCloud y Apple Music contra sus APIs reales | Credenciales del propietario (OAuth app y developer token JWT) |
-| D-04 | Narrativa de los 4 documentos de `docs/features/` aún no re-derivada | Tiempo de lectura por subsistema, no una dependencia externa |
 
 Lo que este registro **no** afirma en ningún caso: que la funcionalidad del producto
 esté completa. La verificación end-to-end de SoundCloud y Apple Music sigue sin estar
