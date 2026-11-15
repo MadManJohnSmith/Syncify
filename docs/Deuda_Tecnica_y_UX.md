@@ -87,25 +87,6 @@ Rust, no solo el `app_id`. Antes de eso: ítem 9.1 del plan post-auditoría
 - **Cierra**: con las credenciales del propietario — la OAuth app de SoundCloud y el
   developer token de Apple Music—. Es una comprobación, no una implementación.
 
-### D-04 — 4 de los 6 documentos de `docs/features/` siguen re-derivados solo por rutas
-
-- **Ejecución**: [#58](https://github.com/MadManJohnSmith/Syncify/issues/58), [#59](https://github.com/MadManJohnSmith/Syncify/issues/59), [#60](https://github.com/MadManJohnSmith/Syncify/issues/60) y [#61](https://github.com/MadManJohnSmith/Syncify/issues/61) (spec [#36](https://github.com/MadManJohnSmith/Syncify/issues/36)).
-
-- **Observado**: esta revisión re-derivó del código la narrativa de
-  `docs/features/metadata-enrichment.md` y `docs/features/playlist-system.md`, que
-  describían como vigente un flujo de Spotify Audio Features retirado con S68 y
-  afirmaban que solo Spotify importaba playlists en Rust cuando el motor unificado
-  las importa para cinco servicios. Los otros cuatro —`auth-flow.md`,
-  `download-pipeline.md`, `library-import.md` y `settings-system.md`— conservan el
-  encabezado que declara su narrativa como referencia de diseño sin verificar.
-- **Cierra**: re-derivar los cuatro restantes cuando toque modificar ese subsistema.
-  No depende de una entrada externa, pero tampoco de una entrega con fecha: es tiempo
-  de lectura que se ejecuta junto al próximo cambio de cada subsistema, y hasta
-  entonces se declara con su condición en vez de quedar como pendiente suelto.
-- **Cerrada el 2026-11-14**: los cuatro documentos se re-derivaron completos contra
-  el árbol, con símbolos verificados y sello de revisión fechado (PR #291,
-  `788c195`); issues de ejecución #58–#61 cerrados.
-
 ## Alcance condicionado: lo que este registro NO declara como pendiente
 
 La entrada anterior (D-01) está **registrada, con su condición de cierre, y no
@@ -453,3 +434,15 @@ sidecar) viaja en `FlacPictureSanitizeReport::dropped_unrepairable_blocks`, en l
 `actions` y en el `details_json` de la fila de `repair_history`, y el usuario la ve en
 el modal de historial de reparaciones.
 
+
+## D-04 — Cerrada el 2026-11-14
+
+La entrada pedía re-derivar del código los cuatro documentos de `docs/features/`
+que seguían con narrativa de diseño sin verificar (`auth-flow.md`,
+`download-pipeline.md`, `library-import.md` y `settings-system.md`). Se re-derivaron
+completos contra el árbol con la misma disciplina que los dos ya revisados
+(metadata-enrichment y playlist-system): símbolos y comportamiento verificados, sello
+«Estado de revisión» con fecha 2026-11-14 en cada uno. Evidencia: PR #291 (`788c195`);
+issues de ejecución #58–#61 cerrados citando el SHA. Lo que queda de la spec #36 es
+la verificación de red de los brazos SoundCloud y Apple Music, que vive en D-01
+condicionada a credenciales del propietario.
