@@ -898,10 +898,9 @@ async fn restore_settings_surface(
             if !target_columns.contains(key) {
                 continue;
             }
-            cells.push(
-                manifest_cell(value)
-                    .map_err(|e| format!("Invalid v2 manifest: settings surface '{table}' column '{key}': {e}"))?,
-            );
+            cells.push(manifest_cell(value).map_err(|e| {
+                format!("Invalid v2 manifest: settings surface '{table}' column '{key}': {e}")
+            })?);
             columns.push(key.as_str());
         }
 
@@ -1000,8 +999,9 @@ async fn restore_settings_manifest(
         &settings.service_preferences,
     )
     .await?;
-    restored += restore_settings_surface(tx, "sync_settings", &["id"], true, &settings.sync_settings)
-        .await?;
+    restored +=
+        restore_settings_surface(tx, "sync_settings", &["id"], true, &settings.sync_settings)
+            .await?;
     restored += restore_settings_surface(
         tx,
         "service_sync_settings",
@@ -1050,8 +1050,9 @@ async fn restore_settings_manifest(
         &settings.lyrics_provider_settings,
     )
     .await?;
-    restored += restore_settings_surface(tx, "lyrics_config", &["id"], true, &settings.lyrics_config)
-        .await?;
+    restored +=
+        restore_settings_surface(tx, "lyrics_config", &["id"], true, &settings.lyrics_config)
+            .await?;
     restored += restore_settings_surface(
         tx,
         "metadata_preferences",
@@ -1095,7 +1096,9 @@ async fn restore_account_metadata(
                     .bind(&account.service)
                     .fetch_one(&mut **tx)
                     .await
-                    .map_err(|e| format!("Failed to create service '{}': {}", account.service, e))?,
+                    .map_err(|e| {
+                        format!("Failed to create service '{}': {}", account.service, e)
+                    })?,
             };
 
         // Deduplicación NULL-safe para que reimportar sea idempotente:
@@ -1397,10 +1400,12 @@ pub async fn import_library_with_bases(
         if let Some(artist_id) = artist_id {
             let _ = crate::db::write_or_log(
                 "restore_backup",
-                sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-                    .bind(album_id)
-                    .bind(artist_id)
-                    .execute(&mut *tx),
+                sqlx::query(
+                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)",
+                )
+                .bind(album_id)
+                .bind(artist_id)
+                .execute(&mut *tx),
             )
             .await;
         }

@@ -499,7 +499,10 @@ async fn v2_import_restores_settings_and_accounts_await_reauth() {
     };
 
     assert_eq!(res.tracks_imported, 1);
-    assert!(res.settings_rows_restored > 0, "v2 import must restore settings");
+    assert!(
+        res.settings_rows_restored > 0,
+        "v2 import must restore settings"
+    );
     assert_eq!(res.accounts_restored, 1);
     assert_eq!(
         res.accounts_awaiting_reauth,
@@ -553,7 +556,10 @@ async fn v2_import_restores_settings_and_accounts_await_reauth() {
     .fetch_one(&target_db)
     .await
     .unwrap();
-    assert_eq!(credentials, None, "restoration must never fabricate credentials");
+    assert_eq!(
+        credentials, None,
+        "restoration must never fabricate credentials"
+    );
     assert_eq!(display, Some("Tidal Main".to_string()));
     assert_eq!(email, Some("main@example.com".to_string()));
     assert_eq!(is_active, 1);
@@ -570,12 +576,11 @@ async fn v2_import_restores_settings_and_accounts_await_reauth() {
         Vec::<String>::new(),
         "second import finds the account and updates it in place"
     );
-    let account_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM accounts WHERE external_user_id = 'ext-usr-4242'",
-    )
-    .fetch_one(&target_db)
-    .await
-    .unwrap();
+    let account_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE external_user_id = 'ext-usr-4242'")
+            .fetch_one(&target_db)
+            .await
+            .unwrap();
     assert_eq!(account_count, 1);
     let track_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE isrc = 'GBAAA8001234'")
@@ -588,7 +593,10 @@ async fn v2_import_restores_settings_and_accounts_await_reauth() {
             .fetch_one(&target_db)
             .await
             .unwrap();
-    assert_eq!(max_conc_after, 5, "settings must be stable across reimports");
+    assert_eq!(
+        max_conc_after, 5,
+        "settings must be stable across reimports"
+    );
 }
 
 #[tokio::test]
@@ -612,7 +620,11 @@ async fn future_manifest_fails_safely_without_partial_writes() {
     // Caso 1: major futuro (3.0.0).
     manifest["version"] = "3.0.0".into();
     let future_path = backup.path.replace(".json", "_v3.json");
-    std::fs::write(&future_path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    std::fs::write(
+        &future_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
     let err = {
         let state = target_app.state::<AppState>();
         import_library_with_bases(state, future_path.clone(), None, &backup.allowed_bases)
@@ -633,12 +645,21 @@ async fn future_manifest_fails_safely_without_partial_writes() {
     manifest["version"] = "2.0.0".into();
     manifest["schema_version"] = (applied + 1).into();
     let future_schema_path = backup.path.replace(".json", "_future_schema.json");
-    std::fs::write(&future_schema_path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    std::fs::write(
+        &future_schema_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
     let err = {
         let state = target_app.state::<AppState>();
-        import_library_with_bases(state, future_schema_path.clone(), None, &backup.allowed_bases)
-            .await
-            .expect_err("a manifest from a newer schema must be rejected")
+        import_library_with_bases(
+            state,
+            future_schema_path.clone(),
+            None,
+            &backup.allowed_bases,
+        )
+        .await
+        .expect_err("a manifest from a newer schema must be rejected")
     };
     assert!(
         err.contains("esquema más nuevo"),
@@ -700,7 +721,11 @@ async fn restored_database_never_contains_secrets() {
     manifest["accounts"][0]["access_token"] = "evil-5".into();
 
     let hostile_path = backup.path.replace(".json", "_hostile.json");
-    std::fs::write(&hostile_path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    std::fs::write(
+        &hostile_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
 
     let target_db = create_test_db().await;
     let target_app = create_test_app(target_db.clone());
