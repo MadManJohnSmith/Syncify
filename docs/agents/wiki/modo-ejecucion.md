@@ -213,3 +213,14 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   comentarios cruzados en #97/#110; la afirmación del informe de
   investigación de que «no eran issues de GitHub» quedó corregida con
   nota de mismo día en el informe versionado. Fuente: PR #302, tracker.
+- **2026-11-16**: FE-PERF-04 (#51) fusionado por squash en PR #301
+  (`0684c43` en `dev`, CI 8/8); issues #51 y el spec padre #34
+  cerrados citando los tres SHAs (afd087d / 8c59672 / 0684c43).
+  Programa de rendimiento de UI completo 3/3. La sonda
+  navigationProbe y tools/nav-perf.sh quedan como infraestructura
+  reutilizable. Con el cierre de #34 arrancó la serie #96 según la
+  decisión del propietario: L01 #98 delegado contra el esquema actual
+  (módulo propio extraído de library.rs como pieza habilitante del
+  paralelismo posterior; pertenencia de L00 detrás de un borde claro;
+  piezas que la requieren deshabilitadas con motivo). Fuente: PR
+  #301, tracker.
