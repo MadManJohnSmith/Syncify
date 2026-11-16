@@ -126,6 +126,14 @@ pub struct ImportLibraryResult {
     pub artists_imported: i64,
     pub playlists_imported: i64,
     pub favorites_restored: i64,
+    /// Filas de ajustes restauradas del manifest v2 (superficies tipadas +
+    /// entradas de la KV). 0 en manifests v1.
+    pub settings_rows_restored: i64,
+    /// Cuentas aplicadas desde el manifest v2, siempre sin sesión.
+    pub accounts_restored: i64,
+    /// Servicios de las cuentas recién insertadas sin credenciales: piden
+    /// login al terminar la restauración (ADR-0020 decisión 1).
+    pub accounts_awaiting_reauth: Vec<String>,
     pub message: String,
 }
 
@@ -753,6 +761,456 @@ pub async fn export_library_with_bases(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Import v2: ajustes por superficie y metadatos de cuenta sin sesiones
+// (ADR-0020 decisión 1). El import de manifests v1 no entra en esta sección.
+// ---------------------------------------------------------------------------
+
+/// Major máximo de manifest aceptado por el import: 1.x (formato histórico)
+/// y 2.x (ADR-0020). Un major mayor es una versión futura y se rechaza en
+/// frío, antes de escribir nada.
+const MAX_SUPPORTED_MANIFEST_MAJOR: u64 = 2;
+
+/// Celda del manifest tipada para el bind dinámico. Los ajustes son
+/// escalares: cualquier valor compuesto es un manifest inválido, no algo que
+/// silenciar.
+enum ManifestCell {
+    Null,
+    Int(i64),
+    Real(f64),
+    Text(String),
+}
+
+fn manifest_cell(value: &serde_json::Value) -> Result<ManifestCell, String> {
+    match value {
+        serde_json::Value::Null => Ok(ManifestCell::Null),
+        serde_json::Value::Bool(b) => Ok(ManifestCell::Int(i64::from(*b))),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(ManifestCell::Int(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(ManifestCell::Real(f))
+            } else {
+                Err("numeric value out of range".to_string())
+            }
+        }
+        serde_json::Value::String(s) => Ok(ManifestCell::Text(s.clone())),
+        other => {
+            let kind = if other.is_object() { "object" } else { "array" };
+            Err(format!(
+                "composite value ({kind}) is not a valid settings cell"
+            ))
+        }
+    }
+}
+
+fn manifest_major_version(version: &str) -> Result<u64, String> {
+    let major = version.split('.').next().unwrap_or("").trim();
+    major.parse::<u64>().map_err(|_| {
+        format!(
+            "Manifest de backup con versión no reconocida ('{version}'): se espera semver (mayor.menor.parche)"
+        )
+    })
+}
+
+/// Validación por superficie del payload v2 (ADR-0020), antes de abrir la
+/// transacción: cada fila de cada superficie debe ser un objeto escalar.
+/// Cualquier desviación aborta con diagnóstico claro sin haber escrito nada.
+fn validate_settings_payload(settings: &BackupSettingsDto) -> Result<(), String> {
+    let surfaces: [(&str, &Vec<serde_json::Value>); 11] = [
+        ("service_preferences", &settings.service_preferences),
+        ("sync_settings", &settings.sync_settings),
+        ("service_sync_settings", &settings.service_sync_settings),
+        ("quality_preferences", &settings.quality_preferences),
+        ("folder_settings", &settings.folder_settings),
+        ("duplicate_settings", &settings.duplicate_settings),
+        (
+            "audio_processing_settings",
+            &settings.audio_processing_settings,
+        ),
+        (
+            "lyrics_provider_settings",
+            &settings.lyrics_provider_settings,
+        ),
+        ("lyrics_config", &settings.lyrics_config),
+        ("metadata_preferences", &settings.metadata_preferences),
+        ("advanced_settings", &settings.advanced_settings),
+    ];
+
+    for (surface, rows) in surfaces {
+        for row in rows {
+            let obj = row.as_object().ok_or_else(|| {
+                format!(
+                    "Invalid v2 manifest: settings surface '{surface}' must carry one JSON object per row"
+                )
+            })?;
+            for (column, value) in obj {
+                if value.is_object() || value.is_array() {
+                    return Err(format!(
+                        "Invalid v2 manifest: settings surface '{surface}' column '{column}' carries a composite value; only scalar cells are restorable"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Restaura una superficie de ajustes del manifest v2 con upsert por su clave
+/// natural (el `id` autogenerado solo en singletons): los catálogos nunca
+/// llevan el `id` del origen, la BD destino asigna el suyo. Solo se escriben
+/// las columnas que la tabla destino realmente conoce — una columna que el
+/// manifest traiga de más (futura o inyectada, p. ej. `credentials_json`) se
+/// descarta, no se fabrica.
+async fn restore_settings_surface(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    table: &'static str,
+    conflict_keys: &[&str],
+    carries_row_id: bool,
+    rows: &[serde_json::Value],
+) -> Result<i64, String> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    // Columnas reales de la tabla destino. El nombre de tabla viene de las
+    // llamadas de este módulo (whitelist), no del manifest.
+    let target_columns: std::collections::HashSet<String> =
+        sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info(?)")
+            .bind(table)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|e| format!("Failed to inspect settings surface '{table}': {e}"))?
+            .into_iter()
+            .collect();
+
+    for row in rows {
+        let obj = row.as_object().ok_or_else(|| {
+            format!("Invalid v2 manifest: settings surface '{table}' must carry one JSON object per row")
+        })?;
+
+        let mut columns: Vec<&str> = Vec::new();
+        let mut cells: Vec<ManifestCell> = Vec::new();
+        for (key, value) in obj {
+            if key == "id" && !carries_row_id {
+                continue;
+            }
+            if !target_columns.contains(key) {
+                continue;
+            }
+            cells.push(
+                manifest_cell(value)
+                    .map_err(|e| format!("Invalid v2 manifest: settings surface '{table}' column '{key}': {e}"))?,
+            );
+            columns.push(key.as_str());
+        }
+
+        if columns.is_empty() {
+            return Err(format!(
+                "Invalid v2 manifest: settings surface '{table}' row carries no column known to this schema"
+            ));
+        }
+        for key in conflict_keys {
+            if !columns.contains(key) {
+                return Err(format!(
+                    "Invalid v2 manifest: settings surface '{table}' row is missing its identity column '{key}'"
+                ));
+            }
+        }
+        let update_columns: Vec<&str> = columns
+            .iter()
+            .copied()
+            .filter(|c| c != &"id" && !conflict_keys.contains(c))
+            .collect();
+        if update_columns.is_empty() {
+            return Err(format!(
+                "Invalid v2 manifest: settings surface '{table}' row carries no restorable column beyond its identity"
+            ));
+        }
+
+        let sql = format!(
+            "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}",
+            columns.join(", "),
+            vec!["?"; columns.len()].join(", "),
+            conflict_keys.join(", "),
+            update_columns
+                .iter()
+                .map(|c| format!("{c} = excluded.{c}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+
+        let mut query = sqlx::query(&sql);
+        for cell in &cells {
+            query = match cell {
+                ManifestCell::Null => query.bind(None::<i64>),
+                ManifestCell::Int(v) => query.bind(*v),
+                ManifestCell::Real(v) => query.bind(*v),
+                ManifestCell::Text(v) => query.bind(v.clone()),
+            };
+        }
+        query
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| format!("Failed to restore settings surface '{table}': {e}"))?;
+    }
+
+    Ok(rows.len() as i64)
+}
+
+/// Restaura la KV de ajustes con la misma selección del export: solo claves
+/// del catálogo de usuario y ninguna sensible. Un manifest que traiga una
+/// clave sensible o desconocida no la escribe: la restauración no fabrica
+/// credenciales (contrato testeable de ADR-0020).
+async fn restore_settings_kv(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    kv: &std::collections::BTreeMap<String, String>,
+) -> Result<i64, String> {
+    let mut restored = 0i64;
+    for (key, value) in kv {
+        if !crate::settings_defaults::SETTINGS_KV_KEYS.contains(&key.as_str())
+            || is_sensitive_setting_key(key)
+        {
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("Failed to restore settings KV '{key}': {e}"))?;
+        restored += 1;
+    }
+    Ok(restored)
+}
+
+async fn restore_settings_manifest(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    settings: &BackupSettingsDto,
+) -> Result<i64, String> {
+    let mut restored = 0i64;
+    restored += restore_settings_surface(
+        tx,
+        "service_preferences",
+        &["service_name"],
+        false,
+        &settings.service_preferences,
+    )
+    .await?;
+    restored += restore_settings_surface(tx, "sync_settings", &["id"], true, &settings.sync_settings)
+        .await?;
+    restored += restore_settings_surface(
+        tx,
+        "service_sync_settings",
+        &["service_name"],
+        false,
+        &settings.service_sync_settings,
+    )
+    .await?;
+    restored += restore_settings_surface(
+        tx,
+        "quality_preferences",
+        &["service_name"],
+        false,
+        &settings.quality_preferences,
+    )
+    .await?;
+    restored += restore_settings_surface(
+        tx,
+        "folder_settings",
+        &["id"],
+        true,
+        &settings.folder_settings,
+    )
+    .await?;
+    restored += restore_settings_surface(
+        tx,
+        "duplicate_settings",
+        &["id"],
+        true,
+        &settings.duplicate_settings,
+    )
+    .await?;
+    restored += restore_settings_surface(
+        tx,
+        "audio_processing_settings",
+        &["id"],
+        true,
+        &settings.audio_processing_settings,
+    )
+    .await?;
+    restored += restore_settings_surface(
+        tx,
+        "lyrics_provider_settings",
+        &["provider_id"],
+        false,
+        &settings.lyrics_provider_settings,
+    )
+    .await?;
+    restored += restore_settings_surface(tx, "lyrics_config", &["id"], true, &settings.lyrics_config)
+        .await?;
+    restored += restore_settings_surface(
+        tx,
+        "metadata_preferences",
+        &["id"],
+        true,
+        &settings.metadata_preferences,
+    )
+    .await?;
+    restored += restore_settings_surface(
+        tx,
+        "advanced_settings",
+        &["id"],
+        true,
+        &settings.advanced_settings,
+    )
+    .await?;
+    restored += restore_settings_kv(tx, &settings.kv).await?;
+    Ok(restored)
+}
+
+/// Aplica los metadatos de cuenta del manifest v2 SIN crear sesiones: al
+/// insertar, `credentials_json` queda NULL y la cuenta queda a la espera de
+/// reautenticar; al actualizar una cuenta existente, `credentials_json` no se
+/// toca jamás. Devuelve los servicios de las cuentas recién insertadas, que
+/// piden login al terminar la restauración.
+async fn restore_account_metadata(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    accounts: &[BackupAccountDto],
+) -> Result<Vec<String>, String> {
+    let mut awaiting_reauth = Vec::new();
+    for account in accounts {
+        let service_id: i64 =
+            match sqlx::query_scalar::<_, i64>("SELECT id FROM services WHERE name = ?")
+                .bind(&account.service)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(|e| format!("Failed to resolve service '{}': {}", account.service, e))?
+            {
+                Some(id) => id,
+                None => sqlx::query_scalar("INSERT INTO services (name) VALUES (?) RETURNING id")
+                    .bind(&account.service)
+                    .fetch_one(&mut **tx)
+                    .await
+                    .map_err(|e| format!("Failed to create service '{}': {}", account.service, e))?,
+            };
+
+        // Deduplicación NULL-safe para que reimportar sea idempotente:
+        // identidad externa, luego email, y como último recurso la cuenta del
+        // servicio sin identidad ninguna.
+        let existing_id: Option<i64> = match (&account.external_user_id, &account.email) {
+            (Some(external), _) => {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT id FROM accounts WHERE service_id = ? AND external_user_id IS ? LIMIT 1",
+                )
+                .bind(service_id)
+                .bind(external)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to look up account for service '{}': {}",
+                        account.service, e
+                    )
+                })?
+            }
+            (None, Some(email)) => {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT id FROM accounts WHERE service_id = ? AND email IS ? LIMIT 1",
+                )
+                .bind(service_id)
+                .bind(email)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to look up account for service '{}': {}",
+                        account.service, e
+                    )
+                })?
+            }
+            (None, None) => {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT id FROM accounts WHERE service_id = ? AND external_user_id IS NULL AND email IS NULL ORDER BY id ASC LIMIT 1",
+                )
+                .bind(service_id)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to look up account for service '{}': {}",
+                        account.service, e
+                    )
+                })?
+            }
+        };
+
+        match existing_id {
+            Some(id) => {
+                // Sin sesión: credentials_json no aparece en esta sentencia.
+                sqlx::query(
+                    "UPDATE accounts SET display_name = ?, email = ?, \
+                     external_user_id = COALESCE(external_user_id, ?), is_active = ? WHERE id = ?",
+                )
+                .bind(&account.display_name)
+                .bind(&account.email)
+                .bind(&account.external_user_id)
+                .bind(i64::from(account.is_active))
+                .bind(id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to update account for service '{}': {}",
+                        account.service, e
+                    )
+                })?;
+            }
+            None => {
+                sqlx::query(
+                    "INSERT INTO accounts (service_id, display_name, email, external_user_id, is_active)
+                     VALUES (?, ?, ?, ?, ?)",
+                )
+                .bind(service_id)
+                .bind(&account.display_name)
+                .bind(&account.email)
+                .bind(&account.external_user_id)
+                .bind(i64::from(account.is_active))
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to insert account for service '{}': {}",
+                        account.service, e
+                    )
+                })?;
+                awaiting_reauth.push(account.service.clone());
+            }
+        }
+    }
+    Ok(awaiting_reauth)
+}
+
+/// ¿Trae este nombre de artista del manifest un artista restaurable?
+///
+/// El export fabrica `'Unknown Artist'` (COALESCE del JOIN) cuando un álbum
+/// o pista no tiene artista enlazado, y manifests v1 antiguos pueden llevar
+/// filas de artista con nombres basura. La migración 0079 los rechaza en la
+/// BD destino (`trg_artists_reject_garbage_ins`: vacío, 'unknown',
+/// 'unknown artist', '\\p', '\\\\p'), así que el import los trata como «sin
+/// artista»: no crea la fila ni enlaza album_artists/track_artists.
+fn artist_name_is_restorable(name: &str) -> bool {
+    let trimmed = name.trim();
+    !trimmed.is_empty()
+        && !matches!(
+            trimmed.to_ascii_lowercase().as_str(),
+            "unknown" | "unknown artist" | "\\p" | "\\\\p"
+        )
+}
+
 /// Import a backup manifest into the database with validation and atomic rollback
 #[tauri::command]
 pub async fn import_library(
@@ -782,6 +1240,24 @@ pub async fn import_library_with_bases(
     let manifest: LibraryBackupManifest = serde_json::from_str(&content)
         .map_err(|e| format!("Invalid backup manifest format: {}", e))?;
 
+    // Puerta de versión futura (ADR-0020): un manifest de un major mayor que
+    // el soportado se rechaza antes de tocar nada, aunque sus campos se
+    // deserialicen parcialmente. Diagnóstico claro y cero escrituras.
+    let manifest_major = manifest_major_version(&manifest.version)?;
+    if manifest_major > MAX_SUPPORTED_MANIFEST_MAJOR {
+        return Err(format!(
+            "El manifest de backup es de una versión futura ({}): este import soporta 1.x y 2.x. \
+             Actualiza la app e inténtalo de nuevo; nada se ha restaurado.",
+            manifest.version
+        ));
+    }
+
+    // Validación por superficie del payload v2 (si viaja), antes de abrir la
+    // transacción: falla seguro sin escribir a medias.
+    if let Some(settings) = &manifest.settings {
+        validate_settings_payload(settings)?;
+    }
+
     // Checksum verification (if provided)
     if let Some(expected_checksum) = &manifest.checksum_sha256 {
         // Recompute on manifest without checksum field
@@ -798,6 +1274,20 @@ pub async fn import_library_with_bases(
         }
     }
 
+    // Puerta de esquema (ADR-0020): un manifest derivado de un esquema más
+    // nuevo que esta BD puede llevar columnas que aquí no existen; se rechaza
+    // en frío con diagnóstico claro, sin abrir siquiera la transacción.
+    let target_schema_version = detect_schema_version(&state.db)
+        .await
+        .map_err(|e| format!("Failed to detect target schema version: {}", e))?;
+    if manifest.schema_version > target_schema_version {
+        return Err(format!(
+            "El manifest procede de un esquema más nuevo ({}) que esta instalación ({}): \
+             actualiza la app antes de restaurar; nada se ha restaurado.",
+            manifest.schema_version, target_schema_version
+        ));
+    }
+
     // Atomic SQLite Transaction
     let mut tx = state
         .db
@@ -812,7 +1302,11 @@ pub async fn import_library_with_bases(
     let mut favorites_restored = 0i64;
 
     // 1. Import Artists
-    for artist in &manifest.artists {
+    for artist in manifest
+        .artists
+        .iter()
+        .filter(|a| artist_name_is_restorable(&a.name))
+    {
         let res = sqlx::query(
             r#"
             INSERT INTO artists (name, favorite_at)
@@ -836,22 +1330,34 @@ pub async fn import_library_with_bases(
 
     // 2. Import Albums
     for album in &manifest.albums {
-        // Ensure artist exists
-        let artist_id: i64 =
-            match sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
-                .bind(&album.artist)
-                .fetch_optional(&mut *tx)
-                .await
-                .ok()
-                .flatten()
-            {
-                Some(id) => id,
-                None => sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
+        // Ensure artist exists. El export fabrica 'Unknown Artist' cuando el
+        // álbum no tiene artista enlazado; la migración 0079 rechaza ese
+        // nombre como basura (trg_artists_reject_garbage_ins), así que el
+        // import lo trata como «sin artista»: no crea la fila ni la enlaza.
+        let artist_id: Option<i64> = if artist_name_is_restorable(&album.artist) {
+            Some(
+                match sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
                     .bind(&album.artist)
-                    .fetch_one(&mut *tx)
+                    .fetch_optional(&mut *tx)
                     .await
-                    .map_err(|e| format!("Failed to create artist {}: {}", album.artist, e))?,
-            };
+                    .ok()
+                    .flatten()
+                {
+                    Some(id) => id,
+                    None => {
+                        sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
+                            .bind(&album.artist)
+                            .fetch_one(&mut *tx)
+                            .await
+                            .map_err(|e| {
+                                format!("Failed to create artist {}: {}", album.artist, e)
+                            })?
+                    }
+                },
+            )
+        } else {
+            None
+        };
 
         let album_id: i64 = match sqlx::query_scalar::<_, i64>("SELECT id FROM albums WHERE title = ?")
             .bind(&album.title)
@@ -887,15 +1393,17 @@ pub async fn import_library_with_bases(
             }
         };
 
-        // Link album_artists
-        let _ = crate::db::write_or_log(
-            "restore_backup",
-            sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
-                .bind(album_id)
-                .bind(artist_id)
-                .execute(&mut *tx),
-        )
-        .await;
+        // Link album_artists (solo si el manifest trajo artista restaurable)
+        if let Some(artist_id) = artist_id {
+            let _ = crate::db::write_or_log(
+                "restore_backup",
+                sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id) VALUES (?, ?)")
+                    .bind(album_id)
+                    .bind(artist_id)
+                    .execute(&mut *tx),
+            )
+            .await;
+        }
 
         albums_imported += 1;
         if album.favorite_at.is_some() {
@@ -905,22 +1413,32 @@ pub async fn import_library_with_bases(
 
     // 3. Import Tracks
     for track in &manifest.tracks {
-        // Resolve artist
-        let artist_id: i64 =
-            match sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
-                .bind(&track.artist)
-                .fetch_optional(&mut *tx)
-                .await
-                .ok()
-                .flatten()
-            {
-                Some(id) => id,
-                None => sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
+        // Resolve artist. Mismo trato que los álbumes: el sentinel
+        // 'Unknown Artist' del export no es un artista restaurable (0079).
+        let artist_id: Option<i64> = if artist_name_is_restorable(&track.artist) {
+            Some(
+                match sqlx::query_scalar::<_, i64>("SELECT id FROM artists WHERE name = ?")
                     .bind(&track.artist)
-                    .fetch_one(&mut *tx)
+                    .fetch_optional(&mut *tx)
                     .await
-                    .map_err(|e| format!("Failed to create artist {}: {}", track.artist, e))?,
-            };
+                    .ok()
+                    .flatten()
+                {
+                    Some(id) => id,
+                    None => {
+                        sqlx::query_scalar("INSERT INTO artists (name) VALUES (?) RETURNING id")
+                            .bind(&track.artist)
+                            .fetch_one(&mut *tx)
+                            .await
+                            .map_err(|e| {
+                                format!("Failed to create artist {}: {}", track.artist, e)
+                            })?
+                    }
+                },
+            )
+        } else {
+            None
+        };
 
         // Resolve album if any
         let album_id: Option<i64> = if let Some(alb_name) = &track.album {
@@ -1023,17 +1541,19 @@ pub async fn import_library_with_bases(
             }
         };
 
-        // Link track_artists
-        let _ = crate::db::write_or_log(
-            "restore_backup",
-            sqlx::query(
-                "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+        // Link track_artists (solo si el manifest trajo artista restaurable)
+        if let Some(artist_id) = artist_id {
+            let _ = crate::db::write_or_log(
+                "restore_backup",
+                sqlx::query(
+                    "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
+                )
+                .bind(track_id)
+                .bind(artist_id)
+                .execute(&mut *tx),
             )
-            .bind(track_id)
-            .bind(artist_id)
-            .execute(&mut *tx),
-        )
-        .await;
+            .await;
+        }
 
         tracks_imported += 1;
         if track.favorite_at.is_some() {
@@ -1078,9 +1598,40 @@ pub async fn import_library_with_bases(
         playlists_imported += 1;
     }
 
+    // 5. Manifest v2 (ADR-0020): ajustes por superficie y metadatos de cuenta.
+    // En manifests v1 ambos campos son None y este bloque no se ejecuta.
+    let mut settings_rows_restored = 0i64;
+    if let Some(settings) = &manifest.settings {
+        settings_rows_restored += restore_settings_manifest(&mut tx, settings).await?;
+    }
+    let accounts_awaiting_reauth = if let Some(accounts) = &manifest.accounts {
+        restore_account_metadata(&mut tx, accounts).await?
+    } else {
+        Vec::new()
+    };
+    let accounts_restored = manifest
+        .accounts
+        .as_ref()
+        .map_or(0, |accounts| accounts.len() as i64);
+
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit import transaction: {}", e))?;
+
+    let mut message = format!(
+        "Successfully imported {} tracks, {} albums, {} artists, {} playlists with {} favorites restored",
+        tracks_imported, albums_imported, artists_imported, playlists_imported, favorites_restored
+    );
+    if settings_rows_restored > 0 {
+        message.push_str(&format!(", {} settings restored", settings_rows_restored));
+    }
+    if !accounts_awaiting_reauth.is_empty() {
+        message.push_str(&format!(
+            "; {} account(s) await re-authentication: {}",
+            accounts_awaiting_reauth.len(),
+            accounts_awaiting_reauth.join(", ")
+        ));
+    }
 
     Ok(ImportLibraryResult {
         tracks_imported,
@@ -1088,9 +1639,9 @@ pub async fn import_library_with_bases(
         artists_imported,
         playlists_imported,
         favorites_restored,
-        message: format!(
-            "Successfully imported {} tracks, {} albums, {} artists, {} playlists with {} favorites restored",
-            tracks_imported, albums_imported, artists_imported, playlists_imported, favorites_restored
-        ),
+        settings_rows_restored,
+        accounts_restored,
+        accounts_awaiting_reauth,
+        message,
     })
 }
