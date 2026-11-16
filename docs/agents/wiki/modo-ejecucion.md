@@ -183,3 +183,12 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   irán en paralelo solo si no comparten fichero. Fuente: orden del
   propietario de paralelización con máx. 2 + reparto de superficies
   del handoff del 2026-11-14.
+- **2026-11-16**: FE-PERF-01 (#49) fusionado por squash en PR #300
+  (`afd087d` en `dev`, CI 8/8); issue cerrado citando el SHA. El
+  programa #34 queda 1/3. Lectura honesta de la medición registrada en
+  el PR: con BD vacía y `out-in` conservado el tiempo pared no baja
+  (~300 ms); lo verificado por mecanismo es el fin del remontaje
+  (47 mount → 39 cached) y de las llamadas repetidas. La sonda
+  `navigationProbe` y el harness `tools/nav-perf.sh` quedan en el
+  árbol para los hermanos #50/#51 (el plugin de vite.config es
+  dev-only, no reparto de chunks). Fuente: PR #300, tracker.
