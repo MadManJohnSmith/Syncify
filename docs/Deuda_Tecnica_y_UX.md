@@ -207,9 +207,11 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   El orquestador baja a **3 809 líneas** (desde 4 546: un 16 % menos) y el límite de 8
   argumentos se marca con `allow(clippy::too_many_arguments)` en el brazo, no en el
   orquestador.
-- **Límite conocido**: ningún test de integración recorre los brazos con red; la equivalencia
-  se apoya en el compilador, en el contrato de cada brazo (autenticación sin red, sin fases
-  no se toca nada) y en la suite completa, no en una reproducción con proveedor real.
+- **Límite conocido**: ningún test de integración recorre los brazos con red real; la
+  equivalencia se apoya en el compilador, en el contrato de cada brazo (autenticación sin
+  red, sin fases no se toca nada) y en la suite completa. El quinto brazo (Qobuz) ya tiene
+  su reproducción de red contra proveedor simulado (2026-11-16, abajo); los otros cuatro
+  siguen sin ella.
 - **Hecho (2026-10-19, tercer brazo)**: Spotify extraído a `sync_spotify_arm` (841 líneas).
   El struct crece con `reported_favorites`/`reported_albums`/`reported_playlists`
   (`Option<i64>`, los recuentos que declara el proveedor) y el call site de Deezer se alineó
@@ -251,6 +253,20 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   mutan in situ por `&mut`, y el resto de la función lee de ella; desaparecieron los 153
   volcados campo a campo y el saco de snapshots. El contrato queda documentado en el doc
   comment del propio struct. La caracterización con red sigue pendiente (issue #41).
+- **Hecho (2026-11-16, D-08b, #41)**: caracterización de la red del quinto brazo
+  (`sync_qobuz_arm`) contra un proveedor simulado en proceso, sin red:
+  `src-tauri/tests/qobuz_sync_arm_simulated_provider_test.rs` levanta un servidor HTTP en
+  `127.0.0.1:0` y apunta el cliente Qobuz a él con la costura de entorno
+  `SYNCIFY_QOBUZ_API_BASE` (mismo molde que `SYNCIFY_DEEZER_API_BASE`), con migraciones
+  reales sobre SQLite `:memory:` y credenciales con token almacenado. Fija la petición que
+  el brazo envía (`favorite/getUserFavorites?type=tracks&offset=0&limit=50`, firmada con
+  `app_id`/`request_sig`), los contadores del `SyncOutcome` único (2 favoritos → 2 pistas,
+  2 `library_entries`, `account_import_counts` con lo declarado y lo importado), la
+  secuencia completa de fases, la idempotencia de la segunda pasada y el golden de las
+  cadenas de i18n que viajan en el payload de los eventos de progreso: la comparación es
+  exacta por plantilla y una cadena traducida en el payload hace fallar el test (prueba
+  negativa incluida). La caracterización con red de los otros cuatro brazos sigue
+  pendiente (D-01, credenciales).
 - **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
   después, y el orquestador reducido a un bucle corto sobre los brazos.
 

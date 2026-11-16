@@ -25,6 +25,21 @@ pub const QOBUZ_APP_ID: &str = QOBUZ_APP_ID_FALLBACK;
 pub const QOBUZ_APP_SECRET: &str = QOBUZ_APP_SECRET_FALLBACK;
 pub const QOBUZ_API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
 
+/// Costura de entorno para apuntar el cliente Qobuz a un proveedor simulado
+/// (mismo molde que `SYNCIFY_DEEZER_API_BASE` / `SYNCIFY_SOUNDCLOUD_API_BASE`):
+/// los tests de caracterización del brazo la fijan a un servidor HTTP en
+/// 127.0.0.1 y así la red del brazo se ejercita sin salir de la máquina.
+pub const QOBUZ_API_BASE_ENV: &str = "SYNCIFY_QOBUZ_API_BASE";
+
+/// Base API efectiva: la variable de entorno manda, si no la constante.
+fn qobuz_base_from_env() -> String {
+    std::env::var(QOBUZ_API_BASE_ENV)
+        .ok()
+        .map(|base| base.trim().trim_end_matches('/').to_string())
+        .filter(|base| !base.is_empty())
+        .unwrap_or_else(|| QOBUZ_API_BASE.to_string())
+}
+
 /// Resolve Qobuz App ID dynamically from environment or fallback placeholder.
 #[allow(dead_code)] // Cubierta por `tests/secrets_isolation_security_test.rs`.
 pub fn get_qobuz_app_id() -> String {
@@ -528,7 +543,7 @@ impl QobuzClient {
             app_id,
             app_secret,
             user_auth_token: None,
-            base_url: QOBUZ_API_BASE.to_string(),
+            base_url: qobuz_base_from_env(),
         }
     }
 
@@ -538,7 +553,7 @@ impl QobuzClient {
             app_id,
             app_secret,
             user_auth_token: Some(token),
-            base_url: QOBUZ_API_BASE.to_string(),
+            base_url: qobuz_base_from_env(),
         }
     }
 
