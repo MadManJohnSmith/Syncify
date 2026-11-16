@@ -171,7 +171,11 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   fusionados, la métrica del ratchet mide **19** apariciones: 18 que ya propagan
   (`commands/favorites.rs` 10, `services/tidal.rs` 8) y 1 dentro de un bloque
   comentado de `main.rs`, sin efecto en ejecución. El suelo registrado baja de 113 a
-  19 (medido sobre el árbol con ambos lotes; solo puede seguir bajando).
+  19 (medido 2026-11-14 sobre el árbol con ambos lotes; solo puede seguir bajando).
+  Desde [#39](https://github.com/MadManJohnSmith/Syncify/issues/39) el ratchet
+  (`scripts/tests/test_silent_write_ratchet.py`) es automático: su `BASELINE` (19,
+  fecha de medición 2026-11-14) debe coincidir con esta cifra — el test la sincroniza
+  — y el patrón cubre también la query en la línea siguiente al `let _ =`.
 
 ### D-08 — Dos funciones monstruo
 
