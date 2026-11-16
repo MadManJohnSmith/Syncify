@@ -38,6 +38,10 @@ pub use integrity::*;
 pub mod library;
 pub use library::*;
 
+/// L01 (issue #98): consulta de biblioteca v2, módulo propio extraído de
+/// `library.rs`. La serie L02-L12 del spec #96 extiende ESTE módulo.
+pub mod library_query;
+
 pub mod logging;
 pub use logging::*;
 

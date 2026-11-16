@@ -7,7 +7,8 @@ use super::*;
 
 /// Validate only paths present in the returned page. The cache lives for one request,
 /// so a later page refresh observes files removed or restored since the previous call.
-async fn verify_page_files(tracks: &mut [LibraryTrack]) -> Result<(), String> {
+/// `pub(crate)`: la comparte `query_library` (commands/library_query.rs, L01).
+pub(crate) async fn verify_page_files(tracks: &mut [LibraryTrack]) -> Result<(), String> {
     use futures::stream::{self, StreamExt};
     use std::collections::HashMap;
     use std::io::ErrorKind;
@@ -513,147 +514,17 @@ async fn get_library_inner(
     })
 }
 
-/// Get duplicate tracks (by Title + Primary Artist) - paginated
+/// L01 (issue #98): consulta de biblioteca v2 — una fila por `tracks.id`,
+/// filtros AND/OR, contadores y orden EN SERVIDOR (la vista deja de filtrar,
+/// ordenar y sustituir por búsqueda en el renderer). Wrapper fino: el cuerpo
+/// vive en `commands/library_query.rs` (módulo propio extraído de este
+/// fichero; la serie L02-L12 extiende allí).
 #[tauri::command]
-pub async fn get_duplicate_tracks(
+pub async fn query_library(
     state: State<'_, AppState>,
-    offset: Option<i64>,
-    limit: Option<i64>,
-) -> Result<LibraryPage, String> {
-    let offset = offset.unwrap_or(0);
-    let limit = limit.unwrap_or(100).min(500);
-
-    tracing::info!(
-        "get_duplicate_tracks called with offset={}, limit={}",
-        offset,
-        limit
-    );
-
-    // Get total count first
-    let total: (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(*) FROM tracks t
-        WHERE EXISTS (
-            SELECT 1 FROM tracks t2
-            JOIN track_artists ta2 ON t2.id = ta2.track_id
-            AND ta2.role = 'primary'
-            JOIN track_artists ta ON t.id = ta.track_id
-            AND ta.role = 'primary'
-            WHERE t2.title = t.title
-            AND ta2.artist_id = ta.artist_id
-            AND t2.id != t.id
-        )
-        "#,
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("Count error: {}", e))?;
-
-    let mut tracks = sqlx::query_as::<_, LibraryTrack>(
-        r#"
-        SELECT
-            t.id,
-            t.title,
-            (SELECT a2.name FROM track_artists ta2
-             JOIN artists a2 ON a2.id = ta2.artist_id
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
-             LIMIT 1) as artist_name,
-            (SELECT a2.id FROM track_artists ta2
-             JOIN artists a2 ON a2.id = ta2.artist_id
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
-             LIMIT 1) as artist_id,
-            al.title as album_name,
-            al.id as album_id,
-            t.duration_ms,
-            t.isrc,
-            GROUP_CONCAT(DISTINCT s.name) as services,
-            (SELECT GROUP_CONCAT(DISTINCT s_imp.name)
-             FROM library_entries le
-             JOIN accounts acc ON acc.id = le.account_id
-             JOIN services s_imp ON s_imp.id = acc.service_id
-             WHERE le.track_id = t.id) as imported_from,
-            COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
-            (SELECT GROUP_CONCAT(DISTINCT s_avail.name)
-             FROM track_sources ts_avail
-             JOIN services s_avail ON s_avail.id = ts_avail.service_id
-             WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
-            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ')
-             FROM track_sources ts_all
-             JOIN services s_all ON s_all.id = ts_all.service_id
-             WHERE ts_all.track_id = t.id) as availability_summary,
-            COALESCE(d.file_format, ts.format) as quality,
-            CASE
-                WHEN d.file_path IS NOT NULL THEN 'downloaded'
-                WHEN dq.status = 'queued' OR dq.status = 'downloading' THEN 'queued'
-                ELSE 'not_downloaded'
-            END as download_status,
-            (
-                CASE WHEN t.title IS NOT NULL AND t.title != '' THEN 10 ELSE 0 END +
-                CASE WHEN EXISTS(SELECT 1 FROM track_artists WHERE track_id = t.id) THEN 10 ELSE 0 END +
-                CASE WHEN al.title IS NOT NULL AND al.title != '' THEN 10 ELSE 0 END +
-                CASE WHEN t.isrc IS NOT NULL AND t.isrc != '' THEN 20 ELSE 0 END +
-                CASE WHEN t.musicbrainz_id IS NOT NULL AND t.musicbrainz_id NOT IN ('NOT_FOUND', 'MISMATCH') THEN 20 ELSE 0 END +
-                CASE WHEN al.cover_art_url IS NOT NULL AND al.cover_art_url != '' THEN 10 ELSE 0 END +
-                CASE WHEN t.release_year IS NOT NULL AND t.release_year > 0 THEN 10 ELSE 0 END +
-                CASE WHEN t.genre IS NOT NULL AND t.genre != '' THEN 10 ELSE 0 END
-            ) as metadata_score,
-            CASE
-                WHEN l.sync_level IN ('syllable', 'word') THEN 'synced'
-                WHEN l.sync_level = 'line' THEN 'timed'
-                WHEN l.content IS NOT NULL THEN 'plain'
-                ELSE 'none'
-            END as lyrics_type,
-            al.cover_art_url as cover_art_url,
-            ts_spot.service_track_id as spotify_track_id,
-            t.track_number,
-            t.disc_number,
-            t.genre,
-            t.bpm,
-            t.musical_key,
-            t.release_year,
-            t.explicit,
-            t.is_favorite,
-            t.favorite_at,
-            d.file_path
-        FROM tracks t
-        LEFT JOIN albums al ON al.id = t.album_id
-        LEFT JOIN track_sources ts ON ts.track_id = t.id
-        LEFT JOIN services s ON s.id = ts.service_id
-        LEFT JOIN track_sources ts_spot ON ts_spot.track_id = t.id AND ts_spot.service_id = (SELECT id FROM services WHERE name = 'spotify')
-        LEFT JOIN downloads d ON d.track_id = t.id
-        LEFT JOIN download_queue dq ON dq.track_id = t.id AND dq.status IN ('queued', 'downloading')
-        LEFT JOIN lyrics l ON l.track_id = t.id
-        WHERE EXISTS (
-            SELECT 1 FROM tracks t2
-            JOIN track_artists ta2 ON t2.id = ta2.track_id
-            AND ta2.role = 'primary'
-            JOIN track_artists ta ON t.id = ta.track_id
-            AND ta.role = 'primary'
-            WHERE t2.title = t.title
-            AND ta2.artist_id = ta.artist_id
-            AND t2.id != t.id
-        )
-        GROUP BY t.id
-        ORDER BY t.title ASC, t.id ASC
-        LIMIT ? OFFSET ?
-        "#
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
-
-    verify_page_files(&mut tracks).await?;
-    let has_more = offset + (tracks.len() as i64) < total.0;
-
-    Ok(LibraryPage {
-        tracks,
-        total: total.0,
-        offset,
-        limit,
-        has_more,
-    })
+    query: library_query::LibraryQuery,
+) -> Result<library_query::LibraryQueryResult, String> {
+    library_query::query_library(&state.db, query).await
 }
 
 /// Get library statistics
