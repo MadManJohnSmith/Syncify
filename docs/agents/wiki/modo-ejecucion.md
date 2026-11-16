@@ -20,6 +20,16 @@ preferencia del agente. Relacionadas: [`entorno.md`](entorno.md) y
   delege en primer plano o con otro modelo vía `orchestrator_capabilities`;
   dos carriles que comparten fichero mina se serializan o usan
   `isolation: worktree`. Fuente: misma sección del handoff.
+- **2026-11-15/16, dos fallos nuevos de infraestructura de delegación**:
+  (1) un delegado murió por cuota (`1005 exceed quota limit`) dejando WIP
+  sin commit — el reintento se lanzó limpio, sin reutilizar el WIP;
+  (2) tras una recuperación de sesión del harness, el id de modelo
+  heredado cambió de `builtin:zai-start-plan\GLM-5.3-Flash` a
+  `account:zai-start-plan\GLM-5.3-Flash` y el agente rechazó el segundo;
+  el catálogo (`orchestrator_capabilities`) ya no anuncia el `builtin:` —
+  la mitigación fue relanzar con un modelo hermano del mismo plan
+  (`account:zai-start-plan\GLM-5.2`). Fuente: fallos de los delegados
+  SB05 #201 y sus reintentos en la sesión del 2026-11-14/16.
 
 ## Histórico: inline preferente (supersado)
 
