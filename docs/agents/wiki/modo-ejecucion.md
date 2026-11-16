@@ -164,3 +164,10 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   cualquier manifest con álbum sin artista era irrestaurable. El
   programa #195 queda con solo SB06 #202 pendiente, lanzado ese mismo
   día como segundo carril junto a D-08b #41. Fuente: PR #297, tracker.
+- **2026-11-16**: D-08b (#41) fusionado por squash en PR #298
+  (`56f3154` en `dev`, CI 8/8); issue cerrado citando el SHA y el spec
+  #32 cerrado 5/5 (programa de deuda accionable terminado). La
+  costura de entorno `SYNCIFY_QOBUZ_API_BASE` en `services/qobuz.rs`
+  siguió el molde documentado `SYNCIFY_DEEZER_API_BASE`; el test
+  objetivo se verificó en ejecución real (3 passed en el target del
+  delegado). Fuente: PR #298, tracker.
