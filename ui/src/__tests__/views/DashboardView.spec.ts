@@ -15,35 +15,59 @@ vi.mock('vue-router', () => ({
   useRoute: () => ({ query: {}, params: {} }),
 }))
 
+/**
+ * FE-PERF-04 (#51): el Dashboard lee sus agregados equivalentes en UNA
+ * llamada (`get_dashboard_snapshot`). Los stubs que antes respondían a
+ * `get_library_stats` / `get_metadata_stats` / `get_lyrics_stats` /
+ * `get_library_snapshots` / `create_library_snapshot` se montan ahora en
+ * este payload unificado.
+ */
+function unifiedSnapshot(
+  overrides: {
+    stats?: Record<string, number>,
+    snapshot?: Record<string, unknown>,
+    snapshots?: unknown[],
+    metadata?: Record<string, unknown>,
+    lyrics?: Record<string, unknown>,
+  } = {},
+) {
+  return {
+    stats: {
+      total_tracks: 0, total_artists: 0, total_albums: 0, total_downloads: 0,
+      queued_downloads: 0, active_downloads: 0, library_entries: 0,
+      playlists: 0, services_with_data: 0,
+      ...overrides.stats,
+    },
+    snapshot: {
+      id: 1, snapshot_date: '2026-01-01', total_tracks: 0, total_albums: 0,
+      total_artists: 0, total_size_bytes: 0, tracks_with_lyrics: 0,
+      tracks_lossless: 0, tracks_hires: 0, downloaded_tracks: 0,
+      ...overrides.snapshot,
+    },
+    snapshots: overrides.snapshots ?? [],
+    metadata: {
+      total_tracks: 0, with_isrc: 0, with_musicbrainz_id: 0, with_album: 0,
+      with_year: 0, with_genre: 0, with_art: 0, average_completeness: 0,
+      ...overrides.metadata,
+    },
+    lyrics: {
+      total_tracks: 0, with_lyrics: 0, synced_lyrics: 0, embedded_lyrics: 0,
+      ...overrides.lyrics,
+    },
+  }
+}
+
 describe('DashboardView.vue (TASK-128 UI Completion)', () => {
   beforeEach(() => {
     resetMocks()
     mockPush.mockReset()
 
     mockInvoke((command) => {
-      if (command === 'create_library_snapshot') return null
-      if (command === 'get_library_stats') {
-        return {
-          total_tracks: 0,
-          total_albums: 0,
-          total_artists: 0,
-          playlists: 0,
-          total_downloads: 0,
-          queued_downloads: 0,
-          active_downloads: 0,
-        }
-      }
+      if (command === 'get_dashboard_snapshot') return unifiedSnapshot()
       if (command === 'get_queue_stats') {
         return { total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 }
       }
       if (command === 'get_service_statuses') return []
-      if (command === 'get_metadata_stats') {
-        return { total_tracks: 0, complete: 0, missing: 0, lyrics_count: 0 }
-      }
-      if (command === 'get_lyrics_stats') {
-        return { total: 0, synchronized: 0, unsynchronized: 0, missing: 0 }
-      }
-      if (command === 'get_library_snapshots') return []
       if (command === 'get_storage_stats') {
         return { used_bytes: 0, available_bytes: 107374182400 }
       }
@@ -98,18 +122,9 @@ describe('DashboardView.vue (TASK-128 UI Completion)', () => {
 
   it('derives growth stats from real library stats when historical snapshots are empty', async () => {
     mockInvoke((command) => {
-      if (command === 'get_library_stats') {
-        return {
-          total_tracks: 100,
-          total_albums: 10,
-          total_artists: 5,
-          playlists: 2,
-          total_downloads: 60,
-          queued_downloads: 0,
-          active_downloads: 0,
-        }
+      if (command === 'get_dashboard_snapshot') {
+        return unifiedSnapshot({ stats: { total_tracks: 100, total_downloads: 60 } })
       }
-      if (command === 'get_library_snapshots') return []
       return null
     })
 
@@ -124,11 +139,13 @@ describe('DashboardView.vue (TASK-128 UI Completion)', () => {
 
   it('renders historical snapshot growth bars when snapshots exist', async () => {
     mockInvoke((command) => {
-      if (command === 'get_library_snapshots') {
-        return [
-          { snapshot_date: '2025-03-15', total_tracks: 50, downloaded_tracks: 20 },
-          { snapshot_date: '2025-03-16', total_tracks: 80, downloaded_tracks: 40 },
-        ]
+      if (command === 'get_dashboard_snapshot') {
+        return unifiedSnapshot({
+          snapshots: [
+            { snapshot_date: '2025-03-15', total_tracks: 50, downloaded_tracks: 20 },
+            { snapshot_date: '2025-03-16', total_tracks: 80, downloaded_tracks: 40 },
+          ],
+        })
       }
       return null
     })
@@ -281,12 +298,8 @@ describe('DashboardView.vue — Sources coverage card (WF-DASH-01)', () => {
     mockPush.mockReset()
 
     mockInvoke((command) => {
-      if (command === 'create_library_snapshot') return null
-      if (command === 'get_library_stats') return zeroLibraryStats()
-      if (command === 'get_queue_stats') return emptyQueueStats()
-      if (command === 'get_metadata_stats') return emptyMetadataStats()
-      if (command === 'get_lyrics_stats') return emptyLyricsStats()
-      if (command === 'get_library_snapshots') return []
+      if (command === 'get_dashboard_snapshot') return unifiedSnapshot()
+      if (command === 'get_queue_stats') return { total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 }
       if (command === 'get_storage_stats') return { used_bytes: 0, available_bytes: 107374182400 }
       if (command === 'get_top_artists') return []
       if (command === 'get_top_genres') return []
@@ -296,25 +309,6 @@ describe('DashboardView.vue — Sources coverage card (WF-DASH-01)', () => {
       return null
     })
   })
-
-  function zeroLibraryStats() {
-    return {
-      total_tracks: 0, total_albums: 0, total_artists: 0, playlists: 0,
-      total_downloads: 0, queued_downloads: 0, active_downloads: 0,
-    }
-  }
-
-  function emptyQueueStats() {
-    return { total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 }
-  }
-
-  function emptyMetadataStats() {
-    return { total_tracks: 0, complete: 0, missing: 0, lyrics_count: 0 }
-  }
-
-  function emptyLyricsStats() {
-    return { total: 0, synchronized: 0, unsynchronized: 0, missing: 0 }
-  }
 
   function serviceStatus(entries: { name: string, library_count: number, connected?: boolean }[]) {
     return entries.map(e => ({
@@ -331,14 +325,8 @@ describe('DashboardView.vue — Sources coverage card (WF-DASH-01)', () => {
 
   function renderSources(withTracks = 0) {
     mockInvoke((command) => {
-      if (command === 'create_library_snapshot') return null
-      if (command === 'get_library_stats') {
-        return {
-          ...zeroLibraryStats(),
-          total_tracks: withTracks,
-        }
-      }
-      if (command === 'get_queue_stats') return emptyQueueStats()
+      if (command === 'get_dashboard_snapshot') return unifiedSnapshot({ stats: { total_tracks: withTracks } })
+      if (command === 'get_queue_stats') return { total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 }
       if (command === 'get_service_statuses') {
         return serviceStatus([
           { name: 'qobuz', library_count: 30 },
@@ -346,9 +334,6 @@ describe('DashboardView.vue — Sources coverage card (WF-DASH-01)', () => {
           { name: 'deezer', library_count: 40 },
         ])
       }
-      if (command === 'get_metadata_stats') return emptyMetadataStats()
-      if (command === 'get_lyrics_stats') return emptyLyricsStats()
-      if (command === 'get_library_snapshots') return []
       if (command === 'get_storage_stats') return { used_bytes: 0, available_bytes: 107374182400 }
       if (command === 'get_top_artists') return []
       if (command === 'get_top_genres') return []
@@ -410,20 +395,14 @@ describe('DashboardView.vue — Sources coverage card (WF-DASH-01)', () => {
 
   it('keeps one bar at 0% when a connected service has an empty library', async () => {
     mockInvoke((command) => {
-      if (command === 'create_library_snapshot') return null
-      if (command === 'get_library_stats') {
-        return { ...zeroLibraryStats(), total_tracks: 100 }
-      }
-      if (command === 'get_queue_stats') return emptyQueueStats()
+      if (command === 'get_dashboard_snapshot') return unifiedSnapshot({ stats: { total_tracks: 100 } })
+      if (command === 'get_queue_stats') return { total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 }
       if (command === 'get_service_statuses') {
         return serviceStatus([
           { name: 'spotify', library_count: 40 },
           { name: 'deezer', library_count: 0 },
         ])
       }
-      if (command === 'get_metadata_stats') return emptyMetadataStats()
-      if (command === 'get_lyrics_stats') return emptyLyricsStats()
-      if (command === 'get_library_snapshots') return []
       if (command === 'get_storage_stats') return { used_bytes: 0, available_bytes: 107374182400 }
       if (command === 'get_top_artists') return []
       if (command === 'get_top_genres') return []
@@ -460,11 +439,8 @@ describe('DashboardView.vue — Sources coverage card (WF-DASH-01)', () => {
 
     // Mismo fixture con el orden invertido: cada servicio conserva su color.
     mockInvoke((command) => {
-      if (command === 'create_library_snapshot') return null
-      if (command === 'get_library_stats') {
-        return { ...zeroLibraryStats(), total_tracks: 100 }
-      }
-      if (command === 'get_queue_stats') return emptyQueueStats()
+      if (command === 'get_dashboard_snapshot') return unifiedSnapshot({ stats: { total_tracks: 100 } })
+      if (command === 'get_queue_stats') return { total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 }
       if (command === 'get_service_statuses') {
         return serviceStatus([
           { name: ' DEEZER ', library_count: 40 },
@@ -472,9 +448,6 @@ describe('DashboardView.vue — Sources coverage card (WF-DASH-01)', () => {
           { name: 'QOBUZ', library_count: 30 },
         ])
       }
-      if (command === 'get_metadata_stats') return emptyMetadataStats()
-      if (command === 'get_lyrics_stats') return emptyLyricsStats()
-      if (command === 'get_library_snapshots') return []
       if (command === 'get_storage_stats') return { used_bytes: 0, available_bytes: 107374182400 }
       if (command === 'get_top_artists') return []
       if (command === 'get_top_genres') return []
@@ -501,11 +474,8 @@ describe('DashboardView.vue — Sources coverage card (WF-DASH-01)', () => {
     // is_active = 1 ORDER BY id DESC LIMIT 1), así que dos cuentas del mismo
     // servicio llegan como UNA fila y no deben multiplicarse en la tarjeta.
     mockInvoke((command) => {
-      if (command === 'create_library_snapshot') return null
-      if (command === 'get_library_stats') {
-        return { ...zeroLibraryStats(), total_tracks: 200 }
-      }
-      if (command === 'get_queue_stats') return emptyQueueStats()
+      if (command === 'get_dashboard_snapshot') return unifiedSnapshot({ stats: { total_tracks: 200 } })
+      if (command === 'get_queue_stats') return { total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 }
       if (command === 'get_service_statuses') {
         // Qobuz: cuenta activa con 200 entradas (todas las pistas), cuenta
         // antigua con 0 — solo debe contarse la activa y sin duplicar filas.
@@ -514,9 +484,6 @@ describe('DashboardView.vue — Sources coverage card (WF-DASH-01)', () => {
           { name: 'spotify', library_count: 50 },
         ])
       }
-      if (command === 'get_metadata_stats') return emptyMetadataStats()
-      if (command === 'get_lyrics_stats') return emptyLyricsStats()
-      if (command === 'get_library_snapshots') return []
       if (command === 'get_storage_stats') return { used_bytes: 0, available_bytes: 107374182400 }
       if (command === 'get_top_artists') return []
       if (command === 'get_top_genres') return []
@@ -540,17 +507,11 @@ describe('DashboardView.vue — Sources coverage card (WF-DASH-01)', () => {
 
   it('falls back to a neutral color for an unmapped service name', async () => {
     mockInvoke((command) => {
-      if (command === 'create_library_snapshot') return null
-      if (command === 'get_library_stats') {
-        return { ...zeroLibraryStats(), total_tracks: 10 }
-      }
-      if (command === 'get_queue_stats') return emptyQueueStats()
+      if (command === 'get_dashboard_snapshot') return unifiedSnapshot({ stats: { total_tracks: 10 } })
+      if (command === 'get_queue_stats') return { total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 }
       if (command === 'get_service_statuses') {
         return serviceStatus([{ name: 'napster', library_count: 4 }])
       }
-      if (command === 'get_metadata_stats') return emptyMetadataStats()
-      if (command === 'get_lyrics_stats') return emptyLyricsStats()
-      if (command === 'get_library_snapshots') return []
       if (command === 'get_storage_stats') return { used_bytes: 0, available_bytes: 107374182400 }
       if (command === 'get_top_artists') return []
       if (command === 'get_top_genres') return []

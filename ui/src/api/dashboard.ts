@@ -6,7 +6,7 @@
 
 import { invokeCommand } from './tauri';
 import { asArray, asString, asRecord, pickNumber } from './normalize';
-import type { LibrarySnapshot, ServiceHealthInfo } from './types';
+import type { LibrarySnapshot, LibraryStats, MetadataStats, ServiceHealthInfo, LyricsStats } from './types';
 
 /**
  * Get service health status for all connected services
@@ -17,10 +17,80 @@ export async function getServiceHealth(): Promise<ServiceHealthInfo[]> {
 }
 
 /**
- * Create a library snapshot for historical tracking
+ * FE-PERF-04 (#51): payload unificado del Dashboard. Una llamada
+ * (`get_dashboard_snapshot`) devuelve los seis recuentos del snapshot y la
+ * vista `library_stats` resueltos en UNA lectura, más el historial de
+ * snapshots y la cobertura de metadatos y letras que el Dashboard pedía por
+ * separado (`create_library_snapshot`, `get_library_stats`,
+ * `get_library_snapshots`, `get_metadata_stats`, `get_lyrics_stats`).
  */
-export async function createLibrarySnapshot(): Promise<LibrarySnapshot> {
-    return invokeCommand<LibrarySnapshot>('create_library_snapshot');
+export interface DashboardSnapshotPayload {
+    /** Vista `library_stats` — misma semántica que `get_library_stats`. */
+    stats: LibraryStats;
+    /** Snapshot del día, ya escrito. */
+    snapshot: LibrarySnapshot;
+    /** Historial para la gráfica de crecimiento. */
+    snapshots: LibrarySnapshot[];
+    /** Cobertura de metadatos — misma consulta que `get_metadata_stats`. */
+    metadata: MetadataStats;
+    /** Cobertura de letras — misma consulta que `get_lyrics_stats`. */
+    lyrics: LyricsStats;
+}
+
+function normalizeSnapshot(raw: unknown): LibrarySnapshot {
+    const rec = asRecord(raw);
+    return {
+        id: pickNumber(rec, ['id']),
+        snapshot_date: asString(rec?.snapshot_date),
+        total_tracks: pickNumber(rec, ['total_tracks']),
+        total_albums: pickNumber(rec, ['total_albums']),
+        total_artists: pickNumber(rec, ['total_artists']),
+        total_size_bytes: pickNumber(rec, ['total_size_bytes']),
+        tracks_with_lyrics: pickNumber(rec, ['tracks_with_lyrics']),
+        tracks_lossless: pickNumber(rec, ['tracks_lossless']),
+        tracks_hires: pickNumber(rec, ['tracks_hires']),
+        downloaded_tracks: pickNumber(rec, ['downloaded_tracks']),
+    };
+}
+
+/**
+ * Lectura unificada de los agregados del Dashboard.
+ * @param days - Días de historial de snapshots para la gráfica de crecimiento
+ */
+export async function getDashboardSnapshot(days: number = 30): Promise<DashboardSnapshotPayload> {
+    const raw = await invokeCommand<unknown>('get_dashboard_snapshot', { days });
+    const rec = asRecord(raw);
+    return {
+        stats: {
+            total_tracks: pickNumber(rec?.stats, ['total_tracks', 'totalTracks']),
+            total_artists: pickNumber(rec?.stats, ['total_artists', 'totalArtists']),
+            total_albums: pickNumber(rec?.stats, ['total_albums', 'totalAlbums']),
+            total_downloads: pickNumber(rec?.stats, ['total_downloads', 'totalDownloads']),
+            queued_downloads: pickNumber(rec?.stats, ['queued_downloads', 'queuedDownloads']),
+            active_downloads: pickNumber(rec?.stats, ['active_downloads', 'activeDownloads']),
+            library_entries: pickNumber(rec?.stats, ['library_entries', 'libraryEntries']),
+            playlists: pickNumber(rec?.stats, ['playlists']),
+            services_with_data: pickNumber(rec?.stats, ['services_with_data', 'servicesWithData']),
+        },
+        snapshot: normalizeSnapshot(rec?.snapshot),
+        snapshots: asArray<LibrarySnapshot>(rec?.snapshots),
+        metadata: {
+            total_tracks: pickNumber(rec?.metadata, ['total_tracks', 'totalTracks']),
+            with_isrc: pickNumber(rec?.metadata, ['with_isrc', 'withIsrc']),
+            with_musicbrainz_id: pickNumber(rec?.metadata, ['with_musicbrainz_id', 'withMusicbrainzId', 'withMusicBrainzId']),
+            with_album: pickNumber(rec?.metadata, ['with_album', 'withAlbum']),
+            with_year: pickNumber(rec?.metadata, ['with_year', 'withYear']),
+            with_genre: pickNumber(rec?.metadata, ['with_genre', 'withGenre']),
+            with_art: pickNumber(rec?.metadata, ['with_art', 'withArt']),
+            average_completeness: pickNumber(rec?.metadata, ['average_completeness', 'averageCompleteness']),
+        },
+        lyrics: {
+            total_tracks: pickNumber(rec?.lyrics, ['total_tracks', 'totalTracks']),
+            with_lyrics: pickNumber(rec?.lyrics, ['with_lyrics', 'withLyrics']),
+            synced_lyrics: pickNumber(rec?.lyrics, ['synced_lyrics', 'syncedLyrics']),
+            embedded_lyrics: pickNumber(rec?.lyrics, ['embedded_lyrics', 'embeddedLyrics']),
+        },
+    };
 }
 
 /**
@@ -159,7 +229,7 @@ export async function runBatchHealthCheck(): Promise<BatchHealthReport> {
 // Export as namespace
 export const dashboardApi = {
     getServiceHealth,
-    createLibrarySnapshot,
+    getDashboardSnapshot,
     getLibrarySnapshots,
     getDuplicateStats,
     getDashboardStats,

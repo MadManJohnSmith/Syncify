@@ -1242,7 +1242,7 @@ fn main() {
             commands::reconcile_library_physical_state,
             commands::get_service_health,
             commands::run_batch_health_check,
-            commands::create_library_snapshot,
+            commands::get_dashboard_snapshot,
             commands::get_library_snapshots,
             // Sprint 5: Advanced Settings & Polish
             commands::get_advanced_settings,

@@ -20,7 +20,10 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::path::Path;
 use std::sync::Arc;
-use syncify_tauri_lib::commands::dashboard::create_library_snapshot;
+use syncify_tauri_lib::commands::dashboard::{
+    read_unified_library_counts, upsert_library_snapshot,
+};
+use syncify_tauri_lib::models::LibrarySnapshot;
 use syncify_tauri_lib::services::animated_cover::associate_animated_cover_in_db;
 use syncify_tauri_lib::worker::DownloadWorkerState;
 use syncify_tauri_lib::{AppState, EnrichmentWorkerState};
@@ -54,6 +57,19 @@ async fn setup_test_db() -> SqlitePool {
         .expect("Failed to run migrations");
 
     pool
+}
+
+/// FE-PERF-04 (#51): `create_library_snapshot` ya no existe como comando — el
+/// snapshot del día lo escribe `get_dashboard_snapshot`. El comportamiento de
+/// la escritura se ejercita aquí con sus mismos dos pasos: lectura unificada
+/// + upsert.
+async fn create_library_snapshot(pool: &SqlitePool) -> LibrarySnapshot {
+    let counts = read_unified_library_counts(pool)
+        .await
+        .expect("unified counts must succeed");
+    upsert_library_snapshot(pool, &counts)
+        .await
+        .expect("snapshot upsert must succeed")
 }
 
 async fn column_names(pool: &SqlitePool, table: &str) -> Vec<String> {
@@ -728,9 +744,7 @@ async fn test_create_library_snapshot_persists_all_columns() {
         concurrency_manager: Arc::new(syncify_tauri_lib::services::ConcurrencyManager::new()),
     });
 
-    let snapshot = create_library_snapshot(app.state::<AppState>())
-        .await
-        .expect("create_library_snapshot must succeed");
+    let snapshot = create_library_snapshot(&pool).await;
 
     assert_eq!(snapshot.total_tracks, 3);
     assert_eq!(snapshot.total_albums, 1);
@@ -750,9 +764,7 @@ async fn test_create_library_snapshot_persists_all_columns() {
     );
 
     // Re-running updates today's snapshot in place instead of duplicating it.
-    let second = create_library_snapshot(app.state::<AppState>())
-        .await
-        .expect("second snapshot must succeed");
+    let second = create_library_snapshot(&pool).await;
     assert_eq!(second.id, snapshot.id);
 
     let (rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM library_snapshots")

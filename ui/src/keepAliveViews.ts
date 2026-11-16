@@ -13,8 +13,10 @@
  *
  * Justificación del conjunto — los cuatro hubs del sidebar, revisados una y
  * otra vez dentro de una sesión:
- *   - DashboardView: su `onMounted` lanza `createLibrarySnapshot` + 11
- *     llamadas en `Promise.all` + `getVersion`; volver repetía las 13.
+ *   - DashboardView: su `onMounted` lanza la lectura unificada
+ *     `get_dashboard_snapshot` (FE-PERF-04, #51) + 7 llamadas en `Promise.all`
+ *     + `getQueue` de actividad reciente + `getVersion`; volver repetía antes
+ *     `create_library_snapshot` + 11 llamadas.
  *   - LibraryView: la vista con más estado (lista acumulada, filtros, scroll
  *     virtualizado); reconstruirla es lo más caro y perder el scroll es la
  *     regresión más perceptible.
