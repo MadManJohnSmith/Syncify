@@ -153,3 +153,14 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   nuevo). Ambos con el modelo fijado ese día y target privado por
   carril (`/tmp/syncify-target-sb05`, `/tmp/syncify-target-d06c`).
   Fuente: orden del propietario en la sesión del 2026-11-16.
+- **2026-11-16**: D-06c (#39) fusionado por squash en PR #296
+  (`b27b611` en `dev`, CI 8/8); issue cerrado citando el SHA. El
+  programa #32 queda 4/5. Fuente: PR #296, tracker.
+- **2026-11-16**: SB05 (#201) fusionado por squash en PR #297
+  (`ee5b3fd` en `dev`, CI 8/8); issue cerrado citando el SHA. El
+  delegado rescató el WIP, lo rebasó limpio y corrigió un defecto real
+  de dominio: el artista centinela `'Unknown Artist'` del export se
+  trata como «sin artista» (espejo del trigger `0079`) — antes
+  cualquier manifest con álbum sin artista era irrestaurable. El
+  programa #195 queda con solo SB06 #202 pendiente, lanzado ese mismo
+  día como segundo carril junto a D-08b #41. Fuente: PR #297, tracker.
