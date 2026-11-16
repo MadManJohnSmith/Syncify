@@ -25,7 +25,7 @@ CARGO_TARGET_DIR=/tmp/syncify-target cargo clippy --workspace --all-targets --lo
 cargo fmt --all -- --check
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 323 objetivos de test: recuento real
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --test batch_50_audit_test -- --test-threads=1
-npm --prefix ui run build && npm --prefix ui run test:run                  # 132 ficheros / 1145 tests
+npm --prefix ui run build && npm --prefix ui run test:run                  # 134 ficheros / 1153 tests
 .venv/bin/python -m unittest discover -s scripts/tests                    # 431 tests (2 skipped)
 ```
 

@@ -54,6 +54,18 @@ export const router = createRouter({
 if (typeof document !== 'undefined') {
     const mountEl = document.getElementById('app')
     if (mountEl) {
-        createApp(App).use(router).mount(mountEl)
+        const app = createApp(App).use(router)
+        // FE-PERF-01: sonda de navegación. Chunk separado que SOLO se descarga
+        // en la ventana real de desarrollo con la medición pedida
+        // (VITE_NAVPERF=1 o ?__navperf=1): cero coste en producción y en tests.
+        const inTauri =
+            typeof window !== 'undefined' &&
+            typeof (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ !== 'undefined'
+        if (inTauri && (import.meta.env.VITE_NAVPERF === '1' || window.location.search.includes('__navperf=1'))) {
+            void import('./perf/navigationProbe')
+                .then((m) => m.installNavigationProbe(app, router))
+                .catch((err) => console.warn('[navperf] probe no instalada:', err))
+        }
+        app.mount(mountEl)
     }
 }

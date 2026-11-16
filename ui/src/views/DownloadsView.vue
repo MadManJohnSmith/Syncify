@@ -1102,6 +1102,9 @@
 </template>
 
 <script setup lang="ts">
+// FE-PERF-01: nombre explícito — el `include` de <KeepAlive> (App.vue /
+// keepAliveViews.ts) filtra por `name`, y debe coincidir exactamente.
+defineOptions({ name: 'DownloadsView' })
 import { ref, shallowRef, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useToast } from '@/composables/useToast'

@@ -81,6 +81,9 @@
 </template>
 
 <script setup lang="ts">
+// FE-PERF-01: nombre explícito — el `include` de <KeepAlive> (App.vue /
+// keepAliveViews.ts) filtra por `name`, y debe coincidir exactamente.
+defineOptions({ name: 'SettingsView' })
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { settingsApi } from '@/api/settings'
