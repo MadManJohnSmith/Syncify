@@ -205,3 +205,11 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   paralelo ese mismo día (worktree privado cada uno, zonas excluidas
   cruzadas en los briefs). Fuente: informe versionado, orden del
   propietario en la sesión.
+- **2026-11-16**: FE-PERF-03 (#50) fusionado por squash en PR #302
+  (`8c59672` en `dev`, CI 8/8); issue cerrado citando el SHA. El
+  programa #34 queda 2/3 (solo #51, PR #301 en CI). El triaje de
+  Q-13/Q-14 quedó resuelto: los issues #265/#266 (que ya existían como
+  tickets del checklist #264) se enlazaron como sub-issues de #96 con
+  comentarios cruzados en #97/#110; la afirmación del informe de
+  investigación de que «no eran issues de GitHub» quedó corregida con
+  nota de mismo día en el informe versionado. Fuente: PR #302, tracker.

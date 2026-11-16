@@ -144,3 +144,16 @@ Fase 4   L13 #110                   (cierre transversal; depende L01-L04 y adopt
 - **D-06 (escrituras silenciosas)**: L00 (sync masivo de pertenencias), L05 (bloques de 500) y L06 citan el ratchet explícitamente; cualquier `let _ = sqlx::query(...)` nuevo sube el contador prohibido (suelo 19, ratchet automático desde #39).
 - **Migraciones**: L00 (tabla nueva + índices + `library_added_at`), L02 (rebuild de FTS sobre 30k pistas) y L10 (registro de fusiones) crean migraciones. Ninguna edita aplicadas ni reutiliza números (minas del AGENTS.md); L00 exige prueba de upgrade sobre base existente, no solo `:memory:`.
 - **`useVirtualWindow` es reciente (ADR-0025)**: L13 dice "mantener el virtualizador existente si cumple" — no introducir dependencia nueva.
+
+---
+
+## Corrección (2026-11-16, mismo día)
+
+El §4 de este informe afirma que Q-13/Q-14 «no son issues de GitHub»:
+**es falso**. Son los issues #265 y #266 (OPEN, labels `bug`,
+`ready-for-agent`, creados el 2026-11-10 a partir del checklist #264).
+Los registros en `docs/historico/Errores-Pruebas-2026-10-11.md` son su
+origen, no su único hogar. Triaje aplicado: #265 y #266 añadidos como
+sub-issues de #96 (grafo nativo), con comentarios cruzados en #97 y
+#110 enlazando el solape. Su gate original («hasta que #264 cierre»)
+queda intacto: el enlazado no abre trabajo, solo organiza el grafo.
