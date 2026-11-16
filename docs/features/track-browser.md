@@ -21,12 +21,14 @@ se comporta una lista; las vistas solo declaran su fuente.
 
 | Vista | Fuente | Paginación | Selección |
 |---|---|---|---|
-| `LibraryView` | `get_library` / `get_favorite_tracks` / `get_duplicate_tracks` (elige en caliente según filtros) + `search_tracks` (FTS) | offset/limit 100 + `has_more`; FTS con su propio paginador (100/página) y query prefijando `*` por palabra | ids |
+| `LibraryView` | `query_library` (L01, issue #98: filtros, orden, búsqueda y contadores EN SERVIDOR; módulo `commands/library_query.rs`) | offset/limit 100 (máx 200) + `has_more` + contadores en la primera página | ids |
 | `MetadataView` | `get_library(0,500)` o `get_tracks_needing_metadata(500)` según `filterType` | página única, sin `has_more` | ids |
 | `DownloadsView` | `get_queue` completa | sin paginación server-side; recorte client-side a 50 por sección y salto por posición | sin selección |
 
 La optimización de prefijo ordenado de `LibraryView` (`sortedPrefix`/`mergeSorted`)
-sigue leyendo `pageAppendCount` del composable: los appends pagan solo el merge.
+se retiró con L01: el orden lo fija el servidor y el renderer solo concatena
+páginas. `search_tracks` sigue existiendo para la búsqueda global (CommandPalette,
+SearchView); ya no sustituye la lista de la biblioteca.
 
 ## Selección por ids
 
