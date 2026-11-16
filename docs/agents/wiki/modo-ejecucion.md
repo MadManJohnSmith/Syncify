@@ -171,3 +171,15 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   siguió el molde documentado `SYNCIFY_DEEZER_API_BASE`; el test
   objetivo se verificó en ejecución real (3 passed en el target del
   delegado). Fuente: PR #298, tracker.
+- **2026-11-16**: SB06 (#202) fusionado por squash en PR #299
+  (`9526aa6` en `dev`, CI 8/8); issues #202 y el spec padre #195
+  cerrados citando el SHA. Programa AJUSTES/BACKUP completo (6/6).
+  Fuente: PR #299, tracker.
+- **2026-11-16, decisión de serialización**: el spec siguiente #96
+  (biblioteca agregada, 14 sub-issues #97-#110) toca ui/src, ficheros
+  que el carril en vuelo FE-PERF-01 #49 también edita: por el
+  contrato del handoff se serializa — #96 no arranca hasta cerrar
+  #49, y dentro de #34 los hermanos #50/#51 (desbloqueados por #49)
+  irán en paralelo solo si no comparten fichero. Fuente: orden del
+  propietario de paralelización con máx. 2 + reparto de superficies
+  del handoff del 2026-11-14.
