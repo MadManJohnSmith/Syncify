@@ -192,3 +192,16 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   `navigationProbe` y el harness `tools/nav-perf.sh` quedan en el
   árbol para los hermanos #50/#51 (el plugin de vite.config es
   dev-only, no reparto de chunks). Fuente: PR #300, tracker.
+- **2026-11-16**: investigación del spec #96 completada por delegación
+  (solo lectura); informe versionado en
+  `docs/historico/investigacion-biblioteca-96-2026-11-16.md` como
+  referencia de los 14 carriles (L00-L13, #97-#110). Tres decisiones
+  del propietario de ese día: (1) retirar por completo
+  `auto_resolve_duplicates` al integrar #107; (2) pertenencia de #97
+  como tabla nueva + nota en el glosario (delegada en el agente, sin
+  usuarios existentes que proteger); (3) la serie arranca con #98
+  (L01) contra fixtures en cuanto el programa #34 cierre, sin esperar
+  a #64/#65-#68. FE-PERF-03 #50 y FE-PERF-04 #51 lanzados en
+  paralelo ese mismo día (worktree privado cada uno, zonas excluidas
+  cruzadas en los briefs). Fuente: informe versionado, orden del
+  propietario en la sesión.
