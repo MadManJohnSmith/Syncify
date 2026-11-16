@@ -144,15 +144,34 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   siguiente) que la expresión del ratchet no contaba; migrado igualmente. Medido con la
   expresión del ratchet: 99 sitios antes del lote, 58 después; el suelo registrado baja
   de 113 a 58.
+- **Hecho (2026-11-14, lote comandos/worker/caché, [#38])**: los 44 puntos restantes
+  fuera de los servicios de proveedor pasan por la frontera o propagan, revisados uno a
+  uno: `commands/settings.rs` 3 y `commands/playlists.rs` 1 propagan con `?` (los
+  hermanos de su misma transacción ya abortaban con `map_err(..)?`; perder la escritura
+  y confirmar igual era exactamente el daño de D-06), y con `write_or_log` —
+  `services/operation_recovery.rs` 10 (reconciliación de arranque y caminos canónicos),
+  `commands/backup.rs` 6 (restauración: upserts `INSERT OR IGNORE` y favoritos
+  best-effort), `worker.rs` 5, `import_cache.rs` 4, `commands/enrichment.rs` 3,
+  `commands/accounts.rs` 3, `main.rs` 3 (arranque: purga y siembra de credenciales),
+  `commands/queue.rs` 2, `services/enrichment.rs` 2, `commands/lyrics.rs` 1 y
+  `commands/migration.rs` 1. Sin cambio de comportamiento observable fuera del log.
+  Nota de recuento: la cifra del issue (ajustes 10, cola 5, dashboard 2) se midió antes
+  de SB00/SB01; al llegar a `origin/dev` settings tenía 3, queue 2 y dashboard ya
+  propagaba. El ratchet (`scripts/tests/test_silent_write_ratchet.py`, métrica de una
+  línea sobre todo `src-tauri/src`) baja de 113 a 60 con este lote y solo puede
+  seguir bajando.
 - **Lo que la frontera destapó (2026-10-19)**: en la primera prueba manual,
   `context="enrich_and_persist_sync_track"` registró 51 fallos que antes eran
   invisibles: `UNIQUE constraint failed: tracks.isrc`. Corregido en `c7325a7`
   (ver D-07). Es el argumento de la frontera: no cambia el comportamiento, pero
   convierte un fallo mudo en una línea de log accionable.
-- **Cierra**: migrar el resto por lotes (comandos, worker y caché:
-  [#38](https://github.com/MadManJohnSmith/Syncify/issues/38)), un fichero por commit
-  con su suite verde, y seguir bajando el baseline; el ratchet automático es
-  [#39](https://github.com/MadManJohnSmith/Syncify/issues/39).
+- **Cierra**: migrar el resto por lotes y seguir bajando el baseline; el ratchet
+  automático es [#39](https://github.com/MadManJohnSmith/Syncify/issues/39). Con los
+  dos lotes de 2026-11-14 (#37 servicios de proveedor y #38 comandos/worker/caché)
+  fusionados, la métrica del ratchet mide **19** apariciones: 18 que ya propagan
+  (`commands/favorites.rs` 10, `services/tidal.rs` 8) y 1 dentro de un bloque
+  comentado de `main.rs`, sin efecto en ejecución. El suelo registrado baja de 113 a
+  19 (medido sobre el árbol con ambos lotes; solo puede seguir bajando).
 
 ### D-08 — Dos funciones monstruo
 

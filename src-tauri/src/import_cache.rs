@@ -161,10 +161,13 @@ impl ImportCache {
             id
         } else {
             // Create new (use INSERT OR IGNORE in case of race condition)
-            let _ = sqlx::query("INSERT OR IGNORE INTO artists (name) VALUES (?)")
-                .bind(&clean_name)
-                .execute(db)
-                .await;
+            let _ = crate::db::write_or_log(
+                "cache_get_or_create_artist",
+                sqlx::query("INSERT OR IGNORE INTO artists (name) VALUES (?)")
+                    .bind(&clean_name)
+                    .execute(db),
+            )
+            .await;
 
             // Always SELECT to get the ID (handles both new insert and race condition)
             let (id,): (i64,) =
@@ -253,17 +256,23 @@ impl ImportCache {
 
         let id = if let Some(&(id,)) = candidates.first() {
             if effective_is_compilation {
-                let _ = sqlx::query(
-                    "UPDATE albums SET is_compilation = 1 WHERE id = ? AND is_compilation != 1",
-                )
-                .bind(id)
-                .execute(db)
-                .await;
-                let _ = sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
+                let _ = crate::db::write_or_log(
+                    "cache_get_or_create_album",
+                    sqlx::query(
+                        "UPDATE albums SET is_compilation = 1 WHERE id = ? AND is_compilation != 1",
+                    )
                     .bind(id)
-                    .bind(effective_artist_id)
-                    .execute(db)
-                    .await;
+                    .execute(db),
+                )
+                .await;
+                let _ = crate::db::write_or_log(
+                    "cache_get_or_create_album",
+                    sqlx::query("INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)")
+                        .bind(id)
+                        .bind(effective_artist_id)
+                        .execute(db),
+                )
+                .await;
             }
             id
         } else {
@@ -313,12 +322,15 @@ impl ImportCache {
                 created.map_err(|e| format!("Failed to create album '{}': {}", clean_name, e))?;
 
             // Link to primary artist (INSERT OR IGNORE handles duplicates)
-            let _ = sqlx::query(
-                "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
+            let _ = crate::db::write_or_log(
+                "cache_get_or_create_album",
+                sqlx::query(
+                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
+                )
+                .bind(id)
+                .bind(effective_artist_id)
+                .execute(db),
             )
-            .bind(id)
-            .bind(effective_artist_id)
-            .execute(db)
             .await;
             // Ignore errors - link might already exist
 

@@ -2757,16 +2757,22 @@ pub async fn perform_force_redownload_tracks(
         };
 
         // 1. Remove from downloads table to allow fresh download
-        let _ = sqlx::query("DELETE FROM downloads WHERE track_id = ?")
-            .bind(tid)
-            .execute(&state.db)
-            .await;
+        let _ = crate::db::write_or_log(
+            "perform_force_redownload_tracks",
+            sqlx::query("DELETE FROM downloads WHERE track_id = ?")
+                .bind(tid)
+                .execute(&state.db),
+        )
+        .await;
 
         // 2. Remove existing queue items for this track
-        let _ = sqlx::query("DELETE FROM download_queue WHERE track_id = ?")
-            .bind(tid)
-            .execute(&state.db)
-            .await;
+        let _ = crate::db::write_or_log(
+            "perform_force_redownload_tracks",
+            sqlx::query("DELETE FROM download_queue WHERE track_id = ?")
+                .bind(tid)
+                .execute(&state.db),
+        )
+        .await;
 
         let add_result = perform_add_to_queue(
             &state.db,

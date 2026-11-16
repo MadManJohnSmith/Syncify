@@ -722,11 +722,14 @@ fn main() {
                         // por un arranque donde el keyring no estaba disponible,
                         // la marca era transitoria y la cuenta vuelve a estar viva.
                         Ok(_) => {
-                            let _ = sqlx::query(
-                                "UPDATE accounts SET credentials_invalid = 0, invalid_reason = NULL WHERE id = ? AND credentials_invalid = 1",
+                            let _ = crate::db::write_or_log(
+                                "startup_restore_account_credentials",
+                                sqlx::query(
+                                    "UPDATE accounts SET credentials_invalid = 0, invalid_reason = NULL WHERE id = ? AND credentials_invalid = 1",
+                                )
+                                .bind(account_id)
+                                .execute(&db_for_migration),
                             )
-                            .bind(account_id)
-                            .execute(&db_for_migration)
                             .await;
                             restored.push(service_name.clone());
                         }
@@ -744,11 +747,13 @@ fn main() {
                             // reconstruye, solo exigiría un login que el usuario
                             // no puede evitar. Los rechazos de proveedor (Tidal,
                             // worker) sí lo sellan.
-                            let _ =
+                            let _ = crate::db::write_or_log(
+                                "startup_purge_account_credentials",
                                 sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
                                     .bind(account_id)
-                                    .execute(&db_for_migration)
-                                    .await;
+                                    .execute(&db_for_migration),
+                            )
+                            .await;
                             purged += 1;
                             purged_names.push(service_name.clone());
                         }
@@ -789,14 +794,17 @@ fn main() {
                             "display_name": "Qobuz User",
                         });
                         if let Ok(encrypted) = crate::crypto::encrypt(&creds.to_string()) {
-                            let _ = sqlx::query(
-                                r#"UPDATE accounts
-                                   SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL
-                                   WHERE service_id = (SELECT id FROM services WHERE name = 'qobuz')
-                                     AND (credentials_invalid = 1 OR credentials_json IS NULL OR credentials_json NOT LIKE '%user_auth_token%')"#
+                            let _ = crate::db::write_or_log(
+                                "startup_seed_qobuz_env_token",
+                                sqlx::query(
+                                    r#"UPDATE accounts
+                                       SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL
+                                       WHERE service_id = (SELECT id FROM services WHERE name = 'qobuz')
+                                         AND (credentials_invalid = 1 OR credentials_json IS NULL OR credentials_json NOT LIKE '%user_auth_token%')"#
+                                )
+                                .bind(&encrypted)
+                                .execute(&db_for_migration),
                             )
-                            .bind(&encrypted)
-                            .execute(&db_for_migration)
                             .await;
                         }
                     }

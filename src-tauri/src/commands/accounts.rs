@@ -994,10 +994,13 @@ pub async fn get_internal_account_credentials(
                     account_id,
                     e
                 );
-                let _ = sqlx::query("UPDATE accounts SET credentials_json = NULL WHERE id = ?")
-                    .bind(account_id)
-                    .execute(pool)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "clear_corrupted_credentials",
+                    sqlx::query("UPDATE accounts SET credentials_json = NULL WHERE id = ?")
+                        .bind(account_id)
+                        .execute(pool),
+                )
+                .await;
                 Err("Service credentials expired. Please reconnect your account.".to_string())
             }
             Err(e) => Err(e),
@@ -1303,10 +1306,13 @@ pub async fn purge_stale_credentials(
                     service_name,
                     e
                 );
-                let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
-                    .bind(account_id)
-                    .execute(&state.db)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "purge_stale_credentials",
+                    sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
+                        .bind(account_id)
+                        .execute(&state.db),
+                )
+                .await;
                 purged_count += 1;
                 purged_services.push(service_name.clone());
             }
@@ -1318,10 +1324,13 @@ pub async fn purge_stale_credentials(
                     service_name,
                     e
                 );
-                let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
-                    .bind(account_id)
-                    .execute(&state.db)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "purge_stale_credentials",
+                    sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
+                        .bind(account_id)
+                        .execute(&state.db),
+                )
+                .await;
                 purged_count += 1;
                 purged_services.push(service_name.clone());
             }

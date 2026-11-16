@@ -2437,7 +2437,7 @@ pub async fn perform_save_effective_download_preferences(
     // 5. Update advanced_settings. SB01: la copia del límite concurrente
     // desaparece; max_retries/retry_delay sí son superficie propia (la única)
     // de advanced_settings.
-    let _ = sqlx::query(
+    sqlx::query(
         r#"UPDATE advanced_settings
            SET max_retries = ?, retry_delay_seconds = ?, updated_at = datetime('now')
            WHERE id = 1"#,
@@ -2445,22 +2445,24 @@ pub async fn perform_save_effective_download_preferences(
     .bind(prefs.max_retries as i32)
     .bind(prefs.retry_delay_seconds as i32)
     .execute(&mut *tx)
-    .await;
+    .await
+    .map_err(|e| format!("Failed to update advanced_settings: {}", e))?;
 
     // 6. Update service priority order if provided
     for (idx, svc_name) in prefs.service_priority_order.iter().enumerate() {
-        let _ = sqlx::query(
+        sqlx::query(
             "UPDATE service_preferences SET priority = ?, updated_at = CURRENT_TIMESTAMP WHERE service_name = ?"
         )
         .bind((idx + 1) as i32)
         .bind(svc_name)
         .execute(&mut *tx)
-        .await;
+        .await
+        .map_err(|e| format!("Failed to update service preference priority '{}': {}", svc_name, e))?;
     }
 
     // 7. Update service qualities via UPSERT
     for q in &prefs.service_qualities {
-        let _ = sqlx::query(
+        sqlx::query(
             r#"INSERT INTO quality_preferences (service_name, max_quality, preferred_format, fallback_quality, fallback_format, updated_at)
                VALUES (?, ?, ?, ?, ?, datetime('now'))
                ON CONFLICT(service_name) DO UPDATE SET
@@ -2476,7 +2478,8 @@ pub async fn perform_save_effective_download_preferences(
         .bind(&q.fallback_quality)
         .bind(&q.fallback_format)
         .execute(&mut *tx)
-        .await;
+        .await
+        .map_err(|e| format!("Failed to save quality preference '{}': {}", q.service_name, e))?;
     }
 
     // 8. Update settings key-value table. SB01: sin espejo de ruta (vive en

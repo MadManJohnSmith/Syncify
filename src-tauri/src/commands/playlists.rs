@@ -120,10 +120,11 @@ pub async fn delete_playlist(state: State<'_, AppState>, id: i64) -> Result<(), 
         .await
         .map_err(|e| format!("Failed to delete playlist tracks: {}", e))?;
 
-    let _ = sqlx::query("DELETE FROM playlist_sources WHERE playlist_id = ?")
+    sqlx::query("DELETE FROM playlist_sources WHERE playlist_id = ?")
         .bind(id)
         .execute(&mut *tx)
-        .await;
+        .await
+        .map_err(|e| format!("Failed to delete playlist sources: {}", e))?;
 
     let res = sqlx::query("DELETE FROM playlists WHERE id = ?")
         .bind(id)
