@@ -4,6 +4,27 @@
 **Origen:** ronda de grilling del flujo AJUSTES/BACKUP.
 **Spec:** #195 · **Tickets:** #196–#202.
 
+## Cierre del flujo (2026-11-16)
+
+Serie SB completa y fusionada en `dev`; comportamiento vigente descrito en
+`docs/features/settings-system.md` y el ledger en `docs/auditoria/matriz-ajustes.md`:
+
+- **SB00** #196 (PR #287): decisiones 3 y 5 — defaults únicos
+  (`settings_defaults.rs`) y reset completo único en backend.
+- **SB02** #197 (PR #281): decisión 2 (mitad ocultar) y decisión 6 (comando
+  sin registro); huérfanos ocultos con fila SB02-H* e interruptor
+  `incremental_sync` retirado (fila SB02-R1).
+- **SB01** #199 (PR #288): decisión 4 — una superficie por dato
+  (`max_concurrent_downloads`, ruta de descarga) con lecturas tolerantes al
+  legado.
+- **SB03** #198 (PR #289): decisión 2 (mitad cablear) — flags `write_*`,
+  `preserve_custom_tags`, `overwrite_on_reimport`, `multi_value_separator`,
+  `sync_include_appearances` y `enable_lastfm`; paridad de fábrica con la
+  migración 0105. Fila SB03-01 en la matriz (con el pendiente de productor de
+  `SYNCIFY_ONLY_AVAILABLE_ON`/`SYNCIFY_NOT_AVAILABLE_STREAMING`).
+- **Cierre documental:** #202 (reconciliación del plan post-beta y docs de
+  comportamiento).
+
 ## Contexto
 
 Hay ~40 ajustes visibles que ningún código lee: los 7 de `duplicate_settings`

@@ -4,6 +4,25 @@
 **Origen:** ronda de grilling del flujo AJUSTES/BACKUP.
 **Spec:** #195 · **Tickets:** #196–#202.
 
+## Cierre del flujo (2026-11-16)
+
+Serie SB completa y fusionada en `dev`; comportamiento vigente descrito en
+`docs/features/backup.md`:
+
+- **SB04** #200 (PR #292): decisiones 1 (mitad export) y 2 — manifest v2.0.0
+  con ajustes, metadatos de cuenta sin secretos y `schema_version` derivada
+  del esquema real; exclusión testeada (`tests/backup_manifest_v2_test.rs`).
+- **SB05** #201 (PR #297): decisiones 1 (mitad import) y 2 — restauración por
+  superficie, cuentas sin sesión con `accounts_awaiting_reauth`, fallo seguro
+  ante major futuro y esquema más nuevo con cero escrituras, manifest v1
+  aceptado.
+- La decisión 3 (backup manual formalizado) no necesita código: sin
+  programador ni historial en la UI ya es el comportamiento, y la copia
+  pre-mutación (`VACUUM INTO`) queda documentada como mecanismo interno en
+  `docs/features/backup.md` y `GLOSSARY.md`.
+- **Cierre documental:** #202 (reconciliación del plan post-beta y docs de
+  comportamiento).
+
 ## Contexto
 
 ADR-0007 (cláusula 11) promete que el backup incluye «biblioteca, ajustes y
