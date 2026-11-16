@@ -41,7 +41,11 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
     AcoustID, y el worker de fondo.
   - `playlist-system.md`: sincronización y persistencia de listas de
     reproducción.
-  - `settings-system.md`: configuración jerárquica y persistencia en SQLite.
+  - `settings-system.md`: configuración jerárquica y persistencia en SQLite,
+    defaults únicos y reset completo en backend.
+  - `backup.md`: manifest v2 — export/import con ajustes y cuentas sin
+    secretos, reautenticación al restaurar y fallo seguro ante versiones
+    futuras.
   - `PLAYER_PHASE1_MPRIS.md`: reproductor integrado — MediaSession, motor
     nativo (`crates/syncify-player`) y el servicio MPRIS nativo
     (`src-tauri/src/services/mpris.rs`). La comprobación D-Bus de extremo a

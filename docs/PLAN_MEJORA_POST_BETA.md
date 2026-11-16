@@ -1,7 +1,8 @@
 # Plan de mejora post-beta — registro de funcionalidades diferidas
 
 **Estado:** lista de espera post-beta; ningún ítem se empieza antes de cerrar el beta.
-**Última revisión:** 2026-11-05 (reconciliado contra los flujos de documentación cerrados).
+**Última revisión:** 2026-11-16 (reconciliado contra el cierre de la serie SB de
+ajustes/backup y los flujos de documentación cerrados).
 
 **Propósito:** que ninguna funcionalidad estudiada y decidida como diferida se pierda.
 La decisión de alcance vive en `docs/adr/0002-alcance-beta.md`; los ítems que esa
@@ -52,6 +53,41 @@ migración #164, letras #176, ajustes/backup #195):
 **Espera post-beta real:** A-05, C-04, C-05, C-06, D-01, D-02, E-02, más los residuales
 parciales (disparadores A-04/A-06, feed A-07, declaración UI A-08, atajo C-01, cascada
 C-02, C-03 para JioSaavn/YouTube Music/Apple Music Audio).
+
+## Reconciliación (2026-11-16)
+
+Cierre del flujo AJUSTES/BACKUP (#195): la serie SB está completa y fusionada en
+`dev` — SB00 #196 (PR #287: defaults únicos en `settings_defaults.rs` y reset
+completo único en backend), SB02 #197 (PR #281: huérfanos ocultos e interruptor
+`incremental_sync` retirado), SB01 #199 (PR #288: cada dato en una sola
+superficie), SB03 #198 (PR #289: flags de escritura, reimportado, apariciones y
+Last.fm cableados; paridad de fábrica con la migración 0105), SB04 #200 (PR
+#292: manifest v2 de export con ajustes y cuentas sin secretos), SB05 #201 (PR
+#297: import con reautenticación por cuenta, fallo seguro ante versiones
+futuras y tratamiento del artista centinela). Cierre documental: #202.
+
+- **A-03** sigue `cubierto`: la retirada efectiva (#197) y la paridad del
+  comportamiento ya constan arriba; nada nuevo.
+- **A-04** sigue `parcial`: el ajuste sigue retirado de la superficie (fila
+  SB02-R2 de la matriz); el disparador sigue siendo la pieza que falta.
+- **B-03** sigue `cubierto` por el flujo del reproductor (P07): los ajustes
+  `replay_gain_mode` y `target_loudness_lufs` quedaron **visibles** por
+  decisión del ADR-0019 (decisión 2) — son del reproductor, no huérfanos del
+  flujo de ajustes.
+- **C-05** y **C-06** siguen `en espera`: sus ajustes siguen ocultos con fila de
+  reapertura en `docs/auditoria/matriz-ajustes.md` (SB02-H8 y SB02-H2/H3);
+  ocultar no cierra la feature, la reapertura sigue siendo post-beta.
+- **E-01** sigue `parcial` y avanza: la re-verificación de endpoints de letras
+  de las 12 fuentes se ejecutó y quedó registrada (LY00 #178, cerrado por PR
+  #290 el 2026-11-15, evidencia fechada en `docs/LYRICS_PROVIDER_MATRIX.md`
+  §4); además los cuatro documentos de `docs/features/` que conservaban
+  narrativa sin re-derivar se re-derivaron contra el árbol (PR #291, D-04).
+  Falta: reducir la lista del README como tarea única (LY16 #194, abierto) y
+  lo ya anotado (GUI/audio/MPRIS #149, descargas reales #127).
+
+**Espera post-beta real tras este cierre:** sin cambios respecto a la
+reconciliación de 2026-11-05 — A-05, C-04, C-05, C-06, D-01, D-02, E-02 y los
+residuales parciales ya listados.
 
 ---
 
@@ -238,7 +274,9 @@ _E-01 · `parcial` · **Verificación real que el README declara pendiente.** El
 excluye expresamente de su evidencia de release el login en vivo, el enriquecimiento, las
 descargas, la resolución de letras y la comprobación real de GUI/audio/tray/MPRIS
 (§"Verification and limitations" de `README.md`/`README.es.md`). Nada de lo anterior debe darse por bueno sin estalista
-reducida. Relacionado: el handoff advierte de no fiarse de los "verificado" de las
+reducida. Avance 2026-11-15: la re-verificación de endpoints de letras (LY00 #178,
+PR #290) se ejecutó y registró en `docs/LYRICS_PROVIDER_MATRIX.md`; la reducción de la
+lista del README sigue abierta en LY16 (#194). Relacionado: el handoff advierte de no fiarse de los "verificado" de las
 bitácoras de carril donde el carril no pudo ejecutar (`docs/historico/HANDOFF-2026-10-11.md:295-297`).
 
 _E-02 · `registrado` · **Windows: target de compilación y D-Bus/MPRIS en máquina real.**
