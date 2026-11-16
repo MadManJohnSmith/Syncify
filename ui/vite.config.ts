@@ -52,6 +52,22 @@ export default defineConfig({
         target: ['es2021', 'chrome100', 'safari13'],
         minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
         sourcemap: !!process.env.TAURI_DEBUG,
+        // FE-PERF-03 (#50): política de reparto de chunks. NO hay
+        // `manualChunks` a propósito: el reparto lo hacen los límites de
+        // `import()` dinámico (todas las vistas en `src/main.ts`), que Rollup
+        // convierte en un chunk por vista más los chunks compartidos que
+        // surjan. Confirmado con medición en la ventana real
+        // (tools/nav-perf.sh, sonda ui/src/perf/navigationProbe.ts):
+        // chunk principal 452.50 kB -> 399.00 kB raw y arranque (page origin
+        // -> primera vista pintada) 1656 -> 1480 ms (mediana de 3 pasadas;
+        // artefactos en ~/.local/state/syncify-fperf03/). Sin vendor split:
+        // el harness mide el arranque en `vite dev`, donde manualChunks no
+        // aplica, y separar vendor no reduce bytes ni parseo en disco local;
+        // fragmentar por tamaño sin datos que lo justifiquen está vetado por
+        // el issue. Verificación anti-huérfanos/anti-duplicación: grafo de
+        // referencias entre chunks y `sources` de los sourcemaps (con
+        // TAURI_DEBUG=1) — 24 chunks, todos alcanzables, cero fuentes en más
+        // de un chunk.
     },
 })
 
