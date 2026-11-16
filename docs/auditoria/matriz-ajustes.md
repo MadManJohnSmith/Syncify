@@ -346,8 +346,8 @@ Conclusión: CFGL-01 no es «un botón de test» en esta pestaña: `SettingsLyri
 | **LOG-02** | `LogsView.vue`, `useLogs.ts`, `App.vue`, `src-tauri/src/services/logging.rs` | Persistencia y escucha global de logs | Singleton global activo | Verificado: los logs se guardan y capturan continuamente aunque el usuario no esté en la pestaña Logs. `App.vue:559` inicia los listeners en el arranque global (`initLogListeners`), manteniendo el historial en un `ref` singleton reactivo, en `sessionStorage` y en los archivos rotativos en disco. Añadida la opción `<option value="lyrics">Lyrics</option>` al selector de módulos en `LogsView.vue`. |
 | **LOG-03** | `LogsView.vue` | Filtros de nivel, módulo y búsqueda de texto | Filtros combinados en tiempo real | Verificados y funcionales: los filtros de nivel (info/warn/error/debug/trace), búsqueda libre de texto y filtrado por proveedor/módulo (incluyendo el recién añadido módulo de letras) filtran de forma instantánea sobre las entradas cargadas y en disco. |
 | **LOG-04** | `LogsView.vue`, `services/logging.rs` | Catálogo de módulos en interfaz | Módulos del sistema | Verificado: los 17 módulos del sistema (Spotify, Qobuz, Tidal, Deezer, Apple, SoundCloud, MusicBrainz, Last.fm, Downloads, Enrichment, Worker, Database, Filesystem, Security, Library, System y Lyrics) se muestran y filtran correctamente. No se modifican módulos adicionales al encontrarse íntegros y estables. |
-| **BR-01** | `SettingsBackup.vue`, `src-tauri/src/commands/backup.rs` | Exportación de biblioteca | Esquema completo v1.0.0 | Falso positivo verificado: la exportación está completamente al día, serializa artistas, álbumes, pistas (con ISRC, duración, pista, formato y servicio), favoritos y playlists con checksum SHA-256 e integridad verificada en `backup_restore_e2e_test.rs`. |
-| **BR-02** | `SettingsBackup.vue`, `src-tauri/src/commands/backup.rs` | Restauración de biblioteca | Importación atómica con rollback | Verificado E2E: la restauración de base de datos funciona con éxito total y previene duplicados (`backup_restore_e2e_test.rs`, 5/5 tests verdes). En `SettingsBackup.vue`, se añade confirmación previa a la importación para evitar sobreescrituras accidentales y se persiste el resultado en almacenamiento local (`localStorage`). |
+| **BR-01** | `SettingsBackup.vue`, `src-tauri/src/commands/backup.rs` | Exportación de biblioteca, ajustes y metadatos de cuenta | Manifest v2.0.0 (SB04, #292) | Verificado: el manifest v2 lleva la biblioteca como v1 (artistas, álbumes, pistas con ISRC/duración/formato/servicio, favoritos y playlists), las 11 superficies tipadas de ajustes, la KV de ajustes acotada por `SETTINGS_KV_KEYS` y `is_sensitive_setting_key` (ningún token, clave de API o credencial viaja — contrato testeado en `tests/backup_manifest_v2_test.rs`) y metadatos de cuenta sin `credentials_json`; `schema_version` derivada del esquema real y checksum SHA-256. |
+| **BR-02** | `SettingsBackup.vue`, `src-tauri/src/commands/backup.rs` | Restauración de biblioteca y ajustes | Import atómico con reauth por cuenta (SB05, #297) | Verificado: import en transacción `BEGIN IMMEDIATE` idempotente; ajustes restaurados por superficie (upsert, columnas desconocidas descartadas); cuentas aplicadas como metadatos sin sesión, `credentials_json` intacto y `accounts_awaiting_reauth` pide login por cuenta; fallo seguro ante major futuro y esquema más nuevo con cero escrituras; manifest v1 sigue aceptándose; el artista centinela del export no crea filas (migración 0079). En `SettingsBackup.vue` se conservan confirmación previa y persistencia del resultado (`localStorage`). |
 
 ### Filas del carril `biblioteca-local-fuente` (Ola 7 / F-01, F-02)
 
@@ -764,3 +764,30 @@ Fuera de alcance de #197 (quedan como están): `advanced_settings.max_retries` y
 de #197: fmt, clippy `-D warnings`, `cargo check --workspace --all-targets`,
 `cargo test --locked --no-fail-fast`, build + vitest de UI (132 ficheros / 1149
 tests), puertas Python, todo en verde.
+
+## SB00/SB01 — defaults únicos, reset completo y una superficie por dato (#196/#199, 2026-11-14)
+
+Carril B de la serie SB (spec #195, ADR-0019 decisiones 3–5). Filas del
+cierre; los detalles completos en los cuerpos de los PR #287 (SB00) y #288
+(SB01). No abren ni cierran huérfanos: SB00/01 son de superficie única y
+verdad del valor, no de consumo.
+
+| ID | Ajuste / valor | Qué cambió | Reapertura | Estado |
+|---|---|---|---|---|
+| SB00-01 | Defaults de todas las superficies | Fuente única en `src-tauri/src/settings_defaults.rs`: `impl Default` de las superficies tipadas, catálogos semilla y `SETTINGS_KV_KEYS`; alimenta reset, fallbacks y seed. Dos verdades divergentes corregidas en `resolve_effective_download_preferences` (sync y plantilla de carpeta). Copias de defaults y reset por categoría fuera de la UI (`SettingsView` perdió `resetCategoryDefaults` y sus cinco constantes) | Un ajuste nuevo toma su default del módulo y su fila aquí antes de tocar código | aplicado (#287) |
+| SB00-02 | `reset_to_defaults('all')` | Reset completo único en backend (`reset_all_settings` en `settings_defaults.rs`): una transacción, 11 superficies tipadas + claves de ajustes de la KV; pertenencia de catálogos por upsert sin re-siembra de filas fuera de catálogo; errores propagados (−2 escrituras silenciosas D-06). Tests: `tests/settings_reset_defaults_test.rs` | — | aplicado (#287) |
+| SB01-01 | Límite concurrente de descargas | Superficie única: `sync_settings.max_concurrent_downloads`. Fuera las copias en `advanced_settings` y la KV `dl_concurrent_downloads` en las cuatro vías de escritura; lecturas tolerantes al legado (`COALESCE`) | — | aplicado (#288) |
+| SB01-02 | Ruta de descarga | Superficie única: `folder_settings.base_folder`. Fuera el espejo triple `dl_download_path`/`download_dir`/`download_path` y el auto-siembrado de espejos en `get_kv_settings`; `save_settings_batch` escribe a través; `resolve_effective_download_paths` lee el legado como fallback. Tests: `tests/settings_single_surface_test.rs` | — | aplicado (#288) |
+
+## SB04/SB05 — manifest v2: ajustes y cuentas sin secretos (#200/#201, 2026-11-15/16)
+
+Carril B de la serie SB (spec #195, ADR-0020 decisiones 1–2). Comportamiento
+documentado en `docs/features/backup.md`; filas de cierre:
+
+| ID | Valor | Qué cambió | Reapertura | Estado |
+|---|---|---|---|---|
+| SB04-01 | Manifest de export | `export_library` produce v2.0.0: biblioteca como v1 + 11 superficies tipadas + KV de ajustes acotada (`SETTINGS_KV_KEYS` ∧ ¬`is_sensitive_setting_key`) + metadatos de cuenta sin `credentials_json`; `schema_version` derivada con `detect_schema_version`; sandbox, checksum y límite de tamaño intactos. Contrato sin secretos testeado en `tests/backup_manifest_v2_test.rs` | Secretos nuevos: añadir la clave a la exclusión y su caso al contrato | aplicado (#292) |
+| SB05-01 | Manifest de import | `import_library` restaura ajustes por superficie (upsert por clave natural, columnas desconocidas descartadas), KV con la misma selección, cuentas como metadatos sin sesión (`credentials_json` intacto) y `accounts_awaiting_reauth`; puertas de major futuro y esquema más nuevo con cero escrituras; v1 aceptado; artista centinela no restaurado (migración 0079). Tests: `tests/backup_manifest_v2_test.rs` (8) | — | aplicado (#297) |
+
+Actualización de filas previas del carril `datos-logs-backup`: BR-01 y BR-02
+pasan de describir el manifest v1 a describir el v2 (ver arriba).
