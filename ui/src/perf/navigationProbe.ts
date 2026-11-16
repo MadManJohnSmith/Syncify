@@ -141,6 +141,10 @@ export function installNavigationProbe(app: App, router: Router): boolean {
     import.meta.env.VITE_NAVPERF === '1' ||
     (typeof window !== 'undefined' && window.location.search.includes('__navperf=1'))
   trace('probe-module-loaded', { inTauri, requested, viteNavperf: String(import.meta.env.VITE_NAVPERF) })
+  // FE-PERF-03 (#50): origen de página en epoch (ms). Con el ts ISO de
+  // 'first-view-ready' permite derivar el tiempo de ARRANQUE (página carga ->
+  // primera vista pintada) sin tocar el harness ni la definición de FE-PERF-01.
+  trace('page-origin', { timeOrigin: performance.timeOrigin })
   if (!inTauri || !requested) return false
 
   // Errores globales de la página: visibles en el log del harness. Van ANTES
@@ -333,6 +337,8 @@ function publishResults(state: ProbeState): void {
   const payload = {
     label: new URLSearchParams(window.location.search).get('__navperf_label') ?? 'run',
     finishedAt: new Date().toISOString(),
+    // FE-PERF-03 (#50): origen de página (epoch ms) para derivar arranque.
+    pageTimeOrigin: Math.round(performance.timeOrigin),
     samples: state.samples,
     summary,
     ipc: state.invokeCounts,

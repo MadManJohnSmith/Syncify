@@ -3,14 +3,18 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import App from './App.vue'
 import './styles/main.css'
 
-// Import views
-import DashboardView from './views/DashboardView.vue'
-import AlbumDetailView from './views/AlbumDetailView.vue'
-import ArtistDetailView from './views/ArtistDetailView.vue'
-
+// FE-PERF-03 (#50): TODAS las vistas son `import()` dinámico. Antes
+// DashboardView, AlbumDetailView y ArtistDetailView se importaban aquí de
+// forma estática y engordaban el chunk principal (452 kB raw / 140 kB gz):
+// el arranque cargaba y parseaba de golpe también AlbumDetail y ArtistDetail,
+// que no son la primera pantalla. Con imports dinámicos el chunk principal
+// queda reducido al shell (App + router + API) y cada vista viaja en su
+// chunk; la medición antes/después está en ~/.local/state/syncify-fperf03/
+// y en el PR. Nota: la primera navegación a Dashboard añade el fetch de su
+// chunk, que solapa con el init del backend mientras corre la splash.
 export const routes: RouteRecordRaw[] = [
     { path: '/', redirect: '/dashboard' },
-    { path: '/dashboard', name: 'Dashboard', component: DashboardView },
+    { path: '/dashboard', name: 'Dashboard', component: () => import('./views/DashboardView.vue') },
     { path: '/library', name: 'Library', component: () => import('./views/LibraryView.vue') },
     { path: '/playlists', name: 'Playlists', component: () => import('./views/PlaylistView.vue') },
     { path: '/downloads', name: 'Downloads', component: () => import('./views/DownloadsView.vue') },
@@ -38,9 +42,9 @@ export const routes: RouteRecordRaw[] = [
     { path: '/metadata', name: 'Metadata', component: () => import('./views/MetadataView.vue') },
     { path: '/lyrics', name: 'Lyrics', component: () => import('./views/LyricsView.vue') },
     { path: '/migration', name: 'Migration', component: () => import('./views/MigrationView.vue') },
-    // Sprint 4: Detail Views
-    { path: '/album/:id', name: 'AlbumDetail', component: AlbumDetailView },
-    { path: '/artist/:id', name: 'ArtistDetail', component: ArtistDetailView },
+    // Sprint 4: Detail Views (FE-PERF-03: también dinámicas)
+    { path: '/album/:id', name: 'AlbumDetail', component: () => import('./views/AlbumDetailView.vue') },
+    { path: '/artist/:id', name: 'ArtistDetail', component: () => import('./views/ArtistDetailView.vue') },
     // R17: search lives ONLY as a modal (App.vue). There is no /search route: an
     // old link falls into the catch-all and lands on /dashboard.
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
