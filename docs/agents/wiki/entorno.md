@@ -24,6 +24,21 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   o target privado por checkout. Fuente: handoff del 2026-11-13 §Gotcha de
   entorno.
 
+## tmpfs 12G y targets privados en paralelo
+
+- **2026-11-16, medido**: con dos carriles en paralelo con target privado
+  por delegado, tmpfs (12G) se llenó a mitad de `cargo test` (error 28, `No
+  space left on device`); el target privado del carril D-06c llegó a 8,5G.
+  Contramedidas aplicadas: (1) cuando dos carriles gatean a la vez, el
+  segundo usa target privado **fuera de tmpfs**
+  (`/home/alan/.cache/syncify-target-<carril>`; 509G libres en `/home`);
+  (2) liberar el target privado de un carril que ya gateó verde (sus
+  binarios además hornean rutas de un checkout que muere con el merge);
+  (3) el delegado D-06c liberó `/tmp/syncify-target` compartido (inactivo,
+  regenerable por diseño) para seguir gateando: la primera puerta con el
+  default recompilará. Fuente: informe del delegado D-06c (PR #296,
+  `deb5183`) y `df` medido en la sesión del 2026-11-16.
+
 ## Lock del target y procesos huérfanos
 
 - **2026-11-13**: los procesos huérfanos de un run terminado pueden
