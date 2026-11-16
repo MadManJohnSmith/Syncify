@@ -28,27 +28,50 @@ function seedLibrary() {
   }
 }
 
+// FE-PERF-04 (#51): el Dashboard lee sus agregados equivalentes en UNA
+// llamada (`get_dashboard_snapshot`); los stubs que antes respondían a
+// get_library_stats/get_metadata_stats/get_lyrics_stats/get_library_snapshots
+// se montan en este payload unificado.
+function unifiedSnapshot(overrides: {
+  stats?: Record<string, number>,
+  snapshots?: unknown[],
+} = {}) {
+  return {
+    stats: {
+      ...seedLibrary(),
+      library_entries: 0,
+      services_with_data: 0,
+      ...overrides.stats,
+    },
+    snapshot: {
+      id: 1, snapshot_date: '2026-01-01', total_tracks: 1200, total_albums: 80,
+      total_artists: 45, total_size_bytes: 0, tracks_with_lyrics: 0,
+      tracks_lossless: 0, tracks_hires: 0, downloaded_tracks: 900,
+    },
+    snapshots: overrides.snapshots ?? [],
+    metadata: {
+      total_tracks: 1200, with_isrc: 0, with_musicbrainz_id: 0, with_album: 0,
+      with_year: 0, with_genre: 0, with_art: 0, average_completeness: 0,
+    },
+    lyrics: {
+      total_tracks: 1200, with_lyrics: 0, synced_lyrics: 0, embedded_lyrics: 0,
+    },
+  }
+}
+
 describe('DashboardView without page scroll and with real free space', () => {
   beforeEach(() => {
     resetMocks()
     mockPush.mockReset()
 
     mockInvoke((command) => {
-      if (command === 'create_library_snapshot') return null
-      if (command === 'get_library_stats') return seedLibrary()
+      if (command === 'get_dashboard_snapshot') return unifiedSnapshot()
       if (command === 'get_queue_stats') {
         return { total: 12, queued: 4, downloading: 2, completed: 6, failed: 0, paused: 0 }
       }
       if (command === 'get_service_statuses') {
         return [{ name: 'spotify', connected: true, library_count: 1200 }]
       }
-      if (command === 'get_metadata_stats') {
-        return { total_tracks: 1200, complete: 0, missing: 0, lyrics_count: 0 }
-      }
-      if (command === 'get_lyrics_stats') {
-        return { total: 1200, synchronized: 0, unsynchronized: 0, missing: 0 }
-      }
-      if (command === 'get_library_snapshots') return []
       if (command === 'get_storage_stats') {
         return {
           used_bytes: 32212254720,
@@ -154,7 +177,7 @@ describe('DashboardView without page scroll and with real free space', () => {
 
   it('shows a backend failure as an error, not as zeroed statistics', async () => {
     mockInvoke((command) => {
-      if (command === 'get_library_stats') {
+      if (command === 'get_dashboard_snapshot') {
         throw new Error('Dashboard stats error (tracks): no such table: tracks')
       }
       return null

@@ -372,7 +372,7 @@ function renderOverlay(state: ProbeState, summary: NavPairSummary[]): void {
     .map((s) => `${s.pair}  kind=${s.kind}  n=${s.n}  p50=${s.p50.toFixed(1)}ms  p95=${s.p95.toFixed(1)}ms  max=${s.max.toFixed(1)}ms`)
     .join('\n')
   const ipc = Object.entries(state.invokeCounts)
-    .filter(([cmd, n]) => n > 0 && /^(create_library_snapshot|get_library_stats|get_library|get_queue_stats|get_top_artists|get_top_genres)/.test(cmd))
+    .filter(([cmd, n]) => n > 0 && /^(get_dashboard_snapshot|create_library_snapshot|get_library_stats|get_library|get_queue_stats|get_top_artists|get_top_genres)/.test(cmd))
     .map(([cmd, n]) => `  ${cmd}: ${n}`)
     .join('\n')
   el.textContent = `FE-PERF-01 navegación (sin warmup, ${state.samples.length - countWarmup(state)} muestras)\n${rows}\nIPC relevantes:\n${ipc}`

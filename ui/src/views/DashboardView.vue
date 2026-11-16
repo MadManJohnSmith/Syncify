@@ -398,7 +398,6 @@ import { confirm } from '@/composables/useToast'
 import { libraryApi } from '@/api/library'
 import { queueApi } from '@/api/queue'
 import { accountsApi } from '@/api/accounts'
-import { metadataApi } from '@/api/metadata'
 import { lyricsApi } from '@/api/lyrics'
 import { dashboardApi } from '@/api/dashboard'
 import { getStorageStats, type StorageStats } from '@/api/storage'
@@ -634,16 +633,18 @@ async function fetchData() {
   error.value = null
 
   try {
+    // FE-PERF-04 (#51): los recuentos equivalentes del Dashboard van en UNA
+    // lectura unificada (`get_dashboard_snapshot`): la vista `library_stats`
+    // + los seis recuentos del snapshot + el historial + metadatos + letras.
+    // Lo que queda fuera son agregados que el snapshot no cubre (cola,
+    // servicios, disco, top artistas/géneros, calidad, duplicados).
     const [
-      libStats, qStats, services, meta, lyrics, snaps, storage,
+      snapRead, qStats, services, storage,
       topArtists, topGenres, qualityList, dupeStats
     ] = await Promise.all([
-      libraryApi.getLibraryStats(),
+      dashboardApi.getDashboardSnapshot(getDaysForTimeRange(timeRange.value)),
       queueApi.getQueueStats(),
       accountsApi.getServiceStatuses(),
-      metadataApi.getMetadataStats(),
-      lyricsApi.getLyricsStats(),
-      dashboardApi.getLibrarySnapshots(getDaysForTimeRange(timeRange.value)).catch(() => []),
       getStorageStats(),
       libraryApi.getTopArtists(5),
       libraryApi.getTopGenres(5).catch(() => []),
@@ -651,11 +652,12 @@ async function fetchData() {
       dashboardApi.getDuplicateStats().catch(() => 0) // Fallback inline for partial failures
     ])
 
-    libraryStats.value = libStats
+    libraryStats.value = snapRead.stats
     queueStats.value = qStats
     serviceStatuses.value = services
-    metadataStats.value = meta
-    lyricsStats.value = lyrics
+    metadataStats.value = snapRead.metadata
+    lyricsStats.value = snapRead.lyrics
+    const snaps: LibrarySnapshot[] = snapRead.snapshots
     snapshots.value = snaps
     storageData.value = storage
     topArtistsData.value = topArtists
@@ -671,8 +673,8 @@ async function fetchData() {
         total: Math.round((s.total_tracks / maxTracks) * 100),
         downloaded: Math.round((s.downloaded_tracks / maxTracks) * 100)
       }))
-    } else if (libStats && libStats.total_tracks > 0) {
-      const dlPct = Math.round((libStats.total_downloads / libStats.total_tracks) * 100)
+    } else if (snapRead.stats.total_tracks > 0) {
+      const dlPct = Math.round((snapRead.stats.total_downloads / snapRead.stats.total_tracks) * 100)
       growthData.value = [
         { label: 'Current', total: 100, downloaded: dlPct }
       ]
@@ -887,7 +889,9 @@ onMounted(async () => {
   void eventBus.on(TauriEvents.IMPORT_COMPLETE, markDashboardStale)
   void eventBus.on(TauriEvents.DOWNLOAD_PROGRESS, markDashboardStale)
 
-  await dashboardApi.createLibrarySnapshot().catch(() => null)
+  // FE-PERF-04 (#51): ya no hay `create_library_snapshot` previo — la lectura
+  // unificada `get_dashboard_snapshot` escribe el snapshot del día dentro de
+  // la misma llamada que trae los agregados.
   await fetchData()
 
   // Get app version

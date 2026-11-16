@@ -1,10 +1,13 @@
-// FE-PERF-01 (#49): comportamiento externo del KeepAlive acotado.
+// FE-PERF-01 (#49) + FE-PERF-04 (#51): comportamiento externo del KeepAlive
+// acotado sobre el contrato unificado del Dashboard.
 //
 // Criterio de aceptación: volver a Dashboard NO repite su montaje ni sus
 // llamadas. Se prueba montando la App real con el router real y contando las
-// invocaciones IPC de los comandos que sólo Dashboard lanza
-// (`create_library_snapshot`, `get_library_stats`): si la vista se remontara,
-// la segunda visita los repetiría.
+// invocaciones IPC: la lectura unificada (`get_dashboard_snapshot`) debe
+// correr UNA vez, y los comandos que el snapshot cubre (`create_library_snapshot`,
+// `get_library_stats`, `get_metadata_stats`, `get_lyrics_stats`) NO se invocan
+// como llamadas separadas. `get_top_artists` sigue siendo suya (el snapshot no
+// lo cubre). Si la vista se remontara, la segunda visita repetiría todo.
 //
 // También se comprueba el límite de retención por el lado del comportamiento:
 // LibraryView (incluida) conserva su instancia al volver (no repite
@@ -25,10 +28,24 @@ function stubBackend() {
       return { running: false, paused: false, active_downloads: 0, max_concurrent: 3 }
     if (cmd === 'get_queue_stats')
       return { total: 0, queued: 0, downloading: 0, completed: 0, failed: 0, paused: 0 }
-    if (cmd === 'get_library_stats')
+    if (cmd === 'get_dashboard_snapshot')
       return {
-        total_tracks: 1, total_albums: 1, total_artists: 1,
-        playlists: 0, total_downloads: 0, queued_downloads: 0, active_downloads: 0,
+        stats: {
+          total_tracks: 1, total_artists: 1, total_albums: 1, total_downloads: 0,
+          queued_downloads: 0, active_downloads: 0, library_entries: 0,
+          playlists: 0, services_with_data: 0,
+        },
+        snapshot: {
+          id: 1, snapshot_date: '2026-01-01', total_tracks: 1, total_albums: 1,
+          total_artists: 1, total_size_bytes: 0, tracks_with_lyrics: 0,
+          tracks_lossless: 0, tracks_hires: 0, downloaded_tracks: 0,
+        },
+        snapshots: [],
+        metadata: {
+          total_tracks: 1, with_isrc: 0, with_musicbrainz_id: 0, with_album: 0,
+          with_year: 0, with_genre: 0, with_art: 0, average_completeness: 0,
+        },
+        lyrics: { total_tracks: 1, with_lyrics: 0, synced_lyrics: 0, embedded_lyrics: 0 },
       }
     if (cmd === 'get_service_statuses' || cmd === 'get_accounts') return []
     if (cmd === 'get_library') return { tracks: [], total: 0 }
@@ -64,9 +81,14 @@ describe('KeepAlive acotado — volver no remonta (FE-PERF-01)', () => {
   it('volver a Dashboard no repite su montaje ni sus llamadas', async () => {
     const { wrapper, router } = await mountAppWithRouter()
 
-    // Primera visita: Dashboard monta y lanza snapshot + stats (una vez).
-    expect(countCalls('create_library_snapshot')).toBe(1)
-    expect(countCalls('get_library_stats')).toBe(1)
+    // Primera visita: Dashboard monta y lanza la lectura unificada (una vez).
+    // FE-PERF-04: los recuentos equivalentes van en `get_dashboard_snapshot`;
+    // sus comandos predecesores no se invocan como llamadas separadas.
+    expect(countCalls('get_dashboard_snapshot')).toBe(1)
+    expect(countCalls('create_library_snapshot')).toBe(0)
+    expect(countCalls('get_library_stats')).toBe(0)
+    expect(countCalls('get_metadata_stats')).toBe(0)
+    expect(countCalls('get_lyrics_stats')).toBe(0)
     expect(countCalls('get_top_artists')).toBe(1)
 
     await navigate(router, '/library')
@@ -76,11 +98,10 @@ describe('KeepAlive acotado — volver no remonta (FE-PERF-01)', () => {
 
     // Segunda visita: la vista se reactiva del KeepAlive; ningún comando de
     // Dashboard se repite (el montaje no vuelve a correr).
-    expect(countCalls('create_library_snapshot')).toBe(1)
-    expect(countCalls('get_library_stats')).toBe(1)
+    expect(countCalls('get_dashboard_snapshot')).toBe(1)
+    expect(countCalls('create_library_snapshot')).toBe(0)
+    expect(countCalls('get_library_stats')).toBe(0)
     expect(countCalls('get_top_artists')).toBe(1)
-    expect(countCalls('get_metadata_stats')).toBe(1)
-    expect(countCalls('get_lyrics_stats')).toBe(1)
     wrapper.unmount()
   })
 

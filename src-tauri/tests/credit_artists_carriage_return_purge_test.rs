@@ -16,7 +16,8 @@ use syncify_core_domain::metadata::{
     parse_credit_role_and_name, parse_credits_string, sanitize_artist_name,
 };
 use syncify_tauri_lib::commands::{
-    create_library_snapshot, get_dashboard_stats, search_library, SearchLibraryParams,
+    get_dashboard_stats, read_unified_library_counts, search_library, upsert_library_snapshot,
+    SearchLibraryParams,
 };
 use syncify_tauri_lib::enrichment_worker::EnrichmentWorkerState;
 use syncify_tauri_lib::services::ConcurrencyManager;
@@ -335,9 +336,15 @@ async fn test_search_and_dashboard_library_hardening() {
         "Dashboard total_artists must strictly count 3 library/favorite artists, excluding technical credit artist"
     );
 
-    let snapshot = create_library_snapshot(app_state.clone())
+    // FE-PERF-04 (#51): el snapshot del día lo escribe `get_dashboard_snapshot`
+    // (lectura unificada + upsert); la escritura se ejercita con sus mismos
+    // dos pasos.
+    let counts = read_unified_library_counts(&app_state.db)
         .await
-        .expect("create_library_snapshot should succeed");
+        .expect("unified counts should succeed");
+    let snapshot = upsert_library_snapshot(&app_state.db, &counts)
+        .await
+        .expect("snapshot upsert should succeed");
     assert_eq!(
         snapshot.total_artists, 3,
         "Today snapshot total_artists must strictly be 3"

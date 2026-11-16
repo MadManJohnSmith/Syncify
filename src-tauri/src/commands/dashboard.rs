@@ -32,69 +32,83 @@ pub async fn get_service_health(
     .map_err(|e| format!("Database error: {}", e))
 }
 
-/// Create a library snapshot for historical tracking
-#[tauri::command]
-pub async fn create_library_snapshot(
-    state: State<'_, AppState>,
+/// FE-PERF-04 (#51): los seis recuentos del snapshot y las columnas de la
+/// vista `library_stats` se resuelven en UNA lectura. `ls.*` trae la vista
+/// verbatim (la misma semántica que devuelve `get_library_stats`) y los seis
+/// subselects son los valores que el snapshot necesita y la vista no expone;
+/// cada subselect es la consulta exacta que antes corría como sentencia
+/// separada, ahora en una sola sentencia.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct UnifiedLibraryCounts {
+    // Columnas de la vista library_stats (0005_fix_album_stats.sql:13-27,
+    // recreada verbatim en 0085_alignment_audit.sql:212-226).
+    pub total_tracks: i64,
+    pub total_artists: i64,
+    pub total_albums: i64,
+    pub total_downloads: i64,
+    pub queued_downloads: i64,
+    pub active_downloads: i64,
+    pub library_entries: i64,
+    pub playlists: i64,
+    pub services_with_data: i64,
+    // Valores propios del snapshot que la vista no cubre.
+    pub snap_total_albums: i64,
+    pub snap_total_artists: i64,
+    pub snap_total_size_bytes: i64,
+    pub snap_tracks_with_lyrics: i64,
+    pub snap_tracks_lossless: i64,
+    pub snap_tracks_hires: i64,
+}
+
+const UNIFIED_LIBRARY_COUNTS_SQL: &str = r#"
+SELECT ls.*,
+    (SELECT COUNT(*) FROM albums) as snap_total_albums,
+    (SELECT COUNT(*) FROM artists art
+     WHERE EXISTS (
+         SELECT 1 FROM track_artists ta WHERE ta.artist_id = art.id
+         UNION
+         SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id
+     ) OR art.is_favorite = 1 OR art.favorite_at IS NOT NULL) as snap_total_artists,
+    (SELECT COALESCE(SUM(file_size_bytes), 0) FROM downloads) as snap_total_size_bytes,
+    (SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE content IS NOT NULL AND content != '') as snap_tracks_with_lyrics,
+    (SELECT COUNT(*) FROM tracks WHERE audio_quality = 'lossless') as snap_tracks_lossless,
+    (SELECT COUNT(*) FROM tracks WHERE audio_quality = 'hires') as snap_tracks_hires
+FROM library_stats ls
+"#;
+
+/// pub para los tests de contrato: ejercitan la lectura unificada directa.
+pub async fn read_unified_library_counts(
+    db: &crate::db::DbPool,
+) -> Result<UnifiedLibraryCounts, String> {
+    sqlx::query_as::<_, UnifiedLibraryCounts>(UNIFIED_LIBRARY_COUNTS_SQL)
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("Unified dashboard counts error: {}", e))
+}
+
+impl UnifiedLibraryCounts {
+    /// La vista `library_stats`, tal cual la devuelve `get_library_stats`.
+    fn to_library_stats(&self) -> LibraryStats {
+        LibraryStats {
+            total_tracks: self.total_tracks,
+            total_artists: self.total_artists,
+            total_albums: self.total_albums,
+            total_downloads: self.total_downloads,
+            queued_downloads: self.queued_downloads,
+            active_downloads: self.active_downloads,
+            library_entries: self.library_entries,
+            playlists: self.playlists,
+            services_with_data: self.services_with_data,
+        }
+    }
+}
+
+/// Upsert del snapshot del día a partir de una lectura unificada ya hecha.
+/// pub para los tests de schema (0085/BD-11), que ejercitan la escritura.
+pub async fn upsert_library_snapshot(
+    db: &crate::db::DbPool,
+    counts: &UnifiedLibraryCounts,
 ) -> Result<LibrarySnapshot, String> {
-    tracing::info!("create_library_snapshot");
-
-    // Gather current library stats
-    let (total_tracks,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| format!("Query error: {}", e))?;
-
-    let (total_albums,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM albums")
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| format!("Query error: {}", e))?;
-
-    let (total_artists,): (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(*) FROM artists art
-        WHERE EXISTS (
-            SELECT 1 FROM track_artists ta WHERE ta.artist_id = art.id
-            UNION
-            SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id
-        ) OR art.is_favorite = 1 OR art.favorite_at IS NOT NULL
-        "#,
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("Query error: {}", e))?;
-
-    let (downloaded_tracks,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM downloads")
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| format!("Query error: {}", e))?;
-
-    // BD-11: every remaining snapshot column gets a real value now.
-    let (total_size_bytes,): (i64,) =
-        sqlx::query_as("SELECT COALESCE(SUM(file_size_bytes), 0) FROM downloads")
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| format!("Query error: {}", e))?;
-
-    let (tracks_with_lyrics,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(DISTINCT track_id) FROM lyrics WHERE content IS NOT NULL AND content != ''",
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("Query error: {}", e))?;
-
-    let (tracks_lossless,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE audio_quality = 'lossless'")
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| format!("Query error: {}", e))?;
-
-    let (tracks_hires,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM tracks WHERE audio_quality = 'hires'")
-            .fetch_one(&state.db)
-            .await
-            .map_err(|e| format!("Query error: {}", e))?;
-
     // Insert or update today's snapshot
     sqlx::query(
         "INSERT INTO library_snapshots (snapshot_date, total_tracks, total_albums, total_artists, downloaded_tracks, total_size_bytes, tracks_with_lyrics, tracks_lossless, tracks_hires)
@@ -105,15 +119,15 @@ pub async fn create_library_snapshot(
          total_size_bytes = excluded.total_size_bytes, tracks_with_lyrics = excluded.tracks_with_lyrics,
          tracks_lossless = excluded.tracks_lossless, tracks_hires = excluded.tracks_hires",
     )
-    .bind(total_tracks)
-    .bind(total_albums)
-    .bind(total_artists)
-    .bind(downloaded_tracks)
-    .bind(total_size_bytes)
-    .bind(tracks_with_lyrics)
-    .bind(tracks_lossless)
-    .bind(tracks_hires)
-    .execute(&state.db)
+    .bind(counts.total_tracks)
+    .bind(counts.snap_total_albums)
+    .bind(counts.snap_total_artists)
+    .bind(counts.total_downloads) // == COUNT(*) FROM downloads, como antes
+    .bind(counts.snap_total_size_bytes)
+    .bind(counts.snap_tracks_with_lyrics)
+    .bind(counts.snap_tracks_lossless)
+    .bind(counts.snap_tracks_hires)
+    .execute(db)
     .await
     .map_err(|e| format!("Insert error: {}", e))?;
 
@@ -121,7 +135,7 @@ pub async fn create_library_snapshot(
     sqlx::query_as::<_, LibrarySnapshot>(
         "SELECT * FROM library_snapshots WHERE snapshot_date = date('now')",
     )
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await
     .map_err(|e| format!("Fetch error: {}", e))
 }
@@ -143,6 +157,53 @@ pub async fn get_library_snapshots(
     .fetch_all(&state.db)
     .await
     .map_err(|e| format!("Database error: {}", e))
+}
+
+/// Payload unificado del Dashboard (FE-PERF-04, #51): los recuentos
+/// equivalentes llegan en una sola llamada en vez de por separado.
+#[derive(Debug, Serialize)]
+pub struct DashboardSnapshotRead {
+    /// Vista `library_stats` — idéntica a `get_library_stats`.
+    pub stats: LibraryStats,
+    /// Snapshot del día, ya escrito — idéntico a `create_library_snapshot`.
+    pub snapshot: LibrarySnapshot,
+    /// Historial para la gráfica de crecimiento — idéntico a
+    /// `get_library_snapshots(days)`.
+    pub snapshots: Vec<LibrarySnapshot>,
+    /// Cobertura de metadatos — misma consulta que `get_metadata_stats`.
+    pub metadata: MetadataStats,
+    /// Cobertura de letras — misma consulta que `get_lyrics_stats`.
+    pub lyrics: LyricsStats,
+}
+
+/// Una llamada resuelve los agregados que el Dashboard pedía por separado:
+/// los seis recuentos del snapshot y la vista `library_stats` en UNA lectura,
+/// y en el mismo payload el historial de snapshots, la cobertura de
+/// metadatos y la de letras (reutilizando las consultas exactas de sus
+/// comandos, sin re-cálculos). `get_library_stats`, `get_metadata_stats` y
+/// `get_lyrics_stats` siguen existiendo para sus otros consumidores
+/// (AccountsView, MetadataView, LyricsView).
+#[tauri::command]
+pub async fn get_dashboard_snapshot(
+    state: State<'_, AppState>,
+    days: i32,
+) -> Result<DashboardSnapshotRead, String> {
+    tracing::info!("get_dashboard_snapshot: {} days", days);
+
+    let counts = read_unified_library_counts(&state.db).await?;
+    let stats = counts.to_library_stats();
+    let snapshot = upsert_library_snapshot(&state.db, &counts).await?;
+    let snapshots = get_library_snapshots(state.clone(), days).await?;
+    let metadata = get_metadata_stats(state.clone()).await?;
+    let lyrics = get_lyrics_stats(state.clone()).await?;
+
+    Ok(DashboardSnapshotRead {
+        stats,
+        snapshot,
+        snapshots,
+        metadata,
+        lyrics,
+    })
 }
 
 // ==============================================
